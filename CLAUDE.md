@@ -61,9 +61,10 @@ The bot allows users to interact with Claude Code through Slack, providing real-
 - **External Tools**: Extends Claude's capabilities with external MCP servers
 - **Multiple Server Types**: Supports stdio, SSE, and HTTP MCP servers
 - **Auto-Configuration**: Loads servers from `mcp-servers.json` automatically
+- **Default Configuration**: Pre-configured with filesystem and GitHub servers
 - **Tool Management**: All MCP tools are allowed by default with `mcp__serverName__toolName` pattern
 - **Runtime Management**: Reload configuration without restarting the bot
-- **Popular Integrations**: Filesystem access, GitHub API, database connections, web search
+- **Popular Integrations**: Filesystem access, GitHub API (via token), database connections, web search
 
 ## Environment Configuration
 
@@ -82,6 +83,9 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 ```env
 # Working Directory Configuration
 BASE_DIRECTORY=/Users/username/Code/
+
+# GitHub Integration (for MCP)
+GITHUB_TOKEN=ghp_your_personal_access_token
 
 # Third-party API Providers
 CLAUDE_CODE_USE_BEDROCK=1
@@ -167,6 +171,77 @@ Bot: ✅ MCP configuration reloaded successfully.
 User: @ClaudeBot list all TODO comments in the project
 Bot: [Uses mcp__filesystem tools to search files]
 ```
+
+### GitHub Integration
+
+GitHub integration is provided through the MCP GitHub server using a personal access token:
+
+#### Setup
+1. **Generate a GitHub Personal Access Token:**
+
+   **Step-by-step instructions:**
+   
+   a. **Navigate to GitHub Settings:**
+      - Go to [github.com](https://github.com) and sign in
+      - Click your profile picture in the top right corner
+      - Select "Settings" from the dropdown menu
+   
+   b. **Access Developer Settings:**
+      - In the left sidebar, scroll down and click "Developer settings"
+      - Click "Personal access tokens"
+      - Select "Tokens (classic)"
+   
+   c. **Generate New Token:**
+      - Click "Generate new token (classic)"
+      - You may be prompted to confirm your password
+   
+   d. **Configure Token:**
+      - **Note**: Give it a descriptive name like "Claude Code Slack Bot"
+      - **Expiration**: Choose an appropriate expiration (90 days, 1 year, or no expiration)
+      - **Select scopes** based on your needs:
+        - ✅ `repo` - Full control of private repositories (includes all repo permissions)
+        - ✅ `read:org` - Read organization membership and team membership
+        - ✅ `read:user` - Read user profile data
+        - ✅ `user:email` - Access user email addresses (read-only)
+   
+   e. **Generate and Save Token:**
+      - Click "Generate token" at the bottom
+      - **Important**: Copy the token immediately - you won't be able to see it again
+      - Store it securely (password manager, secure notes, etc.)
+   
+   **Token Format**: The token will look like `ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+   **Security Notes:**
+   - Treat this token like a password - never share it publicly
+   - Don't commit it to version control
+   - Use environment variables or secure secret management
+   - Consider setting an expiration date for better security
+   - You can regenerate the token anytime if compromised
+
+   **Permission Explanation:**
+   - `repo`: Grants full access to repositories (read, write, admin)
+   - `read:org`: Allows reading organization membership and team membership
+   - `read:user`: Allows reading basic user profile information
+   - `user:email`: Allows reading user email addresses
+
+2. Add the token to your environment:
+   ```env
+   GITHUB_TOKEN=ghp_your_personal_access_token
+   ```
+
+3. **Configure MCP Server:**
+   The project includes a pre-configured `mcp-servers.json` file that automatically sets up:
+   - **Filesystem server**: Provides access to the working directory
+   - **GitHub server**: Activated when `GITHUB_TOKEN` environment variable is provided
+   
+   For Docker deployment, no additional MCP configuration is needed. For local development, you can modify `mcp-servers.json` as needed.
+
+#### Available GitHub Features
+- Repository browsing and file access
+- Pull request management
+- Issue tracking
+- Code search and analysis
+- Commit history and diff viewing
 
 ## Development
 

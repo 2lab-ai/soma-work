@@ -18,8 +18,8 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.35",
-    "@modelcontextprotocol/sdk": "^1.13.2",
+    "@anthropic-ai/claude-code": "^1.0.119",
+    "@modelcontextprotocol/sdk": "^1.18.1",
     "@slack/bolt": "^4.4.0",
     "@types/node-fetch": "^2.6.12",
     "dotenv": "^16.6.0",

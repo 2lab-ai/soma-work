@@ -7,9 +7,10 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebClient } from '@slack/web-api';
-import { Logger } from './logger.js';
+import { StderrLogger } from './stderr-logger.js';
+import { sharedStore, PendingApproval, PermissionResponse } from './shared-store.js';
 
-const logger = new Logger('PermissionMCP');
+const logger = new StderrLogger('PermissionMCP');
 
 interface PermissionRequest {
   tool_name: string;
@@ -19,19 +20,9 @@ interface PermissionRequest {
   user?: string;
 }
 
-interface PermissionResponse {
-  behavior: 'allow' | 'deny';
-  updatedInput?: any;
-  message?: string;
-}
-
 class PermissionMCPServer {
   private server: Server;
   private slack: WebClient;
-  private pendingApprovals = new Map<string, {
-    resolve: (response: PermissionResponse) => void;
-    reject: (error: Error) => void;
-  }>();
 
   constructor() {
     this.server = new Server(
@@ -89,8 +80,9 @@ class PermissionMCPServer {
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      logger.debug('Received tool call request', { tool: request.params.name });
       if (request.params.name === "permission_prompt") {
-        return await this.handlePermissionPrompt(request.params.arguments as PermissionRequest);
+        return await this.handlePermissionPrompt(request.params.arguments as unknown as PermissionRequest);
       }
       throw new Error(`Unknown tool: ${request.params.name}`);
     });
@@ -99,6 +91,8 @@ class PermissionMCPServer {
   private async handlePermissionPrompt(params: PermissionRequest) {
     const { tool_name, input } = params;
     
+    logger.debug('Received permission prompt request', { tool_name, input });
+
     // Get Slack context from environment (passed by Claude handler)
     const slackContextStr = process.env.SLACK_CONTEXT;
     const slackContext = slackContextStr ? JSON.parse(slackContextStr) : {};
@@ -161,6 +155,19 @@ class PermissionMCPServer {
         text: `Permission request for ${tool_name}` // Fallback text
       });
 
+      // Store pending approval in shared store
+      const pendingApproval: PendingApproval = {
+        tool_name,
+        input,
+        channel,
+        thread_ts,
+        user,
+        created_at: Date.now(),
+        expires_at: Date.now() + (5 * 60 * 1000) // 5 minutes
+      };
+      
+      await sharedStore.storePendingApproval(approvalId, pendingApproval);
+      
       // Wait for user response
       const response = await this.waitForApproval(approvalId);
       
@@ -220,34 +227,42 @@ class PermissionMCPServer {
   }
 
   private async waitForApproval(approvalId: string): Promise<PermissionResponse> {
-    return new Promise((resolve, reject) => {
-      // Store the promise resolvers
-      this.pendingApprovals.set(approvalId, { resolve, reject });
-      
-      // Set timeout (5 minutes)
-      setTimeout(() => {
-        if (this.pendingApprovals.has(approvalId)) {
-          this.pendingApprovals.delete(approvalId);
-          resolve({
-            behavior: 'deny',
-            message: 'Permission request timed out'
-          });
-        }
-      }, 5 * 60 * 1000);
-    });
+    logger.debug('Waiting for approval using shared store', { approvalId });
+    
+    // Use shared store to wait for response
+    return await sharedStore.waitForPermissionResponse(approvalId, 5 * 60 * 1000);
   }
 
   // Method to be called by Slack handler when button is clicked
-  public resolveApproval(approvalId: string, approved: boolean, updatedInput?: any) {
-    const pending = this.pendingApprovals.get(approvalId);
-    if (pending) {
-      this.pendingApprovals.delete(approvalId);
-      pending.resolve({
-        behavior: approved ? 'allow' : 'deny',
-        updatedInput: updatedInput || undefined,
-        message: approved ? 'Approved by user' : 'Denied by user'
-      });
-    }
+  // Note: This method is no longer used directly, but kept for backwards compatibility
+  public async resolveApproval(approvalId: string, approved: boolean, updatedInput?: any) {
+    logger.debug('Resolving approval via shared store', { 
+      approvalId, 
+      approved
+    });
+    
+    const response: PermissionResponse = {
+      behavior: approved ? 'allow' : 'deny',
+      updatedInput,
+      message: approved ? 'Approved by user' : 'Denied by user'
+    };
+    
+    await sharedStore.storePermissionResponse(approvalId, response);
+    
+    logger.info('Permission resolved via shared store', { 
+      approvalId, 
+      behavior: response.behavior
+    });
+  }
+
+  // Method to get pending approval count for debugging
+  public async getPendingApprovalCount(): Promise<number> {
+    return await sharedStore.getPendingCount();
+  }
+
+  // Method to clear expired approvals manually
+  public async clearExpiredApprovals(): Promise<number> {
+    return await sharedStore.cleanupExpired();
   }
 
   async run() {
@@ -257,12 +272,23 @@ class PermissionMCPServer {
   }
 }
 
+// Global instance for both module export and CLI execution
+let serverInstance: PermissionMCPServer | null = null;
+
+// Create singleton accessor
+export function getPermissionServer(): PermissionMCPServer {
+  if (!serverInstance) {
+    serverInstance = new PermissionMCPServer();
+  }
+  return serverInstance;
+}
+
 // Export singleton instance for use by Slack handler
-export const permissionServer = new PermissionMCPServer();
+export const permissionServer = getPermissionServer();
 
 // Run if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  permissionServer.run().catch((error) => {
+if (require.main === module) {
+  getPermissionServer().run().catch((error) => {
     logger.error('Permission MCP server error:', error);
     process.exit(1);
   });

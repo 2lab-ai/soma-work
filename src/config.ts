@@ -24,6 +24,7 @@ export function validateConfig() {
     'SLACK_BOT_TOKEN',
     'SLACK_APP_TOKEN',
     'SLACK_SIGNING_SECRET',
+    'ANTHROPIC_API_KEY',
   ];
 
   const missing = required.filter((key) => !process.env[key]);

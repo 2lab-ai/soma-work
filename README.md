@@ -225,6 +225,72 @@ All MCP tools are automatically allowed and follow the pattern: `mcp__serverName
 
 ## Advanced Configuration
 
+### GitHub Integration
+
+The bot supports GitHub integration through the MCP GitHub server using a personal access token. This provides access to repositories, pull request management, and code analysis through Claude's MCP tools.
+
+#### Setting up GitHub Integration
+
+1. **Create a Personal Access Token:**
+   
+   **Step-by-step instructions:**
+   
+   a. **Navigate to GitHub Settings:**
+      - Go to [github.com](https://github.com) and sign in
+      - Click your profile picture in the top right corner
+      - Select "Settings" from the dropdown menu
+   
+   b. **Access Developer Settings:**
+      - In the left sidebar, scroll down and click "Developer settings"
+      - Click "Personal access tokens"
+      - Select "Tokens (classic)"
+   
+   c. **Generate New Token:**
+      - Click "Generate new token (classic)"
+      - You may be prompted to confirm your password
+   
+   d. **Configure Token:**
+      - **Note**: Give it a descriptive name like "Claude Code Slack Bot"
+      - **Expiration**: Choose an appropriate expiration (90 days, 1 year, or no expiration)
+      - **Select scopes** based on your needs:
+        - ✅ `repo` - Full control of private repositories (includes all repo permissions)
+        - ✅ `read:org` - Read organization membership and team membership
+        - ✅ `read:user` - Read user profile data
+        - ✅ `user:email` - Access user email addresses (read-only)
+   
+   e. **Generate and Save Token:**
+      - Click "Generate token" at the bottom
+      - **Important**: Copy the token immediately - you won't be able to see it again
+      - Store it securely (password manager, secure notes, etc.)
+   
+   **Token Format**: The token will look like `ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+   **Security Notes:**
+   - Treat this token like a password - never share it publicly
+   - Don't commit it to version control
+   - Use environment variables or secure secret management
+   - Consider setting an expiration date for better security
+   - You can regenerate the token anytime if compromised
+
+   **Permission Explanation:**
+   - `repo`: Grants full access to repositories (read, write, admin)
+   - `read:org`: Allows reading organization membership and team membership
+   - `read:user`: Allows reading basic user profile information
+   - `user:email`: Allows reading user email addresses
+
+2. **Configure Environment Variables:**
+   ```env
+   # GitHub Token for MCP
+   GITHUB_TOKEN=ghp_your_personal_access_token
+   ```
+
+3. **Configure MCP Server:**
+   The Docker container includes a pre-configured `mcp-servers.json` file that automatically sets up:
+   - **Filesystem server**: Provides access to the `/usercontent` directory
+   - **GitHub server**: Activated when `GITHUB_TOKEN` environment variable is provided
+   
+   No additional MCP configuration is needed for Docker deployment.
+
 ### Using AWS Bedrock
 Set these environment variables:
 ```env
