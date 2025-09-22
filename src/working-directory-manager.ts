@@ -93,6 +93,21 @@ export class WorkingDirectoryManager {
       return cwdRelativePath;
     }
 
+    // If directory doesn't exist, try to create it
+    try {
+      fs.mkdirSync(cwdRelativePath, { recursive: true });
+      this.logger.info('Created directory relative to cwd', { 
+        input: directory,
+        resolved: cwdRelativePath 
+      });
+      return cwdRelativePath;
+    } catch (error) {
+      this.logger.error('Failed to create directory', { 
+        path: cwdRelativePath,
+        error 
+      });
+    }
+
     return null;
   }
 
