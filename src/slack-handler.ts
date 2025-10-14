@@ -242,7 +242,7 @@ export class SlackHandler {
       // Create Slack context for permission prompts
       const slackContext = {
         channel,
-        threadTs: thread_ts,
+        threadTs: thread_ts || ts,  // Always provide a thread context
         user
       };
       

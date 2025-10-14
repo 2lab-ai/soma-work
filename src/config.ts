@@ -9,7 +9,7 @@ export const config = {
     signingSecret: process.env.SLACK_SIGNING_SECRET!,
   },
   anthropic: {
-    apiKey: process.env.ANTHROPIC_API_KEY!,
+    apiKey: process.env.ANTHROPIC_API_KEY || '', // Optional - only needed if not using Claude subscription
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
@@ -30,12 +30,19 @@ export function validateConfig() {
     'SLACK_BOT_TOKEN',
     'SLACK_APP_TOKEN',
     'SLACK_SIGNING_SECRET',
-    'ANTHROPIC_API_KEY',
+    // ANTHROPIC_API_KEY is optional - only needed if not using Claude subscription
   ];
 
   const missing = required.filter((key) => !process.env[key]);
-  
+
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+
+  // Log if using Claude subscription vs API key
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log('[Config] Using Claude subscription (no API key provided)');
+  } else {
+    console.log('[Config] Using Anthropic API key');
   }
 }
