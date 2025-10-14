@@ -2,6 +2,7 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { ConversationSession } from './types';
 import { Logger } from './logger';
 import { McpManager, McpServerConfig } from './mcp-manager';
+import * as path from 'path';
 
 export class ClaudeHandler {
   private sessions: Map<string, ConversationSession> = new Map();
@@ -41,13 +42,18 @@ export class ClaudeHandler {
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const options: any = {
       outputFormat: 'stream-json',
+      // Enable permission prompts when we have Slack context
       permissionMode: slackContext ? 'default' : 'bypassPermissions',
     };
 
     // Add permission prompt tool if we have Slack context
     if (slackContext) {
       options.permissionPromptToolName = 'mcp__permission-prompt__permission_prompt';
-      this.logger.debug('Added permission prompt tool for Slack integration', slackContext);
+      this.logger.debug('Configured permission prompts for Slack integration', {
+        channel: slackContext.channel,
+        user: slackContext.user,
+        hasThread: !!slackContext.threadTs
+      });
     }
 
     if (workingDirectory) {
@@ -55,14 +61,14 @@ export class ClaudeHandler {
     }
 
     // Add MCP server configuration if available
-    const mcpServers = this.mcpManager.getServerConfiguration();
+    const mcpServers = await this.mcpManager.getServerConfiguration();
     
     // Add permission prompt server if we have Slack context
     if (slackContext) {
       const permissionServer = {
         'permission-prompt': {
           command: 'npx',
-          args: ['tsx', '/Users/marcelpociot/Experiments/claude-code-slack/src/permission-mcp-server.ts'],
+          args: ['tsx', path.join(__dirname, 'permission-mcp-server.ts')],
           env: {
             SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
             SLACK_CONTEXT: JSON.stringify(slackContext)
@@ -83,7 +89,7 @@ export class ClaudeHandler {
       // Allow all MCP tools by default, plus permission prompt tool
       const defaultMcpTools = this.mcpManager.getDefaultAllowedTools();
       if (slackContext) {
-        defaultMcpTools.push('mcp__permission-prompt');
+        defaultMcpTools.push('mcp__permission-prompt__permission_prompt');
       }
       if (defaultMcpTools.length > 0) {
         options.allowedTools = defaultMcpTools;
@@ -94,6 +100,7 @@ export class ClaudeHandler {
         servers: Object.keys(options.mcpServers),
         allowedTools: defaultMcpTools,
         hasSlackContext: !!slackContext,
+        permissionMode: options.permissionMode,
       });
     }
 
@@ -106,10 +113,13 @@ export class ClaudeHandler {
 
     this.logger.debug('Claude query options', options);
 
+    if (abortController) {
+      options.abortController = abortController;
+    }
+
     try {
       for await (const message of query({
         prompt,
-        abortController: abortController || new AbortController(),
         options,
       })) {
         if (message.type === 'system' && message.subtype === 'init') {

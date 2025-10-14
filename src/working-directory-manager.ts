@@ -62,6 +62,7 @@ export class WorkingDirectoryManager {
   }
 
   private resolveDirectory(directory: string): string | null {
+    this.logger.debug('Resolving directory', { input: directory });
     // If it's an absolute path, use it directly
     if (path.isAbsolute(directory)) {
       if (fs.existsSync(directory)) {
@@ -80,6 +81,26 @@ export class WorkingDirectoryManager {
           resolved: baseRelativePath 
         });
         return path.resolve(baseRelativePath);
+      } else {
+        this.logger.debug('Directory not found relative to base, checking if it can be created', { 
+          input: directory,
+          baseDirectory: config.baseDirectory,
+          attemptedPath: baseRelativePath 
+        });
+        try {
+          fs.mkdirSync(baseRelativePath, { recursive: true });
+          this.logger.info('Created directory relative to base directory', { 
+            input: directory,
+            baseDirectory: config.baseDirectory,
+            resolved: baseRelativePath 
+          });
+          return path.resolve(baseRelativePath);
+        } catch (error) {
+          this.logger.error('Failed to create directory relative to base', { 
+            path: baseRelativePath,
+            error 
+          });
+        }
       }
     }
 
@@ -91,6 +112,21 @@ export class WorkingDirectoryManager {
         resolved: cwdRelativePath 
       });
       return cwdRelativePath;
+    }
+
+    // If directory doesn't exist, try to create it
+    try {
+      fs.mkdirSync(cwdRelativePath, { recursive: true });
+      this.logger.info('Created directory relative to cwd', { 
+        input: directory,
+        resolved: cwdRelativePath 
+      });
+      return cwdRelativePath;
+    } catch (error) {
+      this.logger.error('Failed to create directory', { 
+        path: cwdRelativePath,
+        error 
+      });
     }
 
     return null;

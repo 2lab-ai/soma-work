@@ -61,9 +61,10 @@ The bot allows users to interact with Claude Code through Slack, providing real-
 - **External Tools**: Extends Claude's capabilities with external MCP servers
 - **Multiple Server Types**: Supports stdio, SSE, and HTTP MCP servers
 - **Auto-Configuration**: Loads servers from `mcp-servers.json` automatically
+- **Default Configuration**: Pre-configured with filesystem and GitHub servers
 - **Tool Management**: All MCP tools are allowed by default with `mcp__serverName__toolName` pattern
 - **Runtime Management**: Reload configuration without restarting the bot
-- **Popular Integrations**: Filesystem access, GitHub API, database connections, web search
+- **Popular Integrations**: Filesystem access, GitHub API (via token), database connections, web search
 
 ## Environment Configuration
 
@@ -82,6 +83,14 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 ```env
 # Working Directory Configuration
 BASE_DIRECTORY=/Users/username/Code/
+
+# GitHub App Integration (for MCP) - Recommended
+GITHUB_APP_ID=123456
+GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nYour private key content here...\n-----END RSA PRIVATE KEY-----"
+GITHUB_INSTALLATION_ID=12345678
+
+# Legacy GitHub Token Integration (fallback)
+GITHUB_TOKEN=ghp_your_personal_access_token
 
 # Third-party API Providers
 CLAUDE_CODE_USE_BEDROCK=1
@@ -167,6 +176,182 @@ Bot: ✅ MCP configuration reloaded successfully.
 User: @ClaudeBot list all TODO comments in the project
 Bot: [Uses mcp__filesystem tools to search files]
 ```
+
+### GitHub Integration
+
+GitHub integration is provided through the MCP GitHub server using **GitHub Apps** for better security and granular permissions. This replaces the previous personal access token approach.
+
+#### Setup with GitHub Apps (Recommended)
+
+1. **Create a GitHub App:**
+
+   **Step-by-step instructions:**
+   
+   a. **Navigate to GitHub Settings:**
+      - Go to [github.com](https://github.com) and sign in
+      - Click your profile picture in the top right corner
+      - Select "Settings" from the dropdown menu
+   
+   b. **Access Developer Settings:**
+      - In the left sidebar, scroll down and click "Developer settings"
+      - Click "GitHub Apps"
+      - Click "New GitHub App"
+   
+   c. **Configure the GitHub App:**
+      - **GitHub App name**: "Claude Code Slack Bot" (or your preferred name)
+      - **Homepage URL**: Your organization's website or the repository URL
+      - **Webhook URL**: Leave blank (not used for this integration)
+      - **Webhook secret**: Leave blank
+      - **Permissions**: Select the following repository permissions:
+        - ✅ `Contents` - Read & Write (for reading and modifying files)
+        - ✅ `Issues` - Read & Write (for issue management)
+        - ✅ `Pull requests` - Read & Write (for PR management)
+        - ✅ `Metadata` - Read (for basic repository information)
+        - ✅ `Actions` - Read (optional, for viewing CI/CD status)
+      - **Organization permissions** (optional):
+        - ✅ `Members` - Read (for team information)
+      - **User permissions**: None required
+      - **Subscribe to events**: None required (we don't use webhooks)
+      - **Where can this GitHub App be installed?**: Choose based on your needs
+        - "Only on this account" for personal use
+        - "Any account" if you plan to share the app
+   
+   d. **Create the App:**
+      - Click "Create GitHub App"
+      - You'll be redirected to the app's settings page
+   
+   e. **Generate Private Key:**
+      - Scroll down to "Private keys" section
+      - Click "Generate a private key"
+      - Download the `.pem` file and store it securely
+   
+   f. **Note the App ID:**
+      - At the top of the app settings page, note the "App ID" (e.g., 123456)
+
+2. **Install the GitHub App:**
+
+   a. **Install on Repositories:**
+      - Go to the "Install App" tab in your GitHub App settings
+      - Click "Install" next to your account/organization
+      - Choose "All repositories" or "Selected repositories" based on your needs
+      - Complete the installation
+   
+   b. **Note the Installation ID:**
+      - After installation, you'll see the installation URL
+      - The Installation ID is in the URL: `https://github.com/settings/installations/12345678`
+      - Note this number (e.g., 12345678)
+
+3. **Configure Environment Variables:**
+   ```env
+   GITHUB_APP_ID=123456
+   GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+   MIIEpAIBAAKCAQEA...
+   (your private key content here)
+   ...
+   -----END RSA PRIVATE KEY-----"
+   GITHUB_INSTALLATION_ID=12345678
+   ```
+
+   **Important Notes:**
+   - The private key should include the full PEM format with line breaks
+   - Store the private key securely and never commit it to version control
+   - The bot will automatically discover installations if INSTALLATION_ID is not set
+
+#### Legacy Setup with Personal Access Tokens (Fallback)
+
+If you prefer or need to use personal access tokens instead of GitHub Apps:
+
+1. **Generate a Personal Access Token** (following the previous instructions)
+2. **Set the environment variable:**
+   ```env
+   GITHUB_TOKEN=ghp_your_personal_access_token
+   ```
+
+The bot will automatically use GitHub App authentication when configured, and fall back to personal access tokens if GitHub App settings are not available.
+
+#### MCP Server Configuration
+
+The project includes a pre-configured `mcp-servers.json` file that automatically sets up:
+- **Filesystem server**: Provides access to the working directory
+- **GitHub server**: Uses GitHub App authentication when available, or falls back to token authentication
+- **Git server**: For Git operations with proper authentication
+
+#### Available GitHub Features
+- Repository browsing and file access
+- Pull request management
+- Issue tracking
+- Code search and analysis
+- Commit history and diff viewing
+- Organization and team management (with proper permissions)
+
+#### Automatic Token Refresh
+
+The bot automatically handles GitHub App token refresh to ensure continuous operation:
+
+**Features:**
+- **Automatic Refresh**: Tokens are refreshed 5 minutes before expiry or at 50% of their lifetime (whichever is shorter)
+- **Background Processing**: Token refresh happens in the background without interrupting operations
+- **Git Credentials Update**: Automatically updates git credentials and environment variables when tokens are refreshed
+- **Retry Logic**: If token refresh fails, the system will retry every 2 minutes until successful
+- **Graceful Degradation**: Continues to use existing tokens during refresh attempts
+
+**Implementation Details:**
+- Tokens are cached until expiry to minimize API calls
+- Uses Node.js timers to schedule refresh operations
+- Updates both `.git-credentials` file and git global configuration
+- Exports `GITHUB_TOKEN` environment variable for child processes
+- Automatic cleanup on application shutdown
+
+**Monitoring:**
+The bot logs all token refresh activities:
+```
+GitHub App token refresh scheduled for 2024-01-01T12:00:00.000Z (in 55 minutes)
+Background refresh of GitHub App installation token starting
+GitHub App installation token refreshed successfully in background
+Git credentials updated successfully with refreshed GitHub App token
+```
+
+#### Git CLI Authentication
+
+The bot automatically handles GitHub authentication for Git CLI operations performed by Claude Code. When Claude executes Git commands that require GitHub access (push, pull, clone from private repositories), the bot provides the appropriate authentication:
+
+**Authentication Priority:**
+1. **GITHUB_TOKEN environment variable** - If set, this token is used directly
+2. **GitHub App token** - If GitHub App is configured, an installation token is automatically obtained and used
+3. **No authentication** - Commands proceed without authentication (works for public repositories)
+
+**Supported Operations:**
+- `git push` to GitHub repositories
+- `git pull` from private repositories  
+- `git clone` of private repositories
+- `git remote set-url` with authenticated URLs
+
+**Automatic Token Injection:**
+The bot provides utility functions that automatically prefix Git commands with the appropriate `GITHUB_TOKEN=<token>` when authentication is available:
+
+```typescript
+// Available utilities for Claude Code operations
+import { getGitHubTokenForCLI, createGitCommand } from './src/git-cli-auth.js';
+
+// Get token for manual use
+const token = await getGitHubTokenForCLI();
+
+// Create authenticated Git command
+const authenticatedCommand = await createGitCommand('git push origin main');
+```
+
+**Environment Variables for Git Operations:**
+The bot automatically sets up the following environment variables for MCP servers and Git operations:
+- `GITHUB_TOKEN` - Populated from environment variable or GitHub App installation token
+- `GITHUB_PERSONAL_ACCESS_TOKEN` - Used by MCP GitHub server
+
+#### Advantages of GitHub Apps over Personal Tokens
+- **Better Security**: Apps have granular permissions instead of broad user-level access
+- **Institutional Identity**: Actions appear as the app, not a personal user
+- **No User Dependency**: Doesn't depend on a specific user's account remaining active
+- **Audit Trail**: Better tracking of automated actions
+- **Rate Limits**: Higher rate limits for API requests
+- **Revocable**: Easy to revoke access without affecting user's personal tokens
 
 ## Development
 

@@ -6,7 +6,7 @@ import { WorkingDirectoryManager } from './working-directory-manager';
 import { FileHandler, ProcessedFile } from './file-handler';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
-import { permissionServer } from './permission-mcp-server';
+import { sharedStore, PermissionResponse } from './shared-store';
 import { config } from './config';
 
 interface MessageEvent {
@@ -123,8 +123,9 @@ export class SlackHandler {
 
     // Check if this is an MCP info command (only if there's text)
     if (text && this.isMcpInfoCommand(text)) {
+      const mcpInfo = await this.mcpManager.formatMcpInfo();
       await say({
-        text: this.mcpManager.formatMcpInfo(),
+        text: mcpInfo,
         thread_ts: thread_ts || ts,
       });
       return;
@@ -134,8 +135,9 @@ export class SlackHandler {
     if (text && this.isMcpReloadCommand(text)) {
       const reloaded = this.mcpManager.reloadConfiguration();
       if (reloaded) {
+        const mcpInfo = await this.mcpManager.formatMcpInfo();
         await say({
-          text: `✅ MCP configuration reloaded successfully.\n\n${this.mcpManager.formatMcpInfo()}`,
+          text: `✅ MCP configuration reloaded successfully.\n\n${mcpInfo}`,
           thread_ts: thread_ts || ts,
         });
       } else {
@@ -235,7 +237,7 @@ export class SlackHandler {
       statusMessageTs = statusResult.ts;
 
       // Add thinking reaction to original message (but don't spam if already set)
-      await this.updateMessageReaction(sessionKey, '🤔');
+      await this.updateMessageReaction(sessionKey, 'thinking_face');
       
       // Create Slack context for permission prompts
       const slackContext = {
@@ -268,7 +270,7 @@ export class SlackHandler {
             }
 
             // Update reaction to show working
-            await this.updateMessageReaction(sessionKey, '⚙️');
+            await this.updateMessageReaction(sessionKey, 'gear');
 
             // Check for TodoWrite tool and handle it specially
             const todoTool = message.message.content?.find((part: any) => 
@@ -332,7 +334,7 @@ export class SlackHandler {
       }
 
       // Update reaction to show completion
-      await this.updateMessageReaction(sessionKey, '✅');
+      await this.updateMessageReaction(sessionKey, 'white_check_mark');
 
       this.logger.info('Completed processing message', {
         sessionKey,
@@ -357,7 +359,7 @@ export class SlackHandler {
         }
 
         // Update reaction to show error
-        await this.updateMessageReaction(sessionKey, '❌');
+        await this.updateMessageReaction(sessionKey, 'x');
         
         await say({
           text: `Error: ${error.message || 'Something went wrong'}`,
@@ -376,7 +378,7 @@ export class SlackHandler {
         }
 
         // Update reaction to show cancellation
-        await this.updateMessageReaction(sessionKey, '⏹️');
+        await this.updateMessageReaction(sessionKey, 'stop_sign');
       }
 
       // Clean up temporary files in case of error too
@@ -436,6 +438,9 @@ export class SlackHandler {
           case 'TodoWrite':
             // Handle TodoWrite separately - don't include in regular tool output
             return this.handleTodoWrite(input);
+          case 'mcp__permission-prompt__permission_prompt':
+            // Don't show permission prompt tool usage - it's handled internally
+            return '';
           default:
             parts.push(this.formatGenericTool(toolName, input));
         }
@@ -633,11 +638,11 @@ export class SlackHandler {
 
     let emoji: string;
     if (completed === total) {
-      emoji = '✅'; // All tasks completed
+      emoji = 'white_check_mark'; // All tasks completed
     } else if (inProgress > 0) {
-      emoji = '🔄'; // Tasks in progress
+      emoji = 'arrows_counterclockwise'; // Tasks in progress
     } else {
-      emoji = '📋'; // Tasks pending
+      emoji = 'clipboard'; // Tasks pending
     }
 
     await this.updateMessageReaction(sessionKey, emoji);
@@ -752,29 +757,83 @@ export class SlackHandler {
     // Handle permission approval button clicks
     this.app.action('approve_tool', async ({ ack, body, respond }) => {
       await ack();
-      const approvalId = (body as any).actions[0].value;
-      this.logger.info('Tool approval granted', { approvalId });
       
-      permissionServer.resolveApproval(approvalId, true);
-      
-      await respond({
-        response_type: 'ephemeral',
-        text: '✅ Tool execution approved'
-      });
+      try {
+        const approvalId = (body as any).actions[0].value;
+        const user = (body as any).user?.id;
+        const triggerId = (body as any).trigger_id;
+        
+        this.logger.info('Tool approval granted', { 
+          approvalId, 
+          user,
+          triggerId 
+        });
+        
+        // Resolve the approval via shared store
+        const response: PermissionResponse = {
+          behavior: 'allow',
+          message: 'Approved by user'
+        };
+        await sharedStore.storePermissionResponse(approvalId, response);
+        
+        // Provide immediate feedback
+        await respond({
+          response_type: 'ephemeral',
+          text: '✅ Tool execution approved. Claude will now proceed with the operation.',
+          replace_original: false
+        });
+        
+        this.logger.debug('Approval processed successfully', { approvalId });
+      } catch (error) {
+        this.logger.error('Error processing tool approval', error);
+        
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ Error processing approval. The request may have already been handled.',
+          replace_original: false
+        });
+      }
     });
 
     // Handle permission denial button clicks
     this.app.action('deny_tool', async ({ ack, body, respond }) => {
       await ack();
-      const approvalId = (body as any).actions[0].value;
-      this.logger.info('Tool approval denied', { approvalId });
       
-      permissionServer.resolveApproval(approvalId, false);
-      
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Tool execution denied'
-      });
+      try {
+        const approvalId = (body as any).actions[0].value;
+        const user = (body as any).user?.id;
+        const triggerId = (body as any).trigger_id;
+        
+        this.logger.info('Tool approval denied', { 
+          approvalId, 
+          user,
+          triggerId 
+        });
+        
+        // Resolve the denial via shared store
+        const response: PermissionResponse = {
+          behavior: 'deny',
+          message: 'Denied by user'
+        };
+        await sharedStore.storePermissionResponse(approvalId, response);
+        
+        // Provide immediate feedback
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ Tool execution denied. Claude will not proceed with this operation.',
+          replace_original: false
+        });
+        
+        this.logger.debug('Denial processed successfully', { approvalId });
+      } catch (error) {
+        this.logger.error('Error processing tool denial', error);
+        
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ Error processing denial. The request may have already been handled.',
+          replace_original: false
+        });
+      }
     });
 
     // Cleanup inactive sessions periodically

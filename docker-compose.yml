@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  claude-code-slack-bot:
+    build: .
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - ./user-content:/usercontent
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BASE_DIRECTORY=/usercontent
+      - PORT=${PORT:-3000}
+      - DEBUG=${DEBUG:-false}
+      - CLAUDE_CODE_USE_BEDROCK=${CLAUDE_CODE_USE_BEDROCK:-0}
+      - CLAUDE_CODE_USE_VERTEX=${CLAUDE_CODE_USE_VERTEX:-0}
+      # GitHub App Configuration for MCP
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_PRIVATE_KEY=${GITHUB_PRIVATE_KEY}
+      - GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID}
+      # Legacy GitHub Token (fallback)
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    restart: unless-stopped
