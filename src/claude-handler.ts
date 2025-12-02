@@ -2,6 +2,7 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { ConversationSession } from './types';
 import { Logger } from './logger';
 import { McpManager, McpServerConfig } from './mcp-manager';
+import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
 
 export class ClaudeHandler {
@@ -40,19 +41,29 @@ export class ClaudeHandler {
     workingDirectory?: string,
     slackContext?: { channel: string; threadTs?: string; user: string }
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    // Check if user has bypass permission enabled
+    const userBypass = slackContext?.user
+      ? userSettingsStore.getUserBypassPermission(slackContext.user)
+      : false;
+
     const options: any = {
       outputFormat: 'stream-json',
-      // Enable permission prompts when we have Slack context
-      permissionMode: slackContext ? 'default' : 'bypassPermissions',
+      // Enable permission prompts when we have Slack context, unless user has bypass enabled
+      permissionMode: (!slackContext || userBypass) ? 'bypassPermissions' : 'default',
     };
 
-    // Add permission prompt tool if we have Slack context
-    if (slackContext) {
+    // Add permission prompt tool if we have Slack context and bypass is not enabled
+    if (slackContext && !userBypass) {
       options.permissionPromptToolName = 'mcp__permission-prompt__permission_prompt';
       this.logger.debug('Configured permission prompts for Slack integration', {
         channel: slackContext.channel,
         user: slackContext.user,
         hasThread: !!slackContext.threadTs
+      });
+    } else if (slackContext && userBypass) {
+      this.logger.debug('Bypassing permission prompts for user', {
+        user: slackContext.user,
+        bypassEnabled: true
       });
     }
 
@@ -62,9 +73,9 @@ export class ClaudeHandler {
 
     // Add MCP server configuration if available
     const mcpServers = await this.mcpManager.getServerConfiguration();
-    
-    // Add permission prompt server if we have Slack context
-    if (slackContext) {
+
+    // Add permission prompt server if we have Slack context and bypass is not enabled
+    if (slackContext && !userBypass) {
       const permissionServer = {
         'permission-prompt': {
           command: 'npx',
@@ -75,7 +86,7 @@ export class ClaudeHandler {
           }
         }
       };
-      
+
       if (mcpServers) {
         options.mcpServers = { ...mcpServers, ...permissionServer };
       } else {
@@ -86,20 +97,21 @@ export class ClaudeHandler {
     }
     
     if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
-      // Allow all MCP tools by default, plus permission prompt tool
+      // Allow all MCP tools by default, plus permission prompt tool if not bypassed
       const defaultMcpTools = this.mcpManager.getDefaultAllowedTools();
-      if (slackContext) {
+      if (slackContext && !userBypass) {
         defaultMcpTools.push('mcp__permission-prompt__permission_prompt');
       }
       if (defaultMcpTools.length > 0) {
         options.allowedTools = defaultMcpTools;
       }
-      
+
       this.logger.debug('Added MCP configuration to options', {
         serverCount: Object.keys(options.mcpServers).length,
         servers: Object.keys(options.mcpServers),
         allowedTools: defaultMcpTools,
         hasSlackContext: !!slackContext,
+        userBypass,
         permissionMode: options.permissionMode,
       });
     }

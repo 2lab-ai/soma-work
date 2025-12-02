@@ -1,6 +1,7 @@
 import { WorkingDirectoryConfig } from './types';
 import { Logger } from './logger';
 import { config } from './config';
+import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -53,6 +54,12 @@ export class WorkingDirectoryManager {
         isThread: !!threadTs,
         isDM: channelId.startsWith('D'),
       });
+
+      // Also save as user's default directory for future sessions
+      if (userId) {
+        userSettingsStore.setUserDefaultDirectory(userId, resolvedPath);
+        this.logger.info('Saved user default directory', { userId, directory: resolvedPath });
+      }
 
       return { success: true, resolvedPath };
     } catch (error) {
@@ -133,7 +140,7 @@ export class WorkingDirectoryManager {
   }
 
   getWorkingDirectory(channelId: string, threadTs?: string, userId?: string): string | undefined {
-    // Priority: Thread > Channel/DM
+    // Priority: Thread > Channel/DM > User Default
     if (threadTs) {
       const threadKey = this.getConfigKey(channelId, threadTs);
       const threadConfig = this.configs.get(threadKey);
@@ -157,8 +164,47 @@ export class WorkingDirectoryManager {
       return channelConfig.directory;
     }
 
-    this.logger.debug('No working directory configured', { channelId, threadTs });
+    // Fall back to user's saved default directory
+    if (userId) {
+      const userDefault = userSettingsStore.getUserDefaultDirectory(userId);
+      if (userDefault) {
+        // Verify the directory still exists
+        if (fs.existsSync(userDefault)) {
+          this.logger.debug('Using user default working directory', {
+            directory: userDefault,
+            userId,
+          });
+          // Auto-apply user's default to current context
+          this.setWorkingDirectoryInternal(channelId, userDefault, threadTs, userId);
+          return userDefault;
+        } else {
+          this.logger.warn('User default directory no longer exists', {
+            userId,
+            directory: userDefault,
+          });
+        }
+      }
+    }
+
+    this.logger.debug('No working directory configured', { channelId, threadTs, userId });
     return undefined;
+  }
+
+  /**
+   * Internal method to set working directory without saving to user settings
+   * Used when auto-applying user defaults
+   */
+  private setWorkingDirectoryInternal(channelId: string, directory: string, threadTs?: string, userId?: string): void {
+    const key = this.getConfigKey(channelId, threadTs, userId);
+    const workingDirConfig: WorkingDirectoryConfig = {
+      channelId,
+      threadTs,
+      userId,
+      directory,
+      setAt: new Date(),
+    };
+    this.configs.set(key, workingDirConfig);
+    this.logger.debug('Auto-applied working directory to session', { key, directory });
   }
 
   removeWorkingDirectory(channelId: string, threadTs?: string, userId?: string): boolean {

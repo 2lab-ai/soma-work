@@ -7,6 +7,7 @@ import { FileHandler, ProcessedFile } from './file-handler';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
+import { userSettingsStore } from './user-settings-store';
 import { config } from './config';
 
 interface MessageEvent {
@@ -82,17 +83,18 @@ export class SlackHandler {
     const setDirPath = text ? this.workingDirManager.parseSetCommand(text) : null;
     if (setDirPath) {
       const isDM = channel.startsWith('D');
+      // Always pass userId to save user's default directory
       const result = this.workingDirManager.setWorkingDirectory(
         channel,
         setDirPath,
         thread_ts,
-        isDM ? user : undefined
+        user
       );
 
       if (result.success) {
         const context = thread_ts ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
         await say({
-          text: `✅ Working directory set for ${context}: \`${result.resolvedPath}\``,
+          text: `✅ Working directory set for ${context}: \`${result.resolvedPath}\`\n_This will be your default for future conversations._`,
           thread_ts: thread_ts || ts,
         });
       } else {
@@ -107,13 +109,14 @@ export class SlackHandler {
     // Check if this is a get directory command (only if there's text)
     if (text && this.workingDirManager.isGetCommand(text)) {
       const isDM = channel.startsWith('D');
+      // Always pass userId to check user's saved default
       const directory = this.workingDirManager.getWorkingDirectory(
         channel,
         thread_ts,
-        isDM ? user : undefined
+        user
       );
       const context = thread_ts ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
-      
+
       await say({
         text: this.workingDirManager.formatDirectoryMessage(directory, context),
         thread_ts: thread_ts || ts,
@@ -149,12 +152,39 @@ export class SlackHandler {
       return;
     }
 
+    // Check if this is a bypass permission command (only if there's text)
+    if (text && this.isBypassCommand(text)) {
+      const bypassAction = this.parseBypassCommand(text);
+
+      if (bypassAction === 'status') {
+        const currentBypass = userSettingsStore.getUserBypassPermission(user);
+        await say({
+          text: `🔐 *Permission Bypass Status*\n\nYour current setting: \`${currentBypass ? 'ON' : 'OFF'}\`\n\n${currentBypass ? '⚠️ Claude will execute tools without asking for permission.' : '✅ Claude will ask for permission before executing sensitive tools.'}`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (bypassAction === 'on') {
+        userSettingsStore.setUserBypassPermission(user, true);
+        await say({
+          text: `✅ *Permission Bypass Enabled*\n\nClaude will now execute tools without asking for permission.\n\n⚠️ _Use with caution - this allows Claude to perform actions automatically._`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (bypassAction === 'off') {
+        userSettingsStore.setUserBypassPermission(user, false);
+        await say({
+          text: `✅ *Permission Bypass Disabled*\n\nClaude will now ask for your permission before executing sensitive tools.`,
+          thread_ts: thread_ts || ts,
+        });
+      }
+      return;
+    }
+
     // Check if we have a working directory set
     const isDM = channel.startsWith('D');
+    // Always pass userId to auto-apply user's saved default if available
     const workingDirectory = this.workingDirManager.getWorkingDirectory(
       channel,
       thread_ts,
-      isDM ? user : undefined
+      user
     );
 
     // Working directory is always required
@@ -654,6 +684,25 @@ export class SlackHandler {
 
   private isMcpReloadCommand(text: string): boolean {
     return /^(mcp|servers?)\s+(reload|refresh)$/i.test(text.trim());
+  }
+
+  private isBypassCommand(text: string): boolean {
+    return /^bypass(\s+(on|off|true|false|enable|disable|status))?$/i.test(text.trim());
+  }
+
+  private parseBypassCommand(text: string): 'on' | 'off' | 'status' {
+    const match = text.trim().match(/^bypass(\s+(on|off|true|false|enable|disable|status))?$/i);
+    if (!match || !match[2]) {
+      return 'status';
+    }
+    const action = match[2].toLowerCase();
+    if (action === 'on' || action === 'true' || action === 'enable') {
+      return 'on';
+    }
+    if (action === 'off' || action === 'false' || action === 'disable') {
+      return 'off';
+    }
+    return 'status';
   }
 
   private async getBotUserId(): Promise<string> {
