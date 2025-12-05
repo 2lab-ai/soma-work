@@ -1,5 +1,5 @@
 import { App } from '@slack/bolt';
-import { ClaudeHandler } from './claude-handler';
+import { ClaudeHandler, getAvailablePersonas } from './claude-handler';
 import { SDKMessage } from '@anthropic-ai/claude-code';
 import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
@@ -174,6 +174,45 @@ export class SlackHandler {
           text: `✅ *Permission Bypass Disabled*\n\nClaude will now ask for your permission before executing sensitive tools.`,
           thread_ts: thread_ts || ts,
         });
+      }
+      return;
+    }
+
+    // Check if this is a persona command (only if there's text)
+    if (text && this.isPersonaCommand(text)) {
+      const personaAction = this.parsePersonaCommand(text);
+
+      if (personaAction.action === 'status') {
+        const currentPersona = userSettingsStore.getUserPersona(user);
+        const availablePersonas = getAvailablePersonas();
+        await say({
+          text: `🎭 *Persona Status*\n\nYour current persona: \`${currentPersona}\`\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}\n\n_Use \`persona set <name>\` to change your persona._`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (personaAction.action === 'list') {
+        const availablePersonas = getAvailablePersonas();
+        const currentPersona = userSettingsStore.getUserPersona(user);
+        const personaList = availablePersonas
+          .map(p => p === currentPersona ? `• \`${p}\` _(current)_` : `• \`${p}\``)
+          .join('\n');
+        await say({
+          text: `🎭 *Available Personas*\n\n${personaList}\n\n_Use \`persona set <name>\` to change your persona._`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (personaAction.action === 'set' && personaAction.persona) {
+        const availablePersonas = getAvailablePersonas();
+        if (availablePersonas.includes(personaAction.persona)) {
+          userSettingsStore.setUserPersona(user, personaAction.persona);
+          await say({
+            text: `✅ *Persona Changed*\n\nYour persona is now set to: \`${personaAction.persona}\``,
+            thread_ts: thread_ts || ts,
+          });
+        } else {
+          await say({
+            text: `❌ *Unknown Persona*\n\nPersona \`${personaAction.persona}\` not found.\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}`,
+            thread_ts: thread_ts || ts,
+          });
+        }
       }
       return;
     }
@@ -703,6 +742,25 @@ export class SlackHandler {
       return 'off';
     }
     return 'status';
+  }
+
+  private isPersonaCommand(text: string): boolean {
+    return /^persona(\s+(list|status|set\s+\S+))?$/i.test(text.trim());
+  }
+
+  private parsePersonaCommand(text: string): { action: 'list' | 'status' | 'set'; persona?: string } {
+    const trimmed = text.trim().toLowerCase();
+
+    if (/^persona\s+list$/i.test(trimmed)) {
+      return { action: 'list' };
+    }
+
+    const setMatch = trimmed.match(/^persona\s+set\s+(\S+)$/i);
+    if (setMatch) {
+      return { action: 'set', persona: setMatch[1] };
+    }
+
+    return { action: 'status' };
   }
 
   private async getBotUserId(): Promise<string> {

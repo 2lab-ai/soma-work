@@ -4,6 +4,58 @@ import { Logger } from './logger';
 import { McpManager, McpServerConfig } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
+import * as fs from 'fs';
+
+// Load system prompt from file
+const SYSTEM_PROMPT_PATH = path.join(__dirname, 'prompt', 'system.prompt');
+const PERSONA_DIR = path.join(__dirname, 'persona');
+let DEFAULT_SYSTEM_PROMPT: string | undefined;
+
+try {
+  if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
+    DEFAULT_SYSTEM_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
+  }
+} catch (error) {
+  console.error('Failed to load system prompt:', error);
+}
+
+/**
+ * Load persona content from file
+ */
+function loadPersona(personaName: string): string | undefined {
+  const personaPath = path.join(PERSONA_DIR, `${personaName}.md`);
+  try {
+    if (fs.existsSync(personaPath)) {
+      return fs.readFileSync(personaPath, 'utf-8');
+    }
+    // Fallback to default if specified persona not found
+    if (personaName !== 'default') {
+      const defaultPath = path.join(PERSONA_DIR, 'default.md');
+      if (fs.existsSync(defaultPath)) {
+        return fs.readFileSync(defaultPath, 'utf-8');
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to load persona '${personaName}':`, error);
+  }
+  return undefined;
+}
+
+/**
+ * Get list of available personas
+ */
+export function getAvailablePersonas(): string[] {
+  try {
+    if (fs.existsSync(PERSONA_DIR)) {
+      return fs.readdirSync(PERSONA_DIR)
+        .filter(file => file.endsWith('.md'))
+        .map(file => file.replace('.md', ''));
+    }
+  } catch (error) {
+    console.error('Failed to list personas:', error);
+  }
+  return ['default'];
+}
 
 export class ClaudeHandler {
   private sessions: Map<string, ConversationSession> = new Map();
@@ -51,6 +103,26 @@ export class ClaudeHandler {
       // Enable permission prompts when we have Slack context, unless user has bypass enabled
       permissionMode: (!slackContext || userBypass) ? 'bypassPermissions' : 'default',
     };
+
+    // Build system prompt with persona
+    let systemPrompt = DEFAULT_SYSTEM_PROMPT || '';
+
+    // Load and append user's persona
+    if (slackContext?.user) {
+      const personaName = userSettingsStore.getUserPersona(slackContext.user);
+      const personaContent = loadPersona(personaName);
+      if (personaContent) {
+        systemPrompt = systemPrompt
+          ? `${systemPrompt}\n\n<persona>\n${personaContent}\n</persona>`
+          : `<persona>\n${personaContent}\n</persona>`;
+        this.logger.debug('Applied persona', { user: slackContext.user, persona: personaName });
+      }
+    }
+
+    if (systemPrompt) {
+      options.customSystemPrompt = systemPrompt;
+      this.logger.debug('Applied custom system prompt with persona');
+    }
 
     // Add permission prompt tool if we have Slack context and bypass is not enabled
     if (slackContext && !userBypass) {

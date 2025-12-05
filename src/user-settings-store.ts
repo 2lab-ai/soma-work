@@ -8,6 +8,7 @@ export interface UserSettings {
   userId: string;
   defaultDirectory: string;
   bypassPermission: boolean;
+  persona: string;  // persona file name (without .md extension)
   lastUpdated: string;
 }
 
@@ -98,6 +99,7 @@ export class UserSettingsStore {
       userId,
       defaultDirectory: directory,
       bypassPermission: existing?.bypassPermission ?? false,
+      persona: existing?.persona ?? 'default',
       lastUpdated: new Date().toISOString(),
     };
     this.saveSettings();
@@ -124,11 +126,40 @@ export class UserSettingsStore {
         userId,
         defaultDirectory: '',
         bypassPermission: bypass,
+        persona: 'default',
         lastUpdated: new Date().toISOString(),
       };
     }
     this.saveSettings();
     logger.info('Set user bypass permission', { userId, bypass });
+  }
+
+  /**
+   * Get user's persona setting
+   */
+  getUserPersona(userId: string): string {
+    const userSettings = this.settings[userId];
+    return userSettings?.persona ?? 'default';
+  }
+
+  /**
+   * Set user's persona setting
+   */
+  setUserPersona(userId: string, persona: string): void {
+    if (this.settings[userId]) {
+      this.settings[userId].persona = persona;
+      this.settings[userId].lastUpdated = new Date().toISOString();
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona,
+        lastUpdated: new Date().toISOString(),
+      };
+    }
+    this.saveSettings();
+    logger.info('Set user persona', { userId, persona });
   }
 
   /**
