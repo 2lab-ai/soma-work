@@ -10,6 +10,19 @@ export interface UserSettings {
   bypassPermission: boolean;
   persona: string;  // persona file name (without .md extension)
   lastUpdated: string;
+  // Jira integration
+  jiraAccountId?: string;
+  jiraName?: string;
+  slackName?: string;
+}
+
+interface SlackJiraMapping {
+  [slackId: string]: {
+    jiraAccountId: string;
+    name: string;
+    slackName?: string;
+    jiraName?: string;
+  };
 }
 
 interface SettingsData {
@@ -22,7 +35,9 @@ interface SettingsData {
  */
 export class UserSettingsStore {
   private settingsFile: string;
+  private mappingFile: string;
   private settings: SettingsData = {};
+  private slackJiraMapping: SlackJiraMapping = {};
 
   constructor(dataDir?: string) {
     // Use data directory or default to project root
@@ -35,7 +50,9 @@ export class UserSettingsStore {
     }
 
     this.settingsFile = path.join(dir, 'user-settings.json');
+    this.mappingFile = path.join(dir, 'slack_jira_mapping.json');
     this.loadSettings();
+    this.loadSlackJiraMapping();
   }
 
   /**
@@ -60,6 +77,34 @@ export class UserSettingsStore {
   }
 
   /**
+   * Load Slack-Jira mapping from file
+   */
+  private loadSlackJiraMapping(): void {
+    try {
+      if (fs.existsSync(this.mappingFile)) {
+        const data = fs.readFileSync(this.mappingFile, 'utf8');
+        this.slackJiraMapping = JSON.parse(data);
+        logger.info('Loaded Slack-Jira mapping', {
+          mappingCount: Object.keys(this.slackJiraMapping).length
+        });
+      } else {
+        this.slackJiraMapping = {};
+        logger.info('No Slack-Jira mapping file found');
+      }
+    } catch (error) {
+      logger.error('Failed to load Slack-Jira mapping', error);
+      this.slackJiraMapping = {};
+    }
+  }
+
+  /**
+   * Reload Slack-Jira mapping (for runtime updates)
+   */
+  reloadSlackJiraMapping(): void {
+    this.loadSlackJiraMapping();
+  }
+
+  /**
    * Save settings to file
    */
   private saveSettings(): void {
@@ -73,6 +118,61 @@ export class UserSettingsStore {
     } catch (error) {
       logger.error('Failed to save user settings', error);
     }
+  }
+
+  /**
+   * Update user's Jira info from Slack-Jira mapping
+   * Called when a user sends a message to sync their Jira info
+   */
+  updateUserJiraInfo(userId: string, slackName?: string): boolean {
+    const mapping = this.slackJiraMapping[userId];
+    if (!mapping) {
+      logger.debug('No Jira mapping found for user', { userId });
+      return false;
+    }
+
+    const existing = this.settings[userId];
+    const needsUpdate = !existing ||
+      existing.jiraAccountId !== mapping.jiraAccountId ||
+      existing.jiraName !== mapping.name ||
+      (slackName && existing.slackName !== slackName);
+
+    if (needsUpdate) {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: existing?.defaultDirectory ?? '',
+        bypassPermission: existing?.bypassPermission ?? false,
+        persona: existing?.persona ?? 'default',
+        lastUpdated: new Date().toISOString(),
+        jiraAccountId: mapping.jiraAccountId,
+        jiraName: mapping.name,
+        slackName: slackName || mapping.slackName || existing?.slackName,
+      };
+      this.saveSettings();
+      logger.info('Updated user Jira info', {
+        userId,
+        jiraAccountId: mapping.jiraAccountId,
+        jiraName: mapping.name,
+        slackName
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get user's Jira account ID
+   */
+  getUserJiraAccountId(userId: string): string | undefined {
+    return this.settings[userId]?.jiraAccountId;
+  }
+
+  /**
+   * Get user's Jira name
+   */
+  getUserJiraName(userId: string): string | undefined {
+    return this.settings[userId]?.jiraName;
   }
 
   /**

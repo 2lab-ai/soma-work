@@ -6,8 +6,11 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "prod": "node dist/index.js"
+    "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/",
+    "prod": "node dist/index.js",
+    "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
+    "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
+    "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
   },
   "keywords": [],
   "author": "",

@@ -2,12 +2,18 @@
 
 # Claude Code Slack Bot - Service Management Script
 # Usage: ./service.sh [status|start|stop|restart|install|uninstall|logs]
+#
+# This script manages the bot as a SYSTEM DAEMON (/Library/LaunchDaemons)
+# which runs at boot time WITHOUT requiring user login.
+# All commands require sudo (password will be prompted).
 
 SERVICE_NAME="com.dd.claude-slack-bot"
-PLIST_PATH="$HOME/Library/LaunchAgents/$SERVICE_NAME.plist"
+# Use system-level LaunchDaemons for boot-time execution (no login required)
+PLIST_PATH="/Library/LaunchDaemons/$SERVICE_NAME.plist"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGS_DIR="$PROJECT_DIR/logs"
 NODE_PATH="$HOME/.nvm/versions/node/v25.2.1/bin"
+USER_HOME="$HOME"
 
 # Colors for output
 RED='\033[0;31m'
@@ -32,15 +38,15 @@ print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-# Check if service is running
+# Check if service is running (system-level daemon)
 is_running() {
-    launchctl list | grep -q "$SERVICE_NAME"
+    sudo launchctl list | grep -q "$SERVICE_NAME"
     return $?
 }
 
 # Get service PID
 get_pid() {
-    launchctl list | grep "$SERVICE_NAME" | awk '{print $1}'
+    sudo launchctl list | grep "$SERVICE_NAME" | awk '{print $1}'
 }
 
 # Status command
@@ -99,7 +105,7 @@ cmd_start() {
         return 1
     fi
 
-    launchctl load "$PLIST_PATH"
+    sudo launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
@@ -122,7 +128,7 @@ cmd_stop() {
         return 0
     fi
 
-    launchctl unload "$PLIST_PATH"
+    sudo launchctl unload "$PLIST_PATH"
     sleep 2
 
     if ! is_running; then
@@ -143,13 +149,18 @@ cmd_restart() {
 
 # Install command
 cmd_install() {
-    print_status "Installing service..."
+    print_status "Installing service as system daemon (runs at boot, no login required)..."
 
     # Create logs directory
     mkdir -p "$LOGS_DIR"
 
-    # Create plist file
-    cat > "$PLIST_PATH" << EOF
+    # Get current user info for running the service
+    local CURRENT_USER=$(whoami)
+    local CURRENT_UID=$(id -u)
+    local CURRENT_GID=$(id -g)
+
+    # Create plist file (requires sudo for /Library/LaunchDaemons)
+    sudo tee "$PLIST_PATH" > /dev/null << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -157,11 +168,17 @@ cmd_install() {
     <key>Label</key>
     <string>$SERVICE_NAME</string>
 
+    <key>UserName</key>
+    <string>$CURRENT_USER</string>
+
+    <key>GroupName</key>
+    <string>staff</string>
+
     <key>ProgramArguments</key>
     <array>
-        <string>$NODE_PATH/npx</string>
-        <string>tsx</string>
-        <string>src/index.ts</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; npx tsx src/index.ts</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -172,7 +189,7 @@ cmd_install() {
         <key>PATH</key>
         <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
-        <string>$HOME</string>
+        <string>$USER_HOME</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -196,7 +213,7 @@ EOF
     print_success "Plist created at: $PLIST_PATH"
 
     # Load the service
-    launchctl load "$PLIST_PATH"
+    sudo launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
@@ -214,12 +231,12 @@ cmd_uninstall() {
 
     if is_running; then
         print_status "Stopping service first..."
-        launchctl unload "$PLIST_PATH"
+        sudo launchctl unload "$PLIST_PATH"
         sleep 2
     fi
 
     if [[ -f "$PLIST_PATH" ]]; then
-        rm "$PLIST_PATH"
+        sudo rm "$PLIST_PATH"
         print_success "Plist removed"
     else
         print_warning "Plist not found"
@@ -262,6 +279,110 @@ cmd_logs() {
     esac
 }
 
+# Reinstall command (stop -> build -> install -> start)
+cmd_reinstall() {
+    print_status "Reinstalling service with latest code..."
+    echo ""
+
+    # Step 1: Stop service
+    print_status "[1/4] Stopping service..."
+    if is_running; then
+        sudo launchctl unload "$PLIST_PATH"
+        sleep 2
+        if ! is_running; then
+            print_success "Service stopped"
+        else
+            print_error "Failed to stop service"
+            return 1
+        fi
+    else
+        print_warning "Service was not running"
+    fi
+
+    # Step 2: Build
+    print_status "[2/4] Building project..."
+    cd "$PROJECT_DIR" || exit 1
+    if npm run build; then
+        print_success "Build completed"
+    else
+        print_error "Build failed"
+        return 1
+    fi
+
+    # Step 3: Reinstall plist (in case config changed)
+    print_status "[3/4] Updating service configuration..."
+    local CURRENT_USER=$(whoami)
+
+    sudo tee "$PLIST_PATH" > /dev/null << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$SERVICE_NAME</string>
+
+    <key>UserName</key>
+    <string>$CURRENT_USER</string>
+
+    <key>GroupName</key>
+    <string>staff</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; npx tsx src/index.ts</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>$USER_HOME</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$LOGS_DIR/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$LOGS_DIR/stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+EOF
+    print_success "Service configuration updated"
+
+    # Step 4: Start service
+    print_status "[4/4] Starting service..."
+    sudo launchctl load "$PLIST_PATH"
+    sleep 2
+
+    if is_running; then
+        local pid=$(get_pid)
+        echo ""
+        print_success "Reinstall completed successfully!"
+        echo "  PID: $pid"
+        echo ""
+        echo "Check logs: ./service.sh logs follow"
+    else
+        print_error "Service failed to start. Check logs:"
+        echo "  tail -f $LOGS_DIR/stderr.log"
+        return 1
+    fi
+}
+
 # Main
 case "${1:-}" in
     status)
@@ -282,6 +403,9 @@ case "${1:-}" in
     uninstall)
         cmd_uninstall
         ;;
+    reinstall)
+        cmd_reinstall
+        ;;
     logs)
         cmd_logs "$2" "$3"
         ;;
@@ -294,14 +418,15 @@ case "${1:-}" in
         echo "  status     Show service status"
         echo "  start      Start the service"
         echo "  stop       Stop the service"
-        echo "  restart    Restart the service"
+        echo "  restart    Restart the service (quick, no rebuild)"
+        echo "  reinstall  Stop, rebuild, and start (use after code changes)"
         echo "  install    Install as launchd service"
         echo "  uninstall  Remove launchd service"
         echo "  logs       View logs (stdout|stderr|follow|all) [lines]"
         echo ""
         echo "Examples:"
         echo "  ./service.sh status"
-        echo "  ./service.sh restart"
+        echo "  ./service.sh reinstall    # Apply code changes"
         echo "  ./service.sh logs stderr 100"
         echo "  ./service.sh logs follow"
         ;;

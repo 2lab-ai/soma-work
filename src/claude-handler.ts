@@ -3,6 +3,8 @@ import { ConversationSession } from './types';
 import { Logger } from './logger';
 import { McpManager, McpServerConfig } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
+import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
+import { sendCredentialAlert } from './credential-alert';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -93,6 +95,28 @@ export class ClaudeHandler {
     workingDirectory?: string,
     slackContext?: { channel: string; threadTs?: string; user: string }
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    // Validate credentials before making the query
+    const credentialResult = await ensureValidCredentials();
+    if (!credentialResult.valid) {
+      this.logger.error('Claude credentials invalid', {
+        error: credentialResult.error,
+        status: getCredentialStatus(),
+      });
+
+      // Send alert to Slack channel
+      await sendCredentialAlert(credentialResult.error);
+
+      // Throw error to stop the query
+      throw new Error(
+        `Claude credentials missing: ${credentialResult.error}\n` +
+          'Please log in to Claude manually or enable automatic credential restore.'
+      );
+    }
+
+    if (credentialResult.restored) {
+      this.logger.info('Credentials were restored from backup');
+    }
+
     // Check if user has bypass permission enabled
     const userBypass = slackContext?.user
       ? userSettingsStore.getUserBypassPermission(slackContext.user)

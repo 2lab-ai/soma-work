@@ -168,21 +168,31 @@ export class WorkingDirectoryManager {
     if (userId) {
       const userDefault = userSettingsStore.getUserDefaultDirectory(userId);
       if (userDefault) {
-        // Verify the directory still exists
-        if (fs.existsSync(userDefault)) {
-          this.logger.debug('Using user default working directory', {
-            directory: userDefault,
-            userId,
-          });
-          // Auto-apply user's default to current context
-          this.setWorkingDirectoryInternal(channelId, userDefault, threadTs, userId);
-          return userDefault;
-        } else {
-          this.logger.warn('User default directory no longer exists', {
-            userId,
-            directory: userDefault,
-          });
+        // Create directory if it doesn't exist
+        if (!fs.existsSync(userDefault)) {
+          try {
+            fs.mkdirSync(userDefault, { recursive: true });
+            this.logger.info('Created missing working directory', {
+              directory: userDefault,
+              userId,
+            });
+          } catch (error) {
+            this.logger.error('Failed to create working directory', {
+              directory: userDefault,
+              userId,
+              error,
+            });
+            return undefined;
+          }
         }
+
+        this.logger.debug('Using user default working directory', {
+          directory: userDefault,
+          userId,
+        });
+        // Auto-apply user's default to current context
+        this.setWorkingDirectoryInternal(channelId, userDefault, threadTs, userId);
+        return userDefault;
       }
     }
 
@@ -221,12 +231,13 @@ export class WorkingDirectoryManager {
   }
 
   parseSetCommand(text: string): string | null {
-    const cwdMatch = text.match(/^cwd\s+(.+)$/i);
+    // Support both with and without slash prefix: cwd path, /cwd path
+    const cwdMatch = text.match(/^\/?cwd\s+(.+)$/i);
     if (cwdMatch) {
       return cwdMatch[1].trim();
     }
 
-    const setMatch = text.match(/^set\s+(?:cwd|dir|directory|working[- ]?directory)\s+(.+)$/i);
+    const setMatch = text.match(/^\/?set\s+(?:cwd|dir|directory|working[- ]?directory)\s+(.+)$/i);
     if (setMatch) {
       return setMatch[1].trim();
     }
@@ -235,7 +246,8 @@ export class WorkingDirectoryManager {
   }
 
   isGetCommand(text: string): boolean {
-    return /^(get\s+)?(cwd|dir|directory|working[- ]?directory)(\?)?$/i.test(text.trim());
+    // Support both with and without slash prefix: cwd, /cwd
+    return /^\/?(?:get\s+)?(?:cwd|dir|directory|working[- ]?directory)(?:\?)?$/i.test(text.trim());
   }
 
   formatDirectoryMessage(directory: string | undefined, context: string): string {

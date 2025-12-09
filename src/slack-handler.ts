@@ -9,6 +9,7 @@ import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
 import { userSettingsStore } from './user-settings-store';
 import { config } from './config';
+import { getCredentialStatus, copyBackupCredentials, hasClaudeAiOauth, isCredentialManagerEnabled } from './credentials-manager';
 
 interface MessageEvent {
   user: string;
@@ -52,7 +53,10 @@ export class SlackHandler {
 
   async handleMessage(event: MessageEvent, say: any) {
     const { user, channel, thread_ts, ts, text, files } = event;
-    
+
+    // Update user's Jira info from mapping (if available)
+    userSettingsStore.updateUserJiraInfo(user);
+
     // Process any attached files
     let processedFiles: ProcessedFile[] = [];
     if (files && files.length > 0) {
@@ -217,6 +221,21 @@ export class SlackHandler {
       return;
     }
 
+    // Check if this is a restore credentials command (only if there's text)
+    if (text && this.isRestoreCommand(text)) {
+      await this.handleRestoreCommand(channel, thread_ts || ts, say);
+      return;
+    }
+
+    // Check if this is a help command (only if there's text)
+    if (text && this.isHelpCommand(text)) {
+      await say({
+        text: this.getHelpMessage(),
+        thread_ts: thread_ts || ts,
+      });
+      return;
+    }
+
     // Check if we have a working directory set
     const isDM = channel.startsWith('D');
     // Always pass userId to auto-apply user's saved default if available
@@ -287,9 +306,15 @@ export class SlackHandler {
 
     try {
       // Prepare the prompt with file attachments
-      const finalPrompt = processedFiles.length > 0 
+      let finalPrompt = processedFiles.length > 0
         ? await this.fileHandler.formatFilePrompt(processedFiles, text || '')
         : text || '';
+
+      // Inject user info (Jira name, Slack name) at the end of the prompt
+      const userInfo = this.getUserInfoContext(user);
+      if (userInfo) {
+        finalPrompt = `${finalPrompt}\n\n${userInfo}`;
+      }
 
       this.logger.info('Sending query to Claude Code SDK', { 
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''), 
@@ -717,24 +742,49 @@ export class SlackHandler {
     await this.updateMessageReaction(sessionKey, emoji);
   }
 
+  private getUserInfoContext(userId: string): string | null {
+    const jiraName = userSettingsStore.getUserJiraName(userId);
+    const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
+    const settings = userSettingsStore.getUserSettings(userId);
+    const slackName = settings?.slackName;
+
+    if (!jiraName && !slackName) {
+      return null;
+    }
+
+    const lines: string[] = ['<user-context>'];
+    if (slackName) {
+      lines.push(`  <slack-name>${slackName}</slack-name>`);
+    }
+    if (jiraName) {
+      lines.push(`  <jira-name>${jiraName}</jira-name>`);
+    }
+    if (jiraAccountId) {
+      lines.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
+    }
+    lines.push('</user-context>');
+
+    return lines.join('\n');
+  }
+
   private isMcpInfoCommand(text: string): boolean {
-    return /^(mcp|servers?)(\s+(info|list|status))?(\?)?$/i.test(text.trim());
+    return /^\/?(?:mcp|servers?)(?:\s+(?:info|list|status))?(?:\?)?$/i.test(text.trim());
   }
 
   private isMcpReloadCommand(text: string): boolean {
-    return /^(mcp|servers?)\s+(reload|refresh)$/i.test(text.trim());
+    return /^\/?(?:mcp|servers?)\s+(?:reload|refresh)$/i.test(text.trim());
   }
 
   private isBypassCommand(text: string): boolean {
-    return /^bypass(\s+(on|off|true|false|enable|disable|status))?$/i.test(text.trim());
+    return /^\/?bypass(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
   }
 
   private parseBypassCommand(text: string): 'on' | 'off' | 'status' {
-    const match = text.trim().match(/^bypass(\s+(on|off|true|false|enable|disable|status))?$/i);
-    if (!match || !match[2]) {
+    const match = text.trim().match(/^\/?bypass(?:\s+(on|off|true|false|enable|disable|status))?$/i);
+    if (!match || !match[1]) {
       return 'status';
     }
-    const action = match[2].toLowerCase();
+    const action = match[1].toLowerCase();
     if (action === 'on' || action === 'true' || action === 'enable') {
       return 'on';
     }
@@ -745,22 +795,141 @@ export class SlackHandler {
   }
 
   private isPersonaCommand(text: string): boolean {
-    return /^persona(\s+(list|status|set\s+\S+))?$/i.test(text.trim());
+    return /^\/?persona(?:\s+(?:list|status|set\s+\S+))?$/i.test(text.trim());
   }
 
   private parsePersonaCommand(text: string): { action: 'list' | 'status' | 'set'; persona?: string } {
-    const trimmed = text.trim().toLowerCase();
+    const trimmed = text.trim();
 
-    if (/^persona\s+list$/i.test(trimmed)) {
+    if (/^\/?persona\s+list$/i.test(trimmed)) {
       return { action: 'list' };
     }
 
-    const setMatch = trimmed.match(/^persona\s+set\s+(\S+)$/i);
+    const setMatch = trimmed.match(/^\/?persona\s+set\s+(\S+)$/i);
     if (setMatch) {
       return { action: 'set', persona: setMatch[1] };
     }
 
     return { action: 'status' };
+  }
+
+  private isRestoreCommand(text: string): boolean {
+    return /^\/?(?:restore|credentials?)(?:\s+(?:restore|status))?$/i.test(text.trim());
+  }
+
+  private isHelpCommand(text: string): boolean {
+    return /^\/?(?:help|commands?)(?:\?)?$/i.test(text.trim());
+  }
+
+  private getHelpMessage(): string {
+    const commands = [
+      '*📚 Available Commands*',
+      '',
+      '*Working Directory:*',
+      '• `cwd <path>` or `/cwd <path>` - Set working directory',
+      '• `cwd` or `/cwd` - Show current working directory',
+      '',
+      '*MCP Servers:*',
+      '• `mcp` or `/mcp` - Show MCP server status',
+      '• `mcp reload` or `/mcp reload` - Reload MCP configuration',
+      '',
+      '*Permissions:*',
+      '• `bypass` or `/bypass` - Show permission bypass status',
+      '• `bypass on` or `/bypass on` - Enable permission bypass',
+      '• `bypass off` or `/bypass off` - Disable permission bypass',
+      '',
+      '*Persona:*',
+      '• `persona` or `/persona` - Show current persona',
+      '• `persona list` or `/persona list` - List available personas',
+      '• `persona set <name>` or `/persona set <name>` - Set persona',
+      '',
+      '*Credentials:*',
+      '• `restore` or `/restore` - Restore Claude credentials from backup',
+      '',
+      '*Help:*',
+      '• `help` or `/help` - Show this help message',
+    ];
+    return commands.join('\n');
+  }
+
+  private async handleRestoreCommand(channel: string, threadTs: string, say: any): Promise<void> {
+    // Check if credential manager is enabled
+    if (!isCredentialManagerEnabled()) {
+      await say({
+        text: '⚠️ Credential manager is disabled.\n\nTo enable, set `ENABLE_LOCAL_FILE_CREDENTIALS_JSON=1` in your environment.',
+        thread_ts: threadTs,
+      });
+      return;
+    }
+
+    // Get status before restore
+    const beforeStatus = getCredentialStatus();
+
+    // Format before status message
+    const beforeLines: string[] = [
+      '🔑 *Credential Restore*',
+      '',
+      '*현재 상태 (복사 전):*',
+      `• 크레덴셜 파일 존재 (\`.credentials.json\`): ${beforeStatus.credentialsFileExists ? '✅' : '❌'}`,
+      `• 백업 파일 존재 (\`credentials.json\`): ${beforeStatus.backupFileExists ? '✅' : '❌'}`,
+      `• claudeAiOauth 존재: ${beforeStatus.hasClaudeAiOauth ? '✅' : '❌'}`,
+      `• 자동 복원 활성화: ${beforeStatus.autoRestoreEnabled ? '✅' : '❌'}`,
+    ];
+
+    await say({
+      text: beforeLines.join('\n'),
+      thread_ts: threadTs,
+    });
+
+    // Attempt to copy backup credentials
+    this.logger.info('Attempting credential restore via command');
+    const copySuccess = copyBackupCredentials();
+
+    // Get status after restore
+    const afterHasOauth = hasClaudeAiOauth();
+    const afterStatus = getCredentialStatus();
+
+    // Format result message
+    const resultLines: string[] = [];
+
+    if (copySuccess) {
+      resultLines.push('✅ *복사 완료*');
+      resultLines.push('');
+      resultLines.push('`~/.claude/credentials.json` → `~/.claude/.credentials.json`');
+    } else {
+      resultLines.push('❌ *복사 실패*');
+      resultLines.push('');
+      if (!beforeStatus.backupFileExists) {
+        resultLines.push('백업 파일 (`credentials.json`)이 존재하지 않습니다.');
+      } else {
+        resultLines.push('파일 복사 중 오류가 발생했습니다.');
+      }
+    }
+
+    resultLines.push('');
+    resultLines.push('*복사 후 상태:*');
+    resultLines.push(`• 크레덴셜 파일 존재: ${afterStatus.credentialsFileExists ? '✅' : '❌'}`);
+    resultLines.push(`• claudeAiOauth 존재: ${afterHasOauth ? '✅' : '❌'}`);
+
+    if (afterHasOauth) {
+      resultLines.push('');
+      resultLines.push('🎉 Claude 인증이 정상적으로 설정되었습니다!');
+    } else if (copySuccess) {
+      resultLines.push('');
+      resultLines.push('⚠️ 파일은 복사되었지만 claudeAiOauth가 없습니다.');
+      resultLines.push('`claude login` 명령어로 다시 로그인해주세요.');
+    }
+
+    await say({
+      text: resultLines.join('\n'),
+      thread_ts: threadTs,
+    });
+
+    this.logger.info('Credential restore command completed', {
+      copySuccess,
+      beforeHadOauth: beforeStatus.hasClaudeAiOauth,
+      afterHasOauth,
+    });
   }
 
   private async getBotUserId(): Promise<string> {

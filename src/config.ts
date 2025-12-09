@@ -15,6 +15,11 @@ export const config = {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
   },
+  credentials: {
+    enabled: process.env.ENABLE_LOCAL_FILE_CREDENTIALS_JSON === '1',
+    autoRestore: process.env.AUTOMATIC_RESTORE_CREDENTIAL === '1',
+    alertChannel: process.env.CREDENTIAL_ALERT_CHANNEL || '#backend-general',
+  },
   baseDirectory: process.env.BASE_DIRECTORY || '',
   github: {
     appId: process.env.GITHUB_APP_ID || '',

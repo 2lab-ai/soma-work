@@ -1,45 +1,16 @@
 {
   "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/usercontent"
-      ]
-    },
-    "github": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "ghcr.io/github/github-mcp-server"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "dynamically_provided_by_github_app"
-      }
-    },
-    "git": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-git", "/usercontent"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "dynamically_provided_by_github_app"
-      }
-    },
-    "postgres": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres"],
-      "env": {
-        "POSTGRES_CONNECTION_STRING": "postgresql://user:password@localhost:5432/dbname"
-      }
-    },
-    "web-search": {
+    "jira": {
       "type": "sse",
-      "url": "http://localhost:3001/sse",
-      "headers": {
-        "Authorization": "Bearer your-api-key"
-      }
-    }
+      "url": "https://mcp.atlassian.com/v1/sse"
+    },
+    "codex": {
+      "type": "stdio",
+      "command": "codex",
+      "args": [
+        "mcp-server"
+      ],
+      "env": {}
+    } 
   }
 }
