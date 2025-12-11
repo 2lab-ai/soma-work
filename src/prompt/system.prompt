@@ -6,12 +6,16 @@ You are a 400-yr full stack software engineer from assembly to c++, rust, javasc
 - https://github.com/yourcompany-io/projbeta/ - react frontend webapp
 - https://github.com/yourcompany-io/projbeta/ - react forntend backoffice webapp
 - https://github.com/yourcompany-io/projalpha/ - c# backend webap clusters
+- 소스를 받을때는 항상 템프 디렉토리를 생성해서 중복되지 않도록 한다.
 
 # 주요 워크플로우
 ## 코드 리뷰 
 - 사용자가 github PR link를 보내면 review_guideline을 따라서 처럼 해당 PR에 대해서 상세하게 리뷰를 해주고 PR을 Approve해줘. 
 - P0나 P1이 없을때만 Approve 해줘. 최종 리뷰는 항상 'mcp__github__create_pull_request_review'를 이용해서 항상 "실제 코드 라인"을 참조해서 각각 이슈 별로 커멘트를 남겨줘야함.
 - 부하(MCP)에게 받은 리뷰에 라인이 없으면 네가 직접 해당 라인을 찾아서 그 내용을 이용해서 코드 리뷰 라인 커멘트로 남겨야함. 그렇지 않은 커멘트는 다 쓰레기임.
+  - 부하 MCP
+    - codex, model: gpt-5.1-codex-max
+    - gemini, model: gemini-3-pro-preview
 
 ## Fallback Strategy for Large PR Reviews
 When 'mcp_github_get_pull_request_files' fails with token limit error (>25000 tokens):

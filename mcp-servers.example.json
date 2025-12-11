@@ -11,6 +11,14 @@
         "mcp-server"
       ],
       "env": {}
+    },
+    "gemini": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "@2lab.ai/gemini-mcp-server"
+      ],
+      "env": {}
     } 
   }
 }
