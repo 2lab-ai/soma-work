@@ -1,15 +1,17 @@
 import { App } from '@slack/bolt';
-import { ClaudeHandler, getAvailablePersonas } from './claude-handler';
+import { ClaudeHandler, getAvailablePersonas, SessionExpiryCallbacks } from './claude-handler';
 import { SDKMessage } from '@anthropic-ai/claude-code';
 import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
 import { FileHandler, ProcessedFile } from './file-handler';
+import { ConversationSession } from './types';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
 import { userSettingsStore } from './user-settings-store';
 import { config } from './config';
 import { getCredentialStatus, copyBackupCredentials, hasClaudeAiOauth, isCredentialManagerEnabled } from './credentials-manager';
+import { mcpCallTracker, McpCallTracker } from './mcp-call-tracker';
 
 interface MessageEvent {
   user: string;
@@ -41,6 +43,14 @@ export class SlackHandler {
   private originalMessages: Map<string, { channel: string; ts: string }> = new Map(); // sessionKey -> original message info
   private currentReactions: Map<string, string> = new Map(); // sessionKey -> current emoji
   private botUserId: string | null = null;
+  // Track tool_use_id -> tool_name mapping for MCP result display
+  private toolUseIdToName: Map<string, string> = new Map();
+  // Track MCP call IDs for duration tracking
+  private toolUseIdToCallId: Map<string, string> = new Map();
+  // Track active MCP status update intervals
+  private mcpStatusIntervals: Map<string, NodeJS.Timeout> = new Map();
+  // Track MCP status message timestamps and channel info
+  private mcpStatusMessages: Map<string, { ts: string; channel: string; serverName: string; toolName: string }> = new Map();
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -367,7 +377,7 @@ export class SlackHandler {
             await this.updateMessageReaction(sessionKey, 'gear');
 
             // Check for TodoWrite tool and handle it specially
-            const todoTool = message.message.content?.find((part: any) => 
+            const todoTool = message.message.content?.find((part: any) =>
               part.type === 'tool_use' && part.name === 'TodoWrite'
             );
 
@@ -383,6 +393,25 @@ export class SlackHandler {
                 thread_ts: thread_ts || ts,
               });
             }
+
+            // Track all tool_use_id -> tool_name mappings and start MCP status AFTER tool use message
+            for (const part of message.message.content || []) {
+              if (part.type === 'tool_use' && part.id && part.name) {
+                this.toolUseIdToName.set(part.id, part.name);
+
+                // Start tracking MCP calls (after the tool use message is sent)
+                if (part.name.startsWith('mcp__')) {
+                  const nameParts = part.name.split('__');
+                  const serverName = nameParts[1] || 'unknown';
+                  const actualToolName = nameParts.slice(2).join('__') || part.name;
+                  const callId = mcpCallTracker.startCall(serverName, actualToolName);
+                  this.toolUseIdToCallId.set(part.id, callId);
+
+                  // Start periodic status update for this MCP call
+                  this.startMcpStatusUpdate(callId, serverName, actualToolName, channel, thread_ts || ts);
+                }
+              }
+            }
           } else {
             // Handle regular text content
             const content = this.extractTextContent(message);
@@ -397,6 +426,67 @@ export class SlackHandler {
               });
             }
           }
+        } else if (message.type === 'user') {
+          // Handle synthetic user messages (tool_result)
+          const userMessage = message as any;
+
+          // Log to debug what we're receiving
+          this.logger.debug('Received user message', {
+            isSynthetic: userMessage.isSynthetic,
+            hasContent: !!userMessage.message?.content,
+            contentLength: userMessage.message?.content?.length,
+            contentTypes: userMessage.message?.content?.map((c: any) => c.type),
+          });
+
+          // Handle tool results from synthetic messages or direct content
+          const content = userMessage.message?.content || userMessage.content;
+          if (content) {
+            const toolResults = this.extractToolResults(content);
+
+            this.logger.debug('Extracted tool results', {
+              count: toolResults.length,
+              toolNames: toolResults.map(r => r.toolName || this.toolUseIdToName.get(r.toolUseId)),
+            });
+
+            for (const toolResult of toolResults) {
+              // Lookup tool name from our tracking map if not already set
+              if (!toolResult.toolName && toolResult.toolUseId) {
+                toolResult.toolName = this.toolUseIdToName.get(toolResult.toolUseId);
+              }
+
+              // End MCP call tracking and get duration
+              let duration: number | null = null;
+              if (toolResult.toolUseId) {
+                const callId = this.toolUseIdToCallId.get(toolResult.toolUseId);
+                if (callId) {
+                  duration = mcpCallTracker.endCall(callId);
+                  this.toolUseIdToCallId.delete(toolResult.toolUseId);
+
+                  // Stop the status update interval and show completion
+                  await this.stopMcpStatusUpdate(callId, duration);
+                }
+              }
+
+              // Show MCP tool results in detail
+              if (toolResult.toolName?.startsWith('mcp__')) {
+                this.logger.info('Formatting MCP tool result', {
+                  toolName: toolResult.toolName,
+                  hasResult: !!toolResult.result,
+                  resultType: typeof toolResult.result,
+                  isError: toolResult.isError,
+                  duration,
+                });
+
+                const formatted = this.formatMcpToolResult(toolResult, duration);
+                if (formatted) {
+                  await say({
+                    text: formatted,
+                    thread_ts: thread_ts || ts,
+                  });
+                }
+              }
+            }
+          }
         } else if (message.type === 'result') {
           this.logger.info('Received result from Claude SDK', {
             subtype: message.subtype,
@@ -404,7 +494,7 @@ export class SlackHandler {
             totalCost: (message as any).total_cost_usd,
             duration: (message as any).duration_ms,
           });
-          
+
           if (message.subtype === 'success' && (message as any).result) {
             const finalResult = (message as any).result;
             if (finalResult && !currentMessages.includes(finalResult)) {
@@ -481,7 +571,7 @@ export class SlackHandler {
       }
     } finally {
       this.activeControllers.delete(sessionKey);
-      
+
       // Clean up todo tracking if session ended
       if (session?.sessionId) {
         // Don't immediately clean up - keep todos visible for a while
@@ -490,6 +580,8 @@ export class SlackHandler {
           this.todoMessages.delete(sessionKey);
           this.originalMessages.delete(sessionKey);
           this.currentReactions.delete(sessionKey);
+          // Clean up tool tracking
+          this.toolUseIdToName.clear();
         }, 5 * 60 * 1000); // 5 minutes
       }
     }
@@ -576,7 +668,172 @@ export class SlackHandler {
   }
 
   private formatGenericTool(toolName: string, input: any): string {
+    // Check if this is an MCP tool
+    if (toolName.startsWith('mcp__')) {
+      return this.formatMcpTool(toolName, input);
+    }
     return `🔧 *Using ${toolName}*`;
+  }
+
+  private formatMcpTool(toolName: string, input: any): string {
+    // Parse MCP tool name: mcp__serverName__toolName
+    const parts = toolName.split('__');
+    const serverName = parts[1] || 'unknown';
+    const actualToolName = parts.slice(2).join('__') || toolName;
+
+    let result = `🔌 *MCP: ${serverName} → ${actualToolName}*\n`;
+
+    // Format input parameters
+    if (input && typeof input === 'object') {
+      const inputStr = this.formatMcpInput(input);
+      if (inputStr) {
+        result += inputStr;
+      }
+    }
+
+    return result;
+  }
+
+  private formatMcpInput(input: any): string {
+    if (!input || typeof input !== 'object') {
+      return '';
+    }
+
+    const lines: string[] = [];
+
+    for (const [key, value] of Object.entries(input)) {
+      if (value === undefined || value === null) continue;
+
+      if (typeof value === 'string') {
+        // Truncate long strings
+        const displayValue = value.length > 500
+          ? value.substring(0, 500) + '...'
+          : value;
+
+        // Check if it's multiline
+        if (displayValue.includes('\n')) {
+          lines.push(`*${key}:*\n\`\`\`\n${displayValue}\n\`\`\``);
+        } else {
+          lines.push(`*${key}:* \`${displayValue}\``);
+        }
+      } else if (typeof value === 'object') {
+        try {
+          const jsonStr = JSON.stringify(value, null, 2);
+          const truncated = jsonStr.length > 300
+            ? jsonStr.substring(0, 300) + '...'
+            : jsonStr;
+          lines.push(`*${key}:*\n\`\`\`json\n${truncated}\n\`\`\``);
+        } catch {
+          lines.push(`*${key}:* [complex object]`);
+        }
+      } else {
+        lines.push(`*${key}:* \`${String(value)}\``);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  private extractToolResults(content: any[]): Array<{ toolName?: string; toolUseId: string; result: any; isError?: boolean }> {
+    const results: Array<{ toolName?: string; toolUseId: string; result: any; isError?: boolean }> = [];
+
+    if (!Array.isArray(content)) {
+      return results;
+    }
+
+    for (const part of content) {
+      if (part.type === 'tool_result') {
+        results.push({
+          toolUseId: part.tool_use_id,
+          result: part.content,
+          isError: part.is_error,
+          // Tool name might be stored in metadata or we need to track it
+          toolName: (part as any).tool_name,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private formatMcpToolResult(toolResult: { toolName?: string; toolUseId: string; result: any; isError?: boolean }, duration?: number | null): string | null {
+    const { toolName, result, isError } = toolResult;
+
+    // Parse MCP tool name if available
+    let serverName = 'unknown';
+    let actualToolName = 'unknown';
+
+    if (toolName?.startsWith('mcp__')) {
+      const parts = toolName.split('__');
+      serverName = parts[1] || 'unknown';
+      actualToolName = parts.slice(2).join('__') || toolName;
+    }
+
+    const statusIcon = isError ? '❌' : '✅';
+    let formatted = `${statusIcon} *MCP Result: ${serverName} → ${actualToolName}*`;
+
+    // Add duration info
+    if (duration !== null && duration !== undefined) {
+      formatted += ` (${McpCallTracker.formatDuration(duration)})`;
+
+      // Add average prediction info
+      const stats = mcpCallTracker.getToolStats(serverName, actualToolName);
+      if (stats && stats.callCount > 1) {
+        formatted += ` | 평균: ${McpCallTracker.formatDuration(stats.avgDuration)}`;
+      }
+    }
+    formatted += '\n';
+
+    // Format the result content
+    if (result) {
+      if (typeof result === 'string') {
+        const truncated = result.length > 1000
+          ? result.substring(0, 1000) + '...'
+          : result;
+
+        if (truncated.includes('\n')) {
+          formatted += `\`\`\`\n${truncated}\n\`\`\``;
+        } else {
+          formatted += `\`${truncated}\``;
+        }
+      } else if (Array.isArray(result)) {
+        // Handle array of content blocks (common MCP format)
+        for (const item of result) {
+          if (item.type === 'text' && item.text) {
+            const truncated = item.text.length > 1000
+              ? item.text.substring(0, 1000) + '...'
+              : item.text;
+            formatted += `\`\`\`\n${truncated}\n\`\`\``;
+          } else if (item.type === 'image') {
+            formatted += `_[Image data]_`;
+          } else if (typeof item === 'object') {
+            try {
+              const jsonStr = JSON.stringify(item, null, 2);
+              const truncated = jsonStr.length > 500
+                ? jsonStr.substring(0, 500) + '...'
+                : jsonStr;
+              formatted += `\`\`\`json\n${truncated}\n\`\`\``;
+            } catch {
+              formatted += `_[Complex result]_`;
+            }
+          }
+        }
+      } else if (typeof result === 'object') {
+        try {
+          const jsonStr = JSON.stringify(result, null, 2);
+          const truncated = jsonStr.length > 500
+            ? jsonStr.substring(0, 500) + '...'
+            : jsonStr;
+          formatted += `\`\`\`json\n${truncated}\n\`\`\``;
+        } catch {
+          formatted += `_[Complex result]_`;
+        }
+      }
+    } else {
+      formatted += `_[No result content]_`;
+    }
+
+    return formatted;
   }
 
   private truncateString(str: string, maxLength: number): string {
@@ -1112,10 +1369,319 @@ export class SlackHandler {
       }
     });
 
+    // Register session expiry callbacks
+    this.claudeHandler.setExpiryCallbacks({
+      onWarning: this.handleSessionWarning.bind(this),
+      onExpiry: this.handleSessionExpiry.bind(this),
+    });
+
     // Cleanup inactive sessions periodically
-    setInterval(() => {
+    setInterval(async () => {
       this.logger.debug('Running session cleanup');
-      this.claudeHandler.cleanupInactiveSessions();
+      await this.claudeHandler.cleanupInactiveSessions();
     }, 5 * 60 * 1000); // Every 5 minutes
+  }
+
+  /**
+   * Format time remaining in human-readable format
+   */
+  private formatTimeRemaining(ms: number): string {
+    const hours = Math.floor(ms / (60 * 60 * 1000));
+    const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+
+    if (hours > 0) {
+      return `${hours}시간 ${minutes}분`;
+    }
+    return `${minutes}분`;
+  }
+
+  /**
+   * Handle session expiry warning - send or update warning message
+   */
+  private async handleSessionWarning(
+    session: ConversationSession,
+    timeRemaining: number,
+    existingMessageTs?: string
+  ): Promise<string | undefined> {
+    const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${this.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
+    const threadTs = session.threadTs;
+    const channel = session.channelId;
+
+    try {
+      if (existingMessageTs) {
+        // Update existing warning message
+        await this.app.client.chat.update({
+          channel,
+          ts: existingMessageTs,
+          text: warningText,
+        });
+        return existingMessageTs;
+      } else {
+        // Create new warning message
+        const result = await this.app.client.chat.postMessage({
+          channel,
+          text: warningText,
+          thread_ts: threadTs,
+        });
+        return result.ts;
+      }
+    } catch (error) {
+      this.logger.error('Failed to send/update session warning message', error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Handle session expiry - send final message that session is closed
+   */
+  private async handleSessionExpiry(session: ConversationSession): Promise<void> {
+    const expiryText = `🔒 *세션이 종료되었습니다*\n\n24시간 동안 활동이 없어 이 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+
+    try {
+      // Update the warning message to show session closed, or send new message
+      if (session.warningMessageTs) {
+        await this.app.client.chat.update({
+          channel: session.channelId,
+          ts: session.warningMessageTs,
+          text: expiryText,
+        });
+      } else {
+        await this.app.client.chat.postMessage({
+          channel: session.channelId,
+          text: expiryText,
+          thread_ts: session.threadTs,
+        });
+      }
+
+      this.logger.info('Session expired', {
+        userId: session.userId,
+        channelId: session.channelId,
+        threadTs: session.threadTs,
+      });
+    } catch (error) {
+      this.logger.error('Failed to send session expiry message', error);
+    }
+  }
+
+  /**
+   * Notify all active sessions about server shutdown
+   * Called before the service shuts down
+   */
+  async notifyShutdown(): Promise<void> {
+    const shutdownText = `🔄 *서버 재시작 중*\n\n서버가 재시작됩니다. 잠시 후 다시 대화를 이어갈 수 있습니다.\n세션이 저장되었으므로 서버 재시작 후에도 대화 내용이 유지됩니다.`;
+
+    const sessions = this.claudeHandler.getAllSessions();
+    const notifyPromises: Promise<void>[] = [];
+
+    for (const [key, session] of sessions.entries()) {
+      // Only notify sessions with active conversations (have sessionId)
+      if (session.sessionId) {
+        const promise = (async () => {
+          try {
+            await this.app.client.chat.postMessage({
+              channel: session.channelId,
+              text: shutdownText,
+              thread_ts: session.threadTs,
+            });
+            this.logger.debug('Sent shutdown notification', {
+              sessionKey: key,
+              channel: session.channelId,
+            });
+          } catch (error) {
+            this.logger.error('Failed to send shutdown notification', {
+              sessionKey: key,
+              error,
+            });
+          }
+        })();
+        notifyPromises.push(promise);
+      }
+    }
+
+    // Wait for all notifications to complete (with timeout)
+    if (notifyPromises.length > 0) {
+      this.logger.info(`Sending shutdown notifications to ${notifyPromises.length} sessions`);
+      await Promise.race([
+        Promise.all(notifyPromises),
+        new Promise(resolve => setTimeout(resolve, 5000)), // 5 second timeout
+      ]);
+    }
+  }
+
+  /**
+   * Load saved sessions from file
+   * Returns the number of sessions loaded
+   */
+  loadSavedSessions(): number {
+    return this.claudeHandler.loadSessions();
+  }
+
+  /**
+   * Save sessions to file before shutdown
+   */
+  saveSessions(): void {
+    this.claudeHandler.saveSessions();
+  }
+
+  /**
+   * Start periodic status update for an MCP call
+   * - codex: shows status immediately and updates every 30s
+   * - others: shows status after 10s delay, then updates every 30s
+   */
+  private async startMcpStatusUpdate(
+    callId: string,
+    serverName: string,
+    toolName: string,
+    channel: string,
+    threadTs: string
+  ): Promise<void> {
+    const isCodex = serverName === 'codex';
+    const initialDelay = isCodex ? 0 : 10000; // codex: immediate, others: 10s delay
+
+    // Get predicted duration for status message
+    const predicted = mcpCallTracker.getPredictedDuration(serverName, toolName);
+
+    // Helper to create/update status message
+    const createOrUpdateStatusMessage = async (isInitial: boolean) => {
+      const elapsed = mcpCallTracker.getElapsedTime(callId);
+      if (elapsed === null) {
+        // Call already ended
+        return;
+      }
+
+      let statusText = `⏳ *MCP 실행 중: ${serverName} → ${toolName}*\n`;
+      statusText += `경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
+
+      if (predicted) {
+        const remaining = Math.max(0, predicted - elapsed);
+        const progress = Math.min(100, (elapsed / predicted) * 100);
+        statusText += `\n예상 시간: ${McpCallTracker.formatDuration(predicted)}`;
+        if (remaining > 0) {
+          statusText += ` | 남은 시간: ~${McpCallTracker.formatDuration(remaining)}`;
+        }
+        statusText += `\n진행률: ${progress.toFixed(0)}%`;
+
+        // Add progress bar
+        const progressBarLength = 20;
+        const filledLength = Math.round((progress / 100) * progressBarLength);
+        const emptyLength = progressBarLength - filledLength;
+        const progressBar = '█'.repeat(filledLength) + '░'.repeat(emptyLength);
+        statusText += ` \`${progressBar}\``;
+      }
+
+      const msgInfo = this.mcpStatusMessages.get(callId);
+
+      if (isInitial || !msgInfo) {
+        // Create new status message
+        try {
+          const result = await this.app.client.chat.postMessage({
+            channel,
+            thread_ts: threadTs,
+            text: statusText,
+          });
+
+          if (result.ts) {
+            this.mcpStatusMessages.set(callId, { ts: result.ts, channel, serverName, toolName });
+          }
+        } catch (error) {
+          this.logger.warn('Failed to create MCP status message', error);
+        }
+      } else {
+        // Update existing status message
+        try {
+          await this.app.client.chat.update({
+            channel: msgInfo.channel,
+            ts: msgInfo.ts,
+            text: statusText,
+          });
+          this.logger.debug('Updated MCP status message', { callId, elapsed });
+        } catch (error) {
+          this.logger.warn('Failed to update MCP status message', error);
+        }
+      }
+    };
+
+    if (isCodex) {
+      // Codex: create status message immediately
+      await createOrUpdateStatusMessage(true);
+
+      // Set up 30-second interval for updates
+      const interval = setInterval(async () => {
+        const elapsed = mcpCallTracker.getElapsedTime(callId);
+        if (elapsed === null) {
+          this.stopMcpStatusUpdate(callId);
+          return;
+        }
+        await createOrUpdateStatusMessage(false);
+      }, 30000);
+
+      this.mcpStatusIntervals.set(callId, interval);
+    } else {
+      // Others: wait 10s before showing status, then update every 30s
+      const initialTimeout = setTimeout(async () => {
+        const elapsed = mcpCallTracker.getElapsedTime(callId);
+        if (elapsed === null) {
+          // Call already ended before 10s, no status message needed
+          return;
+        }
+
+        // Create initial status message after 10s
+        await createOrUpdateStatusMessage(true);
+
+        // Set up 30-second interval for subsequent updates
+        const interval = setInterval(async () => {
+          const currentElapsed = mcpCallTracker.getElapsedTime(callId);
+          if (currentElapsed === null) {
+            this.stopMcpStatusUpdate(callId);
+            return;
+          }
+          await createOrUpdateStatusMessage(false);
+        }, 30000);
+
+        this.mcpStatusIntervals.set(callId, interval);
+      }, initialDelay);
+
+      // Store the timeout so we can clear it if call ends early
+      this.mcpStatusIntervals.set(callId, initialTimeout as unknown as NodeJS.Timeout);
+    }
+  }
+
+  /**
+   * Stop periodic status update for an MCP call and update the message to show completion
+   */
+  private async stopMcpStatusUpdate(callId: string, duration?: number | null): Promise<void> {
+    this.logger.debug('Stopping MCP status update', { callId, duration });
+
+    // Clear the interval/timeout first
+    const timer = this.mcpStatusIntervals.get(callId);
+    if (timer) {
+      clearInterval(timer);
+      clearTimeout(timer);
+      this.mcpStatusIntervals.delete(callId);
+      this.logger.debug('Cleared timer for MCP call', { callId });
+    }
+
+    // Update the status message to show completion (only if status message exists)
+    const msgInfo = this.mcpStatusMessages.get(callId);
+    if (msgInfo) {
+      try {
+        let completedText = `✅ *MCP 완료: ${msgInfo.serverName} → ${msgInfo.toolName}*`;
+        if (duration !== null && duration !== undefined) {
+          completedText += ` (${McpCallTracker.formatDuration(duration)})`;
+        }
+
+        await this.app.client.chat.update({
+          channel: msgInfo.channel,
+          ts: msgInfo.ts,
+          text: completedText,
+        });
+        this.logger.debug('Updated MCP status message to completed', { callId, duration });
+      } catch (error) {
+        this.logger.warn('Failed to update MCP status message to completed', error);
+      }
+      this.mcpStatusMessages.delete(callId);
+    }
+    // If no msgInfo, the call completed before status message was shown (< 10s for non-codex)
+    // In this case, only the MCP result will be shown, which is the expected behavior
   }
 }

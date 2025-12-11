@@ -8,6 +8,21 @@ import { sendCredentialAlert } from './credential-alert';
 import * as path from 'path';
 import * as fs from 'fs';
 
+// Session persistence file path
+const DATA_DIR = path.join(process.cwd(), 'data');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+
+interface SerializedSession {
+  key: string;
+  userId: string;
+  channelId: string;
+  threadTs?: string;
+  sessionId?: string;
+  isActive: boolean;
+  lastActivity: string; // ISO date string
+  workingDirectory?: string;
+}
+
 // Load system prompt from file
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'prompt', 'system.prompt');
 const PERSONA_DIR = path.join(__dirname, 'persona');
@@ -59,13 +74,37 @@ export function getAvailablePersonas(): string[] {
   return ['default'];
 }
 
+// Session expiry warning intervals in milliseconds (from session expiry time)
+// These are the times BEFORE expiry when warnings should be sent
+const WARNING_INTERVALS = [
+  12 * 60 * 60 * 1000, // 12 hours
+  6 * 60 * 60 * 1000,  // 6 hours
+  3 * 60 * 60 * 1000,  // 3 hours
+  1 * 60 * 60 * 1000,  // 1 hour
+  30 * 60 * 1000,      // 30 minutes
+  10 * 60 * 1000,      // 10 minutes
+];
+
+// Default session timeout: 24 hours
+const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
+
+export interface SessionExpiryCallbacks {
+  onWarning: (session: ConversationSession, timeRemaining: number, warningMessageTs?: string) => Promise<string | undefined>;
+  onExpiry: (session: ConversationSession) => Promise<void>;
+}
+
 export class ClaudeHandler {
   private sessions: Map<string, ConversationSession> = new Map();
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
+  private expiryCallbacks?: SessionExpiryCallbacks;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
+  }
+
+  setExpiryCallbacks(callbacks: SessionExpiryCallbacks) {
+    this.expiryCallbacks = callbacks;
   }
 
   getSessionKey(userId: string, channelId: string, threadTs?: string): string {
@@ -248,17 +287,158 @@ export class ClaudeHandler {
     }
   }
 
-  cleanupInactiveSessions(maxAge: number = 30 * 60 * 1000) {
+  async cleanupInactiveSessions(maxAge: number = DEFAULT_SESSION_TIMEOUT) {
     const now = Date.now();
     let cleaned = 0;
+
     for (const [key, session] of this.sessions.entries()) {
-      if (now - session.lastActivity.getTime() > maxAge) {
+      const sessionAge = now - session.lastActivity.getTime();
+      const timeUntilExpiry = maxAge - sessionAge;
+
+      // Check if session should be expired
+      if (timeUntilExpiry <= 0) {
+        // Send expiry message before cleaning up
+        if (this.expiryCallbacks) {
+          try {
+            await this.expiryCallbacks.onExpiry(session);
+          } catch (error) {
+            this.logger.error('Failed to send session expiry message', error);
+          }
+        }
         this.sessions.delete(key);
         cleaned++;
+        continue;
+      }
+
+      // Check if we should send a warning
+      if (this.expiryCallbacks) {
+        for (const warningInterval of WARNING_INTERVALS) {
+          // If time until expiry is less than or equal to this warning interval
+          // and we haven't sent this warning yet (or a more urgent one)
+          if (timeUntilExpiry <= warningInterval) {
+            const lastWarningSent = session.lastWarningSentAt || Infinity;
+
+            // Only send if this is a new/more urgent warning
+            if (warningInterval < lastWarningSent) {
+              try {
+                const newMessageTs = await this.expiryCallbacks.onWarning(
+                  session,
+                  timeUntilExpiry,
+                  session.warningMessageTs
+                );
+
+                // Update session with warning info
+                session.lastWarningSentAt = warningInterval;
+                if (newMessageTs) {
+                  session.warningMessageTs = newMessageTs;
+                }
+
+                this.logger.debug('Sent session expiry warning', {
+                  sessionKey: key,
+                  timeRemaining: timeUntilExpiry,
+                  warningInterval,
+                });
+              } catch (error) {
+                this.logger.error('Failed to send session warning', error);
+              }
+            }
+            break; // Only send the most urgent applicable warning
+          }
+        }
       }
     }
+
     if (cleaned > 0) {
       this.logger.info(`Cleaned up ${cleaned} inactive sessions`);
+    }
+  }
+
+  /**
+   * Get all active sessions
+   */
+  getAllSessions(): Map<string, ConversationSession> {
+    return this.sessions;
+  }
+
+  /**
+   * Save all sessions to file for persistence across restarts
+   */
+  saveSessions(): void {
+    try {
+      // Ensure data directory exists
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+
+      const sessionsArray: SerializedSession[] = [];
+      for (const [key, session] of this.sessions.entries()) {
+        // Only save sessions with sessionId (meaning they have conversation history)
+        if (session.sessionId) {
+          sessionsArray.push({
+            key,
+            userId: session.userId,
+            channelId: session.channelId,
+            threadTs: session.threadTs,
+            sessionId: session.sessionId,
+            isActive: session.isActive,
+            lastActivity: session.lastActivity.toISOString(),
+            workingDirectory: session.workingDirectory,
+          });
+        }
+      }
+
+      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessionsArray, null, 2));
+      this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+    }
+  }
+
+  /**
+   * Load sessions from file after restart
+   */
+  loadSessions(): number {
+    try {
+      if (!fs.existsSync(SESSIONS_FILE)) {
+        this.logger.debug('No sessions file found');
+        return 0;
+      }
+
+      const data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
+      const sessionsArray: SerializedSession[] = JSON.parse(data);
+
+      let loaded = 0;
+      const now = Date.now();
+      const maxAge = DEFAULT_SESSION_TIMEOUT;
+
+      for (const serialized of sessionsArray) {
+        const lastActivity = new Date(serialized.lastActivity);
+        const sessionAge = now - lastActivity.getTime();
+
+        // Only restore sessions that haven't expired
+        if (sessionAge < maxAge) {
+          const session: ConversationSession = {
+            userId: serialized.userId,
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            sessionId: serialized.sessionId,
+            isActive: serialized.isActive,
+            lastActivity,
+            workingDirectory: serialized.workingDirectory,
+          };
+          this.sessions.set(serialized.key, session);
+          loaded++;
+        }
+      }
+
+      this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);
+
+      // Clean up the sessions file after loading
+      // We'll save fresh on next shutdown
+      return loaded;
+    } catch (error) {
+      this.logger.error('Failed to load sessions', error);
+      return 0;
     }
   }
 }
