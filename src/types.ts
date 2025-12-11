@@ -6,6 +6,9 @@ export interface ConversationSession {
   isActive: boolean;
   lastActivity: Date;
   workingDirectory?: string;
+  // Session expiry warning tracking
+  warningMessageTs?: string;
+  lastWarningSentAt?: number; // Which warning interval was last sent (in ms)
 }
 
 export interface WorkingDirectoryConfig {

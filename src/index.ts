@@ -54,18 +54,41 @@ async function start() {
     // Setup event handlers
     slackHandler.setupEventHandlers();
 
+    // Load saved sessions from previous run
+    const loadedSessions = slackHandler.loadSavedSessions();
+    if (loadedSessions > 0) {
+      logger.info(`Restored ${loadedSessions} sessions from previous run`);
+    }
+
     // Start the app
     await app.start();
     logger.info('⚡️ Claude Code Slack bot is running!');
 
     // Handle graceful shutdown
-    const cleanup = () => {
+    let isShuttingDown = false;
+    const cleanup = async () => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+
       logger.info('Shutting down gracefully...');
+
+      try {
+        // Notify all active sessions about shutdown
+        await slackHandler.notifyShutdown();
+
+        // Save sessions for persistence
+        slackHandler.saveSessions();
+        logger.info('Sessions saved successfully');
+      } catch (error) {
+        logger.error('Error during shutdown:', error);
+      }
+
       const githubAuth = getGitHubAppAuth();
       if (githubAuth) {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
       }
+
       process.exit(0);
     };
 
