@@ -246,6 +246,24 @@ export class SlackHandler {
       return;
     }
 
+    // Check if this is a sessions command
+    if (text && this.isSessionsCommand(text)) {
+      await say({
+        text: await this.formatUserSessions(user),
+        thread_ts: thread_ts || ts,
+      });
+      return;
+    }
+
+    // Check if this is an all_sessions command
+    if (text && this.isAllSessionsCommand(text)) {
+      await say({
+        text: await this.formatAllSessions(),
+        thread_ts: thread_ts || ts,
+      });
+      return;
+    }
+
     // Check if we have a working directory set
     const isDM = channel.startsWith('D');
     // Always pass userId to auto-apply user's saved default if available
@@ -1086,6 +1104,10 @@ export class SlackHandler {
       '• `cwd <path>` or `/cwd <path>` - Set working directory',
       '• `cwd` or `/cwd` - Show current working directory',
       '',
+      '*Sessions:*',
+      '• `sessions` or `/sessions` - Show your active sessions',
+      '• `all_sessions` or `/all_sessions` - Show all active sessions',
+      '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',
       '• `mcp reload` or `/mcp reload` - Reload MCP configuration',
@@ -1107,6 +1129,182 @@ export class SlackHandler {
       '• `help` or `/help` - Show this help message',
     ];
     return commands.join('\n');
+  }
+
+  private isSessionsCommand(text: string): boolean {
+    return /^\/?sessions?$/i.test(text.trim());
+  }
+
+  private isAllSessionsCommand(text: string): boolean {
+    return /^\/?all_sessions?$/i.test(text.trim());
+  }
+
+  /**
+   * Format time elapsed since a date in human-readable Korean
+   */
+  private formatTimeAgo(date: Date): string {
+    const now = Date.now();
+    const diff = now - date.getTime();
+
+    const minutes = Math.floor(diff / (60 * 1000));
+    const hours = Math.floor(diff / (60 * 60 * 1000));
+    const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+
+    if (days > 0) {
+      return `${days}일 ${hours % 24}시간 전`;
+    } else if (hours > 0) {
+      return `${hours}시간 ${minutes % 60}분 전`;
+    } else if (minutes > 0) {
+      return `${minutes}분 전`;
+    } else {
+      return '방금 전';
+    }
+  }
+
+  /**
+   * Format session expiry time remaining
+   */
+  private formatExpiresIn(lastActivity: Date): string {
+    const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+    const expiresAt = lastActivity.getTime() + SESSION_TIMEOUT;
+    const remaining = expiresAt - Date.now();
+
+    if (remaining <= 0) {
+      return '만료됨';
+    }
+
+    const hours = Math.floor(remaining / (60 * 60 * 1000));
+    const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
+
+    if (hours > 0) {
+      return `${hours}시간 ${minutes}분 남음`;
+    }
+    return `${minutes}분 남음`;
+  }
+
+  /**
+   * Get username from Slack user ID
+   */
+  private async getUserName(userId: string): Promise<string> {
+    try {
+      const result = await this.app.client.users.info({ user: userId });
+      return result.user?.real_name || result.user?.name || userId;
+    } catch {
+      return userId;
+    }
+  }
+
+  /**
+   * Get channel name from channel ID
+   */
+  private async getChannelName(channelId: string): Promise<string> {
+    try {
+      // DM channels start with 'D'
+      if (channelId.startsWith('D')) {
+        return 'DM';
+      }
+      const result = await this.app.client.conversations.info({ channel: channelId });
+      return `#${(result.channel as any)?.name || channelId}`;
+    } catch {
+      return channelId;
+    }
+  }
+
+  /**
+   * Format sessions for a specific user
+   */
+  private async formatUserSessions(userId: string): Promise<string> {
+    const allSessions = this.claudeHandler.getAllSessions();
+    const userSessions: Array<{ key: string; session: ConversationSession }> = [];
+
+    for (const [key, session] of allSessions.entries()) {
+      if (session.userId === userId && session.sessionId) {
+        userSessions.push({ key, session });
+      }
+    }
+
+    if (userSessions.length === 0) {
+      return '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.';
+    }
+
+    const lines: string[] = [
+      `📋 *내 세션 목록* (${userSessions.length}개)`,
+      '',
+    ];
+
+    // Sort by last activity (most recent first)
+    userSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
+
+    for (let i = 0; i < userSessions.length; i++) {
+      const { session } = userSessions[i];
+      const channelName = await this.getChannelName(session.channelId);
+      const timeAgo = this.formatTimeAgo(session.lastActivity);
+      const expiresIn = this.formatExpiresIn(session.lastActivity);
+      const workDir = session.workingDirectory ? `\`${session.workingDirectory}\`` : '_미설정_';
+
+      lines.push(`*${i + 1}. ${channelName}*${session.threadTs ? ' (thread)' : ''}`);
+      lines.push(`   📁 ${workDir}`);
+      lines.push(`   🕐 마지막 활동: ${timeAgo}`);
+      lines.push(`   ⏳ 만료: ${expiresIn}`);
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Format all sessions overview
+   */
+  private async formatAllSessions(): Promise<string> {
+    const allSessions = this.claudeHandler.getAllSessions();
+    const activeSessions: Array<{ key: string; session: ConversationSession }> = [];
+
+    for (const [key, session] of allSessions.entries()) {
+      if (session.sessionId) {
+        activeSessions.push({ key, session });
+      }
+    }
+
+    if (activeSessions.length === 0) {
+      return '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.';
+    }
+
+    const lines: string[] = [
+      `🌐 *전체 세션 현황* (${activeSessions.length}개)`,
+      '',
+    ];
+
+    // Sort by last activity (most recent first)
+    activeSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
+
+    // Group by user
+    const sessionsByUser = new Map<string, Array<{ key: string; session: ConversationSession }>>();
+    for (const item of activeSessions) {
+      const userId = item.session.userId;
+      if (!sessionsByUser.has(userId)) {
+        sessionsByUser.set(userId, []);
+      }
+      sessionsByUser.get(userId)!.push(item);
+    }
+
+    for (const [userId, sessions] of sessionsByUser.entries()) {
+      const userName = await this.getUserName(userId);
+      lines.push(`👤 *${userName}* (${sessions.length}개 세션)`);
+
+      for (const { session } of sessions) {
+        const channelName = await this.getChannelName(session.channelId);
+        const timeAgo = this.formatTimeAgo(session.lastActivity);
+        const expiresIn = this.formatExpiresIn(session.lastActivity);
+        const workDir = session.workingDirectory
+          ? session.workingDirectory.split('/').pop() || session.workingDirectory
+          : '-';
+
+        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 📁 \`${workDir}\` | 🕐 ${timeAgo} | ⏳ ${expiresIn}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
   }
 
   private async handleRestoreCommand(channel: string, threadTs: string, say: any): Promise<void> {
