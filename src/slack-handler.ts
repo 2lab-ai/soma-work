@@ -1269,12 +1269,39 @@ export class SlackHandler {
       } as MessageEvent, say);
     });
 
-    // Handle file uploads in threads
+    // Handle thread messages without mention (if session exists)
     this.app.event('message', async ({ event, say }) => {
-      // Only handle file uploads that are not from bots and have files
-      if (event.subtype === 'file_share' && 'user' in event && event.files) {
+      // Skip bot messages
+      if ('bot_id' in event || !('user' in event)) {
+        return;
+      }
+
+      const messageEvent = event as any;
+
+      // Handle file uploads
+      if (event.subtype === 'file_share' && messageEvent.files) {
         this.logger.info('Handling file upload event');
-        await this.handleMessage(event as MessageEvent, say);
+        await this.handleMessage(messageEvent as MessageEvent, say);
+        return;
+      }
+
+      // Handle thread messages without mention if session exists
+      if (event.subtype === undefined && messageEvent.thread_ts) {
+        const user = messageEvent.user;
+        const channel = messageEvent.channel;
+        const threadTs = messageEvent.thread_ts;
+
+        // Check if we have an existing session for this thread
+        const session = this.claudeHandler.getSession(user, channel, threadTs);
+        if (session?.sessionId) {
+          this.logger.info('Handling thread message (session exists)', {
+            user,
+            channel,
+            threadTs,
+            sessionId: session.sessionId,
+          });
+          await this.handleMessage(messageEvent as MessageEvent, say);
+        }
       }
     });
 
