@@ -75,13 +75,8 @@ export function getAvailablePersonas(): string[] {
 }
 
 // Session expiry warning intervals in milliseconds (from session expiry time)
-// These are the times BEFORE expiry when warnings should be sent
+// Only send warning 10 minutes before expiry
 const WARNING_INTERVALS = [
-  12 * 60 * 60 * 1000, // 12 hours
-  6 * 60 * 60 * 1000,  // 6 hours
-  3 * 60 * 60 * 1000,  // 3 hours
-  1 * 60 * 60 * 1000,  // 1 hour
-  30 * 60 * 1000,      // 30 minutes
   10 * 60 * 1000,      // 10 minutes
 ];
 
