@@ -14,7 +14,9 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
 interface SerializedSession {
   key: string;
-  userId: string;
+  ownerId: string;
+  ownerName?: string;
+  userId: string; // Legacy field
   channelId: string;
   threadTs?: string;
   sessionId?: string;
@@ -102,24 +104,75 @@ export class ClaudeHandler {
     this.expiryCallbacks = callbacks;
   }
 
-  getSessionKey(userId: string, channelId: string, threadTs?: string): string {
-    return `${userId}-${channelId}-${threadTs || 'direct'}`;
+  /**
+   * Get session key - now based on channel and thread only (shared session)
+   */
+  getSessionKey(channelId: string, threadTs?: string): string {
+    return `${channelId}-${threadTs || 'direct'}`;
   }
 
-  getSession(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
-    return this.sessions.get(this.getSessionKey(userId, channelId, threadTs));
+  /**
+   * Legacy method for backward compatibility - ignores userId
+   */
+  getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
+    return this.getSessionKey(channelId, threadTs);
   }
 
-  createSession(userId: string, channelId: string, threadTs?: string): ConversationSession {
+  getSession(channelId: string, threadTs?: string): ConversationSession | undefined {
+    return this.sessions.get(this.getSessionKey(channelId, threadTs));
+  }
+
+  /**
+   * Legacy method for backward compatibility
+   */
+  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
+    return this.getSession(channelId, threadTs);
+  }
+
+  createSession(ownerId: string, ownerName: string, channelId: string, threadTs?: string): ConversationSession {
     const session: ConversationSession = {
-      userId,
+      ownerId,
+      ownerName,
+      userId: ownerId, // Legacy field
       channelId,
       threadTs,
       isActive: true,
       lastActivity: new Date(),
     };
-    this.sessions.set(this.getSessionKey(userId, channelId, threadTs), session);
+    this.sessions.set(this.getSessionKey(channelId, threadTs), session);
     return session;
+  }
+
+  /**
+   * Update the current initiator of a session
+   */
+  updateInitiator(channelId: string, threadTs: string | undefined, initiatorId: string, initiatorName: string): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session) {
+      session.currentInitiatorId = initiatorId;
+      session.currentInitiatorName = initiatorName;
+      session.lastActivity = new Date();
+    }
+  }
+
+  /**
+   * Check if a user can interrupt the current response
+   * Only owner or current initiator can interrupt
+   */
+  canInterrupt(channelId: string, threadTs: string | undefined, userId: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) {
+      return true; // No session, so anyone can start
+    }
+    // Owner can always interrupt
+    if (session.ownerId === userId) {
+      return true;
+    }
+    // Current initiator can interrupt
+    if (session.currentInitiatorId === userId) {
+      return true;
+    }
+    return false;
   }
 
   async *streamQuery(
@@ -371,7 +424,9 @@ export class ClaudeHandler {
         if (session.sessionId) {
           sessionsArray.push({
             key,
-            userId: session.userId,
+            ownerId: session.ownerId,
+            ownerName: session.ownerName,
+            userId: session.userId, // Legacy field
             channelId: session.channelId,
             threadTs: session.threadTs,
             sessionId: session.sessionId,
@@ -413,7 +468,9 @@ export class ClaudeHandler {
         // Only restore sessions that haven't expired
         if (sessionAge < maxAge) {
           const session: ConversationSession = {
-            userId: serialized.userId,
+            ownerId: serialized.ownerId || serialized.userId, // Fallback for legacy sessions
+            ownerName: serialized.ownerName,
+            userId: serialized.userId, // Legacy field
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,
             sessionId: serialized.sessionId,

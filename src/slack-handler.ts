@@ -305,38 +305,72 @@ export class SlackHandler {
       return;
     }
 
-    const sessionKey = this.claudeHandler.getSessionKey(user, channel, thread_ts || ts);
-    
+    // Get user's display name for speaker tag
+    const userName = await this.getUserName(user);
+
+    // Session key is now based on channel + thread only (shared session)
+    const sessionKey = this.claudeHandler.getSessionKey(channel, thread_ts || ts);
+
     // Store the original message info for status reactions
     const originalMessageTs = thread_ts || ts;
     this.originalMessages.set(sessionKey, { channel, ts: originalMessageTs });
-    
-    // Cancel any existing request for this conversation
+
+    // Get or create session
+    const existingSession = this.claudeHandler.getSession(channel, thread_ts || ts);
+    const isNewSession = !existingSession;
+
+    const session = isNewSession
+      ? this.claudeHandler.createSession(user, userName, channel, thread_ts || ts)
+      : existingSession;
+
+    if (isNewSession) {
+      this.logger.debug('Creating new session', { sessionKey, owner: userName });
+    } else {
+      this.logger.debug('Using existing session', {
+        sessionKey,
+        sessionId: session.sessionId,
+        owner: session.ownerName,
+        currentInitiator: session.currentInitiatorName,
+      });
+    }
+
+    // Check if this user can interrupt the current response
+    const canInterrupt = this.claudeHandler.canInterrupt(channel, thread_ts || ts, user);
+
+    // Cancel existing request only if user can interrupt (owner or current initiator)
     const existingController = this.activeControllers.get(sessionKey);
-    if (existingController) {
-      this.logger.debug('Cancelling existing request for session', { sessionKey });
+    if (existingController && canInterrupt) {
+      this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
       existingController.abort();
+    } else if (existingController && !canInterrupt) {
+      // User cannot interrupt - their message will be queued for after current response
+      this.logger.debug('User cannot interrupt, message will be processed after current response', {
+        sessionKey,
+        user: userName,
+        owner: session.ownerName,
+        currentInitiator: session.currentInitiatorName,
+      });
+      // Don't return - we'll still process this message, just won't abort the existing one
+      // The existing controller will complete and this new request will start after
     }
 
     const abortController = new AbortController();
     this.activeControllers.set(sessionKey, abortController);
 
-    let session = this.claudeHandler.getSession(user, channel, thread_ts || ts);
-    if (!session) {
-      this.logger.debug('Creating new session', { sessionKey });
-      session = this.claudeHandler.createSession(user, channel, thread_ts || ts);
-    } else {
-      this.logger.debug('Using existing session', { sessionKey, sessionId: session.sessionId });
-    }
+    // Update the current initiator
+    this.claudeHandler.updateInitiator(channel, thread_ts || ts, user, userName);
 
     let currentMessages: string[] = [];
     let statusMessageTs: string | undefined;
 
     try {
       // Prepare the prompt with file attachments
-      let finalPrompt = processedFiles.length > 0
+      let rawPrompt = processedFiles.length > 0
         ? await this.fileHandler.formatFilePrompt(processedFiles, text || '')
         : text || '';
+
+      // Wrap the prompt with speaker tag to identify who is speaking
+      let finalPrompt = `<speaker>${userName}</speaker>\n${rawPrompt}`;
 
       // Inject user info (Jira name, Slack name) at the end of the prompt
       const userInfo = this.getUserInfoContext(user);
@@ -344,11 +378,13 @@ export class SlackHandler {
         finalPrompt = `${finalPrompt}\n\n${userInfo}`;
       }
 
-      this.logger.info('Sending query to Claude Code SDK', { 
-        prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''), 
+      this.logger.info('Sending query to Claude Code SDK', {
+        prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
         sessionId: session.sessionId,
         workingDirectory,
         fileCount: processedFiles.length,
+        speaker: userName,
+        isOwner: session.ownerId === user,
       });
 
       // Send initial status message
@@ -1217,8 +1253,9 @@ export class SlackHandler {
     const allSessions = this.claudeHandler.getAllSessions();
     const userSessions: Array<{ key: string; session: ConversationSession }> = [];
 
+    // Find sessions where user is the owner
     for (const [key, session] of allSessions.entries()) {
-      if (session.userId === userId && session.sessionId) {
+      if (session.ownerId === userId && session.sessionId) {
         userSessions.push({ key, session });
       }
     }
@@ -1241,10 +1278,13 @@ export class SlackHandler {
       const timeAgo = this.formatTimeAgo(session.lastActivity);
       const expiresIn = this.formatExpiresIn(session.lastActivity);
       const workDir = session.workingDirectory ? `\`${session.workingDirectory}\`` : '_미설정_';
+      const initiator = session.currentInitiatorName
+        ? ` | 🎯 현재 대화: ${session.currentInitiatorName}`
+        : '';
 
       lines.push(`*${i + 1}. ${channelName}*${session.threadTs ? ' (thread)' : ''}`);
       lines.push(`   📁 ${workDir}`);
-      lines.push(`   🕐 마지막 활동: ${timeAgo}`);
+      lines.push(`   🕐 마지막 활동: ${timeAgo}${initiator}`);
       lines.push(`   ⏳ 만료: ${expiresIn}`);
       lines.push('');
     }
@@ -1277,19 +1317,19 @@ export class SlackHandler {
     // Sort by last activity (most recent first)
     activeSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
 
-    // Group by user
-    const sessionsByUser = new Map<string, Array<{ key: string; session: ConversationSession }>>();
+    // Group by owner
+    const sessionsByOwner = new Map<string, Array<{ key: string; session: ConversationSession }>>();
     for (const item of activeSessions) {
-      const userId = item.session.userId;
-      if (!sessionsByUser.has(userId)) {
-        sessionsByUser.set(userId, []);
+      const ownerId = item.session.ownerId;
+      if (!sessionsByOwner.has(ownerId)) {
+        sessionsByOwner.set(ownerId, []);
       }
-      sessionsByUser.get(userId)!.push(item);
+      sessionsByOwner.get(ownerId)!.push(item);
     }
 
-    for (const [userId, sessions] of sessionsByUser.entries()) {
-      const userName = await this.getUserName(userId);
-      lines.push(`👤 *${userName}* (${sessions.length}개 세션)`);
+    for (const [ownerId, sessions] of sessionsByOwner.entries()) {
+      const ownerName = sessions[0].session.ownerName || await this.getUserName(ownerId);
+      lines.push(`👤 *${ownerName}* (${sessions.length}개 세션)`);
 
       for (const { session } of sessions) {
         const channelName = await this.getChannelName(session.channelId);
@@ -1298,8 +1338,11 @@ export class SlackHandler {
         const workDir = session.workingDirectory
           ? session.workingDirectory.split('/').pop() || session.workingDirectory
           : '-';
+        const initiator = session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
+          ? ` | 🎯 ${session.currentInitiatorName}`
+          : '';
 
-        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 📁 \`${workDir}\` | 🕐 ${timeAgo} | ⏳ ${expiresIn}`);
+        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 📁 \`${workDir}\` | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`);
       }
       lines.push('');
     }
@@ -1489,14 +1532,15 @@ export class SlackHandler {
         const channel = messageEvent.channel;
         const threadTs = messageEvent.thread_ts;
 
-        // Check if we have an existing session for this thread
-        const session = this.claudeHandler.getSession(user, channel, threadTs);
+        // Check if we have an existing session for this thread (shared session, no user in key)
+        const session = this.claudeHandler.getSession(channel, threadTs);
         if (session?.sessionId) {
           this.logger.info('Handling thread message (session exists)', {
             user,
             channel,
             threadTs,
             sessionId: session.sessionId,
+            owner: session.ownerName,
           });
           await this.handleMessage(messageEvent as MessageEvent, say);
         }

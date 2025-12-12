@@ -1,5 +1,8 @@
 export interface ConversationSession {
-  userId: string;
+  ownerId: string;           // User who started the session
+  ownerName?: string;        // Display name of owner
+  currentInitiatorId?: string; // User who triggered the current response
+  currentInitiatorName?: string; // Display name of current initiator
   channelId: string;
   threadTs?: string;
   sessionId?: string;
@@ -9,6 +12,8 @@ export interface ConversationSession {
   // Session expiry warning tracking
   warningMessageTs?: string;
   lastWarningSentAt?: number; // Which warning interval was last sent (in ms)
+  // Legacy field for backward compatibility
+  userId: string;
 }
 
 export interface WorkingDirectoryConfig {
