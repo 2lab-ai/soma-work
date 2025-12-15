@@ -23,16 +23,27 @@ interface SerializedSession {
   isActive: boolean;
   lastActivity: string; // ISO date string
   workingDirectory?: string;
+  title?: string;
+  model?: string;
 }
 
 // Load system prompt from file
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'prompt', 'system.prompt');
+const LOCAL_SYSTEM_PROMPT_PATH = path.join(process.cwd(), '.system.prompt');
 const PERSONA_DIR = path.join(__dirname, 'persona');
 let DEFAULT_SYSTEM_PROMPT: string | undefined;
 
 try {
   if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
     DEFAULT_SYSTEM_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
+  }
+  // Append local system prompt if exists (not committed to source)
+  if (fs.existsSync(LOCAL_SYSTEM_PROMPT_PATH)) {
+    const localPrompt = fs.readFileSync(LOCAL_SYSTEM_PROMPT_PATH, 'utf-8');
+    DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+      ? `${DEFAULT_SYSTEM_PROMPT}\n\n${localPrompt}`
+      : localPrompt;
+    console.log('Loaded local system prompt from .system.prompt');
   }
 } catch (error) {
   console.error('Failed to load system prompt:', error);
@@ -129,7 +140,10 @@ export class ClaudeHandler {
     return this.getSession(channelId, threadTs);
   }
 
-  createSession(ownerId: string, ownerName: string, channelId: string, threadTs?: string): ConversationSession {
+  createSession(ownerId: string, ownerName: string, channelId: string, threadTs?: string, model?: string): ConversationSession {
+    // Get user's default model if not provided
+    const sessionModel = model || userSettingsStore.getUserDefaultModel(ownerId);
+
     const session: ConversationSession = {
       ownerId,
       ownerName,
@@ -138,9 +152,21 @@ export class ClaudeHandler {
       threadTs,
       isActive: true,
       lastActivity: new Date(),
+      model: sessionModel,
     };
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
     return session;
+  }
+
+  /**
+   * Set session title (typically auto-generated from first Q&A)
+   */
+  setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session && !session.title) {
+      session.title = title;
+      this.saveSessions();
+    }
   }
 
   /**
@@ -214,6 +240,17 @@ export class ClaudeHandler {
       // Enable permission prompts when we have Slack context, unless user has bypass enabled
       permissionMode: (!slackContext || userBypass) ? 'bypassPermissions' : 'default',
     };
+
+    // Set model from session or user's default model
+    if (session?.model) {
+      options.model = session.model;
+      this.logger.debug('Using session model', { model: session.model });
+    } else if (slackContext?.user) {
+      // Fallback to user's default model for existing sessions without model
+      const userModel = userSettingsStore.getUserDefaultModel(slackContext.user);
+      options.model = userModel;
+      this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
+    }
 
     // Build system prompt with persona
     let systemPrompt = DEFAULT_SYSTEM_PROMPT || '';
@@ -409,6 +446,32 @@ export class ClaudeHandler {
   }
 
   /**
+   * Get a session by its key directly
+   */
+  getSessionByKey(sessionKey: string): ConversationSession | undefined {
+    return this.sessions.get(sessionKey);
+  }
+
+  /**
+   * Terminate a session by its key
+   */
+  terminateSession(sessionKey: string): boolean {
+    const session = this.sessions.get(sessionKey);
+    if (!session) {
+      return false;
+    }
+
+    // Remove from sessions map
+    this.sessions.delete(sessionKey);
+    this.logger.info('Session terminated', { sessionKey, ownerId: session.ownerId });
+
+    // Save sessions after termination
+    this.saveSessions();
+
+    return true;
+  }
+
+  /**
    * Save all sessions to file for persistence across restarts
    */
   saveSessions(): void {
@@ -433,6 +496,8 @@ export class ClaudeHandler {
             isActive: session.isActive,
             lastActivity: session.lastActivity.toISOString(),
             workingDirectory: session.workingDirectory,
+            title: session.title,
+            model: session.model,
           });
         }
       }
@@ -477,6 +542,8 @@ export class ClaudeHandler {
             isActive: serialized.isActive,
             lastActivity,
             workingDirectory: serialized.workingDirectory,
+            title: serialized.title,
+            model: serialized.model,
           };
           this.sessions.set(serialized.key, session);
           loaded++;
