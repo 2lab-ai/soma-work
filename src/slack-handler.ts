@@ -4,14 +4,15 @@ import { SDKMessage } from '@anthropic-ai/claude-code';
 import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
 import { FileHandler, ProcessedFile } from './file-handler';
-import { ConversationSession } from './types';
+import { ConversationSession, UserChoice, UserChoices, UserChoiceQuestion, PendingChoiceForm } from './types';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
-import { userSettingsStore } from './user-settings-store';
+import { userSettingsStore, AVAILABLE_MODELS, MODEL_ALIASES } from './user-settings-store';
 import { config } from './config';
 import { getCredentialStatus, copyBackupCredentials, hasClaudeAiOauth, isCredentialManagerEnabled } from './credentials-manager';
 import { mcpCallTracker, McpCallTracker } from './mcp-call-tracker';
+import { CommandParser, ToolFormatter, UserChoiceHandler, MessageFormatter } from './slack';
 
 interface MessageEvent {
   user: string;
@@ -51,6 +52,17 @@ export class SlackHandler {
   private mcpStatusIntervals: Map<string, NodeJS.Timeout> = new Map();
   // Track MCP status message timestamps and channel info
   private mcpStatusMessages: Map<string, { ts: string; channel: string; serverName: string; toolName: string }> = new Map();
+  // Track pending choice forms for multi-question selection
+  private pendingChoiceForms: Map<string, {
+    formId: string;
+    sessionKey: string;
+    channel: string;
+    threadTs: string;
+    messageTs: string;
+    questions: UserChoiceQuestion[];
+    selections: Record<string, { choiceId: string; label: string }>;
+    createdAt: number;
+  }> = new Map();
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -139,7 +151,7 @@ export class SlackHandler {
     }
 
     // Check if this is an MCP info command (only if there's text)
-    if (text && this.isMcpInfoCommand(text)) {
+    if (text && CommandParser.isMcpInfoCommand(text)) {
       const mcpInfo = await this.mcpManager.formatMcpInfo();
       await say({
         text: mcpInfo,
@@ -149,7 +161,7 @@ export class SlackHandler {
     }
 
     // Check if this is an MCP reload command (only if there's text)
-    if (text && this.isMcpReloadCommand(text)) {
+    if (text && CommandParser.isMcpReloadCommand(text)) {
       const reloaded = this.mcpManager.reloadConfiguration();
       if (reloaded) {
         const mcpInfo = await this.mcpManager.formatMcpInfo();
@@ -167,8 +179,8 @@ export class SlackHandler {
     }
 
     // Check if this is a bypass permission command (only if there's text)
-    if (text && this.isBypassCommand(text)) {
-      const bypassAction = this.parseBypassCommand(text);
+    if (text && CommandParser.isBypassCommand(text)) {
+      const bypassAction = CommandParser.parseBypassCommand(text);
 
       if (bypassAction === 'status') {
         const currentBypass = userSettingsStore.getUserBypassPermission(user);
@@ -193,8 +205,8 @@ export class SlackHandler {
     }
 
     // Check if this is a persona command (only if there's text)
-    if (text && this.isPersonaCommand(text)) {
-      const personaAction = this.parsePersonaCommand(text);
+    if (text && CommandParser.isPersonaCommand(text)) {
+      const personaAction = CommandParser.parsePersonaCommand(text);
 
       if (personaAction.action === 'status') {
         const currentPersona = userSettingsStore.getUserPersona(user);
@@ -231,32 +243,89 @@ export class SlackHandler {
       return;
     }
 
+    // Check if this is a model command (only if there's text)
+    if (text && CommandParser.isModelCommand(text)) {
+      const modelAction = CommandParser.parseModelCommand(text);
+
+      if (modelAction.action === 'status') {
+        const currentModel = userSettingsStore.getUserDefaultModel(user);
+        const displayName = userSettingsStore.getModelDisplayName(currentModel);
+        const aliasesText = Object.entries(MODEL_ALIASES)
+          .map(([alias, model]) => `\`${alias}\` → ${userSettingsStore.getModelDisplayName(model)}`)
+          .join('\n');
+
+        await say({
+          text: `🤖 *Model Status*\n\nYour default model: *${displayName}*\n\`${currentModel}\`\n\n*Available aliases:*\n${aliasesText}\n\n_Use \`model set <name>\` to change your default model._`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (modelAction.action === 'list') {
+        const currentModel = userSettingsStore.getUserDefaultModel(user);
+        const modelList = AVAILABLE_MODELS
+          .map(m => {
+            const displayName = userSettingsStore.getModelDisplayName(m);
+            return m === currentModel ? `• *${displayName}* _(current)_\n  \`${m}\`` : `• ${displayName}\n  \`${m}\``;
+          })
+          .join('\n');
+
+        await say({
+          text: `🤖 *Available Models*\n\n${modelList}\n\n_Use \`model set <name>\` to change your default model._`,
+          thread_ts: thread_ts || ts,
+        });
+      } else if (modelAction.action === 'set' && modelAction.model) {
+        const resolvedModel = userSettingsStore.resolveModelInput(modelAction.model);
+        if (resolvedModel) {
+          userSettingsStore.setUserDefaultModel(user, resolvedModel);
+          const displayName = userSettingsStore.getModelDisplayName(resolvedModel);
+          await say({
+            text: `✅ *Model Changed*\n\nYour default model is now: *${displayName}*\n\`${resolvedModel}\`\n\n_New sessions will use this model._`,
+            thread_ts: thread_ts || ts,
+          });
+        } else {
+          const aliasesText = Object.keys(MODEL_ALIASES).map(a => `\`${a}\``).join(', ');
+          await say({
+            text: `❌ *Unknown Model*\n\nModel \`${modelAction.model}\` not found.\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
+            thread_ts: thread_ts || ts,
+          });
+        }
+      }
+      return;
+    }
+
     // Check if this is a restore credentials command (only if there's text)
-    if (text && this.isRestoreCommand(text)) {
+    if (text && CommandParser.isRestoreCommand(text)) {
       await this.handleRestoreCommand(channel, thread_ts || ts, say);
       return;
     }
 
     // Check if this is a help command (only if there's text)
-    if (text && this.isHelpCommand(text)) {
+    if (text && CommandParser.isHelpCommand(text)) {
       await say({
-        text: this.getHelpMessage(),
+        text: CommandParser.getHelpMessage(),
         thread_ts: thread_ts || ts,
       });
       return;
     }
 
     // Check if this is a sessions command
-    if (text && this.isSessionsCommand(text)) {
+    if (text && CommandParser.isSessionsCommand(text)) {
+      const { text: msgText, blocks } = await this.formatUserSessionsBlocks(user);
       await say({
-        text: await this.formatUserSessions(user),
+        text: msgText,
+        blocks,
         thread_ts: thread_ts || ts,
       });
       return;
     }
 
+    // Check if this is a terminate command
+    const terminateMatch = text ? CommandParser.parseTerminateCommand(text) : null;
+    if (terminateMatch) {
+      await this.handleTerminateCommand(terminateMatch, user, channel, thread_ts || ts, say);
+      return;
+    }
+
     // Check if this is an all_sessions command
-    if (text && this.isAllSessionsCommand(text)) {
+    if (text && CommandParser.isAllSessionsCommand(text)) {
       await say({
         text: await this.formatAllSessions(),
         thread_ts: thread_ts || ts,
@@ -325,6 +394,11 @@ export class SlackHandler {
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
+      // Generate session title from first message
+      if (text) {
+        const title = MessageFormatter.generateSessionTitle(text);
+        this.claudeHandler.setSessionTitle(channel, thread_ts || ts, title);
+      }
     } else {
       this.logger.debug('Using existing session', {
         sessionKey,
@@ -440,7 +514,7 @@ export class SlackHandler {
             }
 
             // For other tool use messages, format them immediately as new messages
-            const toolContent = this.formatToolUse(message.message.content);
+            const toolContent = ToolFormatter.formatToolUse(message.message.content);
             if (toolContent) { // Only send if there's content (TodoWrite returns empty string)
               await say({
                 text: toolContent,
@@ -471,13 +545,72 @@ export class SlackHandler {
             const content = this.extractTextContent(message);
             if (content) {
               currentMessages.push(content);
-              
-              // Send each new piece of content as a separate message
-              const formatted = this.formatMessage(content, false);
-              await say({
-                text: formatted,
-                thread_ts: thread_ts || ts,
-              });
+
+              // Check for user choice JSON (single or multi)
+              const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(content);
+
+              if (choices) {
+                // Multi-question form
+                if (textWithoutChoice) {
+                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
+                  await say({
+                    text: formatted,
+                    thread_ts: thread_ts || ts,
+                  });
+                }
+
+                // Generate unique form ID
+                const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                // Store pending form
+                this.pendingChoiceForms.set(formId, {
+                  formId,
+                  sessionKey,
+                  channel,
+                  threadTs: thread_ts || ts,
+                  messageTs: '', // Will be set after message is sent
+                  questions: choices.questions,
+                  selections: {},
+                  createdAt: Date.now(),
+                });
+
+                // Send multi-choice form
+                const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
+                const formResult = await say({
+                  text: choices.title || '📋 선택이 필요합니다',
+                  blocks,
+                  thread_ts: thread_ts || ts,
+                });
+
+                // Update stored form with message timestamp
+                const pendingForm = this.pendingChoiceForms.get(formId);
+                if (pendingForm && formResult?.ts) {
+                  pendingForm.messageTs = formResult.ts;
+                }
+              } else if (choice) {
+                // Single question - existing behavior
+                if (textWithoutChoice) {
+                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
+                  await say({
+                    text: formatted,
+                    thread_ts: thread_ts || ts,
+                  });
+                }
+
+                const blocks = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
+                await say({
+                  text: `🔹 ${choice.question}`,
+                  blocks,
+                  thread_ts: thread_ts || ts,
+                });
+              } else {
+                // No choice JSON - send as regular message
+                const formatted = MessageFormatter.formatMessage(content, false);
+                await say({
+                  text: formatted,
+                  thread_ts: thread_ts || ts,
+                });
+              }
             }
           }
         } else if (message.type === 'user') {
@@ -494,12 +627,24 @@ export class SlackHandler {
 
           // Handle tool results from synthetic messages or direct content
           const content = userMessage.message?.content || userMessage.content;
-          if (content) {
-            const toolResults = this.extractToolResults(content);
 
-            this.logger.debug('Extracted tool results', {
+          // Debug: log raw content
+          this.logger.info('📥 User message content for tool results', {
+            hasContent: !!content,
+            contentType: typeof content,
+            isArray: Array.isArray(content),
+            contentLength: Array.isArray(content) ? content.length : 0,
+            rawContent: JSON.stringify(content)?.substring(0, 500),
+          });
+
+          if (content) {
+            const toolResults = ToolFormatter.extractToolResults(content);
+
+            this.logger.info('📤 Extracted tool results', {
               count: toolResults.length,
               toolNames: toolResults.map(r => r.toolName || this.toolUseIdToName.get(r.toolUseId)),
+              toolUseIds: toolResults.map(r => r.toolUseId),
+              hasResults: toolResults.map(r => !!r.result),
             });
 
             for (const toolResult of toolResults) {
@@ -521,23 +666,23 @@ export class SlackHandler {
                 }
               }
 
-              // Show MCP tool results in detail
-              if (toolResult.toolName?.startsWith('mcp__')) {
-                this.logger.info('Formatting MCP tool result', {
-                  toolName: toolResult.toolName,
-                  hasResult: !!toolResult.result,
-                  resultType: typeof toolResult.result,
-                  isError: toolResult.isError,
-                  duration,
-                });
+              // Log all tool results for debugging
+              this.logger.info('Processing tool result', {
+                toolName: toolResult.toolName,
+                toolUseId: toolResult.toolUseId,
+                hasResult: !!toolResult.result,
+                resultType: typeof toolResult.result,
+                isError: toolResult.isError,
+                duration,
+              });
 
-                const formatted = this.formatMcpToolResult(toolResult, duration);
-                if (formatted) {
-                  await say({
-                    text: formatted,
-                    thread_ts: thread_ts || ts,
-                  });
-                }
+              // Format and show tool result
+              const formatted = ToolFormatter.formatToolResult(toolResult, duration, mcpCallTracker);
+              if (formatted) {
+                await say({
+                  text: formatted,
+                  thread_ts: thread_ts || ts,
+                });
               }
             }
           }
@@ -552,11 +697,65 @@ export class SlackHandler {
           if (message.subtype === 'success' && (message as any).result) {
             const finalResult = (message as any).result;
             if (finalResult && !currentMessages.includes(finalResult)) {
-              const formatted = this.formatMessage(finalResult, true);
-              await say({
-                text: formatted,
-                thread_ts: thread_ts || ts,
-              });
+              // Check for user choice JSON in final result (single or multi)
+              const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(finalResult);
+
+              if (choices) {
+                // Multi-question form in final result
+                if (textWithoutChoice) {
+                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, true);
+                  await say({
+                    text: formatted,
+                    thread_ts: thread_ts || ts,
+                  });
+                }
+
+                const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                this.pendingChoiceForms.set(formId, {
+                  formId,
+                  sessionKey,
+                  channel,
+                  threadTs: thread_ts || ts,
+                  messageTs: '',
+                  questions: choices.questions,
+                  selections: {},
+                  createdAt: Date.now(),
+                });
+
+                const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
+                const formResult = await say({
+                  text: choices.title || '📋 선택이 필요합니다',
+                  blocks,
+                  thread_ts: thread_ts || ts,
+                });
+
+                const pendingForm = this.pendingChoiceForms.get(formId);
+                if (pendingForm && formResult?.ts) {
+                  pendingForm.messageTs = formResult.ts;
+                }
+              } else if (choice) {
+                if (textWithoutChoice) {
+                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, true);
+                  await say({
+                    text: formatted,
+                    thread_ts: thread_ts || ts,
+                  });
+                }
+
+                const blocks = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
+                await say({
+                  text: `🔹 ${choice.question}`,
+                  blocks,
+                  thread_ts: thread_ts || ts,
+                });
+              } else {
+                const formatted = MessageFormatter.formatMessage(finalResult, true);
+                await say({
+                  text: formatted,
+                  thread_ts: thread_ts || ts,
+                });
+              }
             }
           }
         }
@@ -649,256 +848,6 @@ export class SlackHandler {
       return textParts.join('');
     }
     return null;
-  }
-
-  private formatToolUse(content: any[]): string {
-    const parts: string[] = [];
-    
-    for (const part of content) {
-      if (part.type === 'text') {
-        parts.push(part.text);
-      } else if (part.type === 'tool_use') {
-        const toolName = part.name;
-        const input = part.input;
-        
-        switch (toolName) {
-          case 'Edit':
-          case 'MultiEdit':
-            parts.push(this.formatEditTool(toolName, input));
-            break;
-          case 'Write':
-            parts.push(this.formatWriteTool(input));
-            break;
-          case 'Read':
-            parts.push(this.formatReadTool(input));
-            break;
-          case 'Bash':
-            parts.push(this.formatBashTool(input));
-            break;
-          case 'TodoWrite':
-            // Handle TodoWrite separately - don't include in regular tool output
-            return this.handleTodoWrite(input);
-          case 'mcp__permission-prompt__permission_prompt':
-            // Don't show permission prompt tool usage - it's handled internally
-            return '';
-          default:
-            parts.push(this.formatGenericTool(toolName, input));
-        }
-      }
-    }
-    
-    return parts.join('\n\n');
-  }
-
-  private formatEditTool(toolName: string, input: any): string {
-    const filePath = input.file_path;
-    const edits = toolName === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
-    
-    let result = `📝 *Editing \`${filePath}\`*\n`;
-    
-    for (const edit of edits) {
-      result += '\n```diff\n';
-      result += `- ${this.truncateString(edit.old_string, 200)}\n`;
-      result += `+ ${this.truncateString(edit.new_string, 200)}\n`;
-      result += '```';
-    }
-    
-    return result;
-  }
-
-  private formatWriteTool(input: any): string {
-    const filePath = input.file_path;
-    const preview = this.truncateString(input.content, 300);
-    
-    return `📄 *Creating \`${filePath}\`*\n\`\`\`\n${preview}\n\`\`\``;
-  }
-
-  private formatReadTool(input: any): string {
-    return `👁️ *Reading \`${input.file_path}\`*`;
-  }
-
-  private formatBashTool(input: any): string {
-    return `🖥️ *Running command:*\n\`\`\`bash\n${input.command}\n\`\`\``;
-  }
-
-  private formatGenericTool(toolName: string, input: any): string {
-    // Check if this is an MCP tool
-    if (toolName.startsWith('mcp__')) {
-      return this.formatMcpTool(toolName, input);
-    }
-    return `🔧 *Using ${toolName}*`;
-  }
-
-  private formatMcpTool(toolName: string, input: any): string {
-    // Parse MCP tool name: mcp__serverName__toolName
-    const parts = toolName.split('__');
-    const serverName = parts[1] || 'unknown';
-    const actualToolName = parts.slice(2).join('__') || toolName;
-
-    let result = `🔌 *MCP: ${serverName} → ${actualToolName}*\n`;
-
-    // Format input parameters
-    if (input && typeof input === 'object') {
-      const inputStr = this.formatMcpInput(input);
-      if (inputStr) {
-        result += inputStr;
-      }
-    }
-
-    return result;
-  }
-
-  private formatMcpInput(input: any): string {
-    if (!input || typeof input !== 'object') {
-      return '';
-    }
-
-    const lines: string[] = [];
-
-    for (const [key, value] of Object.entries(input)) {
-      if (value === undefined || value === null) continue;
-
-      if (typeof value === 'string') {
-        // Truncate long strings
-        const displayValue = value.length > 500
-          ? value.substring(0, 500) + '...'
-          : value;
-
-        // Check if it's multiline
-        if (displayValue.includes('\n')) {
-          lines.push(`*${key}:*\n\`\`\`\n${displayValue}\n\`\`\``);
-        } else {
-          lines.push(`*${key}:* \`${displayValue}\``);
-        }
-      } else if (typeof value === 'object') {
-        try {
-          const jsonStr = JSON.stringify(value, null, 2);
-          const truncated = jsonStr.length > 300
-            ? jsonStr.substring(0, 300) + '...'
-            : jsonStr;
-          lines.push(`*${key}:*\n\`\`\`json\n${truncated}\n\`\`\``);
-        } catch {
-          lines.push(`*${key}:* [complex object]`);
-        }
-      } else {
-        lines.push(`*${key}:* \`${String(value)}\``);
-      }
-    }
-
-    return lines.join('\n');
-  }
-
-  private extractToolResults(content: any[]): Array<{ toolName?: string; toolUseId: string; result: any; isError?: boolean }> {
-    const results: Array<{ toolName?: string; toolUseId: string; result: any; isError?: boolean }> = [];
-
-    if (!Array.isArray(content)) {
-      return results;
-    }
-
-    for (const part of content) {
-      if (part.type === 'tool_result') {
-        results.push({
-          toolUseId: part.tool_use_id,
-          result: part.content,
-          isError: part.is_error,
-          // Tool name might be stored in metadata or we need to track it
-          toolName: (part as any).tool_name,
-        });
-      }
-    }
-
-    return results;
-  }
-
-  private formatMcpToolResult(toolResult: { toolName?: string; toolUseId: string; result: any; isError?: boolean }, duration?: number | null): string | null {
-    const { toolName, result, isError } = toolResult;
-
-    // Parse MCP tool name if available
-    let serverName = 'unknown';
-    let actualToolName = 'unknown';
-
-    if (toolName?.startsWith('mcp__')) {
-      const parts = toolName.split('__');
-      serverName = parts[1] || 'unknown';
-      actualToolName = parts.slice(2).join('__') || toolName;
-    }
-
-    const statusIcon = isError ? '❌' : '✅';
-    let formatted = `${statusIcon} *MCP Result: ${serverName} → ${actualToolName}*`;
-
-    // Add duration info
-    if (duration !== null && duration !== undefined) {
-      formatted += ` (${McpCallTracker.formatDuration(duration)})`;
-
-      // Add average prediction info
-      const stats = mcpCallTracker.getToolStats(serverName, actualToolName);
-      if (stats && stats.callCount > 1) {
-        formatted += ` | 평균: ${McpCallTracker.formatDuration(stats.avgDuration)}`;
-      }
-    }
-    formatted += '\n';
-
-    // Format the result content
-    if (result) {
-      if (typeof result === 'string') {
-        const truncated = result.length > 1000
-          ? result.substring(0, 1000) + '...'
-          : result;
-
-        if (truncated.includes('\n')) {
-          formatted += `\`\`\`\n${truncated}\n\`\`\``;
-        } else {
-          formatted += `\`${truncated}\``;
-        }
-      } else if (Array.isArray(result)) {
-        // Handle array of content blocks (common MCP format)
-        for (const item of result) {
-          if (item.type === 'text' && item.text) {
-            const truncated = item.text.length > 1000
-              ? item.text.substring(0, 1000) + '...'
-              : item.text;
-            formatted += `\`\`\`\n${truncated}\n\`\`\``;
-          } else if (item.type === 'image') {
-            formatted += `_[Image data]_`;
-          } else if (typeof item === 'object') {
-            try {
-              const jsonStr = JSON.stringify(item, null, 2);
-              const truncated = jsonStr.length > 500
-                ? jsonStr.substring(0, 500) + '...'
-                : jsonStr;
-              formatted += `\`\`\`json\n${truncated}\n\`\`\``;
-            } catch {
-              formatted += `_[Complex result]_`;
-            }
-          }
-        }
-      } else if (typeof result === 'object') {
-        try {
-          const jsonStr = JSON.stringify(result, null, 2);
-          const truncated = jsonStr.length > 500
-            ? jsonStr.substring(0, 500) + '...'
-            : jsonStr;
-          formatted += `\`\`\`json\n${truncated}\n\`\`\``;
-        } catch {
-          formatted += `_[Complex result]_`;
-        }
-      }
-    } else {
-      formatted += `_[No result content]_`;
-    }
-
-    return formatted;
-  }
-
-  private truncateString(str: string, maxLength: number): string {
-    if (!str) return '';
-    if (str.length <= maxLength) return str;
-    return str.substring(0, maxLength) + '...';
-  }
-
-  private handleTodoWrite(input: any): string {
-    // TodoWrite tool doesn't produce visible output - handled separately
-    return '';
   }
 
   private async handleTodoUpdate(
@@ -1078,144 +1027,61 @@ export class SlackHandler {
     return lines.join('\n');
   }
 
-  private isMcpInfoCommand(text: string): boolean {
-    return /^\/?(?:mcp|servers?)(?:\s+(?:info|list|status))?(?:\?)?$/i.test(text.trim());
-  }
+  private async handleTerminateCommand(
+    sessionKey: string,
+    userId: string,
+    channel: string,
+    threadTs: string,
+    say: any
+  ): Promise<void> {
+    // Try to find the session
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
 
-  private isMcpReloadCommand(text: string): boolean {
-    return /^\/?(?:mcp|servers?)\s+(?:reload|refresh)$/i.test(text.trim());
-  }
-
-  private isBypassCommand(text: string): boolean {
-    return /^\/?bypass(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
-  }
-
-  private parseBypassCommand(text: string): 'on' | 'off' | 'status' {
-    const match = text.trim().match(/^\/?bypass(?:\s+(on|off|true|false|enable|disable|status))?$/i);
-    if (!match || !match[1]) {
-      return 'status';
-    }
-    const action = match[1].toLowerCase();
-    if (action === 'on' || action === 'true' || action === 'enable') {
-      return 'on';
-    }
-    if (action === 'off' || action === 'false' || action === 'disable') {
-      return 'off';
-    }
-    return 'status';
-  }
-
-  private isPersonaCommand(text: string): boolean {
-    return /^\/?persona(?:\s+(?:list|status|set\s+\S+))?$/i.test(text.trim());
-  }
-
-  private parsePersonaCommand(text: string): { action: 'list' | 'status' | 'set'; persona?: string } {
-    const trimmed = text.trim();
-
-    if (/^\/?persona\s+list$/i.test(trimmed)) {
-      return { action: 'list' };
+    if (!session) {
+      await say({
+        text: `❌ 세션을 찾을 수 없습니다: \`${sessionKey}\`\n\n\`sessions\` 명령으로 활성 세션 목록을 확인하세요.`,
+        thread_ts: threadTs,
+      });
+      return;
     }
 
-    const setMatch = trimmed.match(/^\/?persona\s+set\s+(\S+)$/i);
-    if (setMatch) {
-      return { action: 'set', persona: setMatch[1] };
+    // Check if user owns this session
+    if (session.ownerId !== userId) {
+      await say({
+        text: `❌ 이 세션을 종료할 권한이 없습니다. 세션 소유자만 종료할 수 있습니다.`,
+        thread_ts: threadTs,
+      });
+      return;
     }
 
-    return { action: 'status' };
-  }
+    // Terminate the session
+    const success = this.claudeHandler.terminateSession(sessionKey);
 
-  private isRestoreCommand(text: string): boolean {
-    return /^\/?(?:restore|credentials?)(?:\s+(?:restore|status))?$/i.test(text.trim());
-  }
+    if (success) {
+      const channelName = await this.getChannelName(session.channelId);
+      await say({
+        text: `✅ 세션이 종료되었습니다.\n\n*채널:* ${channelName}\n*세션 키:* \`${sessionKey}\``,
+        thread_ts: threadTs,
+      });
 
-  private isHelpCommand(text: string): boolean {
-    return /^\/?(?:help|commands?)(?:\?)?$/i.test(text.trim());
-  }
-
-  private getHelpMessage(): string {
-    const commands = [
-      '*📚 Available Commands*',
-      '',
-      '*Working Directory:*',
-      '• `cwd <path>` or `/cwd <path>` - Set working directory',
-      '• `cwd` or `/cwd` - Show current working directory',
-      '',
-      '*Sessions:*',
-      '• `sessions` or `/sessions` - Show your active sessions',
-      '• `all_sessions` or `/all_sessions` - Show all active sessions',
-      '',
-      '*MCP Servers:*',
-      '• `mcp` or `/mcp` - Show MCP server status',
-      '• `mcp reload` or `/mcp reload` - Reload MCP configuration',
-      '',
-      '*Permissions:*',
-      '• `bypass` or `/bypass` - Show permission bypass status',
-      '• `bypass on` or `/bypass on` - Enable permission bypass',
-      '• `bypass off` or `/bypass off` - Disable permission bypass',
-      '',
-      '*Persona:*',
-      '• `persona` or `/persona` - Show current persona',
-      '• `persona list` or `/persona list` - List available personas',
-      '• `persona set <name>` or `/persona set <name>` - Set persona',
-      '',
-      '*Credentials:*',
-      '• `restore` or `/restore` - Restore Claude credentials from backup',
-      '',
-      '*Help:*',
-      '• `help` or `/help` - Show this help message',
-    ];
-    return commands.join('\n');
-  }
-
-  private isSessionsCommand(text: string): boolean {
-    return /^\/?sessions?$/i.test(text.trim());
-  }
-
-  private isAllSessionsCommand(text: string): boolean {
-    return /^\/?all_sessions?$/i.test(text.trim());
-  }
-
-  /**
-   * Format time elapsed since a date in human-readable Korean
-   */
-  private formatTimeAgo(date: Date): string {
-    const now = Date.now();
-    const diff = now - date.getTime();
-
-    const minutes = Math.floor(diff / (60 * 1000));
-    const hours = Math.floor(diff / (60 * 60 * 1000));
-    const days = Math.floor(diff / (24 * 60 * 60 * 1000));
-
-    if (days > 0) {
-      return `${days}일 ${hours % 24}시간 전`;
-    } else if (hours > 0) {
-      return `${hours}시간 ${minutes % 60}분 전`;
-    } else if (minutes > 0) {
-      return `${minutes}분 전`;
+      // Also notify in the original thread if different
+      if (session.threadTs && session.threadTs !== threadTs) {
+        try {
+          await this.app.client.chat.postMessage({
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
+          });
+        } catch (error) {
+          this.logger.warn('Failed to notify original thread about session termination', error);
+        }
+      }
     } else {
-      return '방금 전';
+      await say({
+        text: `❌ 세션 종료에 실패했습니다: \`${sessionKey}\``,
+        thread_ts: threadTs,
+      });
     }
-  }
-
-  /**
-   * Format session expiry time remaining
-   */
-  private formatExpiresIn(lastActivity: Date): string {
-    const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
-    const expiresAt = lastActivity.getTime() + SESSION_TIMEOUT;
-    const remaining = expiresAt - Date.now();
-
-    if (remaining <= 0) {
-      return '만료됨';
-    }
-
-    const hours = Math.floor(remaining / (60 * 60 * 1000));
-    const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
-
-    if (hours > 0) {
-      return `${hours}시간 ${minutes}분 남음`;
-    }
-    return `${minutes}분 남음`;
   }
 
   /**
@@ -1247,9 +1113,25 @@ export class SlackHandler {
   }
 
   /**
-   * Format sessions for a specific user
+   * Get permalink for a message
    */
-  private async formatUserSessions(userId: string): Promise<string> {
+  private async getPermalink(channel: string, messageTs: string): Promise<string | null> {
+    try {
+      const result = await this.app.client.chat.getPermalink({
+        channel,
+        message_ts: messageTs,
+      });
+      return result.permalink || null;
+    } catch (error) {
+      this.logger.warn('Failed to get permalink', { channel, messageTs, error });
+      return null;
+    }
+  }
+
+  /**
+   * Format sessions for a specific user with Block Kit
+   */
+  private async formatUserSessionsBlocks(userId: string): Promise<{ text: string; blocks: any[] }> {
     const allSessions = this.claudeHandler.getAllSessions();
     const userSessions: Array<{ key: string; session: ConversationSession }> = [];
 
@@ -1261,35 +1143,135 @@ export class SlackHandler {
     }
 
     if (userSessions.length === 0) {
-      return '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.';
+      return {
+        text: '📭 활성 세션 없음',
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.',
+            },
+          },
+        ],
+      };
     }
-
-    const lines: string[] = [
-      `📋 *내 세션 목록* (${userSessions.length}개)`,
-      '',
-    ];
 
     // Sort by last activity (most recent first)
     userSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
 
+    const blocks: any[] = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `📋 내 세션 목록 (${userSessions.length}개)`,
+          emoji: true,
+        },
+      },
+      { type: 'divider' },
+    ];
+
     for (let i = 0; i < userSessions.length; i++) {
-      const { session } = userSessions[i];
+      const { key, session } = userSessions[i];
       const channelName = await this.getChannelName(session.channelId);
-      const timeAgo = this.formatTimeAgo(session.lastActivity);
-      const expiresIn = this.formatExpiresIn(session.lastActivity);
-      const workDir = session.workingDirectory ? `\`${session.workingDirectory}\`` : '_미설정_';
+      const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
+      const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
+      const workDir = session.workingDirectory
+        ? `\`${session.workingDirectory.split('/').pop()}\``
+        : '_미설정_';
+      const modelDisplay = session.model
+        ? userSettingsStore.getModelDisplayName(session.model as any)
+        : 'Sonnet 4';
       const initiator = session.currentInitiatorName
-        ? ` | 🎯 현재 대화: ${session.currentInitiatorName}`
+        ? ` | 🎯 ${session.currentInitiatorName}`
         : '';
 
-      lines.push(`*${i + 1}. ${channelName}*${session.threadTs ? ' (thread)' : ''}`);
-      lines.push(`   📁 ${workDir}`);
-      lines.push(`   🕐 마지막 활동: ${timeAgo}${initiator}`);
-      lines.push(`   ⏳ 만료: ${expiresIn}`);
-      lines.push('');
+      // Get permalink for the thread
+      const permalink = session.threadTs
+        ? await this.getPermalink(session.channelId, session.threadTs)
+        : null;
+
+      // Create session identifier for terminate button
+      const sessionId = key; // key is already "channel:threadTs"
+
+      // Build session info text
+      let sessionText = `*${i + 1}.*`;
+      if (session.title) {
+        sessionText += ` ${session.title}`;
+      }
+      sessionText += ` _${channelName}_`;
+      if (session.threadTs && permalink) {
+        sessionText += ` <${permalink}|(열기)>`;
+      } else if (session.threadTs) {
+        sessionText += ` (thread)`;
+      }
+      sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: sessionText,
+        },
+        accessory: {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🗑️ 종료',
+            emoji: true,
+          },
+          style: 'danger',
+          value: sessionId,
+          action_id: 'terminate_session',
+          confirm: {
+            title: {
+              type: 'plain_text',
+              text: '세션 종료',
+            },
+            text: {
+              type: 'mrkdwn',
+              text: `정말로 이 세션을 종료하시겠습니까?\n*${channelName}*`,
+            },
+            confirm: {
+              type: 'plain_text',
+              text: '종료',
+            },
+            deny: {
+              type: 'plain_text',
+              text: '취소',
+            },
+          },
+        },
+      });
     }
 
-    return lines.join('\n');
+    // Add help text at the bottom
+    blocks.push(
+      { type: 'divider' },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: '💡 `terminate <session-key>` 명령으로도 세션을 종료할 수 있습니다.',
+          },
+        ],
+      }
+    );
+
+    return {
+      text: `📋 내 세션 목록 (${userSessions.length}개)`,
+      blocks,
+    };
+  }
+
+  /**
+   * Format sessions for a specific user (text only, for backward compatibility)
+   */
+  private async formatUserSessions(userId: string): Promise<string> {
+    const result = await this.formatUserSessionsBlocks(userId);
+    return result.text;
   }
 
   /**
@@ -1333,8 +1315,8 @@ export class SlackHandler {
 
       for (const { session } of sessions) {
         const channelName = await this.getChannelName(session.channelId);
-        const timeAgo = this.formatTimeAgo(session.lastActivity);
-        const expiresIn = this.formatExpiresIn(session.lastActivity);
+        const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
+        const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
         const workDir = session.workingDirectory
           ? session.workingDirectory.split('/').pop() || session.workingDirectory
           : '-';
@@ -1491,10 +1473,299 @@ export class SlackHandler {
     return formatted;
   }
 
+  /**
+   * Extract UserChoice or UserChoices JSON from message text
+   * Looks for ```json blocks containing user_choice or user_choices type
+   */
+  private extractUserChoice(text: string): {
+    choice: UserChoice | null;
+    choices: UserChoices | null;
+    textWithoutChoice: string;
+  } {
+    // Pattern to match JSON code blocks
+    const jsonBlockPattern = /```json\s*\n?([\s\S]*?)\n?```/g;
+    let match;
+    let choice: UserChoice | null = null;
+    let choices: UserChoices | null = null;
+    let textWithoutChoice = text;
+
+    while ((match = jsonBlockPattern.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+
+        // Check for multi-question format first
+        if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
+          choices = parsed as UserChoices;
+          textWithoutChoice = text.replace(match[0], '').trim();
+          break;
+        }
+
+        // Check for single question format
+        if (parsed.type === 'user_choice' && Array.isArray(parsed.choices)) {
+          choice = parsed as UserChoice;
+          textWithoutChoice = text.replace(match[0], '').trim();
+          break;
+        }
+      } catch {
+        // Not valid JSON, continue
+      }
+    }
+
+    return { choice, choices, textWithoutChoice };
+  }
+
+  /**
+   * Build Slack blocks for single user choice buttons
+   */
+  private buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): any[] {
+    const blocks: any[] = [];
+
+    // Add question as section
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `🔹 *${choice.question}*`,
+      },
+    });
+
+    // Add context if provided
+    if (choice.context) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: choice.context,
+          },
+        ],
+      });
+    }
+
+    // Build button elements (max 4 to leave room for custom input)
+    const buttons: any[] = choice.choices.slice(0, 4).map((opt) => ({
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: `${opt.id}. ${opt.label}`.substring(0, 75), // Slack limit
+        emoji: true,
+      },
+      value: JSON.stringify({
+        sessionKey,
+        choiceId: opt.id,
+        label: opt.label,
+        question: choice.question,
+      }),
+      action_id: `user_choice_${opt.id}`,
+    }));
+
+    // Add custom input button
+    buttons.push({
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: '✏️ 직접 입력',
+        emoji: true,
+      },
+      style: 'primary',
+      value: JSON.stringify({
+        sessionKey,
+        question: choice.question,
+        type: 'single',
+      }),
+      action_id: 'custom_input_single',
+    });
+
+    blocks.push({
+      type: 'actions',
+      elements: buttons,
+    });
+
+    // Add descriptions if any choices have them
+    const descriptions = choice.choices
+      .filter((opt) => opt.description)
+      .map((opt) => `*${opt.id}.* ${opt.description}`)
+      .join('\n');
+
+    if (descriptions) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: descriptions,
+          },
+        ],
+      });
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Build Slack blocks for multi-question choice form
+   */
+  private buildMultiChoiceFormBlocks(
+    choices: UserChoices,
+    formId: string,
+    sessionKey: string,
+    selections: Record<string, { choiceId: string; label: string }> = {}
+  ): any[] {
+    const blocks: any[] = [];
+
+    // Header with title
+    blocks.push({
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: choices.title || '📋 선택이 필요합니다',
+        emoji: true,
+      },
+    });
+
+    // Description if provided
+    if (choices.description) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: choices.description,
+        },
+      });
+    }
+
+    blocks.push({ type: 'divider' });
+
+    // Build each question
+    choices.questions.forEach((q, idx) => {
+      const isSelected = !!selections[q.id];
+      const selectedChoice = selections[q.id];
+
+      // Question header with selection status
+      const questionText = isSelected
+        ? `✅ *${idx + 1}. ${q.question}*\n_선택됨: ${selectedChoice.choiceId}. ${selectedChoice.label}_`
+        : `🔹 *${idx + 1}. ${q.question}*`;
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: questionText,
+        },
+      });
+
+      // Context if provided
+      if (q.context && !isSelected) {
+        blocks.push({
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: q.context,
+            },
+          ],
+        });
+      }
+
+      // Show buttons only if not yet selected
+      if (!isSelected) {
+        // Max 4 choices to leave room for custom input button
+        const buttons: any[] = q.choices.slice(0, 4).map((opt) => ({
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: `${opt.id}. ${opt.label}`.substring(0, 75),
+            emoji: true,
+          },
+          value: JSON.stringify({
+            formId,
+            sessionKey,
+            questionId: q.id,
+            choiceId: opt.id,
+            label: opt.label,
+          }),
+          action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
+        }));
+
+        // Add custom input button
+        buttons.push({
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '✏️ 직접 입력',
+            emoji: true,
+          },
+          style: 'primary',
+          value: JSON.stringify({
+            formId,
+            sessionKey,
+            questionId: q.id,
+            question: q.question,
+            type: 'multi',
+          }),
+          action_id: `custom_input_multi_${formId}_${q.id}`,
+        });
+
+        blocks.push({
+          type: 'actions',
+          elements: buttons,
+        });
+
+        // Descriptions
+        const descriptions = q.choices
+          .filter((opt) => opt.description)
+          .map((opt) => `*${opt.id}.* ${opt.description}`)
+          .join('\n');
+
+        if (descriptions) {
+          blocks.push({
+            type: 'context',
+            elements: [
+              {
+                type: 'mrkdwn',
+                text: descriptions,
+              },
+            ],
+          });
+        }
+      }
+
+      // Add spacing between questions
+      if (idx < choices.questions.length - 1) {
+        blocks.push({ type: 'divider' });
+      }
+    });
+
+    // Progress indicator
+    const totalQuestions = choices.questions.length;
+    const answeredCount = Object.keys(selections).length;
+    const progressText = `진행: ${answeredCount}/${totalQuestions}`;
+
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: answeredCount === totalQuestions
+            ? `✅ *모든 선택 완료!* 잠시 후 자동으로 진행됩니다...`
+            : `⏳ ${progressText} - 모든 항목을 선택하면 자동으로 진행됩니다`,
+        },
+      ],
+    });
+
+    return blocks;
+  }
+
   setupEventHandlers() {
-    // Handle direct messages
+    // Handle direct messages (DM only)
     this.app.message(async ({ message, say }) => {
       if (message.subtype === undefined && 'user' in message) {
+        const messageEvent = message as any;
+        // Only handle DM messages here - channel messages are handled by app_mention or message event
+        if (!messageEvent.channel?.startsWith('D')) {
+          return;
+        }
         this.logger.info('Handling direct message event');
         await this.handleMessage(message as MessageEvent, say);
       }
@@ -1512,12 +1783,26 @@ export class SlackHandler {
 
     // Handle thread messages without mention (if session exists)
     this.app.event('message', async ({ event, say }) => {
+      const messageEvent = event as any;
+
+      // Log ALL incoming message events for debugging
+      this.logger.info('📨 RAW message event received', {
+        type: event.type,
+        subtype: event.subtype,
+        channel: messageEvent.channel,
+        channelType: messageEvent.channel_type,
+        user: messageEvent.user,
+        bot_id: (event as any).bot_id,
+        thread_ts: messageEvent.thread_ts,
+        ts: messageEvent.ts,
+        text: messageEvent.text?.substring(0, 50),
+      });
+
       // Skip bot messages
       if ('bot_id' in event || !('user' in event)) {
+        this.logger.debug('Skipping bot message or no user');
         return;
       }
-
-      const messageEvent = event as any;
 
       // Handle file uploads
       if (event.subtype === 'file_share' && messageEvent.files) {
@@ -1531,11 +1816,22 @@ export class SlackHandler {
         const user = messageEvent.user;
         const channel = messageEvent.channel;
         const threadTs = messageEvent.thread_ts;
+        const text = messageEvent.text || '';
+
+        // Skip if message contains bot mention (will be handled by app_mention event)
+        const botId = await this.getBotUserId();
+        if (botId && text.includes(`<@${botId}>`)) {
+          this.logger.debug('Skipping thread message with bot mention (handled by app_mention)', {
+            channel,
+            threadTs,
+          });
+          return;
+        }
 
         // Check if we have an existing session for this thread (shared session, no user in key)
         const session = this.claudeHandler.getSession(channel, threadTs);
         if (session?.sessionId) {
-          this.logger.info('Handling thread message (session exists)', {
+          this.logger.info('Handling thread message without mention (session exists)', {
             user,
             channel,
             threadTs,
@@ -1600,41 +1896,662 @@ export class SlackHandler {
     // Handle permission denial button clicks
     this.app.action('deny_tool', async ({ ack, body, respond }) => {
       await ack();
-      
+
       try {
         const approvalId = (body as any).actions[0].value;
         const user = (body as any).user?.id;
         const triggerId = (body as any).trigger_id;
-        
-        this.logger.info('Tool approval denied', { 
-          approvalId, 
+
+        this.logger.info('Tool approval denied', {
+          approvalId,
           user,
-          triggerId 
+          triggerId
         });
-        
+
         // Resolve the denial via shared store
         const response: PermissionResponse = {
           behavior: 'deny',
           message: 'Denied by user'
         };
         await sharedStore.storePermissionResponse(approvalId, response);
-        
+
         // Provide immediate feedback
         await respond({
           response_type: 'ephemeral',
           text: '❌ Tool execution denied. Claude will not proceed with this operation.',
           replace_original: false
         });
-        
+
         this.logger.debug('Denial processed successfully', { approvalId });
       } catch (error) {
         this.logger.error('Error processing tool denial', error);
-        
+
         await respond({
           response_type: 'ephemeral',
           text: '❌ Error processing denial. The request may have already been handled.',
           replace_original: false
         });
+      }
+    });
+
+    // Handle session termination button clicks
+    this.app.action('terminate_session', async ({ ack, body, respond }) => {
+      await ack();
+
+      try {
+        const sessionKey = (body as any).actions[0].value;
+        const userId = (body as any).user?.id;
+
+        this.logger.info('Session termination requested', { sessionKey, userId });
+
+        // Get session to verify ownership
+        const session = this.claudeHandler.getSessionByKey(sessionKey);
+
+        if (!session) {
+          await respond({
+            response_type: 'ephemeral',
+            text: `❌ 세션을 찾을 수 없습니다. 이미 종료되었을 수 있습니다.`,
+            replace_original: false
+          });
+          return;
+        }
+
+        // Check ownership
+        if (session.ownerId !== userId) {
+          await respond({
+            response_type: 'ephemeral',
+            text: `❌ 이 세션을 종료할 권한이 없습니다. 세션 소유자만 종료할 수 있습니다.`,
+            replace_original: false
+          });
+          return;
+        }
+
+        // Terminate the session
+        const channelName = await this.getChannelName(session.channelId);
+        const success = this.claudeHandler.terminateSession(sessionKey);
+
+        if (success) {
+          // Update the sessions list message with refreshed data
+          const { text: newText, blocks: newBlocks } = await this.formatUserSessionsBlocks(userId);
+          await respond({
+            text: newText,
+            blocks: newBlocks,
+            replace_original: true
+          });
+
+          // Also send ephemeral confirmation
+          await this.app.client.chat.postEphemeral({
+            channel: (body as any).channel?.id,
+            user: userId,
+            text: `✅ 세션이 종료되었습니다: *${session.title || channelName}*`,
+          });
+
+          // Notify in the original thread
+          if (session.threadTs) {
+            try {
+              await this.app.client.chat.postMessage({
+                channel: session.channelId,
+                thread_ts: session.threadTs,
+                text: `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
+              });
+            } catch (error) {
+              this.logger.warn('Failed to notify original thread about session termination', error);
+            }
+          }
+        } else {
+          await respond({
+            response_type: 'ephemeral',
+            text: `❌ 세션 종료에 실패했습니다.`,
+            replace_original: false
+          });
+        }
+      } catch (error) {
+        this.logger.error('Error processing session termination', error);
+
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료 중 오류가 발생했습니다.',
+          replace_original: false
+        });
+      }
+    });
+
+    // Handle user choice button clicks (pattern matches user_choice_1, user_choice_2, etc.)
+    this.app.action(/^user_choice_/, async ({ ack, body }) => {
+      await ack();
+
+      try {
+        const action = (body as any).actions[0];
+        const valueData = JSON.parse(action.value);
+        const { sessionKey, choiceId, label, question } = valueData;
+        const userId = (body as any).user?.id;
+        const channel = (body as any).channel?.id;
+        const messageTs = (body as any).message?.ts;
+
+        this.logger.info('User choice selected', {
+          sessionKey,
+          choiceId,
+          label,
+          userId,
+        });
+
+        // Get the thread_ts from the message or use the message ts
+        const threadTs = (body as any).message?.thread_ts || messageTs;
+
+        // Update the original message to show the selection
+        if (messageTs && channel) {
+          try {
+            await this.app.client.chat.update({
+              channel,
+              ts: messageTs,
+              text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+              blocks: [
+                {
+                  type: 'section',
+                  text: {
+                    type: 'mrkdwn',
+                    text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+                  },
+                },
+              ],
+            });
+          } catch (error) {
+            this.logger.warn('Failed to update choice message', error);
+          }
+        }
+
+        // Get the session to find the correct thread
+        const session = this.claudeHandler.getSessionByKey(sessionKey);
+        if (session) {
+          // Create a say function using the app client
+          const say = async (args: any) => {
+            const msgArgs = typeof args === 'string' ? { text: args } : args;
+            return this.app.client.chat.postMessage({
+              channel,
+              ...msgArgs,
+            });
+          };
+
+          // Handle the message as if the user sent it
+          await this.handleMessage(
+            {
+              user: userId,
+              channel,
+              thread_ts: threadTs,
+              ts: messageTs,
+              text: choiceId,
+            } as MessageEvent,
+            say
+          );
+        } else {
+          this.logger.warn('Session not found for user choice', { sessionKey });
+          await this.app.client.chat.postEphemeral({
+            channel,
+            user: userId,
+            text: '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
+          });
+        }
+      } catch (error) {
+        this.logger.error('Error processing user choice', error);
+      }
+    });
+
+    // Handle multi-choice form button clicks (pattern matches multi_choice_formId_questionId_choiceId)
+    this.app.action(/^multi_choice_/, async ({ ack, body }) => {
+      await ack();
+
+      try {
+        const action = (body as any).actions[0];
+        const valueData = JSON.parse(action.value);
+        const { formId, sessionKey, questionId, choiceId, label } = valueData;
+        const userId = (body as any).user?.id;
+        const channel = (body as any).channel?.id;
+        const messageTs = (body as any).message?.ts;
+
+        this.logger.info('Multi-choice selection', {
+          formId,
+          questionId,
+          choiceId,
+          label,
+          userId,
+        });
+
+        // Get the pending form
+        const pendingForm = this.pendingChoiceForms.get(formId);
+        if (!pendingForm) {
+          this.logger.warn('Pending form not found', { formId });
+          await this.app.client.chat.postEphemeral({
+            channel,
+            user: userId,
+            text: '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
+          });
+          return;
+        }
+
+        // Store the selection
+        pendingForm.selections[questionId] = { choiceId, label };
+
+        // Check if all questions are answered
+        const totalQuestions = pendingForm.questions.length;
+        const answeredCount = Object.keys(pendingForm.selections).length;
+
+        // Rebuild the form blocks with updated selections - need original choices data
+        const choicesData: UserChoices = {
+          type: 'user_choices',
+          questions: pendingForm.questions,
+        };
+
+        const updatedBlocks = UserChoiceHandler.buildMultiChoiceFormBlocks(
+          choicesData,
+          formId,
+          sessionKey,
+          pendingForm.selections
+        );
+
+        // Update the message with new blocks
+        try {
+          await this.app.client.chat.update({
+            channel,
+            ts: messageTs,
+            text: '📋 선택이 필요합니다',
+            blocks: updatedBlocks,
+          });
+        } catch (error) {
+          this.logger.warn('Failed to update multi-choice form', error);
+        }
+
+        // If all questions answered, send to Claude
+        if (answeredCount === totalQuestions) {
+          this.logger.info('All multi-choice selections complete', { formId, selections: pendingForm.selections });
+
+          // Format the combined response
+          const responses = pendingForm.questions.map((q) => {
+            const sel = pendingForm.selections[q.id];
+            return `${q.question}: ${sel.choiceId}. ${sel.label}`;
+          });
+          const combinedMessage = responses.join('\n');
+
+          // Remove the pending form
+          this.pendingChoiceForms.delete(formId);
+
+          // Update form to show completion
+          try {
+            const completedBlocks = [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
+                },
+              },
+            ];
+
+            await this.app.client.chat.update({
+              channel,
+              ts: messageTs,
+              text: '✅ 모든 선택 완료',
+              blocks: completedBlocks,
+            });
+          } catch (error) {
+            this.logger.warn('Failed to update completed form', error);
+          }
+
+          // Get session and send to Claude
+          const session = this.claudeHandler.getSessionByKey(sessionKey);
+          if (session) {
+            const say = async (args: any) => {
+              const msgArgs = typeof args === 'string' ? { text: args } : args;
+              return this.app.client.chat.postMessage({
+                channel,
+                ...msgArgs,
+              });
+            };
+
+            await this.handleMessage(
+              {
+                user: userId,
+                channel,
+                thread_ts: pendingForm.threadTs,
+                ts: messageTs,
+                text: combinedMessage,
+              } as MessageEvent,
+              say
+            );
+          } else {
+            this.logger.warn('Session not found for multi-choice completion', { sessionKey });
+            await this.app.client.chat.postEphemeral({
+              channel,
+              user: userId,
+              text: '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
+            });
+          }
+        }
+      } catch (error) {
+        this.logger.error('Error processing multi-choice selection', error);
+      }
+    });
+
+    // Handle custom input button for single choice
+    this.app.action('custom_input_single', async ({ ack, body, client }) => {
+      await ack();
+
+      try {
+        const action = (body as any).actions[0];
+        const valueData = JSON.parse(action.value);
+        const { sessionKey, question } = valueData;
+        const triggerId = (body as any).trigger_id;
+        const channel = (body as any).channel?.id;
+        const messageTs = (body as any).message?.ts;
+        const threadTs = (body as any).message?.thread_ts || messageTs;
+
+        // Open modal for text input
+        await client.views.open({
+          trigger_id: triggerId,
+          view: {
+            type: 'modal',
+            callback_id: 'custom_input_submit',
+            private_metadata: JSON.stringify({
+              sessionKey,
+              question,
+              channel,
+              messageTs,
+              threadTs,
+              type: 'single',
+            }),
+            title: {
+              type: 'plain_text',
+              text: '직접 입력',
+              emoji: true,
+            },
+            submit: {
+              type: 'plain_text',
+              text: '제출',
+              emoji: true,
+            },
+            close: {
+              type: 'plain_text',
+              text: '취소',
+              emoji: true,
+            },
+            blocks: [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `*${question}*`,
+                },
+              },
+              {
+                type: 'input',
+                block_id: 'custom_input_block',
+                element: {
+                  type: 'plain_text_input',
+                  action_id: 'custom_input_text',
+                  multiline: true,
+                  placeholder: {
+                    type: 'plain_text',
+                    text: '원하는 내용을 자유롭게 입력하세요...',
+                  },
+                },
+                label: {
+                  type: 'plain_text',
+                  text: '응답',
+                  emoji: true,
+                },
+              },
+            ],
+          },
+        });
+      } catch (error) {
+        this.logger.error('Error opening custom input modal', error);
+      }
+    });
+
+    // Handle custom input button for multi-choice
+    this.app.action(/^custom_input_multi_/, async ({ ack, body, client }) => {
+      await ack();
+
+      try {
+        const action = (body as any).actions[0];
+        const valueData = JSON.parse(action.value);
+        const { formId, sessionKey, questionId, question } = valueData;
+        const triggerId = (body as any).trigger_id;
+        const channel = (body as any).channel?.id;
+        const messageTs = (body as any).message?.ts;
+        const threadTs = (body as any).message?.thread_ts || messageTs;
+
+        // Open modal for text input
+        await client.views.open({
+          trigger_id: triggerId,
+          view: {
+            type: 'modal',
+            callback_id: 'custom_input_submit',
+            private_metadata: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId,
+              question,
+              channel,
+              messageTs,
+              threadTs,
+              type: 'multi',
+            }),
+            title: {
+              type: 'plain_text',
+              text: '직접 입력',
+              emoji: true,
+            },
+            submit: {
+              type: 'plain_text',
+              text: '제출',
+              emoji: true,
+            },
+            close: {
+              type: 'plain_text',
+              text: '취소',
+              emoji: true,
+            },
+            blocks: [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `*${question}*`,
+                },
+              },
+              {
+                type: 'input',
+                block_id: 'custom_input_block',
+                element: {
+                  type: 'plain_text_input',
+                  action_id: 'custom_input_text',
+                  multiline: true,
+                  placeholder: {
+                    type: 'plain_text',
+                    text: '원하는 내용을 자유롭게 입력하세요...',
+                  },
+                },
+                label: {
+                  type: 'plain_text',
+                  text: '응답',
+                  emoji: true,
+                },
+              },
+            ],
+          },
+        });
+      } catch (error) {
+        this.logger.error('Error opening custom input modal for multi-choice', error);
+      }
+    });
+
+    // Handle modal submission for custom input
+    this.app.view('custom_input_submit', async ({ ack, body, view }) => {
+      await ack();
+
+      try {
+        const metadata = JSON.parse(view.private_metadata);
+        const { sessionKey, question, channel, messageTs, threadTs, type, formId, questionId } = metadata;
+        const userId = body.user.id;
+
+        // Get the input value
+        const inputValue = view.state.values.custom_input_block.custom_input_text.value || '';
+
+        this.logger.info('Custom input submitted', {
+          type,
+          sessionKey,
+          questionId,
+          inputLength: inputValue.length,
+          userId,
+        });
+
+        if (type === 'single') {
+          // Handle single choice custom input
+          // Update the original message
+          if (messageTs && channel) {
+            try {
+              await this.app.client.chat.update({
+                channel,
+                ts: messageTs,
+                text: `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 100)}${inputValue.length > 100 ? '...' : ''}_`,
+                blocks: [
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`,
+                    },
+                  },
+                ],
+              });
+            } catch (error) {
+              this.logger.warn('Failed to update choice message after custom input', error);
+            }
+          }
+
+          // Send to Claude
+          const session = this.claudeHandler.getSessionByKey(sessionKey);
+          if (session) {
+            const say = async (args: any) => {
+              const msgArgs = typeof args === 'string' ? { text: args } : args;
+              return this.app.client.chat.postMessage({
+                channel,
+                ...msgArgs,
+              });
+            };
+
+            await this.handleMessage(
+              {
+                user: userId,
+                channel,
+                thread_ts: threadTs,
+                ts: messageTs,
+                text: inputValue,
+              } as MessageEvent,
+              say
+            );
+          }
+        } else if (type === 'multi') {
+          // Handle multi-choice custom input
+          const pendingForm = this.pendingChoiceForms.get(formId);
+          if (!pendingForm) {
+            this.logger.warn('Pending form not found for custom input', { formId });
+            return;
+          }
+
+          // Store the custom selection
+          pendingForm.selections[questionId] = {
+            choiceId: '직접입력',
+            label: inputValue.substring(0, 50) + (inputValue.length > 50 ? '...' : ''),
+          };
+
+          // Check if all questions answered
+          const totalQuestions = pendingForm.questions.length;
+          const answeredCount = Object.keys(pendingForm.selections).length;
+
+          // Rebuild and update the form
+          const choicesData: UserChoices = {
+            type: 'user_choices',
+            questions: pendingForm.questions,
+          };
+
+          const updatedBlocks = UserChoiceHandler.buildMultiChoiceFormBlocks(
+            choicesData,
+            formId,
+            sessionKey,
+            pendingForm.selections
+          );
+
+          try {
+            await this.app.client.chat.update({
+              channel,
+              ts: messageTs,
+              text: '📋 선택이 필요합니다',
+              blocks: updatedBlocks,
+            });
+          } catch (error) {
+            this.logger.warn('Failed to update multi-choice form after custom input', error);
+          }
+
+          // If all answered, send to Claude
+          if (answeredCount === totalQuestions) {
+            const responses = pendingForm.questions.map((q) => {
+              const sel = pendingForm.selections[q.id];
+              if (sel.choiceId === '직접입력') {
+                return `${q.question}: (직접입력) ${sel.label}`;
+              }
+              return `${q.question}: ${sel.choiceId}. ${sel.label}`;
+            });
+            const combinedMessage = responses.join('\n');
+
+            this.pendingChoiceForms.delete(formId);
+
+            // Update form to completion
+            try {
+              await this.app.client.chat.update({
+                channel,
+                ts: messageTs,
+                text: '✅ 모든 선택 완료',
+                blocks: [
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
+                    },
+                  },
+                ],
+              });
+            } catch (error) {
+              this.logger.warn('Failed to update completed form', error);
+            }
+
+            // Send to Claude
+            const session = this.claudeHandler.getSessionByKey(sessionKey);
+            if (session) {
+              const say = async (args: any) => {
+                const msgArgs = typeof args === 'string' ? { text: args } : args;
+                return this.app.client.chat.postMessage({
+                  channel,
+                  ...msgArgs,
+                });
+              };
+
+              await this.handleMessage(
+                {
+                  user: userId,
+                  channel,
+                  thread_ts: threadTs,
+                  ts: messageTs,
+                  text: combinedMessage,
+                } as MessageEvent,
+                say
+              );
+            }
+          }
+        }
+      } catch (error) {
+        this.logger.error('Error processing custom input submission', error);
       }
     });
 
@@ -1652,19 +2569,6 @@ export class SlackHandler {
   }
 
   /**
-   * Format time remaining in human-readable format
-   */
-  private formatTimeRemaining(ms: number): string {
-    const hours = Math.floor(ms / (60 * 60 * 1000));
-    const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
-
-    if (hours > 0) {
-      return `${hours}시간 ${minutes}분`;
-    }
-    return `${minutes}분`;
-  }
-
-  /**
    * Handle session expiry warning - send or update warning message
    */
   private async handleSessionWarning(
@@ -1672,7 +2576,7 @@ export class SlackHandler {
     timeRemaining: number,
     existingMessageTs?: string
   ): Promise<string | undefined> {
-    const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${this.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
+    const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${MessageFormatter.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
     const threadTs = session.threadTs;
     const channel = session.channelId;
 
