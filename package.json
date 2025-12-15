@@ -8,6 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/",
     "prod": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
     "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
@@ -18,7 +20,8 @@
   "devDependencies": {
     "@types/node": "=24.0.4",
     "tsx": "=4.20.3",
-    "typescript": "5.8.3"
+    "typescript": "5.8.3",
+    "vitest": "^4.0.15"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "=2.0.24",
