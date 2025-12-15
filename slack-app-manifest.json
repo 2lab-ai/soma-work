@@ -21,6 +21,7 @@
       "bot": [
         "app_mentions:read",
         "channels:history",
+        "groups:history",
         "chat:write",
         "chat:write.public",
         "im:history",
@@ -36,12 +37,14 @@
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
+        "message.channels",
+        "message.groups",
         "message.im",
         "member_joined_channel"
       ]
     },
     "interactivity": {
-      "is_enabled": false
+      "is_enabled": true
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
