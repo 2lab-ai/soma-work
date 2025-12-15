@@ -4,11 +4,33 @@ import { Logger } from './logger.js';
 
 const logger = new Logger('UserSettingsStore');
 
+// Available models
+export const AVAILABLE_MODELS = [
+  'claude-sonnet-4-5-20250929',
+  'claude-opus-4-5-20251101',
+  'claude-haiku-4-5-20251001',
+] as const;
+
+export type ModelId = typeof AVAILABLE_MODELS[number];
+
+// Model aliases for user-friendly input
+export const MODEL_ALIASES: Record<string, ModelId> = {
+  'sonnet': 'claude-sonnet-4-5-20250929',
+  'sonnet-4.5': 'claude-sonnet-4-5-20250929',
+  'opus': 'claude-opus-4-5-20251101',
+  'opus-4.5': 'claude-opus-4-5-20251101',
+  'haiku': 'claude-haiku-4-5-20251001',
+  'haiku-4.5': 'claude-haiku-4-5-20251001',
+};
+
+export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-5-20250929';
+
 export interface UserSettings {
   userId: string;
   defaultDirectory: string;
   bypassPermission: boolean;
   persona: string;  // persona file name (without .md extension)
+  defaultModel: ModelId;  // default model for new sessions
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -143,6 +165,7 @@ export class UserSettingsStore {
         defaultDirectory: existing?.defaultDirectory ?? '',
         bypassPermission: existing?.bypassPermission ?? false,
         persona: existing?.persona ?? 'default',
+        defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
         lastUpdated: new Date().toISOString(),
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
@@ -200,6 +223,7 @@ export class UserSettingsStore {
       defaultDirectory: directory,
       bypassPermission: existing?.bypassPermission ?? false,
       persona: existing?.persona ?? 'default',
+      defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
       lastUpdated: new Date().toISOString(),
     };
     this.saveSettings();
@@ -227,6 +251,7 @@ export class UserSettingsStore {
         defaultDirectory: '',
         bypassPermission: bypass,
         persona: 'default',
+        defaultModel: DEFAULT_MODEL,
         lastUpdated: new Date().toISOString(),
       };
     }
@@ -255,11 +280,76 @@ export class UserSettingsStore {
         defaultDirectory: '',
         bypassPermission: false,
         persona,
+        defaultModel: DEFAULT_MODEL,
         lastUpdated: new Date().toISOString(),
       };
     }
     this.saveSettings();
     logger.info('Set user persona', { userId, persona });
+  }
+
+  /**
+   * Get user's default model
+   */
+  getUserDefaultModel(userId: string): ModelId {
+    const userSettings = this.settings[userId];
+    return userSettings?.defaultModel ?? DEFAULT_MODEL;
+  }
+
+  /**
+   * Set user's default model
+   */
+  setUserDefaultModel(userId: string, model: ModelId): void {
+    if (this.settings[userId]) {
+      this.settings[userId].defaultModel = model;
+      this.settings[userId].lastUpdated = new Date().toISOString();
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: model,
+        lastUpdated: new Date().toISOString(),
+      };
+    }
+    this.saveSettings();
+    logger.info('Set user default model', { userId, model });
+  }
+
+  /**
+   * Parse and resolve model input (handle aliases)
+   */
+  resolveModelInput(input: string): ModelId | null {
+    const normalized = input.toLowerCase().trim();
+
+    // Check if it's already a valid model ID
+    if (AVAILABLE_MODELS.includes(normalized as ModelId)) {
+      return normalized as ModelId;
+    }
+
+    // Check aliases
+    if (MODEL_ALIASES[normalized]) {
+      return MODEL_ALIASES[normalized];
+    }
+
+    return null;
+  }
+
+  /**
+   * Get display name for a model
+   */
+  getModelDisplayName(model: ModelId): string {
+    switch (model) {
+      case 'claude-sonnet-4-5-20250929':
+        return 'Sonnet 4.5';
+      case 'claude-opus-4-5-20251101':
+        return 'Opus 4.5';
+      case 'claude-haiku-4-5-20251001':
+        return 'Haiku 4.5';
+      default:
+        return model;
+    }
   }
 
   /**
