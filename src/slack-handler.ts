@@ -575,10 +575,10 @@ export class SlackHandler {
                 });
 
                 // Send multi-choice form
-                const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
+                const multiPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
                 const formResult = await say({
                   text: choices.title || '📋 선택이 필요합니다',
-                  blocks,
+                  ...multiPayload,
                   thread_ts: thread_ts || ts,
                 });
 
@@ -597,10 +597,10 @@ export class SlackHandler {
                   });
                 }
 
-                const blocks = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
+                const singlePayload = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
                 await say({
-                  text: `🔹 ${choice.question}`,
-                  blocks,
+                  text: choice.question,
+                  ...singlePayload,
                   thread_ts: thread_ts || ts,
                 });
               } else {
@@ -723,10 +723,10 @@ export class SlackHandler {
                   createdAt: Date.now(),
                 });
 
-                const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
+                const multiPayload2 = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
                 const formResult = await say({
                   text: choices.title || '📋 선택이 필요합니다',
-                  blocks,
+                  ...multiPayload2,
                   thread_ts: thread_ts || ts,
                 });
 
@@ -743,10 +743,10 @@ export class SlackHandler {
                   });
                 }
 
-                const blocks = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
+                const singlePayload2 = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
                 await say({
-                  text: `🔹 ${choice.question}`,
-                  blocks,
+                  text: choice.question,
+                  ...singlePayload2,
                   thread_ts: thread_ts || ts,
                 });
               } else {
@@ -1514,249 +1514,6 @@ export class SlackHandler {
     return { choice, choices, textWithoutChoice };
   }
 
-  /**
-   * Build Slack blocks for single user choice buttons
-   */
-  private buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): any[] {
-    const blocks: any[] = [];
-
-    // Add question as section
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `🔹 *${choice.question}*`,
-      },
-    });
-
-    // Add context if provided
-    if (choice.context) {
-      blocks.push({
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: choice.context,
-          },
-        ],
-      });
-    }
-
-    // Build button elements (max 4 to leave room for custom input)
-    const buttons: any[] = choice.choices.slice(0, 4).map((opt) => ({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: `${opt.id}. ${opt.label}`.substring(0, 75), // Slack limit
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        choiceId: opt.id,
-        label: opt.label,
-        question: choice.question,
-      }),
-      action_id: `user_choice_${opt.id}`,
-    }));
-
-    // Add custom input button
-    buttons.push({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: '✏️ 직접 입력',
-        emoji: true,
-      },
-      style: 'primary',
-      value: JSON.stringify({
-        sessionKey,
-        question: choice.question,
-        type: 'single',
-      }),
-      action_id: 'custom_input_single',
-    });
-
-    blocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
-
-    // Add descriptions if any choices have them
-    const descriptions = choice.choices
-      .filter((opt) => opt.description)
-      .map((opt) => `*${opt.id}.* ${opt.description}`)
-      .join('\n');
-
-    if (descriptions) {
-      blocks.push({
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: descriptions,
-          },
-        ],
-      });
-    }
-
-    return blocks;
-  }
-
-  /**
-   * Build Slack blocks for multi-question choice form
-   */
-  private buildMultiChoiceFormBlocks(
-    choices: UserChoices,
-    formId: string,
-    sessionKey: string,
-    selections: Record<string, { choiceId: string; label: string }> = {}
-  ): any[] {
-    const blocks: any[] = [];
-
-    // Header with title
-    blocks.push({
-      type: 'header',
-      text: {
-        type: 'plain_text',
-        text: choices.title || '📋 선택이 필요합니다',
-        emoji: true,
-      },
-    });
-
-    // Description if provided
-    if (choices.description) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: choices.description,
-        },
-      });
-    }
-
-    blocks.push({ type: 'divider' });
-
-    // Build each question
-    choices.questions.forEach((q, idx) => {
-      const isSelected = !!selections[q.id];
-      const selectedChoice = selections[q.id];
-
-      // Question header with selection status
-      const questionText = isSelected
-        ? `✅ *${idx + 1}. ${q.question}*\n_선택됨: ${selectedChoice.choiceId}. ${selectedChoice.label}_`
-        : `🔹 *${idx + 1}. ${q.question}*`;
-
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: questionText,
-        },
-      });
-
-      // Context if provided
-      if (q.context && !isSelected) {
-        blocks.push({
-          type: 'context',
-          elements: [
-            {
-              type: 'mrkdwn',
-              text: q.context,
-            },
-          ],
-        });
-      }
-
-      // Show buttons only if not yet selected
-      if (!isSelected) {
-        // Max 4 choices to leave room for custom input button
-        const buttons: any[] = q.choices.slice(0, 4).map((opt) => ({
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: `${opt.id}. ${opt.label}`.substring(0, 75),
-            emoji: true,
-          },
-          value: JSON.stringify({
-            formId,
-            sessionKey,
-            questionId: q.id,
-            choiceId: opt.id,
-            label: opt.label,
-          }),
-          action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
-        }));
-
-        // Add custom input button
-        buttons.push({
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: '✏️ 직접 입력',
-            emoji: true,
-          },
-          style: 'primary',
-          value: JSON.stringify({
-            formId,
-            sessionKey,
-            questionId: q.id,
-            question: q.question,
-            type: 'multi',
-          }),
-          action_id: `custom_input_multi_${formId}_${q.id}`,
-        });
-
-        blocks.push({
-          type: 'actions',
-          elements: buttons,
-        });
-
-        // Descriptions
-        const descriptions = q.choices
-          .filter((opt) => opt.description)
-          .map((opt) => `*${opt.id}.* ${opt.description}`)
-          .join('\n');
-
-        if (descriptions) {
-          blocks.push({
-            type: 'context',
-            elements: [
-              {
-                type: 'mrkdwn',
-                text: descriptions,
-              },
-            ],
-          });
-        }
-      }
-
-      // Add spacing between questions
-      if (idx < choices.questions.length - 1) {
-        blocks.push({ type: 'divider' });
-      }
-    });
-
-    // Progress indicator
-    const totalQuestions = choices.questions.length;
-    const answeredCount = Object.keys(selections).length;
-    const progressText = `진행: ${answeredCount}/${totalQuestions}`;
-
-    blocks.push({ type: 'divider' });
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: answeredCount === totalQuestions
-            ? `✅ *모든 선택 완료!* 잠시 후 자동으로 진행됩니다...`
-            : `⏳ ${progressText} - 모든 항목을 선택하면 자동으로 진행됩니다`,
-        },
-      ],
-    });
-
-    return blocks;
-  }
-
   setupEventHandlers() {
     // Handle direct messages (DM only)
     this.app.message(async ({ message, say }) => {
@@ -1786,7 +1543,7 @@ export class SlackHandler {
       const messageEvent = event as any;
 
       // Log ALL incoming message events for debugging
-      this.logger.info('📨 RAW message event received', {
+      this.logger.debug('📨 RAW message event received', {
         type: event.type,
         subtype: event.subtype,
         channel: messageEvent.channel,
@@ -1804,10 +1561,38 @@ export class SlackHandler {
         return;
       }
 
-      // Handle file uploads
+      // Handle file uploads - only in DM or existing session
       if (event.subtype === 'file_share' && messageEvent.files) {
-        this.logger.info('Handling file upload event');
-        await this.handleMessage(messageEvent as MessageEvent, say);
+        const channel = messageEvent.channel;
+        const threadTs = messageEvent.thread_ts;
+        const isDM = channel.startsWith('D');
+
+        // Only handle file uploads in DM or if there's an existing session in the thread
+        if (isDM) {
+          this.logger.info('Handling file upload event in DM');
+          await this.handleMessage(messageEvent as MessageEvent, say);
+          return;
+        }
+
+        // In channels, only handle if there's an existing session
+        if (threadTs) {
+          const session = this.claudeHandler.getSession(channel, threadTs);
+          if (session?.sessionId) {
+            this.logger.info('Handling file upload event in existing session', {
+              channel,
+              threadTs,
+              sessionId: session.sessionId,
+            });
+            await this.handleMessage(messageEvent as MessageEvent, say);
+            return;
+          }
+        }
+
+        this.logger.debug('Ignoring file upload - not in DM and no existing session', {
+          channel,
+          threadTs,
+          isDM,
+        });
         return;
       }
 
@@ -2141,20 +1926,20 @@ export class SlackHandler {
           questions: pendingForm.questions,
         };
 
-        const updatedBlocks = UserChoiceHandler.buildMultiChoiceFormBlocks(
+        const updatedPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(
           choicesData,
           formId,
           sessionKey,
           pendingForm.selections
         );
 
-        // Update the message with new blocks
+        // Update the message with new blocks/attachments
         try {
           await this.app.client.chat.update({
             channel,
             ts: messageTs,
             text: '📋 선택이 필요합니다',
-            blocks: updatedBlocks,
+            ...updatedPayload,
           });
         } catch (error) {
           this.logger.warn('Failed to update multi-choice form', error);
@@ -2475,7 +2260,7 @@ export class SlackHandler {
             questions: pendingForm.questions,
           };
 
-          const updatedBlocks = UserChoiceHandler.buildMultiChoiceFormBlocks(
+          const updatedPayload2 = UserChoiceHandler.buildMultiChoiceFormBlocks(
             choicesData,
             formId,
             sessionKey,
@@ -2487,7 +2272,7 @@ export class SlackHandler {
               channel,
               ts: messageTs,
               text: '📋 선택이 필요합니다',
-              blocks: updatedBlocks,
+              ...updatedPayload2,
             });
           } catch (error) {
             this.logger.warn('Failed to update multi-choice form after custom input', error);

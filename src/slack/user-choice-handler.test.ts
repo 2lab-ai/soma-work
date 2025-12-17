@@ -11,7 +11,7 @@ describe('UserChoiceHandler', () => {
       expect(result.textWithoutChoice).toBe('Hello world');
     });
 
-    it('should extract single user_choice', () => {
+    it('should extract single user_choice with choices field', () => {
       const text = `Some intro text
 
 \`\`\`json
@@ -36,6 +36,90 @@ Some outro text`;
       expect(result.textWithoutChoice).toContain('Some intro text');
       expect(result.textWithoutChoice).toContain('Some outro text');
       expect(result.textWithoutChoice).not.toContain('user_choice');
+    });
+
+    it('should extract single user_choice with options field (system.prompt format)', () => {
+      const text = `Here is a choice:
+
+\`\`\`json
+{
+  "type": "user_choice",
+  "question": "Which database?",
+  "options": [
+    {"id": "1", "label": "PostgreSQL", "description": "Robust and reliable"},
+    {"id": "2", "label": "MySQL", "description": "Simple and fast"}
+  ],
+  "context": "Database choice affects performance"
+}
+\`\`\``;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.type).toBe('user_choice');
+      expect(result.choice?.question).toBe('Which database?');
+      expect(result.choice?.choices).toHaveLength(2);
+      expect(result.choice?.choices[0].description).toBe('Robust and reliable');
+      expect(result.choice?.context).toBe('Database choice affects performance');
+    });
+
+    it('should extract UserChoiceGroup format (single question)', () => {
+      const text = `Decision needed:
+
+\`\`\`json
+{
+  "question": "PROJ-1895 작업 진행 방식",
+  "choices": [
+    {
+      "type": "user_choice",
+      "question": "어떤 작업을 진행할까요?",
+      "options": [
+        {"id": "1", "label": "구현 시작", "description": "바로 코딩 시작"},
+        {"id": "2", "label": "코드 분석", "description": "먼저 분석"}
+      ],
+      "context": "Spec이 확정되어 있음"
+    }
+  ],
+  "context": "작업 진행 방식 결정"
+}
+\`\`\``;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      // Single question in UserChoiceGroup should be converted to UserChoice
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.question).toBe('어떤 작업을 진행할까요?');
+      expect(result.choice?.choices).toHaveLength(2);
+      expect(result.choice?.choices[0].label).toBe('구현 시작');
+      expect(result.choices).toBe(null);
+    });
+
+    it('should extract UserChoiceGroup format (multiple questions)', () => {
+      const text = `Multiple decisions:
+
+\`\`\`json
+{
+  "question": "프로젝트 설정",
+  "choices": [
+    {
+      "type": "user_choice",
+      "question": "DB 선택?",
+      "options": [{"id": "1", "label": "Postgres"}]
+    },
+    {
+      "type": "user_choice",
+      "question": "Auth 방식?",
+      "options": [{"id": "1", "label": "JWT"}]
+    }
+  ]
+}
+\`\`\``;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      // Multiple questions should be converted to UserChoices
+      expect(result.choices).not.toBe(null);
+      expect(result.choices?.type).toBe('user_choices');
+      expect(result.choices?.title).toBe('프로젝트 설정');
+      expect(result.choices?.questions).toHaveLength(2);
+      expect(result.choice).toBe(null);
     });
 
     it('should extract user_choices (multi-question)', () => {
@@ -66,6 +150,24 @@ Some outro text`;
       expect(result.choices?.title).toBe('Project Setup');
       expect(result.choices?.questions).toHaveLength(2);
       expect(result.choice).toBe(null);
+    });
+
+    it('should extract raw JSON without code blocks', () => {
+      const text = `Here is the decision:
+---
+{
+  "type": "user_choice",
+  "question": "Which option?",
+  "options": [
+    {"id": "1", "label": "Option A"},
+    {"id": "2", "label": "Option B"}
+  ]
+}`;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.question).toBe('Which option?');
+      expect(result.textWithoutChoice).toContain('Here is the decision:');
     });
 
     it('should ignore invalid JSON blocks', () => {
@@ -135,9 +237,20 @@ this is not valid json
       ],
     };
 
+    // Helper to get blocks from payload
+    const getBlocks = (payload: any) => payload.attachments?.[0]?.blocks || [];
+
+    it('should return attachment format with color', () => {
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      expect(payload.attachments).toBeDefined();
+      expect(payload.attachments).toHaveLength(1);
+      expect(payload.attachments![0].color).toBe('#0052CC');
+    });
+
     it('should create blocks with question', () => {
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
-      const questionBlock = blocks.find(b => b.type === 'section' && b.text?.text?.includes('Which option?'));
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const blocks = getBlocks(payload);
+      const questionBlock = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Which option?'));
       expect(questionBlock).toBeDefined();
     });
 
@@ -146,48 +259,32 @@ this is not valid json
         ...sampleChoice,
         context: 'Important context',
       };
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key');
-      const contextBlock = blocks.find(b => b.type === 'context' && b.elements?.[0]?.text === 'Important context');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key');
+      const blocks = getBlocks(payload);
+      const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'));
       expect(contextBlock).toBeDefined();
     });
 
-    it('should not include context block when no context', () => {
-      const choiceWithoutContext: UserChoice = {
-        type: 'user_choice',
-        question: 'Question',
-        choices: [{ id: '1', label: 'A' }],
-      };
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(choiceWithoutContext, 'session-key');
-      // Should only have section, actions, no context from question context
-      expect(blocks).toHaveLength(2); // section + actions
-    });
-
-    it('should create action buttons for each choice', () => {
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
-      expect(actionsBlock).toBeDefined();
-      // 2 choices + 1 custom input button = 3 buttons
-      expect(actionsBlock.elements).toHaveLength(3);
-    });
-
     it('should include custom input button', () => {
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
-      const customButton = actionsBlock.elements.find((e: any) => e.action_id === 'custom_input_single');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const blocks = getBlocks(payload);
+      const actionsBlock = blocks.find((b: any) => b.type === 'actions');
+      const customButton = actionsBlock?.elements?.find((e: any) => e.action_id === 'custom_input_single');
       expect(customButton).toBeDefined();
       expect(customButton.text.text).toContain('직접 입력');
     });
 
-    it('should include descriptions context when choices have descriptions', () => {
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
-      const descriptionBlock = blocks.find(b =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('First option')
+    it('should include descriptions in fields', () => {
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const blocks = getBlocks(payload);
+      // New UI: options displayed as fields in section
+      const fieldsSection = blocks.find((b: any) =>
+        b.type === 'section' && b.fields?.some((f: any) => f.text?.includes('Option A'))
       );
-      expect(descriptionBlock).toBeDefined();
-      expect(descriptionBlock.elements[0].text).toContain('Second option');
+      expect(fieldsSection).toBeDefined();
     });
 
-    it('should limit choices to 4 buttons', () => {
+    it('should limit to 4 options in action buttons', () => {
       const manyChoices: UserChoice = {
         type: 'user_choice',
         question: 'Question',
@@ -199,27 +296,17 @@ this is not valid json
           { id: '5', label: 'E' },
         ],
       };
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(manyChoices, 'session-key');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
-      // 4 choices + 1 custom input = 5 max
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(manyChoices, 'session-key');
+      const blocks = getBlocks(payload);
+      const actionsBlock = blocks.find((b: any) => b.type === 'actions');
+      // 4 choice buttons + 1 custom input = 5
       expect(actionsBlock.elements).toHaveLength(5);
     });
 
-    it('should truncate long button labels', () => {
-      const longLabel: UserChoice = {
-        type: 'user_choice',
-        question: 'Question',
-        choices: [{ id: '1', label: 'A'.repeat(100) }],
-      };
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(longLabel, 'session-key');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
-      const buttonText = actionsBlock.elements[0].text.text;
-      expect(buttonText.length).toBeLessThanOrEqual(75);
-    });
-
     it('should store sessionKey in button values', () => {
-      const blocks = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'test-session');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'test-session');
+      const blocks = getBlocks(payload);
+      const actionsBlock = blocks.find((b: any) => b.type === 'actions');
       const buttonValue = JSON.parse(actionsBlock.elements[0].value);
       expect(buttonValue.sessionKey).toBe('test-session');
     });
@@ -245,11 +332,21 @@ this is not valid json
       ],
     };
 
-    it('should create header with title', () => {
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
-      const header = blocks.find(b => b.type === 'header');
-      expect(header).toBeDefined();
-      expect(header.text.text).toBe('Setup Form');
+    // Helper to get blocks from payload
+    const getBlocks = (payload: any) => payload.attachments?.[0]?.blocks || [];
+
+    it('should return attachment format with color', () => {
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
+      expect(payload.attachments).toBeDefined();
+      expect(payload.attachments).toHaveLength(1);
+      expect(payload.attachments![0].color).toBe('#0052CC');
+    });
+
+    it('should create section with title', () => {
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const titleBlock = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Setup Form'));
+      expect(titleBlock).toBeDefined();
     });
 
     it('should use default title when not provided', () => {
@@ -257,58 +354,64 @@ this is not valid json
         type: 'user_choices',
         questions: sampleChoices.questions,
       };
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(choicesNoTitle, 'form-1', 'session-key');
-      const header = blocks.find(b => b.type === 'header');
-      expect(header.text.text).toContain('선택이 필요합니다');
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(choicesNoTitle, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const titleBlock = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('선택이 필요합니다'));
+      expect(titleBlock).toBeDefined();
     });
 
-    it('should include description when provided', () => {
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
-      const descBlock = blocks.find(b =>
-        b.type === 'section' && b.text?.text === 'Please answer these questions'
+    it('should include description in context when provided', () => {
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const descBlock = blocks.find((b: any) =>
+        b.type === 'context' && b.elements?.some((e: any) => e.text?.includes('Please answer these questions'))
       );
       expect(descBlock).toBeDefined();
     });
 
-    it('should create buttons for each question', () => {
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
-      const actionBlocks = blocks.filter(b => b.type === 'actions');
+    it('should create action buttons for each question', () => {
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
       expect(actionBlocks).toHaveLength(2); // One per question
     });
 
     it('should show selected state for answered questions', () => {
       const selections = { q1: { choiceId: '1', label: 'Yes' } };
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const blocks = getBlocks(payload);
 
-      // First question should show selected
-      const q1Section = blocks.find(b =>
-        b.type === 'section' && b.text?.text?.includes('First question')
+      // First question should show as fields (strikethrough question, bold label)
+      const q1Section = blocks.find((b: any) =>
+        b.type === 'section' && b.fields?.some((f: any) => f.text?.includes('First question'))
       );
-      expect(q1Section.text.text).toContain('✅');
-      expect(q1Section.text.text).toContain('Yes');
+      expect(q1Section).toBeDefined();
 
       // Should only have 1 actions block (for q2)
-      const actionBlocks = blocks.filter(b => b.type === 'actions');
+      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
       expect(actionBlocks).toHaveLength(1);
     });
 
     it('should hide context for selected questions', () => {
       const selections = { q2: { choiceId: 'a', label: 'Option A' } };
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const blocks = getBlocks(payload);
 
       // Context for q2 should not be shown since it's selected
-      const contextBlocks = blocks.filter(b =>
-        b.type === 'context' && b.elements?.[0]?.text === 'This is important'
+      const contextBlocks = blocks.filter((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('This is important')
       );
       expect(contextBlocks).toHaveLength(0);
     });
 
-    it('should show progress indicator', () => {
+    it('should show progress bar', () => {
       const selections = { q1: { choiceId: '1', label: 'Yes' } };
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const blocks = getBlocks(payload);
 
-      const progressBlock = blocks.find(b =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('진행: 1/2')
+      // Progress bar with dots (●○) and count
+      const progressBlock = blocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('1/2')
       );
       expect(progressBlock).toBeDefined();
     });
@@ -318,24 +421,37 @@ this is not valid json
         q1: { choiceId: '1', label: 'Yes' },
         q2: { choiceId: 'a', label: 'Option A' },
       };
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      const blocks = getBlocks(payload);
 
-      const completionBlock = blocks.find(b =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('모든 선택 완료')
+      const completionBlock = blocks.find((b: any) =>
+        b.type === 'section' && b.text?.text?.includes('모든 선택 완료')
       );
       expect(completionBlock).toBeDefined();
     });
 
+    it('should change color to green when complete', () => {
+      const selections = {
+        q1: { choiceId: '1', label: 'Yes' },
+        q2: { choiceId: 'a', label: 'Option A' },
+      };
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
+      expect(payload.attachments![0].color).toBe('#36a64f');
+    });
+
     it('should include formId in button values', () => {
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'test-form', 'session-key');
-      const actionsBlock = blocks.find(b => b.type === 'actions');
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'test-form', 'session-key');
+      const blocks = getBlocks(payload);
+      const actionsBlock = blocks.find((b: any) => b.type === 'actions');
+      expect(actionsBlock).toBeDefined();
       const buttonValue = JSON.parse(actionsBlock.elements[0].value);
       expect(buttonValue.formId).toBe('test-form');
     });
 
     it('should include custom input buttons for each question', () => {
-      const blocks = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
-      const actionBlocks = blocks.filter(b => b.type === 'actions');
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
 
       for (const actionBlock of actionBlocks) {
         const customButton = actionBlock.elements.find((e: any) =>

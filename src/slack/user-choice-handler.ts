@@ -1,7 +1,7 @@
 /**
  * User choice handling utilities for Slack bot
  */
-import { UserChoice, UserChoices, UserChoiceQuestion } from '../types';
+import { UserChoice, UserChoices, UserChoiceQuestion, UserChoiceGroup } from '../types';
 
 export interface ExtractedChoice {
   choice: UserChoice | null;
@@ -9,37 +9,46 @@ export interface ExtractedChoice {
   textWithoutChoice: string;
 }
 
+export interface SlackMessagePayload {
+  blocks?: any[];
+  attachments?: any[];
+}
+
 export class UserChoiceHandler {
   /**
-   * Extract UserChoice or UserChoices JSON from message text
-   * Looks for ```json blocks containing user_choice or user_choices type
+   * Extract UserChoice, UserChoices, or UserChoiceGroup JSON from message text
+   * Supports both ```json blocks and raw JSON objects
    */
   static extractUserChoice(text: string): ExtractedChoice {
-    const jsonBlockPattern = /```json\s*\n?([\s\S]*?)\n?```/g;
-    let match;
     let choice: UserChoice | null = null;
     let choices: UserChoices | null = null;
     let textWithoutChoice = text;
 
+    // Try to find JSON in code blocks first
+    const jsonBlockPattern = /```json\s*\n?([\s\S]*?)\n?```/g;
+    let match;
+
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
+      const result = this.parseAndNormalizeChoice(match[1].trim());
+      if (result.choice || result.choices) {
+        textWithoutChoice = text.replace(match[0], '').trim();
+        return { ...result, textWithoutChoice };
+      }
+    }
 
-        // Check for multi-question format first
-        if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
-          choices = parsed as UserChoices;
-          textWithoutChoice = text.replace(match[0], '').trim();
-          break;
-        }
+    // Try to find raw JSON objects (not in code blocks)
+    const rawJsonPattern = /(\{[\s\S]*?"(?:type|question|choices)"[\s\S]*?\})\s*$/;
+    const rawMatch = text.match(rawJsonPattern);
 
-        // Check for single question format
-        if (parsed.type === 'user_choice' && Array.isArray(parsed.choices)) {
-          choice = parsed as UserChoice;
-          textWithoutChoice = text.replace(match[0], '').trim();
-          break;
+    if (rawMatch) {
+      // Find the balanced JSON object
+      const jsonStr = this.extractBalancedJson(text, rawMatch.index || 0);
+      if (jsonStr) {
+        const result = this.parseAndNormalizeChoice(jsonStr);
+        if (result.choice || result.choices) {
+          textWithoutChoice = text.substring(0, rawMatch.index).trim();
+          return { ...result, textWithoutChoice };
         }
-      } catch {
-        // Not valid JSON, continue
       }
     }
 
@@ -47,23 +56,141 @@ export class UserChoiceHandler {
   }
 
   /**
-   * Build Slack blocks for single user choice buttons
+   * Extract a balanced JSON object starting from a given position
    */
-  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): any[] {
-    const blocks: any[] = [];
+  private static extractBalancedJson(text: string, startIndex: number): string | null {
+    let braceCount = 0;
+    let inString = false;
+    let escape = false;
+    let jsonStart = -1;
 
-    // Add question as section
-    blocks.push({
+    for (let i = startIndex; i < text.length; i++) {
+      const char = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (char === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (char === '{') {
+        if (braceCount === 0) jsonStart = i;
+        braceCount++;
+      } else if (char === '}') {
+        braceCount--;
+        if (braceCount === 0 && jsonStart !== -1) {
+          return text.substring(jsonStart, i + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Parse JSON and normalize to UserChoice or UserChoices format
+   * Handles UserChoiceGroup format from system.prompt
+   */
+  private static parseAndNormalizeChoice(jsonStr: string): { choice: UserChoice | null; choices: UserChoices | null } {
+    try {
+      const parsed = JSON.parse(jsonStr);
+
+      // Format 1: UserChoices (multi-question form)
+      if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
+        return { choice: null, choices: parsed as UserChoices };
+      }
+
+      // Format 2: UserChoice (single choice with type field)
+      if (parsed.type === 'user_choice') {
+        const opts = parsed.choices || parsed.options;
+        if (Array.isArray(opts)) {
+          return {
+            choice: {
+              type: 'user_choice',
+              question: parsed.question,
+              choices: opts,
+              context: parsed.context,
+            },
+            choices: null,
+          };
+        }
+      }
+
+      // Format 3: UserChoiceGroup (from system.prompt)
+      // { question: "...", choices: [{ type: "user_choice", ... }] }
+      if (parsed.question && Array.isArray(parsed.choices) && !parsed.type) {
+        const firstChoice = parsed.choices[0];
+        if (firstChoice && (firstChoice.type === 'user_choice' || firstChoice.options || firstChoice.choices)) {
+          // Convert UserChoiceGroup to UserChoices for multi-question display
+          const questions: UserChoiceQuestion[] = parsed.choices.map((c: any, idx: number) => ({
+            id: `q${idx + 1}`,
+            question: c.question,
+            choices: c.options || c.choices || [],
+            context: c.context,
+          }));
+
+          // If only one question, return as single choice
+          if (questions.length === 1) {
+            return {
+              choice: {
+                type: 'user_choice',
+                question: questions[0].question,
+                choices: questions[0].choices,
+                context: questions[0].context,
+              },
+              choices: null,
+            };
+          }
+
+          // Multiple questions - return as UserChoices
+          return {
+            choice: null,
+            choices: {
+              type: 'user_choices',
+              title: parsed.question,
+              description: parsed.context,
+              questions,
+            },
+          };
+        }
+      }
+    } catch {
+      // Not valid JSON
+    }
+
+    return { choice: null, choices: null };
+  }
+
+  /**
+   * Build Slack attachment for single user choice (Jira-style card UI)
+   */
+  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+    // Use attachment format for card-like appearance with color bar
+    const attachmentBlocks: any[] = [];
+
+    // Title
+    attachmentBlocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `🔹 *${choice.question}*`,
+        text: `*${choice.question}*`,
       },
     });
 
-    // Add context if provided
+    // Context if provided
     if (choice.context) {
-      blocks.push({
+      attachmentBlocks.push({
         type: 'context',
         elements: [
           {
@@ -74,12 +201,35 @@ export class UserChoiceHandler {
       });
     }
 
-    // Build button elements (max 4 to leave room for custom input)
-    const buttons: any[] = choice.choices.slice(0, 4).map((opt) => ({
+    // Build fields for horizontal layout (2 columns)
+    const options = choice.choices.slice(0, 4);
+    const fields: any[] = options.map((opt) => ({
+      type: 'mrkdwn',
+      text: opt.description
+        ? `*${opt.label}*\n${opt.description}`
+        : `*${opt.label}*`,
+    }));
+
+    if (fields.length > 0) {
+      attachmentBlocks.push({
+        type: 'section',
+        fields: fields.slice(0, 2), // First row (max 2)
+      });
+
+      if (fields.length > 2) {
+        attachmentBlocks.push({
+          type: 'section',
+          fields: fields.slice(2, 4), // Second row
+        });
+      }
+    }
+
+    // Action buttons
+    const buttons: any[] = options.map((opt) => ({
       type: 'button',
       text: {
         type: 'plain_text',
-        text: `${opt.id}. ${opt.label}`.substring(0, 75), // Slack limit
+        text: opt.label.substring(0, 30),
         emoji: true,
       },
       value: JSON.stringify({
@@ -91,15 +241,14 @@ export class UserChoiceHandler {
       action_id: `user_choice_${opt.id}`,
     }));
 
-    // Add custom input button
+    // Custom input button
     buttons.push({
       type: 'button',
       text: {
         type: 'plain_text',
-        text: '✏️ 직접 입력',
+        text: '직접 입력',
         emoji: true,
       },
-      style: 'primary',
       value: JSON.stringify({
         sessionKey,
         question: choice.question,
@@ -108,105 +257,140 @@ export class UserChoiceHandler {
       action_id: 'custom_input_single',
     });
 
-    blocks.push({
+    attachmentBlocks.push({
       type: 'actions',
       elements: buttons,
     });
 
-    // Add descriptions if any choices have them
-    const descriptions = choice.choices
-      .filter((opt) => opt.description)
-      .map((opt) => `*${opt.id}.* ${opt.description}`)
-      .join('\n');
-
-    if (descriptions) {
-      blocks.push({
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: descriptions,
-          },
-        ],
-      });
-    }
-
-    return blocks;
+    return {
+      attachments: [
+        {
+          color: '#0052CC', // Blue color bar (like Jira)
+          blocks: attachmentBlocks,
+        },
+      ],
+    };
   }
 
   /**
-   * Build Slack blocks for multi-question choice form
+   * Build Slack attachment for multi-question choice form (Jira-style card UI)
    */
   static buildMultiChoiceFormBlocks(
     choices: UserChoices,
     formId: string,
     sessionKey: string,
     selections: Record<string, { choiceId: string; label: string }> = {}
-  ): any[] {
-    const blocks: any[] = [];
+  ): SlackMessagePayload {
+    const attachmentBlocks: any[] = [];
+
+    // Progress calculation
+    const totalQuestions = choices.questions.length;
+    const answeredCount = Object.keys(selections).length;
+    const isComplete = answeredCount === totalQuestions;
 
     // Header with title
-    blocks.push({
-      type: 'header',
+    attachmentBlocks.push({
+      type: 'section',
       text: {
-        type: 'plain_text',
-        text: choices.title || '📋 선택이 필요합니다',
-        emoji: true,
+        type: 'mrkdwn',
+        text: `*${choices.title || '선택이 필요합니다'}*`,
       },
     });
 
-    // Description if provided
+    // Progress and description context
+    const contextElements: any[] = [
+      {
+        type: 'mrkdwn',
+        text: `${this.buildProgressBar(answeredCount, totalQuestions)}  *${answeredCount}/${totalQuestions}*`,
+      },
+    ];
+
     if (choices.description) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: choices.description,
-        },
+      contextElements.push({
+        type: 'mrkdwn',
+        text: `  |  ${choices.description}`,
       });
     }
 
-    blocks.push({ type: 'divider' });
+    attachmentBlocks.push({
+      type: 'context',
+      elements: contextElements,
+    });
 
     // Build each question
     choices.questions.forEach((q, idx) => {
       const isSelected = !!selections[q.id];
       const selectedChoice = selections[q.id];
 
-      // Question header with selection status
-      const questionText = isSelected
-        ? `✅ *${idx + 1}. ${q.question}*\n_선택됨: ${selectedChoice.choiceId}. ${selectedChoice.label}_`
-        : `🔹 *${idx + 1}. ${q.question}*`;
+      attachmentBlocks.push({ type: 'divider' });
 
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: questionText,
-        },
-      });
-
-      // Context if provided
-      if (q.context && !isSelected) {
-        blocks.push({
-          type: 'context',
-          elements: [
+      if (isSelected) {
+        // Completed question - show as field
+        attachmentBlocks.push({
+          type: 'section',
+          fields: [
             {
               type: 'mrkdwn',
-              text: q.context,
+              text: `~${q.question}~`,
+            },
+            {
+              type: 'mrkdwn',
+              text: `*${selectedChoice.label}*`,
             },
           ],
         });
-      }
+      } else {
+        // Question header
+        attachmentBlocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*${q.question}*`,
+          },
+        });
 
-      // Show buttons only if not yet selected
-      if (!isSelected) {
-        // Max 4 choices to leave room for custom input button
-        const buttons: any[] = q.choices.slice(0, 4).map((opt) => ({
+        // Context if provided
+        if (q.context) {
+          attachmentBlocks.push({
+            type: 'context',
+            elements: [
+              {
+                type: 'mrkdwn',
+                text: q.context,
+              },
+            ],
+          });
+        }
+
+        // Options as fields (2 columns)
+        const options = q.choices.slice(0, 4);
+        const fields: any[] = options.map((opt) => ({
+          type: 'mrkdwn',
+          text: opt.description
+            ? `*${opt.label}*\n${opt.description}`
+            : `*${opt.label}*`,
+        }));
+
+        if (fields.length > 0) {
+          attachmentBlocks.push({
+            type: 'section',
+            fields: fields.slice(0, 2),
+          });
+
+          if (fields.length > 2) {
+            attachmentBlocks.push({
+              type: 'section',
+              fields: fields.slice(2, 4),
+            });
+          }
+        }
+
+        // Action buttons for this question
+        const buttons: any[] = options.map((opt) => ({
           type: 'button',
           text: {
             type: 'plain_text',
-            text: `${opt.id}. ${opt.label}`.substring(0, 75),
+            text: opt.label.substring(0, 30),
             emoji: true,
           },
           value: JSON.stringify({
@@ -219,15 +403,13 @@ export class UserChoiceHandler {
           action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
         }));
 
-        // Add custom input button
         buttons.push({
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '✏️ 직접 입력',
+            text: '직접 입력',
             emoji: true,
           },
-          style: 'primary',
           value: JSON.stringify({
             formId,
             sessionKey,
@@ -238,54 +420,46 @@ export class UserChoiceHandler {
           action_id: `custom_input_multi_${formId}_${q.id}`,
         });
 
-        blocks.push({
+        attachmentBlocks.push({
           type: 'actions',
           elements: buttons,
         });
-
-        // Descriptions
-        const descriptions = q.choices
-          .filter((opt) => opt.description)
-          .map((opt) => `*${opt.id}.* ${opt.description}`)
-          .join('\n');
-
-        if (descriptions) {
-          blocks.push({
-            type: 'context',
-            elements: [
-              {
-                type: 'mrkdwn',
-                text: descriptions,
-              },
-            ],
-          });
-        }
-      }
-
-      // Add spacing between questions
-      if (idx < choices.questions.length - 1) {
-        blocks.push({ type: 'divider' });
       }
     });
 
-    // Progress indicator
-    const totalQuestions = choices.questions.length;
-    const answeredCount = Object.keys(selections).length;
-    const progressText = `진행: ${answeredCount}/${totalQuestions}`;
-
-    blocks.push({ type: 'divider' });
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
+    // Completion message
+    if (isComplete) {
+      attachmentBlocks.push({ type: 'divider' });
+      attachmentBlocks.push({
+        type: 'section',
+        text: {
           type: 'mrkdwn',
-          text: answeredCount === totalQuestions
-            ? `✅ *모든 선택 완료!* 잠시 후 자동으로 진행됩니다...`
-            : `⏳ ${progressText} - 모든 항목을 선택하면 자동으로 진행됩니다`,
+          text: '✓ *모든 선택 완료* — 진행 중...',
+        },
+      });
+    }
+
+    // Color based on progress
+    const color = isComplete ? '#36a64f' : '#0052CC'; // Green when complete, blue otherwise
+
+    return {
+      attachments: [
+        {
+          color,
+          blocks: attachmentBlocks,
         },
       ],
-    });
+    };
+  }
 
-    return blocks;
+  /**
+   * Build a visual progress bar
+   */
+  private static buildProgressBar(current: number, total: number): string {
+    const filled = current;
+    const empty = total - current;
+    const filledChar = '●';
+    const emptyChar = '○';
+    return filledChar.repeat(filled) + emptyChar.repeat(empty);
   }
 }

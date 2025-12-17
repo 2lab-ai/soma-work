@@ -82,3 +82,13 @@ export interface PendingChoiceForm {
   selections: Map<string, { choiceId: string; label: string }>; // questionId -> selection
   createdAt: number;
 }
+
+/**
+ * User choice group - wraps multiple UserChoice items
+ * Matches the format defined in system.prompt
+ */
+export interface UserChoiceGroup {
+  question: string;              // Group title/context
+  choices: UserChoice[];         // Array of individual choices
+  context?: string;              // Why these decisions are needed
+}

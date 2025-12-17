@@ -9,9 +9,16 @@ import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from '
 const logger = new Logger('Main');
 
 async function start() {
+  const startTime = Date.now();
+  const timing = (label: string) => {
+    const elapsed = Date.now() - startTime;
+    logger.info(`[${elapsed}ms] ${label}`);
+  };
+
   try {
     // Validate configuration
     validateConfig();
+    timing('Config validated');
 
     logger.info('Starting Claude Code Slack bot', {
       debug: config.debug,
@@ -26,42 +33,52 @@ async function start() {
       socketMode: true,
       appToken: config.slack.appToken,
     });
+    timing('Slack App initialized');
 
     // Initialize MCP manager
     const mcpManager = new McpManager();
     const mcpConfig = mcpManager.loadConfiguration();
+    timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
     // Initialize GitHub App authentication and auto-refresh if configured
     if (isGitHubAppConfigured()) {
       await discoverInstallations();
-      
+      timing('GitHub installations discovered');
+
       // Start auto-refresh for GitHub App tokens
       const githubAuth = getGitHubAppAuth();
       if (githubAuth) {
         try {
           await githubAuth.startAutoRefresh();
+          timing('GitHub App token auto-refresh started');
           logger.info('GitHub App token auto-refresh initialized');
         } catch (error) {
           logger.error('Failed to start GitHub App token auto-refresh:', error);
         }
       }
     }
-    
+
     // Initialize handlers
     const claudeHandler = new ClaudeHandler(mcpManager);
+    timing('ClaudeHandler initialized');
+
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
+    timing('SlackHandler initialized');
 
     // Setup event handlers
     slackHandler.setupEventHandlers();
+    timing('Event handlers setup');
 
     // Load saved sessions from previous run
     const loadedSessions = slackHandler.loadSavedSessions();
+    timing(`Sessions loaded (${loadedSessions} restored)`);
     if (loadedSessions > 0) {
       logger.info(`Restored ${loadedSessions} sessions from previous run`);
     }
 
     // Start the app
     await app.start();
+    timing('Slack socket connected');
     logger.info('⚡️ Claude Code Slack bot is running!');
 
     // Handle graceful shutdown
