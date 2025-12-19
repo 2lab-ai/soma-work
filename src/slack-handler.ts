@@ -1,10 +1,10 @@
 import { App } from '@slack/bolt';
-import { ClaudeHandler, getAvailablePersonas, SessionExpiryCallbacks } from './claude-handler';
+import { ClaudeHandler, getAvailablePersonas } from './claude-handler';
 import { SDKMessage } from '@anthropic-ai/claude-code';
 import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
 import { FileHandler, ProcessedFile } from './file-handler';
-import { ConversationSession, UserChoice, UserChoices, UserChoiceQuestion, PendingChoiceForm } from './types';
+import { ConversationSession, UserChoices, UserChoiceQuestion } from './types';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
@@ -12,7 +12,20 @@ import { userSettingsStore, AVAILABLE_MODELS, MODEL_ALIASES } from './user-setti
 import { config } from './config';
 import { getCredentialStatus, copyBackupCredentials, hasClaudeAiOauth, isCredentialManagerEnabled } from './credentials-manager';
 import { mcpCallTracker, McpCallTracker } from './mcp-call-tracker';
-import { CommandParser, ToolFormatter, UserChoiceHandler, MessageFormatter } from './slack';
+import {
+  CommandParser,
+  ToolFormatter,
+  UserChoiceHandler,
+  MessageFormatter,
+  SlackApiHelper,
+  ReactionManager,
+  McpStatusDisplay,
+  SessionUiManager,
+  ActionHandlers,
+  ActionHandlerContext,
+  EventRouter,
+  EventRouterDeps,
+} from './slack';
 
 interface MessageEvent {
   user: string;
@@ -41,28 +54,18 @@ export class SlackHandler {
   private todoManager: TodoManager;
   private mcpManager: McpManager;
   private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
-  private originalMessages: Map<string, { channel: string; ts: string }> = new Map(); // sessionKey -> original message info
-  private currentReactions: Map<string, string> = new Map(); // sessionKey -> current emoji
-  private botUserId: string | null = null;
   // Track tool_use_id -> tool_name mapping for MCP result display
   private toolUseIdToName: Map<string, string> = new Map();
   // Track MCP call IDs for duration tracking
   private toolUseIdToCallId: Map<string, string> = new Map();
-  // Track active MCP status update intervals
-  private mcpStatusIntervals: Map<string, NodeJS.Timeout> = new Map();
-  // Track MCP status message timestamps and channel info
-  private mcpStatusMessages: Map<string, { ts: string; channel: string; serverName: string; toolName: string }> = new Map();
-  // Track pending choice forms for multi-question selection
-  private pendingChoiceForms: Map<string, {
-    formId: string;
-    sessionKey: string;
-    channel: string;
-    threadTs: string;
-    messageTs: string;
-    questions: UserChoiceQuestion[];
-    selections: Record<string, { choiceId: string; label: string }>;
-    createdAt: number;
-  }> = new Map();
+
+  // New modular helpers
+  private slackApi: SlackApiHelper;
+  private reactionManager: ReactionManager;
+  private mcpStatusDisplay: McpStatusDisplay;
+  private sessionUiManager: SessionUiManager;
+  private actionHandlers: ActionHandlers;
+  private eventRouter: EventRouter;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -71,6 +74,30 @@ export class SlackHandler {
     this.workingDirManager = new WorkingDirectoryManager();
     this.fileHandler = new FileHandler();
     this.todoManager = new TodoManager();
+
+    // Initialize new modular helpers
+    this.slackApi = new SlackApiHelper(app);
+    this.reactionManager = new ReactionManager(this.slackApi);
+    this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
+    this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
+
+    // ActionHandlers needs context
+    const actionContext: ActionHandlerContext = {
+      slackApi: this.slackApi,
+      claudeHandler: this.claudeHandler,
+      sessionManager: this.sessionUiManager,
+      messageHandler: this.handleMessage.bind(this),
+    };
+    this.actionHandlers = new ActionHandlers(actionContext);
+
+    // EventRouter for event handling
+    const eventRouterDeps: EventRouterDeps = {
+      slackApi: this.slackApi,
+      claudeHandler: this.claudeHandler,
+      sessionManager: this.sessionUiManager,
+      actionHandlers: this.actionHandlers,
+    };
+    this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
   }
 
   async handleMessage(event: MessageEvent, say: any) {
@@ -84,7 +111,7 @@ export class SlackHandler {
     if (files && files.length > 0) {
       this.logger.info('Processing uploaded files', { count: files.length });
       processedFiles = await this.fileHandler.downloadAndProcessFiles(files);
-      
+
       if (processedFiles.length > 0) {
         await say({
           text: `📎 Processing ${processedFiles.length} file(s): ${processedFiles.map(f => f.name).join(', ')}`,
@@ -308,7 +335,7 @@ export class SlackHandler {
 
     // Check if this is a sessions command
     if (text && CommandParser.isSessionsCommand(text)) {
-      const { text: msgText, blocks } = await this.formatUserSessionsBlocks(user);
+      const { text: msgText, blocks } = await this.sessionUiManager.formatUserSessionsBlocks(user);
       await say({
         text: msgText,
         blocks,
@@ -320,14 +347,14 @@ export class SlackHandler {
     // Check if this is a terminate command
     const terminateMatch = text ? CommandParser.parseTerminateCommand(text) : null;
     if (terminateMatch) {
-      await this.handleTerminateCommand(terminateMatch, user, channel, thread_ts || ts, say);
+      await this.sessionUiManager.handleTerminateCommand(terminateMatch, user, channel, thread_ts || ts, say);
       return;
     }
 
     // Check if this is an all_sessions command
     if (text && CommandParser.isAllSessionsCommand(text)) {
       await say({
-        text: await this.formatAllSessions(),
+        text: await this.sessionUiManager.formatAllSessions(),
         thread_ts: thread_ts || ts,
       });
       return;
@@ -345,7 +372,7 @@ export class SlackHandler {
     // Working directory is always required
     if (!workingDirectory) {
       let errorMessage = `⚠️ No working directory set. `;
-      
+
       if (!isDM && !this.workingDirManager.hasChannelWorkingDirectory(channel)) {
         // No channel default set
         errorMessage += `Please set a default working directory for this channel first using:\n`;
@@ -366,7 +393,7 @@ export class SlackHandler {
       } else {
         errorMessage += `Please set one first using:\n\`cwd /path/to/directory\``;
       }
-      
+
       await say({
         text: errorMessage,
         thread_ts: thread_ts || ts,
@@ -375,14 +402,14 @@ export class SlackHandler {
     }
 
     // Get user's display name for speaker tag
-    const userName = await this.getUserName(user);
+    const userName = await this.slackApi.getUserName(user);
 
     // Session key is now based on channel + thread only (shared session)
     const sessionKey = this.claudeHandler.getSessionKey(channel, thread_ts || ts);
 
     // Store the original message info for status reactions
     const originalMessageTs = thread_ts || ts;
-    this.originalMessages.set(sessionKey, { channel, ts: originalMessageTs });
+    this.reactionManager.setOriginalMessage(sessionKey, channel, originalMessageTs);
 
     // Get or create session
     const existingSession = this.claudeHandler.getSession(channel, thread_ts || ts);
@@ -469,15 +496,15 @@ export class SlackHandler {
       statusMessageTs = statusResult.ts;
 
       // Add thinking reaction to original message (but don't spam if already set)
-      await this.updateMessageReaction(sessionKey, 'thinking_face');
-      
+      await this.reactionManager.updateReaction(sessionKey, 'thinking_face');
+
       // Create Slack context for permission prompts
       const slackContext = {
         channel,
         threadTs: thread_ts || ts,  // Always provide a thread context
         user
       };
-      
+
       for await (const message of this.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext)) {
         if (abortController.signal.aborted) break;
 
@@ -490,7 +517,7 @@ export class SlackHandler {
         if (message.type === 'assistant') {
           // Check if this is a tool use message
           const hasToolUse = message.message.content?.some((part: any) => part.type === 'tool_use');
-          
+
           if (hasToolUse) {
             // Update status to show working
             if (statusMessageTs) {
@@ -502,7 +529,7 @@ export class SlackHandler {
             }
 
             // Update reaction to show working
-            await this.updateMessageReaction(sessionKey, 'gear');
+            await this.reactionManager.updateReaction(sessionKey, 'gear');
 
             // Check for TodoWrite tool and handle it specially
             const todoTool = message.message.content?.find((part: any) =>
@@ -536,7 +563,7 @@ export class SlackHandler {
                   this.toolUseIdToCallId.set(part.id, callId);
 
                   // Start periodic status update for this MCP call
-                  this.startMcpStatusUpdate(callId, serverName, actualToolName, channel, thread_ts || ts);
+                  this.mcpStatusDisplay.startStatusUpdate(callId, serverName, actualToolName, channel, thread_ts || ts);
                 }
               }
             }
@@ -562,8 +589,8 @@ export class SlackHandler {
                 // Generate unique form ID
                 const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-                // Store pending form
-                this.pendingChoiceForms.set(formId, {
+                // Store pending form via ActionHandlers
+                this.actionHandlers.setPendingForm(formId, {
                   formId,
                   sessionKey,
                   channel,
@@ -583,7 +610,7 @@ export class SlackHandler {
                 });
 
                 // Update stored form with message timestamp
-                const pendingForm = this.pendingChoiceForms.get(formId);
+                const pendingForm = this.actionHandlers.getPendingForm(formId);
                 if (pendingForm && formResult?.ts) {
                   pendingForm.messageTs = formResult.ts;
                 }
@@ -662,7 +689,7 @@ export class SlackHandler {
                   this.toolUseIdToCallId.delete(toolResult.toolUseId);
 
                   // Stop the status update interval and show completion
-                  await this.stopMcpStatusUpdate(callId, duration);
+                  await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
                 }
               }
 
@@ -712,7 +739,7 @@ export class SlackHandler {
 
                 const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-                this.pendingChoiceForms.set(formId, {
+                this.actionHandlers.setPendingForm(formId, {
                   formId,
                   sessionKey,
                   channel,
@@ -730,7 +757,7 @@ export class SlackHandler {
                   thread_ts: thread_ts || ts,
                 });
 
-                const pendingForm = this.pendingChoiceForms.get(formId);
+                const pendingForm = this.actionHandlers.getPendingForm(formId);
                 if (pendingForm && formResult?.ts) {
                   pendingForm.messageTs = formResult.ts;
                 }
@@ -771,7 +798,7 @@ export class SlackHandler {
       }
 
       // Update reaction to show completion
-      await this.updateMessageReaction(sessionKey, 'white_check_mark');
+      await this.reactionManager.updateReaction(sessionKey, 'white_check_mark');
 
       this.logger.info('Completed processing message', {
         sessionKey,
@@ -785,7 +812,7 @@ export class SlackHandler {
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         this.logger.error('Error handling message', error);
-        
+
         // Update status to error
         if (statusMessageTs) {
           await this.app.client.chat.update({
@@ -796,15 +823,15 @@ export class SlackHandler {
         }
 
         // Update reaction to show error
-        await this.updateMessageReaction(sessionKey, 'x');
-        
+        await this.reactionManager.updateReaction(sessionKey, 'x');
+
         await say({
           text: `Error: ${error.message || 'Something went wrong'}`,
           thread_ts: thread_ts || ts,
         });
       } else {
         this.logger.debug('Request was aborted', { sessionKey });
-        
+
         // Update status to cancelled
         if (statusMessageTs) {
           await this.app.client.chat.update({
@@ -815,7 +842,7 @@ export class SlackHandler {
         }
 
         // Update reaction to show cancellation
-        await this.updateMessageReaction(sessionKey, 'stop_sign');
+        await this.reactionManager.updateReaction(sessionKey, 'stop_sign');
       }
 
       // Clean up temporary files in case of error too
@@ -831,8 +858,7 @@ export class SlackHandler {
         setTimeout(() => {
           this.todoManager.cleanupSession(session.sessionId!);
           this.todoMessages.delete(sessionKey);
-          this.originalMessages.delete(sessionKey);
-          this.currentReactions.delete(sessionKey);
+          this.reactionManager.cleanup(sessionKey);
           // Clean up tool tracking
           this.toolUseIdToName.clear();
         }, 5 * 60 * 1000); // 5 minutes
@@ -905,7 +931,7 @@ export class SlackHandler {
       }
 
       // Update reaction based on overall progress
-      await this.updateTaskProgressReaction(sessionKey, newTodos);
+      await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
     }
   }
 
@@ -927,80 +953,6 @@ export class SlackHandler {
     }
   }
 
-  private async updateMessageReaction(sessionKey: string, emoji: string): Promise<void> {
-    const originalMessage = this.originalMessages.get(sessionKey);
-    if (!originalMessage) {
-      return;
-    }
-
-    // Check if we're already showing this emoji
-    const currentEmoji = this.currentReactions.get(sessionKey);
-    if (currentEmoji === emoji) {
-      this.logger.debug('Reaction already set, skipping', { sessionKey, emoji });
-      return;
-    }
-
-    try {
-      // Remove the current reaction if it exists
-      if (currentEmoji) {
-        try {
-          await this.app.client.reactions.remove({
-            channel: originalMessage.channel,
-            timestamp: originalMessage.ts,
-            name: currentEmoji,
-          });
-          this.logger.debug('Removed previous reaction', { sessionKey, emoji: currentEmoji });
-        } catch (error) {
-          this.logger.debug('Failed to remove previous reaction (might not exist)', { 
-            sessionKey, 
-            emoji: currentEmoji,
-            error: (error as any).message 
-          });
-        }
-      }
-
-      // Add the new reaction
-      await this.app.client.reactions.add({
-        channel: originalMessage.channel,
-        timestamp: originalMessage.ts,
-        name: emoji,
-      });
-
-      // Track the current reaction
-      this.currentReactions.set(sessionKey, emoji);
-
-      this.logger.debug('Updated message reaction', { 
-        sessionKey, 
-        emoji, 
-        previousEmoji: currentEmoji,
-        channel: originalMessage.channel, 
-        ts: originalMessage.ts 
-      });
-    } catch (error) {
-      this.logger.warn('Failed to update message reaction', error);
-    }
-  }
-
-  private async updateTaskProgressReaction(sessionKey: string, todos: Todo[]): Promise<void> {
-    if (todos.length === 0) {
-      return;
-    }
-
-    const completed = todos.filter(t => t.status === 'completed').length;
-    const inProgress = todos.filter(t => t.status === 'in_progress').length;
-    const total = todos.length;
-
-    let emoji: string;
-    if (completed === total) {
-      emoji = 'white_check_mark'; // All tasks completed
-    } else if (inProgress > 0) {
-      emoji = 'arrows_counterclockwise'; // Tasks in progress
-    } else {
-      emoji = 'clipboard'; // Tasks pending
-    }
-
-    await this.updateMessageReaction(sessionKey, emoji);
-  }
 
   private getUserInfoContext(userId: string): string | null {
     const jiraName = userSettingsStore.getUserJiraName(userId);
@@ -1027,310 +979,6 @@ export class SlackHandler {
     return lines.join('\n');
   }
 
-  private async handleTerminateCommand(
-    sessionKey: string,
-    userId: string,
-    channel: string,
-    threadTs: string,
-    say: any
-  ): Promise<void> {
-    // Try to find the session
-    const session = this.claudeHandler.getSessionByKey(sessionKey);
-
-    if (!session) {
-      await say({
-        text: `❌ 세션을 찾을 수 없습니다: \`${sessionKey}\`\n\n\`sessions\` 명령으로 활성 세션 목록을 확인하세요.`,
-        thread_ts: threadTs,
-      });
-      return;
-    }
-
-    // Check if user owns this session
-    if (session.ownerId !== userId) {
-      await say({
-        text: `❌ 이 세션을 종료할 권한이 없습니다. 세션 소유자만 종료할 수 있습니다.`,
-        thread_ts: threadTs,
-      });
-      return;
-    }
-
-    // Terminate the session
-    const success = this.claudeHandler.terminateSession(sessionKey);
-
-    if (success) {
-      const channelName = await this.getChannelName(session.channelId);
-      await say({
-        text: `✅ 세션이 종료되었습니다.\n\n*채널:* ${channelName}\n*세션 키:* \`${sessionKey}\``,
-        thread_ts: threadTs,
-      });
-
-      // Also notify in the original thread if different
-      if (session.threadTs && session.threadTs !== threadTs) {
-        try {
-          await this.app.client.chat.postMessage({
-            channel: session.channelId,
-            thread_ts: session.threadTs,
-            text: `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
-          });
-        } catch (error) {
-          this.logger.warn('Failed to notify original thread about session termination', error);
-        }
-      }
-    } else {
-      await say({
-        text: `❌ 세션 종료에 실패했습니다: \`${sessionKey}\``,
-        thread_ts: threadTs,
-      });
-    }
-  }
-
-  /**
-   * Get username from Slack user ID
-   */
-  private async getUserName(userId: string): Promise<string> {
-    try {
-      const result = await this.app.client.users.info({ user: userId });
-      return result.user?.real_name || result.user?.name || userId;
-    } catch {
-      return userId;
-    }
-  }
-
-  /**
-   * Get channel name from channel ID
-   */
-  private async getChannelName(channelId: string): Promise<string> {
-    try {
-      // DM channels start with 'D'
-      if (channelId.startsWith('D')) {
-        return 'DM';
-      }
-      const result = await this.app.client.conversations.info({ channel: channelId });
-      return `#${(result.channel as any)?.name || channelId}`;
-    } catch {
-      return channelId;
-    }
-  }
-
-  /**
-   * Get permalink for a message
-   */
-  private async getPermalink(channel: string, messageTs: string): Promise<string | null> {
-    try {
-      const result = await this.app.client.chat.getPermalink({
-        channel,
-        message_ts: messageTs,
-      });
-      return result.permalink || null;
-    } catch (error) {
-      this.logger.warn('Failed to get permalink', { channel, messageTs, error });
-      return null;
-    }
-  }
-
-  /**
-   * Format sessions for a specific user with Block Kit
-   */
-  private async formatUserSessionsBlocks(userId: string): Promise<{ text: string; blocks: any[] }> {
-    const allSessions = this.claudeHandler.getAllSessions();
-    const userSessions: Array<{ key: string; session: ConversationSession }> = [];
-
-    // Find sessions where user is the owner
-    for (const [key, session] of allSessions.entries()) {
-      if (session.ownerId === userId && session.sessionId) {
-        userSessions.push({ key, session });
-      }
-    }
-
-    if (userSessions.length === 0) {
-      return {
-        text: '📭 활성 세션 없음',
-        blocks: [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.',
-            },
-          },
-        ],
-      };
-    }
-
-    // Sort by last activity (most recent first)
-    userSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
-
-    const blocks: any[] = [
-      {
-        type: 'header',
-        text: {
-          type: 'plain_text',
-          text: `📋 내 세션 목록 (${userSessions.length}개)`,
-          emoji: true,
-        },
-      },
-      { type: 'divider' },
-    ];
-
-    for (let i = 0; i < userSessions.length; i++) {
-      const { key, session } = userSessions[i];
-      const channelName = await this.getChannelName(session.channelId);
-      const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-      const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-      const workDir = session.workingDirectory
-        ? `\`${session.workingDirectory.split('/').pop()}\``
-        : '_미설정_';
-      const modelDisplay = session.model
-        ? userSettingsStore.getModelDisplayName(session.model as any)
-        : 'Sonnet 4';
-      const initiator = session.currentInitiatorName
-        ? ` | 🎯 ${session.currentInitiatorName}`
-        : '';
-
-      // Get permalink for the thread
-      const permalink = session.threadTs
-        ? await this.getPermalink(session.channelId, session.threadTs)
-        : null;
-
-      // Create session identifier for terminate button
-      const sessionId = key; // key is already "channel:threadTs"
-
-      // Build session info text
-      let sessionText = `*${i + 1}.*`;
-      if (session.title) {
-        sessionText += ` ${session.title}`;
-      }
-      sessionText += ` _${channelName}_`;
-      if (session.threadTs && permalink) {
-        sessionText += ` <${permalink}|(열기)>`;
-      } else if (session.threadTs) {
-        sessionText += ` (thread)`;
-      }
-      sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
-
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: sessionText,
-        },
-        accessory: {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: '🗑️ 종료',
-            emoji: true,
-          },
-          style: 'danger',
-          value: sessionId,
-          action_id: 'terminate_session',
-          confirm: {
-            title: {
-              type: 'plain_text',
-              text: '세션 종료',
-            },
-            text: {
-              type: 'mrkdwn',
-              text: `정말로 이 세션을 종료하시겠습니까?\n*${channelName}*`,
-            },
-            confirm: {
-              type: 'plain_text',
-              text: '종료',
-            },
-            deny: {
-              type: 'plain_text',
-              text: '취소',
-            },
-          },
-        },
-      });
-    }
-
-    // Add help text at the bottom
-    blocks.push(
-      { type: 'divider' },
-      {
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: '💡 `terminate <session-key>` 명령으로도 세션을 종료할 수 있습니다.',
-          },
-        ],
-      }
-    );
-
-    return {
-      text: `📋 내 세션 목록 (${userSessions.length}개)`,
-      blocks,
-    };
-  }
-
-  /**
-   * Format sessions for a specific user (text only, for backward compatibility)
-   */
-  private async formatUserSessions(userId: string): Promise<string> {
-    const result = await this.formatUserSessionsBlocks(userId);
-    return result.text;
-  }
-
-  /**
-   * Format all sessions overview
-   */
-  private async formatAllSessions(): Promise<string> {
-    const allSessions = this.claudeHandler.getAllSessions();
-    const activeSessions: Array<{ key: string; session: ConversationSession }> = [];
-
-    for (const [key, session] of allSessions.entries()) {
-      if (session.sessionId) {
-        activeSessions.push({ key, session });
-      }
-    }
-
-    if (activeSessions.length === 0) {
-      return '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.';
-    }
-
-    const lines: string[] = [
-      `🌐 *전체 세션 현황* (${activeSessions.length}개)`,
-      '',
-    ];
-
-    // Sort by last activity (most recent first)
-    activeSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
-
-    // Group by owner
-    const sessionsByOwner = new Map<string, Array<{ key: string; session: ConversationSession }>>();
-    for (const item of activeSessions) {
-      const ownerId = item.session.ownerId;
-      if (!sessionsByOwner.has(ownerId)) {
-        sessionsByOwner.set(ownerId, []);
-      }
-      sessionsByOwner.get(ownerId)!.push(item);
-    }
-
-    for (const [ownerId, sessions] of sessionsByOwner.entries()) {
-      const ownerName = sessions[0].session.ownerName || await this.getUserName(ownerId);
-      lines.push(`👤 *${ownerName}* (${sessions.length}개 세션)`);
-
-      for (const { session } of sessions) {
-        const channelName = await this.getChannelName(session.channelId);
-        const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-        const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-        const workDir = session.workingDirectory
-          ? session.workingDirectory.split('/').pop() || session.workingDirectory
-          : '-';
-        const initiator = session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
-          ? ` | 🎯 ${session.currentInitiatorName}`
-          : '';
-
-        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 📁 \`${workDir}\` | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`);
-      }
-      lines.push('');
-    }
-
-    return lines.join('\n');
-  }
 
   private async handleRestoreCommand(channel: string, threadTs: string, say: any): Promise<void> {
     // Check if credential manager is enabled
@@ -1412,1013 +1060,11 @@ export class SlackHandler {
     });
   }
 
-  private async getBotUserId(): Promise<string> {
-    if (!this.botUserId) {
-      try {
-        const response = await this.app.client.auth.test();
-        this.botUserId = response.user_id as string;
-      } catch (error) {
-        this.logger.error('Failed to get bot user ID', error);
-        this.botUserId = '';
-      }
-    }
-    return this.botUserId;
-  }
-
-  private async handleChannelJoin(channelId: string, say: any): Promise<void> {
-    try {
-      // Get channel info
-      const channelInfo = await this.app.client.conversations.info({
-        channel: channelId,
-      });
-
-      const channelName = (channelInfo.channel as any)?.name || 'this channel';
-      
-      let welcomeMessage = `👋 Hi! I'm Claude Code, your AI coding assistant.\n\n`;
-      welcomeMessage += `To get started, I need to know the default working directory for #${channelName}.\n\n`;
-      
-      if (config.baseDirectory) {
-        welcomeMessage += `You can use:\n`;
-        welcomeMessage += `• \`cwd project-name\` (relative to base directory: \`${config.baseDirectory}\`)\n`;
-        welcomeMessage += `• \`cwd /absolute/path/to/project\` (absolute path)\n\n`;
-      } else {
-        welcomeMessage += `Please set it using:\n`;
-        welcomeMessage += `• \`cwd /path/to/project\` or \`set directory /path/to/project\`\n\n`;
-      }
-      
-      welcomeMessage += `This will be the default working directory for this channel. `;
-      welcomeMessage += `You can always override it for specific threads by mentioning me with a different \`cwd\` command.\n\n`;
-      welcomeMessage += `Once set, you can ask me to help with code reviews, file analysis, debugging, and more!`;
-
-      await say({
-        text: welcomeMessage,
-      });
-
-      this.logger.info('Sent welcome message to channel', { channelId, channelName });
-    } catch (error) {
-      this.logger.error('Failed to handle channel join', error);
-    }
-  }
-
-  private formatMessage(text: string, isFinal: boolean): string {
-    // Convert markdown code blocks to Slack format
-    let formatted = text
-      .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
-        return '```' + code + '```';
-      })
-      .replace(/`([^`]+)`/g, '`$1`')
-      .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-      .replace(/__([^_]+)__/g, '_$1_');
-
-    return formatted;
-  }
-
   /**
-   * Extract UserChoice or UserChoices JSON from message text
-   * Looks for ```json blocks containing user_choice or user_choices type
+   * Setup all event handlers via EventRouter
    */
-  private extractUserChoice(text: string): {
-    choice: UserChoice | null;
-    choices: UserChoices | null;
-    textWithoutChoice: string;
-  } {
-    // Pattern to match JSON code blocks
-    const jsonBlockPattern = /```json\s*\n?([\s\S]*?)\n?```/g;
-    let match;
-    let choice: UserChoice | null = null;
-    let choices: UserChoices | null = null;
-    let textWithoutChoice = text;
-
-    while ((match = jsonBlockPattern.exec(text)) !== null) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-
-        // Check for multi-question format first
-        if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
-          choices = parsed as UserChoices;
-          textWithoutChoice = text.replace(match[0], '').trim();
-          break;
-        }
-
-        // Check for single question format
-        if (parsed.type === 'user_choice' && Array.isArray(parsed.choices)) {
-          choice = parsed as UserChoice;
-          textWithoutChoice = text.replace(match[0], '').trim();
-          break;
-        }
-      } catch {
-        // Not valid JSON, continue
-      }
-    }
-
-    return { choice, choices, textWithoutChoice };
-  }
-
-  setupEventHandlers() {
-    // Handle direct messages (DM only)
-    this.app.message(async ({ message, say }) => {
-      if (message.subtype === undefined && 'user' in message) {
-        const messageEvent = message as any;
-        // Only handle DM messages here - channel messages are handled by app_mention or message event
-        if (!messageEvent.channel?.startsWith('D')) {
-          return;
-        }
-        this.logger.info('Handling direct message event');
-        await this.handleMessage(message as MessageEvent, say);
-      }
-    });
-
-    // Handle app mentions
-    this.app.event('app_mention', async ({ event, say }) => {
-      this.logger.info('Handling app mention event');
-      const text = event.text.replace(/<@[^>]+>/g, '').trim();
-      await this.handleMessage({
-        ...event,
-        text,
-      } as MessageEvent, say);
-    });
-
-    // Handle thread messages without mention (if session exists)
-    this.app.event('message', async ({ event, say }) => {
-      const messageEvent = event as any;
-
-      // Log ALL incoming message events for debugging
-      this.logger.debug('📨 RAW message event received', {
-        type: event.type,
-        subtype: event.subtype,
-        channel: messageEvent.channel,
-        channelType: messageEvent.channel_type,
-        user: messageEvent.user,
-        bot_id: (event as any).bot_id,
-        thread_ts: messageEvent.thread_ts,
-        ts: messageEvent.ts,
-        text: messageEvent.text?.substring(0, 50),
-      });
-
-      // Skip bot messages
-      if ('bot_id' in event || !('user' in event)) {
-        this.logger.debug('Skipping bot message or no user');
-        return;
-      }
-
-      // Handle file uploads - only in DM or existing session
-      if (event.subtype === 'file_share' && messageEvent.files) {
-        const channel = messageEvent.channel;
-        const threadTs = messageEvent.thread_ts;
-        const isDM = channel.startsWith('D');
-
-        // Only handle file uploads in DM or if there's an existing session in the thread
-        if (isDM) {
-          this.logger.info('Handling file upload event in DM');
-          await this.handleMessage(messageEvent as MessageEvent, say);
-          return;
-        }
-
-        // In channels, only handle if there's an existing session
-        if (threadTs) {
-          const session = this.claudeHandler.getSession(channel, threadTs);
-          if (session?.sessionId) {
-            this.logger.info('Handling file upload event in existing session', {
-              channel,
-              threadTs,
-              sessionId: session.sessionId,
-            });
-            await this.handleMessage(messageEvent as MessageEvent, say);
-            return;
-          }
-        }
-
-        this.logger.debug('Ignoring file upload - not in DM and no existing session', {
-          channel,
-          threadTs,
-          isDM,
-        });
-        return;
-      }
-
-      // Handle thread messages without mention if session exists
-      if (event.subtype === undefined && messageEvent.thread_ts) {
-        const user = messageEvent.user;
-        const channel = messageEvent.channel;
-        const threadTs = messageEvent.thread_ts;
-        const text = messageEvent.text || '';
-
-        // Skip if message contains bot mention (will be handled by app_mention event)
-        const botId = await this.getBotUserId();
-        if (botId && text.includes(`<@${botId}>`)) {
-          this.logger.debug('Skipping thread message with bot mention (handled by app_mention)', {
-            channel,
-            threadTs,
-          });
-          return;
-        }
-
-        // Check if we have an existing session for this thread (shared session, no user in key)
-        const session = this.claudeHandler.getSession(channel, threadTs);
-        if (session?.sessionId) {
-          this.logger.info('Handling thread message without mention (session exists)', {
-            user,
-            channel,
-            threadTs,
-            sessionId: session.sessionId,
-            owner: session.ownerName,
-          });
-          await this.handleMessage(messageEvent as MessageEvent, say);
-        }
-      }
-    });
-
-    // Handle bot being added to channels
-    this.app.event('member_joined_channel', async ({ event, say }) => {
-      // Check if the bot was added to the channel
-      if (event.user === await this.getBotUserId()) {
-        this.logger.info('Bot added to channel', { channel: event.channel });
-        await this.handleChannelJoin(event.channel, say);
-      }
-    });
-
-    // Handle permission approval button clicks
-    this.app.action('approve_tool', async ({ ack, body, respond }) => {
-      await ack();
-      
-      try {
-        const approvalId = (body as any).actions[0].value;
-        const user = (body as any).user?.id;
-        const triggerId = (body as any).trigger_id;
-        
-        this.logger.info('Tool approval granted', { 
-          approvalId, 
-          user,
-          triggerId 
-        });
-        
-        // Resolve the approval via shared store
-        const response: PermissionResponse = {
-          behavior: 'allow',
-          message: 'Approved by user'
-        };
-        await sharedStore.storePermissionResponse(approvalId, response);
-        
-        // Provide immediate feedback
-        await respond({
-          response_type: 'ephemeral',
-          text: '✅ Tool execution approved. Claude will now proceed with the operation.',
-          replace_original: false
-        });
-        
-        this.logger.debug('Approval processed successfully', { approvalId });
-      } catch (error) {
-        this.logger.error('Error processing tool approval', error);
-        
-        await respond({
-          response_type: 'ephemeral',
-          text: '❌ Error processing approval. The request may have already been handled.',
-          replace_original: false
-        });
-      }
-    });
-
-    // Handle permission denial button clicks
-    this.app.action('deny_tool', async ({ ack, body, respond }) => {
-      await ack();
-
-      try {
-        const approvalId = (body as any).actions[0].value;
-        const user = (body as any).user?.id;
-        const triggerId = (body as any).trigger_id;
-
-        this.logger.info('Tool approval denied', {
-          approvalId,
-          user,
-          triggerId
-        });
-
-        // Resolve the denial via shared store
-        const response: PermissionResponse = {
-          behavior: 'deny',
-          message: 'Denied by user'
-        };
-        await sharedStore.storePermissionResponse(approvalId, response);
-
-        // Provide immediate feedback
-        await respond({
-          response_type: 'ephemeral',
-          text: '❌ Tool execution denied. Claude will not proceed with this operation.',
-          replace_original: false
-        });
-
-        this.logger.debug('Denial processed successfully', { approvalId });
-      } catch (error) {
-        this.logger.error('Error processing tool denial', error);
-
-        await respond({
-          response_type: 'ephemeral',
-          text: '❌ Error processing denial. The request may have already been handled.',
-          replace_original: false
-        });
-      }
-    });
-
-    // Handle session termination button clicks
-    this.app.action('terminate_session', async ({ ack, body, respond }) => {
-      await ack();
-
-      try {
-        const sessionKey = (body as any).actions[0].value;
-        const userId = (body as any).user?.id;
-
-        this.logger.info('Session termination requested', { sessionKey, userId });
-
-        // Get session to verify ownership
-        const session = this.claudeHandler.getSessionByKey(sessionKey);
-
-        if (!session) {
-          await respond({
-            response_type: 'ephemeral',
-            text: `❌ 세션을 찾을 수 없습니다. 이미 종료되었을 수 있습니다.`,
-            replace_original: false
-          });
-          return;
-        }
-
-        // Check ownership
-        if (session.ownerId !== userId) {
-          await respond({
-            response_type: 'ephemeral',
-            text: `❌ 이 세션을 종료할 권한이 없습니다. 세션 소유자만 종료할 수 있습니다.`,
-            replace_original: false
-          });
-          return;
-        }
-
-        // Terminate the session
-        const channelName = await this.getChannelName(session.channelId);
-        const success = this.claudeHandler.terminateSession(sessionKey);
-
-        if (success) {
-          // Update the sessions list message with refreshed data
-          const { text: newText, blocks: newBlocks } = await this.formatUserSessionsBlocks(userId);
-          await respond({
-            text: newText,
-            blocks: newBlocks,
-            replace_original: true
-          });
-
-          // Also send ephemeral confirmation
-          await this.app.client.chat.postEphemeral({
-            channel: (body as any).channel?.id,
-            user: userId,
-            text: `✅ 세션이 종료되었습니다: *${session.title || channelName}*`,
-          });
-
-          // Notify in the original thread
-          if (session.threadTs) {
-            try {
-              await this.app.client.chat.postMessage({
-                channel: session.channelId,
-                thread_ts: session.threadTs,
-                text: `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
-              });
-            } catch (error) {
-              this.logger.warn('Failed to notify original thread about session termination', error);
-            }
-          }
-        } else {
-          await respond({
-            response_type: 'ephemeral',
-            text: `❌ 세션 종료에 실패했습니다.`,
-            replace_original: false
-          });
-        }
-      } catch (error) {
-        this.logger.error('Error processing session termination', error);
-
-        await respond({
-          response_type: 'ephemeral',
-          text: '❌ 세션 종료 중 오류가 발생했습니다.',
-          replace_original: false
-        });
-      }
-    });
-
-    // Handle user choice button clicks (pattern matches user_choice_1, user_choice_2, etc.)
-    this.app.action(/^user_choice_/, async ({ ack, body }) => {
-      await ack();
-
-      try {
-        const action = (body as any).actions[0];
-        const valueData = JSON.parse(action.value);
-        const { sessionKey, choiceId, label, question } = valueData;
-        const userId = (body as any).user?.id;
-        const channel = (body as any).channel?.id;
-        const messageTs = (body as any).message?.ts;
-
-        this.logger.info('User choice selected', {
-          sessionKey,
-          choiceId,
-          label,
-          userId,
-        });
-
-        // Get the thread_ts from the message or use the message ts
-        const threadTs = (body as any).message?.thread_ts || messageTs;
-
-        // Update the original message to show the selection
-        if (messageTs && channel) {
-          try {
-            await this.app.client.chat.update({
-              channel,
-              ts: messageTs,
-              text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-              blocks: [
-                {
-                  type: 'section',
-                  text: {
-                    type: 'mrkdwn',
-                    text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-                  },
-                },
-              ],
-            });
-          } catch (error) {
-            this.logger.warn('Failed to update choice message', error);
-          }
-        }
-
-        // Get the session to find the correct thread
-        const session = this.claudeHandler.getSessionByKey(sessionKey);
-        if (session) {
-          // Create a say function using the app client
-          const say = async (args: any) => {
-            const msgArgs = typeof args === 'string' ? { text: args } : args;
-            return this.app.client.chat.postMessage({
-              channel,
-              ...msgArgs,
-            });
-          };
-
-          // Handle the message as if the user sent it
-          await this.handleMessage(
-            {
-              user: userId,
-              channel,
-              thread_ts: threadTs,
-              ts: messageTs,
-              text: choiceId,
-            } as MessageEvent,
-            say
-          );
-        } else {
-          this.logger.warn('Session not found for user choice', { sessionKey });
-          await this.app.client.chat.postEphemeral({
-            channel,
-            user: userId,
-            text: '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
-          });
-        }
-      } catch (error) {
-        this.logger.error('Error processing user choice', error);
-      }
-    });
-
-    // Handle multi-choice form button clicks (pattern matches multi_choice_formId_questionId_choiceId)
-    this.app.action(/^multi_choice_/, async ({ ack, body }) => {
-      await ack();
-
-      try {
-        const action = (body as any).actions[0];
-        const valueData = JSON.parse(action.value);
-        const { formId, sessionKey, questionId, choiceId, label } = valueData;
-        const userId = (body as any).user?.id;
-        const channel = (body as any).channel?.id;
-        const messageTs = (body as any).message?.ts;
-
-        this.logger.info('Multi-choice selection', {
-          formId,
-          questionId,
-          choiceId,
-          label,
-          userId,
-        });
-
-        // Get the pending form
-        const pendingForm = this.pendingChoiceForms.get(formId);
-        if (!pendingForm) {
-          this.logger.warn('Pending form not found', { formId });
-          await this.app.client.chat.postEphemeral({
-            channel,
-            user: userId,
-            text: '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
-          });
-          return;
-        }
-
-        // Store the selection
-        pendingForm.selections[questionId] = { choiceId, label };
-
-        // Check if all questions are answered
-        const totalQuestions = pendingForm.questions.length;
-        const answeredCount = Object.keys(pendingForm.selections).length;
-
-        // Rebuild the form blocks with updated selections - need original choices data
-        const choicesData: UserChoices = {
-          type: 'user_choices',
-          questions: pendingForm.questions,
-        };
-
-        const updatedPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(
-          choicesData,
-          formId,
-          sessionKey,
-          pendingForm.selections
-        );
-
-        // Update the message with new blocks/attachments
-        try {
-          await this.app.client.chat.update({
-            channel,
-            ts: messageTs,
-            text: '📋 선택이 필요합니다',
-            ...updatedPayload,
-          });
-        } catch (error) {
-          this.logger.warn('Failed to update multi-choice form', error);
-        }
-
-        // If all questions answered, send to Claude
-        if (answeredCount === totalQuestions) {
-          this.logger.info('All multi-choice selections complete', { formId, selections: pendingForm.selections });
-
-          // Format the combined response
-          const responses = pendingForm.questions.map((q) => {
-            const sel = pendingForm.selections[q.id];
-            return `${q.question}: ${sel.choiceId}. ${sel.label}`;
-          });
-          const combinedMessage = responses.join('\n');
-
-          // Remove the pending form
-          this.pendingChoiceForms.delete(formId);
-
-          // Update form to show completion
-          try {
-            const completedBlocks = [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
-                },
-              },
-            ];
-
-            await this.app.client.chat.update({
-              channel,
-              ts: messageTs,
-              text: '✅ 모든 선택 완료',
-              blocks: completedBlocks,
-            });
-          } catch (error) {
-            this.logger.warn('Failed to update completed form', error);
-          }
-
-          // Get session and send to Claude
-          const session = this.claudeHandler.getSessionByKey(sessionKey);
-          if (session) {
-            const say = async (args: any) => {
-              const msgArgs = typeof args === 'string' ? { text: args } : args;
-              return this.app.client.chat.postMessage({
-                channel,
-                ...msgArgs,
-              });
-            };
-
-            await this.handleMessage(
-              {
-                user: userId,
-                channel,
-                thread_ts: pendingForm.threadTs,
-                ts: messageTs,
-                text: combinedMessage,
-              } as MessageEvent,
-              say
-            );
-          } else {
-            this.logger.warn('Session not found for multi-choice completion', { sessionKey });
-            await this.app.client.chat.postEphemeral({
-              channel,
-              user: userId,
-              text: '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
-            });
-          }
-        }
-      } catch (error) {
-        this.logger.error('Error processing multi-choice selection', error);
-      }
-    });
-
-    // Handle custom input button for single choice
-    this.app.action('custom_input_single', async ({ ack, body, client }) => {
-      await ack();
-
-      try {
-        const action = (body as any).actions[0];
-        const valueData = JSON.parse(action.value);
-        const { sessionKey, question } = valueData;
-        const triggerId = (body as any).trigger_id;
-        const channel = (body as any).channel?.id;
-        const messageTs = (body as any).message?.ts;
-        const threadTs = (body as any).message?.thread_ts || messageTs;
-
-        // Open modal for text input
-        await client.views.open({
-          trigger_id: triggerId,
-          view: {
-            type: 'modal',
-            callback_id: 'custom_input_submit',
-            private_metadata: JSON.stringify({
-              sessionKey,
-              question,
-              channel,
-              messageTs,
-              threadTs,
-              type: 'single',
-            }),
-            title: {
-              type: 'plain_text',
-              text: '직접 입력',
-              emoji: true,
-            },
-            submit: {
-              type: 'plain_text',
-              text: '제출',
-              emoji: true,
-            },
-            close: {
-              type: 'plain_text',
-              text: '취소',
-              emoji: true,
-            },
-            blocks: [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `*${question}*`,
-                },
-              },
-              {
-                type: 'input',
-                block_id: 'custom_input_block',
-                element: {
-                  type: 'plain_text_input',
-                  action_id: 'custom_input_text',
-                  multiline: true,
-                  placeholder: {
-                    type: 'plain_text',
-                    text: '원하는 내용을 자유롭게 입력하세요...',
-                  },
-                },
-                label: {
-                  type: 'plain_text',
-                  text: '응답',
-                  emoji: true,
-                },
-              },
-            ],
-          },
-        });
-      } catch (error) {
-        this.logger.error('Error opening custom input modal', error);
-      }
-    });
-
-    // Handle custom input button for multi-choice
-    this.app.action(/^custom_input_multi_/, async ({ ack, body, client }) => {
-      await ack();
-
-      try {
-        const action = (body as any).actions[0];
-        const valueData = JSON.parse(action.value);
-        const { formId, sessionKey, questionId, question } = valueData;
-        const triggerId = (body as any).trigger_id;
-        const channel = (body as any).channel?.id;
-        const messageTs = (body as any).message?.ts;
-        const threadTs = (body as any).message?.thread_ts || messageTs;
-
-        // Open modal for text input
-        await client.views.open({
-          trigger_id: triggerId,
-          view: {
-            type: 'modal',
-            callback_id: 'custom_input_submit',
-            private_metadata: JSON.stringify({
-              formId,
-              sessionKey,
-              questionId,
-              question,
-              channel,
-              messageTs,
-              threadTs,
-              type: 'multi',
-            }),
-            title: {
-              type: 'plain_text',
-              text: '직접 입력',
-              emoji: true,
-            },
-            submit: {
-              type: 'plain_text',
-              text: '제출',
-              emoji: true,
-            },
-            close: {
-              type: 'plain_text',
-              text: '취소',
-              emoji: true,
-            },
-            blocks: [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `*${question}*`,
-                },
-              },
-              {
-                type: 'input',
-                block_id: 'custom_input_block',
-                element: {
-                  type: 'plain_text_input',
-                  action_id: 'custom_input_text',
-                  multiline: true,
-                  placeholder: {
-                    type: 'plain_text',
-                    text: '원하는 내용을 자유롭게 입력하세요...',
-                  },
-                },
-                label: {
-                  type: 'plain_text',
-                  text: '응답',
-                  emoji: true,
-                },
-              },
-            ],
-          },
-        });
-      } catch (error) {
-        this.logger.error('Error opening custom input modal for multi-choice', error);
-      }
-    });
-
-    // Handle modal submission for custom input
-    this.app.view('custom_input_submit', async ({ ack, body, view }) => {
-      await ack();
-
-      try {
-        const metadata = JSON.parse(view.private_metadata);
-        const { sessionKey, question, channel, messageTs, threadTs, type, formId, questionId } = metadata;
-        const userId = body.user.id;
-
-        // Get the input value
-        const inputValue = view.state.values.custom_input_block.custom_input_text.value || '';
-
-        this.logger.info('Custom input submitted', {
-          type,
-          sessionKey,
-          questionId,
-          inputLength: inputValue.length,
-          userId,
-        });
-
-        if (type === 'single') {
-          // Handle single choice custom input
-          // Update the original message
-          if (messageTs && channel) {
-            try {
-              await this.app.client.chat.update({
-                channel,
-                ts: messageTs,
-                text: `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 100)}${inputValue.length > 100 ? '...' : ''}_`,
-                blocks: [
-                  {
-                    type: 'section',
-                    text: {
-                      type: 'mrkdwn',
-                      text: `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`,
-                    },
-                  },
-                ],
-              });
-            } catch (error) {
-              this.logger.warn('Failed to update choice message after custom input', error);
-            }
-          }
-
-          // Send to Claude
-          const session = this.claudeHandler.getSessionByKey(sessionKey);
-          if (session) {
-            const say = async (args: any) => {
-              const msgArgs = typeof args === 'string' ? { text: args } : args;
-              return this.app.client.chat.postMessage({
-                channel,
-                ...msgArgs,
-              });
-            };
-
-            await this.handleMessage(
-              {
-                user: userId,
-                channel,
-                thread_ts: threadTs,
-                ts: messageTs,
-                text: inputValue,
-              } as MessageEvent,
-              say
-            );
-          }
-        } else if (type === 'multi') {
-          // Handle multi-choice custom input
-          const pendingForm = this.pendingChoiceForms.get(formId);
-          if (!pendingForm) {
-            this.logger.warn('Pending form not found for custom input', { formId });
-            return;
-          }
-
-          // Store the custom selection
-          pendingForm.selections[questionId] = {
-            choiceId: '직접입력',
-            label: inputValue.substring(0, 50) + (inputValue.length > 50 ? '...' : ''),
-          };
-
-          // Check if all questions answered
-          const totalQuestions = pendingForm.questions.length;
-          const answeredCount = Object.keys(pendingForm.selections).length;
-
-          // Rebuild and update the form
-          const choicesData: UserChoices = {
-            type: 'user_choices',
-            questions: pendingForm.questions,
-          };
-
-          const updatedPayload2 = UserChoiceHandler.buildMultiChoiceFormBlocks(
-            choicesData,
-            formId,
-            sessionKey,
-            pendingForm.selections
-          );
-
-          try {
-            await this.app.client.chat.update({
-              channel,
-              ts: messageTs,
-              text: '📋 선택이 필요합니다',
-              ...updatedPayload2,
-            });
-          } catch (error) {
-            this.logger.warn('Failed to update multi-choice form after custom input', error);
-          }
-
-          // If all answered, send to Claude
-          if (answeredCount === totalQuestions) {
-            const responses = pendingForm.questions.map((q) => {
-              const sel = pendingForm.selections[q.id];
-              if (sel.choiceId === '직접입력') {
-                return `${q.question}: (직접입력) ${sel.label}`;
-              }
-              return `${q.question}: ${sel.choiceId}. ${sel.label}`;
-            });
-            const combinedMessage = responses.join('\n');
-
-            this.pendingChoiceForms.delete(formId);
-
-            // Update form to completion
-            try {
-              await this.app.client.chat.update({
-                channel,
-                ts: messageTs,
-                text: '✅ 모든 선택 완료',
-                blocks: [
-                  {
-                    type: 'section',
-                    text: {
-                      type: 'mrkdwn',
-                      text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
-                    },
-                  },
-                ],
-              });
-            } catch (error) {
-              this.logger.warn('Failed to update completed form', error);
-            }
-
-            // Send to Claude
-            const session = this.claudeHandler.getSessionByKey(sessionKey);
-            if (session) {
-              const say = async (args: any) => {
-                const msgArgs = typeof args === 'string' ? { text: args } : args;
-                return this.app.client.chat.postMessage({
-                  channel,
-                  ...msgArgs,
-                });
-              };
-
-              await this.handleMessage(
-                {
-                  user: userId,
-                  channel,
-                  thread_ts: threadTs,
-                  ts: messageTs,
-                  text: combinedMessage,
-                } as MessageEvent,
-                say
-              );
-            }
-          }
-        }
-      } catch (error) {
-        this.logger.error('Error processing custom input submission', error);
-      }
-    });
-
-    // Register session expiry callbacks
-    this.claudeHandler.setExpiryCallbacks({
-      onWarning: this.handleSessionWarning.bind(this),
-      onExpiry: this.handleSessionExpiry.bind(this),
-    });
-
-    // Cleanup inactive sessions periodically
-    setInterval(async () => {
-      this.logger.debug('Running session cleanup');
-      await this.claudeHandler.cleanupInactiveSessions();
-    }, 5 * 60 * 1000); // Every 5 minutes
-  }
-
-  /**
-   * Handle session expiry warning - send or update warning message
-   */
-  private async handleSessionWarning(
-    session: ConversationSession,
-    timeRemaining: number,
-    existingMessageTs?: string
-  ): Promise<string | undefined> {
-    const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${MessageFormatter.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
-    const threadTs = session.threadTs;
-    const channel = session.channelId;
-
-    try {
-      if (existingMessageTs) {
-        // Update existing warning message
-        await this.app.client.chat.update({
-          channel,
-          ts: existingMessageTs,
-          text: warningText,
-        });
-        return existingMessageTs;
-      } else {
-        // Create new warning message
-        const result = await this.app.client.chat.postMessage({
-          channel,
-          text: warningText,
-          thread_ts: threadTs,
-        });
-        return result.ts;
-      }
-    } catch (error) {
-      this.logger.error('Failed to send/update session warning message', error);
-      return undefined;
-    }
-  }
-
-  /**
-   * Handle session expiry - send final message that session is closed
-   */
-  private async handleSessionExpiry(session: ConversationSession): Promise<void> {
-    const expiryText = `🔒 *세션이 종료되었습니다*\n\n24시간 동안 활동이 없어 이 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
-
-    try {
-      // Update the warning message to show session closed, or send new message
-      if (session.warningMessageTs) {
-        await this.app.client.chat.update({
-          channel: session.channelId,
-          ts: session.warningMessageTs,
-          text: expiryText,
-        });
-      } else {
-        await this.app.client.chat.postMessage({
-          channel: session.channelId,
-          text: expiryText,
-          thread_ts: session.threadTs,
-        });
-      }
-
-      this.logger.info('Session expired', {
-        userId: session.userId,
-        channelId: session.channelId,
-        threadTs: session.threadTs,
-      });
-    } catch (error) {
-      this.logger.error('Failed to send session expiry message', error);
-    }
+  setupEventHandlers(): void {
+    this.eventRouter.setup();
   }
 
   /**
@@ -2426,44 +1072,7 @@ export class SlackHandler {
    * Called before the service shuts down
    */
   async notifyShutdown(): Promise<void> {
-    const shutdownText = `🔄 *서버 재시작 중*\n\n서버가 재시작됩니다. 잠시 후 다시 대화를 이어갈 수 있습니다.\n세션이 저장되었으므로 서버 재시작 후에도 대화 내용이 유지됩니다.`;
-
-    const sessions = this.claudeHandler.getAllSessions();
-    const notifyPromises: Promise<void>[] = [];
-
-    for (const [key, session] of sessions.entries()) {
-      // Only notify sessions with active conversations (have sessionId)
-      if (session.sessionId) {
-        const promise = (async () => {
-          try {
-            await this.app.client.chat.postMessage({
-              channel: session.channelId,
-              text: shutdownText,
-              thread_ts: session.threadTs,
-            });
-            this.logger.debug('Sent shutdown notification', {
-              sessionKey: key,
-              channel: session.channelId,
-            });
-          } catch (error) {
-            this.logger.error('Failed to send shutdown notification', {
-              sessionKey: key,
-              error,
-            });
-          }
-        })();
-        notifyPromises.push(promise);
-      }
-    }
-
-    // Wait for all notifications to complete (with timeout)
-    if (notifyPromises.length > 0) {
-      this.logger.info(`Sending shutdown notifications to ${notifyPromises.length} sessions`);
-      await Promise.race([
-        Promise.all(notifyPromises),
-        new Promise(resolve => setTimeout(resolve, 5000)), // 5 second timeout
-      ]);
-    }
+    await this.sessionUiManager.notifyShutdown();
   }
 
   /**
@@ -2479,167 +1088,5 @@ export class SlackHandler {
    */
   saveSessions(): void {
     this.claudeHandler.saveSessions();
-  }
-
-  /**
-   * Start periodic status update for an MCP call
-   * - codex: shows status immediately and updates every 30s
-   * - others: shows status after 10s delay, then updates every 30s
-   */
-  private async startMcpStatusUpdate(
-    callId: string,
-    serverName: string,
-    toolName: string,
-    channel: string,
-    threadTs: string
-  ): Promise<void> {
-    const isCodex = serverName === 'codex';
-    const initialDelay = isCodex ? 0 : 10000; // codex: immediate, others: 10s delay
-
-    // Get predicted duration for status message
-    const predicted = mcpCallTracker.getPredictedDuration(serverName, toolName);
-
-    // Helper to create/update status message
-    const createOrUpdateStatusMessage = async (isInitial: boolean) => {
-      const elapsed = mcpCallTracker.getElapsedTime(callId);
-      if (elapsed === null) {
-        // Call already ended
-        return;
-      }
-
-      let statusText = `⏳ *MCP 실행 중: ${serverName} → ${toolName}*\n`;
-      statusText += `경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
-
-      if (predicted) {
-        const remaining = Math.max(0, predicted - elapsed);
-        const progress = Math.min(100, (elapsed / predicted) * 100);
-        statusText += `\n예상 시간: ${McpCallTracker.formatDuration(predicted)}`;
-        if (remaining > 0) {
-          statusText += ` | 남은 시간: ~${McpCallTracker.formatDuration(remaining)}`;
-        }
-        statusText += `\n진행률: ${progress.toFixed(0)}%`;
-
-        // Add progress bar
-        const progressBarLength = 20;
-        const filledLength = Math.round((progress / 100) * progressBarLength);
-        const emptyLength = progressBarLength - filledLength;
-        const progressBar = '█'.repeat(filledLength) + '░'.repeat(emptyLength);
-        statusText += ` \`${progressBar}\``;
-      }
-
-      const msgInfo = this.mcpStatusMessages.get(callId);
-
-      if (isInitial || !msgInfo) {
-        // Create new status message
-        try {
-          const result = await this.app.client.chat.postMessage({
-            channel,
-            thread_ts: threadTs,
-            text: statusText,
-          });
-
-          if (result.ts) {
-            this.mcpStatusMessages.set(callId, { ts: result.ts, channel, serverName, toolName });
-          }
-        } catch (error) {
-          this.logger.warn('Failed to create MCP status message', error);
-        }
-      } else {
-        // Update existing status message
-        try {
-          await this.app.client.chat.update({
-            channel: msgInfo.channel,
-            ts: msgInfo.ts,
-            text: statusText,
-          });
-          this.logger.debug('Updated MCP status message', { callId, elapsed });
-        } catch (error) {
-          this.logger.warn('Failed to update MCP status message', error);
-        }
-      }
-    };
-
-    if (isCodex) {
-      // Codex: create status message immediately
-      await createOrUpdateStatusMessage(true);
-
-      // Set up 30-second interval for updates
-      const interval = setInterval(async () => {
-        const elapsed = mcpCallTracker.getElapsedTime(callId);
-        if (elapsed === null) {
-          this.stopMcpStatusUpdate(callId);
-          return;
-        }
-        await createOrUpdateStatusMessage(false);
-      }, 30000);
-
-      this.mcpStatusIntervals.set(callId, interval);
-    } else {
-      // Others: wait 10s before showing status, then update every 30s
-      const initialTimeout = setTimeout(async () => {
-        const elapsed = mcpCallTracker.getElapsedTime(callId);
-        if (elapsed === null) {
-          // Call already ended before 10s, no status message needed
-          return;
-        }
-
-        // Create initial status message after 10s
-        await createOrUpdateStatusMessage(true);
-
-        // Set up 30-second interval for subsequent updates
-        const interval = setInterval(async () => {
-          const currentElapsed = mcpCallTracker.getElapsedTime(callId);
-          if (currentElapsed === null) {
-            this.stopMcpStatusUpdate(callId);
-            return;
-          }
-          await createOrUpdateStatusMessage(false);
-        }, 30000);
-
-        this.mcpStatusIntervals.set(callId, interval);
-      }, initialDelay);
-
-      // Store the timeout so we can clear it if call ends early
-      this.mcpStatusIntervals.set(callId, initialTimeout as unknown as NodeJS.Timeout);
-    }
-  }
-
-  /**
-   * Stop periodic status update for an MCP call and update the message to show completion
-   */
-  private async stopMcpStatusUpdate(callId: string, duration?: number | null): Promise<void> {
-    this.logger.debug('Stopping MCP status update', { callId, duration });
-
-    // Clear the interval/timeout first
-    const timer = this.mcpStatusIntervals.get(callId);
-    if (timer) {
-      clearInterval(timer);
-      clearTimeout(timer);
-      this.mcpStatusIntervals.delete(callId);
-      this.logger.debug('Cleared timer for MCP call', { callId });
-    }
-
-    // Update the status message to show completion (only if status message exists)
-    const msgInfo = this.mcpStatusMessages.get(callId);
-    if (msgInfo) {
-      try {
-        let completedText = `✅ *MCP 완료: ${msgInfo.serverName} → ${msgInfo.toolName}*`;
-        if (duration !== null && duration !== undefined) {
-          completedText += ` (${McpCallTracker.formatDuration(duration)})`;
-        }
-
-        await this.app.client.chat.update({
-          channel: msgInfo.channel,
-          ts: msgInfo.ts,
-          text: completedText,
-        });
-        this.logger.debug('Updated MCP status message to completed', { callId, duration });
-      } catch (error) {
-        this.logger.warn('Failed to update MCP status message to completed', error);
-      }
-      this.mcpStatusMessages.delete(callId);
-    }
-    // If no msgInfo, the call completed before status message was shown (< 10s for non-codex)
-    // In this case, only the MCP result will be shown, which is the expected behavior
   }
 }
