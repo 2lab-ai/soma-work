@@ -15,3 +15,7 @@ export { McpStatusDisplay } from './mcp-status-tracker';
 export { SessionUiManager, SayFn } from './session-manager';
 export { ActionHandlers, ActionHandlerContext, MessageHandler, MessageEvent } from './action-handlers';
 export { EventRouter, EventRouterDeps } from './event-router';
+
+// Phase 2: Session state and concurrency
+export { RequestCoordinator } from './request-coordinator';
+export { ToolTracker } from './tool-tracker';

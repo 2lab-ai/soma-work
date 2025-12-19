@@ -25,6 +25,8 @@ import {
   ActionHandlerContext,
   EventRouter,
   EventRouterDeps,
+  RequestCoordinator,
+  ToolTracker,
 } from './slack';
 
 interface MessageEvent {
@@ -47,25 +49,24 @@ interface MessageEvent {
 export class SlackHandler {
   private app: App;
   private claudeHandler: ClaudeHandler;
-  private activeControllers: Map<string, AbortController> = new Map();
   private logger = new Logger('SlackHandler');
   private workingDirManager: WorkingDirectoryManager;
   private fileHandler: FileHandler;
   private todoManager: TodoManager;
   private mcpManager: McpManager;
   private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
-  // Track tool_use_id -> tool_name mapping for MCP result display
-  private toolUseIdToName: Map<string, string> = new Map();
-  // Track MCP call IDs for duration tracking
-  private toolUseIdToCallId: Map<string, string> = new Map();
 
-  // New modular helpers
+  // Modular helpers
   private slackApi: SlackApiHelper;
   private reactionManager: ReactionManager;
   private mcpStatusDisplay: McpStatusDisplay;
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
   private eventRouter: EventRouter;
+
+  // Phase 2: Session state and concurrency
+  private requestCoordinator: RequestCoordinator;
+  private toolTracker: ToolTracker;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -75,8 +76,12 @@ export class SlackHandler {
     this.fileHandler = new FileHandler();
     this.todoManager = new TodoManager();
 
-    // Initialize new modular helpers
+    // Initialize modular helpers
     this.slackApi = new SlackApiHelper(app);
+
+    // Phase 2: Session state and concurrency
+    this.requestCoordinator = new RequestCoordinator();
+    this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
@@ -439,11 +444,10 @@ export class SlackHandler {
     const canInterrupt = this.claudeHandler.canInterrupt(channel, thread_ts || ts, user);
 
     // Cancel existing request only if user can interrupt (owner or current initiator)
-    const existingController = this.activeControllers.get(sessionKey);
-    if (existingController && canInterrupt) {
+    if (this.requestCoordinator.isRequestActive(sessionKey) && canInterrupt) {
       this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
-      existingController.abort();
-    } else if (existingController && !canInterrupt) {
+      this.requestCoordinator.abortSession(sessionKey);
+    } else if (this.requestCoordinator.isRequestActive(sessionKey) && !canInterrupt) {
       // User cannot interrupt - their message will be queued for after current response
       this.logger.debug('User cannot interrupt, message will be processed after current response', {
         sessionKey,
@@ -456,7 +460,7 @@ export class SlackHandler {
     }
 
     const abortController = new AbortController();
-    this.activeControllers.set(sessionKey, abortController);
+    this.requestCoordinator.setController(sessionKey, abortController);
 
     // Update the current initiator
     this.claudeHandler.updateInitiator(channel, thread_ts || ts, user, userName);
@@ -552,7 +556,7 @@ export class SlackHandler {
             // Track all tool_use_id -> tool_name mappings and start MCP status AFTER tool use message
             for (const part of message.message.content || []) {
               if (part.type === 'tool_use' && part.id && part.name) {
-                this.toolUseIdToName.set(part.id, part.name);
+                this.toolTracker.trackToolUse(part.id, part.name);
 
                 // Start tracking MCP calls (after the tool use message is sent)
                 if (part.name.startsWith('mcp__')) {
@@ -560,7 +564,7 @@ export class SlackHandler {
                   const serverName = nameParts[1] || 'unknown';
                   const actualToolName = nameParts.slice(2).join('__') || part.name;
                   const callId = mcpCallTracker.startCall(serverName, actualToolName);
-                  this.toolUseIdToCallId.set(part.id, callId);
+                  this.toolTracker.trackMcpCall(part.id, callId);
 
                   // Start periodic status update for this MCP call
                   this.mcpStatusDisplay.startStatusUpdate(callId, serverName, actualToolName, channel, thread_ts || ts);
@@ -669,7 +673,7 @@ export class SlackHandler {
 
             this.logger.info('📤 Extracted tool results', {
               count: toolResults.length,
-              toolNames: toolResults.map(r => r.toolName || this.toolUseIdToName.get(r.toolUseId)),
+              toolNames: toolResults.map(r => r.toolName || this.toolTracker.getToolName(r.toolUseId)),
               toolUseIds: toolResults.map(r => r.toolUseId),
               hasResults: toolResults.map(r => !!r.result),
             });
@@ -677,16 +681,16 @@ export class SlackHandler {
             for (const toolResult of toolResults) {
               // Lookup tool name from our tracking map if not already set
               if (!toolResult.toolName && toolResult.toolUseId) {
-                toolResult.toolName = this.toolUseIdToName.get(toolResult.toolUseId);
+                toolResult.toolName = this.toolTracker.getToolName(toolResult.toolUseId);
               }
 
               // End MCP call tracking and get duration
               let duration: number | null = null;
               if (toolResult.toolUseId) {
-                const callId = this.toolUseIdToCallId.get(toolResult.toolUseId);
+                const callId = this.toolTracker.getMcpCallId(toolResult.toolUseId);
                 if (callId) {
                   duration = mcpCallTracker.endCall(callId);
-                  this.toolUseIdToCallId.delete(toolResult.toolUseId);
+                  this.toolTracker.removeMcpCallId(toolResult.toolUseId);
 
                   // Stop the status update interval and show completion
                   await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
@@ -850,18 +854,16 @@ export class SlackHandler {
         await this.fileHandler.cleanupTempFiles(processedFiles);
       }
     } finally {
-      this.activeControllers.delete(sessionKey);
+      this.requestCoordinator.removeController(sessionKey);
 
       // Clean up todo tracking if session ended
       if (session?.sessionId) {
         // Don't immediately clean up - keep todos visible for a while
-        setTimeout(() => {
+        this.toolTracker.scheduleCleanup(5 * 60 * 1000, () => {
           this.todoManager.cleanupSession(session.sessionId!);
           this.todoMessages.delete(sessionKey);
           this.reactionManager.cleanup(sessionKey);
-          // Clean up tool tracking
-          this.toolUseIdToName.clear();
-        }, 5 * 60 * 1000); // 5 minutes
+        });
       }
     }
   }
