@@ -1,5 +1,5 @@
 import { App } from '@slack/bolt';
-import { ClaudeHandler, getAvailablePersonas } from './claude-handler';
+import { ClaudeHandler } from './claude-handler';
 import { SDKMessage } from '@anthropic-ai/claude-code';
 import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
@@ -8,9 +8,8 @@ import { ConversationSession, UserChoices, UserChoiceQuestion } from './types';
 import { TodoManager, Todo } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
-import { userSettingsStore, AVAILABLE_MODELS, MODEL_ALIASES } from './user-settings-store';
+import { userSettingsStore } from './user-settings-store';
 import { config } from './config';
-import { getCredentialStatus, copyBackupCredentials, hasClaudeAiOauth, isCredentialManagerEnabled } from './credentials-manager';
 import { mcpCallTracker, McpCallTracker } from './mcp-call-tracker';
 import {
   CommandParser,
@@ -27,6 +26,8 @@ import {
   EventRouterDeps,
   RequestCoordinator,
   ToolTracker,
+  CommandRouter,
+  CommandDependencies,
 } from './slack';
 
 interface MessageEvent {
@@ -68,6 +69,9 @@ export class SlackHandler {
   private requestCoordinator: RequestCoordinator;
   private toolTracker: ToolTracker;
 
+  // Phase 3: Command routing
+  private commandRouter: CommandRouter;
+
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
     this.claudeHandler = claudeHandler;
@@ -85,6 +89,15 @@ export class SlackHandler {
     this.reactionManager = new ReactionManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
+
+    // Phase 3: Command routing
+    const commandDeps: CommandDependencies = {
+      workingDirManager: this.workingDirManager,
+      mcpManager: this.mcpManager,
+      claudeHandler: this.claudeHandler,
+      sessionUiManager: this.sessionUiManager,
+    };
+    this.commandRouter = new CommandRouter(commandDeps);
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -137,232 +150,18 @@ export class SlackHandler {
       fileCount: processedFiles.length,
     });
 
-    // Check if this is a working directory command (only if there's text)
-    const setDirPath = text ? this.workingDirManager.parseSetCommand(text) : null;
-    if (setDirPath) {
-      const isDM = channel.startsWith('D');
-      // Always pass userId to save user's default directory
-      const result = this.workingDirManager.setWorkingDirectory(
+    // Route to command handlers (cwd, mcp, bypass, persona, model, restore, help, sessions, terminate, all_sessions)
+    if (text) {
+      const commandResult = await this.commandRouter.route({
+        user,
         channel,
-        setDirPath,
-        thread_ts,
-        user
-      );
-
-      if (result.success) {
-        const context = thread_ts ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
-        await say({
-          text: `✅ Working directory set for ${context}: \`${result.resolvedPath}\`\n_This will be your default for future conversations._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else {
-        await say({
-          text: `❌ ${result.error}`,
-          thread_ts: thread_ts || ts,
-        });
-      }
-      return;
-    }
-
-    // Check if this is a get directory command (only if there's text)
-    if (text && this.workingDirManager.isGetCommand(text)) {
-      const isDM = channel.startsWith('D');
-      // Always pass userId to check user's saved default
-      const directory = this.workingDirManager.getWorkingDirectory(
-        channel,
-        thread_ts,
-        user
-      );
-      const context = thread_ts ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
-
-      await say({
-        text: this.workingDirManager.formatDirectoryMessage(directory, context),
-        thread_ts: thread_ts || ts,
+        threadTs: thread_ts || ts,
+        text,
+        say,
       });
-      return;
-    }
-
-    // Check if this is an MCP info command (only if there's text)
-    if (text && CommandParser.isMcpInfoCommand(text)) {
-      const mcpInfo = await this.mcpManager.formatMcpInfo();
-      await say({
-        text: mcpInfo,
-        thread_ts: thread_ts || ts,
-      });
-      return;
-    }
-
-    // Check if this is an MCP reload command (only if there's text)
-    if (text && CommandParser.isMcpReloadCommand(text)) {
-      const reloaded = this.mcpManager.reloadConfiguration();
-      if (reloaded) {
-        const mcpInfo = await this.mcpManager.formatMcpInfo();
-        await say({
-          text: `✅ MCP configuration reloaded successfully.\n\n${mcpInfo}`,
-          thread_ts: thread_ts || ts,
-        });
-      } else {
-        await say({
-          text: `❌ Failed to reload MCP configuration. Check the mcp-servers.json file.`,
-          thread_ts: thread_ts || ts,
-        });
+      if (commandResult.handled) {
+        return;
       }
-      return;
-    }
-
-    // Check if this is a bypass permission command (only if there's text)
-    if (text && CommandParser.isBypassCommand(text)) {
-      const bypassAction = CommandParser.parseBypassCommand(text);
-
-      if (bypassAction === 'status') {
-        const currentBypass = userSettingsStore.getUserBypassPermission(user);
-        await say({
-          text: `🔐 *Permission Bypass Status*\n\nYour current setting: \`${currentBypass ? 'ON' : 'OFF'}\`\n\n${currentBypass ? '⚠️ Claude will execute tools without asking for permission.' : '✅ Claude will ask for permission before executing sensitive tools.'}`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (bypassAction === 'on') {
-        userSettingsStore.setUserBypassPermission(user, true);
-        await say({
-          text: `✅ *Permission Bypass Enabled*\n\nClaude will now execute tools without asking for permission.\n\n⚠️ _Use with caution - this allows Claude to perform actions automatically._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (bypassAction === 'off') {
-        userSettingsStore.setUserBypassPermission(user, false);
-        await say({
-          text: `✅ *Permission Bypass Disabled*\n\nClaude will now ask for your permission before executing sensitive tools.`,
-          thread_ts: thread_ts || ts,
-        });
-      }
-      return;
-    }
-
-    // Check if this is a persona command (only if there's text)
-    if (text && CommandParser.isPersonaCommand(text)) {
-      const personaAction = CommandParser.parsePersonaCommand(text);
-
-      if (personaAction.action === 'status') {
-        const currentPersona = userSettingsStore.getUserPersona(user);
-        const availablePersonas = getAvailablePersonas();
-        await say({
-          text: `🎭 *Persona Status*\n\nYour current persona: \`${currentPersona}\`\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}\n\n_Use \`persona set <name>\` to change your persona._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (personaAction.action === 'list') {
-        const availablePersonas = getAvailablePersonas();
-        const currentPersona = userSettingsStore.getUserPersona(user);
-        const personaList = availablePersonas
-          .map(p => p === currentPersona ? `• \`${p}\` _(current)_` : `• \`${p}\``)
-          .join('\n');
-        await say({
-          text: `🎭 *Available Personas*\n\n${personaList}\n\n_Use \`persona set <name>\` to change your persona._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (personaAction.action === 'set' && personaAction.persona) {
-        const availablePersonas = getAvailablePersonas();
-        if (availablePersonas.includes(personaAction.persona)) {
-          userSettingsStore.setUserPersona(user, personaAction.persona);
-          await say({
-            text: `✅ *Persona Changed*\n\nYour persona is now set to: \`${personaAction.persona}\``,
-            thread_ts: thread_ts || ts,
-          });
-        } else {
-          await say({
-            text: `❌ *Unknown Persona*\n\nPersona \`${personaAction.persona}\` not found.\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}`,
-            thread_ts: thread_ts || ts,
-          });
-        }
-      }
-      return;
-    }
-
-    // Check if this is a model command (only if there's text)
-    if (text && CommandParser.isModelCommand(text)) {
-      const modelAction = CommandParser.parseModelCommand(text);
-
-      if (modelAction.action === 'status') {
-        const currentModel = userSettingsStore.getUserDefaultModel(user);
-        const displayName = userSettingsStore.getModelDisplayName(currentModel);
-        const aliasesText = Object.entries(MODEL_ALIASES)
-          .map(([alias, model]) => `\`${alias}\` → ${userSettingsStore.getModelDisplayName(model)}`)
-          .join('\n');
-
-        await say({
-          text: `🤖 *Model Status*\n\nYour default model: *${displayName}*\n\`${currentModel}\`\n\n*Available aliases:*\n${aliasesText}\n\n_Use \`model set <name>\` to change your default model._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (modelAction.action === 'list') {
-        const currentModel = userSettingsStore.getUserDefaultModel(user);
-        const modelList = AVAILABLE_MODELS
-          .map(m => {
-            const displayName = userSettingsStore.getModelDisplayName(m);
-            return m === currentModel ? `• *${displayName}* _(current)_\n  \`${m}\`` : `• ${displayName}\n  \`${m}\``;
-          })
-          .join('\n');
-
-        await say({
-          text: `🤖 *Available Models*\n\n${modelList}\n\n_Use \`model set <name>\` to change your default model._`,
-          thread_ts: thread_ts || ts,
-        });
-      } else if (modelAction.action === 'set' && modelAction.model) {
-        const resolvedModel = userSettingsStore.resolveModelInput(modelAction.model);
-        if (resolvedModel) {
-          userSettingsStore.setUserDefaultModel(user, resolvedModel);
-          const displayName = userSettingsStore.getModelDisplayName(resolvedModel);
-          await say({
-            text: `✅ *Model Changed*\n\nYour default model is now: *${displayName}*\n\`${resolvedModel}\`\n\n_New sessions will use this model._`,
-            thread_ts: thread_ts || ts,
-          });
-        } else {
-          const aliasesText = Object.keys(MODEL_ALIASES).map(a => `\`${a}\``).join(', ');
-          await say({
-            text: `❌ *Unknown Model*\n\nModel \`${modelAction.model}\` not found.\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
-            thread_ts: thread_ts || ts,
-          });
-        }
-      }
-      return;
-    }
-
-    // Check if this is a restore credentials command (only if there's text)
-    if (text && CommandParser.isRestoreCommand(text)) {
-      await this.handleRestoreCommand(channel, thread_ts || ts, say);
-      return;
-    }
-
-    // Check if this is a help command (only if there's text)
-    if (text && CommandParser.isHelpCommand(text)) {
-      await say({
-        text: CommandParser.getHelpMessage(),
-        thread_ts: thread_ts || ts,
-      });
-      return;
-    }
-
-    // Check if this is a sessions command
-    if (text && CommandParser.isSessionsCommand(text)) {
-      const { text: msgText, blocks } = await this.sessionUiManager.formatUserSessionsBlocks(user);
-      await say({
-        text: msgText,
-        blocks,
-        thread_ts: thread_ts || ts,
-      });
-      return;
-    }
-
-    // Check if this is a terminate command
-    const terminateMatch = text ? CommandParser.parseTerminateCommand(text) : null;
-    if (terminateMatch) {
-      await this.sessionUiManager.handleTerminateCommand(terminateMatch, user, channel, thread_ts || ts, say);
-      return;
-    }
-
-    // Check if this is an all_sessions command
-    if (text && CommandParser.isAllSessionsCommand(text)) {
-      await say({
-        text: await this.sessionUiManager.formatAllSessions(),
-        thread_ts: thread_ts || ts,
-      });
-      return;
     }
 
     // Check if we have a working directory set
@@ -981,86 +780,6 @@ export class SlackHandler {
     return lines.join('\n');
   }
 
-
-  private async handleRestoreCommand(channel: string, threadTs: string, say: any): Promise<void> {
-    // Check if credential manager is enabled
-    if (!isCredentialManagerEnabled()) {
-      await say({
-        text: '⚠️ Credential manager is disabled.\n\nTo enable, set `ENABLE_LOCAL_FILE_CREDENTIALS_JSON=1` in your environment.',
-        thread_ts: threadTs,
-      });
-      return;
-    }
-
-    // Get status before restore
-    const beforeStatus = getCredentialStatus();
-
-    // Format before status message
-    const beforeLines: string[] = [
-      '🔑 *Credential Restore*',
-      '',
-      '*현재 상태 (복사 전):*',
-      `• 크레덴셜 파일 존재 (\`.credentials.json\`): ${beforeStatus.credentialsFileExists ? '✅' : '❌'}`,
-      `• 백업 파일 존재 (\`credentials.json\`): ${beforeStatus.backupFileExists ? '✅' : '❌'}`,
-      `• claudeAiOauth 존재: ${beforeStatus.hasClaudeAiOauth ? '✅' : '❌'}`,
-      `• 자동 복원 활성화: ${beforeStatus.autoRestoreEnabled ? '✅' : '❌'}`,
-    ];
-
-    await say({
-      text: beforeLines.join('\n'),
-      thread_ts: threadTs,
-    });
-
-    // Attempt to copy backup credentials
-    this.logger.info('Attempting credential restore via command');
-    const copySuccess = copyBackupCredentials();
-
-    // Get status after restore
-    const afterHasOauth = hasClaudeAiOauth();
-    const afterStatus = getCredentialStatus();
-
-    // Format result message
-    const resultLines: string[] = [];
-
-    if (copySuccess) {
-      resultLines.push('✅ *복사 완료*');
-      resultLines.push('');
-      resultLines.push('`~/.claude/credentials.json` → `~/.claude/.credentials.json`');
-    } else {
-      resultLines.push('❌ *복사 실패*');
-      resultLines.push('');
-      if (!beforeStatus.backupFileExists) {
-        resultLines.push('백업 파일 (`credentials.json`)이 존재하지 않습니다.');
-      } else {
-        resultLines.push('파일 복사 중 오류가 발생했습니다.');
-      }
-    }
-
-    resultLines.push('');
-    resultLines.push('*복사 후 상태:*');
-    resultLines.push(`• 크레덴셜 파일 존재: ${afterStatus.credentialsFileExists ? '✅' : '❌'}`);
-    resultLines.push(`• claudeAiOauth 존재: ${afterHasOauth ? '✅' : '❌'}`);
-
-    if (afterHasOauth) {
-      resultLines.push('');
-      resultLines.push('🎉 Claude 인증이 정상적으로 설정되었습니다!');
-    } else if (copySuccess) {
-      resultLines.push('');
-      resultLines.push('⚠️ 파일은 복사되었지만 claudeAiOauth가 없습니다.');
-      resultLines.push('`claude login` 명령어로 다시 로그인해주세요.');
-    }
-
-    await say({
-      text: resultLines.join('\n'),
-      thread_ts: threadTs,
-    });
-
-    this.logger.info('Credential restore command completed', {
-      copySuccess,
-      beforeHadOauth: beforeStatus.hasClaudeAiOauth,
-      afterHasOauth,
-    });
-  }
 
   /**
    * Setup all event handlers via EventRouter
