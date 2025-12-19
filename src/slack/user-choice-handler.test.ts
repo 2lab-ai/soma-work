@@ -122,6 +122,48 @@ Some outro text`;
       expect(result.choice).toBe(null);
     });
 
+    it('should extract UserChoiceGroup with explicit type field', () => {
+      const text = `Task options:
+
+\`\`\`json
+{
+  "type": "user_choice_group",
+  "question": "어떤 작업을 진행할까요?",
+  "choices": [
+    {
+      "type": "user_choice",
+      "question": "가장 급한 버그부터 해결할까요?",
+      "options": [
+        {"id": "1", "label": "PTN-1913 출금 거절 버그 분석", "description": "Gucci 백엔드 소스를 분석하여 출금 거절 API 버그 원인 파악"},
+        {"id": "2", "label": "PTN-1654 홀덤 행 추가", "description": "PradaBo + Gucci에서 게임별 성과분석에 홀덤 추가"}
+      ],
+      "context": "Highest/High 우선순위 이슈 처리"
+    },
+    {
+      "type": "user_choice",
+      "question": "암호화폐 관련 작업을 묶어서 진행할까요?",
+      "options": [
+        {"id": "3", "label": "PTN-1895 입금 처리 개선 구현", "description": "crypto_wallet_transaction 검출 시점에 user_wallet_transaction 선행 생성"}
+      ],
+      "context": "현재 In Progress인 암호화폐 작업들"
+    }
+  ],
+  "context": "현재 7개의 In Progress 이슈와 8개의 To Do 이슈가 있습니다"
+}
+\`\`\``;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      // Multiple questions should be converted to UserChoices
+      expect(result.choices).not.toBe(null);
+      expect(result.choices?.type).toBe('user_choices');
+      expect(result.choices?.title).toBe('어떤 작업을 진행할까요?');
+      expect(result.choices?.description).toBe('현재 7개의 In Progress 이슈와 8개의 To Do 이슈가 있습니다');
+      expect(result.choices?.questions).toHaveLength(2);
+      expect(result.choices?.questions[0].question).toBe('가장 급한 버그부터 해결할까요?');
+      expect(result.choices?.questions[0].context).toBe('Highest/High 우선순위 이슈 처리');
+      expect(result.choice).toBe(null);
+    });
+
     it('should extract user_choices (multi-question)', () => {
       const text = `Here are some questions:
 
@@ -168,6 +210,52 @@ Some outro text`;
       expect(result.choice).not.toBe(null);
       expect(result.choice?.question).toBe('Which option?');
       expect(result.textWithoutChoice).toContain('Here is the decision:');
+    });
+
+    it('should extract raw JSON with trailing content after it', () => {
+      const text = `{
+  "type": "user_choice_group",
+  "question": "다음 작업 선택",
+  "choices": [
+    {
+      "type": "user_choice",
+      "question": "어떤 작업부터 진행할까요?",
+      "options": [
+        { "id": "1", "label": "PTN-1913 상세 확인", "description": "출금 거절 버그" },
+        { "id": "2", "label": "PTN-1977 구현 시작", "description": "수수료 비율 처리" }
+      ],
+      "context": "Implementation Spec이 있습니다"
+    }
+  ]
+}
+
+---
+
+이거 왜 raw json으로 나왔을지 추리해줘`;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.question).toBe('어떤 작업부터 진행할까요?');
+      expect(result.choice?.choices).toHaveLength(2);
+      expect(result.textWithoutChoice).toBe('');
+    });
+
+    it('should extract raw JSON with separator line after it', () => {
+      const text = `Some intro text
+
+{
+  "type": "user_choice",
+  "question": "선택하세요",
+  "options": [
+    {"id": "1", "label": "옵션 A"}
+  ]
+}
+---`;
+
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.question).toBe('선택하세요');
+      expect(result.textWithoutChoice).toBe('Some intro text');
     });
 
     it('should ignore invalid JSON blocks', () => {

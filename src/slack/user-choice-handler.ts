@@ -37,17 +37,22 @@ export class UserChoiceHandler {
     }
 
     // Try to find raw JSON objects (not in code blocks)
-    const rawJsonPattern = /(\{[\s\S]*?"(?:type|question|choices)"[\s\S]*?\})\s*$/;
-    const rawMatch = text.match(rawJsonPattern);
+    // Find all potential JSON start positions with user_choice related keys
+    const jsonStartPattern = /\{\s*"(?:type|question)"\s*:/g;
+    let rawMatch;
 
-    if (rawMatch) {
-      // Find the balanced JSON object
-      const jsonStr = this.extractBalancedJson(text, rawMatch.index || 0);
+    while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
+      const jsonStr = this.extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
         const result = this.parseAndNormalizeChoice(jsonStr);
         if (result.choice || result.choices) {
+          // Use the first valid result (outermost JSON structure)
           textWithoutChoice = text.substring(0, rawMatch.index).trim();
-          return { ...result, textWithoutChoice };
+          return {
+            choice: result.choice,
+            choices: result.choices,
+            textWithoutChoice,
+          };
         }
       }
     }
@@ -128,8 +133,10 @@ export class UserChoiceHandler {
       }
 
       // Format 3: UserChoiceGroup (from system.prompt)
-      // { question: "...", choices: [{ type: "user_choice", ... }] }
-      if (parsed.question && Array.isArray(parsed.choices) && !parsed.type) {
+      // { type: "user_choice_group", question: "...", choices: [{ type: "user_choice", ... }] }
+      // Also supports legacy format without type field
+      if (parsed.question && Array.isArray(parsed.choices) &&
+          (!parsed.type || parsed.type === 'user_choice_group')) {
         const firstChoice = parsed.choices[0];
         if (firstChoice && (firstChoice.type === 'user_choice' || firstChoice.options || firstChoice.choices)) {
           // Convert UserChoiceGroup to UserChoices for multi-question display
