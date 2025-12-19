@@ -19,3 +19,6 @@ export { EventRouter, EventRouterDeps } from './event-router';
 // Phase 2: Session state and concurrency
 export { RequestCoordinator } from './request-coordinator';
 export { ToolTracker } from './tool-tracker';
+
+// Phase 3: Command routing
+export { CommandRouter, CommandContext, CommandResult, CommandDependencies } from './commands';
