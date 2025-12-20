@@ -35,6 +35,7 @@ import {
   ToolUseEvent,
   ToolResultEvent,
   ToolEventContext,
+  MessageValidator,
 } from './slack';
 
 interface MessageEvent {
@@ -83,6 +84,9 @@ export class SlackHandler {
   private streamProcessor: StreamProcessor;
   private toolEventProcessor: ToolEventProcessor;
 
+  // Phase 6: Message validation
+  private messageValidator: MessageValidator;
+
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
     this.claudeHandler = claudeHandler;
@@ -109,6 +113,9 @@ export class SlackHandler {
       sessionUiManager: this.sessionUiManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
+
+    // Phase 6: Message validation
+    this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
 
     // Phase 4: Stream and tool processing
     this.toolEventProcessor = new ToolEventProcessor(
@@ -217,46 +224,16 @@ export class SlackHandler {
       }
     }
 
-    // Check if we have a working directory set
-    const isDM = channel.startsWith('D');
-    // Always pass userId to auto-apply user's saved default if available
-    const workingDirectory = this.workingDirManager.getWorkingDirectory(
-      channel,
-      thread_ts,
-      user
-    );
-
-    // Working directory is always required
-    if (!workingDirectory) {
-      let errorMessage = `⚠️ No working directory set. `;
-
-      if (!isDM && !this.workingDirManager.hasChannelWorkingDirectory(channel)) {
-        // No channel default set
-        errorMessage += `Please set a default working directory for this channel first using:\n`;
-        if (config.baseDirectory) {
-          errorMessage += `\`cwd project-name\` or \`cwd /absolute/path\`\n\n`;
-          errorMessage += `Base directory: \`${config.baseDirectory}\``;
-        } else {
-          errorMessage += `\`cwd /path/to/directory\``;
-        }
-      } else if (thread_ts) {
-        // In thread but no thread-specific directory
-        errorMessage += `You can set a thread-specific working directory using:\n`;
-        if (config.baseDirectory) {
-          errorMessage += `\`@claudebot cwd project-name\` or \`@claudebot cwd /absolute/path\``;
-        } else {
-          errorMessage += `\`@claudebot cwd /path/to/directory\``;
-        }
-      } else {
-        errorMessage += `Please set one first using:\n\`cwd /path/to/directory\``;
-      }
-
+    // Validate working directory using MessageValidator
+    const cwdValidation = this.messageValidator.validateWorkingDirectory(user, channel, thread_ts);
+    if (!cwdValidation.valid) {
       await say({
-        text: errorMessage,
+        text: cwdValidation.errorMessage!,
         thread_ts: thread_ts || ts,
       });
       return;
     }
+    const workingDirectory = cwdValidation.workingDirectory!;
 
     // Get user's display name for speaker tag
     const userName = await this.slackApi.getUserName(user);

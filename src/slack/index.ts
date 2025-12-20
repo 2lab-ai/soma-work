@@ -40,3 +40,6 @@ export {
   ToolUseEvent,
   ToolResultEvent,
 } from './tool-event-processor';
+
+// Phase 6: Message validation
+export { MessageValidator, ValidationResult, InterruptCheckResult } from './message-validator';
