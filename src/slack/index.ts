@@ -22,3 +22,21 @@ export { ToolTracker } from './tool-tracker';
 
 // Phase 3: Command routing
 export { CommandRouter, CommandContext, CommandResult, CommandDependencies } from './commands';
+
+// Phase 4: Stream and tool processing
+export {
+  StreamProcessor,
+  StreamContext,
+  StreamCallbacks,
+  StreamResult,
+  SayFunction,
+  ToolUseEvent as StreamToolUseEvent,
+  ToolResultEvent as StreamToolResultEvent,
+  PendingForm,
+} from './stream-processor';
+export {
+  ToolEventProcessor,
+  ToolEventContext,
+  ToolUseEvent,
+  ToolResultEvent,
+} from './tool-event-processor';

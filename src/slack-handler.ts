@@ -28,6 +28,13 @@ import {
   ToolTracker,
   CommandRouter,
   CommandDependencies,
+  StreamProcessor,
+  StreamContext,
+  StreamCallbacks,
+  ToolEventProcessor,
+  ToolUseEvent,
+  ToolResultEvent,
+  ToolEventContext,
 } from './slack';
 
 interface MessageEvent {
@@ -72,6 +79,10 @@ export class SlackHandler {
   // Phase 3: Command routing
   private commandRouter: CommandRouter;
 
+  // Phase 4: Stream and tool processing
+  private streamProcessor: StreamProcessor;
+  private toolEventProcessor: ToolEventProcessor;
+
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
     this.claudeHandler = claudeHandler;
@@ -98,6 +109,48 @@ export class SlackHandler {
       sessionUiManager: this.sessionUiManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
+
+    // Phase 4: Stream and tool processing
+    this.toolEventProcessor = new ToolEventProcessor(
+      this.toolTracker,
+      this.mcpStatusDisplay,
+      mcpCallTracker
+    );
+    this.streamProcessor = new StreamProcessor({
+      onToolUse: async (toolUses, context) => {
+        await this.toolEventProcessor.handleToolUse(toolUses, {
+          channel: context.channel,
+          threadTs: context.threadTs,
+          say: context.say,
+        });
+      },
+      onToolResult: async (toolResults, context) => {
+        await this.toolEventProcessor.handleToolResult(toolResults, {
+          channel: context.channel,
+          threadTs: context.threadTs,
+          say: context.say,
+        });
+      },
+      onTodoUpdate: async (input, context) => {
+        await this.handleTodoUpdate(
+          input,
+          context.sessionKey,
+          context.sessionId,
+          context.channel,
+          context.threadTs,
+          context.say
+        );
+      },
+      onStatusUpdate: async (status) => {
+        // Status updates are handled in handleMessage
+      },
+      onPendingFormCreate: (formId, form) => {
+        this.actionHandlers.setPendingForm(formId, form);
+      },
+      getPendingForm: (formId) => {
+        return this.actionHandlers.getPendingForm(formId);
+      },
+    });
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -264,7 +317,6 @@ export class SlackHandler {
     // Update the current initiator
     this.claudeHandler.updateInitiator(channel, thread_ts || ts, user, userName);
 
-    let currentMessages: string[] = [];
     let statusMessageTs: string | undefined;
 
     try {
@@ -308,287 +360,83 @@ export class SlackHandler {
         user
       };
 
-      for await (const message of this.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext)) {
-        if (abortController.signal.aborted) break;
-
-        this.logger.debug('Received message from Claude SDK', {
-          type: message.type,
-          subtype: (message as any).subtype,
-          message: message,
-        });
-
-        if (message.type === 'assistant') {
-          // Check if this is a tool use message
-          const hasToolUse = message.message.content?.some((part: any) => part.type === 'tool_use');
-
-          if (hasToolUse) {
-            // Update status to show working
-            if (statusMessageTs) {
-              await this.app.client.chat.update({
-                channel,
-                ts: statusMessageTs,
-                text: '⚙️ *Working...*',
-              });
-            }
-
-            // Update reaction to show working
-            await this.reactionManager.updateReaction(sessionKey, 'gear');
-
-            // Check for TodoWrite tool and handle it specially
-            const todoTool = message.message.content?.find((part: any) =>
-              part.type === 'tool_use' && part.name === 'TodoWrite'
-            );
-
-            if (todoTool) {
-              await this.handleTodoUpdate(todoTool.input, sessionKey, session?.sessionId, channel, thread_ts || ts, say);
-            }
-
-            // For other tool use messages, format them immediately as new messages
-            const toolContent = ToolFormatter.formatToolUse(message.message.content);
-            if (toolContent) { // Only send if there's content (TodoWrite returns empty string)
-              await say({
-                text: toolContent,
-                thread_ts: thread_ts || ts,
-              });
-            }
-
-            // Track all tool_use_id -> tool_name mappings and start MCP status AFTER tool use message
-            for (const part of message.message.content || []) {
-              if (part.type === 'tool_use' && part.id && part.name) {
-                this.toolTracker.trackToolUse(part.id, part.name);
-
-                // Start tracking MCP calls (after the tool use message is sent)
-                if (part.name.startsWith('mcp__')) {
-                  const nameParts = part.name.split('__');
-                  const serverName = nameParts[1] || 'unknown';
-                  const actualToolName = nameParts.slice(2).join('__') || part.name;
-                  const callId = mcpCallTracker.startCall(serverName, actualToolName);
-                  this.toolTracker.trackMcpCall(part.id, callId);
-
-                  // Start periodic status update for this MCP call
-                  this.mcpStatusDisplay.startStatusUpdate(callId, serverName, actualToolName, channel, thread_ts || ts);
-                }
-              }
-            }
-          } else {
-            // Handle regular text content
-            const content = this.extractTextContent(message);
-            if (content) {
-              currentMessages.push(content);
-
-              // Check for user choice JSON (single or multi)
-              const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(content);
-
-              if (choices) {
-                // Multi-question form
-                if (textWithoutChoice) {
-                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
-                  await say({
-                    text: formatted,
-                    thread_ts: thread_ts || ts,
-                  });
-                }
-
-                // Generate unique form ID
-                const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-                // Store pending form via ActionHandlers
-                this.actionHandlers.setPendingForm(formId, {
-                  formId,
-                  sessionKey,
-                  channel,
-                  threadTs: thread_ts || ts,
-                  messageTs: '', // Will be set after message is sent
-                  questions: choices.questions,
-                  selections: {},
-                  createdAt: Date.now(),
-                });
-
-                // Send multi-choice form
-                const multiPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
-                const formResult = await say({
-                  text: choices.title || '📋 선택이 필요합니다',
-                  ...multiPayload,
-                  thread_ts: thread_ts || ts,
-                });
-
-                // Update stored form with message timestamp
-                const pendingForm = this.actionHandlers.getPendingForm(formId);
-                if (pendingForm && formResult?.ts) {
-                  pendingForm.messageTs = formResult.ts;
-                }
-              } else if (choice) {
-                // Single question - existing behavior
-                if (textWithoutChoice) {
-                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
-                  await say({
-                    text: formatted,
-                    thread_ts: thread_ts || ts,
-                  });
-                }
-
-                const singlePayload = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
-                await say({
-                  text: choice.question,
-                  ...singlePayload,
-                  thread_ts: thread_ts || ts,
-                });
-              } else {
-                // No choice JSON - send as regular message
-                const formatted = MessageFormatter.formatMessage(content, false);
-                await say({
-                  text: formatted,
-                  thread_ts: thread_ts || ts,
-                });
-              }
-            }
-          }
-        } else if (message.type === 'user') {
-          // Handle synthetic user messages (tool_result)
-          const userMessage = message as any;
-
-          // Log to debug what we're receiving
-          this.logger.debug('Received user message', {
-            isSynthetic: userMessage.isSynthetic,
-            hasContent: !!userMessage.message?.content,
-            contentLength: userMessage.message?.content?.length,
-            contentTypes: userMessage.message?.content?.map((c: any) => c.type),
+      // Create stream context for the stream processor
+      const streamContext: StreamContext = {
+        channel,
+        threadTs: thread_ts || ts,
+        sessionKey,
+        sessionId: session?.sessionId,
+        say: async (msg) => {
+          const result = await say({
+            text: msg.text,
+            thread_ts: msg.thread_ts,
+            blocks: msg.blocks,
+            attachments: msg.attachments,
           });
+          return { ts: result?.ts };
+        },
+      };
 
-          // Handle tool results from synthetic messages or direct content
-          const content = userMessage.message?.content || userMessage.content;
-
-          // Debug: log raw content
-          this.logger.info('📥 User message content for tool results', {
-            hasContent: !!content,
-            contentType: typeof content,
-            isArray: Array.isArray(content),
-            contentLength: Array.isArray(content) ? content.length : 0,
-            rawContent: JSON.stringify(content)?.substring(0, 500),
-          });
-
-          if (content) {
-            const toolResults = ToolFormatter.extractToolResults(content);
-
-            this.logger.info('📤 Extracted tool results', {
-              count: toolResults.length,
-              toolNames: toolResults.map(r => r.toolName || this.toolTracker.getToolName(r.toolUseId)),
-              toolUseIds: toolResults.map(r => r.toolUseId),
-              hasResults: toolResults.map(r => !!r.result),
+      // Create custom callbacks for status updates
+      const streamCallbacks: StreamCallbacks = {
+        onToolUse: async (toolUses, ctx) => {
+          // Update status to working
+          if (statusMessageTs) {
+            await this.app.client.chat.update({
+              channel,
+              ts: statusMessageTs,
+              text: '⚙️ *Working...*',
             });
-
-            for (const toolResult of toolResults) {
-              // Lookup tool name from our tracking map if not already set
-              if (!toolResult.toolName && toolResult.toolUseId) {
-                toolResult.toolName = this.toolTracker.getToolName(toolResult.toolUseId);
-              }
-
-              // End MCP call tracking and get duration
-              let duration: number | null = null;
-              if (toolResult.toolUseId) {
-                const callId = this.toolTracker.getMcpCallId(toolResult.toolUseId);
-                if (callId) {
-                  duration = mcpCallTracker.endCall(callId);
-                  this.toolTracker.removeMcpCallId(toolResult.toolUseId);
-
-                  // Stop the status update interval and show completion
-                  await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
-                }
-              }
-
-              // Log all tool results for debugging
-              this.logger.info('Processing tool result', {
-                toolName: toolResult.toolName,
-                toolUseId: toolResult.toolUseId,
-                hasResult: !!toolResult.result,
-                resultType: typeof toolResult.result,
-                isError: toolResult.isError,
-                duration,
-              });
-
-              // Format and show tool result
-              const formatted = ToolFormatter.formatToolResult(toolResult, duration, mcpCallTracker);
-              if (formatted) {
-                await say({
-                  text: formatted,
-                  thread_ts: thread_ts || ts,
-                });
-              }
-            }
           }
-        } else if (message.type === 'result') {
-          this.logger.info('Received result from Claude SDK', {
-            subtype: message.subtype,
-            hasResult: message.subtype === 'success' && !!(message as any).result,
-            totalCost: (message as any).total_cost_usd,
-            duration: (message as any).duration_ms,
+          await this.reactionManager.updateReaction(sessionKey, 'gear');
+
+          // Delegate to tool event processor
+          await this.toolEventProcessor.handleToolUse(toolUses, {
+            channel: ctx.channel,
+            threadTs: ctx.threadTs,
+            say: ctx.say,
           });
+        },
+        onToolResult: async (toolResults, ctx) => {
+          await this.toolEventProcessor.handleToolResult(toolResults, {
+            channel: ctx.channel,
+            threadTs: ctx.threadTs,
+            say: ctx.say,
+          });
+        },
+        onTodoUpdate: async (input, ctx) => {
+          await this.handleTodoUpdate(
+            input,
+            ctx.sessionKey,
+            ctx.sessionId,
+            ctx.channel,
+            ctx.threadTs,
+            ctx.say
+          );
+        },
+        onPendingFormCreate: (formId, form) => {
+          this.actionHandlers.setPendingForm(formId, form);
+        },
+        getPendingForm: (formId) => {
+          return this.actionHandlers.getPendingForm(formId);
+        },
+      };
 
-          if (message.subtype === 'success' && (message as any).result) {
-            const finalResult = (message as any).result;
-            if (finalResult && !currentMessages.includes(finalResult)) {
-              // Check for user choice JSON in final result (single or multi)
-              const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(finalResult);
+      // Create a new stream processor with the callbacks
+      const processor = new StreamProcessor(streamCallbacks);
 
-              if (choices) {
-                // Multi-question form in final result
-                if (textWithoutChoice) {
-                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, true);
-                  await say({
-                    text: formatted,
-                    thread_ts: thread_ts || ts,
-                  });
-                }
+      // Process the stream
+      const streamResult = await processor.process(
+        this.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
+        streamContext,
+        abortController.signal
+      );
 
-                const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-                this.actionHandlers.setPendingForm(formId, {
-                  formId,
-                  sessionKey,
-                  channel,
-                  threadTs: thread_ts || ts,
-                  messageTs: '',
-                  questions: choices.questions,
-                  selections: {},
-                  createdAt: Date.now(),
-                });
-
-                const multiPayload2 = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, sessionKey);
-                const formResult = await say({
-                  text: choices.title || '📋 선택이 필요합니다',
-                  ...multiPayload2,
-                  thread_ts: thread_ts || ts,
-                });
-
-                const pendingForm = this.actionHandlers.getPendingForm(formId);
-                if (pendingForm && formResult?.ts) {
-                  pendingForm.messageTs = formResult.ts;
-                }
-              } else if (choice) {
-                if (textWithoutChoice) {
-                  const formatted = MessageFormatter.formatMessage(textWithoutChoice, true);
-                  await say({
-                    text: formatted,
-                    thread_ts: thread_ts || ts,
-                  });
-                }
-
-                const singlePayload2 = UserChoiceHandler.buildUserChoiceBlocks(choice, sessionKey);
-                await say({
-                  text: choice.question,
-                  ...singlePayload2,
-                  thread_ts: thread_ts || ts,
-                });
-              } else {
-                const formatted = MessageFormatter.formatMessage(finalResult, true);
-                await say({
-                  text: formatted,
-                  thread_ts: thread_ts || ts,
-                });
-              }
-            }
-          }
-        }
+      // If aborted, throw to trigger the catch block
+      if (streamResult.aborted) {
+        const abortError = new Error('Request was aborted');
+        abortError.name = 'AbortError';
+        throw abortError;
       }
 
       // Update status to completed
@@ -605,7 +453,7 @@ export class SlackHandler {
 
       this.logger.info('Completed processing message', {
         sessionKey,
-        messageCount: currentMessages.length,
+        messageCount: streamResult.messageCount,
       });
 
       // Clean up temporary files
@@ -665,16 +513,6 @@ export class SlackHandler {
         });
       }
     }
-  }
-
-  private extractTextContent(message: SDKMessage): string | null {
-    if (message.type === 'assistant' && message.message.content) {
-      const textParts = message.message.content
-        .filter((part: any) => part.type === 'text')
-        .map((part: any) => part.text);
-      return textParts.join('');
-    }
-    return null;
   }
 
   private async handleTodoUpdate(
