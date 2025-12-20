@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { StreamProcessor, StreamContext, StreamCallbacks, PendingForm } from './stream-processor';
+import { StreamProcessor, StreamContext, StreamCallbacks, PendingForm, SayFunction } from './stream-processor';
 
 // Mock SDKMessage generator
 function* createMockStream(messages: any[]): Generator<any> {
@@ -13,12 +13,12 @@ function* createMockStream(messages: any[]): Generator<any> {
 }
 
 describe('StreamProcessor', () => {
-  let mockSay: ReturnType<typeof vi.fn>;
+  let mockSay: SayFunction;
   let mockContext: StreamContext;
   let abortController: AbortController;
 
   beforeEach(() => {
-    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' }) as unknown as SayFunction;
     abortController = new AbortController();
     mockContext = {
       channel: 'C123',

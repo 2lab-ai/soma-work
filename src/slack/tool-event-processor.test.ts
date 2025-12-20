@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ToolEventProcessor, ToolUseEvent, ToolResultEvent, ToolEventContext } from './tool-event-processor';
+import { ToolEventProcessor, ToolUseEvent, ToolResultEvent, ToolEventContext, SayFunction } from './tool-event-processor';
 import { ToolTracker } from './tool-tracker';
 import { McpStatusDisplay } from './mcp-status-tracker';
 import { McpCallTracker } from '../mcp-call-tracker';
@@ -21,7 +21,7 @@ describe('ToolEventProcessor', () => {
   let mcpStatusDisplay: any;
   let mcpCallTracker: any;
   let processor: ToolEventProcessor;
-  let mockSay: ReturnType<typeof vi.fn>;
+  let mockSay: SayFunction;
   let mockContext: ToolEventContext;
 
   beforeEach(() => {
@@ -37,7 +37,7 @@ describe('ToolEventProcessor', () => {
     };
     processor = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker);
 
-    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' }) as unknown as SayFunction;
     mockContext = {
       channel: 'C123',
       threadTs: 'thread_ts',
