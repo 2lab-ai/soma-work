@@ -36,6 +36,7 @@ import {
   ToolResultEvent,
   ToolEventContext,
   MessageValidator,
+  StatusReporter,
 } from './slack';
 
 interface MessageEvent {
@@ -84,8 +85,9 @@ export class SlackHandler {
   private streamProcessor: StreamProcessor;
   private toolEventProcessor: ToolEventProcessor;
 
-  // Phase 6: Message validation
+  // Phase 6: Message validation and status reporting
   private messageValidator: MessageValidator;
+  private statusReporter: StatusReporter;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -114,8 +116,9 @@ export class SlackHandler {
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
-    // Phase 6: Message validation
+    // Phase 6: Message validation and status reporting
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
+    this.statusReporter = new StatusReporter(app.client);
 
     // Phase 4: Stream and tool processing
     this.toolEventProcessor = new ToolEventProcessor(
@@ -320,15 +323,16 @@ export class SlackHandler {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message
-      const statusResult = await say({
-        text: '🤔 *Thinking...*',
-        thread_ts: thread_ts || ts,
-      });
-      statusMessageTs = statusResult.ts;
+      // Send initial status message via StatusReporter
+      statusMessageTs = await this.statusReporter.createStatusMessage(
+        channel,
+        thread_ts || ts,
+        sessionKey,
+        'thinking'
+      );
 
-      // Add thinking reaction to original message (but don't spam if already set)
-      await this.reactionManager.updateReaction(sessionKey, 'thinking_face');
+      // Add thinking reaction to original message
+      await this.reactionManager.updateReaction(sessionKey, this.statusReporter.getStatusEmoji('thinking'));
 
       // Create Slack context for permission prompts
       const slackContext = {
@@ -357,15 +361,11 @@ export class SlackHandler {
       // Create custom callbacks for status updates
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          // Update status to working
+          // Update status to working via StatusReporter
           if (statusMessageTs) {
-            await this.app.client.chat.update({
-              channel,
-              ts: statusMessageTs,
-              text: '⚙️ *Working...*',
-            });
+            await this.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
           }
-          await this.reactionManager.updateReaction(sessionKey, 'gear');
+          await this.reactionManager.updateReaction(sessionKey, this.statusReporter.getStatusEmoji('working'));
 
           // Delegate to tool event processor
           await this.toolEventProcessor.handleToolUse(toolUses, {
@@ -416,17 +416,11 @@ export class SlackHandler {
         throw abortError;
       }
 
-      // Update status to completed
+      // Update status to completed via StatusReporter
       if (statusMessageTs) {
-        await this.app.client.chat.update({
-          channel,
-          ts: statusMessageTs,
-          text: '✅ *Task completed*',
-        });
+        await this.statusReporter.updateStatusDirect(channel, statusMessageTs, 'completed');
       }
-
-      // Update reaction to show completion
-      await this.reactionManager.updateReaction(sessionKey, 'white_check_mark');
+      await this.reactionManager.updateReaction(sessionKey, this.statusReporter.getStatusEmoji('completed'));
 
       this.logger.info('Completed processing message', {
         sessionKey,
@@ -441,17 +435,11 @@ export class SlackHandler {
       if (error.name !== 'AbortError') {
         this.logger.error('Error handling message', error);
 
-        // Update status to error
+        // Update status to error via StatusReporter
         if (statusMessageTs) {
-          await this.app.client.chat.update({
-            channel,
-            ts: statusMessageTs,
-            text: '❌ *Error occurred*',
-          });
+          await this.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
         }
-
-        // Update reaction to show error
-        await this.reactionManager.updateReaction(sessionKey, 'x');
+        await this.reactionManager.updateReaction(sessionKey, this.statusReporter.getStatusEmoji('error'));
 
         await say({
           text: `Error: ${error.message || 'Something went wrong'}`,
@@ -460,17 +448,11 @@ export class SlackHandler {
       } else {
         this.logger.debug('Request was aborted', { sessionKey });
 
-        // Update status to cancelled
+        // Update status to cancelled via StatusReporter
         if (statusMessageTs) {
-          await this.app.client.chat.update({
-            channel,
-            ts: statusMessageTs,
-            text: '⏹️ *Cancelled*',
-          });
+          await this.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
         }
-
-        // Update reaction to show cancellation
-        await this.reactionManager.updateReaction(sessionKey, 'stop_sign');
+        await this.reactionManager.updateReaction(sessionKey, this.statusReporter.getStatusEmoji('cancelled'));
       }
 
       // Clean up temporary files in case of error too
@@ -487,6 +469,7 @@ export class SlackHandler {
           this.todoManager.cleanupSession(session.sessionId!);
           this.todoMessages.delete(sessionKey);
           this.reactionManager.cleanup(sessionKey);
+          this.statusReporter.cleanup(sessionKey);
         });
       }
     }

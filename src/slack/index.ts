@@ -41,5 +41,6 @@ export {
   ToolResultEvent,
 } from './tool-event-processor';
 
-// Phase 6: Message validation
+// Phase 6: Message validation and status reporting
 export { MessageValidator, ValidationResult, InterruptCheckResult } from './message-validator';
+export { StatusReporter, StatusType, StatusMessage } from './status-reporter';
