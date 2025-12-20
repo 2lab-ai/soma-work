@@ -5,7 +5,7 @@ import { Logger } from './logger';
 import { WorkingDirectoryManager } from './working-directory-manager';
 import { FileHandler, ProcessedFile } from './file-handler';
 import { ConversationSession, UserChoices, UserChoiceQuestion } from './types';
-import { TodoManager, Todo } from './todo-manager';
+import { TodoManager } from './todo-manager';
 import { McpManager } from './mcp-manager';
 import { sharedStore, PermissionResponse } from './shared-store';
 import { userSettingsStore } from './user-settings-store';
@@ -37,6 +37,7 @@ import {
   ToolEventContext,
   MessageValidator,
   StatusReporter,
+  TodoDisplayManager,
 } from './slack';
 
 interface MessageEvent {
@@ -64,7 +65,6 @@ export class SlackHandler {
   private fileHandler: FileHandler;
   private todoManager: TodoManager;
   private mcpManager: McpManager;
-  private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
 
   // Modular helpers
   private slackApi: SlackApiHelper;
@@ -85,9 +85,10 @@ export class SlackHandler {
   private streamProcessor: StreamProcessor;
   private toolEventProcessor: ToolEventProcessor;
 
-  // Phase 6: Message validation and status reporting
+  // Phase 6: Message validation, status reporting, and todo display
   private messageValidator: MessageValidator;
   private statusReporter: StatusReporter;
+  private todoDisplayManager: TodoDisplayManager;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -116,9 +117,10 @@ export class SlackHandler {
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
-    // Phase 6: Message validation and status reporting
+    // Phase 6: Message validation, status reporting, and todo display
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
     this.statusReporter = new StatusReporter(app.client);
+    this.todoDisplayManager = new TodoDisplayManager(app.client, this.todoManager, this.reactionManager);
 
     // Phase 4: Stream and tool processing
     this.toolEventProcessor = new ToolEventProcessor(
@@ -142,7 +144,7 @@ export class SlackHandler {
         });
       },
       onTodoUpdate: async (input, context) => {
-        await this.handleTodoUpdate(
+        await this.todoDisplayManager.handleTodoUpdate(
           input,
           context.sessionKey,
           context.sessionId,
@@ -382,7 +384,7 @@ export class SlackHandler {
           });
         },
         onTodoUpdate: async (input, ctx) => {
-          await this.handleTodoUpdate(
+          await this.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
             ctx.sessionId,
@@ -466,89 +468,12 @@ export class SlackHandler {
       if (session?.sessionId) {
         // Don't immediately clean up - keep todos visible for a while
         this.toolTracker.scheduleCleanup(5 * 60 * 1000, () => {
-          this.todoManager.cleanupSession(session.sessionId!);
-          this.todoMessages.delete(sessionKey);
+          this.todoDisplayManager.cleanupSession(session.sessionId!);
+          this.todoDisplayManager.cleanup(sessionKey);
           this.reactionManager.cleanup(sessionKey);
           this.statusReporter.cleanup(sessionKey);
         });
       }
-    }
-  }
-
-  private async handleTodoUpdate(
-    input: any, 
-    sessionKey: string, 
-    sessionId: string | undefined, 
-    channel: string, 
-    threadTs: string, 
-    say: any
-  ): Promise<void> {
-    if (!sessionId || !input.todos) {
-      return;
-    }
-
-    const newTodos: Todo[] = input.todos;
-    const oldTodos = this.todoManager.getTodos(sessionId);
-    
-    // Check if there's a significant change
-    if (this.todoManager.hasSignificantChange(oldTodos, newTodos)) {
-      // Update the todo manager
-      this.todoManager.updateTodos(sessionId, newTodos);
-      
-      // Format the todo list
-      const todoList = this.todoManager.formatTodoList(newTodos);
-      
-      // Check if we already have a todo message for this session
-      const existingTodoMessageTs = this.todoMessages.get(sessionKey);
-      
-      if (existingTodoMessageTs) {
-        // Update existing todo message
-        try {
-          await this.app.client.chat.update({
-            channel,
-            ts: existingTodoMessageTs,
-            text: todoList,
-          });
-          this.logger.debug('Updated existing todo message', { sessionKey, messageTs: existingTodoMessageTs });
-        } catch (error) {
-          this.logger.warn('Failed to update todo message, creating new one', error);
-          // If update fails, create a new message
-          await this.createNewTodoMessage(todoList, channel, threadTs, sessionKey, say);
-        }
-      } else {
-        // Create new todo message
-        await this.createNewTodoMessage(todoList, channel, threadTs, sessionKey, say);
-      }
-
-      // Send status change notification if there are meaningful changes
-      const statusChange = this.todoManager.getStatusChange(oldTodos, newTodos);
-      if (statusChange) {
-        await say({
-          text: `🔄 *Task Update:*\n${statusChange}`,
-          thread_ts: threadTs,
-        });
-      }
-
-      // Update reaction based on overall progress
-      await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
-    }
-  }
-
-  private async createNewTodoMessage(
-    todoList: string, 
-    channel: string, 
-    threadTs: string, 
-    sessionKey: string, 
-    say: any
-  ): Promise<void> {
-    const result = await say({
-      text: todoList,
-      thread_ts: threadTs,
-    });
-    
-    if (result?.ts) {
-      this.todoMessages.set(sessionKey, result.ts);
-      this.logger.debug('Created new todo message', { sessionKey, messageTs: result.ts });
     }
   }
 

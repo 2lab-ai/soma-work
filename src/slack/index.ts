@@ -41,6 +41,7 @@ export {
   ToolResultEvent,
 } from './tool-event-processor';
 
-// Phase 6: Message validation and status reporting
+// Phase 6: Message validation, status reporting, and todo display
 export { MessageValidator, ValidationResult, InterruptCheckResult } from './message-validator';
 export { StatusReporter, StatusType, StatusMessage } from './status-reporter';
+export { TodoDisplayManager, TodoUpdateInput, SayFunction as TodoSayFunction } from './todo-display-manager';
