@@ -7,3 +7,5 @@ export {
   PermissionMessageContext,
   PermissionMessageResult,
 } from './slack-messenger';
+
+export { PermissionService, PermissionCheckResult } from './service';
