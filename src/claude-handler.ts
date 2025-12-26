@@ -3,7 +3,7 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
-import { query, type SDKMessage } from '@anthropic-ai/claude-code';
+import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { ConversationSession } from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
@@ -98,6 +98,10 @@ export class ClaudeHandler {
     return this.sessionRegistry.terminateSession(sessionKey);
   }
 
+  clearSessionId(channelId: string, threadTs: string | undefined): void {
+    this.sessionRegistry.clearSessionId(channelId, threadTs);
+  }
+
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
     return this.sessionRegistry.cleanupInactiveSessions(maxAge);
   }
@@ -142,6 +146,8 @@ export class ClaudeHandler {
     // Build query options
     const options: any = {
       outputFormat: 'stream-json',
+      // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
+      settingSources: ['user', 'project', 'local'],
     };
 
     // Get MCP configuration
@@ -169,9 +175,9 @@ export class ClaudeHandler {
     }
 
     // Build system prompt with persona
-    const systemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user);
-    if (systemPrompt) {
-      options.customSystemPrompt = systemPrompt;
+    const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user);
+    if (builtSystemPrompt) {
+      options.systemPrompt = builtSystemPrompt;
       this.logger.debug('Applied custom system prompt with persona');
     }
 

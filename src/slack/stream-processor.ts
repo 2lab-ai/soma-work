@@ -3,7 +3,7 @@
  * Extracted from slack-handler.ts for-await loop (Phase 4.1)
  */
 
-import { SDKMessage } from '@anthropic-ai/claude-code';
+import { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../logger';
 import {
   ToolFormatter,

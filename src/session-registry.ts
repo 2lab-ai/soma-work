@@ -202,6 +202,22 @@ export class SessionRegistry {
   }
 
   /**
+   * Clear session ID (e.g., after abort or error)
+   * This forces a new Claude session on the next request
+   */
+  clearSessionId(channelId: string, threadTs: string | undefined): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session) {
+      this.logger.info('Clearing sessionId for session', {
+        channelId,
+        threadTs,
+        previousSessionId: session.sessionId,
+      });
+      session.sessionId = undefined;
+    }
+  }
+
+  /**
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {

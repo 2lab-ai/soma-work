@@ -118,13 +118,14 @@ export class EventRouter {
     }
 
     // 채널에서는 기존 세션이 있을 때만 처리
+    // NOTE: sessionId가 없어도 세션이 있으면 처리 (sessionId는 첫 응답 후에 설정됨)
     if (threadTs) {
       const session = this.deps.claudeHandler.getSession(channel, threadTs);
-      if (session?.sessionId) {
+      if (session) {
         this.logger.info('Handling file upload event in existing session', {
           channel,
           threadTs,
-          sessionId: session.sessionId,
+          sessionId: session.sessionId || '(pending)',
         });
         await this.messageHandler(messageEvent as MessageEvent, say);
         return;
@@ -158,13 +159,14 @@ export class EventRouter {
     }
 
     // 기존 세션이 있는 경우에만 처리
+    // NOTE: sessionId가 없어도 세션이 있으면 처리 (sessionId는 첫 응답 후에 설정됨)
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
-    if (session?.sessionId) {
+    if (session) {
       this.logger.info('Handling thread message without mention (session exists)', {
         user,
         channel,
         threadTs,
-        sessionId: session.sessionId,
+        sessionId: session.sessionId || '(pending)',
         owner: session.ownerName,
       });
       await this.messageHandler(messageEvent as MessageEvent, say);
