@@ -15,6 +15,9 @@ const DEFAULT_DISPATCH_MODEL = 'claude-3-haiku-20240307';
 // Dispatch prompt file path
 const DISPATCH_PROMPT_PATH = path.join(__dirname, 'prompt', 'dispatch.prompt');
 
+// Fallback counter for monitoring
+let dispatchFallbackCount = 0;
+
 /**
  * Result of dispatch classification
  */
@@ -31,11 +34,13 @@ export class DispatchService {
   private client: Anthropic;
   private model: string;
   private dispatchPrompt: string | undefined;
+  private isConfigured: boolean = false;
 
   constructor() {
     this.client = new Anthropic();
     this.model = process.env.DISPATCH_MODEL || DEFAULT_DISPATCH_MODEL;
     this.loadDispatchPrompt();
+    this.validateConfiguration();
   }
 
   private loadDispatchPrompt(): void {
@@ -52,11 +57,54 @@ export class DispatchService {
   }
 
   /**
-   * Classify user message and determine workflow
+   * Validate dispatch configuration at startup
    */
-  async dispatch(userMessage: string): Promise<DispatchResult> {
+  private validateConfiguration(): void {
+    if (!this.dispatchPrompt) {
+      this.logger.error('DISPATCH CONFIG ERROR: No dispatch prompt loaded. All sessions will use default workflow.', {
+        expectedPath: DISPATCH_PROMPT_PATH,
+        model: this.model,
+      });
+      this.isConfigured = false;
+      return;
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      this.logger.error('DISPATCH CONFIG ERROR: ANTHROPIC_API_KEY not set. Dispatch will fail.');
+      this.isConfigured = false;
+      return;
+    }
+
+    this.isConfigured = true;
+    this.logger.info('Dispatch service configured', {
+      model: this.model,
+      promptLength: this.dispatchPrompt.length,
+    });
+  }
+
+  /**
+   * Check if dispatch service is properly configured
+   */
+  isReady(): boolean {
+    return this.isConfigured;
+  }
+
+  /**
+   * Get current fallback count for monitoring
+   */
+  static getFallbackCount(): number {
+    return dispatchFallbackCount;
+  }
+
+  /**
+   * Classify user message and determine workflow
+   * @param userMessage - The user's message to classify
+   * @param abortSignal - Optional AbortSignal for cancellation
+   */
+  async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
     if (!this.dispatchPrompt) {
       this.logger.warn('No dispatch prompt, defaulting to default workflow');
+      dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
@@ -69,17 +117,23 @@ export class DispatchService {
         messageLength: userMessage.length,
       });
 
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 256,
-        system: this.dispatchPrompt,
-        messages: [
-          {
-            role: 'user',
-            content: userMessage,
-          },
-        ],
-      });
+      const response = await this.client.messages.create(
+        {
+          model: this.model,
+          max_tokens: 256,
+          temperature: 0, // Deterministic output for consistent classification
+          system: this.dispatchPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: userMessage,
+            },
+          ],
+        },
+        {
+          signal: abortSignal, // Pass abort signal for cancellation
+        }
+      );
 
       // Extract text from response
       const textContent = response.content.find((c: { type: string }) => c.type === 'text');
@@ -95,7 +149,13 @@ export class DispatchService {
 
       return result;
     } catch (error) {
-      this.logger.error('Dispatch failed, using fallback', error);
+      // Check if this was an abort
+      if (abortSignal?.aborted) {
+        this.logger.debug('Dispatch aborted');
+      } else {
+        this.logger.error('Dispatch failed, using fallback', error);
+      }
+      dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
@@ -110,13 +170,17 @@ export class DispatchService {
    */
   private parseResponse(text: string, userMessage: string): DispatchResult {
     try {
-      // Try to extract JSON from response
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      // Try to extract JSON from response (non-greedy to get first JSON object)
+      const jsonMatch = text.match(/\{[\s\S]*?\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
+        // Validate parsed fields
+        if (typeof parsed.workflow !== 'string') {
+          throw new Error('Invalid workflow field in response');
+        }
         return {
           workflow: this.validateWorkflow(parsed.workflow),
-          title: parsed.title || this.generateFallbackTitle(userMessage),
+          title: typeof parsed.title === 'string' ? parsed.title : this.generateFallbackTitle(userMessage),
         };
       }
 

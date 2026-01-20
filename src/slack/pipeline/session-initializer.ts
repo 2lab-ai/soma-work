@@ -119,13 +119,19 @@ export class SessionInitializer {
 
   /**
    * Dispatch to determine workflow based on user message
-   * Includes timeout to prevent blocking on slow API responses
+   * Uses AbortController for proper timeout cancellation
    */
   private async dispatchWorkflow(
     channel: string,
     threadTs: string,
     text: string
   ): Promise<void> {
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      abortController.abort();
+      this.logger.warn('Dispatch timeout, aborting request', { channel, threadTs });
+    }, DISPATCH_TIMEOUT_MS);
+
     try {
       const dispatchService = getDispatchService();
       this.logger.debug('Dispatching message to determine workflow', {
@@ -134,13 +140,7 @@ export class SessionInitializer {
         textLength: text.length,
       });
 
-      // Race dispatch against timeout to prevent blocking
-      const result = await Promise.race<DispatchResult>([
-        dispatchService.dispatch(text),
-        new Promise<DispatchResult>((_, reject) =>
-          setTimeout(() => reject(new Error('Dispatch timeout')), DISPATCH_TIMEOUT_MS)
-        ),
-      ]);
+      const result = await dispatchService.dispatch(text, abortController.signal);
 
       this.logger.info('Dispatch completed', {
         channel,
@@ -156,6 +156,8 @@ export class SessionInitializer {
       // Fallback to default workflow on error
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
