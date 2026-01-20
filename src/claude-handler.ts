@@ -4,7 +4,7 @@
  */
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { ConversationSession } from './types';
+import { ConversationSession, WorkflowType } from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
@@ -106,6 +106,25 @@ export class ClaudeHandler {
     return this.sessionRegistry.resetSessionContext(channelId, threadTs);
   }
 
+  // ===== Session State Machine =====
+
+  transitionToMain(
+    channelId: string,
+    threadTs: string | undefined,
+    workflow: WorkflowType,
+    title?: string
+  ): void {
+    this.sessionRegistry.transitionToMain(channelId, threadTs, workflow, title);
+  }
+
+  needsDispatch(channelId: string, threadTs?: string): boolean {
+    return this.sessionRegistry.needsDispatch(channelId, threadTs);
+  }
+
+  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
+    return this.sessionRegistry.getSessionWorkflow(channelId, threadTs);
+  }
+
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
     return this.sessionRegistry.cleanupInactiveSessions(maxAge);
   }
@@ -178,11 +197,12 @@ export class ClaudeHandler {
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
 
-    // Build system prompt with persona
-    const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user);
+    // Build system prompt with persona and workflow
+    const workflow = session?.workflow;
+    const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
-      this.logger.debug('Applied custom system prompt with persona');
+      this.logger.debug('Applied custom system prompt', { persona: true, workflow });
     }
 
     // Set working directory

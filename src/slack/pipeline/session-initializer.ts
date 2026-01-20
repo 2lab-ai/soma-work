@@ -6,6 +6,7 @@ import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
+import { getDispatchService } from '../../dispatch-service';
 
 interface SessionInitializerDeps {
   claudeHandler: ClaudeHandler;
@@ -73,10 +74,13 @@ export class SessionInitializer {
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
-      // Generate session title from first message
+
+      // Dispatch to determine workflow (for new sessions)
       if (text) {
-        const title = MessageFormatter.generateSessionTitle(text);
-        this.deps.claudeHandler.setSessionTitle(channel, threadTs, title);
+        await this.dispatchWorkflow(channel, threadTs, text);
+      } else {
+        // No text - default workflow
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
       }
     } else {
       this.logger.debug('Using existing session', {
@@ -84,6 +88,7 @@ export class SessionInitializer {
         sessionId: session.sessionId,
         owner: session.ownerName,
         currentInitiator: session.currentInitiatorName,
+        workflow: session.workflow,
       });
     }
 
@@ -105,6 +110,41 @@ export class SessionInitializer {
       workingDirectory,
       abortController,
     };
+  }
+
+  /**
+   * Dispatch to determine workflow based on user message
+   */
+  private async dispatchWorkflow(
+    channel: string,
+    threadTs: string,
+    text: string
+  ): Promise<void> {
+    try {
+      const dispatchService = getDispatchService();
+      this.logger.debug('Dispatching message to determine workflow', {
+        channel,
+        threadTs,
+        textLength: text.length,
+      });
+
+      const result = await dispatchService.dispatch(text);
+
+      this.logger.info('Dispatch completed', {
+        channel,
+        threadTs,
+        workflow: result.workflow,
+        title: result.title,
+      });
+
+      // Transition session to MAIN state with determined workflow
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+    } catch (error) {
+      this.logger.error('Dispatch failed, using default workflow', { error });
+      // Fallback to default workflow on error
+      const fallbackTitle = MessageFormatter.generateSessionTitle(text);
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
+    }
   }
 
   private handleConcurrency(
