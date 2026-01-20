@@ -87,7 +87,18 @@ export class PromptBuilder {
 
       try {
         if (fs.existsSync(includePath)) {
-          const includeContent = fs.readFileSync(includePath, 'utf-8');
+          // Resolve symlinks and verify the real path is still within PROMPT_DIR
+          const realPath = fs.realpathSync(includePath);
+          if (!realPath.startsWith(resolvedPromptDir + path.sep) && realPath !== resolvedPromptDir) {
+            this.logger.warn('Include blocked: symlink escapes prompt directory', {
+              filename: trimmedFilename,
+              resolvedPath: includePath,
+              realPath,
+            });
+            return `<!-- Include blocked: ${trimmedFilename} -->`;
+          }
+
+          const includeContent = fs.readFileSync(realPath, 'utf-8');
           // Recursively process includes in included content
           return this.processIncludes(includeContent, depth + 1);
         } else {
