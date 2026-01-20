@@ -87,7 +87,7 @@ export class DispatchService {
         throw new Error('No text content in response');
       }
 
-      const result = this.parseResponse(textContent.text);
+      const result = this.parseResponse(textContent.text, userMessage);
       this.logger.info('Dispatch result', {
         workflow: result.workflow,
         title: result.title,
@@ -105,8 +105,10 @@ export class DispatchService {
 
   /**
    * Parse dispatch response (JSON format)
+   * @param text - The raw response text from the model
+   * @param userMessage - Original user message for fallback title generation
    */
-  private parseResponse(text: string): DispatchResult {
+  private parseResponse(text: string, userMessage: string): DispatchResult {
     try {
       // Try to extract JSON from response
       const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -114,7 +116,7 @@ export class DispatchService {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
           workflow: this.validateWorkflow(parsed.workflow),
-          title: parsed.title || this.generateFallbackTitle(''),
+          title: parsed.title || this.generateFallbackTitle(userMessage),
         };
       }
 
@@ -125,16 +127,20 @@ export class DispatchService {
       if (workflowMatch) {
         return {
           workflow: this.validateWorkflow(workflowMatch[1].trim()),
-          title: titleMatch ? titleMatch[1].trim() : this.generateFallbackTitle(''),
+          title: titleMatch ? titleMatch[1].trim() : this.generateFallbackTitle(userMessage),
         };
       }
 
       throw new Error('Could not parse dispatch response');
     } catch (error) {
-      this.logger.warn('Failed to parse dispatch response', { text, error });
+      // Truncate text to prevent logging sensitive data
+      this.logger.warn('Failed to parse dispatch response', {
+        textPreview: text.substring(0, 100),
+        error,
+      });
       return {
         workflow: 'default',
-        title: this.generateFallbackTitle(''),
+        title: this.generateFallbackTitle(userMessage),
       };
     }
   }

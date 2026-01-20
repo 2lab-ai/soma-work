@@ -57,6 +57,7 @@ export class PromptBuilder {
   /**
    * Process include directives in prompt content
    * Supports {{include:filename.prompt}} syntax
+   * Includes path traversal protection
    */
   private processIncludes(content: string, depth: number = 0): string {
     // Prevent infinite recursion
@@ -65,20 +66,37 @@ export class PromptBuilder {
       return content;
     }
 
+    const resolvedPromptDir = path.resolve(PROMPT_DIR);
+
     return content.replace(INCLUDE_PATTERN, (match, filename) => {
-      const includePath = path.join(PROMPT_DIR, filename.trim());
+      const trimmedFilename = filename.trim();
+
+      // Reject absolute paths
+      if (path.isAbsolute(trimmedFilename)) {
+        this.logger.warn('Include blocked: absolute path not allowed', { filename: trimmedFilename });
+        return `<!-- Include blocked: ${trimmedFilename} -->`;
+      }
+
+      const includePath = path.resolve(PROMPT_DIR, trimmedFilename);
+
+      // Verify path stays within PROMPT_DIR (prevent directory traversal)
+      if (!includePath.startsWith(resolvedPromptDir + path.sep) && includePath !== resolvedPromptDir) {
+        this.logger.warn('Include blocked: path traversal detected', { filename: trimmedFilename });
+        return `<!-- Include blocked: ${trimmedFilename} -->`;
+      }
+
       try {
         if (fs.existsSync(includePath)) {
           const includeContent = fs.readFileSync(includePath, 'utf-8');
           // Recursively process includes in included content
           return this.processIncludes(includeContent, depth + 1);
         } else {
-          this.logger.warn('Include file not found', { filename, path: includePath });
-          return `<!-- Include not found: ${filename} -->`;
+          this.logger.warn('Include file not found', { filename: trimmedFilename, path: includePath });
+          return `<!-- Include not found: ${trimmedFilename} -->`;
         }
       } catch (error) {
-        this.logger.error('Failed to process include', { filename, error });
-        return `<!-- Include error: ${filename} -->`;
+        this.logger.error('Failed to process include', { filename: trimmedFilename, error });
+        return `<!-- Include error: ${trimmedFilename} -->`;
       }
     });
   }

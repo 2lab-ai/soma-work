@@ -6,7 +6,10 @@ import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
-import { getDispatchService } from '../../dispatch-service';
+import { getDispatchService, DispatchResult } from '../../dispatch-service';
+
+// Timeout for dispatch API call (5 seconds)
+const DISPATCH_TIMEOUT_MS = 5000;
 
 interface SessionInitializerDeps {
   claudeHandler: ClaudeHandler;
@@ -74,15 +77,17 @@ export class SessionInitializer {
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
+    }
 
-      // Dispatch to determine workflow (for new sessions)
+    // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
+    if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (text) {
         await this.dispatchWorkflow(channel, threadTs, text);
       } else {
         // No text - default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
       }
-    } else {
+    } else if (!isNewSession) {
       this.logger.debug('Using existing session', {
         sessionKey,
         sessionId: session.sessionId,
@@ -114,6 +119,7 @@ export class SessionInitializer {
 
   /**
    * Dispatch to determine workflow based on user message
+   * Includes timeout to prevent blocking on slow API responses
    */
   private async dispatchWorkflow(
     channel: string,
@@ -128,7 +134,13 @@ export class SessionInitializer {
         textLength: text.length,
       });
 
-      const result = await dispatchService.dispatch(text);
+      // Race dispatch against timeout to prevent blocking
+      const result = await Promise.race<DispatchResult>([
+        dispatchService.dispatch(text),
+        new Promise<DispatchResult>((_, reject) =>
+          setTimeout(() => reject(new Error('Dispatch timeout')), DISPATCH_TIMEOUT_MS)
+        ),
+      ]);
 
       this.logger.info('Dispatch completed', {
         channel,
