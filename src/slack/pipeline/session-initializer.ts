@@ -11,6 +11,10 @@ import { getDispatchService, DispatchResult } from '../../dispatch-service';
 // Timeout for dispatch API call (5 seconds)
 const DISPATCH_TIMEOUT_MS = 5000;
 
+// Track in-flight dispatch calls to prevent race conditions
+// Maps sessionKey -> Promise that resolves when dispatch completes
+const dispatchInFlight: Map<string, Promise<void>> = new Map();
+
 interface SessionInitializerDeps {
   claudeHandler: ClaudeHandler;
   slackApi: SlackApiHelper;
@@ -81,8 +85,13 @@ export class SessionInitializer {
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
-      if (text) {
-        await this.dispatchWorkflow(channel, threadTs, text);
+      // Check if dispatch is already in flight for this session (race condition prevention)
+      const existingDispatch = dispatchInFlight.get(sessionKey);
+      if (existingDispatch) {
+        this.logger.debug('Dispatch already in progress, waiting for completion', { sessionKey });
+        await existingDispatch;
+      } else if (text) {
+        await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
       } else {
         // No text - default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
@@ -120,11 +129,13 @@ export class SessionInitializer {
   /**
    * Dispatch to determine workflow based on user message
    * Uses AbortController for proper timeout cancellation
+   * Tracks in-flight dispatch to prevent race conditions
    */
   private async dispatchWorkflow(
     channel: string,
     threadTs: string,
-    text: string
+    text: string,
+    sessionKey: string
   ): Promise<void> {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => {
@@ -132,33 +143,44 @@ export class SessionInitializer {
       this.logger.warn('Dispatch timeout, aborting request', { channel, threadTs });
     }, DISPATCH_TIMEOUT_MS);
 
-    try {
-      const dispatchService = getDispatchService();
-      this.logger.debug('Dispatching message to determine workflow', {
-        channel,
-        threadTs,
-        textLength: text.length,
-      });
+    // Create a promise that we'll track and resolve when dispatch completes
+    const dispatchPromise = (async () => {
+      try {
+        const dispatchService = getDispatchService();
+        this.logger.debug('Dispatching message to determine workflow', {
+          channel,
+          threadTs,
+          textLength: text.length,
+        });
 
-      const result = await dispatchService.dispatch(text, abortController.signal);
+        const result = await dispatchService.dispatch(text, abortController.signal);
 
-      this.logger.info('Dispatch completed', {
-        channel,
-        threadTs,
-        workflow: result.workflow,
-        title: result.title,
-      });
+        this.logger.info('Dispatch completed', {
+          channel,
+          threadTs,
+          workflow: result.workflow,
+          title: result.title,
+        });
 
-      // Transition session to MAIN state with determined workflow
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
-    } catch (error) {
-      this.logger.error('Dispatch failed, using default workflow', { error });
-      // Fallback to default workflow on error
-      const fallbackTitle = MessageFormatter.generateSessionTitle(text);
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
-    } finally {
-      clearTimeout(timeoutId);
-    }
+        // Transition session to MAIN state with determined workflow
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+      } catch (error) {
+        this.logger.error('Dispatch failed, using default workflow', { error });
+        // Fallback to default workflow on error
+        const fallbackTitle = MessageFormatter.generateSessionTitle(text);
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
+      } finally {
+        clearTimeout(timeoutId);
+        // Clean up the in-flight tracking
+        dispatchInFlight.delete(sessionKey);
+      }
+    })();
+
+    // Track this dispatch call
+    dispatchInFlight.set(sessionKey, dispatchPromise);
+
+    // Wait for completion
+    await dispatchPromise;
   }
 
   private handleConcurrency(
