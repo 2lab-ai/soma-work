@@ -2,6 +2,7 @@ import { WorkingDirectoryManager } from '../../working-directory-manager';
 import { McpManager } from '../../mcp-manager';
 import { ClaudeHandler } from '../../claude-handler';
 import { SessionUiManager } from '../session-manager';
+import { RequestCoordinator } from '../request-coordinator';
 
 /**
  * Context passed to command handlers
@@ -22,6 +23,7 @@ export interface CommandDependencies {
   mcpManager: McpManager;
   claudeHandler: ClaudeHandler;
   sessionUiManager: SessionUiManager;
+  requestCoordinator: RequestCoordinator;
 }
 
 /**
@@ -30,6 +32,8 @@ export interface CommandDependencies {
 export interface CommandResult {
   handled: boolean;
   error?: string;
+  /** If set, continue processing with this prompt after command completes (e.g., /new <prompt>) */
+  continueWithPrompt?: string;
 }
 
 /**
