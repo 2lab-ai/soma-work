@@ -102,7 +102,8 @@ export class DispatchService {
    * @param abortSignal - Optional AbortSignal for cancellation
    */
   async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
-    if (!this.dispatchPrompt) {
+    // Check if service is properly configured (API key + prompt)
+    if (!this.isConfigured || !this.dispatchPrompt) {
       this.logger.warn('No dispatch prompt, defaulting to default workflow');
       dispatchFallbackCount++;
       return {
@@ -164,16 +165,60 @@ export class DispatchService {
   }
 
   /**
+   * Extract JSON object from text using brace balancing
+   * Handles nested objects and strings containing braces
+   */
+  private extractJson(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (c === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+
+      if (c === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (c === '{') depth++;
+      if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Parse dispatch response (JSON format)
    * @param text - The raw response text from the model
    * @param userMessage - Original user message for fallback title generation
    */
   private parseResponse(text: string, userMessage: string): DispatchResult {
-    try {
-      // Try to extract JSON from response (non-greedy to get first JSON object)
-      const jsonMatch = text.match(/\{[\s\S]*?\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+    // Try to extract JSON using brace balancing (handles nested objects)
+    const jsonStr = this.extractJson(text);
+    if (jsonStr) {
+      try {
+        const parsed = JSON.parse(jsonStr);
         // Validate parsed fields
         if (typeof parsed.workflow !== 'string') {
           throw new Error('Invalid workflow field in response');
@@ -182,9 +227,13 @@ export class DispatchService {
           workflow: this.validateWorkflow(parsed.workflow),
           title: typeof parsed.title === 'string' ? parsed.title : this.generateFallbackTitle(userMessage),
         };
+      } catch (jsonError) {
+        this.logger.debug('JSON parse failed, trying XML fallback', { jsonError });
       }
+    }
 
-      // Fallback: try to parse legacy XML format
+    // Fallback: try to parse legacy XML format
+    try {
       const workflowMatch = text.match(/<workflow>([^<]+)<\/workflow>/);
       const titleMatch = text.match(/<title>([^<]+)<\/title>/);
 
@@ -194,19 +243,18 @@ export class DispatchService {
           title: titleMatch ? titleMatch[1].trim() : this.generateFallbackTitle(userMessage),
         };
       }
-
-      throw new Error('Could not parse dispatch response');
-    } catch (error) {
-      // Truncate text to prevent logging sensitive data
-      this.logger.warn('Failed to parse dispatch response', {
-        textPreview: text.substring(0, 100),
-        error,
-      });
-      return {
-        workflow: 'default',
-        title: this.generateFallbackTitle(userMessage),
-      };
+    } catch (xmlError) {
+      this.logger.debug('XML parse failed', { xmlError });
     }
+
+    // Final fallback
+    this.logger.warn('Failed to parse dispatch response', {
+      textPreview: text.substring(0, 100),
+    });
+    return {
+      workflow: 'default',
+      title: this.generateFallbackTitle(userMessage),
+    };
   }
 
   /**
