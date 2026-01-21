@@ -150,35 +150,45 @@ export class SessionRegistry {
   /**
    * Transition session from INITIALIZING to MAIN state
    * Sets the workflow type determined by dispatch
+   * @returns true if transition succeeded, false if session not found or already transitioned
    */
   transitionToMain(
     channelId: string,
     threadTs: string | undefined,
     workflow: WorkflowType,
     title?: string
-  ): void {
+  ): boolean {
     const session = this.getSession(channelId, threadTs);
-    if (session) {
-      if (session.state !== 'INITIALIZING') {
-        this.logger.warn('Attempted to transition non-INITIALIZING session', {
-          channelId,
-          threadTs,
-          currentState: session.state,
-        });
-        return;
-      }
-      session.state = 'MAIN';
-      session.workflow = workflow;
-      if (title && !session.title) {
-        session.title = title;
-      }
-      this.logger.info('Session transitioned to MAIN', {
+    if (!session) {
+      this.logger.debug('transitionToMain: session not found', { channelId, threadTs });
+      return false;
+    }
+
+    if (session.state !== 'INITIALIZING') {
+      // This is expected in race conditions where another dispatch completed first
+      // Use debug level to avoid noisy logs
+      this.logger.debug('Session already transitioned (idempotent)', {
         channelId,
         threadTs,
-        workflow,
+        currentState: session.state,
+        currentWorkflow: session.workflow,
+        attemptedWorkflow: workflow,
       });
-      this.saveSessions();
+      return false;
     }
+
+    session.state = 'MAIN';
+    session.workflow = workflow;
+    if (title && !session.title) {
+      session.title = title;
+    }
+    this.logger.info('Session transitioned to MAIN', {
+      channelId,
+      threadTs,
+      workflow,
+    });
+    this.saveSessions();
+    return true;
   }
 
   /**

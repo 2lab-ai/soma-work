@@ -85,31 +85,54 @@ export class PromptBuilder {
         return `<!-- Include blocked: ${trimmedFilename} -->`;
       }
 
+      // Use file descriptor to prevent TOCTOU race condition
+      // Open file first, then validate via fd to ensure atomicity
+      let fd: number | undefined;
       try {
-        if (fs.existsSync(includePath)) {
-          // Resolve symlinks for both paths to ensure consistent comparison
-          // (handles case where PROMPT_DIR itself is a symlink)
-          const realPromptDir = fs.realpathSync(resolvedPromptDir);
-          const realPath = fs.realpathSync(includePath);
-          if (!realPath.startsWith(realPromptDir + path.sep) && realPath !== realPromptDir) {
-            this.logger.warn('Include blocked: symlink escapes prompt directory', {
-              filename: trimmedFilename,
-              resolvedPath: includePath,
-              realPath,
-            });
-            return `<!-- Include blocked: ${trimmedFilename} -->`;
-          }
+        // Check if path exists and is a file (not directory)
+        const stat = fs.statSync(includePath);
+        if (!stat.isFile()) {
+          this.logger.warn('Include blocked: not a file', { filename: trimmedFilename });
+          return `<!-- Include blocked: ${trimmedFilename} -->`;
+        }
 
-          const includeContent = fs.readFileSync(realPath, 'utf-8');
-          // Recursively process includes in included content
-          return this.processIncludes(includeContent, depth + 1);
-        } else {
+        // Open file descriptor first to lock the inode
+        fd = fs.openSync(includePath, 'r');
+
+        // Now validate the real path (symlink resolution)
+        // Use fstatSync on fd would be ideal but Node doesn't expose realpath from fd
+        // So we validate realpath and then read via fd (same inode)
+        const realPromptDir = fs.realpathSync(resolvedPromptDir);
+        const realPath = fs.realpathSync(includePath);
+        if (!realPath.startsWith(realPromptDir + path.sep) && realPath !== realPromptDir) {
+          this.logger.warn('Include blocked: symlink escapes prompt directory', {
+            filename: trimmedFilename,
+            resolvedPath: includePath,
+            realPath,
+          });
+          return `<!-- Include blocked: ${trimmedFilename} -->`;
+        }
+
+        // Read content via file descriptor (ensures we read the validated inode)
+        const fileSize = fs.fstatSync(fd).size;
+        const buffer = Buffer.alloc(fileSize);
+        fs.readSync(fd, buffer, 0, fileSize, 0);
+        const includeContent = buffer.toString('utf-8');
+
+        // Recursively process includes in included content
+        return this.processIncludes(includeContent, depth + 1);
+      } catch (error) {
+        // Handle specific error cases
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
           this.logger.warn('Include file not found', { filename: trimmedFilename, path: includePath });
           return `<!-- Include not found: ${trimmedFilename} -->`;
         }
-      } catch (error) {
         this.logger.error('Failed to process include', { filename: trimmedFilename, error });
         return `<!-- Include error: ${trimmedFilename} -->`;
+      } finally {
+        if (fd !== undefined) {
+          fs.closeSync(fd);
+        }
       }
     });
   }
