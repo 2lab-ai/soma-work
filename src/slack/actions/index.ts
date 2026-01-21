@@ -84,6 +84,24 @@ export class ActionHandlers {
       await this.choiceHandler.handleMultiChoice(body);
     });
 
+    // Edit choice (reselect a previously answered question)
+    app.action(/^edit_choice_/, async ({ ack, body }) => {
+      await ack();
+      await this.choiceHandler.handleEditChoice(body);
+    });
+
+    // Form submit (final submission of all selections)
+    app.action(/^submit_form_/, async ({ ack, body }) => {
+      await ack();
+      await this.choiceHandler.handleFormSubmit(body);
+    });
+
+    // Form reset (clear all selections)
+    app.action(/^reset_form_/, async ({ ack, body }) => {
+      await ack();
+      await this.choiceHandler.handleFormReset(body);
+    });
+
     app.action('custom_input_single', async ({ ack, body, client }) => {
       await ack();
       await this.formHandler.handleCustomInputSingle(body, client);

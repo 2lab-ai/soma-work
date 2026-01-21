@@ -86,7 +86,6 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
 
       this.logger.info('Multi-choice selection', { formId, questionId, choiceId, label, userId });
 
@@ -104,34 +103,159 @@ export class ChoiceActionHandler {
       // 선택 저장
       pendingForm.selections[questionId] = { choiceId, label };
 
+      // 폼 UI 업데이트 (자동 제출 없음 - Submit 버튼으로 제출)
+      await this.updateFormUI(pendingForm, channel, messageTs);
+    } catch (error) {
+      this.logger.error('Error processing multi-choice selection', error);
+    }
+  }
+
+  /**
+   * Handle edit choice - clear selection for a question and show options again
+   */
+  async handleEditChoice(body: any): Promise<void> {
+    try {
+      const action = body.actions[0];
+      const valueData = JSON.parse(action.value);
+      const { formId, questionId } = valueData;
+      const userId = body.user?.id;
+      const channel = body.channel?.id;
+      const messageTs = body.message?.ts;
+
+      this.logger.info('Edit choice requested', { formId, questionId, userId });
+
+      const pendingForm = this.formStore.get(formId);
+      if (!pendingForm) {
+        this.logger.warn('Pending form not found for edit', { formId });
+        await this.ctx.slackApi.postEphemeral(
+          channel,
+          userId,
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+        );
+        return;
+      }
+
+      // 선택 취소
+      delete pendingForm.selections[questionId];
+
+      // UI 업데이트
+      await this.updateFormUI(pendingForm, channel, messageTs);
+    } catch (error) {
+      this.logger.error('Error processing edit choice', error);
+    }
+  }
+
+  /**
+   * Handle form submit - send all selections to Claude
+   */
+  async handleFormSubmit(body: any): Promise<void> {
+    try {
+      const action = body.actions[0];
+      const valueData = JSON.parse(action.value);
+      const { formId, sessionKey } = valueData;
+      const userId = body.user?.id;
+      const channel = body.channel?.id;
+      const messageTs = body.message?.ts;
+      const threadTs = body.message?.thread_ts || messageTs;
+
+      this.logger.info('Form submit requested', { formId, userId });
+
+      const pendingForm = this.formStore.get(formId);
+      if (!pendingForm) {
+        this.logger.warn('Pending form not found for submit', { formId });
+        await this.ctx.slackApi.postEphemeral(
+          channel,
+          userId,
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+        );
+        return;
+      }
+
+      // 모든 질문이 선택되었는지 확인
       const totalQuestions = pendingForm.questions.length;
       const answeredCount = Object.keys(pendingForm.selections).length;
 
-      // 폼 UI 업데이트
-      const choicesData: UserChoices = {
-        type: 'user_choices',
-        questions: pendingForm.questions,
-      };
-
-      const updatedPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(
-        choicesData,
-        formId,
-        sessionKey,
-        pendingForm.selections
-      );
-
-      try {
-        await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
-      } catch (error) {
-        this.logger.warn('Failed to update multi-choice form', error);
+      if (answeredCount !== totalQuestions) {
+        await this.ctx.slackApi.postEphemeral(
+          channel,
+          userId,
+          `❌ 아직 ${totalQuestions - answeredCount}개의 질문에 답변하지 않았습니다.`
+        );
+        return;
       }
 
-      // 모든 질문 완료 시
-      if (answeredCount === totalQuestions) {
-        await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
-      }
+      // 제출 처리
+      await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
     } catch (error) {
-      this.logger.error('Error processing multi-choice selection', error);
+      this.logger.error('Error processing form submit', error);
+    }
+  }
+
+  /**
+   * Handle form reset - clear all selections
+   */
+  async handleFormReset(body: any): Promise<void> {
+    try {
+      const action = body.actions[0];
+      const valueData = JSON.parse(action.value);
+      const { formId } = valueData;
+      const userId = body.user?.id;
+      const channel = body.channel?.id;
+      const messageTs = body.message?.ts;
+
+      this.logger.info('Form reset requested', { formId, userId });
+
+      const pendingForm = this.formStore.get(formId);
+      if (!pendingForm) {
+        this.logger.warn('Pending form not found for reset', { formId });
+        await this.ctx.slackApi.postEphemeral(
+          channel,
+          userId,
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+        );
+        return;
+      }
+
+      // 모든 선택 초기화
+      pendingForm.selections = {};
+
+      // UI 업데이트
+      await this.updateFormUI(pendingForm, channel, messageTs);
+
+      await this.ctx.slackApi.postEphemeral(
+        channel,
+        userId,
+        '🗑️ 모든 선택이 초기화되었습니다.'
+      );
+    } catch (error) {
+      this.logger.error('Error processing form reset', error);
+    }
+  }
+
+  /**
+   * Update form UI with current selections
+   */
+  private async updateFormUI(
+    pendingForm: PendingChoiceFormData,
+    channel: string,
+    messageTs: string
+  ): Promise<void> {
+    const choicesData: UserChoices = {
+      type: 'user_choices',
+      questions: pendingForm.questions,
+    };
+
+    const updatedPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(
+      choicesData,
+      pendingForm.formId,
+      pendingForm.sessionKey,
+      pendingForm.selections
+    );
+
+    try {
+      await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
+    } catch (error) {
+      this.logger.warn('Failed to update form UI', error);
     }
   }
 

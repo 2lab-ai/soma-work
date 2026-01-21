@@ -5,6 +5,9 @@ export interface SlackMessagePayload {
   attachments?: any[];
 }
 
+// Option number emojis for visual distinction
+const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+
 /**
  * Slack 블록 UI 빌딩 로직
  */
@@ -15,12 +18,12 @@ export class ChoiceMessageBuilder {
   static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): SlackMessagePayload {
     const attachmentBlocks: any[] = [];
 
-    // Title
+    // Title with emoji
     attachmentBlocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${choice.question}*`,
+        text: `❓ *${choice.question}*`,
       },
     });
 
@@ -31,19 +34,19 @@ export class ChoiceMessageBuilder {
         elements: [
           {
             type: 'mrkdwn',
-            text: choice.context,
+            text: `💡 ${choice.context}`,
           },
         ],
       });
     }
 
-    // Build fields for horizontal layout (2 columns)
+    // Build fields for horizontal layout (2 columns) with number emojis
     const options = choice.choices.slice(0, 4);
-    const fields: any[] = options.map((opt) => ({
+    const fields: any[] = options.map((opt, idx) => ({
       type: 'mrkdwn',
       text: opt.description
-        ? `*${opt.label}*\n${opt.description}`
-        : `*${opt.label}*`,
+        ? `${OPTION_EMOJIS[idx]} *${opt.label}*\n_${opt.description}_`
+        : `${OPTION_EMOJIS[idx]} *${opt.label}*`,
     }));
 
     if (fields.length > 0) {
@@ -61,11 +64,11 @@ export class ChoiceMessageBuilder {
     }
 
     // Action buttons
-    const buttons: any[] = options.map((opt) => ({
+    const buttons: any[] = options.map((opt, idx) => ({
       type: 'button',
       text: {
         type: 'plain_text',
-        text: opt.label.substring(0, 30),
+        text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
         emoji: true,
       },
       value: JSON.stringify({
@@ -82,7 +85,7 @@ export class ChoiceMessageBuilder {
       type: 'button',
       text: {
         type: 'plain_text',
-        text: '직접 입력',
+        text: '✏️ 직접 입력',
         emoji: true,
       },
       value: JSON.stringify({
@@ -110,6 +113,10 @@ export class ChoiceMessageBuilder {
 
   /**
    * Build Slack attachment for multi-question choice form (Jira-style card UI)
+   * Enhanced with:
+   * - Edit button for selected choices (reselect)
+   * - Final submit button when all questions answered
+   * - Better visual hierarchy with emojis
    */
   static buildMultiChoiceFormBlocks(
     choices: UserChoices,
@@ -124,27 +131,30 @@ export class ChoiceMessageBuilder {
     const answeredCount = Object.keys(selections).length;
     const isComplete = answeredCount === totalQuestions;
 
-    // Header with title
+    // Header with emoji
     attachmentBlocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${choices.title || '선택이 필요합니다'}*`,
+        text: `📋 *${choices.title || '선택이 필요합니다'}*`,
       },
     });
 
-    // Progress and description context
+    // Progress bar and description
+    const progressBar = this.buildProgressBar(answeredCount, totalQuestions);
+    const progressText = isComplete ? '✅ 모두 완료!' : `${answeredCount}/${totalQuestions} 완료`;
+
     const contextElements: any[] = [
       {
         type: 'mrkdwn',
-        text: `${this.buildProgressBar(answeredCount, totalQuestions)}  *${answeredCount}/${totalQuestions}*`,
+        text: `${progressBar}  *${progressText}*`,
       },
     ];
 
     if (choices.description) {
       contextElements.push({
         type: 'mrkdwn',
-        text: `  |  ${choices.description}`,
+        text: `  │  _${choices.description}_`,
       });
     }
 
@@ -157,29 +167,51 @@ export class ChoiceMessageBuilder {
     choices.questions.forEach((q, idx) => {
       const isSelected = !!selections[q.id];
       const selectedChoice = selections[q.id];
+      const questionNumber = idx + 1;
 
       attachmentBlocks.push({ type: 'divider' });
 
       if (isSelected) {
-        attachmentBlocks.push({
-          type: 'section',
-          fields: [
-            {
-              type: 'mrkdwn',
-              text: `~${q.question}~`,
-            },
-            {
-              type: 'mrkdwn',
-              text: `*${selectedChoice.label}*`,
-            },
-          ],
-        });
-      } else {
+        // Selected question: show checkmark + answer + edit button
         attachmentBlocks.push({
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*${q.question}*`,
+            text: `✅ *Q${questionNumber}. ${q.question}*`,
+          },
+          accessory: {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '🔄 변경',
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+            }),
+            action_id: `edit_choice_${formId}_${q.id}`,
+          },
+        });
+
+        // Show selected answer
+        attachmentBlocks.push({
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: `➜ *${selectedChoice.label}*`,
+            },
+          ],
+        });
+      } else {
+        // Unselected question: show full options
+        attachmentBlocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `❓ *Q${questionNumber}. ${q.question}*`,
           },
         });
 
@@ -189,18 +221,19 @@ export class ChoiceMessageBuilder {
             elements: [
               {
                 type: 'mrkdwn',
-                text: q.context,
+                text: `💡 ${q.context}`,
               },
             ],
           });
         }
 
+        // Options with number emojis
         const options = q.choices.slice(0, 4);
-        const fields: any[] = options.map((opt) => ({
+        const fields: any[] = options.map((opt, optIdx) => ({
           type: 'mrkdwn',
           text: opt.description
-            ? `*${opt.label}*\n${opt.description}`
-            : `*${opt.label}*`,
+            ? `${OPTION_EMOJIS[optIdx]} *${opt.label}*\n_${opt.description}_`
+            : `${OPTION_EMOJIS[optIdx]} *${opt.label}*`,
         }));
 
         if (fields.length > 0) {
@@ -217,11 +250,12 @@ export class ChoiceMessageBuilder {
           }
         }
 
-        const buttons: any[] = options.map((opt) => ({
+        // Action buttons with number emojis
+        const buttons: any[] = options.map((opt, optIdx) => ({
           type: 'button',
           text: {
             type: 'plain_text',
-            text: opt.label.substring(0, 30),
+            text: `${OPTION_EMOJIS[optIdx]} ${opt.label.substring(0, 22)}`,
             emoji: true,
           },
           value: JSON.stringify({
@@ -234,11 +268,12 @@ export class ChoiceMessageBuilder {
           action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
         }));
 
+        // Custom input button
         buttons.push({
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '직접 입력',
+            text: '✏️ 직접 입력',
             emoji: true,
           },
           value: JSON.stringify({
@@ -258,18 +293,72 @@ export class ChoiceMessageBuilder {
       }
     });
 
-    // Completion message
+    // Submit/Reset buttons when complete (instead of auto-submit)
     if (isComplete) {
       attachmentBlocks.push({ type: 'divider' });
+
       attachmentBlocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '✓ *모든 선택 완료* — 진행 중...',
+          text: '🎉 *모든 선택이 완료되었습니다!*\n_제출 전에 위 선택을 변경할 수 있습니다._',
         },
+      });
+
+      attachmentBlocks.push({
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '🚀 제출하기',
+              emoji: true,
+            },
+            style: 'primary',
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+            }),
+            action_id: `submit_form_${formId}`,
+          },
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '🗑️ 모두 초기화',
+              emoji: true,
+            },
+            style: 'danger',
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+            }),
+            action_id: `reset_form_${formId}`,
+            confirm: {
+              title: {
+                type: 'plain_text',
+                text: '초기화 확인',
+              },
+              text: {
+                type: 'mrkdwn',
+                text: '모든 선택을 초기화하시겠습니까?',
+              },
+              confirm: {
+                type: 'plain_text',
+                text: '초기화',
+              },
+              deny: {
+                type: 'plain_text',
+                text: '취소',
+              },
+            },
+          },
+        ],
       });
     }
 
+    // Color based on state: blue (in progress), green (complete & ready to submit)
     const color = isComplete ? '#36a64f' : '#0052CC';
 
     return {
