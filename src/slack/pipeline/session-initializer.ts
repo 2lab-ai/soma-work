@@ -7,6 +7,7 @@ import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService, DispatchResult } from '../../dispatch-service';
+import { ConversationSession } from '../../types';
 
 // Timeout for dispatch API call (5 seconds)
 const DISPATCH_TIMEOUT_MS = 5000;
@@ -89,7 +90,13 @@ export class SessionInitializer {
       const existingDispatch = dispatchInFlight.get(sessionKey);
       if (existingDispatch) {
         this.logger.debug('Dispatch already in progress, waiting for completion', { sessionKey });
-        await existingDispatch;
+        // Add secondary timeout to prevent infinite hang if existing dispatch never settles
+        const waitTimeoutPromise = new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('Dispatch wait timeout')), DISPATCH_TIMEOUT_MS)
+        );
+        await Promise.race([existingDispatch, waitTimeoutPromise]).catch((err) => {
+          this.logger.warn('Timed out waiting for existing dispatch, proceeding anyway', { sessionKey, error: err.message });
+        });
       } else if (text) {
         await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
       } else {
@@ -189,7 +196,7 @@ export class SessionInitializer {
     threadTs: string,
     user: string,
     userName: string,
-    session: any
+    session: ConversationSession
   ): AbortController {
     // Check if this user can interrupt the current response
     const canInterrupt = this.deps.claudeHandler.canInterrupt(channel, threadTs, user);

@@ -225,7 +225,7 @@ export class DispatchService {
         }
         return {
           workflow: this.validateWorkflow(parsed.workflow),
-          title: typeof parsed.title === 'string' ? parsed.title : this.generateFallbackTitle(userMessage),
+          title: typeof parsed.title === 'string' ? this.sanitizeTitle(parsed.title) : this.generateFallbackTitle(userMessage),
         };
       } catch (jsonError) {
         this.logger.debug('JSON parse failed, trying XML fallback', { jsonError });
@@ -240,7 +240,7 @@ export class DispatchService {
       if (workflowMatch) {
         return {
           workflow: this.validateWorkflow(workflowMatch[1].trim()),
-          title: titleMatch ? titleMatch[1].trim() : this.generateFallbackTitle(userMessage),
+          title: titleMatch ? this.sanitizeTitle(titleMatch[1].trim()) : this.generateFallbackTitle(userMessage),
         };
       }
     } catch (xmlError) {
@@ -277,6 +277,19 @@ export class DispatchService {
 
     this.logger.warn('Invalid workflow, defaulting', { workflow });
     return 'default';
+  }
+
+  /**
+   * Sanitize title to remove Slack special formatting
+   * Prevents mention injection (<!channel>, <@U123>) and link formatting
+   */
+  private sanitizeTitle(title: string): string {
+    return title
+      .replace(/<[!@#][^>]*>/g, '') // Remove <!channel>, <@U123>, <#C123>
+      .replace(/<[^|>]+\|([^>]+)>/g, '$1') // Convert <url|text> to text
+      .replace(/<[^>]+>/g, '') // Remove remaining <url>
+      .replace(/\s+/g, ' ')
+      .trim() || 'New Session';
   }
 
   /**
