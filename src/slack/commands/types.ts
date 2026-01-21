@@ -30,6 +30,8 @@ export interface CommandDependencies {
 export interface CommandResult {
   handled: boolean;
   error?: string;
+  /** If set, continue processing with this prompt after command completes (e.g., /new <prompt>) */
+  continueWithPrompt?: string;
 }
 
 /**

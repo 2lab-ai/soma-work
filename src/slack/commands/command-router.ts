@@ -8,6 +8,7 @@ import { ModelHandler } from './model-handler';
 import { HelpHandler } from './help-handler';
 import { SessionHandler } from './session-handler';
 import { RestoreHandler } from './restore-handler';
+import { NewHandler } from './new-handler';
 
 /**
  * Routes commands to appropriate handlers
@@ -26,6 +27,7 @@ export class CommandRouter {
       new PersonaHandler(),
       new ModelHandler(),
       new RestoreHandler(),
+      new NewHandler(deps),
       new HelpHandler(),
       new SessionHandler(deps),
     ];

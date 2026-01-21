@@ -349,6 +349,73 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('isNewCommand', () => {
+    it('should match "new"', () => {
+      expect(CommandParser.isNewCommand('new')).toBe(true);
+    });
+
+    it('should match "/new"', () => {
+      expect(CommandParser.isNewCommand('/new')).toBe(true);
+    });
+
+    it('should match "new some prompt"', () => {
+      expect(CommandParser.isNewCommand('new some prompt')).toBe(true);
+    });
+
+    it('should match "/new https://github.com/owner/repo/pull/123"', () => {
+      expect(CommandParser.isNewCommand('/new https://github.com/owner/repo/pull/123')).toBe(true);
+    });
+
+    it('should match "new" with multiline prompt', () => {
+      expect(CommandParser.isNewCommand('new line 1\nline 2')).toBe(true);
+    });
+
+    it('should not match "newline" (no space)', () => {
+      expect(CommandParser.isNewCommand('newline')).toBe(false);
+    });
+
+    it('should not match "renew"', () => {
+      expect(CommandParser.isNewCommand('renew')).toBe(false);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isNewCommand('hello new world')).toBe(false);
+    });
+  });
+
+  describe('parseNewCommand', () => {
+    it('should return empty prompt for "new"', () => {
+      expect(CommandParser.parseNewCommand('new')).toEqual({ prompt: undefined });
+    });
+
+    it('should return empty prompt for "/new"', () => {
+      expect(CommandParser.parseNewCommand('/new')).toEqual({ prompt: undefined });
+    });
+
+    it('should return prompt for "new some prompt"', () => {
+      expect(CommandParser.parseNewCommand('new some prompt')).toEqual({ prompt: 'some prompt' });
+    });
+
+    it('should return prompt for "/new https://github.com/owner/repo/pull/123"', () => {
+      expect(CommandParser.parseNewCommand('/new https://github.com/owner/repo/pull/123')).toEqual({
+        prompt: 'https://github.com/owner/repo/pull/123',
+      });
+    });
+
+    it('should preserve multiline prompts', () => {
+      const result = CommandParser.parseNewCommand('/new line 1\nline 2');
+      expect(result.prompt).toBe('line 1\nline 2');
+    });
+
+    it('should trim whitespace from prompt', () => {
+      expect(CommandParser.parseNewCommand('new   spaced prompt  ')).toEqual({ prompt: 'spaced prompt' });
+    });
+
+    it('should return empty for "new   " (whitespace only)', () => {
+      expect(CommandParser.parseNewCommand('new   ')).toEqual({ prompt: undefined });
+    });
+  });
+
   describe('getHelpMessage', () => {
     it('should return help message containing command sections', () => {
       const help = CommandParser.getHelpMessage();
@@ -360,6 +427,12 @@ describe('CommandParser', () => {
       expect(help).toContain('Model');
       expect(help).toContain('Credentials');
       expect(help).toContain('Help');
+    });
+
+    it('should include /new command in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('new');
+      expect(help).toContain('Reset session context');
     });
   });
 });

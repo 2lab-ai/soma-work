@@ -183,8 +183,11 @@ export class SlackHandler {
     });
 
     // Step 2: Route commands
-    const { handled } = await this.inputProcessor.routeCommand(event, wrappedSay);
-    if (handled) return;
+    const { handled, continueWithPrompt } = await this.inputProcessor.routeCommand(event, wrappedSay);
+    if (handled && !continueWithPrompt) return;
+
+    // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead
+    const effectiveText = continueWithPrompt || event.text;
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
@@ -201,7 +204,7 @@ export class SlackHandler {
       workingDirectory: sessionResult.workingDirectory,
       abortController: sessionResult.abortController,
       processedFiles,
-      text: event.text,
+      text: effectiveText,
       channel,
       threadTs,
       user: event.user,

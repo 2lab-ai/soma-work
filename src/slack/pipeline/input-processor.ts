@@ -54,7 +54,7 @@ export class InputProcessor {
   async routeCommand(
     event: MessageEvent,
     say: SayFn
-  ): Promise<{ handled: boolean }> {
+  ): Promise<{ handled: boolean; continueWithPrompt?: string }> {
     const { user, channel, thread_ts, ts, text } = event;
 
     if (!text) {
@@ -69,6 +69,9 @@ export class InputProcessor {
       say,
     });
 
-    return { handled: commandResult.handled };
+    return {
+      handled: commandResult.handled,
+      continueWithPrompt: commandResult.continueWithPrompt,
+    };
   }
 }

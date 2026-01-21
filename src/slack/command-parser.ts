@@ -5,6 +5,7 @@
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
+export type NewCommandResult = { prompt?: string };
 
 export class CommandParser {
   /**
@@ -112,6 +113,26 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a /new command
+   */
+  static isNewCommand(text: string): boolean {
+    return /^\/?new(?:\s+[\s\S]*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse /new command to extract optional prompt
+   */
+  static parseNewCommand(text: string): NewCommandResult {
+    const match = text.trim().match(/^\/?new(?:\s+(.+))?$/is);
+    if (!match) {
+      return {};
+    }
+    // match[1] is the optional prompt (everything after /new)
+    const prompt = match[1]?.trim();
+    return { prompt: prompt || undefined };
+  }
+
+  /**
    * Check if text is a sessions command
    */
   static isSessionsCommand(text: string): boolean {
@@ -148,6 +169,8 @@ export class CommandParser {
       '• `sessions` or `/sessions` - Show your active sessions',
       '• `all_sessions` or `/all_sessions` - Show all active sessions',
       '• `terminate <session-key>` - Terminate a specific session',
+      '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
+      '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',

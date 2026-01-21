@@ -102,6 +102,10 @@ export class ClaudeHandler {
     this.sessionRegistry.clearSessionId(channelId, threadTs);
   }
 
+  resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
+    return this.sessionRegistry.resetSessionContext(channelId, threadTs);
+  }
+
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
     return this.sessionRegistry.cleanupInactiveSessions(maxAge);
   }
