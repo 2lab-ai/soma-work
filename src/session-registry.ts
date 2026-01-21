@@ -218,6 +218,38 @@ export class SessionRegistry {
   }
 
   /**
+   * Reset session context (conversation history) while preserving session metadata
+   * Use this for /new command - clears sessionId but keeps owner, workingDirectory, etc.
+   * @returns true if session was found and reset, false otherwise
+   */
+  resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) {
+      return false;
+    }
+
+    this.logger.info('Resetting session context', {
+      channelId,
+      threadTs,
+      previousSessionId: session.sessionId,
+      preservedOwner: session.ownerId,
+      preservedWorkingDirectory: session.workingDirectory,
+    });
+
+    // Clear conversation-related fields
+    session.sessionId = undefined;
+    session.title = undefined;
+    session.lastActivity = new Date();
+
+    // Clear expiry warning state
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+
+    this.saveSessions();
+    return true;
+  }
+
+  /**
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {

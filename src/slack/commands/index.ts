@@ -11,3 +11,4 @@ export { ModelHandler } from './model-handler';
 export { HelpHandler } from './help-handler';
 export { SessionHandler } from './session-handler';
 export { RestoreHandler } from './restore-handler';
+export { NewHandler } from './new-handler';
