@@ -13,9 +13,19 @@ export class NewHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, channel, text, threadTs, say } = ctx;
+    const { channel, text, threadTs, say } = ctx;
 
     const { prompt } = CommandParser.parseNewCommand(text);
+
+    // Check if there's an active request in progress (P1 race condition fix)
+    const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+    if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+      await say({
+        text: '⚠️ Cannot reset session while a request is in progress. Please wait for the current response to complete or cancel it first.',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
 
     // Reset session context
     const wasReset = this.deps.claudeHandler.resetSessionContext(channel, threadTs);

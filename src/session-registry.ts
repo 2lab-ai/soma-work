@@ -219,12 +219,13 @@ export class SessionRegistry {
 
   /**
    * Reset session context (conversation history) while preserving session metadata
-   * Use this for /new command - clears sessionId but keeps owner, workingDirectory, etc.
-   * @returns true if session was found and reset, false otherwise
+   * Use this for /new command - clears sessionId but keeps owner, workingDirectory, model, etc.
+   * @returns true if session had active conversation and was reset, false if no session or already reset
    */
   resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
     const session = this.getSession(channelId, threadTs);
-    if (!session) {
+    // Only return true if there was actually something to reset (had an active conversation)
+    if (!session || !session.sessionId) {
       return false;
     }
 
@@ -240,6 +241,10 @@ export class SessionRegistry {
     session.sessionId = undefined;
     session.title = undefined;
     session.lastActivity = new Date();
+
+    // Clear current initiator (fresh start means no active initiator)
+    session.currentInitiatorId = undefined;
+    session.currentInitiatorName = undefined;
 
     // Clear expiry warning state
     session.warningMessageTs = undefined;

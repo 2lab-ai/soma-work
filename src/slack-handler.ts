@@ -91,6 +91,7 @@ export class SlackHandler {
       mcpManager: this.mcpManager,
       claudeHandler: this.claudeHandler,
       sessionUiManager: this.sessionUiManager,
+      requestCoordinator: this.requestCoordinator,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
