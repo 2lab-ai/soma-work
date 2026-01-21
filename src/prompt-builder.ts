@@ -87,9 +87,11 @@ export class PromptBuilder {
 
       try {
         if (fs.existsSync(includePath)) {
-          // Resolve symlinks and verify the real path is still within PROMPT_DIR
+          // Resolve symlinks for both paths to ensure consistent comparison
+          // (handles case where PROMPT_DIR itself is a symlink)
+          const realPromptDir = fs.realpathSync(resolvedPromptDir);
           const realPath = fs.realpathSync(includePath);
-          if (!realPath.startsWith(resolvedPromptDir + path.sep) && realPath !== resolvedPromptDir) {
+          if (!realPath.startsWith(realPromptDir + path.sep) && realPath !== realPromptDir) {
             this.logger.warn('Include blocked: symlink escapes prompt directory', {
               filename: trimmedFilename,
               resolvedPath: includePath,
