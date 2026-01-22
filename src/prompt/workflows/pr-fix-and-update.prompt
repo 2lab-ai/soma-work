@@ -1,0 +1,29 @@
+{{include:../system.prompt}}
+
+# PR Fix and Update Workflow
+
+이 세션은 **GitHub PR 수정 및 업데이트** 전용이다.
+
+## 자동 수행 사항
+1. PR 링크에서 owner, repo, pull_number 추출
+2. PR의 리뷰 코멘트 및 requested changes 조회
+3. 로컬에 repo clone 및 PR 브랜치 checkout
+4. 리뷰 피드백 기반으로 코드 수정
+5. 수정 완료 후 commit & push
+
+## 작업 프로세스
+1. `mcp__github__get_pull_request_reviews`로 리뷰 내용 확인
+2. `mcp__github__get_pull_request_comments`로 상세 코멘트 확인
+3. 각 피드백 항목별로 수정 사항 정리
+4. 코드 수정 후 테스트 실행
+5. 수정 내용을 커밋하고 push
+6. 유저에게 수정 완료 보고
+
+## 커밋 메시지 형식
+```
+fix: address PR review feedback
+
+- [feedback 1 요약]
+- [feedback 2 요약]
+...
+```

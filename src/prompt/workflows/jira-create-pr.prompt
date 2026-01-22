@@ -1,0 +1,50 @@
+{{include:../system.prompt}}
+
+# Jira Create PR Workflow
+
+이 세션은 **Jira 이슈 기반 PR 생성** 전용이다.
+
+## 자동 수행 사항
+1. Jira 이슈에서 Implementation Spec 확인
+2. 관련 repo clone
+3. 이슈 키로 새 브랜치 생성
+4. 코드 뼈대 및 실패하는 테스트 작성
+5. PR 생성
+
+## 작업 프로세스
+1. Jira 이슈에 Implementation Spec이 있는지 확인
+   - 없으면 `jira-planning` 워크플로우 먼저 진행하라고 안내
+2. Spec 기반으로 코드 구조 생성
+3. 실패하는 테스트 먼저 작성 (TDD)
+4. 기본 구현 뼈대 작성 (아직 테스트 통과 안함)
+5. commit & push
+6. PR 생성
+
+## 브랜치 네이밍
+```
+feature/[ISSUE-KEY]-short-description
+예: feature/PTN-123-add-user-auth
+```
+
+## PR 생성 형식
+```markdown
+## Summary
+- [ISSUE-KEY] 이슈 제목
+- Jira: [링크]
+
+## Changes
+- 변경 사항 요약
+
+## Test Plan
+- [ ] 실패하는 테스트 확인
+- [ ] 구현 완료 후 테스트 통과 확인
+
+## Status
+🚧 WIP - 뼈대만 구현됨, 실제 구현 필요
+```
+
+## 유저에게 확인
+PR 생성 후:
+1. PR 링크 공유
+2. 추가 구현 진행할지 물어봄
+3. 승인 시 실제 구현 진행

@@ -1,0 +1,30 @@
+{{include:../system.prompt}}
+
+# Jira Executive Summary Workflow
+
+이 세션은 **Jira 보드 현황 요약** 전용이다.
+
+## 자동 수행 사항
+1. Jira 보드 링크에서 project key, board id 추출
+2. 현재 스프린트의 모든 이슈 조회
+3. 상태별로 분류하여 executive summary 생성
+
+## 출력 형식
+
+### 📊 스프린트 현황
+- **진행 중 (In Progress)**: N개
+- **할 일 (To Do)**: N개
+- **완료 (Done)**: N개
+
+### 🔥 우선 처리 필요 (In Progress)
+우선순위 순서대로 나열:
+1. **[ISSUE-123]** 이슈 제목
+   - 담당자: @name
+   - 진행 상황: ...
+   - 다음 단계: ...
+
+### 📋 다음 작업 (To Do)
+우선순위대로 뭐부터 어떻게 해야 할지 조언
+
+### ⚠️ 블로커/리스크
+식별된 블로커나 리스크 항목

@@ -3,7 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
-import { ConversationSession } from './types';
+import { ConversationSession, SessionState, WorkflowType } from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
@@ -37,6 +37,9 @@ interface SerializedSession {
   workingDirectory?: string;
   title?: string;
   model?: string;
+  // Session state machine fields
+  state?: SessionState;
+  workflow?: WorkflowType;
 }
 
 /**
@@ -137,10 +140,79 @@ export class SessionRegistry {
       isActive: true,
       lastActivity: new Date(),
       model: sessionModel,
+      state: 'INITIALIZING', // Start in INITIALIZING state
     };
 
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
     return session;
+  }
+
+  /**
+   * Transition session from INITIALIZING to MAIN state
+   * Sets the workflow type determined by dispatch
+   * @returns true if transition succeeded, false if session not found or already transitioned
+   */
+  transitionToMain(
+    channelId: string,
+    threadTs: string | undefined,
+    workflow: WorkflowType,
+    title?: string
+  ): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) {
+      this.logger.debug('transitionToMain: session not found', { channelId, threadTs });
+      return false;
+    }
+
+    if (session.state !== 'INITIALIZING') {
+      // This is expected in race conditions where another dispatch completed first
+      // Use debug level to avoid noisy logs
+      this.logger.debug('Session already transitioned (idempotent)', {
+        channelId,
+        threadTs,
+        currentState: session.state,
+        currentWorkflow: session.workflow,
+        attemptedWorkflow: workflow,
+      });
+      return false;
+    }
+
+    session.state = 'MAIN';
+    session.workflow = workflow;
+    if (title && !session.title) {
+      session.title = title;
+    }
+    this.logger.info('Session transitioned to MAIN', {
+      channelId,
+      threadTs,
+      workflow,
+    });
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Get session state
+   */
+  getSessionState(channelId: string, threadTs?: string): SessionState | undefined {
+    const session = this.getSession(channelId, threadTs);
+    return session?.state;
+  }
+
+  /**
+   * Get session workflow
+   */
+  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
+    const session = this.getSession(channelId, threadTs);
+    return session?.workflow;
+  }
+
+  /**
+   * Check if session needs dispatch (is in INITIALIZING state)
+   */
+  needsDispatch(channelId: string, threadTs?: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    return session?.state === 'INITIALIZING';
   }
 
   /**
@@ -375,6 +447,8 @@ export class SessionRegistry {
             workingDirectory: session.workingDirectory,
             title: session.title,
             model: session.model,
+            state: session.state,
+            workflow: session.workflow,
           });
         }
       }
@@ -421,6 +495,8 @@ export class SessionRegistry {
             workingDirectory: serialized.workingDirectory,
             title: serialized.title,
             model: serialized.model,
+            state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
+            workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           };
           this.sessions.set(serialized.key, session);
           loaded++;
