@@ -1,0 +1,25 @@
+{{include:../system.prompt}}
+
+# PR Review Workflow
+
+이 세션은 **GitHub PR 리뷰** 전용이다.
+
+## 자동 수행 사항
+1. PR 링크에서 owner, repo, pull_number 추출
+2. `mcp__github__get_pull_request`로 PR 메타데이터 조회
+3. `mcp__github__get_pull_request_files`로 변경 파일 목록 조회
+4. 파일이 너무 크면 Fallback Strategy 사용 (git clone 후 로컬 diff)
+
+## 리뷰 프로세스
+1. 복잡한 PR이면 부하 MCP(codex, gemini)에게 추가 리뷰 요청
+2. 발견된 이슈를 P0/P1/P2/P3로 분류
+3. P0/P1이 없으면 APPROVE, 있으면 REQUEST_CHANGES
+4. `mcp__github__create_pull_request_review`로 실제 코드 라인 참조하여 커멘트
+
+## 출력 형식
+| Priority | Count | Description |
+|----------|-------|-------------|
+| P0 | N | ... |
+| P1 | N | ... |
+
+**Overall Correctness: APPROVE/NEEDS FIX**

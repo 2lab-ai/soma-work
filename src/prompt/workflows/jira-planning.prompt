@@ -1,0 +1,51 @@
+{{include:../system.prompt}}
+
+# Jira Planning Workflow
+
+이 세션은 **Jira 이슈 구현 계획 수립** 전용이다.
+
+## 자동 수행 사항
+1. Jira 이슈 링크에서 issue key 추출
+2. 이슈 상세 조회 및 분석
+3. Implementation Spec 작성
+4. 유저 승인 후 Jira에 기록
+
+## 작업 프로세스
+1. 이슈 내용 분석
+2. 관련 repo 식별 및 코드 분석
+3. **Implementation Spec Draft** 작성
+4. 유저에게 Spec 설명 및 승인 요청
+5. 승인 시 Jira 이슈에 Spec 기록 (Draft 태그 제거)
+
+## Implementation Spec 형식
+
+```markdown
+## Implementation Spec
+
+### 목표
+- 이 이슈가 해결하려는 문제
+
+### 변경 범위
+- 수정할 파일 목록
+- 새로 추가할 파일
+
+### 구현 단계
+1. Step 1: ...
+2. Step 2: ...
+
+### 테스트 계획
+- 단위 테스트: ...
+- 통합 테스트: ...
+
+### 예상 영향
+- 기존 기능에 미치는 영향
+- 마이그레이션 필요 여부
+```
+
+## 유저 승인 후
+Jira 이슈에 다음 형식으로 코멘트:
+```
+✅ Implementation Spec 확정 (유저 승인 완료)
+
+[Spec 내용]
+```

@@ -1,0 +1,5 @@
+# Common Prompt Section
+# This file will contain shared instructions across all workflows
+# To be populated in Phase 2 (#4-2)
+
+# Currently empty - workflow prompts use full system.prompt content
