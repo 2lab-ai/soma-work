@@ -1,23 +1,19 @@
-{{include:../system.prompt}}
+{{include:common.prompt}}
 
 # Jira Create PR Workflow
 
-이 세션은 **Jira 이슈 기반 PR 생성** 전용이다.
+이 세션은 **Jira 이슈 기반 PR 생성** 전용이다. Implementation Spec을 기반으로 코드 뼈대와 실패하는 테스트를 작성한다.
+
+## 전제 조건
+- Jira 이슈에 **승인된 Implementation Spec**이 있어야 함
+- Spec이 없으면 `jira-planning` 워크플로우를 먼저 진행하라고 안내
 
 ## 자동 수행 사항
 1. Jira 이슈에서 Implementation Spec 확인
 2. 관련 repo clone
 3. 이슈 키로 새 브랜치 생성
-4. 코드 뼈대 및 실패하는 테스트 작성
-5. PR 생성
-
-## 작업 프로세스
-1. Jira 이슈에 Implementation Spec이 있는지 확인
-   - 없으면 `jira-planning` 워크플로우 먼저 진행하라고 안내
-2. Spec 기반으로 코드 구조 생성
-3. 실패하는 테스트 먼저 작성 (TDD)
-4. 기본 구현 뼈대 작성 (아직 테스트 통과 안함)
-5. commit & push
+4. 실패하는 테스트 먼저 작성 (TDD)
+5. 코드 뼈대 작성 (테스트 아직 통과 안 함)
 6. PR 생성
 
 ## 브랜치 네이밍
@@ -26,25 +22,67 @@ feature/[ISSUE-KEY]-short-description
 예: feature/PROJ-123-add-user-auth
 ```
 
+## 작업 프로세스
+
+### 1. Spec 확인
+- Jira 이슈 조회
+- Implementation Spec 존재 여부 확인
+- Spec이 없으면: "Implementation Spec이 없습니다. `/plan` 또는 jira-planning 워크플로우로 먼저 Spec을 작성해주세요."
+
+### 2. 코드 작성 (TDD 방식)
+```
+1. 실패하는 테스트 작성 (Red)
+2. 테스트를 통과시키기 위한 최소 구현 뼈대 작성
+3. 아직 테스트는 실패 상태 (구현 미완성)
+```
+
+### 3. Git 작업
+```bash
+git checkout -b feature/[ISSUE-KEY]-description
+git add .
+git commit -m "feat([scope]): [ISSUE-KEY] scaffold implementation
+
+- Add failing tests for [feature]
+- Add implementation skeleton
+- WIP: actual implementation needed"
+git push -u origin feature/[ISSUE-KEY]-description
+```
+
+### 4. PR 생성
+`gh pr create` 또는 `mcp__github__create_pull_request` 사용
+
 ## PR 생성 형식
+
 ```markdown
 ## Summary
-- [ISSUE-KEY] 이슈 제목
-- Jira: [링크]
+- **[ISSUE-KEY]** 이슈 제목
+- **Jira**: [이슈 링크]
 
 ## Changes
-- 변경 사항 요약
+- 실패하는 테스트 추가
+- 구현 뼈대 작성
 
 ## Test Plan
-- [ ] 실패하는 테스트 확인
+- [ ] 현재 테스트 실패 확인 (의도적)
 - [ ] 구현 완료 후 테스트 통과 확인
 
 ## Status
-🚧 WIP - 뼈대만 구현됨, 실제 구현 필요
+🚧 **WIP** - 뼈대만 구현됨, 실제 로직 구현 필요
+
+---
+Implements: [ISSUE-KEY]
 ```
 
-## 유저에게 확인
-PR 생성 후:
-1. PR 링크 공유
-2. 추가 구현 진행할지 물어봄
-3. 승인 시 실제 구현 진행
+## PR 생성 후
+
+유저에게 다음 단계 확인:
+```json
+{
+  "type": "user_choice",
+  "question": "PR이 생성되었습니다. 다음 단계를 선택해주세요.",
+  "options": [
+    {"id": "1", "label": "구현 계속 진행", "description": "테스트가 통과하도록 실제 로직 구현"},
+    {"id": "2", "label": "여기서 중단", "description": "PR만 만들고 나중에 직접 구현"}
+  ]
+}
+```

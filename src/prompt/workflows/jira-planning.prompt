@@ -1,51 +1,80 @@
-{{include:../system.prompt}}
+{{include:common.prompt}}
 
 # Jira Planning Workflow
 
-이 세션은 **Jira 이슈 구현 계획 수립** 전용이다.
+이 세션은 **Jira 이슈 구현 계획 수립** 전용이다. Implementation Spec을 작성하고 유저 승인을 받는 것이 목표다.
 
 ## 자동 수행 사항
 1. Jira 이슈 링크에서 issue key 추출
 2. 이슈 상세 조회 및 분석
-3. Implementation Spec 작성
-4. 유저 승인 후 Jira에 기록
+3. 관련 repo 분석
+4. Implementation Spec Draft 작성
+5. 유저 승인 후 Jira에 기록
 
 ## 작업 프로세스
-1. 이슈 내용 분석
-2. 관련 repo 식별 및 코드 분석
-3. **Implementation Spec Draft** 작성
-4. 유저에게 Spec 설명 및 승인 요청
-5. 승인 시 Jira 이슈에 Spec 기록 (Draft 태그 제거)
+
+### 1. 이슈 분석
+- 이슈 내용 상세 분석
+- 기존에 작성된 Spec이 있는지 확인 (이미 있으면 그것을 활용)
+
+### 2. 코드베이스 분석
+- 관련 repo 식별 (모르면 유저에게 질문)
+- 현재 코드 구조 파악
+- 영향 범위 분석
+
+### 3. Implementation Spec Draft 작성
+- 아래 형식에 맞춰 작성
+- **[DRAFT]** 태그 포함
+
+### 4. 유저 승인 프로세스
+- Spec을 유저에게 설명
+- 수정 필요시 반영
+- 승인받으면 Jira에 확정 기록 (Draft 태그 제거)
 
 ## Implementation Spec 형식
 
 ```markdown
-## Implementation Spec
+## Implementation Spec [DRAFT]
 
 ### 목표
 - 이 이슈가 해결하려는 문제
+- 완료 기준
 
 ### 변경 범위
-- 수정할 파일 목록
-- 새로 추가할 파일
+| 파일 | 변경 내용 |
+|------|----------|
+| `path/to/file.ts` | XXX 로직 추가 |
+| `path/to/new-file.ts` | 신규 생성 |
 
 ### 구현 단계
-1. Step 1: ...
-2. Step 2: ...
+1. **Step 1**: [구체적인 작업]
+   - 관련 파일: ...
+   - 예상 소요: ...
+2. **Step 2**: [구체적인 작업]
+   ...
 
 ### 테스트 계획
-- 단위 테스트: ...
-- 통합 테스트: ...
+- **단위 테스트**: 테스트할 함수/모듈
+- **통합 테스트**: 테스트할 시나리오
+- **수동 테스트**: 확인할 동작
 
 ### 예상 영향
 - 기존 기능에 미치는 영향
+- Breaking change 여부
 - 마이그레이션 필요 여부
+
+### 리스크
+- 식별된 리스크와 대응 방안
 ```
 
-## 유저 승인 후
-Jira 이슈에 다음 형식으로 코멘트:
+## 유저 승인 후 Jira 코멘트 형식
+
 ```
 ✅ Implementation Spec 확정 (유저 승인 완료)
 
-[Spec 내용]
+[Spec 내용 - DRAFT 태그 제거]
+
+---
+Approved by: @username
+Date: YYYY-MM-DD
 ```
