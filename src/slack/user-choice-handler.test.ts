@@ -469,13 +469,13 @@ this is not valid json
       const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
       const blocks = getBlocks(payload);
 
-      // First question should show as fields (strikethrough question, bold label)
+      // First question should show with checkmark and edit button (accessory)
       const q1Section = blocks.find((b: any) =>
-        b.type === 'section' && b.fields?.some((f: any) => f.text?.includes('First question'))
+        b.type === 'section' && b.text?.text?.includes('First question') && b.accessory
       );
       expect(q1Section).toBeDefined();
 
-      // Should only have 1 actions block (for q2)
+      // Should have 1 actions block for q2 (unanswered question)
       const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
       expect(actionBlocks).toHaveLength(1);
     });
@@ -512,10 +512,17 @@ this is not valid json
       const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key', selections);
       const blocks = getBlocks(payload);
 
+      // Now shows completion section with submit/reset buttons
       const completionBlock = blocks.find((b: any) =>
-        b.type === 'section' && b.text?.text?.includes('모든 선택 완료')
+        b.type === 'section' && b.text?.text?.includes('모든 선택이 완료')
       );
       expect(completionBlock).toBeDefined();
+
+      // Should have submit and reset buttons
+      const submitActions = blocks.find((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('submit_form_'))
+      );
+      expect(submitActions).toBeDefined();
     });
 
     it('should change color to green when complete', () => {

@@ -1,20 +1,44 @@
-# Claude Code SDK Integration Specification
+# Claude Agent SDK Integration Specification
 
 ## Version
-- Document Version: 1.0
-- Source File: `src/claude-handler.ts`
-- Last Updated: 2025-12-13
+- Document Version: 1.1
+- Source Files: `src/claude-handler.ts`, `src/session-registry.ts`, `src/prompt-builder.ts`, `src/mcp-config-builder.ts`
+- Last Updated: 2025-12-22
 
 ## 1. Overview
 
-Claude Handler는 `@anthropic-ai/claude-code` SDK를 통해 Claude AI와의 모든 상호작용을 관리합니다. 스트리밍 응답, 세션 관리, MCP 서버 설정을 담당합니다.
+Claude Handler는 `@anthropic-ai/claude-agent-sdk` SDK를 통해 Claude AI와의 모든 상호작용을 관리합니다. 스트리밍 응답, 세션 관리, MCP 서버 설정을 담당합니다.
+
+### 1.1 Architecture (Facade Pattern)
+
+ClaudeHandler는 Facade 패턴을 사용하여 다음 컴포넌트들을 조합합니다:
+
+| Component | File | Description |
+|-----------|------|-------------|
+| SessionRegistry | `session-registry.ts` | 세션 생성/조회/영속성 관리 |
+| PromptBuilder | `prompt-builder.ts` | 시스템 프롬프트 + 페르소나 조립 |
+| McpConfigBuilder | `mcp-config-builder.ts` | MCP 서버 설정 조립 |
+
+```typescript
+export class ClaudeHandler {
+  private sessionRegistry: SessionRegistry;
+  private promptBuilder: PromptBuilder;
+  private mcpConfigBuilder: McpConfigBuilder;
+
+  constructor(mcpManager: McpManager) {
+    this.sessionRegistry = new SessionRegistry();
+    this.promptBuilder = new PromptBuilder();
+    this.mcpConfigBuilder = new McpConfigBuilder(mcpManager);
+  }
+}
+```
 
 ## 2. SDK Integration
 
 ### 2.1 Import
 
 ```typescript
-import { query, type SDKMessage } from '@anthropic-ai/claude-code';
+import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 ```
 
 ### 2.2 Query Function
@@ -217,6 +241,7 @@ You are a 400-yr full stack software engineer...
 src/persona/
 ├── default.md      # 기본 페르소나
 ├── chaechae.md     # 커스텀 페르소나
+├── linus.md        # Linus Torvalds 페르소나
 └── *.md            # 추가 페르소나들
 ```
 

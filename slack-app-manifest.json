@@ -1,7 +1,7 @@
 {
   "display_information": {
-    "name": "Claude Code Bot",
-    "description": "AI-powered coding assistant using Claude Code SDK",
+    "name": "[DEV] Claude Code Bot",
+    "description": "AGENT using Claude",
     "background_color": "#4A154B",
     "long_description": "This bot integrates Claude Code SDK with Slack to provide AI-powered coding assistance directly in your workspace. It supports streaming responses, maintains conversation context, and can help with code reviews, debugging, and general programming questions."
   },
@@ -12,7 +12,7 @@
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "Claude Code",
+      "display_name": "DEV Claude Code",
       "always_online": true
     }
   },
@@ -22,15 +22,21 @@
         "app_mentions:read",
         "channels:history",
         "groups:history",
+        "channels:read",
         "chat:write",
         "chat:write.public",
+        "commands",
+        "files:read",        
+        "files:write",
+        "groups:read",
         "im:history",
         "im:read",
         "im:write",
+        "links:read",
+        "links:write",
         "users:read",
         "reactions:read",
-        "reactions:write",
-        "files:read"
+        "reactions:write"
       ]
     }
   },
@@ -38,10 +44,10 @@
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
+        "member_joined_channel",
         "message.channels",
         "message.groups",
-        "message.im",
-        "member_joined_channel"
+        "message.im"
       ]
     },
     "interactivity": {
