@@ -1,3 +1,20 @@
+/**
+ * Session state machine states
+ */
+export type SessionState = 'INITIALIZING' | 'MAIN';
+
+/**
+ * Workflow types for session routing
+ */
+export type WorkflowType =
+  | 'jira-executive-summary'
+  | 'jira-brainstorming'
+  | 'jira-planning'
+  | 'jira-create-pr'
+  | 'pr-review'
+  | 'pr-fix-and-update'
+  | 'default';
+
 export interface ConversationSession {
   ownerId: string;           // User who started the session
   ownerName?: string;        // Display name of owner
@@ -18,6 +35,9 @@ export interface ConversationSession {
   lastWarningSentAt?: number; // Which warning interval was last sent (in ms)
   // Legacy field for backward compatibility
   userId: string;
+  // Session state machine
+  state?: SessionState;      // Current state (INITIALIZING -> MAIN)
+  workflow?: WorkflowType;   // Determined workflow type
 }
 
 export interface WorkingDirectoryConfig {

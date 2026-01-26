@@ -1,8 +1,8 @@
 # Claude Code Slack Bot - System Overview
 
 ## Version
-- Document Version: 1.0
-- Last Updated: 2025-12-13
+- Document Version: 1.1
+- Last Updated: 2025-12-22
 
 ## 1. System Description
 
@@ -72,15 +72,49 @@ Claude Code Slack Bot은 Slack 워크스페이스 내에서 Claude Code SDK를 �
 ### 3.4 Supporting Components
 | Component | File | Description |
 |-----------|------|-------------|
+| Session Registry | `session-registry.ts` | 세션 생명주기 관리 |
+| Prompt Builder | `prompt-builder.ts` | 시스템 프롬프트 + 페르소나 조립 |
+| MCP Config Builder | `mcp-config-builder.ts` | MCP 설정 조립 |
 | Working Directory Manager | `working-directory-manager.ts` | 작업 디렉토리 설정 및 해석 |
 | File Handler | `file-handler.ts` | 파일 업로드 처리 및 변환 |
 | MCP Manager | `mcp-manager.ts` | MCP 서버 설정 및 관리 |
 | Permission MCP Server | `permission-mcp-server.ts` | Slack 기반 권한 승인 |
 | User Settings Store | `user-settings-store.ts` | 사용자 설정 영속화 |
 | Todo Manager | `todo-manager.ts` | 태스크 목록 관리 |
-| GitHub Auth | `github-auth.ts` | GitHub App 인증 |
+| GitHub Auth | `github-auth.ts` | GitHub App 인증 (facade) |
 | Credentials Manager | `credentials-manager.ts` | Claude 인증 관리 |
 | MCP Call Tracker | `mcp-call-tracker.ts` | MCP 호출 추적 및 예측 |
+
+### 3.5 Modular Subdirectories
+
+**src/slack/** - Slack 이벤트 처리 모듈
+| Component | Description |
+|-----------|-------------|
+| EventRouter | 이벤트 라우팅 (DM, mention, thread) |
+| StreamProcessor | Claude SDK 스트림 처리 |
+| ToolEventProcessor | tool_use/tool_result 처리 |
+| RequestCoordinator | 세션별 동시성 제어 |
+| commands/* | 개별 명령어 핸들러 |
+
+**src/mcp/** - MCP 서버 관리 모듈
+| Component | Description |
+|-----------|-------------|
+| ConfigLoader | 설정 파일 로드/검증 |
+| ServerFactory | 서버 생성/GitHub 인증 주입 |
+| InfoFormatter | 상태 정보 포맷팅 |
+
+**src/github/** - GitHub 통합 모듈
+| Component | Description |
+|-----------|-------------|
+| ApiClient | GitHub API 클라이언트 |
+| GitCredentialsManager | Git 자격증명 관리 |
+| TokenRefreshScheduler | 토큰 자동 갱신 |
+
+**src/permission/** - Permission 모듈
+| Component | Description |
+|-----------|-------------|
+| PermissionService | 권한 요청/응답 관리 |
+| SlackMessenger | Slack 권한 메시지 |
 
 ## 4. Key Features
 
@@ -159,7 +193,7 @@ Claude Code Slack Bot은 Slack 워크스페이스 내에서 Claude Code SDK를 �
 | Runtime | Node.js 18+ |
 | Language | TypeScript |
 | Slack SDK | @slack/bolt |
-| Claude SDK | @anthropic-ai/claude-code |
+| Claude SDK | @anthropic-ai/claude-agent-sdk |
 | MCP SDK | @modelcontextprotocol/sdk |
 | Authentication | jsonwebtoken |
 | Process Mode | Socket Mode |
@@ -171,34 +205,73 @@ claude-code-slack-bot/
 ├── src/
 │   ├── index.ts                    # Entry point
 │   ├── config.ts                   # Configuration
-│   ├── slack-handler.ts            # Slack event handling
-│   ├── claude-handler.ts           # Claude SDK integration
+│   ├── slack-handler.ts            # Slack event handling (facade)
+│   ├── claude-handler.ts           # Claude SDK integration (facade)
+│   ├── session-registry.ts         # Session lifecycle management
+│   ├── prompt-builder.ts           # System prompt + persona assembly
+│   ├── mcp-config-builder.ts       # MCP configuration assembly
 │   ├── working-directory-manager.ts
 │   ├── file-handler.ts
 │   ├── image-handler.ts
 │   ├── todo-manager.ts
-│   ├── mcp-manager.ts
+│   ├── mcp-manager.ts              # MCP server management (facade)
 │   ├── permission-mcp-server.ts
 │   ├── shared-store.ts
 │   ├── user-settings-store.ts
-│   ├── github-auth.ts
-│   ├── git-cli-auth.ts
+│   ├── github-auth.ts              # GitHub App auth (facade)
 │   ├── credentials-manager.ts
-│   ├── credential-alert.ts
 │   ├── mcp-call-tracker.ts
 │   ├── logger.ts
-│   ├── stderr-logger.ts
 │   ├── types.ts
+│   │
+│   ├── slack/                      # Slack modules (SRP)
+│   │   ├── event-router.ts
+│   │   ├── stream-processor.ts
+│   │   ├── tool-event-processor.ts
+│   │   ├── request-coordinator.ts
+│   │   ├── message-validator.ts
+│   │   ├── status-reporter.ts
+│   │   ├── todo-display-manager.ts
+│   │   ├── commands/
+│   │   │   ├── cwd-handler.ts
+│   │   │   ├── mcp-handler.ts
+│   │   │   ├── bypass-handler.ts
+│   │   │   ├── persona-handler.ts
+│   │   │   ├── model-handler.ts
+│   │   │   ├── session-handler.ts
+│   │   │   ├── help-handler.ts
+│   │   │   └── restore-handler.ts
+│   │   └── formatters/
+│   │
+│   ├── mcp/                        # MCP modules
+│   │   ├── config-loader.ts
+│   │   ├── server-factory.ts
+│   │   └── info-formatter.ts
+│   │
+│   ├── github/                     # GitHub modules
+│   │   ├── api-client.ts
+│   │   ├── git-credentials-manager.ts
+│   │   └── token-refresh-scheduler.ts
+│   │
+│   ├── permission/                 # Permission modules
+│   │   ├── service.ts
+│   │   └── slack-messenger.ts
+│   │
 │   ├── prompt/
 │   │   └── system.prompt           # System prompt
 │   └── persona/
 │       ├── default.md
-│       └── *.md                    # Custom personas
+│       ├── chaechae.md
+│       └── linus.md                # Linus Torvalds persona
+│
 ├── data/
 │   ├── user-settings.json          # User preferences
 │   ├── sessions.json               # Session persistence
 │   ├── mcp-call-stats.json         # MCP call statistics
 │   └── slack_jira_mapping.json     # Slack-Jira mapping
+├── docs/
+│   ├── spec/                       # Specification documents
+│   └── architecture.md             # Architecture overview
 ├── mcp-servers.json                # MCP server config
 ├── claude-code-settings.json       # Claude SDK permissions
 └── logs/
