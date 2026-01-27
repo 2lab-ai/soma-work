@@ -55,9 +55,7 @@ export class PendingFormStore {
   saveForms(): void {
     try {
       // Ensure data directory exists
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
+      fs.mkdirSync(DATA_DIR, { recursive: true });
 
       const formsArray = Array.from(this.forms.entries()).map(([id, form]) => ({
         id,
@@ -75,39 +73,36 @@ export class PendingFormStore {
    * Load forms from file after restart
    */
   loadForms(): number {
-    try {
-      if (!fs.existsSync(FORMS_FILE)) {
-        this.logger.debug('No forms file found');
-        return 0;
-      }
+    if (!fs.existsSync(FORMS_FILE)) {
+      this.logger.debug('No forms file found');
+      return 0;
+    }
 
+    try {
       const data = fs.readFileSync(FORMS_FILE, 'utf-8');
       const formsArray = JSON.parse(data);
-
-      let loaded = 0;
       const now = Date.now();
 
-      for (const formData of formsArray) {
-        const { id, ...form } = formData;
-        const formAge = now - (form.createdAt || 0);
+      // Only restore non-expired forms
+      const validForms = formsArray.filter((formData: any) => {
+        const formAge = now - (formData.createdAt || 0);
+        return formAge < FORM_TIMEOUT;
+      });
 
-        // Only restore forms that haven't expired
-        if (formAge < FORM_TIMEOUT) {
-          this.forms.set(id, form as PendingChoiceFormData);
-          loaded++;
-        }
+      for (const formData of validForms) {
+        const { id, ...form } = formData;
+        this.forms.set(id, form as PendingChoiceFormData);
       }
 
-      this.logger.info(
-        `Loaded ${loaded} forms from file (${formsArray.length - loaded} expired)`
-      );
+      const expiredCount = formsArray.length - validForms.length;
+      this.logger.info(`Loaded ${validForms.length} forms from file (${expiredCount} expired)`);
 
       // Clean up expired forms from file
-      if (loaded < formsArray.length) {
+      if (expiredCount > 0) {
         this.saveForms();
       }
 
-      return loaded;
+      return validForms.length;
     } catch (error) {
       this.logger.error('Failed to load forms', error);
       return 0;

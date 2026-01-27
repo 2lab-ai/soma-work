@@ -250,8 +250,6 @@ export class StreamExecutor {
           channel,
           threadTs,
           user,
-          userName,
-          workingDirectory,
           say
         );
       } else if (session.renewState === 'pending_load') {
@@ -340,28 +338,21 @@ export class StreamExecutor {
   }
 
   private getUserInfoContext(userId: string): string | null {
-    const jiraName = userSettingsStore.getUserJiraName(userId);
-    const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
     const settings = userSettingsStore.getUserSettings(userId);
     const slackName = settings?.slackName;
+    const jiraName = userSettingsStore.getUserJiraName(userId);
+    const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
 
-    if (!jiraName && !slackName) {
-      return null;
-    }
+    // Return null if no user context available
+    if (!jiraName && !slackName) return null;
 
-    const lines: string[] = ['<user-context>'];
-    if (slackName) {
-      lines.push(`  <slack-name>${slackName}</slack-name>`);
-    }
-    if (jiraName) {
-      lines.push(`  <jira-name>${jiraName}</jira-name>`);
-    }
-    if (jiraAccountId) {
-      lines.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
-    }
-    lines.push('</user-context>');
+    // Build user context XML
+    const contextItems: string[] = [];
+    if (slackName) contextItems.push(`  <slack-name>${slackName}</slack-name>`);
+    if (jiraName) contextItems.push(`  <jira-name>${jiraName}</jira-name>`);
+    if (jiraAccountId) contextItems.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
 
-    return lines.join('\n');
+    return ['<user-context>', ...contextItems, '</user-context>'].join('\n');
   }
 
   /**
@@ -414,8 +405,6 @@ export class StreamExecutor {
     channel: string,
     threadTs: string,
     user: string,
-    userName: string,
-    workingDirectory: string,
     say: SayFn
   ): Promise<void> {
     // Check for "Saved to:" pattern in response

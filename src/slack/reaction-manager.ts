@@ -92,18 +92,16 @@ export class ReactionManager {
    * Todo 진행 상황에 따른 리액션 업데이트
    */
   async updateTaskProgressReaction(sessionKey: string, todos: Todo[]): Promise<void> {
-    if (todos.length === 0) {
-      return;
-    }
+    if (todos.length === 0) return;
 
-    const completed = todos.filter((t) => t.status === 'completed').length;
-    const inProgress = todos.filter((t) => t.status === 'in_progress').length;
-    const total = todos.length;
+    const completedCount = todos.filter((t) => t.status === 'completed').length;
+    const hasInProgress = todos.some((t) => t.status === 'in_progress');
 
+    // Determine emoji based on task progress
     let emoji: string;
-    if (completed === total) {
+    if (completedCount === todos.length) {
       emoji = 'white_check_mark'; // 모든 태스크 완료
-    } else if (inProgress > 0) {
+    } else if (hasInProgress) {
       emoji = 'arrows_counterclockwise'; // 태스크 진행 중
     } else {
       emoji = 'clipboard'; // 태스크 대기 중
@@ -162,8 +160,7 @@ export class ReactionManager {
    * 세션에 대기 중인 MCP 호출이 있는지 확인
    */
   hasPendingMcp(sessionKey: string): boolean {
-    const pending = this.pendingMcpCalls.get(sessionKey);
-    return pending ? pending.size > 0 : false;
+    return (this.pendingMcpCalls.get(sessionKey)?.size ?? 0) > 0;
   }
 
   /**

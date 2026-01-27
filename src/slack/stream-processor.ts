@@ -230,7 +230,6 @@ export class StreamProcessor {
     const todoTool = content.find((part: any) =>
       part.type === 'tool_use' && part.name === 'TodoWrite'
     );
-
     if (todoTool && this.callbacks.onTodoUpdate) {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
@@ -244,19 +243,15 @@ export class StreamProcessor {
       });
     }
 
-    // Collect tool use events
-    const toolUses: ToolUseEvent[] = [];
-    for (const part of content) {
-      if (part.type === 'tool_use' && part.id && part.name) {
-        toolUses.push({
-          id: part.id,
-          name: part.name,
-          input: part.input,
-        });
-      }
-    }
+    // Collect and notify about tool use events
+    const toolUses: ToolUseEvent[] = content
+      .filter((part: any) => part.type === 'tool_use' && part.id && part.name)
+      .map((part: any) => ({
+        id: part.id,
+        name: part.name,
+        input: part.input,
+      }));
 
-    // Notify about tool uses
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
       await this.callbacks.onToolUse(toolUses, context);
     }
@@ -308,7 +303,7 @@ export class StreamProcessor {
       });
     }
 
-    const formId = `form_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Create pending form
     if (this.callbacks.onPendingFormCreate) {
@@ -415,68 +410,72 @@ export class StreamProcessor {
       }
     }
 
-    // Extract usage data from result message
-    // SDK uses camelCase: modelUsage (object with model names as keys)
-    // Each model's usage has camelCase fields: inputTokens, outputTokens, etc.
+    return this.extractUsageData(message);
+  }
+
+  /**
+   * Extract usage data from result message
+   * Supports both modelUsage (new SDK) and direct usage field (older API)
+   */
+  private extractUsageData(message: any): UsageData | undefined {
+    // Try modelUsage first (SDK uses camelCase with model names as keys)
     const modelUsageMap = message.modelUsage;
     if (modelUsageMap && typeof modelUsageMap === 'object') {
-      // Sum up usage across all models (usually just one)
-      let totalInput = 0;
-      let totalOutput = 0;
-      let totalCacheRead = 0;
-      let totalCacheCreation = 0;
-      let totalCost = 0;
-
-      for (const modelName of Object.keys(modelUsageMap)) {
-        const usage = modelUsageMap[modelName];
-        if (usage) {
-          totalInput += usage.inputTokens || 0;
-          totalOutput += usage.outputTokens || 0;
-          totalCacheRead += usage.cacheReadInputTokens || 0;
-          totalCacheCreation += usage.cacheCreationInputTokens || 0;
-          totalCost += usage.costUSD || 0;
-        }
-      }
-
+      const usage = this.aggregateModelUsage(modelUsageMap);
       this.logger.debug('Extracted usage data from modelUsage', {
-        inputTokens: totalInput,
-        outputTokens: totalOutput,
-        cacheRead: totalCacheRead,
-        cacheCreation: totalCacheCreation,
-        totalCost,
+        ...usage,
         models: Object.keys(modelUsageMap),
       });
-
-      return {
-        inputTokens: totalInput,
-        outputTokens: totalOutput,
-        cacheReadInputTokens: totalCacheRead,
-        cacheCreationInputTokens: totalCacheCreation,
-        totalCostUsd: totalCost,
-      };
+      return usage;
     }
 
     // Fallback: try direct usage field (older API format)
     const directUsage = message.usage;
     if (directUsage) {
-      this.logger.debug('Extracted usage data from direct usage field', {
-        inputTokens: directUsage.input_tokens,
-        outputTokens: directUsage.output_tokens,
-      });
-      return {
+      const usage: UsageData = {
         inputTokens: directUsage.input_tokens || 0,
         outputTokens: directUsage.output_tokens || 0,
         cacheReadInputTokens: directUsage.cache_read_input_tokens || 0,
         cacheCreationInputTokens: directUsage.cache_creation_input_tokens || 0,
         totalCostUsd: message.total_cost_usd || 0,
       };
+      this.logger.debug('Extracted usage data from direct usage field', usage);
+      return usage;
     }
 
     this.logger.warn('No usage data found in result message', {
       messageKeys: Object.keys(message),
     });
-
     return undefined;
+  }
+
+  /**
+   * Aggregate usage across all models in modelUsage map
+   */
+  private aggregateModelUsage(modelUsageMap: Record<string, any>): UsageData {
+    let totalInput = 0;
+    let totalOutput = 0;
+    let totalCacheRead = 0;
+    let totalCacheCreation = 0;
+    let totalCost = 0;
+
+    for (const usage of Object.values(modelUsageMap)) {
+      if (usage) {
+        totalInput += usage.inputTokens || 0;
+        totalOutput += usage.outputTokens || 0;
+        totalCacheRead += usage.cacheReadInputTokens || 0;
+        totalCacheCreation += usage.cacheCreationInputTokens || 0;
+        totalCost += usage.costUSD || 0;
+      }
+    }
+
+    return {
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      cacheReadInputTokens: totalCacheRead,
+      cacheCreationInputTokens: totalCacheCreation,
+      totalCostUsd: totalCost,
+    };
   }
 
   /**

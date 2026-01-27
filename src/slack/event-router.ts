@@ -118,8 +118,7 @@ export class EventRouter {
    * 파일 업로드 처리
    */
   private async handleFileUpload(messageEvent: any, say: SayFn): Promise<void> {
-    const channel = messageEvent.channel;
-    const threadTs = messageEvent.thread_ts;
+    const { channel, thread_ts: threadTs, ts } = messageEvent;
     const isDM = channel.startsWith('D');
 
     // DM에서는 항상 처리
@@ -131,27 +130,25 @@ export class EventRouter {
 
     // 채널에서는 기존 세션이 있을 때만 처리
     // NOTE: sessionId가 없어도 세션이 있으면 처리 (sessionId는 첫 응답 후에 설정됨)
-    if (threadTs) {
-      const session = this.deps.claudeHandler.getSession(channel, threadTs);
-      if (session) {
-        this.logger.info('Handling file upload event in existing session', {
-          channel,
-          threadTs,
-          sessionId: session.sessionId || '(pending)',
-        });
-        await this.messageHandler(messageEvent as MessageEvent, say);
-        return;
-      }
+    const session = threadTs ? this.deps.claudeHandler.getSession(channel, threadTs) : undefined;
+    if (session) {
+      this.logger.info('Handling file upload event in existing session', {
+        channel,
+        threadTs,
+        sessionId: session.sessionId || '(pending)',
+      });
+      await this.messageHandler(messageEvent as MessageEvent, say);
+      return;
     }
 
+    // No session - add no_entry emoji to indicate file was seen but not processed
     this.logger.debug('Ignoring file upload - not in DM and no existing session', {
       channel,
       threadTs,
       isDM,
     });
-    // Add no_entry emoji to indicate file was seen but not processed
-    if (messageEvent.ts) {
-      await this.deps.slackApi.addReaction(channel, messageEvent.ts, 'no_entry');
+    if (ts) {
+      await this.deps.slackApi.addReaction(channel, ts, 'no_entry');
     }
   }
 
@@ -159,11 +156,7 @@ export class EventRouter {
    * 스레드 메시지 처리 (멘션 없이)
    */
   private async handleThreadMessage(messageEvent: any, say: SayFn): Promise<void> {
-    const user = messageEvent.user;
-    const channel = messageEvent.channel;
-    const threadTs = messageEvent.thread_ts;
-    const ts = messageEvent.ts;
-    const text = messageEvent.text || '';
+    const { user, channel, thread_ts: threadTs, ts, text = '' } = messageEvent;
 
     // 봇 멘션이 포함된 경우 스킵 (app_mention에서 처리)
     const botId = await this.deps.slackApi.getBotUserId();
@@ -187,15 +180,12 @@ export class EventRouter {
         owner: session.ownerName,
       });
       await this.messageHandler(messageEvent as MessageEvent, say);
-    } else {
-      // No session - add 'no_entry' emoji to indicate message was seen but not processed
-      this.logger.debug('Ignoring thread message - no session exists', {
-        user,
-        channel,
-        threadTs,
-      });
-      await this.deps.slackApi.addReaction(channel, ts, 'no_entry');
+      return;
     }
+
+    // No session - add 'no_entry' emoji to indicate message was seen but not processed
+    this.logger.debug('Ignoring thread message - no session exists', { user, channel, threadTs });
+    await this.deps.slackApi.addReaction(channel, ts, 'no_entry');
   }
 
   /**
