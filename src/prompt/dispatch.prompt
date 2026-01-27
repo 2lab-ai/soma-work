@@ -10,6 +10,7 @@
 | Jira 보드 링크 (예: atlassian.net/jira/software/projects/.../boards/...) | `jira-executive-summary` |
 | "plan" + Jira 이슈 링크 | `jira-planning` |
 | "fix" 또는 "work" + Jira 이슈 링크 | `jira-create-pr` |
+| Confluence 링크 + GitHub PR 링크 (예: atlassian.net/wiki/... + github.com/.../pull/123) | `pr-docs-confluence` |
 | GitHub PR 링크 (예: github.com/.../pull/123) | `pr-review` |
 | "fix" + GitHub PR 링크 | `pr-fix-and-update` |
 | 그 외 모든 경우 | `default` |
@@ -40,6 +41,9 @@
 
 - 입력: "fix https://xxx.atlassian.net/browse/ABC-789"
   출력: {"workflow": "jira-create-pr", "title": "ABC-789 구현"}
+
+- 입력: "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs https://github.com/org/repo/pull/456"
+  출력: {"workflow": "pr-docs-confluence", "title": "PR #456 Confluence 문서화"}
 
 - 입력: "Redis 캐시 구현 방법 알려줘"
   출력: {"workflow": "default", "title": "Redis 캐시 구현"}
