@@ -21,18 +21,18 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
-2. `mcp__github__get_pull_request_reviews`로 리뷰 내용 확인
-3. `mcp__github__get_pull_request_comments`로 상세 코멘트 확인
-4. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
-5. 모든 리뷰 커멘트 각각에 대해서 유저의 컨펌이 필요한 모든 내용을 우선순위대로 정리해서 유저에게 한번에 UIAskUserQuestion으로 컨펌을 받고 해당 내용으로 작업을 진행한다.
-6. 수정 완료 후 commit & push
+2. `/github-pr` 스킬로 PR 데이터 수집 (토큰 효율적)
+   - 리뷰, 코멘트, 변경 파일, 메타데이터 모두 포함
+   - 워크플로우 액션에 필요한 ID (comment.id, node_id, html_url) 유지
+3. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
+4. 모든 리뷰 커멘트 각각에 대해서 유저의 컨펌이 필요한 모든 내용을 우선순위대로 정리해서 유저에게 한번에 UIAskUserQuestion으로 컨펌을 받고 해당 내용으로 작업을 진행한다.
+5. 수정 완료 후 commit & push
 
 ## 작업 프로세스
 
 ### 1. 피드백 수집
 ```
-mcp__github__get_pull_request_reviews
-mcp__github__get_pull_request_comments
+/github-pr <PR_URL>  # 리뷰, 코멘트 모두 포함
 UIAskUserQuestion
 ```
 

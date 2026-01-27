@@ -19,16 +19,20 @@ PR_IDENTIFIER = $ARGUMENTS (PR number or full URL)
 
 ### 1.2 Fetch PR Data
 
-Execute these commands to gather PR information:
+Use the `/github-pr` skill to fetch token-efficient PR data:
 
+```
+/github-pr $ARGUMENTS
+```
+
+This skill:
+- Fetches PR metadata, reviews, comments, and files via GitHub MCP
+- Extracts essential fields and removes wasteful data (diff_hunk, patches, URLs)
+- Returns compact representation suitable for analysis
+
+**Additional data if needed:**
 ```bash
-# Extract PR number from URL if needed
-PR_NUM=$(echo "$PR_IDENTIFIER" | grep -oE '[0-9]+$' || echo "$PR_IDENTIFIER")
-
-# Get PR metadata (JSON)
-gh pr view $PR_NUM --json number,title,author,baseRefName,headRefName,state,createdAt,additions,deletions,files,body,commits,url
-
-# Get full diff
+# Get full diff for code-level analysis
 gh pr diff $PR_NUM
 ```
 
@@ -403,11 +407,12 @@ echo "Summary saved to: ./docs/pr-summary/583-crypto-deposit-bonus.md"
 
 ### Task: $ARGUMENTS
 
-1. **Fetch PR data** using gh CLI commands
-2. **Classify changes** by file patterns and content
-3. **Infer stakeholders** based on change profile
-4. **Generate document** matching the quality standards above
-5. **Save to file** in `./docs/pr-summary/`
-6. **Report completion** with file path
+1. **Fetch PR data** using `/github-pr` skill (token-efficient)
+2. **Fetch full diff** with `gh pr diff` for code-level analysis
+3. **Classify changes** by file patterns and content
+4. **Infer stakeholders** based on change profile
+5. **Generate document** matching the quality standards above
+6. **Save to file** in `./docs/pr-summary/`
+7. **Report completion** with file path
 
 If PR identifier is unclear, use AskUserQuestion first.

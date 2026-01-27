@@ -22,9 +22,8 @@ https://example.atlassian.net/wiki/spaces/TEAM/pages/123456/ChangeLogs https://g
 
 ### 2. PR 정보 수집
 ```
-mcp__github__get_pull_request - PR 메타데이터
-mcp__github__list_pull_request_files - 변경된 파일 목록
-mcp__github__get_pull_request_diff - 상세 diff
+/github-pr <PR_URL>  # PR 메타데이터, 리뷰, 코멘트, 변경 파일 포함 (토큰 효율적)
+gh pr diff <PR_NUM>  # 상세 diff (코드 레벨 분석용)
 ```
 
 ### 3. 이해관계자 분류
