@@ -110,9 +110,10 @@ data/
 ## Key Features
 
 ### 1. Working Directory Management
-- **계층 구조**: Thread > Channel > User default
-- `cwd project-name` 또는 `cwd /absolute/path`로 설정
-- `BASE_DIRECTORY` 환경변수로 상대경로 기준점 설정
+- **고정 디렉토리**: 각 유저별 `{BASE_DIRECTORY}/{userId}/` 사용
+- 유저가 직접 설정 불가 (보안 격리)
+- `cwd` 명령으로 현재 디렉토리 확인
+- 디렉토리 자동 생성
 
 ### 2. Session Management
 - 세션 소유권 (발화자 식별)
@@ -154,12 +155,12 @@ Progress: 1/3 (33%)
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_SIGNING_SECRET=...
+BASE_DIRECTORY=/Users/.../Code/ # 유저별 디렉토리 기준 ({BASE_DIRECTORY}/{userId}/)
 ```
 
 ### Optional
 ```env
 ANTHROPIC_API_KEY=...           # Claude Code 구독 없을 때만 필요
-BASE_DIRECTORY=/Users/.../Code/ # 상대경로 기준
 GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY="-----BEGIN RSA..."
 GITHUB_INSTALLATION_ID=12345678
@@ -174,7 +175,7 @@ DEBUG=true
 ### Commands
 | 명령 | 설명 |
 |------|------|
-| `cwd [path]` | 작업 디렉토리 설정 |
+| `cwd` | 현재 작업 디렉토리 확인 |
 | `mcp` | MCP 서버 목록 |
 | `mcp reload` | MCP 설정 리로드 |
 | `bypass [on/off]` | 권한 프롬프트 우회 |

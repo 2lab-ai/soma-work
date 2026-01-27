@@ -199,35 +199,22 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get user's default directory
+   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
+   * This method is kept for backward compatibility but the value is no longer used.
    */
   getUserDefaultDirectory(userId: string): string | undefined {
-    const userSettings = this.settings[userId];
-    if (userSettings?.defaultDirectory) {
-      logger.debug('Found user default directory', {
-        userId,
-        directory: userSettings.defaultDirectory
-      });
-      return userSettings.defaultDirectory;
-    }
+    logger.debug('getUserDefaultDirectory called (deprecated)', { userId });
+    // Return undefined to indicate no custom directory - fixed directories are now used
     return undefined;
   }
 
   /**
-   * Set user's default directory
+   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
+   * This method is kept for backward compatibility but does nothing.
    */
-  setUserDefaultDirectory(userId: string, directory: string): void {
-    const existing = this.settings[userId];
-    this.settings[userId] = {
-      userId,
-      defaultDirectory: directory,
-      bypassPermission: existing?.bypassPermission ?? false,
-      persona: existing?.persona ?? 'default',
-      defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
-      lastUpdated: new Date().toISOString(),
-    };
-    this.saveSettings();
-    logger.info('Set user default directory', { userId, directory });
+  setUserDefaultDirectory(userId: string, _directory: string): void {
+    logger.debug('setUserDefaultDirectory called (deprecated, no-op)', { userId });
+    // No-op: Working directories are now fixed per user
   }
 
   /**

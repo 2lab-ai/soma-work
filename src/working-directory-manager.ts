@@ -1,258 +1,69 @@
-import { WorkingDirectoryConfig } from './types';
 import { Logger } from './logger';
 import { config } from './config';
-import { userSettingsStore } from './user-settings-store';
 import { DirectoryFormatter } from './slack/formatters';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/**
+ * WorkingDirectoryManager - Simplified version with fixed user directories
+ *
+ * Each user has a fixed working directory: {BASE_DIRECTORY}/{userId}/
+ * - Users cannot set custom working directories
+ * - Directories are automatically created on first access
+ * - Users are isolated to their own directory
+ */
 export class WorkingDirectoryManager {
-  private configs: Map<string, WorkingDirectoryConfig> = new Map();
   private logger = new Logger('WorkingDirectoryManager');
 
-  getConfigKey(channelId: string, threadTs?: string, userId?: string): string {
-    if (threadTs) {
-      return `${channelId}-${threadTs}`;
-    }
-    if (userId && channelId.startsWith('D')) { // Direct message
-      return `${channelId}-${userId}`;
-    }
-    return channelId;
-  }
-
-  setWorkingDirectory(channelId: string, directory: string, threadTs?: string, userId?: string): { success: boolean; resolvedPath?: string; error?: string } {
-    try {
-      const resolvedPath = this.resolveDirectory(directory);
-      
-      if (!resolvedPath) {
-        return { 
-          success: false, 
-          error: `Directory not found: "${directory}"${config.baseDirectory ? ` (checked in base directory: ${config.baseDirectory})` : ''}` 
-        };
-      }
-
-      const stats = fs.statSync(resolvedPath);
-      
-      if (!stats.isDirectory()) {
-        this.logger.warn('Path is not a directory', { directory: resolvedPath });
-        return { success: false, error: 'Path is not a directory' };
-      }
-
-      const key = this.getConfigKey(channelId, threadTs, userId);
-      const workingDirConfig: WorkingDirectoryConfig = {
-        channelId,
-        threadTs,
-        userId,
-        directory: resolvedPath,
-        setAt: new Date(),
-      };
-
-      this.configs.set(key, workingDirConfig);
-      this.logger.info('Working directory set', {
-        key,
-        directory: resolvedPath,
-        originalInput: directory,
-        isThread: !!threadTs,
-        isDM: channelId.startsWith('D'),
-      });
-
-      // Also save as user's default directory for future sessions
-      if (userId) {
-        userSettingsStore.setUserDefaultDirectory(userId, resolvedPath);
-        this.logger.info('Saved user default directory', { userId, directory: resolvedPath });
-      }
-
-      return { success: true, resolvedPath };
-    } catch (error) {
-      this.logger.error('Failed to set working directory', error);
-      return { success: false, error: 'Directory does not exist or is not accessible' };
-    }
-  }
-
-  private resolveDirectory(directory: string): string | null {
-    this.logger.debug('Resolving directory', { input: directory });
-    // If it's an absolute path, use it directly
-    if (path.isAbsolute(directory)) {
-      if (fs.existsSync(directory)) {
-        return path.resolve(directory);
-      }
-      return null;
+  /**
+   * Get the working directory for a user.
+   * Returns fixed path: {BASE_DIRECTORY}/{userId}/
+   * Creates the directory if it doesn't exist.
+   */
+  getWorkingDirectory(_channelId: string, _threadTs?: string, userId?: string): string | undefined {
+    if (!userId) {
+      this.logger.warn('No userId provided for getWorkingDirectory');
+      return undefined;
     }
 
-    // If we have a base directory configured, try relative to base directory first
-    if (config.baseDirectory) {
-      const baseRelativePath = path.join(config.baseDirectory, directory);
-      if (fs.existsSync(baseRelativePath)) {
-        this.logger.debug('Found directory relative to base', { 
-          input: directory,
-          baseDirectory: config.baseDirectory,
-          resolved: baseRelativePath 
-        });
-        return path.resolve(baseRelativePath);
-      } else {
-        this.logger.debug('Directory not found relative to base, checking if it can be created', { 
-          input: directory,
-          baseDirectory: config.baseDirectory,
-          attemptedPath: baseRelativePath 
-        });
-        try {
-          fs.mkdirSync(baseRelativePath, { recursive: true });
-          this.logger.info('Created directory relative to base directory', { 
-            input: directory,
-            baseDirectory: config.baseDirectory,
-            resolved: baseRelativePath 
-          });
-          return path.resolve(baseRelativePath);
-        } catch (error) {
-          this.logger.error('Failed to create directory relative to base', { 
-            path: baseRelativePath,
-            error 
-          });
-        }
-      }
+    if (!config.baseDirectory) {
+      this.logger.error('BASE_DIRECTORY is not configured');
+      return undefined;
     }
 
-    // Try relative to current working directory
-    const cwdRelativePath = path.resolve(directory);
-    if (fs.existsSync(cwdRelativePath)) {
-      this.logger.debug('Found directory relative to cwd', { 
-        input: directory,
-        resolved: cwdRelativePath 
-      });
-      return cwdRelativePath;
-    }
+    // Fixed path: BASE_DIRECTORY/{userId}/
+    const userDir = path.join(config.baseDirectory, userId);
 
-    // If directory doesn't exist, try to create it
-    try {
-      fs.mkdirSync(cwdRelativePath, { recursive: true });
-      this.logger.info('Created directory relative to cwd', { 
-        input: directory,
-        resolved: cwdRelativePath 
-      });
-      return cwdRelativePath;
-    } catch (error) {
-      this.logger.error('Failed to create directory', { 
-        path: cwdRelativePath,
-        error 
-      });
-    }
-
-    return null;
-  }
-
-  getWorkingDirectory(channelId: string, threadTs?: string, userId?: string): string | undefined {
-    // Priority: Thread > Channel/DM > User Default
-    if (threadTs) {
-      const threadKey = this.getConfigKey(channelId, threadTs);
-      const threadConfig = this.configs.get(threadKey);
-      if (threadConfig) {
-        this.logger.debug('Using thread-specific working directory', {
-          directory: threadConfig.directory,
-          threadTs,
-        });
-        return threadConfig.directory;
-      }
-    }
-
-    // Fall back to channel or DM config
-    const channelKey = this.getConfigKey(channelId, undefined, userId);
-    const channelConfig = this.configs.get(channelKey);
-    if (channelConfig) {
-      this.logger.debug('Using channel/DM working directory', {
-        directory: channelConfig.directory,
-        channelId,
-      });
-      return channelConfig.directory;
-    }
-
-    // Fall back to user's saved default directory
-    if (userId) {
-      let userDefault = userSettingsStore.getUserDefaultDirectory(userId);
-
-      // Auto-create user working directory if not set: /tmp/{slackUserId}/
-      if (!userDefault) {
-        const autoDir = `/tmp/${userId}`;
-        try {
-          fs.mkdirSync(autoDir, { recursive: true });
-          userSettingsStore.setUserDefaultDirectory(userId, autoDir);
-          userDefault = autoDir;
-          this.logger.info('Auto-created user working directory', {
-            directory: autoDir,
-            userId,
-          });
-        } catch (error) {
-          this.logger.error('Failed to auto-create user working directory', {
-            directory: autoDir,
-            userId,
-            error,
-          });
-          return undefined;
-        }
-      }
-
-      if (userDefault) {
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(userDefault)) {
-          try {
-            fs.mkdirSync(userDefault, { recursive: true });
-            this.logger.info('Created missing working directory', {
-              directory: userDefault,
-              userId,
-            });
-          } catch (error) {
-            this.logger.error('Failed to create working directory', {
-              directory: userDefault,
-              userId,
-              error,
-            });
-            return undefined;
-          }
-        }
-
-        this.logger.debug('Using user default working directory', {
-          directory: userDefault,
+    // Auto-create directory if it doesn't exist
+    if (!fs.existsSync(userDir)) {
+      try {
+        fs.mkdirSync(userDir, { recursive: true });
+        this.logger.info('Created user working directory', {
           userId,
+          directory: userDir,
         });
-        // Auto-apply user's default to current context
-        this.setWorkingDirectoryInternal(channelId, userDefault, threadTs, userId);
-        return userDefault;
+      } catch (error) {
+        this.logger.error('Failed to create user working directory', {
+          userId,
+          directory: userDir,
+          error,
+        });
+        return undefined;
       }
     }
 
-    this.logger.debug('No working directory configured', { channelId, threadTs, userId });
-    return undefined;
+    this.logger.debug('Using user working directory', {
+      userId,
+      directory: userDir,
+    });
+
+    return userDir;
   }
 
   /**
-   * Internal method to set working directory without saving to user settings
-   * Used when auto-applying user defaults
+   * Check if text is a set command (for showing informational message)
+   * Returns the attempted path if it's a set command, null otherwise
    */
-  private setWorkingDirectoryInternal(channelId: string, directory: string, threadTs?: string, userId?: string): void {
-    const key = this.getConfigKey(channelId, threadTs, userId);
-    const workingDirConfig: WorkingDirectoryConfig = {
-      channelId,
-      threadTs,
-      userId,
-      directory,
-      setAt: new Date(),
-    };
-    this.configs.set(key, workingDirConfig);
-    this.logger.debug('Auto-applied working directory to session', { key, directory });
-  }
-
-  removeWorkingDirectory(channelId: string, threadTs?: string, userId?: string): boolean {
-    const key = this.getConfigKey(channelId, threadTs, userId);
-    const result = this.configs.delete(key);
-    if (result) {
-      this.logger.info('Working directory removed', { key });
-    }
-    return result;
-  }
-
-  listConfigurations(): WorkingDirectoryConfig[] {
-    return Array.from(this.configs.values());
-  }
-
   parseSetCommand(text: string): string | null {
     // Support both with and without slash prefix: cwd path, /cwd path
     const cwdMatch = text.match(/^\/?cwd\s+(.+)$/i);
@@ -273,21 +84,53 @@ export class WorkingDirectoryManager {
     return /^\/?(?:get\s+)?(?:cwd|dir|directory|working[- ]?directory)(?:\?)?$/i.test(text.trim());
   }
 
-  formatDirectoryMessage(directory: string | undefined, context: string): string {
-    return DirectoryFormatter.formatDirectoryMessage(directory, context);
+  formatDirectoryMessage(directory: string | undefined, _context: string): string {
+    if (!directory) {
+      return '❌ Working directory not configured. Please ensure BASE_DIRECTORY is set.';
+    }
+    return `📁 Working directory: \`${directory}\`\n_Your working directory is fixed and cannot be changed._`;
   }
 
-  getChannelWorkingDirectory(channelId: string): string | undefined {
-    const key = this.getConfigKey(channelId);
-    const config = this.configs.get(key);
-    return config?.directory;
+  /**
+   * @deprecated - Working directories are now fixed per user
+   * This method is kept for backward compatibility but does nothing
+   */
+  setWorkingDirectory(_channelId: string, _directory: string, _threadTs?: string, _userId?: string): { success: boolean; resolvedPath?: string; error?: string } {
+    return {
+      success: false,
+      error: 'Working directory setting is disabled. Each user has a fixed directory.',
+    };
   }
 
-  hasChannelWorkingDirectory(channelId: string): boolean {
-    return !!this.getChannelWorkingDirectory(channelId);
+  /**
+   * @deprecated - Working directories are now fixed per user
+   */
+  removeWorkingDirectory(_channelId: string, _threadTs?: string, _userId?: string): boolean {
+    return false;
   }
 
-  formatChannelSetupMessage(channelId: string, channelName: string): string {
-    return DirectoryFormatter.formatChannelSetupMessage(channelId, channelName);
+  /**
+   * @deprecated - No longer used with fixed directories
+   */
+  listConfigurations(): never[] {
+    return [];
+  }
+
+  /**
+   * @deprecated - Use getWorkingDirectory instead
+   */
+  getChannelWorkingDirectory(_channelId: string): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * @deprecated - No longer used with fixed directories
+   */
+  hasChannelWorkingDirectory(_channelId: string): boolean {
+    return false;
+  }
+
+  formatChannelSetupMessage(_channelId: string, _channelName: string): string {
+    return DirectoryFormatter.formatChannelSetupMessage(_channelId, _channelName);
   }
 }
