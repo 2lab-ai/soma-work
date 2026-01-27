@@ -1,12 +1,13 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession } from '../../types';
+import { ConversationSession, SessionUsage } from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
   StreamContext,
   StreamCallbacks,
+  UsageData,
   ToolEventProcessor,
   StatusReporter,
   ReactionManager,
@@ -15,7 +16,15 @@ import {
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
-import { SayFn } from './types';
+import { SayFn, MessageEvent } from './types';
+
+/**
+ * Function type for handleMessage callback (used in renew flow)
+ */
+export type HandleMessageFn = (event: MessageEvent, say: any) => Promise<void>;
+
+// Default context window size (200k for Claude models)
+const DEFAULT_CONTEXT_WINDOW = 200000;
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -27,6 +36,8 @@ interface StreamExecutorDeps {
   todoDisplayManager: TodoDisplayManager;
   actionHandlers: ActionHandlers;
   requestCoordinator: RequestCoordinator;
+  /** Optional: handleMessage function for renew flow recursion */
+  handleMessage?: HandleMessageFn;
 }
 
 interface StreamExecuteParams {
@@ -184,6 +195,9 @@ export class StreamExecutor {
         getPendingForm: (formId) => {
           return this.deps.actionHandlers.getPendingForm(formId);
         },
+        onUsageUpdate: (usage: UsageData) => {
+          this.updateSessionUsage(session, usage);
+        },
       };
 
       // Create and run stream processor
@@ -217,6 +231,25 @@ export class StreamExecutor {
       // Clean up temporary files
       if (processedFiles.length > 0) {
         await this.deps.fileHandler.cleanupTempFiles(processedFiles);
+      }
+
+      // Handle renew flow if in pending_save state
+      if (session.renewState === 'pending_save') {
+        await this.handleRenewSaveComplete(
+          session,
+          streamResult.collectedText || '',
+          channel,
+          threadTs,
+          user,
+          userName,
+          workingDirectory,
+          say
+        );
+      } else if (session.renewState === 'pending_load') {
+        // Load completed, clear renew state
+        session.renewState = null;
+        session.savedWorkflow = undefined;
+        this.logger.info('Renew flow completed', { sessionKey });
       }
 
       return { success: true, messageCount: streamResult.messageCount };
@@ -320,5 +353,125 @@ export class StreamExecutor {
     lines.push('</user-context>');
 
     return lines.join('\n');
+  }
+
+  /**
+   * Update session usage data from stream result
+   */
+  private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
+    if (!session.usage) {
+      session.usage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalCostUsd: 0,
+        contextWindow: DEFAULT_CONTEXT_WINDOW,
+        lastUpdated: Date.now(),
+      };
+    }
+
+    // Accumulate usage
+    session.usage.inputTokens += usage.inputTokens;
+    session.usage.outputTokens += usage.outputTokens;
+    session.usage.cacheReadInputTokens += usage.cacheReadInputTokens;
+    session.usage.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+    session.usage.totalCostUsd += usage.totalCostUsd;
+    session.usage.lastUpdated = Date.now();
+
+    this.logger.debug('Updated session usage', {
+      inputTokens: session.usage.inputTokens,
+      outputTokens: session.usage.outputTokens,
+      totalCostUsd: session.usage.totalCostUsd,
+    });
+  }
+
+  /**
+   * Handle renew flow after save completes
+   */
+  private async handleRenewSaveComplete(
+    session: ConversationSession,
+    collectedText: string,
+    channel: string,
+    threadTs: string,
+    user: string,
+    userName: string,
+    workingDirectory: string,
+    say: SayFn
+  ): Promise<void> {
+    // Check for "Saved to:" pattern in response
+    const savedToMatch = collectedText.match(/Saved to:\s*(.+)/i);
+
+    if (!savedToMatch) {
+      // Save failed or skill not available
+      this.logger.warn('Renew save did not find "Saved to:" pattern', {
+        channel,
+        threadTs,
+        textLength: collectedText.length,
+      });
+      await say({
+        text: '⚠️ Save did not complete as expected. Renew cancelled.\n_The `/save` skill may not be available._',
+        thread_ts: threadTs,
+      });
+      session.renewState = null;
+      session.savedWorkflow = undefined;
+      return;
+    }
+
+    const savePath = savedToMatch[1].trim();
+    this.logger.info('Renew save completed', { savePath });
+
+    // Reset session context
+    const savedWorkflow = session.savedWorkflow;
+    this.deps.claudeHandler.resetSessionContext(channel, threadTs);
+
+    // Restore workflow and set pending_load state
+    const currentSession = this.deps.claudeHandler.getSession(channel, threadTs);
+    if (currentSession) {
+      currentSession.workflow = savedWorkflow;
+      currentSession.renewState = 'pending_load';
+    }
+
+    await say({
+      text: '✅ Context saved. Resetting session and reloading...',
+      thread_ts: threadTs,
+    });
+
+    // Check if handleMessage is available for recursion
+    if (!this.deps.handleMessage) {
+      this.logger.warn('handleMessage not available for renew load step');
+      await say({
+        text: '⚠️ Could not automatically reload context. Use `/load` to restore manually.',
+        thread_ts: threadTs,
+      });
+      if (currentSession) {
+        currentSession.renewState = null;
+        currentSession.savedWorkflow = undefined;
+      }
+      return;
+    }
+
+    // Create a synthetic event for /load
+    const loadEvent: MessageEvent = {
+      user,
+      channel,
+      thread_ts: threadTs,
+      ts: Date.now().toString(),
+      text: '/load',
+    };
+
+    // Create a wrapped say function
+    const wrappedSay = async (args: any) => {
+      const result = await say({
+        text: args.text,
+        thread_ts: args.thread_ts,
+        blocks: args.blocks,
+        attachments: args.attachments,
+      });
+      return { ts: result?.ts };
+    };
+
+    // Recursively call handleMessage with /load
+    await this.deps.handleMessage(loadEvent, wrappedSay);
   }
 }

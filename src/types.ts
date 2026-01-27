@@ -16,6 +16,24 @@ export type WorkflowType =
   | 'pr-docs-confluence'
   | 'default';
 
+/**
+ * Token usage tracking for a session
+ */
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+  contextWindow: number;       // Max context window (e.g., 200000)
+  lastUpdated: number;         // Timestamp of last update
+}
+
+/**
+ * Renew command state machine
+ */
+export type RenewState = 'pending_save' | 'pending_load' | null;
+
 export interface ConversationSession {
   ownerId: string;           // User who started the session
   ownerName?: string;        // Display name of owner
@@ -39,6 +57,11 @@ export interface ConversationSession {
   // Session state machine
   state?: SessionState;      // Current state (INITIALIZING -> MAIN)
   workflow?: WorkflowType;   // Determined workflow type
+  // Token usage tracking
+  usage?: SessionUsage;
+  // Renew command state
+  renewState?: RenewState;
+  savedWorkflow?: WorkflowType; // Workflow to restore after renew
 }
 
 export interface WorkingDirectoryConfig {

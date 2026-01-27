@@ -113,6 +113,20 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a context command (shows token usage)
+   */
+  static isContextCommand(text: string): boolean {
+    return /^\/?context$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a renew command (save → reset → load)
+   */
+  static isRenewCommand(text: string): boolean {
+    return /^\/?renew$/i.test(text.trim());
+  }
+
+  /**
    * Check if text is a /new command
    */
   static isNewCommand(text: string): boolean {
@@ -171,6 +185,8 @@ export class CommandParser {
       '• `terminate <session-key>` - Terminate a specific session',
       '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
       '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
+      '• `context` or `/context` - Show current session token usage and cost',
+      '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',
