@@ -409,16 +409,65 @@ export class StreamProcessor {
     }
 
     // Extract usage data from result message
-    const modelUsage = message.model_usage;
-    if (modelUsage) {
+    // SDK uses camelCase: modelUsage (object with model names as keys)
+    // Each model's usage has camelCase fields: inputTokens, outputTokens, etc.
+    const modelUsageMap = message.modelUsage;
+    if (modelUsageMap && typeof modelUsageMap === 'object') {
+      // Sum up usage across all models (usually just one)
+      let totalInput = 0;
+      let totalOutput = 0;
+      let totalCacheRead = 0;
+      let totalCacheCreation = 0;
+      let totalCost = 0;
+
+      for (const modelName of Object.keys(modelUsageMap)) {
+        const usage = modelUsageMap[modelName];
+        if (usage) {
+          totalInput += usage.inputTokens || 0;
+          totalOutput += usage.outputTokens || 0;
+          totalCacheRead += usage.cacheReadInputTokens || 0;
+          totalCacheCreation += usage.cacheCreationInputTokens || 0;
+          totalCost += usage.costUSD || 0;
+        }
+      }
+
+      this.logger.debug('Extracted usage data from modelUsage', {
+        inputTokens: totalInput,
+        outputTokens: totalOutput,
+        cacheRead: totalCacheRead,
+        cacheCreation: totalCacheCreation,
+        totalCost,
+        models: Object.keys(modelUsageMap),
+      });
+
       return {
-        inputTokens: modelUsage.input_tokens || 0,
-        outputTokens: modelUsage.output_tokens || 0,
-        cacheReadInputTokens: modelUsage.cache_read_input_tokens || 0,
-        cacheCreationInputTokens: modelUsage.cache_creation_input_tokens || 0,
+        inputTokens: totalInput,
+        outputTokens: totalOutput,
+        cacheReadInputTokens: totalCacheRead,
+        cacheCreationInputTokens: totalCacheCreation,
+        totalCostUsd: totalCost,
+      };
+    }
+
+    // Fallback: try direct usage field (older API format)
+    const directUsage = message.usage;
+    if (directUsage) {
+      this.logger.debug('Extracted usage data from direct usage field', {
+        inputTokens: directUsage.input_tokens,
+        outputTokens: directUsage.output_tokens,
+      });
+      return {
+        inputTokens: directUsage.input_tokens || 0,
+        outputTokens: directUsage.output_tokens || 0,
+        cacheReadInputTokens: directUsage.cache_read_input_tokens || 0,
+        cacheCreationInputTokens: directUsage.cache_creation_input_tokens || 0,
         totalCostUsd: message.total_cost_usd || 0,
       };
     }
+
+    this.logger.warn('No usage data found in result message', {
+      messageKeys: Object.keys(message),
+    });
 
     return undefined;
   }
