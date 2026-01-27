@@ -116,6 +116,8 @@ export interface StreamCallbacks {
   onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled') => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
   getPendingForm?: (formId: string) => PendingForm | undefined;
+  /** Called to invalidate old forms when a new form is created */
+  onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
 }
@@ -320,6 +322,11 @@ export class StreamProcessor {
         selections: {},
         createdAt: Date.now(),
       });
+    }
+
+    // Invalidate old forms for this session before sending new form
+    if (this.callbacks.onInvalidateOldForms) {
+      await this.callbacks.onInvalidateOldForms(context.sessionKey, formId);
     }
 
     // Build and send form

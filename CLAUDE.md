@@ -208,6 +208,10 @@ npm run mapping:add    # 수동 추가
 
 ## Development
 
+> **주의**: 개발 중에는 `service.sh`로 LaunchAgent 서비스를 실행하지 마세요.
+> 같은 Slack 토큰으로 여러 인스턴스가 동시에 실행되면 메시지 중복 처리 및 충돌이 발생합니다.
+> 개발 시에는 `npm start` 또는 `npm run dev`만 사용하세요.
+
 ```bash
 npm install
 npm run build    # TypeScript 컴파일

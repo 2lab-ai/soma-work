@@ -13,6 +13,7 @@ import {
   ReactionManager,
   ToolTracker,
   TodoDisplayManager,
+  SlackApiHelper,
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
@@ -36,6 +37,7 @@ interface StreamExecutorDeps {
   todoDisplayManager: TodoDisplayManager;
   actionHandlers: ActionHandlers;
   requestCoordinator: RequestCoordinator;
+  slackApi: SlackApiHelper;
   /** Optional: handleMessage function for renew flow recursion */
   handleMessage?: HandleMessageFn;
 }
@@ -194,6 +196,13 @@ export class StreamExecutor {
         },
         getPendingForm: (formId) => {
           return this.deps.actionHandlers.getPendingForm(formId);
+        },
+        onInvalidateOldForms: async (sessionKey, newFormId) => {
+          await this.deps.actionHandlers.invalidateOldForms(
+            sessionKey,
+            newFormId,
+            this.deps.slackApi
+          );
         },
         onUsageUpdate: (usage: UsageData) => {
           this.updateSessionUsage(session, usage);

@@ -149,6 +149,10 @@ export class EventRouter {
       threadTs,
       isDM,
     });
+    // Add no_entry emoji to indicate file was seen but not processed
+    if (messageEvent.ts) {
+      await this.deps.slackApi.addReaction(channel, messageEvent.ts, 'no_entry');
+    }
   }
 
   /**
@@ -158,6 +162,7 @@ export class EventRouter {
     const user = messageEvent.user;
     const channel = messageEvent.channel;
     const threadTs = messageEvent.thread_ts;
+    const ts = messageEvent.ts;
     const text = messageEvent.text || '';
 
     // 봇 멘션이 포함된 경우 스킵 (app_mention에서 처리)
@@ -182,6 +187,14 @@ export class EventRouter {
         owner: session.ownerName,
       });
       await this.messageHandler(messageEvent as MessageEvent, say);
+    } else {
+      // No session - add 'no_entry' emoji to indicate message was seen but not processed
+      this.logger.debug('Ignoring thread message - no session exists', {
+        user,
+        channel,
+        threadTs,
+      });
+      await this.deps.slackApi.addReaction(channel, ts, 'no_entry');
     }
   }
 

@@ -5,7 +5,11 @@
 이 세션은 **GitHub PR 피드백 반영 및 수정** 전용이다. 새로운 리뷰를 하는 것이 아니라, 기존 리뷰 피드백을 반영하여 코드를 수정하고 코드 리뷰를 유저에게 컨펌(반드시 UIAskUserQuestion 사용) 해결한다.
 의도: PR에 남겨진 미해결 대화(미해결 리뷰 커멘트)를 모두 resolve하는 것
 - 미해결 대화는 직접 코드 수정으로 해결하거나 현재 PR의 작업 범위를 벗어나는 것(새로운 jira 이슈를 생성하도록 유도해줘) 혹은 유저의 결정으로 지금 수정하지 않는 것 정도가 된다.
-- 작업이 끝나고 나서 followup을 미해결 이슈를 jira로 생성하도록 UIAskUserQuestion로 진행해줘.
+- 작업이 끝나고 나서 followup을 미해결 이슈를 jira로 생성하도록 UIAskUserQuestion로 진행해줘
+
+## workflow 성공 조건
+
+**모든 PR 대화가 적절한 fix나 followup에 대한 상세한 커멘트를 남긴후 conversation resolve 되어야함**
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
