@@ -20,13 +20,19 @@ export type WorkflowType =
  * Token usage tracking for a session
  */
 export interface SessionUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens: number;
-  cacheCreationInputTokens: number;
+  // Current context window state (from most recent request)
+  currentInputTokens: number;       // Input tokens in most recent request (includes history)
+  currentOutputTokens: number;      // Output tokens in most recent response
+  currentCacheReadTokens: number;   // Cache read tokens in current request
+  currentCacheCreateTokens: number; // Cache create tokens in current request
+  contextWindow: number;            // Max context window (e.g., 200000)
+
+  // Cumulative session totals
+  totalInputTokens: number;
+  totalOutputTokens: number;
   totalCostUsd: number;
-  contextWindow: number;       // Max context window (e.g., 200000)
-  lastUpdated: number;         // Timestamp of last update
+
+  lastUpdated: number;              // Timestamp of last update
 }
 
 /**

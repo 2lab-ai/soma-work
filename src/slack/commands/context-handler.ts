@@ -2,7 +2,7 @@ import { CommandHandler, CommandContext, CommandResult, CommandDependencies } fr
 import { CommandParser } from '../command-parser';
 
 /**
- * Handles /context command - displays current session token usage
+ * Handles /context command - displays current session context window usage
  */
 export class ContextHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -33,8 +33,6 @@ export class ContextHandler implements CommandHandler {
     }
 
     const usage = session.usage;
-    const totalTokens = usage.inputTokens + usage.outputTokens;
-    const availablePercent = Math.max(0, ((usage.contextWindow - totalTokens) / usage.contextWindow) * 100);
 
     // Format token counts with K notation
     const formatTokens = (n: number): string => {
@@ -43,6 +41,13 @@ export class ContextHandler implements CommandHandler {
       }
       return n.toString();
     };
+
+    // Calculate context window usage
+    // Context = input (previous history + current message) + output (current response)
+    // This is the approximate context size for the next request
+    const currentContext = usage.currentInputTokens + usage.currentOutputTokens;
+    const contextWindow = usage.contextWindow;
+    const availablePercent = Math.max(0, ((contextWindow - currentContext) / contextWindow) * 100);
 
     const lines: string[] = [
       '📊 *Session Context*',
@@ -54,24 +59,24 @@ export class ContextHandler implements CommandHandler {
       lines.push(`*Model:* \`${session.model}\``);
     }
 
-    // Token usage
-    lines.push(
-      `*Tokens:* ${formatTokens(totalTokens)} / ${formatTokens(usage.contextWindow)} (${availablePercent.toFixed(0)}% available)`
-    );
-    lines.push(`  • Input: ${formatTokens(usage.inputTokens)}`);
+    // Current context window usage (what user wants to see!)
+    lines.push(`*Context Window:* ${formatTokens(currentContext)} / ${formatTokens(contextWindow)} (${availablePercent.toFixed(0)}% available)`);
 
-    if (usage.cacheReadInputTokens > 0) {
-      lines.push(`    (cache read: ${formatTokens(usage.cacheReadInputTokens)})`);
-    }
-    if (usage.cacheCreationInputTokens > 0) {
-      lines.push(`    (cache created: ${formatTokens(usage.cacheCreationInputTokens)})`);
+    // Cache info
+    if (usage.currentCacheReadTokens > 0 || usage.currentCacheCreateTokens > 0) {
+      lines.push(`  • Cache read: ${formatTokens(usage.currentCacheReadTokens)}`);
+      lines.push(`  • Cache created: ${formatTokens(usage.currentCacheCreateTokens)}`);
     }
 
-    lines.push(`  • Output: ${formatTokens(usage.outputTokens)}`);
+    // Session totals (cumulative)
+    lines.push('');
+    lines.push('*Session Totals:*');
+    lines.push(`  • Input: ${formatTokens(usage.totalInputTokens)}`);
+    lines.push(`  • Output: ${formatTokens(usage.totalOutputTokens)}`);
 
     // Cost
     if (usage.totalCostUsd > 0) {
-      lines.push(`*Cost:* $${usage.totalCostUsd.toFixed(4)}`);
+      lines.push(`  • Cost: $${usage.totalCostUsd.toFixed(4)}`);
     }
 
     // Warning if context is getting full
