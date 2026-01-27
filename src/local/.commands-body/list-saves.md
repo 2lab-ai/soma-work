@@ -2,12 +2,14 @@
 
 ## Task
 
-Display all saved work contexts from `.claude/omc/tasks/save/` with summary info, filtered by current branch, and provide interactive selection.
+Display all saved work contexts from the user's working directory at `.claude/omc/tasks/save/` with summary info, filtered by current branch, and provide interactive selection.
+
+**IMPORTANT**: All paths are relative to the CURRENT WORKING DIRECTORY (cwd). Do NOT use absolute paths like `/Users/...` or `~/.claude/...`. Use relative paths like `.claude/omc/tasks/save/`.
 
 ## Steps
 
-1. Get current git branch: `git rev-parse --abbrev-ref HEAD`
-2. List all directories in `.claude/omc/tasks/save/`
+1. Get current git branch: `git rev-parse --abbrev-ref HEAD` (may fail if not in git repo - that's OK)
+2. List all directories in `.claude/omc/tasks/save/` (relative to current working directory)
 3. For each save, read the first few lines of `context.md` to extract:
    - Save ID (directory name)
    - Date

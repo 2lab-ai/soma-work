@@ -167,7 +167,29 @@ export class WorkingDirectoryManager {
 
     // Fall back to user's saved default directory
     if (userId) {
-      const userDefault = userSettingsStore.getUserDefaultDirectory(userId);
+      let userDefault = userSettingsStore.getUserDefaultDirectory(userId);
+
+      // Auto-create user working directory if not set: /tmp/{slackUserId}/
+      if (!userDefault) {
+        const autoDir = `/tmp/${userId}`;
+        try {
+          fs.mkdirSync(autoDir, { recursive: true });
+          userSettingsStore.setUserDefaultDirectory(userId, autoDir);
+          userDefault = autoDir;
+          this.logger.info('Auto-created user working directory', {
+            directory: autoDir,
+            userId,
+          });
+        } catch (error) {
+          this.logger.error('Failed to auto-create user working directory', {
+            directory: autoDir,
+            userId,
+            error,
+          });
+          return undefined;
+        }
+      }
+
       if (userDefault) {
         // Create directory if it doesn't exist
         if (!fs.existsSync(userDefault)) {
