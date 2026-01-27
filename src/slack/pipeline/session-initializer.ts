@@ -119,7 +119,7 @@ export class SessionInitializer {
       } else if (text) {
         await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
       } else {
-        // No text - default workflow
+        // No text available - use default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
       }
     } else if (!isNewSession) {
@@ -264,26 +264,26 @@ export class SessionInitializer {
     userName: string,
     session: ConversationSession
   ): AbortController {
-    // Check if this user can interrupt the current response
+    const isRequestActive = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const canInterrupt = this.deps.claudeHandler.canInterrupt(channel, threadTs, user);
 
-    // Cancel existing request only if user can interrupt
-    if (this.deps.requestCoordinator.isRequestActive(sessionKey) && canInterrupt) {
-      this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
-      this.deps.requestCoordinator.abortSession(sessionKey);
-    } else if (this.deps.requestCoordinator.isRequestActive(sessionKey) && !canInterrupt) {
-      this.logger.debug('User cannot interrupt, message will be processed after current response', {
-        sessionKey,
-        user: userName,
-        owner: session.ownerName,
-        currentInitiator: session.currentInitiatorName,
-      });
+    // Handle active request based on interrupt permissions
+    if (isRequestActive) {
+      if (canInterrupt) {
+        this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
+        this.deps.requestCoordinator.abortSession(sessionKey);
+      } else {
+        this.logger.debug('User cannot interrupt, message will be processed after current response', {
+          sessionKey,
+          user: userName,
+          owner: session.ownerName,
+          currentInitiator: session.currentInitiatorName,
+        });
+      }
     }
 
     const abortController = new AbortController();
     this.deps.requestCoordinator.setController(sessionKey, abortController);
-
-    // Update the current initiator
     this.deps.claudeHandler.updateInitiator(channel, threadTs, user, userName);
 
     return abortController;

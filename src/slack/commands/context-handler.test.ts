@@ -15,16 +15,16 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ContextHandler } from './context-handler';
-import type { CommandDependencies, CommandContext } from './types';
+import type { CommandDependencies, CommandContext, SayFn } from './types';
 import type { SessionUsage } from '../../types';
 
 describe('ContextHandler', () => {
   let handler: ContextHandler;
   let mockDeps: CommandDependencies;
-  let mockSay: ReturnType<typeof vi.fn>;
+  let mockSay: SayFn;
 
   beforeEach(() => {
-    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' }) as unknown as SayFn;
     mockDeps = {
       claudeHandler: {
         getSession: vi.fn(),
@@ -82,16 +82,14 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'thread_ts',
         user: 'U123',
-        userName: 'testuser',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       };
 
       await handler.execute(ctx);
 
       expect(mockSay).toHaveBeenCalledTimes(1);
-      const message = mockSay.mock.calls[0][0].text;
+      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
 
       // PROOF: Context window shows 2.8k (2000 + 800), NOT 4.3k (cumulative)
       expect(message).toContain('*Context Window:* 2.8k / 200.0k');
@@ -142,13 +140,11 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'ts',
         user: 'U123',
-        userName: 'test',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       });
 
-      const message = mockSay.mock.calls[0][0].text;
+      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
       // (200000 - 50000) / 200000 * 100 = 75%
       expect(message).toContain('75% available');
     });
@@ -173,13 +169,11 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'ts',
         user: 'U123',
-        userName: 'test',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       });
 
-      const message = mockSay.mock.calls[0][0].text;
+      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
       expect(message).toContain('10% available');
       expect(message).toContain('⚠️ Context running low');
       expect(message).toContain('/renew');
@@ -204,13 +198,11 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'ts',
         user: 'U123',
-        userName: 'test',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       });
 
-      const message = mockSay.mock.calls[0][0].text;
+      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
       expect(message).toContain('Cache read: 3.0k');
       expect(message).toContain('Cache created: 500');
     });
@@ -224,10 +216,8 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'ts',
         user: 'U123',
-        userName: 'test',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       });
 
       expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({
@@ -244,10 +234,8 @@ describe('ContextHandler', () => {
         channel: 'C123',
         threadTs: 'ts',
         user: 'U123',
-        userName: 'test',
         text: 'context',
         say: mockSay,
-        workingDirectory: '/test',
       });
 
       expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({

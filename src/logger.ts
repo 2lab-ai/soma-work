@@ -70,20 +70,14 @@ export class Logger {
   private shouldLog(level: LogLevel): boolean {
     const config = getConfig();
 
-    // Check level
-    if (LOG_LEVELS[level] > LOG_LEVELS[config.level]) {
-      return false;
-    }
+    // Check level threshold
+    if (LOG_LEVELS[level] > LOG_LEVELS[config.level]) return false;
 
     // Check if category is muted
-    if (config.muted.has(this.contextLower)) {
-      return false;
-    }
+    if (config.muted.has(this.contextLower)) return false;
 
-    // Check if category is enabled (if filter is set)
-    if (config.enabled !== null && config.enabled !== undefined && !config.enabled.has(this.contextLower)) {
-      return false;
-    }
+    // Check if category is enabled (when filter is active)
+    if (config.enabled && !config.enabled.has(this.contextLower)) return false;
 
     return true;
   }

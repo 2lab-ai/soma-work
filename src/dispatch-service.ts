@@ -195,30 +195,33 @@ export class DispatchService {
 
     let depth = 0;
     let inString = false;
-    let escape = false;
+    let escapeNext = false;
 
     for (let i = start; i < text.length; i++) {
-      const c = text[i];
+      const char = text[i];
 
-      if (escape) {
-        escape = false;
+      // Handle escape sequences in strings
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (char === '\\' && inString) {
+        escapeNext = true;
         continue;
       }
 
-      if (c === '\\' && inString) {
-        escape = true;
-        continue;
-      }
-
-      if (c === '"') {
+      // Toggle string mode on quotes
+      if (char === '"') {
         inString = !inString;
         continue;
       }
 
+      // Skip brace counting inside strings
       if (inString) continue;
 
-      if (c === '{') depth++;
-      if (c === '}') {
+      // Track brace depth
+      if (char === '{') depth++;
+      if (char === '}') {
         depth--;
         if (depth === 0) {
           return text.slice(start, i + 1);
@@ -279,21 +282,24 @@ export class DispatchService {
   }
 
   /**
+   * Valid workflow types
+   */
+  private static readonly VALID_WORKFLOWS = new Set<WorkflowType>([
+    'jira-executive-summary',
+    'jira-brainstorming',
+    'jira-planning',
+    'jira-create-pr',
+    'pr-review',
+    'pr-fix-and-update',
+    'pr-docs-confluence',
+    'default',
+  ]);
+
+  /**
    * Validate workflow type
    */
   private validateWorkflow(workflow: string): WorkflowType {
-    const validWorkflows: WorkflowType[] = [
-      'jira-executive-summary',
-      'jira-brainstorming',
-      'jira-planning',
-      'jira-create-pr',
-      'pr-review',
-      'pr-fix-and-update',
-      'pr-docs-confluence',
-      'default',
-    ];
-
-    if (validWorkflows.includes(workflow as WorkflowType)) {
+    if (DispatchService.VALID_WORKFLOWS.has(workflow as WorkflowType)) {
       return workflow as WorkflowType;
     }
 

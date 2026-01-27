@@ -145,25 +145,25 @@ export class ActionHandlers {
     slackApi: SlackApiHelper
   ): Promise<void> {
     const oldForms = this.formStore.getFormsBySession(sessionKey);
+    const expiredFormBlock = [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _만료됨_' } }];
 
     for (const [formId, form] of oldForms) {
-      if (formId !== newFormId && form.messageTs) {
-        try {
-          // Update old form message to show it's expired
-          await slackApi.updateMessage(
-            form.channel,
-            form.messageTs,
-            '⏱️ _이 폼은 새로운 폼으로 대체되었습니다._',
-            [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _만료됨_' } }]
-          );
-          this.logger.debug('Invalidated old form', { formId, sessionKey });
-        } catch (error) {
-          this.logger.warn('Failed to update expired form message', { formId, error });
-        }
+      // Skip the new form and forms without message timestamp
+      if (formId === newFormId || !form.messageTs) continue;
 
-        // Remove from store
-        this.formStore.delete(formId);
+      try {
+        await slackApi.updateMessage(
+          form.channel,
+          form.messageTs,
+          '⏱️ _이 폼은 새로운 폼으로 대체되었습니다._',
+          expiredFormBlock
+        );
+        this.logger.debug('Invalidated old form', { formId, sessionKey });
+      } catch (error) {
+        this.logger.warn('Failed to update expired form message', { formId, error });
       }
+
+      this.formStore.delete(formId);
     }
   }
 
