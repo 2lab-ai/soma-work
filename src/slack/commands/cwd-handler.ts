@@ -1,7 +1,11 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 
 /**
- * Handles working directory commands (cwd set/get)
+ * Handles working directory commands (cwd)
+ *
+ * Working directories are now fixed per user: {BASE_DIRECTORY}/{userId}/
+ * - Users cannot set custom working directories
+ * - The cwd command only shows the current fixed directory
  */
 export class CwdHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -13,44 +17,29 @@ export class CwdHandler implements CommandHandler {
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { user, channel, threadTs, text, say } = ctx;
-    const isDM = channel.startsWith('D');
 
-    // Check for set command
+    // Check for set command - now disabled
     const setDirPath = this.deps.workingDirManager.parseSetCommand(text);
     if (setDirPath) {
-      const result = this.deps.workingDirManager.setWorkingDirectory(
-        channel,
-        setDirPath,
-        threadTs !== ctx.threadTs ? threadTs : undefined, // Only pass if it's a real thread
-        user
-      );
-
-      if (result.success) {
-        const context = threadTs ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
-        await say({
-          text: `✅ Working directory set for ${context}: \`${result.resolvedPath}\`\n_This will be your default for future conversations._`,
-          thread_ts: threadTs,
-        });
-      } else {
-        await say({
-          text: `❌ ${result.error}`,
-          thread_ts: threadTs,
-        });
-      }
+      await say({
+        text: '⚠️ Working directory 설정은 비활성화되었습니다.\n' +
+              '각 사용자는 고유한 디렉토리(`BASE_DIRECTORY/{userId}/`)를 자동으로 사용합니다.\n' +
+              '`cwd` 명령으로 현재 디렉토리를 확인하세요.',
+        thread_ts: threadTs,
+      });
       return { handled: true };
     }
 
-    // Check for get command
+    // Check for get command - show fixed directory
     if (this.deps.workingDirManager.isGetCommand(text)) {
       const directory = this.deps.workingDirManager.getWorkingDirectory(
         channel,
-        threadTs !== ctx.threadTs ? threadTs : undefined,
+        threadTs,
         user
       );
-      const context = threadTs ? 'this thread' : (isDM ? 'this conversation' : 'this channel');
 
       await say({
-        text: this.deps.workingDirManager.formatDirectoryMessage(directory, context),
+        text: this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
         thread_ts: threadTs,
       });
       return { handled: true };
