@@ -3,6 +3,7 @@
 # PR Review Workflow
 
 이 세션은 **GitHub PR 리뷰** 전용이다. Jira 관련 작업이나 코드 구현은 이 워크플로우의 범위가 아니다.
+review-pr 스킬도 병렬로 진행한다. 그리고 항상 code-simplifier agent를 이용하여 코드를 단순화 해서 pr에 추가한다. (유저에게 UIAskUserQuestion으로 컨펌 받는다.)
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
