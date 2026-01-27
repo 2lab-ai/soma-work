@@ -1,5 +1,7 @@
 {{include:common.prompt}}
 
+**항상 전체 작업을 Tasks(나 TodoWrite)로 먼저 전체 할일을 업데이트하고 진행한다.
+
 # PR Review Workflow
 
 PR 리뷰를 하고 리뷰 내용을 분류하고 github PR에 라인 리뷰 커멘트로 남기고 해당 해결책에 대해서 유저에게 UIAskUserQuestion으로 질문으로 추후 작업 followup에 대해서 지시를 받는다.
