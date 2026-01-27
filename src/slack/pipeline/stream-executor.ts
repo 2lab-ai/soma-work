@@ -361,27 +361,37 @@ export class StreamExecutor {
   private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
     if (!session.usage) {
       session.usage = {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        totalCostUsd: 0,
+        // Current context (overwritten each request)
+        currentInputTokens: 0,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
         contextWindow: DEFAULT_CONTEXT_WINDOW,
+        // Cumulative totals
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
         lastUpdated: Date.now(),
       };
     }
 
-    // Accumulate usage
-    session.usage.inputTokens += usage.inputTokens;
-    session.usage.outputTokens += usage.outputTokens;
-    session.usage.cacheReadInputTokens += usage.cacheReadInputTokens;
-    session.usage.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+    // Update current context (overwrite - this is the current context window usage)
+    // Context window = input (history + new message) + output (current response)
+    session.usage.currentInputTokens = usage.inputTokens;
+    session.usage.currentOutputTokens = usage.outputTokens;
+    session.usage.currentCacheReadTokens = usage.cacheReadInputTokens;
+    session.usage.currentCacheCreateTokens = usage.cacheCreationInputTokens;
+
+    // Accumulate totals
+    session.usage.totalInputTokens += usage.inputTokens;
+    session.usage.totalOutputTokens += usage.outputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
     this.logger.debug('Updated session usage', {
-      inputTokens: session.usage.inputTokens,
-      outputTokens: session.usage.outputTokens,
+      currentContext: session.usage.currentInputTokens + session.usage.currentOutputTokens,
+      totalInput: session.usage.totalInputTokens,
+      totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,
     });
   }
