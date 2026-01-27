@@ -33,6 +33,7 @@ export {
   ToolUseEvent as StreamToolUseEvent,
   ToolResultEvent as StreamToolResultEvent,
   PendingForm,
+  UsageData,
 } from './stream-processor';
 export {
   ToolEventProcessor,

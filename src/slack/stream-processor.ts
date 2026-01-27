@@ -96,6 +96,17 @@ export interface PendingForm {
 }
 
 /**
+ * Usage data extracted from result message
+ */
+export interface UsageData {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+}
+
+/**
  * Stream processor callbacks
  */
 export interface StreamCallbacks {
@@ -105,6 +116,8 @@ export interface StreamCallbacks {
   onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled') => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
   getPendingForm?: (formId: string) => PendingForm | undefined;
+  /** Called with usage data when stream completes */
+  onUsageUpdate?: (usage: UsageData) => void;
 }
 
 /**
@@ -114,6 +127,10 @@ export interface StreamResult {
   success: boolean;
   messageCount: number;
   aborted: boolean;
+  /** All collected text from the response (for renew pattern detection) */
+  collectedText?: string;
+  /** Usage data from the result message */
+  usage?: UsageData;
 }
 
 /**
@@ -136,6 +153,7 @@ export class StreamProcessor {
     abortSignal: AbortSignal
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
+    let lastUsage: UsageData | undefined;
 
     try {
       for await (const message of stream) {
@@ -153,11 +171,22 @@ export class StreamProcessor {
         } else if (message.type === 'user') {
           await this.handleUserMessage(message, context);
         } else if (message.type === 'result') {
-          await this.handleResultMessage(message, context, currentMessages);
+          lastUsage = await this.handleResultMessage(message, context, currentMessages);
         }
       }
 
-      return { success: true, messageCount: currentMessages.length, aborted: false };
+      // Call usage update callback if we have usage data
+      if (lastUsage && this.callbacks.onUsageUpdate) {
+        this.callbacks.onUsageUpdate(lastUsage);
+      }
+
+      return {
+        success: true,
+        messageCount: currentMessages.length,
+        aborted: false,
+        collectedText: currentMessages.join('\n'),
+        usage: lastUsage,
+      };
     } catch (error: any) {
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };
@@ -357,12 +386,13 @@ export class StreamProcessor {
 
   /**
    * Handle result message (completion)
+   * @returns Usage data extracted from the message
    */
   private async handleResultMessage(
     message: any,
     context: StreamContext,
     currentMessages: string[]
-  ): Promise<void> {
+  ): Promise<UsageData | undefined> {
     this.logger.info('Received result from Claude SDK', {
       subtype: message.subtype,
       hasResult: message.subtype === 'success' && !!message.result,
@@ -373,9 +403,24 @@ export class StreamProcessor {
     if (message.subtype === 'success' && message.result) {
       const finalResult = message.result;
       if (finalResult && !currentMessages.includes(finalResult)) {
+        currentMessages.push(finalResult);
         await this.handleFinalResult(finalResult, context);
       }
     }
+
+    // Extract usage data from result message
+    const modelUsage = message.model_usage;
+    if (modelUsage) {
+      return {
+        inputTokens: modelUsage.input_tokens || 0,
+        outputTokens: modelUsage.output_tokens || 0,
+        cacheReadInputTokens: modelUsage.cache_read_input_tokens || 0,
+        cacheCreationInputTokens: modelUsage.cache_creation_input_tokens || 0,
+        totalCostUsd: message.total_cost_usd || 0,
+      };
+    }
+
+    return undefined;
   }
 
   /**

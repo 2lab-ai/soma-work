@@ -142,6 +142,7 @@ export class SlackHandler {
       todoDisplayManager: this.todoDisplayManager,
       actionHandlers: this.actionHandlers,
       requestCoordinator: this.requestCoordinator,
+      handleMessage: this.handleMessage.bind(this),
     });
 
     // EventRouter for event handling
