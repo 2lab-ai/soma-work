@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/",
+    "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
     "prod": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
