@@ -56,11 +56,14 @@ interface UserChoiceGroup {
 
 ## Rules
 
+- You should include all CONTEXT in that question. Do not let the user scroll up with saying "WHAT THE FUCK IT IS GOING TO DOING?".
+- User should know what will you do if the option chosen by the user.
+
 ### USE UserChoice when:
 - Implementation choice: "Redis vs In-memory cache?"
 - Architecture decision: "Monolithic vs Microservices?"
 - Refactoring options: "Extract function vs Extract class?"
-- PR review actions: "Fix and re-review vs Merge as-is?"
+- PR review actions: "P0 fix-way #1 or fix-way #2 or #3? (with detailed how to fix description) + thqt review source url link"
 - Concrete next steps with clear outcomes
 
 ### DO NOT use UserChoice when:

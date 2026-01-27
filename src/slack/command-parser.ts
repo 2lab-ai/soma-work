@@ -169,6 +169,47 @@ export class CommandParser {
   }
 
   /**
+   * Check if text looks like a command but may not be recognized
+   * Used to provide feedback for unrecognized commands
+   */
+  static isPotentialCommand(text: string): { isPotential: boolean; keyword?: string } {
+    const trimmed = text.trim().toLowerCase();
+
+    // Starts with slash - likely a command attempt
+    if (trimmed.startsWith('/')) {
+      const keyword = trimmed.split(/\s+/)[0].slice(1);
+      return { isPotential: true, keyword };
+    }
+
+    // Known command keywords (including future commands)
+    const commandKeywords = [
+      // Working directory
+      'cwd',
+      // MCP
+      'mcp', 'servers',
+      // Permissions
+      'bypass',
+      // Persona & Model
+      'persona', 'model',
+      // Sessions
+      'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew',
+      // Credentials
+      'restore', 'credentials',
+      // Help
+      'help', 'commands',
+      // Future: save/load (oh-my-claude skills)
+      'save', 'load',
+    ];
+
+    const firstWord = trimmed.split(/\s+/)[0];
+    if (commandKeywords.includes(firstWord)) {
+      return { isPotential: true, keyword: firstWord };
+    }
+
+    return { isPotential: false };
+  }
+
+  /**
    * Generate help message
    */
   static getHelpMessage(): string {
