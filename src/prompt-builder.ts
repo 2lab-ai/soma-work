@@ -12,7 +12,7 @@ import * as fs from 'fs';
 
 // Prompt file paths
 const PROMPT_DIR = path.join(__dirname, 'prompt');
-const SYSTEM_PROMPT_PATH = path.join(PROMPT_DIR, 'system.prompt');
+const DEFAULT_PROMPT_PATH = path.join(PROMPT_DIR, 'default.prompt');
 const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
 const LOCAL_SYSTEM_PROMPT_PATH = path.join(process.cwd(), '.system.prompt');
 const PERSONA_DIR = path.join(__dirname, 'persona');
@@ -37,8 +37,8 @@ export class PromptBuilder {
    */
   private loadDefaultPrompt(): void {
     try {
-      if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
-        this.defaultSystemPrompt = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
+      if (fs.existsSync(DEFAULT_PROMPT_PATH)) {
+        this.defaultSystemPrompt = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
       }
 
       // Append local system prompt if exists (not committed to source)

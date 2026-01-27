@@ -1,22 +1,30 @@
-{{include:common.prompt}}
+{{include:./common.prompt}}
 
 # PR Fix and Update Workflow
 
-이 세션은 **GitHub PR 피드백 반영 및 수정** 전용이다. 새로운 리뷰를 하는 것이 아니라, 기존 리뷰 피드백을 반영하여 코드를 수정하고 코드 리뷰를 유저에게 컨펌(반드시 UIAskUserQuestion 사용) 해결한다.
-의도: PR에 남겨진 미해결 대화(미해결 리뷰 커멘트)를 모두 resolve하는 것
-- 미해결 대화는 직접 코드 수정으로 해결하거나 현재 PR의 작업 범위를 벗어나는 것(새로운 jira 이슈를 생성하도록 유도해줘) 혹은 유저의 결정으로 지금 수정하지 않는 것 정도가 된다.
-- 작업이 끝나고 나서 followup을 미해결 이슈를 jira로 생성하도록 UIAskUserQuestion로 진행해줘
+**GitHub PR 피드백 반영 및 수정** 워크플로우. 새로운 리뷰가 아닌, 기존 리뷰 피드백을 반영하여 코드를 수정한다.
 
-## workflow 성공 조건
+## 목표
+PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 
-**모든 PR 대화가 적절한 fix나 followup에 대한 상세한 커멘트를 남긴후 conversation resolve 되어야함**
+## 미해결 대화 처리 방법
+- **코드 수정**: 직접 코드를 수정하여 해결
+- **Followup 이슈**: PR 범위를 벗어나는 경우 Jira 이슈 생성
+- **Skip**: 유저의 결정으로 현재 수정하지 않음
+
+작업 완료 후 미해결 이슈가 있으면 UIAskUserQuestion으로 Jira 이슈 생성 여부를 확인한다.
+
+## 성공 조건
+
+- 모든 PR 대화에 대해 수정 내용 또는 followup 계획을 커멘트로 남기고 conversation resolve
+- P0/P1 이슈가 모두 해결되면 PR Approve 처리
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
 2. `mcp__github__get_pull_request_reviews`로 리뷰 내용 확인
 3. `mcp__github__get_pull_request_comments`로 상세 코멘트 확인
 4. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
-5. 모든 리뷰 커멘트 각각에 대해서 유저의 컨펌이 필요한 모든 내용을 우선순위대로 정리해서 유저에게 한번에 UIAskUSerQuestion으로 컨펌을 받고 해당 내용으로 작업을 진행한다.
+5. 모든 리뷰 커멘트 각각에 대해서 유저의 컨펌이 필요한 모든 내용을 우선순위대로 정리해서 유저에게 한번에 UIAskUserQuestion으로 컨펌을 받고 해당 내용으로 작업을 진행한다.
 6. 수정 완료 후 commit & push
 
 ## 작업 프로세스

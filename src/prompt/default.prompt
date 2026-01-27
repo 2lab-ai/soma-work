@@ -1,4 +1,4 @@
-{{include:common.prompt}}
+{{include:./common.prompt}}
 
 # Default Workflow
 
