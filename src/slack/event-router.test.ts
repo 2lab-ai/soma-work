@@ -10,6 +10,7 @@ import { ConversationSession } from '../types';
 const createMockSlackApi = () => ({
   getBotUserId: vi.fn().mockResolvedValue('B123'),
   getChannelInfo: vi.fn().mockResolvedValue({ name: 'general' }),
+  addReaction: vi.fn().mockResolvedValue(true),
 });
 
 const createMockClaudeHandler = () => ({

@@ -34,16 +34,16 @@ export class CommandParser {
    */
   static parseBypassCommand(text: string): BypassAction {
     const match = text.trim().match(/^\/?bypass(?:\s+(on|off|true|false|enable|disable|status))?$/i);
-    if (!match || !match[1]) {
+    if (!match?.[1]) {
       return 'status';
     }
+
     const action = match[1].toLowerCase();
-    if (action === 'on' || action === 'true' || action === 'enable') {
-      return 'on';
-    }
-    if (action === 'off' || action === 'false' || action === 'disable') {
-      return 'off';
-    }
+    const enableActions = ['on', 'true', 'enable'];
+    const disableActions = ['off', 'false', 'disable'];
+
+    if (enableActions.includes(action)) return 'on';
+    if (disableActions.includes(action)) return 'off';
     return 'status';
   }
 
@@ -169,40 +169,42 @@ export class CommandParser {
   }
 
   /**
+   * Known command keywords (including future commands)
+   */
+  private static readonly COMMAND_KEYWORDS = new Set([
+    // Working directory
+    'cwd',
+    // MCP
+    'mcp', 'servers',
+    // Permissions
+    'bypass',
+    // Persona & Model
+    'persona', 'model',
+    // Sessions
+    'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew',
+    // Credentials
+    'restore', 'credentials',
+    // Help
+    'help', 'commands',
+    // Future: save/load (oh-my-claude skills)
+    'save', 'load',
+  ]);
+
+  /**
    * Check if text looks like a command but may not be recognized
    * Used to provide feedback for unrecognized commands
    */
   static isPotentialCommand(text: string): { isPotential: boolean; keyword?: string } {
     const trimmed = text.trim().toLowerCase();
+    const firstWord = trimmed.split(/\s+/)[0];
 
     // Starts with slash - likely a command attempt
     if (trimmed.startsWith('/')) {
-      const keyword = trimmed.split(/\s+/)[0].slice(1);
-      return { isPotential: true, keyword };
+      return { isPotential: true, keyword: firstWord.slice(1) };
     }
 
-    // Known command keywords (including future commands)
-    const commandKeywords = [
-      // Working directory
-      'cwd',
-      // MCP
-      'mcp', 'servers',
-      // Permissions
-      'bypass',
-      // Persona & Model
-      'persona', 'model',
-      // Sessions
-      'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew',
-      // Credentials
-      'restore', 'credentials',
-      // Help
-      'help', 'commands',
-      // Future: save/load (oh-my-claude skills)
-      'save', 'load',
-    ];
-
-    const firstWord = trimmed.split(/\s+/)[0];
-    if (commandKeywords.includes(firstWord)) {
+    // Check against known command keywords
+    if (this.COMMAND_KEYWORDS.has(firstWord)) {
       return { isPotential: true, keyword: firstWord };
     }
 
