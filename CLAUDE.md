@@ -89,7 +89,9 @@ src/permission/              # Permission 모듈
 ### Prompt & Persona System
 ```
 src/prompt/
-├── system.prompt      # 시스템 프롬프트 (역할, 워크플로우 정의)
+├── default.prompt     # 기본 워크플로우 프롬프트
+├── common.prompt      # 공통 설정 (MCP, 용어 정의)
+├── dispatch.prompt    # 워크플로우 분류기
 └── review_prompt.md   # PR 리뷰 가이드라인
 
 src/persona/

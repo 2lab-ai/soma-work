@@ -120,21 +120,25 @@ async function start() {
     logger.info('⚡️ Claude Code Slack bot is running!');
 
     // Send startup notification to admin
-    const ADMIN_USER_ID = process.env.ADMIN_USER_ID || 'U09F1M5MML1';
-    try {
-      await app.client.chat.postMessage({
-        channel: ADMIN_USER_ID,
-        text: `🚀 *Bot Started Successfully*\n` +
-          `• Time: ${new Date().toISOString()}\n` +
-          `• MCP Servers: ${mcpConfig ? Object.keys(mcpConfig.mcpServers).join(', ') : 'none'}\n` +
-          `• Sessions restored: ${loadedSessions}\n` +
-          `• Forms restored: ${loadedForms}\n` +
-          `• Socket Mode: Connected\n\n` +
-          `_Reply to this message to test if events are working._`,
-      });
-      logger.info('Startup notification sent to admin');
-    } catch (err) {
-      logger.error('Failed to send startup notification', err);
+    const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
+    if (!ADMIN_USER_ID) {
+      logger.warn('ADMIN_USER_ID not set, skipping startup notification');
+    } else {
+      try {
+        await app.client.chat.postMessage({
+          channel: ADMIN_USER_ID,
+          text: `🚀 *Bot Started Successfully*\n` +
+            `• Time: ${new Date().toISOString()}\n` +
+            `• MCP Servers: ${mcpConfig ? Object.keys(mcpConfig.mcpServers).join(', ') : 'none'}\n` +
+            `• Sessions restored: ${loadedSessions}\n` +
+            `• Forms restored: ${loadedForms}\n` +
+            `• Socket Mode: Connected\n\n` +
+            `_Reply to this message to test if events are working._`,
+        });
+        logger.info('Startup notification sent to admin');
+      } catch (err) {
+        logger.error('Failed to send startup notification', err);
+      }
     }
 
     // Handle graceful shutdown
