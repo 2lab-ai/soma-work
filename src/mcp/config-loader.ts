@@ -50,7 +50,7 @@ export class McpConfigLoader {
 
     try {
       if (!fs.existsSync(this.configPath)) {
-        this.logger.info('No MCP configuration file found', { path: this.configPath });
+        this.logger.debug('No MCP configuration file found', { path: this.configPath });
         return null;
       }
 

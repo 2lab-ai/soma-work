@@ -100,7 +100,7 @@ export class McpClient extends EventEmitter {
       throw new Error('MCP client already started');
     }
 
-    this.logger.info('Starting MCP server', {
+    this.logger.debug('Starting MCP server', {
       command: this.config.command,
       args: this.config.args,
     });
@@ -130,7 +130,7 @@ export class McpClient extends EventEmitter {
 
     // Handle process exit
     this.process.on('close', (code) => {
-      this.logger.info('MCP process exited', { code });
+      this.logger.debug('MCP process exited', { code });
       this.process = null;
       this.initialized = false;
       this.emit('close', code);
@@ -148,7 +148,7 @@ export class McpClient extends EventEmitter {
       return;
     }
 
-    this.logger.info('Stopping MCP server');
+    this.logger.debug('Stopping MCP server');
 
     // Clear pending requests
     for (const [id, pending] of this.pendingRequests) {
@@ -217,7 +217,7 @@ export class McpClient extends EventEmitter {
     });
 
     this.serverInfo = initResult;
-    this.logger.info('MCP server initialized', {
+    this.logger.debug('MCP server initialized', {
       serverInfo: this.serverInfo?.serverInfo,
     });
 
@@ -227,7 +227,7 @@ export class McpClient extends EventEmitter {
     // Step 3: Get available tools
     const toolsResult = await this.sendRequest('tools/list', {});
     this.tools = toolsResult?.tools || [];
-    this.logger.info('MCP tools loaded', {
+    this.logger.debug('MCP tools loaded', {
       count: this.tools.length,
       tools: this.tools.map(t => t.name),
     });

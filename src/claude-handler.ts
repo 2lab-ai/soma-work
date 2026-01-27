@@ -137,6 +137,125 @@ export class ClaudeHandler {
     return this.sessionRegistry.loadSessions();
   }
 
+  // ===== Dispatch One-Shot Query =====
+
+  /**
+   * One-shot dispatch classification query.
+   * Uses Agent SDK with no tools, no session persistence, and maxTurns=1.
+   * Reuses the same credential validation as streamQuery.
+   */
+  async dispatchOneShot(
+    userMessage: string,
+    dispatchPrompt: string,
+    model?: string,
+    abortController?: AbortController
+  ): Promise<string> {
+    // Validate credentials before making the query
+    const credentialResult = await ensureValidCredentials();
+    if (!credentialResult.valid) {
+      this.logger.error('Claude credentials invalid for dispatch', {
+        error: credentialResult.error,
+        status: getCredentialStatus(),
+      });
+
+      await sendCredentialAlert(credentialResult.error);
+
+      throw new Error(
+        `Claude credentials missing: ${credentialResult.error}\n` +
+          'Please log in to Claude manually or enable automatic credential restore.'
+      );
+    }
+
+    if (credentialResult.restored) {
+      this.logger.info('Credentials were restored from backup for dispatch');
+    }
+
+    // Build query options for one-shot dispatch
+    const options: any = {
+      outputFormat: 'stream-json',
+      settingSources: ['user', 'project', 'local'],
+      systemPrompt: dispatchPrompt,
+      tools: [], // No tool use for dispatch
+      maxTurns: 1, // Single turn only
+      // Note: persistSession is not a query option - SDK doesn't persist by default when no session ID is provided
+    };
+
+    if (model) {
+      options.model = model;
+    }
+
+    if (abortController) {
+      options.abortController = abortController;
+    }
+
+    const startTime = Date.now();
+    this.logger.info('🚀 DISPATCH: Starting one-shot query', {
+      model: options.model,
+      messageLength: userMessage.length,
+      messagePreview: userMessage.substring(0, 100),
+    });
+
+    let assistantText = '';
+    let messageCount = 0;
+
+    try {
+      for await (const message of query({ prompt: userMessage, options })) {
+        messageCount++;
+        const elapsed = Date.now() - startTime;
+
+        // Log all message types for debugging
+        this.logger.debug(`📨 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
+          type: message.type,
+          subtype: (message as any).subtype,
+        });
+
+        // Handle system init message
+        if (message.type === 'system' && (message as any).subtype === 'init') {
+          this.logger.info(`✅ DISPATCH: SDK initialized (${elapsed}ms)`, {
+            model: (message as any).model,
+            sessionId: (message as any).session_id,
+          });
+        }
+
+        // Collect assistant text from the response
+        if (message.type === 'assistant' && message.message?.content) {
+          for (const block of message.message.content) {
+            if (block.type === 'text') {
+              assistantText += block.text;
+              this.logger.debug(`📝 DISPATCH: Text received (${elapsed}ms)`, {
+                textLength: block.text.length,
+                textPreview: block.text.substring(0, 50),
+              });
+            }
+          }
+        }
+
+        // Handle result message
+        if (message.type === 'result') {
+          this.logger.info(`🏁 DISPATCH: Query completed (${elapsed}ms)`, {
+            totalMessages: messageCount,
+            responseLength: assistantText.length,
+          });
+        }
+      }
+    } catch (error) {
+      const elapsed = Date.now() - startTime;
+      this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
+        error: (error as Error).message,
+        messagesReceived: messageCount,
+      });
+      throw error;
+    }
+
+    const totalTime = Date.now() - startTime;
+    this.logger.info(`📍 DISPATCH: Response complete (${totalTime}ms)`, {
+      responseLength: assistantText.length,
+      preview: assistantText.substring(0, 200),
+    });
+
+    return assistantText;
+  }
+
   // ===== Core Query Logic =====
 
   async *streamQuery(
@@ -198,11 +317,18 @@ export class ClaudeHandler {
     }
 
     // Build system prompt with persona and workflow
-    const workflow = session?.workflow;
+    const workflow = session?.workflow || 'default';
     const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
-      this.logger.debug('Applied custom system prompt', { persona: true, workflow });
+      this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
+        workflow,
+        sessionId: session?.sessionId,
+        model: options.model,
+        promptLength: builtSystemPrompt.length,
+      });
+    } else {
+      this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
     }
 
     // Set working directory

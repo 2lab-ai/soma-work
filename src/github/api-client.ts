@@ -61,7 +61,7 @@ export class GitHubApiClient {
    */
   async getInstallationToken(installationId: number): Promise<TokenInfo> {
     try {
-      logger.info(`Generating GitHub App installation token for installation ${installationId}`);
+      logger.debug(`Generating GitHub App installation token for installation ${installationId}`);
 
       const appJWT = this.getAppJWT();
       const response = await fetch(
@@ -83,7 +83,7 @@ export class GitHubApiClient {
       const tokenData = (await response.json()) as { token: string; expires_at: string };
       const expiresAt = new Date(tokenData.expires_at);
 
-      logger.info(`GitHub App installation token generated, expires at ${expiresAt.toISOString()}`);
+      logger.debug(`GitHub App installation token generated, expires at ${expiresAt.toISOString()}`);
 
       return {
         token: tokenData.token,
@@ -102,7 +102,7 @@ export class GitHubApiClient {
    */
   async listInstallations(): Promise<Installation[]> {
     try {
-      logger.info('Fetching GitHub App installations');
+      logger.debug('Fetching GitHub App installations');
 
       const appJWT = this.getAppJWT();
       const response = await fetch('https://api.github.com/app/installations', {
@@ -121,7 +121,7 @@ export class GitHubApiClient {
         id: number;
         account: { login: string; type: string };
       }>;
-      logger.info(`Found ${installations.length} GitHub App installations`);
+      logger.debug(`Found ${installations.length} GitHub App installations`);
 
       return installations.map((installation) => ({
         id: installation.id,
