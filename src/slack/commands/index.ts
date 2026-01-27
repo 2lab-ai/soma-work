@@ -12,3 +12,5 @@ export { HelpHandler } from './help-handler';
 export { SessionHandler } from './session-handler';
 export { RestoreHandler } from './restore-handler';
 export { NewHandler } from './new-handler';
+export { ContextHandler } from './context-handler';
+export { RenewHandler } from './renew-handler';

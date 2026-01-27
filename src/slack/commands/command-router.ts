@@ -9,6 +9,8 @@ import { HelpHandler } from './help-handler';
 import { SessionHandler } from './session-handler';
 import { RestoreHandler } from './restore-handler';
 import { NewHandler } from './new-handler';
+import { ContextHandler } from './context-handler';
+import { RenewHandler } from './renew-handler';
 
 /**
  * Routes commands to appropriate handlers
@@ -28,6 +30,8 @@ export class CommandRouter {
       new ModelHandler(),
       new RestoreHandler(),
       new NewHandler(deps),
+      new ContextHandler(deps),
+      new RenewHandler(deps),
       new HelpHandler(),
       new SessionHandler(deps),
     ];
