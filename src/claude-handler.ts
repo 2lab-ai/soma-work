@@ -4,9 +4,13 @@
  */
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import * as path from 'path';
 import { ConversationSession, WorkflowType } from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
+
+// Local plugins directory (contains skills, etc.)
+const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
 import { userSettingsStore } from './user-settings-store';
 import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
 import { sendCredentialAlert } from './credential-alert';
@@ -173,7 +177,8 @@ export class ClaudeHandler {
     // Build query options for one-shot dispatch
     const options: any = {
       outputFormat: 'stream-json',
-      settingSources: ['user', 'project', 'local'],
+      settingSources: [],
+      plugins: [],
       systemPrompt: dispatchPrompt,
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
@@ -289,7 +294,9 @@ export class ClaudeHandler {
     const options: any = {
       outputFormat: 'stream-json',
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
-      settingSources: ['user', 'project', 'local'],
+      settingSources: ['project'],
+      // Load local plugins (skills, etc.) from src/local directory
+      plugins: [{ type: 'local', path: LOCAL_PLUGINS_DIR }],
     };
 
     // Get MCP configuration

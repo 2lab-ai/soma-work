@@ -124,6 +124,9 @@ export class McpConfigBuilder {
   private buildAllowedTools(slackContext?: SlackContext, userBypass?: boolean): string[] {
     const allowedTools = this.mcpManager.getDefaultAllowedTools();
 
+    // Add Skill tool for local plugins
+    allowedTools.push('Skill');
+
     // Add permission prompt tool if not bypassed
     if (slackContext && !userBypass) {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
