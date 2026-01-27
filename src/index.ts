@@ -107,6 +107,13 @@ async function start() {
       logger.info(`Restored ${loadedSessions} sessions from previous run`);
     }
 
+    // Load pending forms from previous run
+    const loadedForms = slackHandler.loadPendingForms();
+    timing(`Pending forms loaded (${loadedForms} restored)`);
+    if (loadedForms > 0) {
+      logger.info(`Restored ${loadedForms} pending forms from previous run`);
+    }
+
     // Start the app
     await app.start();
     timing('Slack socket connected');
@@ -121,6 +128,7 @@ async function start() {
           `• Time: ${new Date().toISOString()}\n` +
           `• MCP Servers: ${mcpConfig ? Object.keys(mcpConfig.mcpServers).join(', ') : 'none'}\n` +
           `• Sessions restored: ${loadedSessions}\n` +
+          `• Forms restored: ${loadedForms}\n` +
           `• Socket Mode: Connected\n\n` +
           `_Reply to this message to test if events are working._`,
       });
@@ -144,6 +152,10 @@ async function start() {
         // Save sessions for persistence
         slackHandler.saveSessions();
         logger.info('Sessions saved successfully');
+
+        // Save pending forms for persistence
+        slackHandler.savePendingForms();
+        logger.info('Pending forms saved successfully');
       } catch (error) {
         logger.error('Error during shutdown:', error);
       }

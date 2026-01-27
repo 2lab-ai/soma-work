@@ -11,6 +11,7 @@ import { RestoreHandler } from './restore-handler';
 import { NewHandler } from './new-handler';
 import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
+import { CommandParser } from '../command-parser';
 
 /**
  * Routes commands to appropriate handlers
@@ -42,7 +43,7 @@ export class CommandRouter {
    * @returns CommandResult with handled=true if a command was executed
    */
   async route(ctx: CommandContext): Promise<CommandResult> {
-    const { text } = ctx;
+    const { text, say, threadTs } = ctx;
 
     if (!text) {
       return { handled: false };
@@ -68,6 +69,17 @@ export class CommandRouter {
           return { handled: false, error: error.message };
         }
       }
+    }
+
+    // Check if it looks like a command but wasn't handled
+    const { isPotential, keyword } = CommandParser.isPotentialCommand(text);
+    if (isPotential) {
+      this.logger.debug('Unrecognized potential command', { keyword, text: text.substring(0, 50) });
+      await say({
+        text: `❓ \`${keyword}\` 명령어를 인식할 수 없습니다. \`help\`를 입력하여 사용 가능한 명령어를 확인하세요.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true }; // Mark as handled to prevent Claude processing
     }
 
     return { handled: false };

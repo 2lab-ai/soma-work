@@ -5,6 +5,8 @@ import { ChoiceActionHandler } from './choice-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
+import { SlackApiHelper } from '../slack-api-helper';
+import { Logger } from '../../logger';
 
 // Re-export types for backwards compatibility
 export { ActionHandlerContext, MessageEvent, MessageHandler, SayFn, RespondFn, PendingChoiceFormData } from './types';
@@ -15,6 +17,7 @@ export { PendingFormStore } from './pending-form-store';
  * 기존 ActionHandlers와 동일한 인터페이스 유지
  */
 export class ActionHandlers {
+  private logger = new Logger('ActionHandlers');
   private formStore: PendingFormStore;
   private permissionHandler: PermissionActionHandler;
   private sessionHandler: SessionActionHandler;
@@ -130,5 +133,51 @@ export class ActionHandlers {
 
   deletePendingForm(formId: string): void {
     this.formStore.delete(formId);
+  }
+
+  /**
+   * Invalidate old forms when a new form is created for the same session
+   * Updates old form messages to show they're expired and removes them from store
+   */
+  async invalidateOldForms(
+    sessionKey: string,
+    newFormId: string,
+    slackApi: SlackApiHelper
+  ): Promise<void> {
+    const oldForms = this.formStore.getFormsBySession(sessionKey);
+
+    for (const [formId, form] of oldForms) {
+      if (formId !== newFormId && form.messageTs) {
+        try {
+          // Update old form message to show it's expired
+          await slackApi.updateMessage(
+            form.channel,
+            form.messageTs,
+            '⏱️ _이 폼은 새로운 폼으로 대체되었습니다._',
+            [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _만료됨_' } }]
+          );
+          this.logger.debug('Invalidated old form', { formId, sessionKey });
+        } catch (error) {
+          this.logger.warn('Failed to update expired form message', { formId, error });
+        }
+
+        // Remove from store
+        this.formStore.delete(formId);
+      }
+    }
+  }
+
+  /**
+   * Load pending forms from file after restart
+   */
+  loadPendingForms(): number {
+    return this.formStore.loadForms();
+  }
+
+  /**
+   * Save pending forms to file before shutdown
+   */
+  savePendingForms(): void {
+    this.formStore.saveForms();
   }
 }

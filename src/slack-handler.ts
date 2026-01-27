@@ -142,6 +142,7 @@ export class SlackHandler {
       todoDisplayManager: this.todoDisplayManager,
       actionHandlers: this.actionHandlers,
       requestCoordinator: this.requestCoordinator,
+      slackApi: this.slackApi,
       handleMessage: this.handleMessage.bind(this),
     });
 
@@ -162,6 +163,9 @@ export class SlackHandler {
     const { channel, thread_ts, ts } = event;
     const threadTs = thread_ts || ts;
 
+    // Immediately acknowledge the message with eyes emoji
+    await this.slackApi.addReaction(channel, ts, 'eyes');
+
     // Wrap say function
     const wrappedSay = async (args: any) => {
       const result = await say({
@@ -175,7 +179,11 @@ export class SlackHandler {
 
     // Step 1: Process files and check for content
     const { files: processedFiles, shouldContinue } = await this.inputProcessor.processFiles(event, wrappedSay);
-    if (!shouldContinue) return;
+    if (!shouldContinue) {
+      // Remove eyes emoji if nothing to process
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      return;
+    }
 
     this.logger.debug('Received message from Slack', {
       user: event.user,
@@ -188,17 +196,34 @@ export class SlackHandler {
 
     // Step 2: Route commands
     const { handled, continueWithPrompt } = await this.inputProcessor.routeCommand(event, wrappedSay);
-    if (handled && !continueWithPrompt) return;
+    if (handled && !continueWithPrompt) {
+      // Command was handled - replace eyes with zap emoji
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      await this.slackApi.addReaction(channel, ts, 'zap');
+      return;
+    }
 
     // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead
     const effectiveText = continueWithPrompt || event.text;
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
-    if (!cwdResult.valid) return;
+    if (!cwdResult.valid) {
+      // CWD validation failed - replace eyes with warning emoji
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      await this.slackApi.addReaction(channel, ts, 'warning');
+      return;
+    }
 
     // Step 4: Initialize session
     const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!);
+
+    // Replace eyes with brain emoji - message is being sent to model
+    // Skip for first message (creates thread) - model adds emoji via reactionManager
+    await this.slackApi.removeReaction(channel, ts, 'eyes');
+    if (thread_ts) {
+      await this.slackApi.addReaction(channel, ts, 'brain');
+    }
 
     // Step 5: Execute stream
     await this.streamExecutor.execute({
@@ -242,5 +267,19 @@ export class SlackHandler {
    */
   saveSessions(): void {
     this.claudeHandler.saveSessions();
+  }
+
+  /**
+   * Load pending forms from file
+   */
+  loadPendingForms(): number {
+    return this.actionHandlers.loadPendingForms();
+  }
+
+  /**
+   * Save pending forms to file before shutdown
+   */
+  savePendingForms(): void {
+    this.actionHandlers.savePendingForms();
   }
 }
