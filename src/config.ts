@@ -169,16 +169,18 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     warnings.push('⚠️ GitHub: No authentication configured (GitHub features disabled)');
   }
 
-  // ===== 5. Base Directory =====
+  // ===== 5. Base Directory (REQUIRED) =====
   const baseDir = process.env.BASE_DIRECTORY || '';
   if (!baseDir) {
-    warnings.push('⚠️ BASE_DIRECTORY: Not set (using /tmp as fallback)');
+    errors.push('❌ BASE_DIRECTORY: Required but not set. Set it in .env file.');
+    errors.push('   → Each user will have a fixed directory: {BASE_DIRECTORY}/{userId}/');
   } else {
     const fs = await import('fs');
     if (!fs.existsSync(baseDir)) {
       errors.push(`❌ BASE_DIRECTORY: Path does not exist: ${baseDir}`);
     } else {
       console.log(`✅ BASE_DIRECTORY: ${baseDir}`);
+      console.log('   → User directories will be created as: {BASE_DIRECTORY}/{userId}/');
     }
   }
 
