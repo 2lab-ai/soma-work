@@ -2,7 +2,9 @@
 
 ## Task
 
-Review archived work contexts from `.claude/omc/tasks/archives/` and verify whether the planned tasks were actually completed.
+Review archived work contexts from the user's working directory at `.claude/omc/tasks/archives/` and verify whether the planned tasks were actually completed.
+
+**IMPORTANT**: All paths are relative to the CURRENT WORKING DIRECTORY (cwd). Do NOT use absolute paths like `/Users/...` or `~/.claude/...`. Use relative paths like `.claude/omc/tasks/archives/`.
 
 ## Arguments
 
@@ -12,7 +14,7 @@ Review archived work contexts from `.claude/omc/tasks/archives/` and verify whet
 
 ## Steps
 
-1. **Determine target archives**:
+1. **Determine target archives** (relative to current working directory):
    ```bash
    # List all archives sorted by name (newest first)
    ls -1 .claude/omc/tasks/archives/ | sort -r

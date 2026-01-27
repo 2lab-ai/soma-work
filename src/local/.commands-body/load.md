@@ -2,11 +2,13 @@
 
 ## Task
 
-Load a previously saved work context from `.claude/omc/tasks/save/$1` and resume work.
+Load a previously saved work context from the user's working directory at `.claude/omc/tasks/save/$1` and resume work.
+
+**IMPORTANT**: All paths are relative to the CURRENT WORKING DIRECTORY (cwd). Do NOT use absolute paths like `/Users/...` or `~/.claude/...`. Use relative paths like `.claude/omc/tasks/save/`.
 
 ## Steps
 
-1. **Locate the save file**:
+1. **Locate the save file** (relative to current working directory):
    - If `$1` is provided, read `.claude/omc/tasks/save/$1/context.md`
    - If `$1` is empty, **automatically load the most recent save** (by timestamp in directory name)
    - If no saves exist, inform the user

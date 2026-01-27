@@ -2,12 +2,14 @@
 
 ## Task
 
-Save the current work context to `.claude/omc/tasks/save/{id}` where `{id}` is a timestamp-based ID.
+Save the current work context to the user's working directory at `.claude/omc/tasks/save/{id}` where `{id}` is a timestamp-based ID.
+
+**IMPORTANT**: All paths are relative to the CURRENT WORKING DIRECTORY (cwd). Do NOT use absolute paths like `/Users/...` or `~/.claude/...`. Use relative paths like `.claude/omc/tasks/save/`.
 
 ## Steps
 
 1. Generate ID from current timestamp: `!date '+%Y%m%d_%H%M%S'`
-2. Create the save directory: `.claude/omc/tasks/save/{generated_id}/`
+2. Create the save directory in the current working directory: `.claude/omc/tasks/save/{generated_id}/`
 
 3. **Check for previously loaded save in this session**:
    - If a save was loaded earlier (via `/load`), note its ID
