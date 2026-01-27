@@ -1,10 +1,11 @@
 import { App } from '@slack/bolt';
-import { config, validateConfig } from './config';
+import { config, validateConfig, runPreflightChecks } from './config';
 import { ClaudeHandler } from './claude-handler';
 import { SlackHandler } from './slack-handler';
 import { McpManager } from './mcp-manager';
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
+import { initializeDispatchService } from './dispatch-service';
 
 const logger = new Logger('Main');
 
@@ -20,6 +21,15 @@ async function start() {
     validateConfig();
     timing('Config validated');
 
+    // Run preflight checks
+    const preflight = await runPreflightChecks();
+    timing('Preflight checks completed');
+
+    if (!preflight.success) {
+      logger.error('Preflight checks failed! Fix the errors above before starting.');
+      process.exit(1);
+    }
+
     logger.info('Starting Claude Code Slack bot', {
       debug: config.debug,
       useBedrock: config.claude.useBedrock,
@@ -33,6 +43,23 @@ async function start() {
       socketMode: true,
       appToken: config.slack.appToken,
     });
+
+    // Log ALL incoming events (before any handler)
+    app.use(async ({ payload, body, next }) => {
+      const bodyAny = body as any;
+      const payloadAny = payload as any;
+      const eventType = bodyAny?.type || 'unknown';
+      const eventSubtype = bodyAny?.event?.type || payloadAny?.type || 'unknown';
+      logger.debug(`🔔 SLACK EVENT RECEIVED: ${eventType}/${eventSubtype}`, {
+        bodyType: bodyAny?.type,
+        eventType: bodyAny?.event?.type,
+        payloadType: payloadAny?.type,
+        channel: bodyAny?.event?.channel || payloadAny?.channel,
+        user: bodyAny?.event?.user || payloadAny?.user,
+      });
+      await next();
+    });
+
     timing('Slack App initialized');
 
     // Initialize MCP manager
@@ -62,6 +89,10 @@ async function start() {
     const claudeHandler = new ClaudeHandler(mcpManager);
     timing('ClaudeHandler initialized');
 
+    // Initialize dispatch service with ClaudeHandler for unified auth
+    initializeDispatchService(claudeHandler);
+    timing('DispatchService initialized with ClaudeHandler');
+
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
     timing('SlackHandler initialized');
 
@@ -80,6 +111,23 @@ async function start() {
     await app.start();
     timing('Slack socket connected');
     logger.info('⚡️ Claude Code Slack bot is running!');
+
+    // Send startup notification to admin
+    const ADMIN_USER_ID = process.env.ADMIN_USER_ID || 'U09F1M5MML1';
+    try {
+      await app.client.chat.postMessage({
+        channel: ADMIN_USER_ID,
+        text: `🚀 *Bot Started Successfully*\n` +
+          `• Time: ${new Date().toISOString()}\n` +
+          `• MCP Servers: ${mcpConfig ? Object.keys(mcpConfig.mcpServers).join(', ') : 'none'}\n` +
+          `• Sessions restored: ${loadedSessions}\n` +
+          `• Socket Mode: Connected\n\n` +
+          `_Reply to this message to test if events are working._`,
+      });
+      logger.info('Startup notification sent to admin');
+    } catch (err) {
+      logger.error('Failed to send startup notification', err);
+    }
 
     // Handle graceful shutdown
     let isShuttingDown = false;

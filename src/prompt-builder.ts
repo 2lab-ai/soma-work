@@ -159,15 +159,15 @@ export class PromptBuilder {
         // Process include directives
         content = this.processIncludes(content);
         this.workflowPromptCache.set(workflow, content);
-        this.logger.debug('Loaded workflow prompt', { workflow, path: workflowPath });
+        this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars)`);
         return content;
       }
     } catch (error) {
-      this.logger.error('Failed to load workflow prompt', { workflow, error });
+      this.logger.error(`📋 WORKFLOW PROMPT failed: [${workflow}]`, { error });
     }
 
     // Fallback to default system prompt
-    this.logger.debug('Workflow prompt not found, using default', { workflow });
+    this.logger.warn(`📋 WORKFLOW PROMPT not found: [${workflow}] → using default`);
     return this.defaultSystemPrompt;
   }
 

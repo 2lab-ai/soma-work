@@ -43,6 +43,13 @@ export class EventRouter {
   private setupMessageHandlers(): void {
     // DM 메시지 처리
     this.app.message(async ({ message, say }) => {
+      const msg = message as any;
+      this.logger.debug('📬 app.message() triggered', {
+        channel: msg.channel,
+        user: msg.user,
+        subtype: message.subtype,
+        isDM: msg.channel?.startsWith('D'),
+      });
       if (message.subtype === undefined && 'user' in message) {
         const messageEvent = message as any;
         // DM 채널만 처리
@@ -56,7 +63,12 @@ export class EventRouter {
 
     // 앱 멘션 처리
     this.app.event('app_mention', async ({ event, say }) => {
-      this.logger.info('Handling app mention event');
+      this.logger.info('📢 app_mention event received', {
+        channel: event.channel,
+        user: event.user,
+        thread_ts: event.thread_ts,
+        text: event.text?.substring(0, 50),
+      });
       const text = event.text.replace(/<@[^>]+>/g, '').trim();
       await this.messageHandler(
         {
@@ -71,7 +83,13 @@ export class EventRouter {
     this.app.event('message', async ({ event, say }) => {
       const messageEvent = event as any;
 
-      this.logger.debug('RAW message event received', {
+      // 봇 메시지 스킵
+      if ('bot_id' in event || !('user' in event)) {
+        this.logger.debug('Skipping bot message or no user');
+        return;
+      }
+
+      this.logger.info('📨 MESSAGE event received', {
         type: event.type,
         subtype: event.subtype,
         channel: messageEvent.channel,
@@ -79,16 +97,10 @@ export class EventRouter {
         user: messageEvent.user,
         bot_id: (event as any).bot_id,
         thread_ts: messageEvent.thread_ts,
-        ts: messageEvent.ts,
-        text: messageEvent.text?.substring(0, 50),
+        hasText: !!messageEvent.text,
       });
 
-      // 봇 메시지 스킵
-      if ('bot_id' in event || !('user' in event)) {
-        this.logger.debug('Skipping bot message or no user');
-        return;
-      }
-
+      
       // 파일 업로드 처리
       if (event.subtype === 'file_share' && messageEvent.files) {
         await this.handleFileUpload(messageEvent, say);

@@ -1,16 +1,17 @@
 /**
  * DispatchService - Routes user messages to appropriate workflows
- * Uses a fast model (Haiku) to classify user intent
+ * Uses ClaudeHandler.dispatchOneShot for classification (unified auth path)
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { WorkflowType } from './types';
 import { Logger } from './logger';
+import { ClaudeHandler } from './claude-handler';
 import * as fs from 'fs';
 import * as path from 'path';
 
 // Default dispatch model - fast and cheap for classification
-const DEFAULT_DISPATCH_MODEL = 'claude-3-haiku-20240307';
+// Can be overridden via DEFAULT_DISPATCH_MODEL env var
+const FALLBACK_DISPATCH_MODEL = 'claude-haiku-4-5-20251001';
 
 // Dispatch prompt file path
 const DISPATCH_PROMPT_PATH = path.join(__dirname, 'prompt', 'dispatch.prompt');
@@ -28,18 +29,27 @@ export interface DispatchResult {
 
 /**
  * DispatchService classifies user messages and routes to appropriate workflows
+ * Now uses ClaudeHandler for unified auth (Claude subscription / Agent SDK)
  */
 export class DispatchService {
   private logger = new Logger('DispatchService');
-  private client: Anthropic;
   private model: string;
   private dispatchPrompt: string | undefined;
   private isConfigured: boolean = false;
+  private claudeHandler: ClaudeHandler | undefined;
 
-  constructor() {
-    this.client = new Anthropic();
-    this.model = process.env.DISPATCH_MODEL || DEFAULT_DISPATCH_MODEL;
+  constructor(claudeHandler?: ClaudeHandler) {
+    this.claudeHandler = claudeHandler;
+    this.model = process.env.DEFAULT_DISPATCH_MODEL || FALLBACK_DISPATCH_MODEL;
     this.loadDispatchPrompt();
+    this.validateConfiguration();
+  }
+
+  /**
+   * Set ClaudeHandler instance (for lazy initialization)
+   */
+  setClaudeHandler(claudeHandler: ClaudeHandler): void {
+    this.claudeHandler = claudeHandler;
     this.validateConfiguration();
   }
 
@@ -47,7 +57,7 @@ export class DispatchService {
     try {
       if (fs.existsSync(DISPATCH_PROMPT_PATH)) {
         this.dispatchPrompt = fs.readFileSync(DISPATCH_PROMPT_PATH, 'utf-8');
-        this.logger.info('Loaded dispatch prompt', { path: DISPATCH_PROMPT_PATH });
+        this.logger.debug('Loaded dispatch prompt', { path: DISPATCH_PROMPT_PATH });
       } else {
         this.logger.warn('Dispatch prompt not found, using default', { path: DISPATCH_PROMPT_PATH });
       }
@@ -69,16 +79,12 @@ export class DispatchService {
       return;
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      this.logger.error('DISPATCH CONFIG ERROR: ANTHROPIC_API_KEY not set. Dispatch will fail.');
-      this.isConfigured = false;
-      return;
-    }
-
+    // Note: No ANTHROPIC_API_KEY check needed - we use ClaudeHandler's auth (subscription credentials)
     this.isConfigured = true;
-    this.logger.info('Dispatch service configured', {
+    this.logger.debug('Dispatch service configured', {
       model: this.model,
       promptLength: this.dispatchPrompt.length,
+      hasClaudeHandler: !!this.claudeHandler,
     });
   }
 
@@ -86,7 +92,7 @@ export class DispatchService {
    * Check if dispatch service is properly configured
    */
   isReady(): boolean {
-    return this.isConfigured;
+    return this.isConfigured && !!this.claudeHandler;
   }
 
   /**
@@ -98,13 +104,14 @@ export class DispatchService {
 
   /**
    * Classify user message and determine workflow
+   * Uses ClaudeHandler.dispatchOneShot for unified auth
    * @param userMessage - The user's message to classify
    * @param abortSignal - Optional AbortSignal for cancellation
    */
   async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
-    // Check if service is properly configured (API key + prompt)
+    // Check if service is properly configured (prompt + ClaudeHandler)
     if (!this.isConfigured || !this.dispatchPrompt) {
-      this.logger.warn('No dispatch prompt, defaulting to default workflow');
+      this.logger.warn(`📍 DISPATCH → [default] (unconfigured - no dispatch prompt)`);
       dispatchFallbackCount++;
       return {
         workflow: 'default',
@@ -112,49 +119,63 @@ export class DispatchService {
       };
     }
 
+    if (!this.claudeHandler) {
+      this.logger.warn(`📍 DISPATCH → [default] (no ClaudeHandler)`);
+      dispatchFallbackCount++;
+      return {
+        workflow: 'default',
+        title: this.generateFallbackTitle(userMessage),
+      };
+    }
+
+    const startTime = Date.now();
     try {
-      this.logger.debug('Dispatching message', {
+      this.logger.info('🎯 DISPATCH: Starting classification', {
         model: this.model,
         messageLength: userMessage.length,
+        messagePreview: userMessage.substring(0, 100),
       });
 
-      const response = await this.client.messages.create(
-        {
-          model: this.model,
-          max_tokens: 256,
-          temperature: 0, // Deterministic output for consistent classification
-          system: this.dispatchPrompt,
-          messages: [
-            {
-              role: 'user',
-              content: userMessage,
-            },
-          ],
-        },
-        {
-          signal: abortSignal, // Pass abort signal for cancellation
-        }
-      );
-
-      // Extract text from response
-      const textContent = response.content.find((c: { type: string }) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') {
-        throw new Error('No text content in response');
+      // Bridge AbortSignal to AbortController for SDK
+      const abortController = new AbortController();
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', () => {
+          const elapsed = Date.now() - startTime;
+          this.logger.warn(`⏱️ DISPATCH: Abort signal received after ${elapsed}ms`);
+          abortController.abort();
+        }, { once: true });
       }
 
-      const result = this.parseResponse(textContent.text, userMessage);
-      this.logger.info('Dispatch result', {
+      const responseText = await this.claudeHandler.dispatchOneShot(
+        userMessage,
+        this.dispatchPrompt,
+        this.model,
+        abortController
+      );
+
+      const elapsed = Date.now() - startTime;
+      this.logger.info(`✅ DISPATCH: Got response in ${elapsed}ms`, {
+        responseLength: responseText.length,
+        responsePreview: responseText.substring(0, 100),
+      });
+
+      const result = this.parseResponse(responseText, userMessage);
+
+      // Workflow dispatch log
+      this.logger.info(`📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms)`, {
         workflow: result.workflow,
         title: result.title,
+        rawResponse: responseText.substring(0, 200),
       });
 
       return result;
     } catch (error) {
+      const elapsed = Date.now() - startTime;
       // Check if this was an abort
       if (abortSignal?.aborted) {
-        this.logger.debug('Dispatch aborted');
+        this.logger.warn(`📍 DISPATCH → [default] (aborted after ${elapsed}ms)`);
       } else {
-        this.logger.error('Dispatch failed, using fallback', error);
+        this.logger.error(`📍 DISPATCH → [default] (error after ${elapsed}ms: ${(error as Error).message})`, error);
       }
       dispatchFallbackCount++;
       return {
@@ -327,4 +348,14 @@ export function getDispatchService(): DispatchService {
     dispatchServiceInstance = new DispatchService();
   }
   return dispatchServiceInstance;
+}
+
+/**
+ * Initialize dispatch service with ClaudeHandler
+ * Must be called once after ClaudeHandler is created
+ */
+export function initializeDispatchService(claudeHandler: ClaudeHandler): DispatchService {
+  const service = getDispatchService();
+  service.setClaudeHandler(claudeHandler);
+  return service;
 }

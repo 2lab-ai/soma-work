@@ -106,6 +106,8 @@ export class SlackHandler {
       this.mcpStatusDisplay,
       mcpCallTracker
     );
+    // Set reaction manager for MCP pending tracking (hourglass emoji)
+    this.toolEventProcessor.setReactionManager(this.reactionManager);
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {

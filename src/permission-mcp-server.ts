@@ -200,7 +200,7 @@ class PermissionMCPServer {
 
     await sharedStore.storePermissionResponse(approvalId, response);
 
-    logger.info('Permission resolved via shared store', {
+    logger.debug('Permission resolved via shared store', {
       approvalId,
       behavior: response.behavior,
     });
@@ -219,7 +219,7 @@ class PermissionMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info('Permission MCP server started');
+    logger.debug('Permission MCP server started');
   }
 }
 

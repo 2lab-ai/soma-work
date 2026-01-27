@@ -6,8 +6,8 @@
 
 | 패턴 | 워크플로우 |
 |------|------------|
+| Jira 이슈 링크 (예: atlassian.net/jira/software/projects/.../boards/...?selectedIssue=XXX-123, atlassian.net/browse/XXX-123) | `jira-brainstorming` |
 | Jira 보드 링크 (예: atlassian.net/jira/software/projects/.../boards/...) | `jira-executive-summary` |
-| Jira 이슈 링크 (예: atlassian.net/browse/XXX-123) | `jira-brainstorming` |
 | "plan" + Jira 이슈 링크 | `jira-planning` |
 | "fix" 또는 "work" + Jira 이슈 링크 | `jira-create-pr` |
 | GitHub PR 링크 (예: github.com/.../pull/123) | `pr-review` |

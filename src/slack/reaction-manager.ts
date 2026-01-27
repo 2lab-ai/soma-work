@@ -15,6 +15,10 @@ export class ReactionManager {
   private logger = new Logger('ReactionManager');
   private originalMessages: Map<string, OriginalMessage> = new Map();
   private currentReactions: Map<string, string> = new Map();
+  // Track pending MCP calls per session
+  private pendingMcpCalls: Map<string, Set<string>> = new Map();
+  // Track pre-MCP reaction to restore after MCP completes
+  private preMcpReactions: Map<string, string> = new Map();
 
   constructor(private slackApi: SlackApiHelper) {}
 
@@ -109,11 +113,67 @@ export class ReactionManager {
   }
 
   /**
+   * MCP 호출 시작 시 모래시계 이모지 설정
+   */
+  async setMcpPending(sessionKey: string, callId: string): Promise<void> {
+    let pending = this.pendingMcpCalls.get(sessionKey);
+    if (!pending) {
+      pending = new Set();
+      this.pendingMcpCalls.set(sessionKey, pending);
+    }
+
+    // Save current reaction before switching to hourglass (only on first MCP)
+    if (pending.size === 0) {
+      const currentEmoji = this.currentReactions.get(sessionKey);
+      if (currentEmoji && currentEmoji !== 'hourglass_flowing_sand') {
+        this.preMcpReactions.set(sessionKey, currentEmoji);
+      }
+      // Set hourglass reaction
+      await this.updateReaction(sessionKey, 'hourglass_flowing_sand');
+      this.logger.debug('Set MCP pending reaction', { sessionKey, callId });
+    }
+
+    pending.add(callId);
+  }
+
+  /**
+   * MCP 호출 완료 시 모래시계 이모지 제거
+   */
+  async clearMcpPending(sessionKey: string, callId: string): Promise<void> {
+    const pending = this.pendingMcpCalls.get(sessionKey);
+    if (!pending) return;
+
+    pending.delete(callId);
+
+    // If no more pending MCP calls, restore previous reaction
+    if (pending.size === 0) {
+      this.pendingMcpCalls.delete(sessionKey);
+      const preMcpEmoji = this.preMcpReactions.get(sessionKey);
+      this.preMcpReactions.delete(sessionKey);
+
+      if (preMcpEmoji) {
+        await this.updateReaction(sessionKey, preMcpEmoji);
+        this.logger.debug('Restored pre-MCP reaction', { sessionKey, emoji: preMcpEmoji });
+      }
+    }
+  }
+
+  /**
+   * 세션에 대기 중인 MCP 호출이 있는지 확인
+   */
+  hasPendingMcp(sessionKey: string): boolean {
+    const pending = this.pendingMcpCalls.get(sessionKey);
+    return pending ? pending.size > 0 : false;
+  }
+
+  /**
    * 세션 정리 시 리액션 상태 제거
    */
   cleanup(sessionKey: string): void {
     this.originalMessages.delete(sessionKey);
     this.currentReactions.delete(sessionKey);
+    this.pendingMcpCalls.delete(sessionKey);
+    this.preMcpReactions.delete(sessionKey);
     this.logger.debug('Cleaned up reaction state', { sessionKey });
   }
 

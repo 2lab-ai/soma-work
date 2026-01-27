@@ -156,6 +156,7 @@ export class StreamExecutor {
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
+            sessionKey: ctx.sessionKey,
             say: ctx.say,
           });
         },
@@ -163,6 +164,7 @@ export class StreamExecutor {
           await this.deps.toolEventProcessor.handleToolResult(toolResults, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
+            sessionKey: ctx.sessionKey,
             say: ctx.say,
           });
         },

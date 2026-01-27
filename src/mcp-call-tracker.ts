@@ -228,7 +228,7 @@ export class McpCallTracker {
           this.stats.set(key, value as McpCallStats);
         }
 
-        this.logger.info('Loaded MCP call stats', { count: this.stats.size });
+        this.logger.debug('Loaded MCP call stats', { count: this.stats.size });
       }
     } catch (error) {
       this.logger.warn('Failed to load MCP call stats', error);

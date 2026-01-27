@@ -6,11 +6,11 @@ import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
-import { getDispatchService, DispatchResult } from '../../dispatch-service';
+import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession } from '../../types';
 
-// Timeout for dispatch API call (5 seconds)
-const DISPATCH_TIMEOUT_MS = 5000;
+// Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
+const DISPATCH_TIMEOUT_MS = 30000;
 
 // Track in-flight dispatch calls to prevent race conditions
 // Maps sessionKey -> Promise that resolves when dispatch completes
@@ -71,6 +71,16 @@ export class SessionInitializer {
 
     // Store original message info for status reactions
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
+
+    // Clear any existing completion reaction when new message arrives
+    const currentReaction = this.deps.reactionManager.getCurrentReaction(sessionKey);
+    if (currentReaction === 'white_check_mark') {
+      this.logger.debug('Clearing completion reaction for new message', { sessionKey });
+      await this.deps.slackApi.removeReaction(channel, threadTs, 'white_check_mark');
+      // Reset reaction state so ReactionManager doesn't think it's still set
+      this.deps.reactionManager.cleanup(sessionKey);
+      this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
+    }
 
     // Get or create session
     const existingSession = this.deps.claudeHandler.getSession(channel, threadTs);
@@ -161,33 +171,80 @@ export class SessionInitializer {
     });
     dispatchInFlight.set(sessionKey, trackingPromise);
 
+    const startTime = Date.now();
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => {
+      const elapsed = Date.now() - startTime;
+      this.logger.warn(`⏱️ Dispatch timeout after ${elapsed}ms (limit: ${DISPATCH_TIMEOUT_MS}ms), aborting`, {
+        channel,
+        threadTs,
+        textPreview: text.substring(0, 50),
+      });
       abortController.abort();
-      this.logger.warn('Dispatch timeout, aborting request', { channel, threadTs });
     }, DISPATCH_TIMEOUT_MS);
+
+    // Track dispatch status message for updating
+    let dispatchMessageTs: string | undefined;
 
     try {
       const dispatchService = getDispatchService();
-      this.logger.debug('Dispatching message to determine workflow', {
+      const model = dispatchService.getModel();
+
+      // Add dispatching reaction and post status message
+      await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
+      const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
+        threadTs,
+      });
+      dispatchMessageTs = msgResult?.ts;
+
+      this.logger.info('🎯 Starting dispatch classification', {
         channel,
         threadTs,
         textLength: text.length,
+        textPreview: text.substring(0, 100),
+        timeoutMs: DISPATCH_TIMEOUT_MS,
+        model,
+        isReady: dispatchService.isReady(),
       });
 
       const result = await dispatchService.dispatch(text, abortController.signal);
 
-      this.logger.info('Dispatch completed', {
+      const elapsed = Date.now() - startTime;
+      this.logger.info(`✅ Session workflow set: [${result.workflow}] "${result.title}" (${elapsed}ms)`, {
         channel,
         threadTs,
-        workflow: result.workflow,
-        title: result.title,
       });
+
+      // Remove dispatching reaction
+      await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
+
+      // Update dispatch message with workflow result
+      if (dispatchMessageTs) {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          dispatchMessageTs,
+          `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`
+        );
+      }
 
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
     } catch (error) {
-      this.logger.error('Dispatch failed, using default workflow', { error });
+      const elapsed = Date.now() - startTime;
+      this.logger.error(`❌ Dispatch failed after ${elapsed}ms, using default workflow`, { error });
+
+      // Remove dispatching reaction
+      await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
+
+      // Update dispatch message with error
+      if (dispatchMessageTs) {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          dispatchMessageTs,
+          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`
+        );
+      }
+
       // Fallback to default workflow on error
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);

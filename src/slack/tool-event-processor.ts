@@ -8,6 +8,7 @@ import { mcpCallTracker, McpCallTracker } from '../mcp-call-tracker';
 import { ToolTracker } from './tool-tracker';
 import { McpStatusDisplay } from './mcp-status-tracker';
 import { ToolFormatter, ToolResult } from './tool-formatter';
+import { ReactionManager } from './reaction-manager';
 
 /**
  * Context for tool event processing
@@ -15,6 +16,7 @@ import { ToolFormatter, ToolResult } from './tool-formatter';
 export interface ToolEventContext {
   channel: string;
   threadTs: string;
+  sessionKey: string;
   say: SayFunction;
 }
 
@@ -53,6 +55,7 @@ export class ToolEventProcessor {
   private toolTracker: ToolTracker;
   private mcpStatusDisplay: McpStatusDisplay;
   private mcpCallTracker: McpCallTracker;
+  private reactionManager: ReactionManager | null = null;
 
   constructor(
     toolTracker: ToolTracker,
@@ -62,6 +65,13 @@ export class ToolEventProcessor {
     this.toolTracker = toolTracker;
     this.mcpStatusDisplay = mcpStatusDisplay;
     this.mcpCallTracker = mcpCallTrackerInstance;
+  }
+
+  /**
+   * Set reaction manager for MCP pending tracking
+   */
+  setReactionManager(reactionManager: ReactionManager): void {
+    this.reactionManager = reactionManager;
   }
 
   /**
@@ -93,6 +103,11 @@ export class ToolEventProcessor {
     const callId = this.mcpCallTracker.startCall(serverName, actualToolName);
     this.toolTracker.trackMcpCall(toolUse.id, callId);
 
+    // Set hourglass reaction for MCP pending
+    if (this.reactionManager && context.sessionKey) {
+      await this.reactionManager.setMcpPending(context.sessionKey, callId);
+    }
+
     // Start periodic status update display
     this.mcpStatusDisplay.startStatusUpdate(
       callId,
@@ -116,7 +131,7 @@ export class ToolEventProcessor {
       }
 
       // End MCP call tracking and get duration
-      const duration = await this.endMcpTracking(toolResult.toolUseId);
+      const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
 
       this.logger.debug('Processing tool result', {
         toolName: toolResult.toolName,
@@ -134,12 +149,17 @@ export class ToolEventProcessor {
   /**
    * End MCP tracking for a tool and return duration
    */
-  private async endMcpTracking(toolUseId: string): Promise<number | null> {
+  private async endMcpTracking(toolUseId: string, sessionKey?: string): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
     if (!callId) return null;
 
     const duration = this.mcpCallTracker.endCall(callId);
     this.toolTracker.removeMcpCallId(toolUseId);
+
+    // Clear hourglass reaction for MCP pending
+    if (this.reactionManager && sessionKey) {
+      await this.reactionManager.clearMcpPending(sessionKey, callId);
+    }
 
     // Stop status update display
     await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);

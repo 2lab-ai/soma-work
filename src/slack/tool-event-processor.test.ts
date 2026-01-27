@@ -41,6 +41,7 @@ describe('ToolEventProcessor', () => {
     mockContext = {
       channel: 'C123',
       threadTs: 'thread_ts',
+      sessionKey: 'C123:thread_ts',
       say: mockSay,
     };
   });
