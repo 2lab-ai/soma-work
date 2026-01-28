@@ -9,6 +9,7 @@ import { mcpCallTracker } from './mcp-call-tracker';
 import {
   SlackApiHelper,
   ReactionManager,
+  ContextWindowManager,
   McpStatusDisplay,
   SessionUiManager,
   ActionHandlers,
@@ -44,6 +45,7 @@ export class SlackHandler {
   // Modular helpers
   private slackApi: SlackApiHelper;
   private reactionManager: ReactionManager;
+  private contextWindowManager: ContextWindowManager;
   private mcpStatusDisplay: McpStatusDisplay;
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
@@ -82,6 +84,7 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator();
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
+    this.contextWindowManager = new ContextWindowManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
 
@@ -130,6 +133,7 @@ export class SlackHandler {
       messageValidator: this.messageValidator,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
+      contextWindowManager: this.contextWindowManager,
     });
 
     this.streamExecutor = new StreamExecutor({
@@ -138,6 +142,7 @@ export class SlackHandler {
       toolEventProcessor: this.toolEventProcessor,
       statusReporter: this.statusReporter,
       reactionManager: this.reactionManager,
+      contextWindowManager: this.contextWindowManager,
       toolTracker: this.toolTracker,
       todoDisplayManager: this.todoDisplayManager,
       actionHandlers: this.actionHandlers,

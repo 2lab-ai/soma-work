@@ -11,6 +11,7 @@ export { MessageFormatter } from './message-formatter';
 // New modules
 export { SlackApiHelper, MessageOptions } from './slack-api-helper';
 export { ReactionManager } from './reaction-manager';
+export { ContextWindowManager } from './context-window-manager';
 export { McpStatusDisplay } from './mcp-status-tracker';
 export { SessionUiManager, SayFn } from './session-manager';
 export { ActionHandlers, ActionHandlerContext, MessageHandler, MessageEvent } from './action-handlers';
