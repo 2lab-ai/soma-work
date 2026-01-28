@@ -31,6 +31,8 @@ Call these MCP tools in parallel:
 - `mcp__github__get_pull_request_comments` - Line comments
 - `mcp__github__get_pull_request_files` - Changed files
 
+**NEVER READ IT DIRECTLY** only read it after **extract essentail data** from following steps.
+
 ### 3. Extract Essential Data
 
 Use the bundled extraction script for large responses:
