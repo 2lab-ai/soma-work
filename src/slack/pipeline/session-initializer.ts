@@ -2,6 +2,7 @@ import { ClaudeHandler } from '../../claude-handler';
 import { SlackApiHelper } from '../slack-api-helper';
 import { MessageValidator } from '../message-validator';
 import { ReactionManager } from '../reaction-manager';
+import { ContextWindowManager } from '../context-window-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
@@ -21,6 +22,7 @@ interface SessionInitializerDeps {
   slackApi: SlackApiHelper;
   messageValidator: MessageValidator;
   reactionManager: ReactionManager;
+  contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
 }
 
@@ -69,8 +71,9 @@ export class SessionInitializer {
     // Session key is based on channel + thread only
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
-    // Store original message info for status reactions
+    // Store original message info for status reactions and context window tracking
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
+    this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
 
     // Clear any existing completion reaction when new message arrives
     const currentReaction = this.deps.reactionManager.getCurrentReaction(sessionKey);
