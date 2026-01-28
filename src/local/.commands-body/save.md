@@ -4,7 +4,6 @@
 
 Save the current work context to the user's working directory at `.claude/omc/tasks/save/{id}` where `{id}` is a timestamp-based ID.
 
-**IMPORTANT**: All paths are relative to the CURRENT WORKING DIRECTORY (cwd). Do NOT use absolute paths like `/Users/...` or `~/.claude/...`. Use relative paths like `.claude/omc/tasks/save/`.
 
 ## Steps
 
@@ -83,11 +82,65 @@ The history section accumulates with each save/load cycle:
 
 5. If there are specific plan files (e.g., in `./docs/agent_tasks/`), reference or copy relevant content.
 
-6. Return the save ID and path to the user:
-   ```
-   Saved to: .claude/omc/tasks/save/{id}/context.md
-   Load with: /load {id}
-   ```
+6. **Save additional files if needed**:
+   - Code snippets that are critical to continue
+   - Config files or patches
+   - Any file content that's essential for resumption
+   - Save them in the same directory: `.claude/omc/tasks/save/{generated_id}/`
+
+7. **MUST output structured JSON result** at the very end.
+
+### JSON Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["save_result"],
+  "properties": {
+    "save_result": {
+      "type": "object",
+      "required": ["success"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "id": { "type": "string", "description": "Save ID (timestamp-based)" },
+        "dir": { "type": "string", "description": "Save directory path" },
+        "summary": { "type": "string", "description": "Brief 1-line summary" },
+        "files": {
+          "type": "array",
+          "description": "List of saved files",
+          "items": {
+            "type": "object",
+            "required": ["name", "content"],
+            "properties": {
+              "name": { "type": "string", "description": "Filename" },
+              "content": { "type": "string", "description": "File content" }
+            }
+          }
+        },
+        "error": { "type": "string", "description": "Error message if failed" }
+      }
+    }
+  }
+}
+```
+
+### Success Output Format
+
+```json
+{"save_result":{"success":true,"id":"20250128_170000","dir":".claude/omc/tasks/save/20250128_170000","summary":"PR review feedback implementation","files":[{"name":"context.md","content":"# Work Context Save\n...full content..."},{"name":"patch.diff","content":"diff content if any"}]}}
+```
+
+### Failure Output Format
+
+```json
+{"save_result":{"success":false,"error":"Failed to create directory"}}
+```
+
+**CRITICAL**:
+- Always validate your JSON output against the schema before outputting
+- The `files` array MUST include at least `context.md` with its full content
+- Output the JSON on a SINGLE LINE (no line breaks within JSON)
 
 ## Important
 
@@ -96,3 +149,5 @@ The history section accumulates with each save/load cycle:
 - Include any error messages or blockers encountered
 - Be thorough - the goal is to enable seamless work resumption
 - **Always preserve the Previous Context History chain** - this enables tracing back through the entire work history
+- **CRITICAL**: Always output the JSON result block at the end - this is required for automation
+- **CRITICAL**: Validate JSON against schema before output
