@@ -294,9 +294,6 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     say: SayFn
   ): Promise<void> {
-    // Clear sessionId on error
-    this.deps.claudeHandler.clearSessionId(channel, threadTs);
-
     // Check for context overflow error
     const errorMessage = error.message?.toLowerCase() || '';
     if (
@@ -308,6 +305,10 @@ export class StreamExecutor {
     }
 
     if (error.name !== 'AbortError') {
+      // Clear sessionId only on actual errors (not abort)
+      // AbortError preserves session history for conversation continuity
+      this.deps.claudeHandler.clearSessionId(channel, threadTs);
+
       this.logger.error('Error handling message', error);
 
       if (statusMessageTs) {
@@ -323,7 +324,8 @@ export class StreamExecutor {
         thread_ts: threadTs,
       });
     } else {
-      this.logger.debug('Request was aborted', { sessionKey });
+      // AbortError - preserve session history for conversation continuity
+      this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
