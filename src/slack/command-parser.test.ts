@@ -435,4 +435,34 @@ describe('CommandParser', () => {
       expect(help).toContain('Reset session context');
     });
   });
+
+  describe('isRenewCommand', () => {
+    it('should match "renew"', () => {
+      expect(CommandParser.isRenewCommand('renew')).toBe(true);
+    });
+
+    it('should match "/renew"', () => {
+      expect(CommandParser.isRenewCommand('/renew')).toBe(true);
+    });
+
+    it('should match "renew some prompt"', () => {
+      expect(CommandParser.isRenewCommand('renew some prompt')).toBe(true);
+    });
+
+    it('should match "/renew https://github.com/owner/repo/pull/123"', () => {
+      expect(CommandParser.isRenewCommand('/renew https://github.com/owner/repo/pull/123')).toBe(true);
+    });
+
+    it('should match "renew" with multiline prompt', () => {
+      expect(CommandParser.isRenewCommand('renew line 1\nline 2')).toBe(true);
+    });
+
+    it('should not match "renewed" (no space)', () => {
+      expect(CommandParser.isRenewCommand('renewed')).toBe(false);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isRenewCommand('hello renew world')).toBe(false);
+    });
+  });
 });
