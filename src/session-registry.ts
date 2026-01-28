@@ -291,7 +291,8 @@ export class SessionRegistry {
 
   /**
    * Reset session context (conversation history) while preserving session metadata
-   * Use this for /new command - clears sessionId but keeps owner, workingDirectory, model, etc.
+   * Use this for /new and /renew commands - clears sessionId but keeps owner, workingDirectory, model, etc.
+   * Also resets state to INITIALIZING to trigger re-dispatch on next message.
    * @returns true if session had active conversation and was reset, false if no session or already reset
    */
   resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
@@ -305,6 +306,7 @@ export class SessionRegistry {
       channelId,
       threadTs,
       previousSessionId: session.sessionId,
+      previousWorkflow: session.workflow,
       preservedOwner: session.ownerId,
       preservedWorkingDirectory: session.workingDirectory,
     });
@@ -313,6 +315,10 @@ export class SessionRegistry {
     session.sessionId = undefined;
     session.title = undefined;
     session.lastActivity = new Date();
+
+    // Reset state to INITIALIZING to trigger re-dispatch on next message
+    session.state = 'INITIALIZING';
+    session.workflow = undefined;
 
     // Clear current initiator (fresh start means no active initiator)
     session.currentInitiatorId = undefined;

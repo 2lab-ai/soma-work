@@ -199,7 +199,7 @@ Continue with that context. If unsure what to do next, call 'oracle' agent for g
     expect(expectedPrompt).toContain('--- todos.md ---');
     expect(expectedPrompt).toContain('<save>');
     expect(expectedPrompt).toContain('</save>');
-    expect(expectedPrompt).toContain("Use 'load' skill");
+    expect(expectedPrompt).toContain("Use 'local:load' skill");
   });
 
   it('should create continuation with resetSession true', () => {

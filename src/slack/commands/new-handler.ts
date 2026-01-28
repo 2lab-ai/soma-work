@@ -31,18 +31,18 @@ export class NewHandler implements CommandHandler {
     const wasReset = this.deps.claudeHandler.resetSessionContext(channel, threadTs);
 
     if (wasReset) {
-      // Session existed and was reset
+      // Session existed and was reset (state → INITIALIZING, dispatch will re-run)
       if (prompt) {
         // Has follow-up prompt - send brief confirmation and continue with prompt
         await say({
-          text: '🔄 Session context reset. Processing your request...',
+          text: '🔄 Session reset. Re-dispatching workflow...',
           thread_ts: threadTs,
         });
         return { handled: true, continueWithPrompt: prompt };
       } else {
         // No follow-up prompt - just confirmation
         await say({
-          text: '🔄 Session context reset. Starting fresh conversation in this thread.',
+          text: '🔄 Session reset. Workflow will be re-dispatched on next message.',
           thread_ts: threadTs,
         });
         return { handled: true };
@@ -52,7 +52,7 @@ export class NewHandler implements CommandHandler {
       if (prompt) {
         // No session to reset, but has prompt - just process it as new conversation
         await say({
-          text: '💡 No existing session to reset. Starting new conversation...',
+          text: '💡 Starting new conversation...',
           thread_ts: threadTs,
         });
         return { handled: true, continueWithPrompt: prompt };
