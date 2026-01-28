@@ -57,13 +57,19 @@ export class SessionInitializer {
 
   /**
    * 세션 초기화 및 동시성 제어
+   * @param event - Slack message event
+   * @param workingDirectory - Working directory for the session
+   * @param effectiveText - Text to use for dispatch (overrides event.text if provided)
    */
   async initialize(
     event: MessageEvent,
-    workingDirectory: string
+    workingDirectory: string,
+    effectiveText?: string
   ): Promise<SessionInitResult> {
     const { user, channel, thread_ts, ts, text } = event;
     const threadTs = thread_ts || ts;
+    // Use effectiveText for dispatch if provided (e.g., after command parsing)
+    const dispatchText = effectiveText ?? text;
 
     // Get user's display name
     const userName = await this.deps.slackApi.getUserName(user);
@@ -119,8 +125,8 @@ export class SessionInitializer {
         } finally {
           if (waitTimeoutId) clearTimeout(waitTimeoutId);
         }
-      } else if (text) {
-        await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
+      } else if (dispatchText) {
+        await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
       } else {
         // No text available - use default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
@@ -153,6 +159,23 @@ export class SessionInitializer {
       workingDirectory,
       abortController,
     };
+  }
+
+  /**
+   * Run dispatch for workflow classification
+   * Called when session needs re-dispatch (e.g., after /new or /renew)
+   * @param channel - Slack channel ID
+   * @param threadTs - Thread timestamp
+   * @param text - Text to use for classification
+   */
+  async runDispatch(channel: string, threadTs: string, text: string): Promise<void> {
+    const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+    if (this.deps.claudeHandler.needsDispatch(channel, threadTs) && text) {
+      await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
+    } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      // No text provided - use default workflow
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Session Reset');
+    }
   }
 
   /**

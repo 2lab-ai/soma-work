@@ -219,8 +219,8 @@ export class SlackHandler {
       return;
     }
 
-    // Step 4: Initialize session
-    const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!);
+    // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
+    const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!, effectiveText);
 
     // Replace eyes with brain emoji - message is being sent to model
     // Skip for first message (creates thread) - model adds emoji via reactionManager
@@ -256,6 +256,9 @@ export class SlackHandler {
       // Reset session if requested (e.g., renew flow)
       if (result.continuation.resetSession) {
         this.claudeHandler.resetSessionContext(channel, threadTs);
+        // Re-run dispatch with the appropriate text
+        const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
+        await this.sessionInitializer.runDispatch(channel, threadTs, dispatchText);
       }
 
       // Prepare for next iteration
