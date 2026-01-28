@@ -11,6 +11,7 @@ import {
   ToolEventProcessor,
   StatusReporter,
   ReactionManager,
+  ContextWindowManager,
   ToolTracker,
   TodoDisplayManager,
   SlackApiHelper,
@@ -33,6 +34,7 @@ interface StreamExecutorDeps {
   toolEventProcessor: ToolEventProcessor;
   statusReporter: StatusReporter;
   reactionManager: ReactionManager;
+  contextWindowManager: ContextWindowManager;
   toolTracker: ToolTracker;
   todoDisplayManager: TodoDisplayManager;
   actionHandlers: ActionHandlers;
@@ -204,8 +206,14 @@ export class StreamExecutor {
             this.deps.slackApi
           );
         },
-        onUsageUpdate: (usage: UsageData) => {
+        onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
+
+          // Update context window emoji
+          if (session.usage) {
+            const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
+            await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
+          }
         },
       };
 
@@ -290,6 +298,16 @@ export class StreamExecutor {
     // Clear sessionId on error
     this.deps.claudeHandler.clearSessionId(channel, threadTs);
 
+    // Check for context overflow error
+    const errorMessage = error.message?.toLowerCase() || '';
+    if (
+      errorMessage.includes('prompt is too long') ||
+      errorMessage.includes('context length exceeded') ||
+      errorMessage.includes('maximum context length')
+    ) {
+      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
+    }
+
     if (error.name !== 'AbortError') {
       this.logger.error('Error handling message', error);
 
@@ -332,6 +350,7 @@ export class StreamExecutor {
         this.deps.todoDisplayManager.cleanupSession(session.sessionId!);
         this.deps.todoDisplayManager.cleanup(sessionKey);
         this.deps.reactionManager.cleanup(sessionKey);
+        this.deps.contextWindowManager.cleanup(sessionKey);
         this.deps.statusReporter.cleanup(sessionKey);
       });
     }
