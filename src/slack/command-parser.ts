@@ -121,9 +121,10 @@ export class CommandParser {
 
   /**
    * Check if text is a renew command (save → reset → load)
+   * Supports: renew, /renew, renew <prompt>, /renew <prompt>
    */
   static isRenewCommand(text: string): boolean {
-    return /^\/?renew$/i.test(text.trim());
+    return /^\/?renew(?:\s+[\s\S]*)?$/i.test(text.trim());
   }
 
   /**

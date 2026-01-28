@@ -26,6 +26,7 @@ const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
 export class PromptBuilder {
   private logger = new Logger('PromptBuilder');
   private defaultSystemPrompt: string | undefined;
+  private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
   private workflowPromptCache: Map<WorkflowType, string> = new Map();
 
   constructor() {
@@ -41,17 +42,25 @@ export class PromptBuilder {
         this.defaultSystemPrompt = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
       }
 
-      // Append local system prompt if exists (not committed to source)
+      // Load local system prompt if exists (not committed to source)
+      // This is stored separately and appended to ALL workflow prompts
       if (fs.existsSync(LOCAL_SYSTEM_PROMPT_PATH)) {
-        const localPrompt = fs.readFileSync(LOCAL_SYSTEM_PROMPT_PATH, 'utf-8');
-        this.defaultSystemPrompt = this.defaultSystemPrompt
-          ? `${this.defaultSystemPrompt}\n\n${localPrompt}`
-          : localPrompt;
-        this.logger.info('Loaded local system prompt from .system.prompt');
+        this.localSystemPrompt = fs.readFileSync(LOCAL_SYSTEM_PROMPT_PATH, 'utf-8');
+        this.logger.info('Loaded local system prompt from .system.prompt (will be injected into all workflows)');
       }
     } catch (error) {
       this.logger.error('Failed to load system prompt', error);
     }
+  }
+
+  /**
+   * Append local system prompt to content if available
+   */
+  private appendLocalSystemPrompt(content: string): string {
+    if (this.localSystemPrompt) {
+      return `${content}\n\n${this.localSystemPrompt}`;
+    }
+    return content;
   }
 
   /**
@@ -139,6 +148,7 @@ export class PromptBuilder {
 
   /**
    * Load workflow-specific prompt
+   * All workflows get .system.prompt appended (if it exists)
    */
   loadWorkflowPrompt(workflow: WorkflowType): string | undefined {
     // Check cache first
@@ -146,29 +156,39 @@ export class PromptBuilder {
       return this.workflowPromptCache.get(workflow);
     }
 
+    let content: string | undefined;
+
     // For 'default' workflow, use the default system prompt
     if (workflow === 'default') {
-      return this.defaultSystemPrompt;
-    }
-
-    // Try to load workflow-specific prompt
-    const workflowPath = path.join(WORKFLOWS_DIR, `${workflow}.prompt`);
-    try {
-      if (fs.existsSync(workflowPath)) {
-        let content = fs.readFileSync(workflowPath, 'utf-8');
-        // Process include directives
-        content = this.processIncludes(content);
-        this.workflowPromptCache.set(workflow, content);
-        this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars)`);
-        return content;
+      content = this.defaultSystemPrompt;
+    } else {
+      // Try to load workflow-specific prompt
+      const workflowPath = path.join(WORKFLOWS_DIR, `${workflow}.prompt`);
+      try {
+        if (fs.existsSync(workflowPath)) {
+          content = fs.readFileSync(workflowPath, 'utf-8');
+          // Process include directives
+          content = this.processIncludes(content);
+        }
+      } catch (error) {
+        this.logger.error(`📋 WORKFLOW PROMPT failed: [${workflow}]`, { error });
       }
-    } catch (error) {
-      this.logger.error(`📋 WORKFLOW PROMPT failed: [${workflow}]`, { error });
+
+      // Fallback to default system prompt if workflow file not found
+      if (!content) {
+        this.logger.warn(`📋 WORKFLOW PROMPT not found: [${workflow}] → using default`);
+        content = this.defaultSystemPrompt;
+      }
     }
 
-    // Fallback to default system prompt
-    this.logger.warn(`📋 WORKFLOW PROMPT not found: [${workflow}] → using default`);
-    return this.defaultSystemPrompt;
+    // Append .system.prompt to ALL workflows
+    if (content) {
+      content = this.appendLocalSystemPrompt(content);
+      this.workflowPromptCache.set(workflow, content);
+      this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`);
+    }
+
+    return content;
   }
 
   /**
@@ -247,10 +267,13 @@ export class PromptBuilder {
   }
 
   /**
-   * Get the default system prompt without persona
+   * Get the default system prompt without persona (includes .system.prompt if exists)
    */
   getDefaultPrompt(): string | undefined {
-    return this.defaultSystemPrompt;
+    if (this.defaultSystemPrompt) {
+      return this.appendLocalSystemPrompt(this.defaultSystemPrompt);
+    }
+    return this.localSystemPrompt;
   }
 }
 
