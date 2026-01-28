@@ -1,7 +1,7 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession, SessionUsage } from '../../types';
+import { ConversationSession, SessionUsage, Continuation } from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
@@ -21,9 +21,13 @@ import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
 
 /**
- * Function type for handleMessage callback (used in renew flow)
+ * Result of stream execution
  */
-export type HandleMessageFn = (event: MessageEvent, say: any) => Promise<void>;
+export interface ExecuteResult {
+  success: boolean;
+  messageCount: number;
+  continuation?: Continuation;  // Next action to perform (if any)
+}
 
 // Default context window size (200k for Claude models)
 const DEFAULT_CONTEXT_WINDOW = 200000;
@@ -40,8 +44,6 @@ interface StreamExecutorDeps {
   actionHandlers: ActionHandlers;
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
-  /** Optional: handleMessage function for renew flow recursion */
-  handleMessage?: HandleMessageFn;
 }
 
 interface StreamExecuteParams {
@@ -73,7 +75,8 @@ export class StreamExecutor {
     text: string | undefined,
     processedFiles: ProcessedFile[],
     userName: string,
-    userId: string
+    userId: string,
+    workingDirectory: string
   ): Promise<string> {
     // Prepare the prompt with file attachments
     let rawPrompt = processedFiles.length > 0
@@ -83,10 +86,10 @@ export class StreamExecutor {
     // Wrap the prompt with speaker tag
     let finalPrompt = `<speaker>${userName}</speaker>\n${rawPrompt}`;
 
-    // Inject user info
-    const userInfo = this.getUserInfoContext(userId);
-    if (userInfo) {
-      finalPrompt = `${finalPrompt}\n\n${userInfo}`;
+    // Inject user and environment context
+    const contextInfo = this.getContextInfo(userId, workingDirectory);
+    if (contextInfo) {
+      finalPrompt = `${finalPrompt}\n\n${contextInfo}`;
     }
 
     return finalPrompt;
@@ -95,7 +98,7 @@ export class StreamExecutor {
   /**
    * 스트림 실행
    */
-  async execute(params: StreamExecuteParams): Promise<{ success: boolean; messageCount: number }> {
+  async execute(params: StreamExecuteParams): Promise<ExecuteResult> {
     const {
       session,
       sessionKey,
@@ -113,7 +116,7 @@ export class StreamExecutor {
     let statusMessageTs: string | undefined;
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user);
+      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -250,21 +253,17 @@ export class StreamExecutor {
         await this.deps.fileHandler.cleanupTempFiles(processedFiles);
       }
 
-      // Handle renew flow if in pending_save state
+      // Handle renew flow if in pending_save state - return continuation instead of recursing
       if (session.renewState === 'pending_save') {
-        await this.handleRenewSaveComplete(
+        const continuation = await this.buildRenewContinuation(
           session,
           streamResult.collectedText || '',
-          channel,
           threadTs,
-          user,
           say
         );
-      } else if (session.renewState === 'pending_load') {
-        // Load completed, clear renew state
-        session.renewState = null;
-        session.savedWorkflow = undefined;
-        this.logger.info('Renew flow completed', { sessionKey });
+        if (continuation) {
+          return { success: true, messageCount: streamResult.messageCount, continuation };
+        }
       }
 
       return { success: true, messageCount: streamResult.messageCount };
@@ -356,22 +355,27 @@ export class StreamExecutor {
     }
   }
 
-  private getUserInfoContext(userId: string): string | null {
+  /**
+   * Build context info including user info and environment
+   */
+  private getContextInfo(userId: string, workingDirectory: string): string {
     const settings = userSettingsStore.getUserSettings(userId);
     const slackName = settings?.slackName;
     const jiraName = userSettingsStore.getUserJiraName(userId);
     const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
 
-    // Return null if no user context available
-    if (!jiraName && !slackName) return null;
-
-    // Build user context XML
     const contextItems: string[] = [];
+
+    // User context
     if (slackName) contextItems.push(`  <slack-name>${slackName}</slack-name>`);
     if (jiraName) contextItems.push(`  <jira-name>${jiraName}</jira-name>`);
     if (jiraAccountId) contextItems.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
 
-    return ['<user-context>', ...contextItems, '</user-context>'].join('\n');
+    // Environment context - always include cwd and timestamp
+    contextItems.push(`  <cwd>${workingDirectory}</cwd>`);
+    contextItems.push(`  <timestamp>${new Date().toISOString()}</timestamp>`);
+
+    return ['<context>', ...contextItems, '</context>'].join('\n');
   }
 
   /**
@@ -416,89 +420,120 @@ export class StreamExecutor {
   }
 
   /**
-   * Handle renew flow after save completes
+   * Build continuation for renew flow after save completes
+   * Returns Continuation object instead of recursively calling execute()
    */
-  private async handleRenewSaveComplete(
+  private async buildRenewContinuation(
     session: ConversationSession,
     collectedText: string,
-    channel: string,
     threadTs: string,
-    user: string,
     say: SayFn
-  ): Promise<void> {
-    // Check for "Saved to:" pattern in response
-    const savedToMatch = collectedText.match(/Saved to:\s*(.+)/i);
+  ): Promise<Continuation | undefined> {
+    // Parse JSON result from save output
+    const saveResult = this.parseSaveResult(collectedText);
 
-    if (!savedToMatch) {
-      // Save failed or skill not available
-      this.logger.warn('Renew save did not find "Saved to:" pattern', {
-        channel,
-        threadTs,
+    if (!saveResult) {
+      this.logger.warn('Renew save did not find save_result JSON', {
         textLength: collectedText.length,
       });
       await say({
-        text: '⚠️ Save did not complete as expected. Renew cancelled.\n_The `/save` skill may not be available._',
+        text: '⚠️ Save did not complete as expected. Renew cancelled.\n_The `/save` skill may not be available or did not output structured result._',
         thread_ts: threadTs,
       });
       session.renewState = null;
-      session.savedWorkflow = undefined;
-      return;
+      return undefined;
     }
 
-    const savePath = savedToMatch[1].trim();
-    this.logger.info('Renew save completed', { savePath });
-
-    // Reset session context
-    const savedWorkflow = session.savedWorkflow;
-    this.deps.claudeHandler.resetSessionContext(channel, threadTs);
-
-    // Restore workflow and set pending_load state
-    const currentSession = this.deps.claudeHandler.getSession(channel, threadTs);
-    if (currentSession) {
-      currentSession.workflow = savedWorkflow;
-      currentSession.renewState = 'pending_load';
+    if (!saveResult.success) {
+      this.logger.warn('Save reported failure', { error: saveResult.error });
+      await say({
+        text: `⚠️ Save failed: ${saveResult.error || 'Unknown error'}`,
+        thread_ts: threadTs,
+      });
+      session.renewState = null;
+      return undefined;
     }
 
+    const { id, files } = saveResult;
+
+    if (!files || files.length === 0) {
+      this.logger.warn('Save succeeded but no files returned');
+      await say({
+        text: '⚠️ Save succeeded but no file content was returned.',
+        thread_ts: threadTs,
+      });
+      session.renewState = null;
+      return undefined;
+    }
+
+    this.logger.info('Renew save completed, building continuation', { id, fileCount: files.length });
+
+    // Build save content from files array
+    const saveContent = files.map((file: { name: string; content: string }) => {
+      return `--- ${file.name} ---\n${file.content}`;
+    }).join('\n\n');
+
+    // Get user message if provided with /renew command
+    const userMessage = session.renewUserMessage;
+
+    // Notify in current thread
     await say({
-      text: '✅ Context saved. Resetting session and reloading...',
+      text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
+        `🔄 *Session Reset Complete*\n` +
+        `• 이전 세션 컨텍스트 초기화됨\n` +
+        `• 저장된 내용으로 load 실행 중...` +
+        (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
       thread_ts: threadTs,
     });
 
-    // Check if handleMessage is available for recursion
-    if (!this.deps.handleMessage) {
-      this.logger.warn('handleMessage not available for renew load step');
-      await say({
-        text: '⚠️ Could not automatically reload context. Use `/load` to restore manually.',
-        thread_ts: threadTs,
-      });
-      if (currentSession) {
-        currentSession.renewState = null;
-        currentSession.savedWorkflow = undefined;
-      }
-      return;
+    // Generate the load prompt with optional user instruction
+    const userInstruction = userMessage
+      ? `\n\nAfter loading the context, execute this user instruction:\n<user-instruction>${userMessage}</user-instruction>`
+      : '\n\nContinue with that context. If unsure what to do next, call \'oracle\' agent for guidance.';
+
+    const loadPrompt = `Use 'local:load' skill with this saved context:
+<save>
+${saveContent}
+</save>
+${userInstruction}`;
+
+    // Clear renew state and user message
+    session.renewState = null;
+    session.renewUserMessage = undefined;
+
+    this.logger.info('Renew: returning continuation for load', { id });
+
+    // Return continuation - handleMessage loop will reset session and execute
+    return {
+      prompt: loadPrompt,
+      resetSession: true,
+    };
+  }
+
+  /**
+   * Parse save_result JSON from collected text
+   */
+  private parseSaveResult(text: string): {
+    success: boolean;
+    id?: string;
+    dir?: string;
+    summary?: string;
+    files?: Array<{ name: string; content: string }>;
+    error?: string;
+  } | null {
+    // Look for {"save_result": ...} pattern - handle nested JSON with files array
+    const jsonMatch = text.match(/\{"save_result"\s*:\s*(\{.*\})\}/s);
+    if (!jsonMatch) {
+      return null;
     }
 
-    // Create a synthetic event for /load
-    const loadEvent: MessageEvent = {
-      user,
-      channel,
-      thread_ts: threadTs,
-      ts: Date.now().toString(),
-      text: '/load',
-    };
-
-    // Create a wrapped say function
-    const wrappedSay = async (args: any) => {
-      const result = await say({
-        text: args.text,
-        thread_ts: args.thread_ts,
-        blocks: args.blocks,
-        attachments: args.attachments,
-      });
-      return { ts: result?.ts };
-    };
-
-    // Recursively call handleMessage with /load
-    await this.deps.handleMessage(loadEvent, wrappedSay);
+    try {
+      const fullJson = `{"save_result":${jsonMatch[1]}}`;
+      const parsed = JSON.parse(fullJson);
+      return parsed.save_result;
+    } catch (error) {
+      this.logger.warn('Failed to parse save_result JSON', { error });
+      return null;
+    }
   }
 }

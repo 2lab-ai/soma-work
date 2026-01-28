@@ -36,9 +36,18 @@ export interface SessionUsage {
 }
 
 /**
- * Renew command state machine
+ * Renew command state
  */
 export type RenewState = 'pending_save' | 'pending_load' | null;
+
+/**
+ * Continuation for chained execution
+ * Allows execute() to return "what to do next" instead of recursing
+ */
+export interface Continuation {
+  prompt: string;
+  resetSession?: boolean;  // Reset session before executing
+}
 
 export interface ConversationSession {
   ownerId: string;           // User who started the session
@@ -67,7 +76,8 @@ export interface ConversationSession {
   usage?: SessionUsage;
   // Renew command state
   renewState?: RenewState;
-  savedWorkflow?: WorkflowType; // Workflow to restore after renew
+  // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
+  renewUserMessage?: string;
 }
 
 export interface WorkingDirectoryConfig {

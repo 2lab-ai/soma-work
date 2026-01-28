@@ -2,8 +2,8 @@ import { CommandHandler, CommandContext, CommandResult, CommandDependencies } fr
 import { CommandParser } from '../command-parser';
 
 /**
- * Handles /renew command - save → reset → load workflow
- * Automates context renewal for long-running sessions
+ * Handles /renew command - save context and generate handoff message
+ * Creates a formatted message that can be copied to continue in a new session
  */
 export class RenewHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -13,10 +13,13 @@ export class RenewHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, say } = ctx;
+    const { channel, threadTs, say, text } = ctx;
 
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
+
+    // Extract user message after /renew command (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
+    const userMessage = text.replace(/^\/?\s*renew\s*/i, '').trim();
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
@@ -45,16 +48,18 @@ export class RenewHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Set renew state and save current workflow
+    // Set renew state and save user message for after load
     session.renewState = 'pending_save';
-    session.savedWorkflow = session.workflow;
+    session.renewUserMessage = userMessage || undefined;
 
     await say({
-      text: '🔄 Starting renew process...\n• Saving current context\n• Will reset and reload automatically',
+      text: userMessage
+        ? `🔄 Saving context for handoff...\n_Load 후 지시사항: "${userMessage}"_`
+        : '🔄 Saving context for handoff...',
       thread_ts: threadTs,
     });
 
     // Return /save as the prompt to continue with
-    return { handled: true, continueWithPrompt: '/save' };
+    return { handled: true, continueWithPrompt: '**RTFM** Use local:save skill.' };
   }
 }
