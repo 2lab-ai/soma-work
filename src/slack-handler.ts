@@ -148,7 +148,6 @@ export class SlackHandler {
       actionHandlers: this.actionHandlers,
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
-      handleMessage: this.handleMessage.bind(this),
     });
 
     // EventRouter for event handling
@@ -230,20 +229,42 @@ export class SlackHandler {
       await this.slackApi.addReaction(channel, ts, 'brain');
     }
 
-    // Step 5: Execute stream
-    await this.streamExecutor.execute({
-      session: sessionResult.session,
-      sessionKey: sessionResult.sessionKey,
-      userName: sessionResult.userName,
-      workingDirectory: sessionResult.workingDirectory,
-      abortController: sessionResult.abortController,
-      processedFiles,
-      text: effectiveText,
-      channel,
-      threadTs,
-      user: event.user,
-      say: wrappedSay,
-    });
+    // Step 5: Execute stream with continuation loop
+    let currentText = effectiveText;
+    let currentSession = sessionResult.session;
+    let currentAbortController = sessionResult.abortController;
+
+    // Continuation loop - handles chained executions (e.g., renew: save -> reset -> load)
+    while (true) {
+      const result = await this.streamExecutor.execute({
+        session: currentSession,
+        sessionKey: sessionResult.sessionKey,
+        userName: sessionResult.userName,
+        workingDirectory: sessionResult.workingDirectory,
+        abortController: currentAbortController,
+        processedFiles: currentText === effectiveText ? processedFiles : [], // Only pass files on first iteration
+        text: currentText,
+        channel,
+        threadTs,
+        user: event.user,
+        say: wrappedSay,
+      });
+
+      // No continuation - exit loop
+      if (!result.continuation) break;
+
+      // Reset session if requested (e.g., renew flow)
+      if (result.continuation.resetSession) {
+        this.claudeHandler.resetSessionContext(channel, threadTs);
+      }
+
+      // Prepare for next iteration
+      currentText = result.continuation.prompt;
+      currentAbortController = new AbortController();
+
+      // Re-fetch session after potential reset
+      currentSession = this.claudeHandler.getSession(channel, threadTs)!;
+    }
   }
 
   /**
