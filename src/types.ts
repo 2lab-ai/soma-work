@@ -46,7 +46,8 @@ export type RenewState = 'pending_save' | 'pending_load' | null;
  */
 export interface Continuation {
   prompt: string;
-  resetSession?: boolean;  // Reset session before executing
+  resetSession?: boolean;  // Reset session before executing (triggers re-dispatch)
+  dispatchText?: string;   // Text to use for dispatch classification (if different from prompt)
 }
 
 export interface ConversationSession {

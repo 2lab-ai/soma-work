@@ -481,9 +481,9 @@ export class StreamExecutor {
     // Notify in current thread
     await say({
       text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
-        `🔄 *Session Reset Complete*\n` +
+        `🔄 *Session Reset & Re-dispatch*\n` +
         `• 이전 세션 컨텍스트 초기화됨\n` +
-        `• 저장된 내용으로 load 실행 중...` +
+        `• 워크플로우 재분류 후 load 실행...` +
         (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
       thread_ts: threadTs,
     });
@@ -503,12 +503,14 @@ ${userInstruction}`;
     session.renewState = null;
     session.renewUserMessage = undefined;
 
-    this.logger.info('Renew: returning continuation for load', { id });
+    this.logger.info('Renew: returning continuation for load', { id, hasUserMessage: !!userMessage });
 
     // Return continuation - handleMessage loop will reset session and execute
+    // dispatchText is the user's message for workflow classification (not the full load prompt)
     return {
       prompt: loadPrompt,
       resetSession: true,
+      dispatchText: userMessage || undefined,
     };
   }
 
