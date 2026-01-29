@@ -60,6 +60,17 @@ export class RenewHandler implements CommandHandler {
     });
 
     // Return /save as the prompt to continue with
-    return { handled: true, continueWithPrompt: '**RTFM** Use local:save skill.' };
+    // CRITICAL: Claude must READ the skill body to get the JSON output format
+    const savePrompt = `**CRITICAL: You MUST execute the save skill correctly.**
+
+1. **READ the skill file first**: Use the Skill tool to invoke "local:save"
+2. The skill body contains the EXACT JSON output format required
+3. You MUST output a valid JSON block with "save_result" at the end
+4. Without the correct JSON output, the renew flow will FAIL
+
+DO NOT improvise. DO NOT skip reading the skill instructions.
+Invoke the Skill tool with skill="local:save" NOW.`;
+
+    return { handled: true, continueWithPrompt: savePrompt };
   }
 }
