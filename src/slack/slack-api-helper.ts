@@ -351,6 +351,32 @@ export class SlackApiHelper {
   }
 
   /**
+   * Assistant thread status 설정 (네이티브 스피너)
+   */
+  async setAssistantStatus(channelId: string, threadTs: string, status: string): Promise<void> {
+    await this.enqueue(() =>
+      this.app.client.assistant.threads.setStatus({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        status,
+      })
+    );
+  }
+
+  /**
+   * Assistant thread title 설정 (DM 히스토리용)
+   */
+  async setAssistantTitle(channelId: string, threadTs: string, title: string): Promise<void> {
+    await this.enqueue(() =>
+      this.app.client.assistant.threads.setTitle({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        title,
+      })
+    );
+  }
+
+  /**
    * 모달 열기
    */
   async openModal(triggerId: string, view: any): Promise<void> {

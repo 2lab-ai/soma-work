@@ -9,6 +9,7 @@ import { ToolTracker } from './tool-tracker';
 import { McpStatusDisplay } from './mcp-status-tracker';
 import { ToolFormatter, ToolResult } from './tool-formatter';
 import { ReactionManager } from './reaction-manager';
+import { AssistantStatusManager } from './assistant-status-manager';
 
 /**
  * Context for tool event processing
@@ -56,15 +57,18 @@ export class ToolEventProcessor {
   private mcpStatusDisplay: McpStatusDisplay;
   private mcpCallTracker: McpCallTracker;
   private reactionManager: ReactionManager | null = null;
+  private assistantStatusManager: AssistantStatusManager | null;
 
   constructor(
     toolTracker: ToolTracker,
     mcpStatusDisplay: McpStatusDisplay,
-    mcpCallTrackerInstance: McpCallTracker = mcpCallTracker
+    mcpCallTrackerInstance: McpCallTracker = mcpCallTracker,
+    assistantStatusManager?: AssistantStatusManager
   ) {
     this.toolTracker = toolTracker;
     this.mcpStatusDisplay = mcpStatusDisplay;
     this.mcpCallTracker = mcpCallTrackerInstance;
+    this.assistantStatusManager = assistantStatusManager || null;
   }
 
   /**
@@ -106,6 +110,12 @@ export class ToolEventProcessor {
     // Set hourglass reaction for MCP pending
     if (this.reactionManager && context.sessionKey) {
       await this.reactionManager.setMcpPending(context.sessionKey, callId);
+    }
+
+    // Native spinner with MCP server name
+    if (this.assistantStatusManager) {
+      const statusText = this.assistantStatusManager.getToolStatusText(toolUse.name, serverName);
+      await this.assistantStatusManager.setStatus(context.channel, context.threadTs, statusText);
     }
 
     // Start periodic status update display
