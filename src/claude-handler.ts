@@ -5,7 +5,7 @@
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
-import { ConversationSession, WorkflowType } from './types';
+import { ConversationSession, SessionLinks, SessionLink, WorkflowType } from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 
@@ -108,6 +108,20 @@ export class ClaudeHandler {
 
   resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
     return this.sessionRegistry.resetSessionContext(channelId, threadTs);
+  }
+
+  // ===== Session Links =====
+
+  setSessionLink(channelId: string, threadTs: string | undefined, link: SessionLink): void {
+    this.sessionRegistry.setSessionLink(channelId, threadTs, link);
+  }
+
+  setSessionLinks(channelId: string, threadTs: string | undefined, links: SessionLinks): void {
+    this.sessionRegistry.setSessionLinks(channelId, threadTs, links);
+  }
+
+  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
+    return this.sessionRegistry.getSessionLinks(channelId, threadTs);
   }
 
   // ===== Session State Machine =====

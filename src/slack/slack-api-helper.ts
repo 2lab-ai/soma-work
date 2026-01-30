@@ -272,7 +272,8 @@ export class SlackApiHelper {
     channel: string,
     user: string,
     text: string,
-    threadTs?: string
+    threadTs?: string,
+    blocks?: any[]
   ): Promise<void> {
     try {
       await this.enqueue(() =>
@@ -281,6 +282,7 @@ export class SlackApiHelper {
           user,
           text,
           thread_ts: threadTs,
+          blocks,
         })
       );
     } catch (error) {

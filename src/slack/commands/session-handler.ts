@@ -18,12 +18,42 @@ export class SessionHandler implements CommandHandler {
 
     // Sessions command (user's sessions)
     if (CommandParser.isSessionsCommand(text)) {
-      const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(user);
-      await say({
-        text: msgText,
-        blocks,
-        thread_ts: threadTs,
-      });
+      const { isPublic } = CommandParser.parseSessionsCommand(text);
+
+      if (isPublic) {
+        // Public: channel-visible, no kill buttons
+        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
+          user,
+          { showControls: false }
+        );
+        await say({
+          text: msgText,
+          blocks,
+          thread_ts: threadTs,
+        });
+      } else {
+        // Default: ephemeral (user-only), with kill buttons
+        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
+          user,
+          { showControls: true }
+        );
+        try {
+          await this.deps.slackApi.postEphemeral(
+            channel,
+            user,
+            msgText,
+            threadTs,
+            blocks
+          );
+        } catch {
+          // Fallback to regular message if ephemeral fails
+          await say({
+            text: msgText,
+            blocks,
+            thread_ts: threadTs,
+          });
+        }
+      }
       return { handled: true };
     }
 

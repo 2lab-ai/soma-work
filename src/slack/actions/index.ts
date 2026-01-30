@@ -76,6 +76,28 @@ export class ActionHandlers {
       await this.sessionHandler.handleTerminateSession(body, respond);
     });
 
+    // Close session confirm/cancel (from /close command)
+    app.action('close_session_confirm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.sessionHandler.handleCloseConfirm(body, respond);
+    });
+
+    app.action('close_session_cancel', async ({ ack, body, respond }) => {
+      await ack();
+      await this.sessionHandler.handleCloseCancel(body, respond);
+    });
+
+    // Idle session close/keep (from 12h idle check)
+    app.action('idle_close_session', async ({ ack, body, respond }) => {
+      await ack();
+      await this.sessionHandler.handleIdleClose(body, respond);
+    });
+
+    app.action('idle_keep_session', async ({ ack, body, respond }) => {
+      await ack();
+      await this.sessionHandler.handleIdleKeep(body, respond);
+    });
+
     // 사용자 선택 액션
     app.action(/^user_choice_/, async ({ ack, body }) => {
       await ack();
