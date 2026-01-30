@@ -19,6 +19,7 @@ import {
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
+import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 
 /**
  * Result of stream execution
@@ -117,6 +118,11 @@ export class StreamExecutor {
 
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
+
+      // Record user turn (fire-and-forget, non-blocking)
+      if (session.conversationId && text) {
+        recordUserTurn(session.conversationId, text, userName, user);
+      }
 
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
@@ -242,6 +248,11 @@ export class StreamExecutor {
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('completed')
       );
+
+      // Record assistant turn (fire-and-forget, non-blocking)
+      if (session.conversationId && streamResult.collectedText) {
+        recordAssistantTurn(session.conversationId, streamResult.collectedText);
+      }
 
       this.logger.info('Completed processing message', {
         sessionKey,
