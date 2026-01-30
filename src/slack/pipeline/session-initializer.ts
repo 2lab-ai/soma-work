@@ -253,6 +253,15 @@ export class SessionInitializer {
         );
       }
 
+      // Store extracted links on the session
+      if (result.links && Object.keys(result.links).length > 0) {
+        this.deps.claudeHandler.setSessionLinks(channel, threadTs, result.links);
+        this.logger.debug('Stored session links from dispatch', {
+          channel, threadTs,
+          links: result.links,
+        });
+      }
+
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
     } catch (error) {

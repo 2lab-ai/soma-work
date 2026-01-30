@@ -1,9 +1,14 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { MessageFormatter } from './message-formatter';
-import { ConversationSession } from '../types';
+import { ConversationSession, SessionLinks } from '../types';
 import { ClaudeHandler } from '../claude-handler';
 import { userSettingsStore } from '../user-settings-store';
 import { Logger } from '../logger';
+
+export interface FormatSessionsOptions {
+  showControls?: boolean; // Show kill buttons (default: true)
+}
+
 
 export type SayFn = (args: any) => Promise<any>;
 
@@ -21,7 +26,11 @@ export class SessionUiManager {
   /**
    * 사용자의 세션 목록을 Block Kit 형식으로 포맷팅
    */
-  async formatUserSessionsBlocks(userId: string): Promise<{ text: string; blocks: any[] }> {
+  async formatUserSessionsBlocks(
+    userId: string,
+    options: FormatSessionsOptions = {}
+  ): Promise<{ text: string; blocks: any[] }> {
+    const { showControls = true } = options;
     const allSessions = this.claudeHandler.getAllSessions();
     const userSessions: Array<{ key: string; session: ConversationSession }> = [];
 
@@ -94,15 +103,26 @@ export class SessionUiManager {
       } else if (session.threadTs) {
         sessionText += ` (thread)`;
       }
+
+      // Links line
+      const linksLine = this.formatLinksLine(session.links);
+      if (linksLine) {
+        sessionText += `\n${linksLine}`;
+      }
+
       sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
 
-      blocks.push({
+      const block: any = {
         type: 'section',
         text: {
           type: 'mrkdwn',
           text: sessionText,
         },
-        accessory: {
+      };
+
+      // Only show kill button when controls are enabled
+      if (showControls) {
+        block.accessory = {
           type: 'button',
           text: {
             type: 'plain_text',
@@ -130,8 +150,10 @@ export class SessionUiManager {
               text: '취소',
             },
           },
-        },
-      });
+        };
+      }
+
+      blocks.push(block);
     }
 
     blocks.push(
@@ -315,6 +337,96 @@ export class SessionUiManager {
     } catch (error) {
       this.logger.error('Failed to send session expiry message', error);
     }
+  }
+
+  /**
+   * Format links line for session display
+   */
+  private formatLinksLine(links?: SessionLinks): string | null {
+    if (!links) return null;
+
+    const parts: string[] = [];
+
+    if (links.issue) {
+      const status = links.issue.status ? ` (${links.issue.status})` : '';
+      parts.push(`🎫 <${links.issue.url}|${links.issue.label || '이슈'}>${status}`);
+    }
+    if (links.pr) {
+      const status = links.pr.status ? ` (${links.pr.status})` : '';
+      parts.push(`🔀 <${links.pr.url}|${links.pr.label || 'PR'}>${status}`);
+    }
+    if (links.doc) {
+      const status = links.doc.status ? ` (${links.doc.status})` : '';
+      parts.push(`📄 <${links.doc.url}|${links.doc.label || '문서'}>${status}`);
+    }
+
+    return parts.length > 0 ? `🔗 ${parts.join(' | ')}` : null;
+  }
+
+  /**
+   * 12시간 유휴 세션 확인 메시지 처리
+   */
+  async handleIdleCheck(
+    session: ConversationSession,
+    timeRemaining: number,
+    existingMessageTs?: string
+  ): Promise<string | undefined> {
+    const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
+    const threadTs = session.threadTs;
+    const channel = session.channelId;
+
+    // 12h idle check (when more than 10 minutes remain = not yet at final warning stage)
+    if (timeRemaining > 60 * 60 * 1000) {
+      const blocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `💤 *세션 활동 확인*\n\n이 세션이 12시간 이상 비활성 상태입니다.\n작업이 완료되었나요?`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: {
+                type: 'plain_text',
+                text: '✅ 종료',
+                emoji: true,
+              },
+              style: 'danger',
+              value: sessionKey,
+              action_id: 'idle_close_session',
+            },
+            {
+              type: 'button',
+              text: {
+                type: 'plain_text',
+                text: '🔄 유지',
+                emoji: true,
+              },
+              value: sessionKey,
+              action_id: 'idle_keep_session',
+            },
+          ],
+        },
+      ];
+
+      try {
+        const result = await this.slackApi.postMessage(channel, '💤 세션 활동 확인', {
+          threadTs,
+          blocks,
+        });
+        return result.ts;
+      } catch (error) {
+        this.logger.error('Failed to send idle check message', error);
+        return undefined;
+      }
+    }
+
+    // Fallback to regular warning for shorter time remaining
+    return this.handleSessionWarning(session, timeRemaining, existingMessageTs);
   }
 
   /**
