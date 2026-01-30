@@ -13,7 +13,7 @@ export class RenewHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, say, text } = ctx;
+    const { channel, threadTs, text } = ctx;
 
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
@@ -23,28 +23,28 @@ export class RenewHandler implements CommandHandler {
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
-      await say({
-        text: '💡 No active session to renew. Start a conversation first!',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '💡 No active session to renew. Start a conversation first!',
+        { threadTs }
+      );
       return { handled: true };
     }
 
     // Check if a request is in progress
     if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
-      await say({
-        text: '⚠️ Cannot renew while a request is in progress. Please wait for the current response to complete.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '⚠️ Cannot renew while a request is in progress. Please wait for the current response to complete.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
     // Check if already in renew process
     if (session.renewState) {
-      await say({
-        text: '⚠️ Renew is already in progress. Please wait for it to complete.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '⚠️ Renew is already in progress. Please wait for it to complete.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
@@ -52,12 +52,12 @@ export class RenewHandler implements CommandHandler {
     session.renewState = 'pending_save';
     session.renewUserMessage = userMessage || undefined;
 
-    await say({
-      text: userMessage
+    await this.deps.slackApi.postSystemMessage(channel,
+      userMessage
         ? `🔄 Saving context for handoff...\n_Load 후 지시사항: "${userMessage}"_`
         : '🔄 Saving context for handoff...',
-      thread_ts: threadTs,
-    });
+      { threadTs }
+    );
 
     // Return /save as the prompt to continue with
     // CRITICAL: Claude must READ the skill body to get the JSON output format

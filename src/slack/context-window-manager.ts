@@ -35,15 +35,21 @@ export class ContextWindowManager {
   /**
    * Set the original message for context emoji (thread's first message)
    * Called from SessionInitializer when session starts
+   * NOTE: Does NOT preserve existing emoji - new session = fresh start
    */
   setOriginalMessage(sessionKey: string, channel: string, ts: string): void {
-    // Preserve current emoji if already tracking this session
-    const existing = this.contextState.get(sessionKey);
     this.contextState.set(sessionKey, {
       channel,
       ts,
-      currentEmoji: existing?.currentEmoji ?? null,
+      currentEmoji: null, // Always start fresh - no emoji preservation
     });
+  }
+
+  /**
+   * Get current emoji for a session
+   */
+  getCurrentEmoji(sessionKey: string): string | null {
+    return this.contextState.get(sessionKey)?.currentEmoji ?? null;
   }
 
   /**
@@ -121,5 +127,47 @@ export class ContextWindowManager {
   cleanup(sessionKey: string): void {
     this.contextState.delete(sessionKey);
     this.logger.debug('Cleaned up context state', { sessionKey });
+  }
+
+  /**
+   * Cleanup session state AND remove emoji from Slack
+   * Use this when resetting session (new/renew commands)
+   * @returns The removed emoji name, or null if none was set
+   */
+  async cleanupWithReaction(sessionKey: string): Promise<string | null> {
+    const state = this.contextState.get(sessionKey);
+    if (!state) {
+      this.logger.debug('No context state to cleanup', { sessionKey });
+      return null;
+    }
+
+    const removedEmoji = state.currentEmoji;
+
+    // Remove emoji from Slack using stored channel/ts (correct location!)
+    if (state.currentEmoji) {
+      await this.slackApi.removeReaction(state.channel, state.ts, state.currentEmoji);
+      this.logger.debug('Removed context emoji during cleanup', {
+        sessionKey,
+        emoji: state.currentEmoji,
+        channel: state.channel,
+        ts: state.ts,
+      });
+    }
+
+    // Delete state
+    this.contextState.delete(sessionKey);
+    this.logger.debug('Cleaned up context state with reaction', { sessionKey });
+
+    return removedEmoji;
+  }
+
+  /**
+   * Get the stored original message info (channel, ts) for a session
+   * Useful for cleanup operations that need the correct ts
+   */
+  getOriginalMessage(sessionKey: string): { channel: string; ts: string } | null {
+    const state = this.contextState.get(sessionKey);
+    if (!state) return null;
+    return { channel: state.channel, ts: state.ts };
   }
 }

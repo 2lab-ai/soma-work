@@ -215,6 +215,22 @@ export class SlackApiHelper {
   }
 
   /**
+   * 시스템 메시지 전송 (⚡ zap 리액션으로 모델 응답과 구분)
+   * 프로그램에서 직접 보내는 메시지에 사용
+   */
+  async postSystemMessage(
+    channel: string,
+    text: string,
+    options?: MessageOptions
+  ): Promise<{ ts?: string; channel?: string }> {
+    const result = await this.postMessage(channel, text, options);
+    if (result.ts) {
+      await this.addReaction(channel, result.ts, 'zap');
+    }
+    return result;
+  }
+
+  /**
    * 메시지 전송
    */
   async postMessage(

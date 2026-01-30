@@ -16,17 +16,17 @@ export class CwdHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, channel, threadTs, text, say } = ctx;
+    const { user, channel, threadTs, text } = ctx;
 
     // Check for set command - now disabled
     const setDirPath = this.deps.workingDirManager.parseSetCommand(text);
     if (setDirPath) {
-      await say({
-        text: '⚠️ Working directory 설정은 비활성화되었습니다.\n' +
-              '각 사용자는 고유한 디렉토리(`BASE_DIRECTORY/{userId}/`)를 자동으로 사용합니다.\n' +
-              '`cwd` 명령으로 현재 디렉토리를 확인하세요.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '⚠️ Working directory 설정은 비활성화되었습니다.\n' +
+        '각 사용자는 고유한 디렉토리(`BASE_DIRECTORY/{userId}/`)를 자동으로 사용합니다.\n' +
+        '`cwd` 명령으로 현재 디렉토리를 확인하세요.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
@@ -38,10 +38,10 @@ export class CwdHandler implements CommandHandler {
         user
       );
 
-      await say({
-        text: this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
+        { threadTs }
+      );
       return { handled: true };
     }
 

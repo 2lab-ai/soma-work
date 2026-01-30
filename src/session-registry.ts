@@ -400,6 +400,9 @@ export class SessionRegistry {
     session.warningMessageTs = undefined;
     session.lastWarningSentAt = undefined;
 
+    // Clear usage data to reset context percentage
+    session.usage = undefined;
+
     this.saveSessions();
     return true;
   }
