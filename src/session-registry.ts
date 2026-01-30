@@ -492,8 +492,9 @@ export class SessionRegistry {
           } catch (error) {
             this.logger.error('Failed to send session warning', error);
           }
+          break; // Sent warning — stop checking less urgent intervals
         }
-        break; // Only send the most urgent applicable warning
+        // Not sent (already sent this level) — continue to check more urgent intervals
       }
     }
   }
