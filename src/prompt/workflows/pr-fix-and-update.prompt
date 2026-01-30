@@ -81,6 +81,15 @@ git commit -m "fix: address PR review feedback
 git push
 ```
 
+커밋 후, 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+```json
+{
+  "type": "session_links",
+  "pr": "PR URL"
+}
+```
+Jira 이슈가 연관되어 있으면 `"jira": "URL"`도 포함한다.
+
 ### 6. 코드 정리
 
 1. origin/develop으로 rebase 하고 push한다.

@@ -224,6 +224,15 @@ export class StreamExecutor {
             this.deps.slackApi
           );
         },
+        onSessionLinksDetected: async (links) => {
+          this.deps.claudeHandler.setSessionLinks(channel, threadTs, links);
+          this.logger.info('Session links updated from model directive', {
+            sessionKey,
+            hasIssue: !!links.issue,
+            hasPr: !!links.pr,
+            hasDoc: !!links.doc,
+          });
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 

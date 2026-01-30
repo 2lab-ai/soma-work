@@ -5,11 +5,13 @@
 
 import { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../logger';
+import { SessionLinks } from '../types';
 import {
   ToolFormatter,
   UserChoiceHandler,
   MessageFormatter,
 } from './index';
+import { SessionLinkDirectiveHandler } from './directives';
 
 /**
  * Context for stream processing
@@ -120,6 +122,8 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /** Called when model outputs session_links JSON directive */
+  onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
 }
 
 /**
@@ -265,8 +269,17 @@ export class StreamProcessor {
     context: StreamContext,
     currentMessages: string[]
   ): Promise<void> {
-    const textContent = this.extractTextContent(content);
+    let textContent = this.extractTextContent(content);
     if (!textContent) return;
+
+    // Extract response directives: session links first, then user choice
+    const linkResult = SessionLinkDirectiveHandler.extract(textContent);
+    if (linkResult.links) {
+      textContent = linkResult.cleanedText;
+      if (this.callbacks.onSessionLinksDetected) {
+        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+      }
+    }
 
     currentMessages.push(textContent);
 
@@ -482,14 +495,24 @@ export class StreamProcessor {
    * Handle final result text
    */
   private async handleFinalResult(result: string, context: StreamContext): Promise<void> {
-    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(result);
+    // Extract response directives before user choice
+    let processedResult = result;
+    const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
+    if (linkResult.links) {
+      processedResult = linkResult.cleanedText;
+      if (this.callbacks.onSessionLinksDetected) {
+        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+      }
+    }
+
+    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
 
     if (choices) {
       await this.handleMultiChoiceMessage(choices, textWithoutChoice, context);
     } else if (choice) {
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      const formatted = MessageFormatter.formatMessage(result, true);
+      const formatted = MessageFormatter.formatMessage(processedResult, true);
       await context.say({
         text: formatted,
         thread_ts: context.threadTs,
