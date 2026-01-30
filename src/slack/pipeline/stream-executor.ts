@@ -15,6 +15,7 @@ import {
   ToolTracker,
   TodoDisplayManager,
   SlackApiHelper,
+  AssistantStatusManager,
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
@@ -45,6 +46,7 @@ interface StreamExecutorDeps {
   actionHandlers: ActionHandlers;
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
+  assistantStatusManager: AssistantStatusManager;
 }
 
 interface StreamExecuteParams {
@@ -141,11 +143,12 @@ export class StreamExecutor {
         'thinking'
       );
 
-      // Add thinking reaction
+      // Add thinking reaction + native spinner
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('thinking')
       );
+      await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
 
       // Create Slack context for permission prompts
       const slackContext = { channel, threadTs, user };
@@ -177,6 +180,12 @@ export class StreamExecutor {
             sessionKey,
             this.deps.statusReporter.getStatusEmoji('working')
           );
+          // Native spinner with tool-specific text
+          const toolName = toolUses[0]?.name;
+          if (toolName) {
+            const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+            await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+          }
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -240,7 +249,7 @@ export class StreamExecutor {
         throw abortError;
       }
 
-      // Update status to completed
+      // Update status to completed + clear native spinner
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'completed');
       }
@@ -248,6 +257,7 @@ export class StreamExecutor {
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('completed')
       );
+      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -305,6 +315,9 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     say: SayFn
   ): Promise<void> {
+    // Clear native spinner on any error
+    await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+
     // Check for context overflow error
     const errorMessage = error.message?.toLowerCase() || '';
     if (
