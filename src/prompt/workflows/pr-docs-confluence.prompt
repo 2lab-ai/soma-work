@@ -141,3 +141,9 @@ UIAskUserQuestion으로 추가 작업 확인:
 ```
 {{include:./workflows/examples/PTN-1978-summary.md}}
 ```
+
+## 🔄 다음 단계 안내
+
+문서 작성 완료 후:
+- 문서 링크를 세션에 연결: "`link doc <url>` 명령으로 Confluence 문서를 세션에 연결할 수 있습니다."
+- 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."

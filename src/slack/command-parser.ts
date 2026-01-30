@@ -6,6 +6,8 @@ export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
+export type SessionsCommandResult = { isPublic: boolean };
+export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
 
 export class CommandParser {
   /**
@@ -148,10 +150,18 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a sessions command
+   * Check if text is a sessions command (with optional 'public' flag)
    */
   static isSessionsCommand(text: string): boolean {
-    return /^\/?sessions?$/i.test(text.trim());
+    return /^\/?sessions?(?:\s+public)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse sessions command to determine if public
+   */
+  static parseSessionsCommand(text: string): SessionsCommandResult {
+    const isPublic = /^\/?sessions?\s+public$/i.test(text.trim());
+    return { isPublic };
   }
 
   /**
@@ -170,6 +180,33 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a close command
+   */
+  static isCloseCommand(text: string): boolean {
+    return /^\/?close$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a link command
+   */
+  static isLinkCommand(text: string): boolean {
+    return /^\/?link\s+(?:issue|pr|doc)\s+\S+$/i.test(text.trim());
+  }
+
+  /**
+   * Parse link command
+   * Example: "link issue https://xxx.atlassian.net/browse/PTN-123"
+   */
+  static parseLinkCommand(text: string): LinkCommandResult {
+    const match = text.trim().match(/^\/?link\s+(issue|pr|doc)\s+(\S+)$/i);
+    if (!match) return null;
+    return {
+      linkType: match[1].toLowerCase() as 'issue' | 'pr' | 'doc',
+      url: match[2],
+    };
+  }
+
+  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
@@ -182,7 +219,7 @@ export class CommandParser {
     // Persona & Model
     'persona', 'model',
     // Sessions
-    'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew',
+    'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew', 'close', 'link',
     // Credentials
     'restore', 'credentials',
     // Help
@@ -224,13 +261,20 @@ export class CommandParser {
       '  _각 사용자는 고정된 디렉토리(`BASE_DIR/{userId}/`)를 사용합니다._',
       '',
       '*Sessions:*',
-      '• `sessions` or `/sessions` - Show your active sessions',
+      '• `sessions` or `/sessions` - Show your active sessions (ephemeral)',
+      '• `sessions public` - Show your sessions to everyone in channel',
       '• `all_sessions` or `/all_sessions` - Show all active sessions',
       '• `terminate <session-key>` - Terminate a specific session',
+      '• `close` or `/close` - Close current thread\'s session',
       '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
       '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
+      '',
+      '*Links:*',
+      '• `link issue <url>` - Attach issue link to current session',
+      '• `link pr <url>` - Attach PR link to current session',
+      '• `link doc <url>` - Attach doc link to current session',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',

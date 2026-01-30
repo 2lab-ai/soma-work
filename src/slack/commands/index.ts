@@ -14,3 +14,5 @@ export { RestoreHandler } from './restore-handler';
 export { NewHandler } from './new-handler';
 export { ContextHandler } from './context-handler';
 export { RenewHandler } from './renew-handler';
+export { LinkHandler } from './link-handler';
+export { CloseHandler } from './close-handler';

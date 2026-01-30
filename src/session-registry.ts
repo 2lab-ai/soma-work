@@ -3,7 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
-import { ConversationSession, SessionState, WorkflowType } from './types';
+import { ConversationSession, SessionState, SessionLinks, SessionLink, WorkflowType } from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
@@ -17,8 +17,10 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
 
 // Session expiry warning intervals in milliseconds (from session expiry time)
+// Sorted descending: most urgent first
 const WARNING_INTERVALS = [
-  10 * 60 * 1000, // 10 minutes
+  12 * 60 * 60 * 1000, // 12 hours remaining - idle check (ask if session is done)
+  10 * 60 * 1000,      // 10 minutes remaining - final warning
 ];
 
 /**
@@ -40,6 +42,8 @@ interface SerializedSession {
   // Session state machine fields
   state?: SessionState;
   workflow?: WorkflowType;
+  // Session links
+  links?: SessionLinks;
 }
 
 /**
@@ -224,6 +228,74 @@ export class SessionRegistry {
       session.title = title;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Set a link on a session (issue, pr, or doc)
+   */
+  setSessionLink(
+    channelId: string,
+    threadTs: string | undefined,
+    link: SessionLink
+  ): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session) {
+      if (!session.links) {
+        session.links = {};
+      }
+      session.links[link.type] = link;
+      this.saveSessions();
+    }
+  }
+
+  /**
+   * Set multiple session links at once
+   */
+  setSessionLinks(
+    channelId: string,
+    threadTs: string | undefined,
+    links: SessionLinks
+  ): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session) {
+      session.links = { ...session.links, ...links };
+      this.saveSessions();
+    }
+  }
+
+  /**
+   * Refresh session activity timestamp and clear warning state.
+   * Used when user clicks "Keep" on idle check prompt.
+   */
+  refreshSessionActivity(channelId: string, threadTs: string | undefined): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return false;
+    session.lastActivity = new Date();
+    session.lastWarningSentAt = undefined;
+    session.warningMessageTs = undefined;
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Refresh session activity by session key.
+   */
+  refreshSessionActivityByKey(sessionKey: string): boolean {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return false;
+    session.lastActivity = new Date();
+    session.lastWarningSentAt = undefined;
+    session.warningMessageTs = undefined;
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Get session links
+   */
+  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
+    const session = this.getSession(channelId, threadTs);
+    return session?.links;
   }
 
   /**
@@ -420,8 +492,9 @@ export class SessionRegistry {
           } catch (error) {
             this.logger.error('Failed to send session warning', error);
           }
+          break; // Sent warning — stop checking less urgent intervals
         }
-        break; // Only send the most urgent applicable warning
+        // Not sent (already sent this level) — continue to check more urgent intervals
       }
     }
   }
@@ -455,6 +528,7 @@ export class SessionRegistry {
             model: session.model,
             state: session.state,
             workflow: session.workflow,
+            links: session.links,
           });
         }
       }
@@ -503,6 +577,7 @@ export class SessionRegistry {
             model: serialized.model,
             state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
             workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
+            links: serialized.links,
           };
           this.sessions.set(serialized.key, session);
           loaded++;

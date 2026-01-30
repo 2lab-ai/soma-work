@@ -95,6 +95,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionUiManager: this.sessionUiManager,
       requestCoordinator: this.requestCoordinator,
+      slackApi: this.slackApi,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
