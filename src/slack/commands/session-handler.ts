@@ -1,10 +1,13 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import { Logger } from '../../logger';
 
 /**
  * Handles session commands (sessions/all_sessions/terminate)
  */
 export class SessionHandler implements CommandHandler {
+  private logger = new Logger('SessionHandler');
+
   constructor(private deps: CommandDependencies) {}
 
   canHandle(text: string): boolean {
@@ -45,7 +48,8 @@ export class SessionHandler implements CommandHandler {
             threadTs,
             blocks
           );
-        } catch {
+        } catch (error) {
+          this.logger.warn('postEphemeral failed, falling back to regular message', error);
           // Fallback to regular message if ephemeral fails
           await say({
             text: msgText,

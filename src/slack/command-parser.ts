@@ -190,7 +190,7 @@ export class CommandParser {
    * Check if text is a link command
    */
   static isLinkCommand(text: string): boolean {
-    return /^\/?link\s+(?:issue|pr|doc)\s+\S+/i.test(text.trim());
+    return /^\/?link\s+(?:issue|pr|doc)\s+\S+$/i.test(text.trim());
   }
 
   /**
