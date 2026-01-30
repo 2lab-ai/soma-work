@@ -11,6 +11,8 @@ import { RestoreHandler } from './restore-handler';
 import { NewHandler } from './new-handler';
 import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
+import { LinkHandler } from './link-handler';
+import { CloseHandler } from './close-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -33,6 +35,8 @@ export class CommandRouter {
       new NewHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
+      new LinkHandler(deps),
+      new CloseHandler(deps),
       new HelpHandler(),
       new SessionHandler(deps),
     ];

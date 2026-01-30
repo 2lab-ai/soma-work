@@ -11,12 +11,148 @@ interface SessionActionContext {
 }
 
 /**
- * 세션 종료 액션 핸들러
+ * 세션 종료 및 유휴 관련 액션 핸들러
  */
 export class SessionActionHandler {
   private logger = new Logger('SessionActionHandler');
 
   constructor(private ctx: SessionActionContext) {}
+
+  /**
+   * Handle close session confirm button (from /close command)
+   */
+  async handleCloseConfirm(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+      const userId = body.user?.id;
+
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (!session) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션을 찾을 수 없습니다. 이미 종료되었을 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      if (session.ownerId !== userId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 소유자만 종료할 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      const success = this.ctx.claudeHandler.terminateSession(sessionKey);
+      if (success) {
+        await respond({
+          text: '✅ 세션이 종료되었습니다.',
+          replace_original: true,
+        });
+      } else {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료에 실패했습니다.',
+          replace_original: false,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Error processing close confirm', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: '❌ 세션 종료 중 오류가 발생했습니다.',
+        replace_original: false,
+      });
+    }
+  }
+
+  /**
+   * Handle close session cancel button
+   */
+  async handleCloseCancel(_body: any, respond: RespondFn): Promise<void> {
+    await respond({
+      text: '취소되었습니다.',
+      replace_original: true,
+    });
+  }
+
+  /**
+   * Handle idle close session button (from 12h idle check)
+   */
+  async handleIdleClose(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+      const userId = body.user?.id;
+
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (!session) {
+        await respond({
+          text: '✅ 세션이 이미 종료되었습니다.',
+          replace_original: true,
+        });
+        return;
+      }
+
+      if (session.ownerId !== userId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 소유자만 종료할 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      const success = this.ctx.claudeHandler.terminateSession(sessionKey);
+      if (success) {
+        await respond({
+          text: '✅ 세션이 종료되었습니다.',
+          replace_original: true,
+        });
+      } else {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료에 실패했습니다.',
+          replace_original: false,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Error processing idle close', error);
+    }
+  }
+
+  /**
+   * Handle idle keep session button (from 12h idle check)
+   * Refreshes the session's lastActivity to prevent auto-close
+   */
+  async handleIdleKeep(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+
+      if (!session) {
+        await respond({
+          text: '세션이 이미 종료되었습니다.',
+          replace_original: true,
+        });
+        return;
+      }
+
+      // Refresh activity timestamp
+      session.lastActivity = new Date();
+      // Clear warning state so it can warn again later
+      session.lastWarningSentAt = undefined;
+      session.warningMessageTs = undefined;
+
+      await respond({
+        text: '🔄 세션이 유지됩니다. 타이머가 리셋되었습니다.',
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.error('Error processing idle keep', error);
+    }
+  }
 
   async handleTerminateSession(body: any, respond: RespondFn): Promise<void> {
     try {
