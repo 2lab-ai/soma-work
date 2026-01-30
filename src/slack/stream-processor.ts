@@ -422,7 +422,9 @@ export class StreamProcessor {
         questionCount: choices.questions?.length,
         rawChoices: JSON.stringify(choices),
       });
-      throw error;
+
+      // Fallback: send as plain text instead of throwing
+      await this.sendChoiceFallback(choices, context, 'multi');
     }
   }
 
@@ -467,8 +469,61 @@ export class StreamProcessor {
         blockCount,
         rawChoice: JSON.stringify(choice),
       });
-      throw error;
+
+      // Fallback: send as plain text instead of throwing
+      await this.sendChoiceFallback(choice, context, 'single');
     }
+  }
+
+  /**
+   * Send choice as plain text when Slack blocks fail
+   */
+  private async sendChoiceFallback(
+    choice: any,
+    context: StreamContext,
+    type: 'single' | 'multi'
+  ): Promise<void> {
+    this.logger.warn('Sending choice as fallback plain text', { type });
+
+    let fallbackText: string;
+
+    if (type === 'multi') {
+      // Multi-choice form fallback
+      const questions = choice.questions || [];
+      const lines = [
+        `📋 *${choice.title || '선택이 필요합니다'}*`,
+        choice.description ? `_${choice.description}_` : '',
+        '',
+        ...questions.map((q: any, idx: number) => {
+          const optionsList = (q.choices || [])
+            .map((opt: any, optIdx: number) => `  ${optIdx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`)
+            .join('\n');
+          return `*Q${idx + 1}. ${q.question}*\n${optionsList}`;
+        }),
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+        '_예: Q1: 1, Q2: 2, Q3: 1_',
+      ];
+      fallbackText = lines.filter(l => l !== '').join('\n');
+    } else {
+      // Single choice fallback
+      const options = (choice.choices || [])
+        .map((opt: any, idx: number) => `${idx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`)
+        .join('\n');
+      fallbackText = [
+        `❓ *${choice.question}*`,
+        choice.context ? `_${choice.context}_` : '',
+        '',
+        options,
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ].filter(l => l !== '').join('\n');
+    }
+
+    await context.say({
+      text: fallbackText,
+      thread_ts: context.threadTs,
+    });
   }
 
   /**

@@ -338,11 +338,25 @@ export class StreamExecutor {
     }
 
     if (error.name !== 'AbortError') {
-      // Clear sessionId only on actual errors (not abort)
-      // AbortError preserves session history for conversation continuity
-      this.deps.claudeHandler.clearSessionId(channel, threadTs);
-
       this.logger.error('Error handling message', error);
+
+      // Only clear session for Claude SDK errors (context overflow, auth, etc.)
+      // Preserve session for Slack API errors (invalid_attachments, rate_limited, etc.)
+      const isSlackApiError = this.isSlackApiError(error);
+      const sessionCleared = !isSlackApiError;
+
+      if (sessionCleared) {
+        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        this.logger.info('Session cleared due to non-Slack error', {
+          sessionKey,
+          errorType: error.name || 'unknown',
+        });
+      } else {
+        this.logger.warn('Slack API error - session preserved', {
+          sessionKey,
+          errorMessage: error.message,
+        });
+      }
 
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
@@ -352,8 +366,10 @@ export class StreamExecutor {
         this.deps.statusReporter.getStatusEmoji('error')
       );
 
+      // Notify user with detailed error info
+      const errorDetails = this.formatErrorForUser(error, sessionCleared);
       await say({
-        text: `Error: ${error.message || 'Something went wrong'}`,
+        text: errorDetails,
         thread_ts: threadTs,
       });
     } else {
@@ -388,6 +404,57 @@ export class StreamExecutor {
         this.deps.statusReporter.cleanup(sessionKey);
       });
     }
+  }
+
+  /**
+   * Check if error is a Slack API error (should preserve session)
+   * These errors are transient or UI-related, not Claude conversation issues
+   */
+  private isSlackApiError(error: any): boolean {
+    const message = error.message?.toLowerCase() || '';
+
+    // Slack API error patterns
+    const slackErrorPatterns = [
+      'invalid_attachments',
+      'invalid_blocks',
+      'rate_limited',
+      'channel_not_found',
+      'no_permission',
+      'not_in_channel',
+      'msg_too_long',
+      'invalid_arguments',
+      'missing_scope',
+      'token_revoked',
+      'no more than 50 items allowed', // Slack block limit
+      'an api error occurred',
+    ];
+
+    return slackErrorPatterns.some(pattern => message.includes(pattern));
+  }
+
+  /**
+   * Format error message for user with detailed info
+   * Distinguishes between bot system errors and model errors
+   */
+  private formatErrorForUser(error: any, sessionCleared: boolean): string {
+    const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
+    const errorName = error.name || 'Error';
+    const errorMessage = error.message || 'Something went wrong';
+
+    const lines = [
+      `❌ *[Bot Error]* ${errorMessage}`,
+      '',
+      `> *Type:* ${errorType} (${errorName})`,
+    ];
+
+    if (sessionCleared) {
+      lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
+      lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+    } else {
+      lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+    }
+
+    return lines.join('\n');
   }
 
   /**
