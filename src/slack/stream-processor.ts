@@ -300,14 +300,29 @@ export class StreamProcessor {
     }
   }
 
+  // Max questions per form to stay under Slack's 50-block limit
+  // Calculation: 2 (header) + 6 (per question) × N + 3 (submit) ≤ 50 → N ≤ 7
+  private static readonly MAX_QUESTIONS_PER_FORM = 6;
+
   /**
    * Handle multi-question choice form
+   * Automatically splits into multiple forms if questions exceed MAX_QUESTIONS_PER_FORM
    */
   private async handleMultiChoiceMessage(
     choices: any,
     textWithoutChoice: string,
     context: StreamContext
   ): Promise<void> {
+    const questions = choices.questions || [];
+    const questionCount = questions.length;
+
+    // Log the original model output for debugging
+    this.logger.debug('Received multi-choice form from model', {
+      questionCount,
+      title: choices.title,
+      rawChoices: JSON.stringify(choices),
+    });
+
     if (textWithoutChoice) {
       const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
       await context.say({
@@ -316,6 +331,44 @@ export class StreamProcessor {
       });
     }
 
+    // Split questions into chunks if needed
+    const chunks: any[][] = [];
+    for (let i = 0; i < questionCount; i += StreamProcessor.MAX_QUESTIONS_PER_FORM) {
+      chunks.push(questions.slice(i, i + StreamProcessor.MAX_QUESTIONS_PER_FORM));
+    }
+
+    if (chunks.length > 1) {
+      this.logger.info('Splitting multi-choice form into multiple messages', {
+        totalQuestions: questionCount,
+        chunkCount: chunks.length,
+        questionsPerChunk: chunks.map(c => c.length),
+      });
+    }
+
+    // Process each chunk as a separate form
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunkQuestions = chunks[chunkIndex];
+      const isFirstChunk = chunkIndex === 0;
+      const chunkLabel = chunks.length > 1 ? ` (${chunkIndex + 1}/${chunks.length})` : '';
+
+      const chunkChoices = {
+        ...choices,
+        title: (choices.title || '선택이 필요합니다') + chunkLabel,
+        questions: chunkQuestions,
+      };
+
+      await this.sendSingleFormChunk(chunkChoices, context, isFirstChunk);
+    }
+  }
+
+  /**
+   * Send a single form chunk (called by handleMultiChoiceMessage)
+   */
+  private async sendSingleFormChunk(
+    choices: any,
+    context: StreamContext,
+    invalidateOldForms: boolean
+  ): Promise<void> {
     const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Create pending form
@@ -332,25 +385,44 @@ export class StreamProcessor {
       });
     }
 
-    // Invalidate old forms for this session before sending new form
-    if (this.callbacks.onInvalidateOldForms) {
+    // Invalidate old forms only for the first chunk
+    if (invalidateOldForms && this.callbacks.onInvalidateOldForms) {
       await this.callbacks.onInvalidateOldForms(context.sessionKey, formId);
     }
 
     // Build and send form
     const multiPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, context.sessionKey);
-    const formResult = await context.say({
-      text: choices.title || '📋 선택이 필요합니다',
-      ...multiPayload,
-      thread_ts: context.threadTs,
+
+    // Log block count
+    const blockCount = multiPayload.attachments?.[0]?.blocks?.length ?? 0;
+    this.logger.debug('Built multi-choice form blocks', {
+      formId,
+      blockCount,
+      questionCount: choices.questions?.length,
     });
 
-    // Update form with message timestamp
-    if (this.callbacks.getPendingForm && formResult?.ts) {
-      const pendingForm = this.callbacks.getPendingForm(formId);
-      if (pendingForm) {
-        pendingForm.messageTs = formResult.ts;
+    try {
+      const formResult = await context.say({
+        text: choices.title || '📋 선택이 필요합니다',
+        ...multiPayload,
+        thread_ts: context.threadTs,
+      });
+
+      // Update form with message timestamp
+      if (this.callbacks.getPendingForm && formResult?.ts) {
+        const pendingForm = this.callbacks.getPendingForm(formId);
+        if (pendingForm) {
+          pendingForm.messageTs = formResult.ts;
+        }
       }
+    } catch (error: any) {
+      this.logger.error('Failed to send multi-choice form to Slack', {
+        error: error.message,
+        blockCount,
+        questionCount: choices.questions?.length,
+        rawChoices: JSON.stringify(choices),
+      });
+      throw error;
     }
   }
 
@@ -362,6 +434,13 @@ export class StreamProcessor {
     textWithoutChoice: string,
     context: StreamContext
   ): Promise<void> {
+    // Log the original model output for debugging
+    this.logger.debug('Received single choice from model', {
+      question: choice.question,
+      choiceCount: choice.choices?.length,
+      rawChoice: JSON.stringify(choice),
+    });
+
     if (textWithoutChoice) {
       const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
       await context.say({
@@ -371,11 +450,25 @@ export class StreamProcessor {
     }
 
     const singlePayload = UserChoiceHandler.buildUserChoiceBlocks(choice, context.sessionKey);
-    await context.say({
-      text: choice.question,
-      ...singlePayload,
-      thread_ts: context.threadTs,
-    });
+
+    // Log block count
+    const blockCount = singlePayload.attachments?.[0]?.blocks?.length ?? 0;
+    this.logger.debug('Built single choice blocks', { blockCount });
+
+    try {
+      await context.say({
+        text: choice.question,
+        ...singlePayload,
+        thread_ts: context.threadTs,
+      });
+    } catch (error: any) {
+      this.logger.error('Failed to send single choice to Slack', {
+        error: error.message,
+        blockCount,
+        rawChoice: JSON.stringify(choice),
+      });
+      throw error;
+    }
   }
 
   /**
