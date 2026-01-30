@@ -3,7 +3,7 @@
  * Uses ClaudeHandler.dispatchOneShot for classification (unified auth path)
  */
 
-import { WorkflowType } from './types';
+import { WorkflowType, SessionLinks, SessionLink } from './types';
 import { Logger } from './logger';
 import { ClaudeHandler } from './claude-handler';
 import * as fs from 'fs';
@@ -25,6 +25,7 @@ let dispatchFallbackCount = 0;
 export interface DispatchResult {
   workflow: WorkflowType;
   title: string;
+  links?: SessionLinks;
 }
 
 /**
@@ -238,6 +239,9 @@ export class DispatchService {
    * @param userMessage - Original user message for fallback title generation
    */
   private parseResponse(text: string, userMessage: string): DispatchResult {
+    // Extract links from the user message (always do this regardless of dispatch response)
+    const extractedLinks = this.extractLinksFromText(userMessage);
+
     // Try to extract JSON using brace balancing (handles nested objects)
     const jsonStr = this.extractJson(text);
     if (jsonStr) {
@@ -247,9 +251,15 @@ export class DispatchService {
         if (typeof parsed.workflow !== 'string') {
           throw new Error('Invalid workflow field in response');
         }
+
+        // Merge links from dispatch response with extracted links
+        const dispatchLinks = this.parseDispatchLinks(parsed.links);
+        const links = this.mergeLinks(extractedLinks, dispatchLinks);
+
         return {
           workflow: this.validateWorkflow(parsed.workflow),
           title: typeof parsed.title === 'string' ? this.sanitizeTitle(parsed.title) : this.generateFallbackTitle(userMessage),
+          links: Object.keys(links).length > 0 ? links : undefined,
         };
       } catch (jsonError) {
         this.logger.debug('JSON parse failed, trying XML fallback', { jsonError });
@@ -265,6 +275,7 @@ export class DispatchService {
         return {
           workflow: this.validateWorkflow(workflowMatch[1].trim()),
           title: titleMatch ? this.sanitizeTitle(titleMatch[1].trim()) : this.generateFallbackTitle(userMessage),
+          links: Object.keys(extractedLinks).length > 0 ? extractedLinks : undefined,
         };
       }
     } catch (xmlError) {
@@ -278,6 +289,115 @@ export class DispatchService {
     return {
       workflow: 'default',
       title: this.generateFallbackTitle(userMessage),
+      links: Object.keys(extractedLinks).length > 0 ? extractedLinks : undefined,
+    };
+  }
+
+  /**
+   * Extract links from user message text using URL patterns
+   */
+  private extractLinksFromText(text: string): SessionLinks {
+    const links: SessionLinks = {};
+
+    // Jira issue: atlassian.net/browse/XXX-123 or selectedIssue=XXX-123
+    const jiraIssueMatch = text.match(/atlassian\.net\/browse\/(\w+-\d+)/) ||
+      text.match(/selectedIssue=(\w+-\d+)/);
+    if (jiraIssueMatch) {
+      // Extract the full URL if present
+      const urlMatch = text.match(/(https?:\/\/\S*atlassian\.net\S*(?:browse\/\w+-\d+|selectedIssue=\w+-\d+)\S*)/);
+      links.issue = {
+        url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://atlassian.net/browse/${jiraIssueMatch[1]}`,
+        type: 'issue',
+        provider: 'jira',
+        label: jiraIssueMatch[1],
+      };
+    }
+
+    // GitHub PR: github.com/owner/repo/pull/123
+    const ghPrMatch = text.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/);
+    if (ghPrMatch) {
+      const urlMatch = text.match(/(https?:\/\/\S*github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\S*)/);
+      links.pr = {
+        url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://github.com/${ghPrMatch[1]}/${ghPrMatch[2]}/pull/${ghPrMatch[3]}`,
+        type: 'pr',
+        provider: 'github',
+        label: `PR #${ghPrMatch[3]}`,
+      };
+    }
+
+    // GitHub issue: github.com/owner/repo/issues/123 (only if no Jira issue)
+    if (!links.issue) {
+      const ghIssueMatch = text.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)/);
+      if (ghIssueMatch) {
+        const urlMatch = text.match(/(https?:\/\/\S*github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+\S*)/);
+        links.issue = {
+          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://github.com/${ghIssueMatch[1]}/${ghIssueMatch[2]}/issues/${ghIssueMatch[3]}`,
+          type: 'issue',
+          provider: 'github',
+          label: `#${ghIssueMatch[3]}`,
+        };
+      }
+    }
+
+    // Confluence: atlassian.net/wiki/spaces/
+    const confluenceMatch = text.match(/(https?:\/\/\S*atlassian\.net\/wiki\/spaces\/\S+)/);
+    if (confluenceMatch) {
+      links.doc = {
+        url: confluenceMatch[1].replace(/[>|].*$/, ''),
+        type: 'doc',
+        provider: 'confluence',
+        label: 'Confluence',
+      };
+    }
+
+    // Linear issue: linear.app/team/issue/XXX-123
+    if (!links.issue) {
+      const linearMatch = text.match(/linear\.app\/([\w-]+)\/issue\/(\w+-\d+)/);
+      if (linearMatch) {
+        const urlMatch = text.match(/(https?:\/\/\S*linear\.app\/[\w-]+\/issue\/\w+-\d+\S*)/);
+        links.issue = {
+          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://linear.app/${linearMatch[1]}/issue/${linearMatch[2]}`,
+          type: 'issue',
+          provider: 'linear',
+          label: linearMatch[2],
+        };
+      }
+    }
+
+    return links;
+  }
+
+  /**
+   * Parse links from dispatch response JSON
+   */
+  private parseDispatchLinks(rawLinks: any): SessionLinks {
+    if (!rawLinks || typeof rawLinks !== 'object') return {};
+    const links: SessionLinks = {};
+
+    // Handle simple URL strings from dispatch response
+    if (typeof rawLinks.issue === 'string') {
+      const parsed = this.extractLinksFromText(rawLinks.issue);
+      if (parsed.issue) links.issue = parsed.issue;
+    }
+    if (typeof rawLinks.pr === 'string') {
+      const parsed = this.extractLinksFromText(rawLinks.pr);
+      if (parsed.pr) links.pr = parsed.pr;
+    }
+    if (typeof rawLinks.doc === 'string') {
+      const parsed = this.extractLinksFromText(rawLinks.doc);
+      if (parsed.doc) links.doc = parsed.doc;
+    }
+
+    return links;
+  }
+
+  /**
+   * Merge two SessionLinks objects (dispatch links take priority)
+   */
+  private mergeLinks(extracted: SessionLinks, dispatch: SessionLinks): SessionLinks {
+    return {
+      ...extracted,
+      ...dispatch,
     };
   }
 

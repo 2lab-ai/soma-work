@@ -3,6 +3,7 @@ import { McpManager } from '../../mcp-manager';
 import { ClaudeHandler } from '../../claude-handler';
 import { SessionUiManager } from '../session-manager';
 import { RequestCoordinator } from '../request-coordinator';
+import { SlackApiHelper } from '../slack-api-helper';
 
 /**
  * Context passed to command handlers
@@ -24,6 +25,7 @@ export interface CommandDependencies {
   claudeHandler: ClaudeHandler;
   sessionUiManager: SessionUiManager;
   requestCoordinator: RequestCoordinator;
+  slackApi: SlackApiHelper;
 }
 
 /**
