@@ -72,10 +72,14 @@ export class SessionActionHandler {
    * Handle close session cancel button
    */
   async handleCloseCancel(_body: any, respond: RespondFn): Promise<void> {
-    await respond({
-      text: '취소되었습니다.',
-      replace_original: true,
-    });
+    try {
+      await respond({
+        text: '취소되었습니다.',
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to respond to close cancel', error);
+    }
   }
 
   /**
@@ -119,6 +123,15 @@ export class SessionActionHandler {
       }
     } catch (error) {
       this.logger.error('Error processing idle close', error);
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료 중 오류가 발생했습니다. 다시 시도해주세요.',
+          replace_original: false,
+        });
+      } catch (respondError) {
+        this.logger.error('Failed to send error response for idle close', respondError);
+      }
     }
   }
 
@@ -129,9 +142,9 @@ export class SessionActionHandler {
   async handleIdleKeep(body: any, respond: RespondFn): Promise<void> {
     try {
       const sessionKey = body.actions[0].value;
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
 
-      if (!session) {
+      const refreshed = this.ctx.claudeHandler.refreshSessionActivityByKey(sessionKey);
+      if (!refreshed) {
         await respond({
           text: '세션이 이미 종료되었습니다.',
           replace_original: true,
@@ -139,18 +152,21 @@ export class SessionActionHandler {
         return;
       }
 
-      // Refresh activity timestamp
-      session.lastActivity = new Date();
-      // Clear warning state so it can warn again later
-      session.lastWarningSentAt = undefined;
-      session.warningMessageTs = undefined;
-
       await respond({
         text: '🔄 세션이 유지됩니다. 타이머가 리셋되었습니다.',
         replace_original: true,
       });
     } catch (error) {
       this.logger.error('Error processing idle keep', error);
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 유지 처리 중 오류가 발생했습니다. 스레드에 메시지를 보내 활동을 갱신해주세요.',
+          replace_original: false,
+        });
+      } catch (respondError) {
+        this.logger.error('Failed to send error response for idle keep', respondError);
+      }
     }
   }
 
