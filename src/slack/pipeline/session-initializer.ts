@@ -9,6 +9,7 @@ import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession } from '../../types';
+import { createConversation, getConversationUrl } from '../../conversation';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -101,6 +102,21 @@ export class SessionInitializer {
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
+
+      // Create conversation record and assign ID to session
+      try {
+        const conversationId = createConversation(channel, threadTs, user, userName);
+        session.conversationId = conversationId;
+
+        // Send conversation URL to the thread
+        const conversationUrl = getConversationUrl(conversationId);
+        await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
+          threadTs,
+        });
+        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+      } catch (error) {
+        this.logger.error('Failed to create conversation record (non-critical)', error);
+      }
     }
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
