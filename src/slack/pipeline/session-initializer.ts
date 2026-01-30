@@ -10,6 +10,7 @@ import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession } from '../../types';
 import { createConversation, getConversationUrl } from '../../conversation';
+import { AssistantStatusManager } from '../assistant-status-manager';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -25,6 +26,7 @@ interface SessionInitializerDeps {
   reactionManager: ReactionManager;
   contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 /**
@@ -232,6 +234,9 @@ export class SessionInitializer {
       const dispatchService = getDispatchService();
       const model = dispatchService.getModel();
 
+      // Native spinner during dispatch
+      await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+
       // Add dispatching reaction and post status message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
       const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
@@ -268,6 +273,9 @@ export class SessionInitializer {
           `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`
         );
       }
+
+      // Set thread title in DM history
+      await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
 
       // Store extracted links on the session
       if (result.links && Object.keys(result.links).length > 0) {
