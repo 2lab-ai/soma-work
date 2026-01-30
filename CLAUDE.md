@@ -385,6 +385,22 @@ Dockerfile                  # Docker 이미지
 docker-compose.yml          # Docker Compose 설정
 ```
 
+### Git Push via gh CLI (multi-account)
+
+기본 `GITHUB_TOKEN`이 bot 토큰이라 push 권한이 없을 때, `gh auth`에 등록된 다른 계정(예: `icedac`)의 토큰으로 push:
+
+```bash
+# 등록된 계정 확인
+gh auth status
+
+# 특정 계정의 토큰으로 push (GITHUB_TOKEN 환경변수가 있으면 gh auth switch 불가)
+ICEDAC_TOKEN=$(gh auth token --user icedac)
+git push "https://icedac:${ICEDAC_TOKEN}@github.com/OWNER/REPO.git" BRANCH_NAME
+```
+
+> `gh auth switch --user icedac`은 `GITHUB_TOKEN` 환경변수가 설정되어 있으면 동작하지 않음.
+> URL에 토큰을 직접 임베딩하는 방식으로 우회.
+
 ### Key Design Decisions
 1. **Facade Pattern**: 복잡한 서브시스템을 단순한 인터페이스로 제공
 2. **Single Responsibility Principle**: 각 모듈이 하나의 책임만 담당
