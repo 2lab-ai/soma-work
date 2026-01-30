@@ -12,23 +12,23 @@ export class ContextHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, say } = ctx;
+    const { channel, threadTs } = ctx;
 
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     if (!session) {
-      await say({
-        text: '💡 No active session in this thread. Start a conversation first!',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '💡 No active session in this thread. Start a conversation first!',
+        { threadTs }
+      );
       return { handled: true };
     }
 
     if (!session.usage) {
-      await say({
-        text: '📊 *Session Context*\n\nNo usage data available yet. Send a message to start tracking.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '📊 *Session Context*\n\nNo usage data available yet. Send a message to start tracking.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
@@ -85,10 +85,7 @@ export class ContextHandler implements CommandHandler {
       lines.push('⚠️ Context running low! Consider using `/renew` to save and reset.');
     }
 
-    await say({
-      text: lines.join('\n'),
-      thread_ts: threadTs,
-    });
+    await this.deps.slackApi.postSystemMessage(channel, lines.join('\n'), { threadTs });
 
     return { handled: true };
   }

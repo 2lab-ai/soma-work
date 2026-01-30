@@ -100,6 +100,8 @@ export class SlackHandler {
       sessionUiManager: this.sessionUiManager,
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
+      reactionManager: this.reactionManager,
+      contextWindowManager: this.contextWindowManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
