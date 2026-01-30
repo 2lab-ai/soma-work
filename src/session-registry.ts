@@ -264,6 +264,33 @@ export class SessionRegistry {
   }
 
   /**
+   * Refresh session activity timestamp and clear warning state.
+   * Used when user clicks "Keep" on idle check prompt.
+   */
+  refreshSessionActivity(channelId: string, threadTs: string | undefined): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return false;
+    session.lastActivity = new Date();
+    session.lastWarningSentAt = undefined;
+    session.warningMessageTs = undefined;
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Refresh session activity by session key.
+   */
+  refreshSessionActivityByKey(sessionKey: string): boolean {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return false;
+    session.lastActivity = new Date();
+    session.lastWarningSentAt = undefined;
+    session.warningMessageTs = undefined;
+    this.saveSessions();
+    return true;
+  }
+
+  /**
    * Get session links
    */
   getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {

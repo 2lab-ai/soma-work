@@ -352,14 +352,14 @@ export class DispatchService {
 
     // Linear issue: linear.app/team/issue/XXX-123
     if (!links.issue) {
-      const linearMatch = text.match(/linear\.app\/[\w-]+\/issue\/(\w+-\d+)/);
+      const linearMatch = text.match(/linear\.app\/([\w-]+)\/issue\/(\w+-\d+)/);
       if (linearMatch) {
         const urlMatch = text.match(/(https?:\/\/\S*linear\.app\/[\w-]+\/issue\/\w+-\d+\S*)/);
         links.issue = {
-          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://linear.app/issue/${linearMatch[1]}`,
+          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://linear.app/${linearMatch[1]}/issue/${linearMatch[2]}`,
           type: 'issue',
           provider: 'linear',
-          label: linearMatch[1],
+          label: linearMatch[2],
         };
       }
     }

@@ -124,6 +124,10 @@ export class ClaudeHandler {
     return this.sessionRegistry.getSessionLinks(channelId, threadTs);
   }
 
+  refreshSessionActivityByKey(sessionKey: string): boolean {
+    return this.sessionRegistry.refreshSessionActivityByKey(sessionKey);
+  }
+
   // ===== Session State Machine =====
 
   transitionToMain(
