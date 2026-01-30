@@ -237,8 +237,14 @@ export class EventRouter {
    * 세션 만료 콜백 설정
    */
   private setupSessionExpiryCallbacks(): void {
+    const IDLE_CHECK_THRESHOLD = 60 * 60 * 1000; // 1 hour: above this → idle check, below → final warning
+
     const callbacks: SessionExpiryCallbacks = {
       onWarning: (session, timeRemaining, existingMessageTs) => {
+        // Route to idle check for 12h warning, regular warning for 10m
+        if (timeRemaining > IDLE_CHECK_THRESHOLD) {
+          return this.deps.sessionManager.handleIdleCheck(session, timeRemaining, existingMessageTs);
+        }
         return this.deps.sessionManager.handleSessionWarning(session, timeRemaining, existingMessageTs);
       },
       onExpiry: (session) => {

@@ -28,22 +28,29 @@
 ```json
 {
   "workflow": "워크플로우_아이디",
-  "title": "세션 타이틀"
+  "title": "세션 타이틀",
+  "links": {
+    "issue": "이슈_URL (있을 경우)",
+    "pr": "PR_URL (있을 경우)",
+    "doc": "문서_URL (있을 경우)"
+  }
 }
 ```
+
+- `links`는 URL이 감지된 경우에만 포함. 없으면 생략.
 
 예시:
 - 입력: "https://xxx.atlassian.net/jira/software/projects/ABC/boards/123"
   출력: {"workflow": "jira-executive-summary", "title": "ABC 스프린트 현황"}
 
 - 입력: "https://github.com/org/repo/pull/456"
-  출력: {"workflow": "pr-review", "title": "PR #456 리뷰"}
+  출력: {"workflow": "pr-review", "title": "PR #456 리뷰", "links": {"pr": "https://github.com/org/repo/pull/456"}}
 
 - 입력: "fix https://xxx.atlassian.net/browse/ABC-789"
-  출력: {"workflow": "jira-create-pr", "title": "ABC-789 구현"}
+  출력: {"workflow": "jira-create-pr", "title": "ABC-789 구현", "links": {"issue": "https://xxx.atlassian.net/browse/ABC-789"}}
 
 - 입력: "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs https://github.com/org/repo/pull/456"
-  출력: {"workflow": "pr-docs-confluence", "title": "PR #456 Confluence 문서화"}
+  출력: {"workflow": "pr-docs-confluence", "title": "PR #456 Confluence 문서화", "links": {"pr": "https://github.com/org/repo/pull/456", "doc": "https://xxx.atlassian.net/wiki/spaces/TEAM/pages/123/ChangeLogs"}}
 
 - 입력: "Redis 캐시 구현 방법 알려줘"
   출력: {"workflow": "default", "title": "Redis 캐시 구현"}

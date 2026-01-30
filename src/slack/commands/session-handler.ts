@@ -1,10 +1,13 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import { Logger } from '../../logger';
 
 /**
  * Handles session commands (sessions/all_sessions/terminate)
  */
 export class SessionHandler implements CommandHandler {
+  private logger = new Logger('SessionHandler');
+
   constructor(private deps: CommandDependencies) {}
 
   canHandle(text: string): boolean {
@@ -18,12 +21,43 @@ export class SessionHandler implements CommandHandler {
 
     // Sessions command (user's sessions)
     if (CommandParser.isSessionsCommand(text)) {
-      const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(user);
-      await say({
-        text: msgText,
-        blocks,
-        thread_ts: threadTs,
-      });
+      const { isPublic } = CommandParser.parseSessionsCommand(text);
+
+      if (isPublic) {
+        // Public: channel-visible, no kill buttons
+        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
+          user,
+          { showControls: false }
+        );
+        await say({
+          text: msgText,
+          blocks,
+          thread_ts: threadTs,
+        });
+      } else {
+        // Default: ephemeral (user-only), with kill buttons
+        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
+          user,
+          { showControls: true }
+        );
+        try {
+          await this.deps.slackApi.postEphemeral(
+            channel,
+            user,
+            msgText,
+            threadTs,
+            blocks
+          );
+        } catch (error) {
+          this.logger.warn('postEphemeral failed, falling back to regular message', error);
+          // Fallback to regular message if ephemeral fails
+          await say({
+            text: msgText,
+            blocks,
+            thread_ts: threadTs,
+          });
+        }
+      }
       return { handled: true };
     }
 
