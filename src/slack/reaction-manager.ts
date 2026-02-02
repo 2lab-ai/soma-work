@@ -180,4 +180,46 @@ export class ReactionManager {
   getCurrentReaction(sessionKey: string): string | undefined {
     return this.currentReactions.get(sessionKey);
   }
+
+  // ===== Lifecycle Emojis (independent from status reactions) =====
+  // These emojis persist alongside status emojis and are managed separately.
+
+  private static readonly LIFECYCLE_IDLE_EMOJI = 'crescent_moon';
+  private static readonly LIFECYCLE_EXPIRED_EMOJI = 'zzz';
+
+  /**
+   * Add idle emoji (crescent_moon) to thread's original message
+   */
+  async setSessionIdle(sessionKey: string): Promise<void> {
+    const msg = this.originalMessages.get(sessionKey);
+    if (!msg) return;
+    await this.slackApi.addReaction(msg.channel, msg.ts, ReactionManager.LIFECYCLE_IDLE_EMOJI);
+  }
+
+  /**
+   * Add expired/sleep emoji (zzz) and remove idle emoji
+   * Accepts fallback channel/ts for cases where originalMessage was cleaned up
+   */
+  async setSessionExpired(sessionKey: string, channel?: string, ts?: string): Promise<void> {
+    const msg = this.originalMessages.get(sessionKey);
+    const ch = msg?.channel || channel;
+    const msgTs = msg?.ts || ts;
+    if (!ch || !msgTs) return;
+
+    // Remove idle emoji if present
+    await this.slackApi.removeReaction(ch, msgTs, ReactionManager.LIFECYCLE_IDLE_EMOJI);
+    // Add expired emoji
+    await this.slackApi.addReaction(ch, msgTs, ReactionManager.LIFECYCLE_EXPIRED_EMOJI);
+  }
+
+  /**
+   * Remove all lifecycle emojis from a message
+   * Used when session is resumed/woken
+   */
+  async clearSessionLifecycleEmojis(channel: string, ts: string): Promise<void> {
+    await Promise.all([
+      this.slackApi.removeReaction(channel, ts, ReactionManager.LIFECYCLE_IDLE_EMOJI),
+      this.slackApi.removeReaction(channel, ts, ReactionManager.LIFECYCLE_EXPIRED_EMOJI),
+    ]);
+  }
 }

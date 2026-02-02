@@ -1,5 +1,6 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
+import { ReactionManager } from '../reaction-manager';
 import { ClaudeHandler } from '../../claude-handler';
 import { UserChoiceQuestion } from '../../types';
 
@@ -31,4 +32,5 @@ export interface ActionHandlerContext {
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
   messageHandler: MessageHandler;
+  reactionManager?: ReactionManager;
 }

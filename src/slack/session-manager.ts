@@ -1,5 +1,6 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { MessageFormatter } from './message-formatter';
+import { ReactionManager } from './reaction-manager';
 import { ConversationSession, SessionLinks } from '../types';
 import { ClaudeHandler } from '../claude-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -18,10 +19,19 @@ export type SayFn = (args: any) => Promise<any>;
 export class SessionUiManager {
   private logger = new Logger('SessionUiManager');
 
+  private reactionManager?: ReactionManager;
+
   constructor(
     private claudeHandler: ClaudeHandler,
     private slackApi: SlackApiHelper
   ) {}
+
+  /**
+   * Set reaction manager for lifecycle emojis (optional dependency)
+   */
+  setReactionManager(reactionManager: ReactionManager): void {
+    this.reactionManager = reactionManager;
+  }
 
   /**
    * 사용자의 세션 목록을 Block Kit 형식으로 포맷팅
@@ -76,9 +86,6 @@ export class SessionUiManager {
       const channelName = await this.slackApi.getChannelName(session.channelId);
       const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
       const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-      const workDir = session.workingDirectory
-        ? `\`${session.workingDirectory.split('/').pop()}\``
-        : '_미설정_';
       const modelDisplay = session.model
         ? userSettingsStore.getModelDisplayName(session.model as any)
         : 'Sonnet 4';
@@ -116,9 +123,9 @@ export class SessionUiManager {
         const sleepExpires = session.sleepStartedAt
           ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt)
           : '?';
-        sessionText += `\n💤 *Sleep* | 🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo} | ⏳ ${sleepExpires}`;
+        sessionText += `\n💤 *Sleep* | 🤖 ${modelDisplay} | 🕐 ${timeAgo} | ⏳ ${sleepExpires}`;
       } else {
-        sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
+        sessionText += `\n🤖 ${modelDisplay} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
       }
 
       const block: any = {
@@ -165,18 +172,35 @@ export class SessionUiManager {
       blocks.push(block);
     }
 
-    blocks.push(
-      { type: 'divider' },
-      {
-        type: 'context',
+    blocks.push({ type: 'divider' });
+
+    // Add refresh button when controls are enabled
+    if (showControls) {
+      blocks.push({
+        type: 'actions',
         elements: [
           {
-            type: 'mrkdwn',
-            text: '💡 `terminate <session-key>` 명령으로도 세션을 종료할 수 있습니다.',
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '🔄 새로고침',
+              emoji: true,
+            },
+            action_id: 'refresh_sessions',
           },
         ],
-      }
-    );
+      });
+    }
+
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: '💡 `terminate <session-key>` 명령으로도 세션을 종료할 수 있습니다.',
+        },
+      ],
+    });
 
     return {
       text: `📋 내 세션 목록 (${userSessions.length}개)`,
@@ -227,14 +251,11 @@ export class SessionUiManager {
         const channelName = await this.slackApi.getChannelName(session.channelId);
         const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
         const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-        const workDir = session.workingDirectory
-          ? session.workingDirectory.split('/').pop() || session.workingDirectory
-          : '-';
         const initiator = session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
           ? ` | 🎯 ${session.currentInitiatorName}`
           : '';
 
-        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 📁 \`${workDir}\` | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`);
+        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`);
       }
       lines.push('');
     }
@@ -305,6 +326,10 @@ export class SessionUiManager {
   async handleSessionSleep(session: ConversationSession): Promise<void> {
     const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n24시간 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 7일간 유지되며, 이후 자동으로 종료됩니다.`;
 
+    // Add zzz emoji to thread
+    const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
+    await this.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+
     try {
       if (session.warningMessageTs) {
         await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, sleepText);
@@ -353,6 +378,10 @@ export class SessionUiManager {
    */
   async handleSessionExpiry(session: ConversationSession): Promise<void> {
     const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 7일 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+
+    // Add zzz emoji (may already be there from sleep transition)
+    const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
+    await this.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
 
     try {
       if (session.warningMessageTs) {
@@ -409,6 +438,8 @@ export class SessionUiManager {
 
     // 12h idle check (when more than 10 minutes remain = not yet at final warning stage)
     if (timeRemaining > 60 * 60 * 1000) {
+      // Add idle emoji to thread
+      await this.reactionManager?.setSessionIdle(sessionKey);
       const blocks = [
         {
           type: 'section',

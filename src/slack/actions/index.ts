@@ -33,6 +33,7 @@ export class ActionHandlers {
       slackApi: ctx.slackApi,
       claudeHandler: ctx.claudeHandler,
       sessionManager: ctx.sessionManager,
+      reactionManager: ctx.reactionManager,
     });
 
     this.choiceHandler = new ChoiceActionHandler(
@@ -74,6 +75,11 @@ export class ActionHandlers {
     app.action('terminate_session', async ({ ack, body, respond }) => {
       await ack();
       await this.sessionHandler.handleTerminateSession(body, respond);
+    });
+
+    app.action('refresh_sessions', async ({ ack, body, respond }) => {
+      await ack();
+      await this.sessionHandler.handleRefreshSessions(body, respond);
     });
 
     // Close session confirm/cancel (from /close command)
