@@ -82,7 +82,7 @@ export class SessionInitializer {
 
     // Store original message info for status reactions and context window tracking
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
-    this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
+    await this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
 
     // Clear any existing completion reaction when new message arrives
     const currentReaction = this.deps.reactionManager.getCurrentReaction(sessionKey);
@@ -92,6 +92,12 @@ export class SessionInitializer {
       // Reset reaction state so ReactionManager doesn't think it's still set
       this.deps.reactionManager.cleanup(sessionKey);
       this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
+    }
+
+    // Wake sleeping sessions before proceeding
+    if (this.deps.claudeHandler.isSleeping(channel, threadTs)) {
+      this.deps.claudeHandler.wakeFromSleep(channel, threadTs);
+      this.logger.info('Woke session from sleep', { sessionKey, user: userName });
     }
 
     // Get or create session

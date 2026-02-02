@@ -247,6 +247,9 @@ export class EventRouter {
         }
         return this.deps.sessionManager.handleSessionWarning(session, timeRemaining, existingMessageTs);
       },
+      onSleep: (session) => {
+        return this.deps.sessionManager.handleSessionSleep(session);
+      },
       onExpiry: (session) => {
         return this.deps.sessionManager.handleSessionExpiry(session);
       },
