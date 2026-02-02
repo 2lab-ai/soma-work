@@ -261,17 +261,18 @@ export class StreamExecutor {
         throw abortError;
       }
 
-      // Update status to completed + clear native spinner
+      // Update status and reaction based on whether user choice is pending
+      const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
       if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'completed');
+        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
       }
       await this.deps.reactionManager.updateReaction(
         sessionKey,
-        this.deps.statusReporter.getStatusEmoji('completed')
+        this.deps.statusReporter.getStatusEmoji(finalStatus)
       );
       await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
-      // Transition activity state based on whether user choice was presented
+      // Transition activity state
       this.deps.claudeHandler.setActivityState(
         channel,
         threadTs,
