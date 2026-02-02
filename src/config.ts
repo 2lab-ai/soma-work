@@ -42,6 +42,7 @@ export const config = {
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
     summaryModel: process.env.SUMMARY_MODEL || 'claude-haiku-4-20250414',
+    viewerHost: process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1',
     viewerPort: parseInt(process.env.CONVERSATION_VIEWER_PORT || '3000', 10),
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',
   },

@@ -23,7 +23,9 @@ const writeLocks = new Map<string, Promise<void>>();
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
   const previous = writeLocks.get(conversationId) || Promise.resolve();
   const current = previous.then(() => getStorage().save(record));
-  writeLocks.set(conversationId, current.catch(() => {})); // prevent chain rejection
+  writeLocks.set(conversationId, current.catch((err) => {
+    logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
+  }));
   await current;
 }
 
@@ -41,6 +43,7 @@ function cacheRecord(id: string, record: ConversationRecord): void {
     const oldest = activeConversations.keys().next().value;
     if (oldest) {
       activeConversations.delete(oldest);
+      writeLocks.delete(oldest);
       logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
     } else {
       break;
