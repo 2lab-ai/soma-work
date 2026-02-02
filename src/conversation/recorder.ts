@@ -40,14 +40,10 @@ function cacheRecord(id: string, record: ConversationRecord): void {
   }
   // Evict oldest entries if at capacity
   while (activeConversations.size >= MAX_CACHE_SIZE) {
-    const oldest = activeConversations.keys().next().value;
-    if (oldest) {
-      activeConversations.delete(oldest);
-      writeLocks.delete(oldest);
-      logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
-    } else {
-      break;
-    }
+    const oldest = activeConversations.keys().next().value!;
+    activeConversations.delete(oldest);
+    writeLocks.delete(oldest);
+    logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
   }
   activeConversations.set(id, record);
 }
