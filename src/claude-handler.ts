@@ -143,6 +143,18 @@ export class ClaudeHandler {
     return this.sessionRegistry.needsDispatch(channelId, threadTs);
   }
 
+  isSleeping(channelId: string, threadTs?: string): boolean {
+    return this.sessionRegistry.isSleeping(channelId, threadTs);
+  }
+
+  wakeFromSleep(channelId: string, threadTs?: string): boolean {
+    return this.sessionRegistry.wakeFromSleep(channelId, threadTs);
+  }
+
+  transitionToSleep(channelId: string, threadTs?: string): boolean {
+    return this.sessionRegistry.transitionToSleep(channelId, threadTs);
+  }
+
   getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
     return this.sessionRegistry.getSessionWorkflow(channelId, threadTs);
   }

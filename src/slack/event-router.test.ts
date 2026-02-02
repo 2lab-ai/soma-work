@@ -21,6 +21,7 @@ const createMockClaudeHandler = () => ({
 
 const createMockSessionManager = () => ({
   handleSessionWarning: vi.fn().mockResolvedValue('123.456'),
+  handleSessionSleep: vi.fn().mockResolvedValue(undefined),
   handleSessionExpiry: vi.fn().mockResolvedValue(undefined),
 });
 
@@ -280,6 +281,7 @@ describe('EventRouter', () => {
 
       expect(mockClaudeHandler.setExpiryCallbacks).toHaveBeenCalledWith({
         onWarning: expect.any(Function),
+        onSleep: expect.any(Function),
         onExpiry: expect.any(Function),
       });
     });
