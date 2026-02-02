@@ -87,11 +87,11 @@ export class SessionInitializer {
     // Clear lifecycle emojis on any new message (removes stale idle/expired emojis)
     await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);
 
-    // Clear any existing completion reaction when new message arrives
+    // Clear any existing completion/waiting reaction when new message arrives
     const currentReaction = this.deps.reactionManager.getCurrentReaction(sessionKey);
-    if (currentReaction === 'white_check_mark') {
-      this.logger.debug('Clearing completion reaction for new message', { sessionKey });
-      await this.deps.slackApi.removeReaction(channel, threadTs, 'white_check_mark');
+    if (currentReaction === 'white_check_mark' || currentReaction === 'raised_hand') {
+      this.logger.debug('Clearing stale reaction for new message', { sessionKey, reaction: currentReaction });
+      await this.deps.slackApi.removeReaction(channel, threadTs, currentReaction);
       // Reset reaction state so ReactionManager doesn't think it's still set
       this.deps.reactionManager.cleanup(sessionKey);
       this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);

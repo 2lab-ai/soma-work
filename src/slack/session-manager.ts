@@ -1,10 +1,10 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { MessageFormatter } from './message-formatter';
 import { ReactionManager } from './reaction-manager';
-import { ConversationSession, SessionLinks } from '../types';
+import { ConversationSession, SessionLinks, ActivityState } from '../types';
 import { ClaudeHandler } from '../claude-handler';
 import { userSettingsStore } from '../user-settings-store';
-import { fetchLinkTitle } from '../link-metadata-fetcher';
+import { fetchLinkMetadata, getStatusEmoji } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 
 export interface FormatSessionsOptions {
@@ -130,7 +130,8 @@ export class SessionUiManager {
         const sessionId = key;
 
         // 세션 정보 텍스트 구성
-        let sessionText = `*${sessionIndex}.*`;
+        const activityEmoji = this.formatActivityEmoji(session.activityState);
+        let sessionText = `${activityEmoji}*${sessionIndex}.*`;
         if (session.title) {
           sessionText += ` ${session.title}`;
         }
@@ -431,6 +432,18 @@ export class SessionUiManager {
   }
 
   /**
+   * Format activity state as emoji prefix for session display.
+   * working → ⚙️, waiting → ✋, idle/undefined → empty string
+   */
+  private formatActivityEmoji(state?: ActivityState): string {
+    switch (state) {
+      case 'working': return '⚙️ ';
+      case 'waiting': return '✋ ';
+      default: return '';
+    }
+  }
+
+  /**
    * Extract repository name from session data.
    * Priority: 1) GitHub PR/Issue URL → org/repo, 2) workingDirectory → last path component, 3) '_기타_'
    */
@@ -454,7 +467,7 @@ export class SessionUiManager {
 
   /**
    * Format links line for session display
-   * Shows title from Jira/GitHub API when available.
+   * Shows title and status from Jira/GitHub API when available.
    * Priority: issue title > PR title (when no issue)
    */
   private async formatLinksLine(links?: SessionLinks): Promise<string | null> {
@@ -462,22 +475,26 @@ export class SessionUiManager {
 
     const parts: string[] = [];
 
-    // Fetch titles in parallel
-    const [issueTitle, prTitle] = await Promise.all([
-      links.issue ? fetchLinkTitle(links.issue) : undefined,
-      links.pr ? fetchLinkTitle(links.pr) : undefined,
+    // Fetch metadata (title + status) in parallel
+    const [issueMeta, prMeta] = await Promise.all([
+      links.issue ? fetchLinkMetadata(links.issue) : undefined,
+      links.pr ? fetchLinkMetadata(links.pr) : undefined,
     ]);
 
     if (links.issue) {
       const label = links.issue.label || '이슈';
-      const titleDisplay = issueTitle ? `: ${issueTitle}` : '';
-      parts.push(`🎫 <${links.issue.url}|${label}${titleDisplay}>`);
+      const title = issueMeta?.title ? `: ${issueMeta.title}` : '';
+      const statusEmoji = getStatusEmoji(issueMeta?.status);
+      const statusText = issueMeta?.status ? ` ${statusEmoji}${issueMeta.status}` : '';
+      parts.push(`🎫 <${links.issue.url}|${label}${title}>${statusText}`);
     }
     if (links.pr) {
       const label = links.pr.label || 'PR';
       // Only show PR title if there's no issue (issue title takes priority)
-      const titleDisplay = !links.issue && prTitle ? `: ${prTitle}` : '';
-      parts.push(`🔀 <${links.pr.url}|${label}${titleDisplay}>`);
+      const title = !links.issue && prMeta?.title ? `: ${prMeta.title}` : '';
+      const statusEmoji = getStatusEmoji(prMeta?.status, 'pr');
+      const statusText = prMeta?.status ? ` ${statusEmoji}${prMeta.status}` : '';
+      parts.push(`🔀 <${links.pr.url}|${label}${title}>${statusText}`);
     }
     if (links.doc) {
       parts.push(`📄 <${links.doc.url}|${links.doc.label || '문서'}>`);

@@ -1,7 +1,7 @@
 import { WebClient } from '@slack/web-api';
 import { Logger } from '../logger';
 
-export type StatusType = 'thinking' | 'working' | 'completed' | 'error' | 'cancelled';
+export type StatusType = 'thinking' | 'working' | 'waiting' | 'completed' | 'error' | 'cancelled';
 
 interface StatusConfig {
   text: string;
@@ -11,6 +11,7 @@ interface StatusConfig {
 const STATUS_CONFIG: Record<StatusType, StatusConfig> = {
   thinking: { text: '🤔 *Thinking...*', emoji: 'thinking_face' },
   working: { text: '⚙️ *Working...*', emoji: 'gear' },
+  waiting: { text: '✋ *Waiting for input...*', emoji: 'raised_hand' },
   completed: { text: '✅ *Task completed*', emoji: 'white_check_mark' },
   error: { text: '❌ *Error occurred*', emoji: 'x' },
   cancelled: { text: '⏹️ *Cancelled*', emoji: 'stop_sign' },
