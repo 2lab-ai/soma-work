@@ -1,7 +1,7 @@
 /**
  * Session state machine states
  */
-export type SessionState = 'INITIALIZING' | 'MAIN';
+export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
 
 /**
  * Workflow types for session routing
@@ -102,6 +102,8 @@ export interface ConversationSession {
   renewUserMessage?: string;
   // Links attached to this session (issue, PR, doc)
   links?: SessionLinks;
+  // Sleep mode
+  sleepStartedAt?: Date;
   // Conversation history recording ID
   conversationId?: string;
 }

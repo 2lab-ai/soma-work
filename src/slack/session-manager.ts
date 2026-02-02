@@ -36,6 +36,7 @@ export class SessionUiManager {
 
     for (const [key, session] of allSessions.entries()) {
       if (session.ownerId === userId && session.sessionId) {
+        // Include both active and sleeping sessions
         userSessions.push({ key, session });
       }
     }
@@ -110,7 +111,15 @@ export class SessionUiManager {
         sessionText += `\n${linksLine}`;
       }
 
-      sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
+      // Show different status line for sleeping sessions
+      if (session.state === 'SLEEPING') {
+        const sleepExpires = session.sleepStartedAt
+          ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt)
+          : '?';
+        sessionText += `\n💤 *Sleep* | 🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo} | ⏳ ${sleepExpires}`;
+      } else {
+        sessionText += `\n🤖 ${modelDisplay} | 📁 ${workDir} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
+      }
 
       const block: any = {
         type: 'section',
@@ -291,6 +300,29 @@ export class SessionUiManager {
   }
 
   /**
+   * 세션 Sleep 전환 처리
+   */
+  async handleSessionSleep(session: ConversationSession): Promise<void> {
+    const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n24시간 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 7일간 유지되며, 이후 자동으로 종료됩니다.`;
+
+    try {
+      if (session.warningMessageTs) {
+        await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, sleepText);
+      } else {
+        await this.slackApi.postMessage(session.channelId, sleepText, { threadTs: session.threadTs });
+      }
+
+      this.logger.info('Session transitioned to sleep', {
+        userId: session.userId,
+        channelId: session.channelId,
+        threadTs: session.threadTs,
+      });
+    } catch (error) {
+      this.logger.error('Failed to send session sleep message', error);
+    }
+  }
+
+  /**
    * 세션 만료 경고 처리
    */
   async handleSessionWarning(
@@ -320,7 +352,7 @@ export class SessionUiManager {
    * 세션 만료 처리
    */
   async handleSessionExpiry(session: ConversationSession): Promise<void> {
-    const expiryText = `🔒 *세션이 종료되었습니다*\n\n24시간 동안 활동이 없어 이 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+    const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 7일 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
 
     try {
       if (session.warningMessageTs) {

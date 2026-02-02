@@ -34,14 +34,34 @@ export class ContextWindowManager {
 
   /**
    * Set the original message for context emoji (thread's first message)
-   * Called from SessionInitializer when session starts
-   * NOTE: Does NOT preserve existing emoji - new session = fresh start
+   * Called from SessionInitializer when each message arrives.
+   * - Same ts: preserve existing emoji state (no-op)
+   * - Different ts: remove old emoji from Slack, then reset state
+   * - First call: initialize fresh
    */
-  setOriginalMessage(sessionKey: string, channel: string, ts: string): void {
+  async setOriginalMessage(sessionKey: string, channel: string, ts: string): Promise<void> {
+    const existing = this.contextState.get(sessionKey);
+
+    // Same ts - preserve emoji state to avoid duplicates
+    if (existing && existing.ts === ts) {
+      return;
+    }
+
+    // Different ts or cleanup happened - remove old emoji from Slack
+    if (existing?.currentEmoji) {
+      await this.slackApi.removeReaction(existing.channel, existing.ts, existing.currentEmoji);
+      this.logger.debug('Removed old context emoji on message change', {
+        sessionKey,
+        oldEmoji: existing.currentEmoji,
+        oldTs: existing.ts,
+        newTs: ts,
+      });
+    }
+
     this.contextState.set(sessionKey, {
       channel,
       ts,
-      currentEmoji: null, // Always start fresh - no emoji preservation
+      currentEmoji: null,
     });
   }
 
@@ -75,7 +95,8 @@ export class ContextWindowManager {
 
   /**
    * Update context emoji on thread's first message
-   * Removes old context emoji if different, adds new one
+   * Removes old context emoji if different, adds new one.
+   * Safety: if currentEmoji is null (e.g., after cleanup/re-entry), removes all possible context emojis first.
    */
   async updateContextEmoji(sessionKey: string, percent: number): Promise<void> {
     const state = this.contextState.get(sessionKey);
@@ -92,8 +113,12 @@ export class ContextWindowManager {
       return;
     }
 
-    // Remove old context emoji
-    if (state.currentEmoji) {
+    // Safety: if currentEmoji is unknown (null), remove all possible context emojis
+    // This handles re-entry after cleanup where stale emojis may linger on Slack
+    if (state.currentEmoji === null) {
+      await this.removeAllContextEmojis(state.channel, state.ts, newEmoji);
+    } else {
+      // Normal path: remove the known old emoji
       await this.slackApi.removeReaction(state.channel, state.ts, state.currentEmoji);
       this.logger.debug('Removed old context emoji', {
         sessionKey,
@@ -111,6 +136,17 @@ export class ContextWindowManager {
         percent: Math.round(percent),
       });
     }
+  }
+
+  /**
+   * Remove all possible context emojis except the specified one.
+   * Used as a safety net when currentEmoji state is lost.
+   */
+  private async removeAllContextEmojis(channel: string, ts: string, exceptEmoji?: string): Promise<void> {
+    const removals = ContextWindowManager.EMOJI_THRESHOLDS
+      .filter(t => t.emoji !== exceptEmoji)
+      .map(t => this.slackApi.removeReaction(channel, ts, t.emoji));
+    await Promise.all(removals);
   }
 
   /**

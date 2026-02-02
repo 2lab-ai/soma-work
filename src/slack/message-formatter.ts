@@ -76,6 +76,22 @@ export class MessageFormatter {
   }
 
   /**
+   * Format sleep expiry countdown
+   */
+  static formatSleepExpiresIn(sleepStartedAt: Date, maxSleepMs: number = 7 * 24 * 60 * 60 * 1000): string {
+    const expiresAt = sleepStartedAt.getTime() + maxSleepMs;
+    const remaining = expiresAt - Date.now();
+
+    if (remaining <= 0) return '만료됨';
+
+    const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((remaining % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+    if (days > 0) return `${days}일 ${hours}시간 남음`;
+    return `${hours}시간 남음`;
+  }
+
+  /**
    * Generate a session title from the first message
    * - Clean up mentions, URLs, code blocks
    * - Truncate to reasonable length

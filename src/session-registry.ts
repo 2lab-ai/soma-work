@@ -13,8 +13,11 @@ import * as fs from 'fs';
 const DATA_DIR = path.join(process.cwd(), 'data');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
-// Default session timeout: 24 hours
+// Default session timeout: 24 hours (Active → Sleep)
 const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
+
+// Maximum sleep duration: 7 days (Sleep → Delete)
+const MAX_SLEEP_DURATION = 7 * 24 * 60 * 60 * 1000;
 
 // Session expiry warning intervals in milliseconds (from session expiry time)
 // Sorted descending: most urgent first
@@ -44,6 +47,8 @@ interface SerializedSession {
   workflow?: WorkflowType;
   // Session links
   links?: SessionLinks;
+  // Sleep mode
+  sleepStartedAt?: string; // ISO date string
 }
 
 /**
@@ -55,6 +60,7 @@ export interface SessionExpiryCallbacks {
     timeRemaining: number,
     warningMessageTs?: string
   ) => Promise<string | undefined>;
+  onSleep: (session: ConversationSession) => Promise<void>;
   onExpiry: (session: ConversationSession) => Promise<void>;
 }
 
@@ -217,6 +223,63 @@ export class SessionRegistry {
   needsDispatch(channelId: string, threadTs?: string): boolean {
     const session = this.getSession(channelId, threadTs);
     return session?.state === 'INITIALIZING';
+  }
+
+  /**
+   * Check if session is sleeping
+   */
+  isSleeping(channelId: string, threadTs?: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    return session?.state === 'SLEEPING';
+  }
+
+  /**
+   * Transition session to SLEEPING state
+   * Called when session has been inactive for 24 hours
+   */
+  transitionToSleep(channelId: string, threadTs?: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session || session.state === 'SLEEPING') return false;
+
+    session.state = 'SLEEPING';
+    session.sleepStartedAt = new Date();
+    // Clear warning state
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+
+    this.logger.info('Session transitioned to SLEEPING', {
+      channelId,
+      threadTs,
+      sessionId: session.sessionId,
+      owner: session.ownerName,
+    });
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Wake session from SLEEPING back to MAIN state
+   * Called when user sends a message to a sleeping session
+   */
+  wakeFromSleep(channelId: string, threadTs?: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    if (!session || session.state !== 'SLEEPING') return false;
+
+    session.state = 'MAIN';
+    session.sleepStartedAt = undefined;
+    session.lastActivity = new Date();
+    // Clear warning state
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+
+    this.logger.info('Session woken from sleep', {
+      channelId,
+      threadTs,
+      sessionId: session.sessionId,
+      owner: session.ownerName,
+    });
+    this.saveSessions();
+    return true;
   }
 
   /**
@@ -409,38 +472,69 @@ export class SessionRegistry {
 
   /**
    * Clean up inactive sessions based on max age
+   * 3-stage lifecycle: Active → Sleep (24h) → Delete (7d sleep)
    */
   async cleanupInactiveSessions(maxAge: number = DEFAULT_SESSION_TIMEOUT): Promise<void> {
     const now = Date.now();
     let cleaned = 0;
+    let slept = 0;
 
     for (const [key, session] of this.sessions.entries()) {
-      const sessionAge = now - session.lastActivity.getTime();
-      const timeUntilExpiry = maxAge - sessionAge;
+      // Stage 1: SLEEPING sessions - check if sleep duration exceeded (7 days)
+      if (session.state === 'SLEEPING') {
+        const sleepAge = session.sleepStartedAt
+          ? now - session.sleepStartedAt.getTime()
+          : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
 
-      // Check if session should be expired
-      if (timeUntilExpiry <= 0) {
-        // Send expiry message before cleaning up
-        if (this.expiryCallbacks) {
-          try {
-            await this.expiryCallbacks.onExpiry(session);
-          } catch (error) {
-            this.logger.error('Failed to send session expiry message', error);
+        if (sleepAge >= MAX_SLEEP_DURATION) {
+          if (this.expiryCallbacks) {
+            try {
+              await this.expiryCallbacks.onExpiry(session);
+            } catch (error) {
+              this.logger.error('Failed to send sleep expiry message', error);
+            }
           }
+          this.sessions.delete(key);
+          cleaned++;
         }
-        this.sessions.delete(key);
-        cleaned++;
+        // Sleeping sessions don't get warnings
         continue;
       }
 
-      // Check if we should send a warning
+      // Stage 2: Active sessions - check if inactive for 24h → transition to Sleep
+      const sessionAge = now - session.lastActivity.getTime();
+      const timeUntilExpiry = maxAge - sessionAge;
+
+      if (timeUntilExpiry <= 0) {
+        // Transition to sleep instead of deleting
+        session.state = 'SLEEPING';
+        session.sleepStartedAt = new Date();
+        session.warningMessageTs = undefined;
+        session.lastWarningSentAt = undefined;
+        slept++;
+
+        if (this.expiryCallbacks) {
+          try {
+            await this.expiryCallbacks.onSleep(session);
+          } catch (error) {
+            this.logger.error('Failed to send session sleep message', error);
+          }
+        }
+        continue;
+      }
+
+      // Stage 3: Active sessions with time remaining - check for warnings
       if (this.expiryCallbacks) {
         await this.checkAndSendWarning(key, session, timeUntilExpiry);
       }
     }
 
-    if (cleaned > 0) {
-      this.logger.info(`Cleaned up ${cleaned} inactive sessions`);
+    if (cleaned > 0 || slept > 0) {
+      this.logger.info(`Session cleanup: ${slept} put to sleep, ${cleaned} expired`);
+    }
+
+    if (cleaned > 0 || slept > 0) {
+      this.saveSessions();
     }
   }
 
@@ -516,6 +610,7 @@ export class SessionRegistry {
             state: session.state,
             workflow: session.workflow,
             links: session.links,
+            sleepStartedAt: session.sleepStartedAt?.toISOString(),
           });
         }
       }
@@ -546,29 +641,39 @@ export class SessionRegistry {
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
-        const sessionAge = now - lastActivity.getTime();
+        const sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
 
-        // Only restore sessions that haven't expired
-        if (sessionAge < maxAge) {
-          const session: ConversationSession = {
-            ownerId: serialized.ownerId || serialized.userId, // Fallback for legacy sessions
-            ownerName: serialized.ownerName,
-            userId: serialized.userId, // Legacy field
-            channelId: serialized.channelId,
-            threadTs: serialized.threadTs,
-            sessionId: serialized.sessionId,
-            isActive: serialized.isActive,
-            lastActivity,
-            workingDirectory: serialized.workingDirectory,
-            title: serialized.title,
-            model: serialized.model,
-            state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
-            workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
-            links: serialized.links,
-          };
-          this.sessions.set(serialized.key, session);
-          loaded++;
+        // For SLEEPING sessions: check against MAX_SLEEP_DURATION
+        if (serialized.state === 'SLEEPING') {
+          const sleepAge = sleepStartedAt
+            ? now - sleepStartedAt.getTime()
+            : MAX_SLEEP_DURATION + 1;
+          if (sleepAge >= MAX_SLEEP_DURATION) continue; // Expired sleep session
+        } else {
+          // For active sessions: check against 24h timeout
+          const sessionAge = now - lastActivity.getTime();
+          if (sessionAge >= maxAge) continue;
         }
+
+        const session: ConversationSession = {
+          ownerId: serialized.ownerId || serialized.userId, // Fallback for legacy sessions
+          ownerName: serialized.ownerName,
+          userId: serialized.userId, // Legacy field
+          channelId: serialized.channelId,
+          threadTs: serialized.threadTs,
+          sessionId: serialized.sessionId,
+          isActive: serialized.isActive,
+          lastActivity,
+          workingDirectory: serialized.workingDirectory,
+          title: serialized.title,
+          model: serialized.model,
+          state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
+          workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
+          links: serialized.links,
+          sleepStartedAt,
+        };
+        this.sessions.set(serialized.key, session);
+        loaded++;
       }
 
       this.logger.info(
