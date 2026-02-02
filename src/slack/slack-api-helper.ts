@@ -215,6 +215,22 @@ export class SlackApiHelper {
   }
 
   /**
+   * 시스템 메시지 전송 (⚡ zap 리액션으로 모델 응답과 구분)
+   * 프로그램에서 직접 보내는 메시지에 사용
+   */
+  async postSystemMessage(
+    channel: string,
+    text: string,
+    options?: MessageOptions
+  ): Promise<{ ts?: string; channel?: string }> {
+    const result = await this.postMessage(channel, text, options);
+    if (result.ts) {
+      await this.addReaction(channel, result.ts, 'zap');
+    }
+    return result;
+  }
+
+  /**
    * 메시지 전송
    */
   async postMessage(
@@ -272,7 +288,8 @@ export class SlackApiHelper {
     channel: string,
     user: string,
     text: string,
-    threadTs?: string
+    threadTs?: string,
+    blocks?: any[]
   ): Promise<void> {
     try {
       await this.enqueue(() =>
@@ -281,6 +298,7 @@ export class SlackApiHelper {
           user,
           text,
           thread_ts: threadTs,
+          blocks,
         })
       );
     } catch (error) {
@@ -346,6 +364,32 @@ export class SlackApiHelper {
       this.logger.warn('Failed to get channel info', { channelId, error });
       return null;
     }
+  }
+
+  /**
+   * Assistant thread status 설정 (네이티브 스피너)
+   */
+  async setAssistantStatus(channelId: string, threadTs: string, status: string): Promise<void> {
+    await this.enqueue(() =>
+      this.app.client.assistant.threads.setStatus({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        status,
+      })
+    );
+  }
+
+  /**
+   * Assistant thread title 설정 (DM 히스토리용)
+   */
+  async setAssistantTitle(channelId: string, threadTs: string, title: string): Promise<void> {
+    await this.enqueue(() =>
+      this.app.client.assistant.threads.setTitle({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        title,
+      })
+    );
   }
 
   /**

@@ -75,6 +75,15 @@ Implements: [ISSUE-KEY]
 
 ## PR 생성 후
 
+PR 생성 즉시, 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+```json
+{
+  "type": "session_links",
+  "jira": "Jira 이슈 URL",
+  "pr": "생성된 PR URL"
+}
+```
+
 유저에게 다음 단계 확인:
 ```json
 {
@@ -86,3 +95,10 @@ Implements: [ISSUE-KEY]
   ]
 }
 ```
+
+## 🔄 다음 단계 안내
+
+PR 생성 후, 유저에게 다음 단계를 안내:
+- **PR 리뷰 요청**: "PR이 생성되었습니다. 리뷰를 받으려면 새 세션에서 PR 링크를 입력하세요."
+- **문서 작성**: "API 변경이 포함된 경우, Confluence 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
+- PR 링크는 `session_links` JSON directive로 자동 연결됨

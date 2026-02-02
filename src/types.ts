@@ -50,6 +50,27 @@ export interface Continuation {
   dispatchText?: string;   // Text to use for dispatch classification (if different from prompt)
 }
 
+/**
+ * Link attached to a session (issue, PR, doc)
+ */
+export interface SessionLink {
+  url: string;
+  type: 'issue' | 'pr' | 'doc';
+  provider: 'github' | 'jira' | 'confluence' | 'linear' | 'unknown';
+  label?: string;        // e.g., "PTN-123", "PR #456"
+  status?: string;       // e.g., "open", "merged", "in-progress"
+  statusCheckedAt?: number;
+}
+
+/**
+ * Collection of links attached to a session
+ */
+export interface SessionLinks {
+  issue?: SessionLink;
+  pr?: SessionLink;
+  doc?: SessionLink;
+}
+
 export interface ConversationSession {
   ownerId: string;           // User who started the session
   ownerName?: string;        // Display name of owner
@@ -79,6 +100,10 @@ export interface ConversationSession {
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
   renewUserMessage?: string;
+  // Links attached to this session (issue, PR, doc)
+  links?: SessionLinks;
+  // Conversation history recording ID
+  conversationId?: string;
 }
 
 export interface WorkingDirectoryConfig {

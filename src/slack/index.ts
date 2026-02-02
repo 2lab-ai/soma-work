@@ -50,3 +50,9 @@ export { TodoDisplayManager, TodoUpdateInput, SayFunction as TodoSayFunction } f
 
 // Phase 9: Message formatters
 export { DirectoryFormatter } from './formatters';
+
+// Native Slack AI spinner
+export { AssistantStatusManager } from './assistant-status-manager';
+
+// Response directives (model -> bot structured callbacks)
+export { SessionLinkDirectiveHandler, SessionLinkExtractResult } from './directives';

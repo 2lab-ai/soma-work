@@ -25,6 +25,7 @@ import {
   MessageValidator,
   StatusReporter,
   TodoDisplayManager,
+  AssistantStatusManager,
 } from './slack';
 import {
   InputProcessor,
@@ -66,6 +67,9 @@ export class SlackHandler {
   private statusReporter: StatusReporter;
   private todoDisplayManager: TodoDisplayManager;
 
+  // Native Slack AI spinner
+  private assistantStatusManager: AssistantStatusManager;
+
   // Pipeline components
   private inputProcessor: InputProcessor;
   private sessionInitializer: SessionInitializer;
@@ -95,6 +99,9 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionUiManager: this.sessionUiManager,
       requestCoordinator: this.requestCoordinator,
+      slackApi: this.slackApi,
+      reactionManager: this.reactionManager,
+      contextWindowManager: this.contextWindowManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
@@ -103,11 +110,15 @@ export class SlackHandler {
     this.statusReporter = new StatusReporter(app.client);
     this.todoDisplayManager = new TodoDisplayManager(app.client, this.todoManager, this.reactionManager);
 
+    // Native Slack AI spinner
+    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
+
     // Tool processing
     this.toolEventProcessor = new ToolEventProcessor(
       this.toolTracker,
       this.mcpStatusDisplay,
-      mcpCallTracker
+      mcpCallTracker,
+      this.assistantStatusManager
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
@@ -134,6 +145,7 @@ export class SlackHandler {
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
       contextWindowManager: this.contextWindowManager,
+      assistantStatusManager: this.assistantStatusManager,
     });
 
     this.streamExecutor = new StreamExecutor({
@@ -148,6 +160,7 @@ export class SlackHandler {
       actionHandlers: this.actionHandlers,
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
+      assistantStatusManager: this.assistantStatusManager,
     });
 
     // EventRouter for event handling

@@ -15,10 +15,12 @@ import {
   ToolTracker,
   TodoDisplayManager,
   SlackApiHelper,
+  AssistantStatusManager,
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
+import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 
 /**
  * Result of stream execution
@@ -44,6 +46,7 @@ interface StreamExecutorDeps {
   actionHandlers: ActionHandlers;
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
+  assistantStatusManager: AssistantStatusManager;
 }
 
 interface StreamExecuteParams {
@@ -118,6 +121,11 @@ export class StreamExecutor {
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
 
+      // Record user turn (fire-and-forget, non-blocking)
+      if (session.conversationId && text) {
+        recordUserTurn(session.conversationId, text, userName, user);
+      }
+
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
         sessionId: session.sessionId,
@@ -135,11 +143,12 @@ export class StreamExecutor {
         'thinking'
       );
 
-      // Add thinking reaction
+      // Add thinking reaction + native spinner
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('thinking')
       );
+      await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
 
       // Create Slack context for permission prompts
       const slackContext = { channel, threadTs, user };
@@ -171,6 +180,12 @@ export class StreamExecutor {
             sessionKey,
             this.deps.statusReporter.getStatusEmoji('working')
           );
+          // Native spinner with tool-specific text
+          const toolName = toolUses[0]?.name;
+          if (toolName) {
+            const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+            await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+          }
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -209,6 +224,15 @@ export class StreamExecutor {
             this.deps.slackApi
           );
         },
+        onSessionLinksDetected: async (links) => {
+          this.deps.claudeHandler.setSessionLinks(channel, threadTs, links);
+          this.logger.info('Session links updated from model directive', {
+            sessionKey,
+            hasIssue: !!links.issue,
+            hasPr: !!links.pr,
+            hasDoc: !!links.doc,
+          });
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 
@@ -234,7 +258,7 @@ export class StreamExecutor {
         throw abortError;
       }
 
-      // Update status to completed
+      // Update status to completed + clear native spinner
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'completed');
       }
@@ -242,6 +266,12 @@ export class StreamExecutor {
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('completed')
       );
+      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+
+      // Record assistant turn (fire-and-forget, non-blocking)
+      if (session.conversationId && streamResult.collectedText) {
+        recordAssistantTurn(session.conversationId, streamResult.collectedText);
+      }
 
       this.logger.info('Completed processing message', {
         sessionKey,
@@ -294,6 +324,9 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     say: SayFn
   ): Promise<void> {
+    // Clear native spinner on any error
+    await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+
     // Check for context overflow error
     const errorMessage = error.message?.toLowerCase() || '';
     if (
@@ -305,11 +338,25 @@ export class StreamExecutor {
     }
 
     if (error.name !== 'AbortError') {
-      // Clear sessionId only on actual errors (not abort)
-      // AbortError preserves session history for conversation continuity
-      this.deps.claudeHandler.clearSessionId(channel, threadTs);
-
       this.logger.error('Error handling message', error);
+
+      // Only clear session for Claude SDK errors (context overflow, auth, etc.)
+      // Preserve session for Slack API errors (invalid_attachments, rate_limited, etc.)
+      const isSlackApiError = this.isSlackApiError(error);
+      const sessionCleared = !isSlackApiError;
+
+      if (sessionCleared) {
+        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        this.logger.info('Session cleared due to non-Slack error', {
+          sessionKey,
+          errorType: error.name || 'unknown',
+        });
+      } else {
+        this.logger.warn('Slack API error - session preserved', {
+          sessionKey,
+          errorMessage: error.message,
+        });
+      }
 
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
@@ -319,8 +366,10 @@ export class StreamExecutor {
         this.deps.statusReporter.getStatusEmoji('error')
       );
 
+      // Notify user with detailed error info
+      const errorDetails = this.formatErrorForUser(error, sessionCleared);
       await say({
-        text: `Error: ${error.message || 'Something went wrong'}`,
+        text: errorDetails,
         thread_ts: threadTs,
       });
     } else {
@@ -355,6 +404,57 @@ export class StreamExecutor {
         this.deps.statusReporter.cleanup(sessionKey);
       });
     }
+  }
+
+  /**
+   * Check if error is a Slack API error (should preserve session)
+   * These errors are transient or UI-related, not Claude conversation issues
+   */
+  private isSlackApiError(error: any): boolean {
+    const message = error.message?.toLowerCase() || '';
+
+    // Slack API error patterns
+    const slackErrorPatterns = [
+      'invalid_attachments',
+      'invalid_blocks',
+      'rate_limited',
+      'channel_not_found',
+      'no_permission',
+      'not_in_channel',
+      'msg_too_long',
+      'invalid_arguments',
+      'missing_scope',
+      'token_revoked',
+      'no more than 50 items allowed', // Slack block limit
+      'an api error occurred',
+    ];
+
+    return slackErrorPatterns.some(pattern => message.includes(pattern));
+  }
+
+  /**
+   * Format error message for user with detailed info
+   * Distinguishes between bot system errors and model errors
+   */
+  private formatErrorForUser(error: any, sessionCleared: boolean): string {
+    const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
+    const errorName = error.name || 'Error';
+    const errorMessage = error.message || 'Something went wrong';
+
+    const lines = [
+      `❌ *[Bot Error]* ${errorMessage}`,
+      '',
+      `> *Type:* ${errorType} (${errorName})`,
+    ];
+
+    if (sessionCleared) {
+      lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
+      lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+    } else {
+      lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+    }
+
+    return lines.join('\n');
   }
 
   /**

@@ -5,11 +5,13 @@
 
 import { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../logger';
+import { SessionLinks } from '../types';
 import {
   ToolFormatter,
   UserChoiceHandler,
   MessageFormatter,
 } from './index';
+import { SessionLinkDirectiveHandler } from './directives';
 
 /**
  * Context for stream processing
@@ -120,6 +122,8 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /** Called when model outputs session_links JSON directive */
+  onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
 }
 
 /**
@@ -265,8 +269,17 @@ export class StreamProcessor {
     context: StreamContext,
     currentMessages: string[]
   ): Promise<void> {
-    const textContent = this.extractTextContent(content);
+    let textContent = this.extractTextContent(content);
     if (!textContent) return;
+
+    // Extract response directives: session links first, then user choice
+    const linkResult = SessionLinkDirectiveHandler.extract(textContent);
+    if (linkResult.links) {
+      textContent = linkResult.cleanedText;
+      if (this.callbacks.onSessionLinksDetected) {
+        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+      }
+    }
 
     currentMessages.push(textContent);
 
@@ -287,14 +300,29 @@ export class StreamProcessor {
     }
   }
 
+  // Max questions per form to stay under Slack's 50-block limit
+  // Calculation: 2 (header) + 6 (per question) × N + 3 (submit) ≤ 50 → N ≤ 7
+  private static readonly MAX_QUESTIONS_PER_FORM = 6;
+
   /**
    * Handle multi-question choice form
+   * Automatically splits into multiple forms if questions exceed MAX_QUESTIONS_PER_FORM
    */
   private async handleMultiChoiceMessage(
     choices: any,
     textWithoutChoice: string,
     context: StreamContext
   ): Promise<void> {
+    const questions = choices.questions || [];
+    const questionCount = questions.length;
+
+    // Log the original model output for debugging
+    this.logger.debug('Received multi-choice form from model', {
+      questionCount,
+      title: choices.title,
+      rawChoices: JSON.stringify(choices),
+    });
+
     if (textWithoutChoice) {
       const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
       await context.say({
@@ -303,6 +331,44 @@ export class StreamProcessor {
       });
     }
 
+    // Split questions into chunks if needed
+    const chunks: any[][] = [];
+    for (let i = 0; i < questionCount; i += StreamProcessor.MAX_QUESTIONS_PER_FORM) {
+      chunks.push(questions.slice(i, i + StreamProcessor.MAX_QUESTIONS_PER_FORM));
+    }
+
+    if (chunks.length > 1) {
+      this.logger.info('Splitting multi-choice form into multiple messages', {
+        totalQuestions: questionCount,
+        chunkCount: chunks.length,
+        questionsPerChunk: chunks.map(c => c.length),
+      });
+    }
+
+    // Process each chunk as a separate form
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunkQuestions = chunks[chunkIndex];
+      const isFirstChunk = chunkIndex === 0;
+      const chunkLabel = chunks.length > 1 ? ` (${chunkIndex + 1}/${chunks.length})` : '';
+
+      const chunkChoices = {
+        ...choices,
+        title: (choices.title || '선택이 필요합니다') + chunkLabel,
+        questions: chunkQuestions,
+      };
+
+      await this.sendSingleFormChunk(chunkChoices, context, isFirstChunk);
+    }
+  }
+
+  /**
+   * Send a single form chunk (called by handleMultiChoiceMessage)
+   */
+  private async sendSingleFormChunk(
+    choices: any,
+    context: StreamContext,
+    invalidateOldForms: boolean
+  ): Promise<void> {
     const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Create pending form
@@ -319,25 +385,46 @@ export class StreamProcessor {
       });
     }
 
-    // Invalidate old forms for this session before sending new form
-    if (this.callbacks.onInvalidateOldForms) {
+    // Invalidate old forms only for the first chunk
+    if (invalidateOldForms && this.callbacks.onInvalidateOldForms) {
       await this.callbacks.onInvalidateOldForms(context.sessionKey, formId);
     }
 
     // Build and send form
     const multiPayload = UserChoiceHandler.buildMultiChoiceFormBlocks(choices, formId, context.sessionKey);
-    const formResult = await context.say({
-      text: choices.title || '📋 선택이 필요합니다',
-      ...multiPayload,
-      thread_ts: context.threadTs,
+
+    // Log block count
+    const blockCount = multiPayload.attachments?.[0]?.blocks?.length ?? 0;
+    this.logger.debug('Built multi-choice form blocks', {
+      formId,
+      blockCount,
+      questionCount: choices.questions?.length,
     });
 
-    // Update form with message timestamp
-    if (this.callbacks.getPendingForm && formResult?.ts) {
-      const pendingForm = this.callbacks.getPendingForm(formId);
-      if (pendingForm) {
-        pendingForm.messageTs = formResult.ts;
+    try {
+      const formResult = await context.say({
+        text: choices.title || '📋 선택이 필요합니다',
+        ...multiPayload,
+        thread_ts: context.threadTs,
+      });
+
+      // Update form with message timestamp
+      if (this.callbacks.getPendingForm && formResult?.ts) {
+        const pendingForm = this.callbacks.getPendingForm(formId);
+        if (pendingForm) {
+          pendingForm.messageTs = formResult.ts;
+        }
       }
+    } catch (error: any) {
+      this.logger.error('Failed to send multi-choice form to Slack', {
+        error: error.message,
+        blockCount,
+        questionCount: choices.questions?.length,
+        rawChoices: JSON.stringify(choices),
+      });
+
+      // Fallback: send as plain text instead of throwing
+      await this.sendChoiceFallback(choices, context, 'multi');
     }
   }
 
@@ -349,6 +436,13 @@ export class StreamProcessor {
     textWithoutChoice: string,
     context: StreamContext
   ): Promise<void> {
+    // Log the original model output for debugging
+    this.logger.debug('Received single choice from model', {
+      question: choice.question,
+      choiceCount: choice.choices?.length,
+      rawChoice: JSON.stringify(choice),
+    });
+
     if (textWithoutChoice) {
       const formatted = MessageFormatter.formatMessage(textWithoutChoice, false);
       await context.say({
@@ -358,9 +452,76 @@ export class StreamProcessor {
     }
 
     const singlePayload = UserChoiceHandler.buildUserChoiceBlocks(choice, context.sessionKey);
+
+    // Log block count
+    const blockCount = singlePayload.attachments?.[0]?.blocks?.length ?? 0;
+    this.logger.debug('Built single choice blocks', { blockCount });
+
+    try {
+      await context.say({
+        text: choice.question,
+        ...singlePayload,
+        thread_ts: context.threadTs,
+      });
+    } catch (error: any) {
+      this.logger.error('Failed to send single choice to Slack', {
+        error: error.message,
+        blockCount,
+        rawChoice: JSON.stringify(choice),
+      });
+
+      // Fallback: send as plain text instead of throwing
+      await this.sendChoiceFallback(choice, context, 'single');
+    }
+  }
+
+  /**
+   * Send choice as plain text when Slack blocks fail
+   */
+  private async sendChoiceFallback(
+    choice: any,
+    context: StreamContext,
+    type: 'single' | 'multi'
+  ): Promise<void> {
+    this.logger.warn('Sending choice as fallback plain text', { type });
+
+    let fallbackText: string;
+
+    if (type === 'multi') {
+      // Multi-choice form fallback
+      const questions = choice.questions || [];
+      const lines = [
+        `📋 *${choice.title || '선택이 필요합니다'}*`,
+        choice.description ? `_${choice.description}_` : '',
+        '',
+        ...questions.map((q: any, idx: number) => {
+          const optionsList = (q.choices || [])
+            .map((opt: any, optIdx: number) => `  ${optIdx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`)
+            .join('\n');
+          return `*Q${idx + 1}. ${q.question}*\n${optionsList}`;
+        }),
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+        '_예: Q1: 1, Q2: 2, Q3: 1_',
+      ];
+      fallbackText = lines.filter(l => l !== '').join('\n');
+    } else {
+      // Single choice fallback
+      const options = (choice.choices || [])
+        .map((opt: any, idx: number) => `${idx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`)
+        .join('\n');
+      fallbackText = [
+        `❓ *${choice.question}*`,
+        choice.context ? `_${choice.context}_` : '',
+        '',
+        options,
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ].filter(l => l !== '').join('\n');
+    }
+
     await context.say({
-      text: choice.question,
-      ...singlePayload,
+      text: fallbackText,
       thread_ts: context.threadTs,
     });
   }
@@ -482,14 +643,24 @@ export class StreamProcessor {
    * Handle final result text
    */
   private async handleFinalResult(result: string, context: StreamContext): Promise<void> {
-    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(result);
+    // Extract response directives before user choice
+    let processedResult = result;
+    const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
+    if (linkResult.links) {
+      processedResult = linkResult.cleanedText;
+      if (this.callbacks.onSessionLinksDetected) {
+        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+      }
+    }
+
+    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
 
     if (choices) {
       await this.handleMultiChoiceMessage(choices, textWithoutChoice, context);
     } else if (choice) {
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      const formatted = MessageFormatter.formatMessage(result, true);
+      const formatted = MessageFormatter.formatMessage(processedResult, true);
       await context.say({
         text: formatted,
         thread_ts: context.threadTs,
