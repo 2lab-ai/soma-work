@@ -60,6 +60,8 @@ export class ChoiceActionHandler {
       // 세션 확인 및 메시지 처리
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       if (session) {
+        // Transition waiting→working when user responds to a choice
+        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
           { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
@@ -299,6 +301,8 @@ export class ChoiceActionHandler {
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     if (session) {
+      // Transition waiting→working when user submits form
+      this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
         { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: combinedMessage },

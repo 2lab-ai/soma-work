@@ -3,7 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
-import { ConversationSession, SessionState, SessionLinks, SessionLink, WorkflowType } from './types';
+import { ConversationSession, SessionState, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
 import * as path from 'path';
@@ -49,6 +49,8 @@ interface SerializedSession {
   links?: SessionLinks;
   // Sleep mode
   sleepStartedAt?: string; // ISO date string
+  // Activity state
+  activityState?: ActivityState;
 }
 
 /**
@@ -151,6 +153,7 @@ export class SessionRegistry {
       lastActivity: new Date(),
       model: sessionModel,
       state: 'INITIALIZING', // Start in INITIALIZING state
+      activityState: 'idle',
     };
 
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
@@ -280,6 +283,62 @@ export class SessionRegistry {
     });
     this.saveSessions();
     return true;
+  }
+
+  /**
+   * Set activity state for a session (working/waiting/idle)
+   * Only persists on transition to idle (to avoid excessive disk writes during active work)
+   */
+  setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return;
+    if (session.activityState === state) return; // No-op for duplicate transitions
+
+    session.activityState = state;
+    session.activityStateChangedAt = Date.now();
+
+    this.logger.debug('Activity state changed', {
+      channelId,
+      threadTs,
+      state,
+    });
+
+    // Only persist on idle transition to minimize disk I/O
+    if (state === 'idle') {
+      this.saveSessions();
+    }
+  }
+
+  /**
+   * Set activity state by session key
+   */
+  setActivityStateByKey(sessionKey: string, state: ActivityState): void {
+    const session = this.getSessionByKey(sessionKey);
+    if (!session) return;
+    if (session.activityState === state) return;
+
+    session.activityState = state;
+    session.activityStateChangedAt = Date.now();
+
+    if (state === 'idle') {
+      this.saveSessions();
+    }
+  }
+
+  /**
+   * Get activity state for a session
+   */
+  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
+    const session = this.getSession(channelId, threadTs);
+    return session?.activityState;
+  }
+
+  /**
+   * Get activity state by session key
+   */
+  getActivityStateByKey(sessionKey: string): ActivityState | undefined {
+    const session = this.getSessionByKey(sessionKey);
+    return session?.activityState;
   }
 
   /**
@@ -450,6 +509,9 @@ export class SessionRegistry {
     // Clear usage data to reset context percentage
     session.usage = undefined;
 
+    // Reset activity state
+    session.activityState = 'idle';
+
     this.saveSessions();
     return true;
   }
@@ -611,6 +673,7 @@ export class SessionRegistry {
             workflow: session.workflow,
             links: session.links,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
+            activityState: session.activityState,
           });
         }
       }
@@ -671,6 +734,7 @@ export class SessionRegistry {
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
           sleepStartedAt,
+          activityState: 'idle', // Always idle on restore (no active streams after restart)
         };
         this.sessions.set(serialized.key, session);
         loaded++;
