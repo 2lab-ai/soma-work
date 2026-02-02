@@ -91,6 +91,7 @@ export class SlackHandler {
     this.contextWindowManager = new ContextWindowManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
+    this.sessionUiManager.setReactionManager(this.reactionManager);
 
     // Command routing
     const commandDeps: CommandDependencies = {
@@ -129,6 +130,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionManager: this.sessionUiManager,
       messageHandler: this.handleMessage.bind(this),
+      reactionManager: this.reactionManager,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
