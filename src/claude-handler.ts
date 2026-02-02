@@ -5,7 +5,7 @@
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
-import { ConversationSession, SessionLinks, SessionLink, WorkflowType } from './types';
+import { ConversationSession, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 
@@ -157,6 +157,18 @@ export class ClaudeHandler {
 
   getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
     return this.sessionRegistry.getSessionWorkflow(channelId, threadTs);
+  }
+
+  setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
+    this.sessionRegistry.setActivityState(channelId, threadTs, state);
+  }
+
+  setActivityStateByKey(sessionKey: string, state: ActivityState): void {
+    this.sessionRegistry.setActivityStateByKey(sessionKey, state);
+  }
+
+  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
+    return this.sessionRegistry.getActivityState(channelId, threadTs);
   }
 
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {

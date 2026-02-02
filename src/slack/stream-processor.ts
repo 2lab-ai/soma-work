@@ -137,6 +137,8 @@ export interface StreamResult {
   collectedText?: string;
   /** Usage data from the result message */
   usage?: UsageData;
+  /** Whether the response ended with a user choice/form prompt */
+  hasUserChoice?: boolean;
 }
 
 /**
@@ -145,6 +147,7 @@ export interface StreamResult {
 export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
+  private _hasUserChoice = false;
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -160,6 +163,7 @@ export class StreamProcessor {
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
     let lastUsage: UsageData | undefined;
+    this._hasUserChoice = false;
 
     try {
       for await (const message of stream) {
@@ -192,6 +196,7 @@ export class StreamProcessor {
         aborted: false,
         collectedText: currentMessages.join('\n'),
         usage: lastUsage,
+        hasUserChoice: this._hasUserChoice,
       };
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -287,8 +292,10 @@ export class StreamProcessor {
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(textContent);
 
     if (choices) {
+      this._hasUserChoice = true;
       await this.handleMultiChoiceMessage(choices, textWithoutChoice, context);
     } else if (choice) {
+      this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
       // Regular message
@@ -656,8 +663,10 @@ export class StreamProcessor {
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
 
     if (choices) {
+      this._hasUserChoice = true;
       await this.handleMultiChoiceMessage(choices, textWithoutChoice, context);
     } else if (choice) {
+      this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
       const formatted = MessageFormatter.formatMessage(processedResult, true);
