@@ -4,6 +4,14 @@
 export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
 
 /**
+ * Bot activity state for a session
+ * - working: AI is generating a response (stream active)
+ * - waiting: Waiting for user input (choice/permission prompt shown)
+ * - idle: Response completed, no active processing
+ */
+export type ActivityState = 'working' | 'waiting' | 'idle';
+
+/**
  * Workflow types for session routing
  */
 export type WorkflowType =
@@ -58,6 +66,7 @@ export interface SessionLink {
   type: 'issue' | 'pr' | 'doc';
   provider: 'github' | 'jira' | 'confluence' | 'linear' | 'unknown';
   label?: string;        // e.g., "PTN-123", "PR #456"
+  title?: string;        // e.g., "Fix login redirect bug"
   status?: string;       // e.g., "open", "merged", "in-progress"
   statusCheckedAt?: number;
 }
@@ -106,6 +115,9 @@ export interface ConversationSession {
   sleepStartedAt?: Date;
   // Conversation history recording ID
   conversationId?: string;
+  // Bot activity state (working/waiting/idle)
+  activityState?: ActivityState;
+  activityStateChangedAt?: number;
 }
 
 export interface WorkingDirectoryConfig {

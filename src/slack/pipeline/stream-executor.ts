@@ -118,6 +118,9 @@ export class StreamExecutor {
 
     let statusMessageTs: string | undefined;
 
+    // Transition to working state
+    this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
 
@@ -268,6 +271,13 @@ export class StreamExecutor {
       );
       await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
+      // Transition activity state based on whether user choice was presented
+      this.deps.claudeHandler.setActivityState(
+        channel,
+        threadTs,
+        streamResult.hasUserChoice ? 'waiting' : 'idle'
+      );
+
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
@@ -324,8 +334,9 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     say: SayFn
   ): Promise<void> {
-    // Clear native spinner on any error
+    // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+    this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error
     const errorMessage = error.message?.toLowerCase() || '';
