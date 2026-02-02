@@ -6,6 +6,7 @@ import { McpManager } from './mcp-manager';
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
+import { initRecorder, startWebServer, stopWebServer } from './conversation';
 
 const logger = new Logger('Main');
 
@@ -114,6 +115,18 @@ async function start() {
       logger.info(`Restored ${loadedForms} pending forms from previous run`);
     }
 
+    // Initialize conversation recorder
+    initRecorder();
+    timing('Conversation recorder initialized');
+
+    // Start conversation viewer web server
+    try {
+      await startWebServer();
+      timing('Conversation viewer web server started');
+    } catch (error) {
+      logger.warn('Failed to start conversation viewer (non-critical)', error);
+    }
+
     // Start the app
     await app.start();
     timing('Slack socket connected');
@@ -168,6 +181,14 @@ async function start() {
       if (githubAuth) {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
+      }
+
+      // Stop conversation viewer
+      try {
+        await stopWebServer();
+        logger.info('Conversation viewer stopped');
+      } catch (error) {
+        logger.error('Error stopping conversation viewer:', error);
       }
 
       process.exit(0);
