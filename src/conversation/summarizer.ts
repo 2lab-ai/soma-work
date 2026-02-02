@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Logger } from '../logger';
+import { config } from '../config';
 
 const logger = new Logger('Summarizer');
 
@@ -28,10 +29,10 @@ function getClient(): Anthropic | null {
 }
 
 /**
- * Get the summary model from environment (default: claude-haiku-4-20250414)
+ * Get the summary model from config (default: claude-haiku-4-20250414)
  */
 function getSummaryModel(): string {
-  return process.env.SUMMARY_MODEL || 'claude-haiku-4-20250414';
+  return config.conversation.summaryModel;
 }
 
 /**
@@ -71,8 +72,14 @@ ${truncatedContent}`,
       .map(block => (block as { type: 'text'; text: string }).text)
       .join('');
 
+    // Strip markdown code block wrappers (LLMs frequently add them despite instructions)
+    let cleanText = text.trim();
+    if (cleanText.startsWith('```')) {
+      cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    }
+
     // Parse JSON response
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(cleanText);
     if (parsed.title && parsed.body) {
       return {
         title: String(parsed.title).substring(0, 100),

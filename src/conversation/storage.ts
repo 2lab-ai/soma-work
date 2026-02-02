@@ -17,14 +17,11 @@ export class ConversationStorage {
     this.ensureDir();
   }
 
+  /** Throws if directory cannot be created — caller must know storage is unusable */
   private ensureDir(): void {
-    try {
-      if (!fs.existsSync(this.dataDir)) {
-        fs.mkdirSync(this.dataDir, { recursive: true });
-        logger.info(`Created conversations directory: ${this.dataDir}`);
-      }
-    } catch (error) {
-      logger.error('Failed to create conversations directory', error);
+    if (!fs.existsSync(this.dataDir)) {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      logger.info(`Created conversations directory: ${this.dataDir}`);
     }
   }
 
@@ -35,16 +32,16 @@ export class ConversationStorage {
   }
 
   /**
-   * Save a conversation record to disk
+   * Save a conversation record to disk.
+   * Uses atomic write-to-temp-then-rename to prevent corruption on crash.
+   * Errors are propagated — callers must handle failures.
    */
   async save(record: ConversationRecord): Promise<void> {
-    try {
-      const filePath = this.filePath(record.id);
-      const data = JSON.stringify(record, null, 2);
-      await fs.promises.writeFile(filePath, data, 'utf-8');
-    } catch (error) {
-      logger.error(`Failed to save conversation ${record.id}`, error);
-    }
+    const filePath = this.filePath(record.id);
+    const tmpPath = filePath + '.tmp';
+    const data = JSON.stringify(record, null, 2);
+    await fs.promises.writeFile(tmpPath, data, 'utf-8');
+    await fs.promises.rename(tmpPath, filePath);
   }
 
   /**

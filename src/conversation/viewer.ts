@@ -266,7 +266,7 @@ function getViewStyles(): string {
  */
 function getViewerScript(conversationId: string): string {
   return `
-    const CONVERSATION_ID = '${conversationId}';
+    const CONVERSATION_ID = ${JSON.stringify(conversationId)};
     const loadedRawCache = {};
 
     // Lazy load raw content when details element is opened
