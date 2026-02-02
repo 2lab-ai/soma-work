@@ -1,5 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
+import { config } from '../config';
 import { getConversation, listConversations, getTurnRawContent } from './recorder';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { ConversationTurn } from './types';
@@ -9,18 +10,17 @@ const logger = new Logger('ConversationWebServer');
 let server: FastifyInstance | null = null;
 
 /**
- * Get the viewer port from environment (default: 3000)
+ * Get the viewer port from config (default: 3000)
  */
 function getPort(): number {
-  const port = parseInt(process.env.CONVERSATION_VIEWER_PORT || '3000', 10);
-  return isNaN(port) ? 3000 : port;
+  return config.conversation.viewerPort || 3000;
 }
 
 /**
  * Get the public base URL for conversation viewer
  */
 export function getViewerBaseUrl(): string {
-  return process.env.CONVERSATION_VIEWER_URL || `http://localhost:${getPort()}`;
+  return config.conversation.viewerUrl || `http://localhost:${getPort()}`;
 }
 
 /**
@@ -169,11 +169,12 @@ export async function startWebServer(): Promise<void> {
     reply.redirect('/conversations');
   });
 
-  // Start listening
+  // Start listening — bind to localhost by default for security
   const port = getPort();
+  const host = process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1';
   try {
-    await server.listen({ port, host: '0.0.0.0' });
-    logger.info(`Conversation viewer started on port ${port}`);
+    await server.listen({ port, host });
+    logger.info(`Conversation viewer started on ${host}:${port}`);
     logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
   } catch (error) {
     logger.error('Failed to start conversation web server', error);

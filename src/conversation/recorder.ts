@@ -9,8 +9,53 @@ const logger = new Logger('ConversationRecorder');
 // Singleton storage instance
 let storage: ConversationStorage | null = null;
 
-// In-memory cache of active conversations (keyed by conversationId)
+// In-memory cache of active conversations with LRU eviction (keyed by conversationId)
+const MAX_CACHE_SIZE = 100;
 const activeConversations = new Map<string, ConversationRecord>();
+
+// Per-conversation write locks to serialize disk writes and prevent race conditions
+const writeLocks = new Map<string, Promise<void>>();
+
+/**
+ * Serialize save operations per conversation to prevent race conditions.
+ * Each conversation's writes are queued so only one writeFile runs at a time.
+ */
+async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
+  const previous = writeLocks.get(conversationId) || Promise.resolve();
+  const current = previous.then(() => getStorage().save(record));
+  writeLocks.set(conversationId, current.catch(() => {})); // prevent chain rejection
+  await current;
+}
+
+/**
+ * Add a record to the in-memory cache with LRU eviction.
+ * Oldest entries are evicted when cache exceeds MAX_CACHE_SIZE.
+ */
+function cacheRecord(id: string, record: ConversationRecord): void {
+  // If already in cache, delete and re-insert to maintain insertion order (LRU)
+  if (activeConversations.has(id)) {
+    activeConversations.delete(id);
+  }
+  // Evict oldest entries if at capacity
+  while (activeConversations.size >= MAX_CACHE_SIZE) {
+    const oldest = activeConversations.keys().next().value;
+    if (oldest) {
+      activeConversations.delete(oldest);
+      logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
+    } else {
+      break;
+    }
+  }
+  activeConversations.set(id, record);
+}
+
+/**
+ * Remove a conversation from the in-memory cache (e.g., on session end).
+ */
+export function removeFromCache(id: string): void {
+  activeConversations.delete(id);
+  writeLocks.delete(id);
+}
 
 /**
  * Initialize the recorder with optional base directory
@@ -57,10 +102,10 @@ export function createConversation(
     turns: [],
   };
 
-  activeConversations.set(id, record);
+  cacheRecord(id, record);
 
-  // Fire-and-forget: persist to disk
-  getStorage().save(record).catch(err => {
+  // Fire-and-forget: persist to disk (serialized per conversation)
+  serializedSave(id, record).catch(err => {
     logger.error(`Failed to persist new conversation ${id}`, err);
   });
 
@@ -107,7 +152,7 @@ async function _recordUserTurnAsync(
   record.turns.push(turn);
   record.updatedAt = Date.now();
 
-  await getStorage().save(record);
+  await serializedSave(conversationId, record);
 }
 
 /**
@@ -145,8 +190,8 @@ async function _recordAssistantTurnAsync(
   record.turns.push(turn);
   record.updatedAt = Date.now();
 
-  // Save immediately with raw content
-  await getStorage().save(record);
+  // Save immediately with raw content (serialized to prevent race conditions)
+  await serializedSave(conversationId, record);
 
   // Then generate summary asynchronously (don't block)
   generateSummary(conversationId, turn.id, content).catch(err => {
@@ -163,20 +208,29 @@ async function generateSummary(
   content: string
 ): Promise<void> {
   const summary = await summarizeResponse(content);
-  if (!summary) return;
+  if (!summary) {
+    logger.warn(`Summary generation returned null for turn ${turnId} in conversation ${conversationId}`);
+    return;
+  }
 
   const record = await getOrLoadConversation(conversationId);
-  if (!record) return;
+  if (!record) {
+    logger.warn(`Conversation ${conversationId} disappeared during summary generation for turn ${turnId}`);
+    return;
+  }
 
   const turn = record.turns.find(t => t.id === turnId);
-  if (!turn) return;
+  if (!turn) {
+    logger.warn(`Turn ${turnId} not found in conversation ${conversationId} during summary — possible race condition`);
+    return;
+  }
 
   turn.summaryTitle = summary.title;
   turn.summaryBody = summary.body;
   turn.summarized = true;
   record.updatedAt = Date.now();
 
-  await getStorage().save(record);
+  await serializedSave(conversationId, record);
   logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
 }
 
@@ -191,7 +245,7 @@ async function getOrLoadConversation(id: string): Promise<ConversationRecord | n
   // Load from disk
   const record = await getStorage().load(id);
   if (record) {
-    activeConversations.set(id, record);
+    cacheRecord(id, record);
   }
   return record;
 }
@@ -238,5 +292,5 @@ export async function updateConversationMeta(
   if (updates.workflow !== undefined) record.workflow = updates.workflow;
   record.updatedAt = Date.now();
 
-  await getStorage().save(record);
+  await serializedSave(conversationId, record);
 }
