@@ -102,6 +102,8 @@ export interface ConversationSession {
   renewUserMessage?: string;
   // Links attached to this session (issue, PR, doc)
   links?: SessionLinks;
+  // Conversation history recording ID
+  conversationId?: string;
 }
 
 export interface WorkingDirectoryConfig {
