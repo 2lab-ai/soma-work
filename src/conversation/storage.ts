@@ -41,7 +41,13 @@ export class ConversationStorage {
     const tmpPath = filePath + '.tmp';
     const data = JSON.stringify(record, null, 2);
     await fs.promises.writeFile(tmpPath, data, 'utf-8');
-    await fs.promises.rename(tmpPath, filePath);
+    try {
+      await fs.promises.rename(tmpPath, filePath);
+    } catch (err) {
+      // Clean up orphaned tmp file on rename failure
+      await fs.promises.unlink(tmpPath).catch(() => {});
+      throw err;
+    }
   }
 
   /**
