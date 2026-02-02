@@ -84,6 +84,9 @@ export class SessionInitializer {
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
     await this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
 
+    // Clear lifecycle emojis on any new message (removes stale idle/expired emojis)
+    await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);
+
     // Clear any existing completion reaction when new message arrives
     const currentReaction = this.deps.reactionManager.getCurrentReaction(sessionKey);
     if (currentReaction === 'white_check_mark') {
@@ -97,6 +100,8 @@ export class SessionInitializer {
     // Wake sleeping sessions before proceeding
     if (this.deps.claudeHandler.isSleeping(channel, threadTs)) {
       this.deps.claudeHandler.wakeFromSleep(channel, threadTs);
+      // Clear lifecycle emojis (zzz, crescent_moon)
+      await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);
       this.logger.info('Woke session from sleep', { sessionKey, user: userName });
     }
 

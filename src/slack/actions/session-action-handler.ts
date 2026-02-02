@@ -1,5 +1,6 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
+import { ReactionManager } from '../reaction-manager';
 import { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import { RespondFn } from './types';
@@ -8,6 +9,7 @@ interface SessionActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
+  reactionManager?: ReactionManager;
 }
 
 /**
@@ -43,6 +45,11 @@ export class SessionActionHandler {
           replace_original: false,
         });
         return;
+      }
+
+      // Add zzz emoji before termination (while session still has data)
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
@@ -108,6 +115,11 @@ export class SessionActionHandler {
         return;
       }
 
+      // Add zzz emoji before termination
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+      }
+
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
         await respond({
@@ -143,6 +155,12 @@ export class SessionActionHandler {
     try {
       const sessionKey = body.actions[0].value;
 
+      // Clear lifecycle emojis (idle moon)
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (session?.threadTs) {
+        await this.ctx.reactionManager?.clearSessionLifecycleEmojis(session.channelId, session.threadTs);
+      }
+
       const refreshed = this.ctx.claudeHandler.refreshSessionActivityByKey(sessionKey);
       if (!refreshed) {
         await respond({
@@ -167,6 +185,25 @@ export class SessionActionHandler {
       } catch (respondError) {
         this.logger.error('Failed to send error response for idle keep', respondError);
       }
+    }
+  }
+
+  /**
+   * Handle refresh sessions button
+   */
+  async handleRefreshSessions(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const userId = body.user?.id;
+      if (!userId) return;
+
+      const { text, blocks } = await this.ctx.sessionManager.formatUserSessionsBlocks(userId, { showControls: true });
+      await respond({
+        text,
+        blocks,
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.error('Error refreshing sessions', error);
     }
   }
 
@@ -196,6 +233,11 @@ export class SessionActionHandler {
           replace_original: false,
         });
         return;
+      }
+
+      // Add zzz emoji before termination
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
