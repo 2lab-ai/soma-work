@@ -273,11 +273,6 @@ export class StreamExecutor {
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
       }
 
-      // Record assistant turn (fire-and-forget, non-blocking)
-      if (session.conversationId && streamResult.collectedText) {
-        recordAssistantTurn(session.conversationId, streamResult.collectedText);
-      }
-
       this.logger.info('Completed processing message', {
         sessionKey,
         messageCount: streamResult.messageCount,

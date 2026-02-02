@@ -46,10 +46,10 @@ export class SessionLinkDirectiveHandler {
     let match;
 
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const result = this.parseSessionLinksJson(match[1].trim());
-      if (result.links) {
+      const links = this.parseSessionLinksJson(match[1].trim());
+      if (links) {
         const cleanedText = text.replace(match[0], '').trim();
-        return { links: result.links, cleanedText };
+        return { links, cleanedText };
       }
     }
 
@@ -60,12 +60,12 @@ export class SessionLinkDirectiveHandler {
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
       const jsonStr = this.extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
-        const result = this.parseSessionLinksJson(jsonStr);
-        if (result.links) {
+        const links = this.parseSessionLinksJson(jsonStr);
+        if (links) {
           const before = text.substring(0, rawMatch.index).trim();
           const after = text.substring(rawMatch.index + jsonStr.length).trim();
           const cleanedText = before && after ? `${before}\n\n${after}` : (before || after);
-          return { links: result.links, cleanedText };
+          return { links, cleanedText };
         }
       }
     }
@@ -119,19 +119,15 @@ export class SessionLinkDirectiveHandler {
   /**
    * Parse JSON and extract session links if it's a valid session_links directive
    */
-  private static parseSessionLinksJson(jsonStr: string): { links: SessionLinks | null } {
+  private static parseSessionLinksJson(jsonStr: string): SessionLinks | null {
     try {
       const parsed = JSON.parse(jsonStr);
 
-      // Must have type: "session_links"
-      if (parsed.type !== 'session_links') {
-        return { links: null };
-      }
+      if (parsed.type !== 'session_links') return null;
 
       const links: SessionLinks = {};
       let hasLinks = false;
 
-      // Extract each known link key
       for (const [key, linkType] of Object.entries(LINK_KEY_TO_TYPE)) {
         const url = parsed[key];
         if (url && typeof url === 'string' && isValidUrl(url)) {
@@ -143,9 +139,9 @@ export class SessionLinkDirectiveHandler {
         }
       }
 
-      return { links: hasLinks ? links : null };
+      return hasLinks ? links : null;
     } catch {
-      return { links: null };
+      return null;
     }
   }
 }
