@@ -171,7 +171,7 @@ export async function startWebServer(): Promise<void> {
 
   // Start listening — bind to localhost by default for security
   const port = getPort();
-  const host = process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1';
+  const host = config.conversation.viewerHost;
   try {
     await server.listen({ port, host });
     logger.info(`Conversation viewer started on ${host}:${port}`);
