@@ -268,13 +268,7 @@ export class SessionRegistry {
    * Used when user clicks "Keep" on idle check prompt.
    */
   refreshSessionActivity(channelId: string, threadTs: string | undefined): boolean {
-    const session = this.getSession(channelId, threadTs);
-    if (!session) return false;
-    session.lastActivity = new Date();
-    session.lastWarningSentAt = undefined;
-    session.warningMessageTs = undefined;
-    this.saveSessions();
-    return true;
+    return this.refreshSessionActivityByKey(this.getSessionKey(channelId, threadTs));
   }
 
   /**
@@ -321,18 +315,8 @@ export class SessionRegistry {
    */
   canInterrupt(channelId: string, threadTs: string | undefined, userId: string): boolean {
     const session = this.getSession(channelId, threadTs);
-    if (!session) {
-      return true; // No session, so anyone can start
-    }
-    // Owner can always interrupt
-    if (session.ownerId === userId) {
-      return true;
-    }
-    // Current initiator can interrupt
-    if (session.currentInitiatorId === userId) {
-      return true;
-    }
-    return false;
+    if (!session) return true;
+    return session.ownerId === userId || session.currentInitiatorId === userId;
   }
 
   /**
