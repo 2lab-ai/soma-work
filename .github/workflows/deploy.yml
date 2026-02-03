@@ -10,6 +10,7 @@ jobs:
   deploy:
     runs-on: self-hosted
     timeout-minutes: 10
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
 
     steps:
       - name: Determine environment
