@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
-      - develop
+      - dev
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -13,18 +17,51 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Determine environment
         id: env
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "env=main" >> "$GITHUB_OUTPUT"
-            echo "dir=/opt/soma-work/main" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
-            echo "dir=/opt/soma-work/dev" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
       - name: Deploy
+        env:
+          ENV: ${{ steps.env.outputs.env }}
+          TARGET: /opt/soma-work/${{ steps.env.outputs.env }}
         run: |
-          cd "${{ steps.env.outputs.dir }}"
-          ./service.sh ${{ steps.env.outputs.env }} deploy
+          echo "Deploying to $TARGET..."
+
+          # Stop service
+          ./service.sh $ENV stop || true
+
+          # Sync built artifacts to deployment target (preserve local configs and data)
+          rsync -a --delete \
+            --exclude='.env' \
+            --exclude='.system.prompt' \
+            --exclude='mcp-servers.json' \
+            --exclude='data/' \
+            --exclude='logs/' \
+            dist/ "$TARGET/dist/"
+
+          rsync -a --delete node_modules/ "$TARGET/node_modules/"
+          rsync -a \
+            package.json \
+            "$TARGET/"
+
+          # Reinstall service (regenerate plist + start)
+          ./service.sh $ENV install
+
+      - name: Verify
+        run: |
+          sleep 3
+          ./service.sh ${{ steps.env.outputs.env }} status

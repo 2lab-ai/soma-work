@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Logger } from './logger.js';
+import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -63,7 +64,7 @@ export class UserSettingsStore {
 
   constructor(dataDir?: string) {
     // Use data directory or default to project root
-    const dir = dataDir || path.join(process.cwd(), 'data');
+    const dir = dataDir || ENV_DATA_DIR;
 
     // Ensure data directory exists
     if (!fs.existsSync(dir)) {
