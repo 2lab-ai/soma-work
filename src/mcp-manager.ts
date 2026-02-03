@@ -1,4 +1,5 @@
 import { McpConfigLoader, McpServerFactory, McpInfoFormatter } from './mcp/index';
+import { MCP_CONFIG_FILE } from './env-paths';
 import type { McpServerConfig, McpConfiguration } from './mcp/index';
 
 // Re-export types for backward compatibility
@@ -22,7 +23,7 @@ export class McpManager {
   private serverFactory: McpServerFactory;
   private infoFormatter: McpInfoFormatter;
 
-  constructor(configPath: string = './mcp-servers.json') {
+  constructor(configPath: string = MCP_CONFIG_FILE) {
     this.configLoader = new McpConfigLoader(configPath);
     this.serverFactory = new McpServerFactory();
     this.infoFormatter = new McpInfoFormatter();

@@ -1,3 +1,4 @@
+import './env-paths';
 import { App } from '@slack/bolt';
 import { config, validateConfig, runPreflightChecks } from './config';
 import { ClaudeHandler } from './claude-handler';

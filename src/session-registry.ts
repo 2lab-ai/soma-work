@@ -6,11 +6,9 @@
 import { ConversationSession, SessionState, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
+import { DATA_DIR } from './env-paths';
 import * as path from 'path';
 import * as fs from 'fs';
-
-// Session persistence file path
-const DATA_DIR = path.join(process.cwd(), 'data');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
 // Default session timeout: 24 hours (Active → Sleep)

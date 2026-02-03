@@ -1,4 +1,5 @@
 import { Logger } from './logger';
+import { DATA_DIR } from './env-paths';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,7 +22,7 @@ interface McpCallStats {
 }
 
 const MAX_HISTORY = 100; // Keep last 100 calls per server/tool combination
-const DATA_FILE = path.join(process.cwd(), 'data', 'mcp-call-stats.json');
+const DATA_FILE = path.join(DATA_DIR, 'mcp-call-stats.json');
 
 /**
  * MCP Call Tracker - Tracks MCP tool call durations and provides predictions

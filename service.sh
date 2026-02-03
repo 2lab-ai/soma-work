@@ -83,7 +83,7 @@ generate_plist() {
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; npx tsx src/index.ts</string>
+        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; node dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -95,6 +95,8 @@ generate_plist() {
         <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>$USER_HOME</string>
+        <key>SOMA_CONFIG_DIR</key>
+        <string>$PROJECT_DIR</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -330,7 +332,7 @@ cmd_reinstall() {
     fi
 }
 
-# Setup deployment directory (only for main/dev environments)
+# Setup deployment directory (config + data only, no source code)
 cmd_setup() {
     if [[ -z "$ENV_ARG" ]]; then
         print_error "Setup requires an environment: ./service.sh main setup  or  ./service.sh dev setup"
@@ -344,33 +346,6 @@ cmd_setup() {
         sudo mkdir -p "$PROJECT_DIR"
         sudo chown "$(whoami):staff" "$PROJECT_DIR"
     fi
-
-    # Clone or init
-    if [[ ! -d "$PROJECT_DIR/.git" ]]; then
-        print_status "Cloning repository..."
-        local REPO_URL
-        REPO_URL=$(git -C "$(cd "$(dirname "$0")" && pwd)" remote get-url origin 2>/dev/null | sed 's|https://[^@]*@|https://|')
-        if [[ -z "$REPO_URL" ]]; then
-            print_error "Cannot determine repo URL. Clone manually into $PROJECT_DIR"
-            return 1
-        fi
-        git clone "$REPO_URL" "$PROJECT_DIR"
-    fi
-
-    # Checkout appropriate branch
-    local branch="main"
-    [[ "$ENV_ARG" == "dev" ]] && branch="develop"
-    cd "$PROJECT_DIR" || return 1
-    git checkout "$branch" 2>/dev/null || git checkout -b "$branch"
-    git pull origin "$branch" 2>/dev/null || true
-
-    # Install dependencies
-    print_status "Installing dependencies..."
-    npm ci
-
-    # Build
-    print_status "Building..."
-    npm run build
 
     # Create required directories
     mkdir -p "$PROJECT_DIR/logs"
@@ -392,58 +367,28 @@ cmd_setup() {
         print_success ".system.prompt found"
     fi
 
+    if [[ ! -f "$PROJECT_DIR/mcp-servers.json" ]]; then
+        print_warning "mcp-servers.json missing! Copy from template:"
+        echo "  cp mcp-servers.example.json $PROJECT_DIR/mcp-servers.json"
+    else
+        print_success "mcp-servers.json found"
+    fi
+
+    echo ""
+    echo "Directory structure:"
+    echo "  $PROJECT_DIR/"
+    echo "    .env               # config (manual)"
+    echo "    .system.prompt     # config (manual)"
+    echo "    mcp-servers.json   # config (manual)"
+    echo "    data/              # runtime data (auto)"
+    echo "    logs/              # logs (auto)"
+    echo "    dist/              # deployed by CI (auto)"
+    echo "    node_modules/      # deployed by CI (auto)"
+    echo "    package.json       # deployed by CI (auto)"
+
     echo ""
     print_success "Setup complete for $ENV_ARG at $PROJECT_DIR"
-    print_status "Next: Copy .env and .system.prompt, then run: ./service.sh $ENV_ARG install"
-}
-
-# Deploy command (used by GitHub Actions)
-cmd_deploy() {
-    if [[ -z "$ENV_ARG" ]]; then
-        print_error "Deploy requires an environment: ./service.sh main deploy  or  ./service.sh dev deploy"
-        return 1
-    fi
-
-    print_status "Deploying $ENV_ARG..."
-    echo ""
-
-    cd "$PROJECT_DIR" || return 1
-
-    # Step 1: Pull latest code
-    print_status "[1/4] Pulling latest code..."
-    local branch="main"
-    [[ "$ENV_ARG" == "dev" ]] && branch="develop"
-    git fetch origin "$branch"
-    git reset --hard "origin/$branch"
-    print_success "Code updated"
-
-    # Step 2: Install dependencies
-    print_status "[2/4] Installing dependencies..."
-    npm ci
-    print_success "Dependencies installed"
-
-    # Step 3: Build
-    print_status "[3/4] Building..."
-    npm run build
-    print_success "Build completed"
-
-    # Step 4: Restart service
-    print_status "[4/4] Restarting service..."
-    if is_running; then
-        launchctl unload "$PLIST_PATH"
-        sleep 2
-    fi
-    launchctl load "$PLIST_PATH"
-    sleep 3
-
-    if is_running; then
-        echo ""
-        print_success "Deploy completed! (PID: $(get_pid))"
-    else
-        print_error "Service failed to start after deploy"
-        tail -10 "$LOGS_DIR/stderr.log"
-        return 1
-    fi
+    print_status "Next: Copy config files, then push to trigger CI deploy"
 }
 
 # Status all environments
@@ -485,9 +430,6 @@ case "$COMMAND" in
     setup)
         cmd_setup
         ;;
-    deploy)
-        cmd_deploy
-        ;;
     logs)
         cmd_logs "$1" "$2"
         ;;
@@ -510,16 +452,16 @@ case "$COMMAND" in
         echo "  reinstall    Stop, rebuild, start (after code changes)"
         echo "  install      Install as LaunchAgent"
         echo "  uninstall    Remove LaunchAgent"
-        echo "  setup        Initialize deployment directory (main/dev only)"
-        echo "  deploy       Pull, build, restart (used by CI)"
+        echo "  setup        Initialize deployment directory (config only)"
         echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
         echo ""
         echo "Examples:"
         echo "  ./service.sh status              # Local status"
         echo "  ./service.sh main status          # Production status"
-        echo "  ./service.sh dev setup            # Initialize dev environment"
-        echo "  ./service.sh main deploy          # Deploy production"
+        echo "  ./service.sh dev setup            # Initialize dev config dir"
         echo "  ./service.sh main logs follow     # Stream production logs"
         echo "  ./service.sh status-all           # All environments"
+        echo ""
+        echo "Deployment: Push to dev/main branch triggers CI auto-deploy"
         ;;
 esac

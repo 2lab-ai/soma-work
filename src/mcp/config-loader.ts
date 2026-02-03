@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../logger';
+import { MCP_CONFIG_FILE } from '../env-paths';
 
 export type McpStdioServerConfig = {
   type?: 'stdio'; // Optional for backwards compatibility
@@ -35,7 +36,7 @@ export class McpConfigLoader {
   private config: McpConfiguration | null = null;
   private configPath: string;
 
-  constructor(configPath: string = './mcp-servers.json') {
+  constructor(configPath: string = MCP_CONFIG_FILE) {
     this.configPath = path.resolve(configPath);
   }
 
