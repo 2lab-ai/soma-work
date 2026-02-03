@@ -10,6 +10,8 @@ node_modules/
 # Local config (not committed)
 mcp-servers.json
 .system.prompt
+.setup-state
+.setup-secrets.tmp
 
 # Build output
 dist/

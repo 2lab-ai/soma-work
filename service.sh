@@ -33,7 +33,7 @@ resolve_env() {
 
     PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
     LOGS_DIR="$PROJECT_DIR/logs"
-    NODE_PATH="$HOME/.nvm/versions/node/v25.2.1/bin"
+    NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
     USER_HOME="$HOME"
 }
 
