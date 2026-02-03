@@ -13,6 +13,7 @@ import { createConversation, getConversationUrl } from '../../conversation';
 import { AssistantStatusManager } from '../assistant-status-manager';
 import { checkRepoChannelMatch, getChannel } from '../../channel-registry';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
+import { userSettingsStore } from '../../user-settings-store';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -132,9 +133,24 @@ export class SessionInitializer {
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
+
+      // First-time user detection: trigger onboarding workflow
+      // Note: Users in Jira mapping already have settings (via updateUserJiraInfo in InputProcessor)
+      const userSettings = userSettingsStore.getUserSettings(user);
+      if (!userSettings) {
+        this.logger.info('First-time user detected, triggering onboarding', {
+          sessionKey,
+          user,
+          userName,
+        });
+        session.isOnboarding = true;
+        this.deps.claudeHandler.transitionToMain(channel, threadTs, 'onboarding', 'Welcome!');
+        // Skip normal dispatch - onboarding workflow will handle the user
+      }
     }
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
+    // Skip dispatch if onboarding was triggered (already transitioned)
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       // Check if dispatch is already in flight for this session (race condition prevention)
       const existingDispatch = dispatchInFlight.get(sessionKey);

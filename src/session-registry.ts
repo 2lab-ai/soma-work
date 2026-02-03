@@ -49,6 +49,8 @@ interface SerializedSession {
   sleepStartedAt?: string; // ISO date string
   // Activity state
   activityState?: ActivityState;
+  // Onboarding flag
+  isOnboarding?: boolean;
 }
 
 /**
@@ -672,6 +674,7 @@ export class SessionRegistry {
             links: session.links,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
+            isOnboarding: session.isOnboarding,
           });
         }
       }
@@ -733,6 +736,7 @@ export class SessionRegistry {
           links: serialized.links,
           sleepStartedAt,
           activityState: 'idle', // Always idle on restore (no active streams after restart)
+          isOnboarding: serialized.isOnboarding,
         };
         this.sessions.set(serialized.key, session);
         loaded++;
