@@ -6,13 +6,14 @@
 # Environments:
 #   main    /opt/soma-work/main (production)
 #   dev     /opt/soma-work/dev (development)
-#   (none)  Current directory (local dev, not recommended for production)
+#   (none)  Current directory (local dev)
 #
-# This script manages the bot as a SYSTEM DAEMON (/Library/LaunchDaemons)
-# which runs at boot time WITHOUT requiring user login.
-# All commands require sudo (password will be prompted).
+# Uses LaunchAgents (user-level) for service management.
+# No sudo required. Service starts when user logs in.
 
 # --- Environment resolution ---
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+
 resolve_env() {
     local env="$1"
     case "$env" in
@@ -30,7 +31,7 @@ resolve_env() {
             ;;
     esac
 
-    PLIST_PATH="/Library/LaunchDaemons/$SERVICE_NAME.plist"
+    PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
     LOGS_DIR="$PROJECT_DIR/logs"
     NODE_PATH="$HOME/.nvm/versions/node/v25.2.1/bin"
     USER_HOME="$HOME"
@@ -62,15 +63,14 @@ print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
 # --- Service helpers ---
 is_running() {
-    sudo launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
+    launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
 }
 
 get_pid() {
-    sudo launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
+    launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
 }
 
 generate_plist() {
-    local user="${1:-$(whoami)}"
     cat << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -78,12 +78,6 @@ generate_plist() {
 <dict>
     <key>Label</key>
     <string>$SERVICE_NAME</string>
-
-    <key>UserName</key>
-    <string>$user</string>
-
-    <key>GroupName</key>
-    <string>staff</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -174,7 +168,7 @@ cmd_start() {
         return 1
     fi
 
-    sudo launchctl load "$PLIST_PATH"
+    launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
@@ -193,7 +187,7 @@ cmd_stop() {
         return 0
     fi
 
-    sudo launchctl unload "$PLIST_PATH"
+    launchctl unload "$PLIST_PATH"
     sleep 2
 
     if ! is_running; then
@@ -212,7 +206,7 @@ cmd_restart() {
 }
 
 cmd_install() {
-    print_status "Installing $SERVICE_NAME as system daemon..."
+    print_status "Installing $SERVICE_NAME as LaunchAgent..."
 
     if [[ ! -d "$PROJECT_DIR" ]]; then
         print_error "Project directory not found: $PROJECT_DIR"
@@ -221,11 +215,12 @@ cmd_install() {
     fi
 
     mkdir -p "$LOGS_DIR"
+    mkdir -p "$LAUNCH_AGENTS_DIR"
 
-    generate_plist "$(whoami)" | sudo tee "$PLIST_PATH" > /dev/null
+    generate_plist > "$PLIST_PATH"
     print_success "Plist created: $PLIST_PATH"
 
-    sudo launchctl load "$PLIST_PATH"
+    launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
@@ -239,12 +234,12 @@ cmd_uninstall() {
     print_status "Uninstalling $SERVICE_NAME..."
 
     if is_running; then
-        sudo launchctl unload "$PLIST_PATH"
+        launchctl unload "$PLIST_PATH"
         sleep 2
     fi
 
     if [[ -f "$PLIST_PATH" ]]; then
-        sudo rm "$PLIST_PATH"
+        rm "$PLIST_PATH"
         print_success "Plist removed"
     else
         print_warning "Plist not found"
@@ -285,14 +280,13 @@ cmd_logs() {
 }
 
 cmd_reinstall() {
-    local env_label="${ENV_ARG:-local}"
     print_status "Reinstalling $SERVICE_NAME..."
     echo ""
 
     # Step 1: Stop
     print_status "[1/4] Stopping service..."
     if is_running; then
-        sudo launchctl unload "$PLIST_PATH"
+        launchctl unload "$PLIST_PATH"
         sleep 2
         if ! is_running; then
             print_success "Service stopped"
@@ -317,12 +311,13 @@ cmd_reinstall() {
     # Step 3: Update plist
     print_status "[3/4] Updating service configuration..."
     mkdir -p "$LOGS_DIR"
-    generate_plist "$(whoami)" | sudo tee "$PLIST_PATH" > /dev/null
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    generate_plist > "$PLIST_PATH"
     print_success "Service configuration updated"
 
     # Step 4: Start
     print_status "[4/4] Starting service..."
-    sudo launchctl load "$PLIST_PATH"
+    launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
@@ -344,9 +339,11 @@ cmd_setup() {
 
     print_status "Setting up $ENV_ARG environment at $PROJECT_DIR..."
 
-    # Create directory
-    sudo mkdir -p "$PROJECT_DIR"
-    sudo chown "$(whoami):staff" "$PROJECT_DIR"
+    # Create directory (needs sudo for /opt)
+    if [[ ! -d "$PROJECT_DIR" ]]; then
+        sudo mkdir -p "$PROJECT_DIR"
+        sudo chown "$(whoami):staff" "$PROJECT_DIR"
+    fi
 
     # Clone or init
     if [[ ! -d "$PROJECT_DIR/.git" ]]; then
@@ -407,8 +404,7 @@ cmd_deploy() {
         return 1
     fi
 
-    local env_label="$ENV_ARG"
-    print_status "Deploying $env_label..."
+    print_status "Deploying $ENV_ARG..."
     echo ""
 
     cd "$PROJECT_DIR" || return 1
@@ -434,10 +430,10 @@ cmd_deploy() {
     # Step 4: Restart service
     print_status "[4/4] Restarting service..."
     if is_running; then
-        sudo launchctl unload "$PLIST_PATH"
+        launchctl unload "$PLIST_PATH"
         sleep 2
     fi
-    sudo launchctl load "$PLIST_PATH"
+    launchctl load "$PLIST_PATH"
     sleep 3
 
     if is_running; then
@@ -463,12 +459,7 @@ cmd_status_all() {
 # --- Main ---
 case "$COMMAND" in
     status)
-        if [[ -z "$ENV_ARG" ]]; then
-            # If no env specified, show status for current dir
-            cmd_status
-        else
-            cmd_status
-        fi
+        cmd_status
         ;;
     status-all)
         cmd_status_all
@@ -517,8 +508,8 @@ case "$COMMAND" in
         echo "  stop         Stop the service"
         echo "  restart      Restart (no rebuild)"
         echo "  reinstall    Stop, rebuild, start (after code changes)"
-        echo "  install      Install as launchd daemon"
-        echo "  uninstall    Remove launchd daemon"
+        echo "  install      Install as LaunchAgent"
+        echo "  uninstall    Remove LaunchAgent"
         echo "  setup        Initialize deployment directory (main/dev only)"
         echo "  deploy       Pull, build, restart (used by CI)"
         echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
