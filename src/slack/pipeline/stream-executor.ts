@@ -317,6 +317,21 @@ export class StreamExecutor {
         }
       }
 
+      // Handle onboarding completion/skip - transition to real workflow
+      if (session.isOnboarding && streamResult.collectedText) {
+        const continuation = this.buildOnboardingContinuation(
+          session,
+          streamResult.collectedText,
+          user,
+          userName,
+          threadTs,
+          say
+        );
+        if (continuation) {
+          return { success: true, messageCount: streamResult.messageCount, continuation };
+        }
+      }
+
       return { success: true, messageCount: streamResult.messageCount };
     } catch (error: any) {
       await this.handleError(
@@ -704,6 +719,76 @@ ${userInstruction}`;
       return parsed.save_result;
     } catch (error) {
       this.logger.warn('Failed to parse save_result JSON', { error });
+      return null;
+    }
+  }
+
+  /**
+   * Build continuation for onboarding completion/skip
+   * When Claude outputs {"onboarding_complete": {...}}, transition to real workflow
+   */
+  private buildOnboardingContinuation(
+    session: ConversationSession,
+    collectedText: string,
+    userId: string,
+    userName: string,
+    threadTs: string,
+    say: SayFn
+  ): Continuation | undefined {
+    // Parse onboarding_complete JSON from output
+    const result = this.parseOnboardingComplete(collectedText);
+    if (!result) {
+      return undefined;
+    }
+
+    this.logger.info('Onboarding complete detected, building continuation', {
+      skipped: result.skipped,
+      userMessage: result.user_message?.substring(0, 50),
+    });
+
+    // Create user settings record (marks user as onboarded)
+    userSettingsStore.ensureUserExists(userId, userName);
+
+    // Clear onboarding flag
+    session.isOnboarding = false;
+
+    // If user provided a real task/message, re-dispatch with it
+    if (result.user_message) {
+      this.logger.info('Onboarding: transitioning to user request', {
+        userMessage: result.user_message.substring(0, 100),
+      });
+
+      return {
+        prompt: result.user_message,
+        resetSession: true,
+        dispatchText: result.user_message,
+      };
+    }
+
+    // Onboarding completed without follow-up task - no continuation needed
+    return undefined;
+  }
+
+  /**
+   * Parse onboarding_complete JSON from collected text
+   * Expected format: {"onboarding_complete": {"skipped": true/false, "user_message": "..."}}
+   */
+  private parseOnboardingComplete(text: string): {
+    skipped: boolean;
+    user_message?: string;
+  } | null {
+    // Look for {"onboarding_complete": ...} pattern
+    const jsonMatch = text.match(/\{"onboarding_complete"\s*:\s*(\{[^}]*\})\}/s);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    try {
+      const fullJson = `{"onboarding_complete":${jsonMatch[1]}}`;
+      const parsed = JSON.parse(fullJson);
+      return parsed.onboarding_complete;
+    } catch (error) {
+      this.logger.warn('Failed to parse onboarding_complete JSON', { error });
       return null;
     }
   }
