@@ -638,24 +638,63 @@ export class StreamExecutor {
       return undefined;
     }
 
-    const { id, files } = saveResult;
+    const { id, files, path, dir, summary } = saveResult;
 
-    if (!files || files.length === 0) {
-      this.logger.warn('Save succeeded but no files returned');
+    // Try to get save content from files array or fallback to reading from path
+    let saveContent: string;
+
+    if (files && files.length > 0) {
+      // Preferred: use files array directly
+      this.logger.info('Renew save completed, using files array', { id, fileCount: files.length });
+      saveContent = files.map((file: { name: string; content: string }) => {
+        return `--- ${file.name} ---\n${file.content}`;
+      }).join('\n\n');
+    } else if (path || dir) {
+      // Fallback: try to read from path/dir
+      const savePath = path || dir;
+      this.logger.info('Renew save completed, attempting file read fallback', { id, savePath });
+
+      try {
+        const fs = await import('fs');
+        const pathModule = await import('path');
+
+        // Try to read context.md from the save directory
+        const contextPath = savePath!.endsWith('.md')
+          ? savePath!
+          : pathModule.join(savePath!, 'context.md');
+
+        if (fs.existsSync(contextPath)) {
+          const content = fs.readFileSync(contextPath, 'utf-8');
+          saveContent = `--- context.md ---\n${content}`;
+          this.logger.info('Successfully read save file via fallback', { contextPath });
+        } else {
+          this.logger.warn('Save path does not exist', { contextPath });
+          await say({
+            text: `⚠️ Save reported success but file not found at: ${contextPath}`,
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+      } catch (readError) {
+        this.logger.warn('Failed to read save file via fallback', { savePath, error: readError });
+        await say({
+          text: `⚠️ Save reported success but could not read file: ${savePath}`,
+          thread_ts: threadTs,
+        });
+        session.renewState = null;
+        return undefined;
+      }
+    } else {
+      // No files and no path - can't proceed
+      this.logger.warn('Save succeeded but no files or path returned', { saveResult });
       await say({
-        text: '⚠️ Save succeeded but no file content was returned.',
+        text: '⚠️ Save succeeded but no file content or path was returned.',
         thread_ts: threadTs,
       });
       session.renewState = null;
       return undefined;
     }
-
-    this.logger.info('Renew save completed, building continuation', { id, fileCount: files.length });
-
-    // Build save content from files array
-    const saveContent = files.map((file: { name: string; content: string }) => {
-      return `--- ${file.name} ---\n${file.content}`;
-    }).join('\n\n');
 
     // Get user message if provided with /renew command
     const userMessage = session.renewUserMessage;
@@ -697,12 +736,17 @@ ${userInstruction}`;
   }
 
   /**
-   * Parse save_result JSON from collected text
+   * Parse save_result JSON from collected text (lenient parsing)
+   * Handles AI output variations:
+   * - success: true | status: "saved" | status: "success"
+   * - id | save_id
+   * - files array or path/dir for fallback
    */
   private parseSaveResult(text: string): {
     success: boolean;
     id?: string;
     dir?: string;
+    path?: string;
     summary?: string;
     files?: Array<{ name: string; content: string }>;
     error?: string;
@@ -716,7 +760,27 @@ ${userInstruction}`;
     try {
       const fullJson = `{"save_result":${jsonMatch[1]}}`;
       const parsed = JSON.parse(fullJson);
-      return parsed.save_result;
+      const raw = parsed.save_result;
+
+      // Normalize the result (lenient parsing)
+      // Success detection: success === true OR status === "saved" OR status === "success"
+      const success = raw.success === true ||
+        raw.status === 'saved' ||
+        raw.status === 'success';
+
+      // ID extraction: id OR save_id
+      const id = raw.id || raw.save_id;
+
+      // Return normalized result
+      return {
+        success,
+        id,
+        dir: raw.dir,
+        path: raw.path,
+        summary: raw.summary || raw.title,
+        files: raw.files,
+        error: raw.error,
+      };
     } catch (error) {
       this.logger.warn('Failed to parse save_result JSON', { error });
       return null;
