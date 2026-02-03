@@ -36,7 +36,7 @@ When a concrete technical decision is needed, output a `UserChoiceGroup`:
 interface UserChoice {
   type: 'user_choice';
   question: string;              // Specific technical question
-  options: UserChoiceOption[];   // 2-5 actionable options
+  options: UserChoiceOption[];   // 2-4 actionable options (Slack UI button limit)
   context?: string;              // Why this decision is needed
 }
 
@@ -58,6 +58,7 @@ interface UserChoiceGroup {
 
 - You should include all CONTEXT in that question. Do not let the user scroll up with saying "WHAT THE FUCK IT IS GOING TO DOING?".
 - User should know what will you do if the option chosen by the user.
+- Slack UI renders up to 4 options as buttons (plus 1 "custom input" button). Keep options to **2-4**.
 
 ### USE UserChoice when:
 - Implementation choice: "Redis vs In-memory cache?"
