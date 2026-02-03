@@ -131,7 +131,7 @@ GitHub App 인증(권장) 또는 PAT 폴백. 자동 토큰 갱신으로 끊김 �
 
 ```bash
 git clone <repo-url>
-cd claude-code-slack-bot
+cd soma-work
 npm install
 ```
 
@@ -216,7 +216,7 @@ docker-compose logs -f
 ./service.sh logs follow # 실시간 로그
 ```
 
-서비스 이름: `com.dd.claude-slack-bot`. 크래시 시 자동 재시작.
+서비스 이름: `com.dd.soma-work`. 크래시 시 자동 재시작.
 
 > **주의**: 개발 중에는 `service.sh`를 사용하지 마세요. 같은 Slack 토큰으로 여러 인스턴스가 실행되면 메시지 충돌이 발생합니다.
 

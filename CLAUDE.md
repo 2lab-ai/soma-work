@@ -38,7 +38,7 @@ bd close <id> --reason "구현 완료"
 - 리뷰 대기 목록: `bd list --status=in_progress --label phase:review`
 - 리뷰에서 수정 필요 시: `bd set-state <id> phase=coding --reason "리뷰 피드백 반영"`
 
-# Claude Code Slack Bot
+# soma-work
 
 Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 TypeScript 기반 봇.
 
@@ -361,8 +361,8 @@ docker-compose logs -f        # 로그 확인
 ```
 
 ### Service Config
-- Name: `com.dd.claude-slack-bot`
-- Plist: `~/Library/LaunchAgents/com.dd.claude-slack-bot.plist`
+- Name: `com.dd.soma-work`
+- Plist: `/Library/LaunchDaemons/com.dd.soma-work.plist`
 - Auto-start, Auto-restart on crash
 
 ## Development
