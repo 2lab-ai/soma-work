@@ -303,6 +303,53 @@ export class SlackApiHelper {
   }
 
   /**
+   * Delete bot-authored messages within a thread (keeps the root message)
+   */
+  async deleteThreadBotMessages(
+    channel: string,
+    threadTs: string,
+    options?: { excludeTs?: string[] }
+  ): Promise<void> {
+    const excludeTs = new Set(options?.excludeTs || []);
+    const botUserId = await this.getBotUserId();
+    let cursor: string | undefined;
+
+    try {
+      do {
+        const response = await this.enqueue(() =>
+          this.app.client.conversations.replies({
+            channel,
+            ts: threadTs,
+            limit: 200,
+            cursor,
+          })
+        );
+
+        const messages = (response.messages as any[]) || [];
+        for (const message of messages) {
+          const messageTs = message?.ts as string | undefined;
+          if (!messageTs || messageTs === threadTs || excludeTs.has(messageTs)) {
+            continue;
+          }
+          if (message?.user !== botUserId) {
+            continue;
+          }
+          try {
+            await this.deleteMessage(channel, messageTs);
+          } catch (error) {
+            this.logger.debug('Failed to delete thread message', { channel, messageTs, error });
+          }
+        }
+
+        const nextCursor = response.response_metadata?.next_cursor;
+        cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+      } while (cursor);
+    } catch (error) {
+      this.logger.warn('Failed to delete bot messages in thread', { channel, threadTs, error });
+    }
+  }
+
+  /**
    * 임시 메시지 전송 (특정 사용자에게만 보임)
    */
   async postEphemeral(

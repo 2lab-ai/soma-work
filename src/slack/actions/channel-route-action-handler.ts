@@ -24,6 +24,7 @@ interface RouteActionValue {
   targetChannelName: string;
   originalChannel: string;
   originalTs: string;
+  originalThreadTs?: string;
   userMessage: string;
   userId: string;
   prUrl?: string;
@@ -40,6 +41,8 @@ export class ChannelRouteActionHandler {
       const action = body.actions?.[0];
       const value: RouteActionValue = JSON.parse(action?.value || '{}');
       const userId = body.user?.id;
+      const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
+      const sessionThreadTs = originalThreadTs || value.originalTs;
 
       if (!value.targetChannel || !userId) {
         logger.warn('Invalid channel route move action', { value });
@@ -53,9 +56,19 @@ export class ChannelRouteActionHandler {
         // Advisory message might already be gone
       }
 
+      if (!originalThreadTs) {
+        logger.warn('Missing original thread ts for channel route move', { value });
+      } else {
+        await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
+          excludeTs: value.originalTs ? [value.originalTs] : [],
+        });
+      }
+
       // Terminate original ghost session
-      const origKey = `${value.originalChannel}:${value.originalTs}`;
-      this.deps.claudeHandler.terminateSession(origKey);
+      if (sessionThreadTs) {
+        const origKey = this.deps.claudeHandler.getSessionKey(value.originalChannel, sessionThreadTs);
+        this.deps.claudeHandler.terminateSession(origKey);
+      }
 
       // Create new thread in correct channel
       // Bot posts as the thread root with user mention and PR info
@@ -80,6 +93,11 @@ export class ChannelRouteActionHandler {
         channel: value.targetChannel,
         ts: `synthetic_${Date.now()}`,
         thread_ts: postResult.ts,
+        routeContext: {
+          skipAutoBotThread: true,
+          sourceChannel: value.originalChannel,
+          sourceThreadTs: originalThreadTs,
+        },
       };
 
       const syntheticSay = async (msg: any) => {
@@ -90,7 +108,7 @@ export class ChannelRouteActionHandler {
         );
       };
 
-      // Pre-mark so SessionInitializer picks up bot-initiated mode during initialization
+      // Best-effort pre-mark (if session already exists it will be marked)
       // setBotThread is called again after messageHandler in case session is recreated
       this.deps.claudeHandler.setBotThread(value.targetChannel, postResult.ts, postResult.ts);
 
@@ -149,6 +167,7 @@ export function buildChannelRouteBlocks(params: {
   targetChannelId: string;
   originalChannel: string;
   originalTs: string;
+  originalThreadTs: string;
   userMessage: string;
   userId: string;
 }): { text: string; blocks: any[] } {
@@ -157,6 +176,7 @@ export function buildChannelRouteBlocks(params: {
     targetChannelName: params.targetChannelName,
     originalChannel: params.originalChannel,
     originalTs: params.originalTs,
+    originalThreadTs: params.originalThreadTs,
     userMessage: params.userMessage,
     userId: params.userId,
     prUrl: params.prUrl,
