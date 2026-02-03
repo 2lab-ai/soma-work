@@ -1,8 +1,5 @@
-import dotenv from 'dotenv';
 import { WebClient } from '@slack/web-api';
 import { Logger } from './logger';
-
-dotenv.config();
 
 // Logger for preflight checks and config validation
 const logger = new Logger('Config');

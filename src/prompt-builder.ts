@@ -6,6 +6,7 @@
 
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
+import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { WorkflowType } from './types';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -14,7 +15,7 @@ import * as fs from 'fs';
 const PROMPT_DIR = path.join(__dirname, 'prompt');
 const DEFAULT_PROMPT_PATH = path.join(PROMPT_DIR, 'default.prompt');
 const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
-const LOCAL_SYSTEM_PROMPT_PATH = path.join(process.cwd(), '.system.prompt');
+const LOCAL_SYSTEM_PROMPT_PATH = SYSTEM_PROMPT_FILE;
 const PERSONA_DIR = path.join(__dirname, 'persona');
 
 // Include directive pattern: {{include:filename.prompt}}

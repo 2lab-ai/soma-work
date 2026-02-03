@@ -1,10 +1,8 @@
 import { PendingChoiceFormData } from './types';
 import { Logger } from '../../logger';
+import { DATA_DIR } from '../../env-paths';
 import * as path from 'path';
 import * as fs from 'fs';
-
-// Persistence file path
-const DATA_DIR = path.join(process.cwd(), 'data');
 const FORMS_FILE = path.join(DATA_DIR, 'pending-forms.json');
 
 // Form timeout: 24 hours (same as session timeout)
