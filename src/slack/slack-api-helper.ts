@@ -50,6 +50,13 @@ export class SlackApiHelper {
   }
 
   /**
+   * Get the underlying Slack WebClient for direct API access
+   */
+  getClient() {
+    return this.app.client;
+  }
+
+  /**
    * Rate limit 큐에 API 호출 추가
    */
   private async enqueue<T>(execute: () => Promise<T>): Promise<T> {
@@ -277,6 +284,20 @@ export class SlackApiHelper {
       );
     } catch (error) {
       this.logger.warn('Failed to update message', { channel, ts, error });
+      throw error;
+    }
+  }
+
+  /**
+   * 메시지 삭제 (봇이 보낸 메시지만 삭제 가능)
+   */
+  async deleteMessage(channel: string, ts: string): Promise<void> {
+    try {
+      await this.enqueue(() =>
+        this.app.client.chat.delete({ channel, ts })
+      );
+    } catch (error) {
+      this.logger.warn('Failed to delete message', { channel, ts, error });
       throw error;
     }
   }

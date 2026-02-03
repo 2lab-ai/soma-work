@@ -541,7 +541,7 @@ export class SessionUiManager {
         });
       }
     } catch (error) {
-      this.logger.debug('Failed to build session action buttons', { sessionKey, error });
+      this.logger.warn('Failed to build session action buttons', { sessionKey, error });
     }
 
     // Slack allows max 5 elements per actions block

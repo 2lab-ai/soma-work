@@ -8,6 +8,8 @@ import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
 import { initRecorder, startWebServer, stopWebServer } from './conversation';
+import { notifyRelease } from './release-notifier';
+import { scanChannels } from './channel-registry';
 
 const logger = new Logger('Main');
 
@@ -132,6 +134,21 @@ async function start() {
     await app.start();
     timing('Slack socket connected');
     logger.info('⚡️ Claude Code Slack bot is running!');
+
+    // Scan channels the bot is a member of (non-blocking)
+    scanChannels(app.client).then(count => {
+      timing(`Channel scan complete (${count} channels)`);
+    }).catch(error => {
+      logger.warn('Channel scan failed (non-critical)', error);
+    });
+
+    // Send release notification to configured channel
+    try {
+      await notifyRelease(app.client);
+      timing('Release notification sent');
+    } catch (error) {
+      logger.warn('Failed to send release notification (non-critical)', error);
+    }
 
     // Send startup notification to admin
     const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
