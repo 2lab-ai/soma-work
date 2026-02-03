@@ -162,9 +162,143 @@ async function fetchJiraMetadata(link: SessionLink): Promise<{ title?: string; s
   };
 }
 
-function extractJiraKey(url: string): string | undefined {
+export function extractJiraKey(url: string): string | undefined {
   const match = url.match(/\/browse\/([A-Z]+-\d+)/);
   return match?.[1];
+}
+
+export function extractGitHubPRInfo(url: string): { owner: string; repo: string; number: number } | undefined {
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) return undefined;
+  return { owner: match[1], repo: match[2], number: parseInt(match[3], 10) };
+}
+
+/**
+ * Jira transition target info
+ */
+export interface JiraTransition {
+  id: string;
+  name: string;
+  to: { name: string; statusCategory: string };
+}
+
+/**
+ * Fetch available Jira transitions for an issue.
+ * Returns empty array on failure (graceful degradation).
+ */
+export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransition[]> {
+  const baseUrl = process.env.JIRA_BASE_URL;
+  const email = process.env.JIRA_EMAIL;
+  const apiToken = process.env.JIRA_API_TOKEN;
+
+  if (!baseUrl || !email || !apiToken) return [];
+
+  try {
+    const response = await fetch(`${baseUrl}/rest/api/3/issue/${issueKey}/transitions`, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json() as {
+      transitions?: Array<{
+        id: string;
+        name: string;
+        to?: { name?: string; statusCategory?: { key?: string } };
+      }>;
+    };
+
+    return (data.transitions || []).map(t => ({
+      id: t.id,
+      name: t.name,
+      to: {
+        name: t.to?.name || t.name,
+        statusCategory: t.to?.statusCategory?.key || 'undefined',
+      },
+    }));
+  } catch (error) {
+    logger.debug('Failed to fetch Jira transitions', { issueKey, error: (error as Error).message });
+    return [];
+  }
+}
+
+/**
+ * GitHub PR details for merge eligibility check
+ */
+export interface GitHubPRDetails {
+  state: string;
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState: string;
+  draft: boolean;
+  head: string;   // source branch
+  base: string;   // target branch
+}
+
+/**
+ * Fetch GitHub PR details including merge eligibility.
+ * Returns undefined on failure.
+ */
+export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRDetails | undefined> {
+  const token = config.github.token;
+  if (!token) return undefined;
+
+  const prInfo = extractGitHubPRInfo(link.url);
+  if (!prInfo) return undefined;
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+      }
+    );
+
+    if (!response.ok) return undefined;
+
+    const data = await response.json() as {
+      state?: string;
+      merged?: boolean;
+      mergeable?: boolean | null;
+      mergeable_state?: string;
+      draft?: boolean;
+      head?: { ref?: string };
+      base?: { ref?: string };
+    };
+
+    return {
+      state: data.state || 'open',
+      merged: data.merged || false,
+      mergeable: data.mergeable ?? null,
+      mergeableState: data.mergeable_state || 'unknown',
+      draft: data.draft || false,
+      head: data.head?.ref || 'unknown',
+      base: data.base?.ref || 'unknown',
+    };
+  } catch (error) {
+    logger.debug('Failed to fetch GitHub PR details', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
+}
+
+/**
+ * Check if a PR is eligible for merging
+ */
+export function isPRMergeable(details: GitHubPRDetails): boolean {
+  return (
+    details.state === 'open' &&
+    !details.draft &&
+    !details.merged &&
+    details.mergeable === true &&
+    details.mergeableState === 'clean'
+  );
 }
 
 function truncateTitle(title: string, maxLen: number): string {

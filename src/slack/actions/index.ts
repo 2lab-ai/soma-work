@@ -3,6 +3,8 @@ import { PermissionActionHandler } from './permission-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { FormActionHandler } from './form-action-handler';
+import { JiraActionHandler } from './jira-action-handler';
+import { PRActionHandler } from './pr-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { SlackApiHelper } from '../slack-api-helper';
@@ -23,6 +25,8 @@ export class ActionHandlers {
   private sessionHandler: SessionActionHandler;
   private choiceHandler: ChoiceActionHandler;
   private formHandler: FormActionHandler;
+  private jiraHandler: JiraActionHandler;
+  private prHandler: PRActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -54,6 +58,18 @@ export class ActionHandlers {
       this.formStore,
       this.choiceHandler
     );
+
+    this.jiraHandler = new JiraActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
+    });
+
+    this.prHandler = new PRActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
+    });
   }
 
   /**
@@ -141,6 +157,18 @@ export class ActionHandlers {
     app.action(/^custom_input_multi_/, async ({ ack, body, client }) => {
       await ack();
       await this.formHandler.handleCustomInputMulti(body, client);
+    });
+
+    // Jira transition actions (regex: jira_transition_{transitionId}_{sessionKeyPrefix})
+    app.action(/^jira_transition_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.jiraHandler.handleTransition(body, respond);
+    });
+
+    // PR merge action (regex: merge_pr_{sessionKeyPrefix})
+    app.action(/^merge_pr_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.prHandler.handleMerge(body, respond);
     });
 
     // 모달 핸들러

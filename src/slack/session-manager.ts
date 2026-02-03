@@ -4,7 +4,16 @@ import { ReactionManager } from './reaction-manager';
 import { ConversationSession, SessionLinks, ActivityState } from '../types';
 import { ClaudeHandler } from '../claude-handler';
 import { userSettingsStore } from '../user-settings-store';
-import { fetchLinkMetadata, getStatusEmoji } from '../link-metadata-fetcher';
+import {
+  fetchLinkMetadata,
+  getStatusEmoji,
+  fetchJiraTransitions,
+  fetchGitHubPRDetails,
+  isPRMergeable,
+  extractJiraKey,
+  JiraTransition,
+  GitHubPRDetails,
+} from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 
 export interface FormatSessionsOptions {
@@ -200,6 +209,17 @@ export class SessionUiManager {
         }
 
         blocks.push(block);
+
+        // Action buttons: Jira transitions + PR merge (only when controls enabled)
+        if (showControls) {
+          const actionElements = await this.buildSessionActionButtons(key, session);
+          if (actionElements.length > 0) {
+            blocks.push({
+              type: 'actions',
+              elements: actionElements,
+            });
+          }
+        }
       }
     }
 
@@ -429,6 +449,115 @@ export class SessionUiManager {
     } catch (error) {
       this.logger.error('Failed to send session expiry message', error);
     }
+  }
+
+  /**
+   * Build action buttons for Jira transitions and PR merge for a session.
+   * Fetches Jira transitions and GitHub PR details in parallel.
+   * Returns empty array if no actions are available.
+   */
+  private async buildSessionActionButtons(
+    sessionKey: string,
+    session: ConversationSession
+  ): Promise<any[]> {
+    const elements: any[] = [];
+    const keyPrefix = sessionKey.substring(0, 8);
+
+    try {
+      // Fetch Jira transitions and PR details in parallel
+      const [jiraTransitions, prDetails] = await Promise.all([
+        this.fetchJiraTransitionsForSession(session),
+        this.fetchPRDetailsForSession(session),
+      ]);
+
+      // Jira transition buttons (max 3 to leave room for merge button)
+      if (jiraTransitions.length > 0) {
+        const issueKey = session.links?.issue?.label
+          || extractJiraKey(session.links?.issue?.url || '')
+          || '';
+        const maxTransitions = prDetails && isPRMergeable(prDetails) ? 3 : 4;
+
+        for (const transition of jiraTransitions.slice(0, maxTransitions)) {
+          const isDone = transition.to.statusCategory === 'done';
+          const button: any = {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: `${isDone ? '✅ ' : ''}${transition.name}`,
+              emoji: true,
+            },
+            value: JSON.stringify({
+              sessionKey,
+              issueKey,
+              transitionId: transition.id,
+              transitionName: transition.name,
+            }),
+            action_id: `jira_transition_${transition.id}_${keyPrefix}`,
+          };
+          if (isDone) {
+            button.style = 'primary';
+          }
+          elements.push(button);
+        }
+      }
+
+      // PR merge button
+      if (prDetails && isPRMergeable(prDetails) && session.links?.pr) {
+        const prLabel = session.links.pr.label || 'PR';
+        elements.push({
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🔀 Merge',
+            emoji: true,
+          },
+          style: 'primary',
+          value: JSON.stringify({
+            sessionKey,
+            prUrl: session.links.pr.url,
+            prLabel,
+            headBranch: prDetails.head,
+            baseBranch: prDetails.base,
+          }),
+          action_id: `merge_pr_${keyPrefix}`,
+          confirm: {
+            title: {
+              type: 'plain_text',
+              text: 'PR 머지',
+            },
+            text: {
+              type: 'mrkdwn',
+              text: `*${prLabel}*을(를) 머지하시겠습니까?\n\n\`${prDetails.head}\` → \`${prDetails.base}\`\n\n_Squash merge로 진행되며, 머지 후 소스 브랜치가 삭제됩니다._`,
+            },
+            confirm: {
+              type: 'plain_text',
+              text: '머지',
+            },
+            deny: {
+              type: 'plain_text',
+              text: '취소',
+            },
+          },
+        });
+      }
+    } catch (error) {
+      this.logger.debug('Failed to build session action buttons', { sessionKey, error });
+    }
+
+    // Slack allows max 5 elements per actions block
+    return elements.slice(0, 5);
+  }
+
+  private async fetchJiraTransitionsForSession(session: ConversationSession): Promise<JiraTransition[]> {
+    if (!session.links?.issue || session.links.issue.provider !== 'jira') return [];
+    const issueKey = session.links.issue.label || extractJiraKey(session.links.issue.url || '');
+    if (!issueKey) return [];
+    return fetchJiraTransitions(issueKey);
+  }
+
+  private async fetchPRDetailsForSession(session: ConversationSession): Promise<GitHubPRDetails | undefined> {
+    if (!session.links?.pr || session.links.pr.provider !== 'github') return undefined;
+    return fetchGitHubPRDetails(session.links.pr);
   }
 
   /**
