@@ -7,7 +7,7 @@
 # which runs at boot time WITHOUT requiring user login.
 # All commands require sudo (password will be prompted).
 
-SERVICE_NAME="com.dd.soma-work"
+SERVICE_NAME="ai.2lab.soma-work"
 # Use system-level LaunchDaemons for boot-time execution (no login required)
 PLIST_PATH="/Library/LaunchDaemons/$SERVICE_NAME.plist"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
