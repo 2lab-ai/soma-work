@@ -1,4 +1,4 @@
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { Logger } from '../logger';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -7,6 +7,46 @@ import { renderConversationListPage, renderConversationViewPage } from './viewer
 import { ConversationTurn } from './types';
 
 const logger = new Logger('ConversationWebServer');
+
+/**
+ * Validate Bearer token from Authorization header
+ */
+function validateAuthToken(request: FastifyRequest): boolean {
+  const token = config.conversation.viewerToken;
+
+  // If no token is configured, auth is disabled (allow all)
+  if (!token) {
+    return true;
+  }
+
+  const authHeader = request.headers.authorization;
+  if (!authHeader) {
+    return false;
+  }
+
+  // Support both "Bearer <token>" and raw token
+  const providedToken = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : authHeader;
+
+  return providedToken === token;
+}
+
+/**
+ * Auth middleware - applied to routes that require authentication
+ */
+async function authMiddleware(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  if (!validateAuthToken(request)) {
+    reply.status(401).send({
+      error: 'Unauthorized',
+      message: 'Valid Authorization header required',
+    });
+    return;
+  }
+}
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
@@ -47,10 +87,10 @@ export async function startWebServer(): Promise<void> {
 
   server = Fastify({ logger: false });
 
-  // ---- HTML Routes ----
+  // ---- HTML Routes (require auth when token is configured) ----
 
   // Conversation list page
-  server.get('/conversations', async (_request, reply) => {
+  server.get('/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
     try {
       const conversations = await listConversations();
       const html = renderConversationListPage(conversations);
@@ -62,7 +102,7 @@ export async function startWebServer(): Promise<void> {
   });
 
   // Conversation detail page
-  server.get<{ Params: { id: string } }>('/conversations/:id', async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const record = await getConversation(request.params.id);
       if (!record) {
@@ -77,10 +117,10 @@ export async function startWebServer(): Promise<void> {
     }
   });
 
-  // ---- JSON API Routes ----
+  // ---- JSON API Routes (require auth when token is configured) ----
 
   // List conversations (JSON)
-  server.get('/api/conversations', async (_request, reply) => {
+  server.get('/api/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
     try {
       const conversations = await listConversations();
       reply.send({ conversations });
@@ -91,7 +131,7 @@ export async function startWebServer(): Promise<void> {
   });
 
   // Get conversation detail (JSON)
-  server.get<{ Params: { id: string } }>('/api/conversations/:id', async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/api/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const record = await getConversation(request.params.id);
       if (!record) {
@@ -125,6 +165,7 @@ export async function startWebServer(): Promise<void> {
   // Get raw content for a specific turn (lazy load)
   server.get<{ Params: { id: string; turnId: string } }>(
     '/api/conversations/:id/turns/:turnId/raw',
+    { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
         const raw = await getTurnRawContent(request.params.id, request.params.turnId);
@@ -143,6 +184,7 @@ export async function startWebServer(): Promise<void> {
   // Export selected turns as markdown
   server.post<{ Params: { id: string }; Body: { turnIds: string[] } }>(
     '/api/conversations/:id/export',
+    { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
         const record = await getConversation(request.params.id);
@@ -186,6 +228,11 @@ export async function startWebServer(): Promise<void> {
       activePort = port;
       logger.info(`Conversation viewer started on ${host}:${port}`);
       logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
+      if (config.conversation.viewerToken) {
+        logger.info('Authentication enabled (CONVERSATION_VIEWER_TOKEN set)');
+      } else {
+        logger.warn('Authentication disabled (CONVERSATION_VIEWER_TOKEN not set)');
+      }
       return;
     } catch (error: any) {
       if (error.code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
