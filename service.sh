@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Claude Code Slack Bot - Service Management Script
+# soma-work - Service Management Script
 # Usage: ./service.sh [status|start|stop|restart|install|uninstall|logs]
 #
 # This script manages the bot as a SYSTEM DAEMON (/Library/LaunchDaemons)
 # which runs at boot time WITHOUT requiring user login.
 # All commands require sudo (password will be prompted).
 
-SERVICE_NAME="com.dd.claude-slack-bot"
+SERVICE_NAME="com.dd.soma-work"
 # Use system-level LaunchDaemons for boot-time execution (no login required)
 PLIST_PATH="/Library/LaunchDaemons/$SERVICE_NAME.plist"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -52,7 +52,7 @@ get_pid() {
 # Status command
 cmd_status() {
     echo "=================================="
-    echo "Claude Code Slack Bot - Status"
+    echo "soma-work - Status"
     echo "=================================="
 
     if is_running; then
@@ -410,7 +410,7 @@ case "${1:-}" in
         cmd_logs "$2" "$3"
         ;;
     *)
-        echo "Claude Code Slack Bot - Service Manager"
+        echo "soma-work - Service Manager"
         echo ""
         echo "Usage: ./service.sh <command>"
         echo ""

@@ -32,7 +32,7 @@ export class SharedStore {
 
   constructor() {
     // Use OS temp directory for cross-process communication
-    this.storeDir = path.join(os.tmpdir(), 'claude-code-slack-bot-store');
+    this.storeDir = path.join(os.tmpdir(), 'soma-work-store');
     this.pendingDir = path.join(this.storeDir, 'pending');
     this.responseDir = path.join(this.storeDir, 'responses');
     
