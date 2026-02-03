@@ -361,8 +361,8 @@ docker-compose logs -f        # 로그 확인
 ```
 
 ### Service Config
-- Name: `com.dd.soma-work`
-- Plist: `/Library/LaunchDaemons/com.dd.soma-work.plist`
+- Name: `ai.2lab.soma-work`
+- Plist: `/Library/LaunchDaemons/ai.2lab.soma-work.plist`
 - Auto-start, Auto-restart on crash
 
 ## Development
