@@ -7,6 +7,11 @@ export interface MessageEvent {
   thread_ts?: string;
   ts: string;
   text?: string;
+  routeContext?: {
+    skipAutoBotThread?: boolean;
+    sourceChannel?: string;
+    sourceThreadTs?: string;
+  };
   files?: Array<{
     id: string;
     name: string;
