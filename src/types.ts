@@ -15,6 +15,7 @@ export type ActivityState = 'working' | 'waiting' | 'idle';
  * Workflow types for session routing
  */
 export type WorkflowType =
+  | 'onboarding'
   | 'jira-executive-summary'
   | 'jira-brainstorming'
   | 'jira-planning'
@@ -122,6 +123,8 @@ export interface ConversationSession {
   threadModel?: 'user-initiated' | 'bot-initiated';
   // For bot-initiated threads: the root message ts (used for chat.update)
   threadRootTs?: string;
+  // Onboarding flag: true when session is an onboarding flow for first-time user
+  isOnboarding?: boolean;
 }
 
 export interface WorkingDirectoryConfig {

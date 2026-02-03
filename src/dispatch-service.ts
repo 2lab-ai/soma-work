@@ -405,6 +405,7 @@ export class DispatchService {
    * Valid workflow types
    */
   private static readonly VALID_WORKFLOWS = new Set<WorkflowType>([
+    'onboarding',
     'jira-executive-summary',
     'jira-brainstorming',
     'jira-planning',

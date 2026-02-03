@@ -348,6 +348,45 @@ export class UserSettingsStore {
   }
 
   /**
+   * Ensure a user settings record exists.
+   * Creates default settings if the user doesn't have any.
+   * Used during onboarding completion/skip to mark 'already onboarded' state.
+   * @param userId - Slack user ID
+   * @param slackName - Optional Slack display name to store
+   * @returns The user settings (created or existing)
+   */
+  ensureUserExists(userId: string, slackName?: string): UserSettings {
+    const existing = this.settings[userId];
+    if (existing) {
+      // Update slackName if provided and different
+      if (slackName && existing.slackName !== slackName) {
+        existing.slackName = slackName;
+        existing.lastUpdated = new Date().toISOString();
+        this.saveSettings();
+        logger.debug('Updated slackName for existing user', { userId, slackName });
+      }
+      return existing;
+    }
+
+    // Create new settings with defaults
+    const newSettings: UserSettings = {
+      userId,
+      defaultDirectory: '',
+      bypassPermission: false,
+      persona: 'default',
+      defaultModel: DEFAULT_MODEL,
+      lastUpdated: new Date().toISOString(),
+      slackName,
+    };
+
+    this.settings[userId] = newSettings;
+    this.saveSettings();
+    logger.info('Created user settings via ensureUserExists', { userId, slackName });
+
+    return newSettings;
+  }
+
+  /**
    * Remove user's settings
    */
   removeUserSettings(userId: string): boolean {
