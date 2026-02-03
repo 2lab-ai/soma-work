@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { config } from '../config';
+import { IS_DEV } from '../env-paths';
 import { getConversation, listConversations, getTurnRawContent } from './recorder';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { ConversationTurn } from './types';
@@ -8,19 +9,24 @@ import { ConversationTurn } from './types';
 const logger = new Logger('ConversationWebServer');
 
 let server: FastifyInstance | null = null;
+let activePort: number | null = null;
+
+const DEFAULT_PORT_MAIN = 3000;
+const DEFAULT_PORT_DEV = 33000;
+const MAX_PORT_RETRIES = 10;
 
 /**
- * Get the viewer port from config (default: 3000)
+ * Get the viewer port from config (default: 3000 for main, 33000 for dev)
  */
 function getPort(): number {
-  return config.conversation.viewerPort || 3000;
+  return config.conversation.viewerPort || (IS_DEV ? DEFAULT_PORT_DEV : DEFAULT_PORT_MAIN);
 }
 
 /**
  * Get the public base URL for conversation viewer
  */
 export function getViewerBaseUrl(): string {
-  return config.conversation.viewerUrl || `http://localhost:${getPort()}`;
+  return config.conversation.viewerUrl || `http://localhost:${activePort || getPort()}`;
 }
 
 /**
@@ -170,15 +176,25 @@ export async function startWebServer(): Promise<void> {
   });
 
   // Start listening — bind to localhost by default for security
-  const port = getPort();
+  // Retry with port+1 on EADDRINUSE
+  const basePort = getPort();
   const host = config.conversation.viewerHost;
-  try {
-    await server.listen({ port, host });
-    logger.info(`Conversation viewer started on ${host}:${port}`);
-    logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
-  } catch (error) {
-    logger.error('Failed to start conversation web server', error);
-    throw error;
+  for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
+    const port = basePort + attempt;
+    try {
+      await server.listen({ port, host });
+      activePort = port;
+      logger.info(`Conversation viewer started on ${host}:${port}`);
+      logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
+      return;
+    } catch (error: any) {
+      if (error.code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
+        logger.warn(`Port ${port} in use, trying ${port + 1}...`);
+        continue;
+      }
+      logger.error('Failed to start conversation web server', error);
+      throw error;
+    }
   }
 }
 

@@ -54,6 +54,7 @@ if (configDir) {
   mode = `branch=${branch}`;
 }
 
+export const IS_DEV = !!configDir || !isMain;
 export const ENV_FILE = envFile;
 export const SYSTEM_PROMPT_FILE = systemPromptFile;
 export const MCP_CONFIG_FILE = mcpConfigFile;
