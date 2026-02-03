@@ -1,0 +1,29 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 10
+
+    steps:
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "env=main" >> "$GITHUB_OUTPUT"
+            echo "dir=/opt/soma-work/main" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "dir=/opt/soma-work/dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy
+        run: |
+          cd "${{ steps.env.outputs.dir }}"
+          ./service.sh ${{ steps.env.outputs.env }} deploy
