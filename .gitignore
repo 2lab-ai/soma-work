@@ -47,3 +47,6 @@ coverage/
 
 usercontent/
 .system.prompt
+
+# bd (beads)
+.beads/daemon-error
