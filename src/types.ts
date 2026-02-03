@@ -118,6 +118,10 @@ export interface ConversationSession {
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
+  // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
+  threadModel?: 'user-initiated' | 'bot-initiated';
+  // For bot-initiated threads: the root message ts (used for chat.update)
+  threadRootTs?: string;
 }
 
 export interface WorkingDirectoryConfig {

@@ -237,6 +237,12 @@ export class SlackHandler {
     // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
     const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!, effectiveText);
 
+    // Channel routing check: if session was halted due to wrong channel, stop processing
+    if (sessionResult.halted) {
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      return;
+    }
+
     // Replace eyes with brain emoji - message is being sent to model
     // Skip for first message (creates thread) - model adds emoji via reactionManager
     await this.slackApi.removeReaction(channel, ts, 'eyes');

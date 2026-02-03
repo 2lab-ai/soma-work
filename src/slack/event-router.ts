@@ -5,6 +5,7 @@ import { ActionHandlers, MessageHandler, MessageEvent, SayFn } from './action-ha
 import { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
+import { registerChannel, unregisterChannel } from '../channel-registry';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -196,7 +197,18 @@ export class EventRouter {
       const botUserId = await this.deps.slackApi.getBotUserId();
       if (event.user === botUserId) {
         this.logger.info('Bot added to channel', { channel: event.channel });
+        // Register channel in registry for repo mapping
+        await registerChannel(this.deps.slackApi.getClient(), event.channel);
         await this.handleChannelJoin(event.channel, say);
+      }
+    });
+
+    // Track channel leave events
+    this.app.event('member_left_channel' as any, async ({ event }: any) => {
+      const botUserId = await this.deps.slackApi.getBotUserId();
+      if (event.user === botUserId) {
+        this.logger.info('Bot removed from channel', { channel: event.channel });
+        unregisterChannel(event.channel);
       }
     });
   }

@@ -5,6 +5,7 @@ import { ChoiceActionHandler } from './choice-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { PRActionHandler } from './pr-action-handler';
+import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { SlackApiHelper } from '../slack-api-helper';
@@ -27,6 +28,7 @@ export class ActionHandlers {
   private formHandler: FormActionHandler;
   private jiraHandler: JiraActionHandler;
   private prHandler: PRActionHandler;
+  private channelRouteHandler: ChannelRouteActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -66,6 +68,12 @@ export class ActionHandlers {
     });
 
     this.prHandler = new PRActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
+    });
+
+    this.channelRouteHandler = new ChannelRouteActionHandler({
       slackApi: ctx.slackApi,
       claudeHandler: ctx.claudeHandler,
       messageHandler: ctx.messageHandler,
@@ -169,6 +177,17 @@ export class ActionHandlers {
     app.action(/^merge_pr_/, async ({ ack, body, respond }) => {
       await ack();
       await this.prHandler.handleMerge(body, respond);
+    });
+
+    // Channel routing actions (move to correct channel / stop)
+    app.action('channel_route_move', async ({ ack, body, respond }) => {
+      await ack();
+      await this.channelRouteHandler.handleMove(body, respond);
+    });
+
+    app.action('channel_route_stop', async ({ ack, body, respond }) => {
+      await ack();
+      await this.channelRouteHandler.handleStop(body, respond);
     });
 
     // 모달 핸들러

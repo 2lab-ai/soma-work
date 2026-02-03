@@ -85,6 +85,17 @@ export class ClaudeHandler {
     this.sessionRegistry.setSessionTitle(channelId, threadTs, title);
   }
 
+  /**
+   * Mark a session as bot-initiated with its root message ts
+   */
+  setBotThread(channelId: string, threadTs: string | undefined, rootTs: string): void {
+    const session = this.sessionRegistry.getSession(channelId, threadTs);
+    if (session) {
+      session.threadModel = 'bot-initiated';
+      session.threadRootTs = rootTs;
+    }
+  }
+
   updateInitiator(
     channelId: string,
     threadTs: string | undefined,
@@ -367,7 +378,13 @@ export class ClaudeHandler {
 
     // Build system prompt with persona and workflow
     const workflow = session?.workflow || 'default';
-    const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+
+    // Inject channel description as additional context
+    if (builtSystemPrompt && slackContext?.channelDescription) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+    }
+
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
       this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
@@ -375,6 +392,7 @@ export class ClaudeHandler {
         sessionId: session?.sessionId,
         model: options.model,
         promptLength: builtSystemPrompt.length,
+        hasChannelDescription: !!slackContext?.channelDescription,
       });
     } else {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);

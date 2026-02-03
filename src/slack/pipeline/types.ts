@@ -35,6 +35,8 @@ export interface SessionInitResult {
   userName: string;
   workingDirectory: string;
   abortController: AbortController;
+  /** Set to true when channel routing advisory was shown. Caller should halt. */
+  halted?: boolean;
 }
 
 export interface StreamExecuteResult {

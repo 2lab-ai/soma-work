@@ -11,6 +11,8 @@ import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession } from '../../types';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { AssistantStatusManager } from '../assistant-status-manager';
+import { checkRepoChannelMatch, getChannel } from '../../channel-registry';
+import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -168,6 +170,109 @@ export class SessionInitializer {
         currentInitiator: session.currentInitiatorName,
         workflow: session.workflow,
       });
+    }
+
+    // Check channel-repo routing for PR links after dispatch
+    if (isNewSession && session.links?.pr?.url) {
+      const routeCheck = checkRepoChannelMatch(session.links.pr.url, channel);
+
+      if (!routeCheck.correct && routeCheck.suggestedChannels.length > 0) {
+        // Wrong channel — show advisory with move/stop buttons
+        const target = routeCheck.suggestedChannels[0];
+        this.logger.info('PR in wrong channel, showing routing advisory', {
+          prUrl: session.links.pr.url,
+          currentChannel: channel,
+          suggestedChannel: target.id,
+        });
+
+        // Post advisory first to get its ts for deletion on button click
+        const advisoryResult = await this.deps.slackApi.postMessage(channel,
+          `🔀 이 repo는 #${target.name} 채널의 작업입니다.`,
+          { threadTs }
+        );
+        const advisoryTs = advisoryResult?.ts || threadTs;
+
+        const { text: advText, blocks } = buildChannelRouteBlocks({
+          prUrl: session.links.pr.url,
+          targetChannelName: target.name,
+          targetChannelId: target.id,
+          originalChannel: channel,
+          originalTs: advisoryTs,
+          userMessage: dispatchText || text || '',
+          userId: user,
+        });
+
+        // Update advisory with buttons
+        if (advisoryTs && advisoryTs !== threadTs) {
+          await this.deps.slackApi.updateMessage(channel, advisoryTs, advText, blocks);
+        } else {
+          await this.deps.slackApi.postMessage(channel, advText, { threadTs, blocks });
+        }
+
+        // Don't register AbortController — no stream will run for halted sessions
+        return {
+          session, sessionKey, isNewSession, userName, workingDirectory,
+          abortController: new AbortController(), halted: true,
+        };
+      } else if (routeCheck.correct) {
+        // Correct channel — auto-create bot thread for PR workflow
+        const currentChannelInfo = getChannel(channel);
+        if (currentChannelInfo) {
+          this.logger.info('PR in correct channel, auto-creating bot thread', {
+            prUrl: session.links.pr.url,
+            channel,
+          });
+
+          // Post thread root message (bot owns this message → can update it)
+          const prLabel = session.links.pr.label || 'PR';
+          const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${session.links.pr.url}`;
+          const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
+
+          if (rootResult?.ts) {
+            // Create a NEW session in the bot's thread
+            const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts);
+            botSession.threadModel = 'bot-initiated';
+            botSession.threadRootTs = rootResult.ts;
+            botSession.links = session.links;
+            botSession.workflow = session.workflow;
+            botSession.title = session.title;
+
+            // Transition the bot session to MAIN
+            this.deps.claudeHandler.transitionToMain(channel, rootResult.ts, session.workflow || 'default', session.title || 'Session');
+
+            // Terminate the original session (cleanup)
+            const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+            this.deps.claudeHandler.terminateSession(origSessionKey);
+
+            // Notify user in original thread
+            await this.deps.slackApi.postMessage(channel,
+              `🔀 새 스레드에서 작업을 시작합니다 →`,
+              { threadTs }
+            );
+
+            // Return with the bot session and new threadTs
+            const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
+            const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
+            this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+            await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+
+            this.logger.info('Bot-initiated thread created, session migrated', {
+              rootTs: rootResult.ts,
+              channel,
+              newSessionKey,
+            });
+
+            return {
+              session: botSession,
+              sessionKey: newSessionKey,
+              isNewSession: true,
+              userName,
+              workingDirectory,
+              abortController,
+            };
+          }
+        }
+      }
     }
 
     // Handle concurrency control

@@ -21,6 +21,7 @@ import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import { getChannelDescription } from '../../channel-description-cache';
 
 /**
  * Result of stream execution
@@ -153,8 +154,12 @@ export class StreamExecutor {
       );
       await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
 
-      // Create Slack context for permission prompts
-      const slackContext = { channel, threadTs, user };
+      // Create Slack context for permission prompts + channel description for system prompt
+      const channelDescription = await getChannelDescription(
+        this.deps.slackApi.getClient(),
+        channel
+      );
+      const slackContext = { channel, threadTs, user, channelDescription };
 
       // Create stream context
       const streamContext: StreamContext = {
@@ -288,6 +293,11 @@ export class StreamExecutor {
         sessionKey,
         messageCount: streamResult.messageCount,
       });
+
+      // Update bot-initiated thread root with status
+      if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
+        await this.updateThreadRoot(session, channel);
+      }
 
       // Clean up temporary files
       if (processedFiles.length > 0) {
@@ -467,6 +477,51 @@ export class StreamExecutor {
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Update the root message of a bot-initiated thread with current status.
+   * Shows workflow, activity state, and linked resources.
+   */
+  private async updateThreadRoot(
+    session: ConversationSession,
+    channel: string
+  ): Promise<void> {
+    if (!session.threadRootTs) return;
+
+    try {
+      const activityEmoji = session.activityState === 'working' ? '⚙️'
+        : session.activityState === 'waiting' ? '✋'
+        : '✅';
+      const workflow = session.workflow || 'default';
+
+      const parts: string[] = [];
+      parts.push(`${activityEmoji} *${session.title || 'Session'}*  ·  \`${workflow}\``);
+
+      if (session.ownerName) {
+        parts.push(`👤 ${session.ownerName}`);
+      }
+
+      // Links
+      const linkParts: string[] = [];
+      if (session.links?.pr?.url) {
+        linkParts.push(`PR: ${session.links.pr.url}`);
+      }
+      if (session.links?.issue?.url) {
+        linkParts.push(`Issue: ${session.links.issue.label || session.links.issue.url}`);
+      }
+      if (linkParts.length > 0) {
+        parts.push(linkParts.join(' · '));
+      }
+
+      const text = parts.join('\n');
+
+      await this.deps.slackApi.updateMessage(channel, session.threadRootTs, text);
+    } catch (error) {
+      this.logger.debug('Failed to update thread root', {
+        error: (error as Error).message,
+      });
+    }
   }
 
   /**
