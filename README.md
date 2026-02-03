@@ -215,7 +215,7 @@ docker-compose logs -f
 ./service.sh logs follow # Stream logs
 ```
 
-Service name: `com.dd.soma-work`. Auto-restarts on crash.
+Service name: `ai.2lab.soma-work`. Auto-restarts on crash.
 
 > **Warning**: Do not use `service.sh` during development. Running multiple instances with the same Slack token causes message conflicts.
 

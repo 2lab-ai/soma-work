@@ -216,7 +216,7 @@ docker-compose logs -f
 ./service.sh logs follow # 실시간 로그
 ```
 
-서비스 이름: `com.dd.soma-work`. 크래시 시 자동 재시작.
+서비스 이름: `ai.2lab.soma-work`. 크래시 시 자동 재시작.
 
 > **주의**: 개발 중에는 `service.sh`를 사용하지 마세요. 같은 Slack 토큰으로 여러 인스턴스가 실행되면 메시지 충돌이 발생합니다.
 
