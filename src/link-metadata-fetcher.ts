@@ -5,6 +5,7 @@
 
 import { SessionLink } from './types';
 import { config } from './config';
+import { getGitHubAppAuth } from './github-auth';
 import { Logger } from './logger';
 
 const logger = new Logger('LinkMetadataFetcher');
@@ -32,6 +33,25 @@ const STATUS_EMOJI: Record<string, string> = {
   // GitHub issue statuses
   'issue:open': '🟢', 'issue:closed': '✅',
 };
+
+/**
+ * Resolve a GitHub token: PAT from env, then GitHub App installation token as fallback.
+ */
+async function getGitHubToken(): Promise<string | null> {
+  if (config.github.token) return config.github.token;
+
+  const appAuth = getGitHubAppAuth();
+  if (appAuth) {
+    try {
+      return await appAuth.getInstallationToken();
+    } catch (error) {
+      logger.warn('Failed to get GitHub App installation token', { error: (error as Error).message });
+      return null;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Get status emoji for a normalized status string
@@ -70,7 +90,7 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
 
     return { title: truncatedTitle || link.title, status: metadata.status || link.status };
   } catch (error) {
-    logger.debug('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
+    logger.warn('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
     // Return existing data on failure (graceful degradation)
     return { title: link.title, status: link.status };
   }
@@ -89,7 +109,7 @@ export async function fetchLinkTitle(link: SessionLink): Promise<string | undefi
  * Fetch GitHub PR or issue metadata (title + status) from API.
  */
 async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string; status?: string }> {
-  const token = config.github.token;
+  const token = await getGitHubToken();
   if (!token) return {};
 
   const match = link.url.match(/github\.com\/([^/]+)\/([^/]+)\/(pull|issues)\/(\d+)/);
@@ -220,7 +240,7 @@ export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransi
       },
     }));
   } catch (error) {
-    logger.debug('Failed to fetch Jira transitions', { issueKey, error: (error as Error).message });
+    logger.warn('Failed to fetch Jira transitions', { issueKey, error: (error as Error).message });
     return [];
   }
 }
@@ -243,7 +263,7 @@ export interface GitHubPRDetails {
  * Returns undefined on failure.
  */
 export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRDetails | undefined> {
-  const token = config.github.token;
+  const token = await getGitHubToken();
   if (!token) return undefined;
 
   const prInfo = extractGitHubPRInfo(link.url);
@@ -283,7 +303,7 @@ export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRD
       base: data.base?.ref || 'unknown',
     };
   } catch (error) {
-    logger.debug('Failed to fetch GitHub PR details', { url: link.url, error: (error as Error).message });
+    logger.warn('Failed to fetch GitHub PR details', { url: link.url, error: (error as Error).message });
     return undefined;
   }
 }

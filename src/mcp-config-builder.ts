@@ -15,6 +15,7 @@ export interface SlackContext {
   channel: string;
   threadTs?: string;
   user: string;
+  channelDescription?: string;
 }
 
 /**

@@ -6,10 +6,17 @@ import { ActionHandlers, MessageHandler } from './action-handlers';
 import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
 
+// Mock channel registry
+vi.mock('../channel-registry', () => ({
+  registerChannel: vi.fn().mockResolvedValue(null),
+  unregisterChannel: vi.fn(),
+}));
+
 // Mock dependencies
 const createMockSlackApi = () => ({
   getBotUserId: vi.fn().mockResolvedValue('B123'),
   getChannelInfo: vi.fn().mockResolvedValue({ name: 'general' }),
+  getClient: vi.fn().mockReturnValue({}),
   addReaction: vi.fn().mockResolvedValue(true),
 });
 
