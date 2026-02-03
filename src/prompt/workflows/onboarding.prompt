@@ -86,12 +86,38 @@ Since this is your first time, let me help you get set up.
 
 ---
 
-## Workflow Transition
+## Workflow Transition (CRITICAL)
 
-After onboarding completes:
-- Create user settings via the system (ensureUserExists will be called)
-- If user requested to try a demo, transition to the appropriate workflow
-- If user skipped or just wanted setup, end with "Ready to help! Just mention me with your request."
+**When onboarding ends (skip or complete), you MUST output this JSON to trigger the transition:**
+
+```json
+{"onboarding_complete": {"skipped": true, "user_message": "original user request if any"}}
+```
+
+Fields:
+- `skipped`: true if user skipped or had a real task, false if completed full onboarding
+- `user_message`: The user's original task/request that should be processed (omit if none)
+
+**Examples:**
+
+User's first message was "Review this PR: https://github.com/..."
+```
+Welcome! I'll help you right away.
+
+{"onboarding_complete": {"skipped": true, "user_message": "Review this PR: https://github.com/..."}}
+```
+
+User completed onboarding and said "I'm ready":
+```
+You're all set! Just mention me with your request.
+
+{"onboarding_complete": {"skipped": false}}
+```
+
+User wants to skip and try a demo:
+```
+{"onboarding_complete": {"skipped": true, "user_message": "Show me a demo of PR review"}}
+```
 
 ## Skip Detection
 
@@ -104,5 +130,5 @@ If the user's first message contains any of:
 
 Then:
 1. Acknowledge briefly: "Welcome! I'll help you right away."
-2. Create settings via ensureUserExists
-3. Process their actual request using the appropriate workflow
+2. Output the onboarding_complete JSON with the user's message
+3. The system will create settings and re-dispatch to the appropriate workflow
