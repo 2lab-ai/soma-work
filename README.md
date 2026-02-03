@@ -130,7 +130,7 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 
 ```bash
 git clone <repo-url>
-cd claude-code-slack-bot
+cd soma-work
 npm install
 ```
 
@@ -215,7 +215,7 @@ docker-compose logs -f
 ./service.sh logs follow # Stream logs
 ```
 
-Service name: `com.dd.claude-slack-bot`. Auto-restarts on crash.
+Service name: `com.dd.soma-work`. Auto-restarts on crash.
 
 > **Warning**: Do not use `service.sh` during development. Running multiple instances with the same Slack token causes message conflicts.
 
