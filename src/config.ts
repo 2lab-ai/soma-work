@@ -42,6 +42,7 @@ export const config = {
     viewerHost: process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1',
     viewerPort: process.env.CONVERSATION_VIEWER_PORT ? parseInt(process.env.CONVERSATION_VIEWER_PORT, 10) : 0,
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',
+    viewerToken: process.env.CONVERSATION_VIEWER_TOKEN || '',
   },
 };
 
