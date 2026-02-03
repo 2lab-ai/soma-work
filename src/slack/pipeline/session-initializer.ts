@@ -76,6 +76,7 @@ export class SessionInitializer {
     const threadTs = thread_ts || ts;
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
+    const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
 
     // Get user's display name
     const userName = await this.deps.slackApi.getUserName(user);
@@ -214,6 +215,7 @@ export class SessionInitializer {
           targetChannelId: target.id,
           originalChannel: channel,
           originalTs: advisoryTs,
+          originalThreadTs: threadTs,
           userMessage: dispatchText || text || '',
           userId: user,
         });
@@ -231,61 +233,69 @@ export class SessionInitializer {
           abortController: new AbortController(), halted: true,
         };
       } else if (routeCheck.correct) {
-        // Correct channel — auto-create bot thread for PR workflow
-        const currentChannelInfo = getChannel(channel);
-        if (currentChannelInfo) {
-          this.logger.info('PR in correct channel, auto-creating bot thread', {
+        if (skipAutoBotThread) {
+          this.logger.info('Skipping auto bot thread creation (routed move)', {
             prUrl: session.links.pr.url,
             channel,
+            threadTs,
           });
-
-          // Post thread root message (bot owns this message → can update it)
-          const prLabel = session.links.pr.label || 'PR';
-          const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${session.links.pr.url}`;
-          const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
-
-          if (rootResult?.ts) {
-            // Create a NEW session in the bot's thread
-            const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts);
-            botSession.threadModel = 'bot-initiated';
-            botSession.threadRootTs = rootResult.ts;
-            botSession.links = session.links;
-            botSession.workflow = session.workflow;
-            botSession.title = session.title;
-
-            // Transition the bot session to MAIN
-            this.deps.claudeHandler.transitionToMain(channel, rootResult.ts, session.workflow || 'default', session.title || 'Session');
-
-            // Terminate the original session (cleanup)
-            const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
-            this.deps.claudeHandler.terminateSession(origSessionKey);
-
-            // Notify user in original thread
-            await this.deps.slackApi.postMessage(channel,
-              `🔀 새 스레드에서 작업을 시작합니다 →`,
-              { threadTs }
-            );
-
-            // Return with the bot session and new threadTs
-            const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
-            const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
-            this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
-            await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
-
-            this.logger.info('Bot-initiated thread created, session migrated', {
-              rootTs: rootResult.ts,
+        } else {
+          // Correct channel — auto-create bot thread for PR workflow
+          const currentChannelInfo = getChannel(channel);
+          if (currentChannelInfo) {
+            this.logger.info('PR in correct channel, auto-creating bot thread', {
+              prUrl: session.links.pr.url,
               channel,
-              newSessionKey,
             });
 
-            return {
-              session: botSession,
-              sessionKey: newSessionKey,
-              isNewSession: true,
-              userName,
-              workingDirectory,
-              abortController,
-            };
+            // Post thread root message (bot owns this message → can update it)
+            const prLabel = session.links.pr.label || 'PR';
+            const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${session.links.pr.url}`;
+            const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
+
+            if (rootResult?.ts) {
+              // Create a NEW session in the bot's thread
+              const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts);
+              botSession.threadModel = 'bot-initiated';
+              botSession.threadRootTs = rootResult.ts;
+              botSession.links = session.links;
+              botSession.workflow = session.workflow;
+              botSession.title = session.title;
+
+              // Transition the bot session to MAIN
+              this.deps.claudeHandler.transitionToMain(channel, rootResult.ts, session.workflow || 'default', session.title || 'Session');
+
+              // Terminate the original session (cleanup)
+              const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+              this.deps.claudeHandler.terminateSession(origSessionKey);
+
+              // Notify user in original thread
+              await this.deps.slackApi.postMessage(channel,
+                `🔀 새 스레드에서 작업을 시작합니다 →`,
+                { threadTs }
+              );
+
+              // Return with the bot session and new threadTs
+              const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
+              const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
+              this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+              await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+
+              this.logger.info('Bot-initiated thread created, session migrated', {
+                rootTs: rootResult.ts,
+                channel,
+                newSessionKey,
+              });
+
+              return {
+                session: botSession,
+                sessionKey: newSessionKey,
+                isNewSession: true,
+                userName,
+                workingDirectory,
+                abortController,
+              };
+            }
           }
         }
       }
