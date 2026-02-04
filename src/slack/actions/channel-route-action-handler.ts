@@ -39,26 +39,41 @@ export class ChannelRouteActionHandler {
   async handleMove(body: any, respond: any): Promise<void> {
     try {
       const action = body.actions?.[0];
-      const value: RouteActionValue = JSON.parse(action?.value || '{}');
+      const rawValue = action?.value || '{}';
+      const value: RouteActionValue = JSON.parse(rawValue);
       const userId = body.user?.id;
       const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
       const sessionThreadTs = originalThreadTs || value.originalTs;
 
+      logger.info('🔀 handleMove START', {
+        userId,
+        targetChannel: value.targetChannel,
+        targetChannelName: value.targetChannelName,
+        originalChannel: value.originalChannel,
+        originalTs: value.originalTs,
+        originalThreadTs,
+        sessionThreadTs,
+        prUrl: value.prUrl,
+        userMessage: value.userMessage?.substring(0, 50),
+      });
+
       if (!value.targetChannel || !userId) {
-        logger.warn('Invalid channel route move action', { value });
+        logger.warn('🔀 handleMove: Invalid action value', { value, userId });
         return;
       }
 
       // Delete the advisory message
       try {
+        logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
         await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
-      } catch {
-        // Advisory message might already be gone
+      } catch (e) {
+        logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
       }
 
       if (!originalThreadTs) {
-        logger.warn('Missing original thread ts for channel route move', { value });
+        logger.warn('🔀 Missing original thread ts', { value });
       } else {
+        logger.debug('🔀 Deleting bot messages in original thread', { channel: value.originalChannel, threadTs: originalThreadTs });
         await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
           excludeTs: value.originalTs ? [value.originalTs] : [],
         });
@@ -67,14 +82,20 @@ export class ChannelRouteActionHandler {
       // Terminate original ghost session
       if (sessionThreadTs) {
         const origKey = this.deps.claudeHandler.getSessionKey(value.originalChannel, sessionThreadTs);
+        logger.info('🔀 Terminating original session', { origKey, channel: value.originalChannel, threadTs: sessionThreadTs });
         this.deps.claudeHandler.terminateSession(origKey);
       }
 
       // Create new thread in correct channel
-      // Bot posts as the thread root with user mention and PR info
       const threadRootText = value.prUrl
         ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}`
         : `<@${userId}> 님의 작업 요청`;
+
+      logger.info('🔀 Creating thread in target channel', {
+        targetChannel: value.targetChannel,
+        targetChannelName: value.targetChannelName,
+        threadRootText: threadRootText.substring(0, 80),
+      });
 
       const postResult = await this.deps.slackApi.postMessage(
         value.targetChannel,
@@ -82,11 +103,19 @@ export class ChannelRouteActionHandler {
       );
 
       if (!postResult?.ts) {
-        logger.error('Failed to create thread in target channel', { targetChannel: value.targetChannel });
+        logger.error('🔀 Failed to create thread in target channel - no ts returned', {
+          targetChannel: value.targetChannel,
+          postResult,
+        });
         return;
       }
 
-      // Now simulate the user's original message in the new thread
+      logger.info('🔀 Thread root created, constructing synthetic event', {
+        targetChannel: value.targetChannel,
+        threadRootTs: postResult.ts,
+      });
+
+      // Simulate the user's original message in the new thread
       const syntheticEvent = {
         text: value.userMessage,
         user: userId,
@@ -108,24 +137,31 @@ export class ChannelRouteActionHandler {
         );
       };
 
-      // Best-effort pre-mark (if session already exists it will be marked)
-      // setBotThread is called again after messageHandler in case session is recreated
+      // Pre-mark bot-initiated thread
       this.deps.claudeHandler.setBotThread(value.targetChannel, postResult.ts, postResult.ts);
+
+      logger.info('🔀 Processing synthetic message in target channel', {
+        channel: value.targetChannel,
+        threadTs: postResult.ts,
+        syntheticTs: syntheticEvent.ts,
+        skipAutoBotThread: true,
+      });
 
       // Process the message in the new channel/thread
       await this.deps.messageHandler(syntheticEvent, syntheticSay);
 
-      // Re-mark to ensure bot-initiated mode is set (session may have been created during messageHandler)
+      // Re-mark to ensure bot-initiated mode persists
       this.deps.claudeHandler.setBotThread(value.targetChannel, postResult.ts, postResult.ts);
 
-      logger.info('Routed conversation to correct channel (bot-initiated thread)', {
+      logger.info('🔀 handleMove COMPLETE — routed to correct channel', {
         from: value.originalChannel,
         to: value.targetChannel,
+        targetChannelName: value.targetChannelName,
         user: userId,
         threadRootTs: postResult.ts,
       });
     } catch (error) {
-      logger.error('Failed to handle channel route move', error);
+      logger.error('🔀 handleMove FAILED', error);
       try {
         await respond({ text: '⚠️ 채널 이동에 실패했습니다.', replace_original: true });
       } catch {}
@@ -140,19 +176,22 @@ export class ChannelRouteActionHandler {
       const action = body.actions?.[0];
       const value: RouteActionValue = JSON.parse(action?.value || '{}');
 
+      logger.info('🔀 handleStop — user declined channel route', {
+        channel: value.originalChannel,
+        targetChannel: value.targetChannel,
+        targetChannelName: value.targetChannelName,
+        user: body.user?.id,
+        prUrl: value.prUrl,
+      });
+
       // Delete the advisory message
       try {
         await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
       } catch {
-        // Advisory message might already be gone
+        logger.debug('🔀 Advisory message already gone');
       }
-
-      logger.info('User declined channel route', {
-        channel: value.originalChannel,
-        user: body.user?.id,
-      });
     } catch (error) {
-      logger.error('Failed to handle channel route stop', error);
+      logger.error('🔀 handleStop FAILED', error);
     }
   }
 }
@@ -171,6 +210,17 @@ export function buildChannelRouteBlocks(params: {
   userMessage: string;
   userId: string;
 }): { text: string; blocks: any[] } {
+  logger.info('🔀 buildChannelRouteBlocks', {
+    prUrl: params.prUrl,
+    targetChannelId: params.targetChannelId,
+    targetChannelName: params.targetChannelName,
+    originalChannel: params.originalChannel,
+    originalTs: params.originalTs,
+    originalThreadTs: params.originalThreadTs,
+    userId: params.userId,
+    userMessagePreview: params.userMessage?.substring(0, 50),
+  });
+
   const value: RouteActionValue = {
     targetChannel: params.targetChannelId,
     targetChannelName: params.targetChannelName,

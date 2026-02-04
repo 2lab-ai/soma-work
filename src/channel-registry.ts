@@ -44,6 +44,8 @@ export async function scanChannels(client: WebClient): Promise<number> {
     let cursor: string | undefined;
     let totalChannels = 0;
 
+    logger.info('🔍 Starting channel scan for repo mapping');
+
     do {
       const result = await client.conversations.list({
         types: 'public_channel,private_channel',
@@ -64,7 +66,18 @@ export async function scanChannels(client: WebClient): Promise<number> {
         };
 
         // Parse repos from purpose + topic
-        info.repos = parseRepos(`${info.purpose}\n${info.topic}`);
+        const rawText = `${info.purpose}\n${info.topic}`;
+        info.repos = parseRepos(rawText);
+
+        if (info.repos.length > 0) {
+          logger.info('📦 Channel has repo mapping', {
+            channelId: channel.id,
+            channelName: info.name,
+            repos: info.repos,
+            purpose: info.purpose.substring(0, 100),
+            topic: info.topic.substring(0, 100),
+          });
+        }
 
         channels.set(channel.id, info);
         totalChannels++;
@@ -76,9 +89,12 @@ export async function scanChannels(client: WebClient): Promise<number> {
     // Rebuild repo→channel index
     rebuildRepoIndex();
 
-    logger.info('Channel scan complete', {
+    logger.info('✅ Channel scan complete', {
       totalChannels,
       channelsWithRepos: [...channels.values()].filter(c => c.repos.length > 0).length,
+      repoMappings: [...repoToChannels.entries()].map(([repo, chs]) =>
+        `${repo} → [${chs.map(id => channels.get(id)?.name || id).join(', ')}]`
+      ),
     });
 
     return totalChannels;
@@ -96,9 +112,13 @@ export async function registerChannel(
   channelId: string
 ): Promise<ChannelInfo | null> {
   try {
+    logger.info('📝 Registering channel', { channelId });
     const result = await client.conversations.info({ channel: channelId });
     const channel = result.channel as any;
-    if (!channel) return null;
+    if (!channel) {
+      logger.warn('Channel info returned null', { channelId });
+      return null;
+    }
 
     const info: ChannelInfo = {
       id: channelId,
@@ -109,16 +129,21 @@ export async function registerChannel(
       joinedAt: Date.now(),
     };
 
-    info.repos = parseRepos(`${info.purpose}\n${info.topic}`);
+    const rawText = `${info.purpose}\n${info.topic}`;
+    info.repos = parseRepos(rawText);
 
     channels.set(channelId, info);
     rebuildRepoIndex();
     invalidateChannelCache(channelId);
 
-    logger.info('Channel registered', {
+    logger.info('✅ Channel registered', {
       channelId,
       name: info.name,
       repos: info.repos,
+      purpose: info.purpose.substring(0, 100),
+      topic: info.topic.substring(0, 100),
+      totalChannels: channels.size,
+      totalRepoMappings: repoToChannels.size,
     });
 
     return info;
@@ -148,7 +173,17 @@ export function unregisterChannel(channelId: string): void {
 export function findChannelsForRepo(repoFullName: string): string[] {
   // Normalize: lowercase, strip .git suffix
   const normalized = repoFullName.toLowerCase().replace(/\.git$/, '');
-  return repoToChannels.get(normalized) || [];
+  const result = repoToChannels.get(normalized) || [];
+
+  logger.debug('🔎 findChannelsForRepo', {
+    input: repoFullName,
+    normalized,
+    matchedChannels: result.map(id => ({ id, name: channels.get(id)?.name })),
+    totalRepoMappings: repoToChannels.size,
+    allMappedRepos: [...repoToChannels.keys()],
+  });
+
+  return result;
 }
 
 /**
@@ -156,8 +191,13 @@ export function findChannelsForRepo(repoFullName: string): string[] {
  */
 export function extractRepoFromUrl(url: string): string | null {
   const match = url.match(/github\.com\/([a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+)/);
-  if (!match) return null;
-  return match[1].replace(/\.git$/, '').toLowerCase();
+  if (!match) {
+    logger.debug('🔗 extractRepoFromUrl: no match', { url });
+    return null;
+  }
+  const repo = match[1].replace(/\.git$/, '').toLowerCase();
+  logger.debug('🔗 extractRepoFromUrl', { url, repo });
+  return repo;
 }
 
 /**
@@ -182,16 +222,42 @@ export function checkRepoChannelMatch(
   prUrl: string,
   currentChannel: string
 ): { correct: boolean; suggestedChannels: ChannelInfo[] } {
+  const currentChannelInfo = channels.get(currentChannel);
+
+  logger.info('🧭 checkRepoChannelMatch START', {
+    prUrl,
+    currentChannel,
+    currentChannelName: currentChannelInfo?.name || '(unknown)',
+    registrySize: channels.size,
+    repoMappingSize: repoToChannels.size,
+  });
+
   const repo = extractRepoFromUrl(prUrl);
-  if (!repo) return { correct: true, suggestedChannels: [] };
+  if (!repo) {
+    logger.info('🧭 checkRepoChannelMatch → correct (no repo extracted from URL)', { prUrl });
+    return { correct: true, suggestedChannels: [] };
+  }
 
   const mappedChannelIds = findChannelsForRepo(repo);
 
   // No mapping exists — assume correct (no registry data)
-  if (mappedChannelIds.length === 0) return { correct: true, suggestedChannels: [] };
+  if (mappedChannelIds.length === 0) {
+    logger.info('🧭 checkRepoChannelMatch → correct (no channel mapping for repo)', {
+      repo,
+      currentChannel,
+      currentChannelName: currentChannelInfo?.name,
+    });
+    return { correct: true, suggestedChannels: [] };
+  }
 
   // Current channel is in the mapped channels
   if (mappedChannelIds.includes(currentChannel)) {
+    logger.info('🧭 checkRepoChannelMatch → correct (current channel matches)', {
+      repo,
+      currentChannel,
+      currentChannelName: currentChannelInfo?.name,
+      mappedChannels: mappedChannelIds.map(id => ({ id, name: channels.get(id)?.name })),
+    });
     return { correct: true, suggestedChannels: [] };
   }
 
@@ -199,6 +265,13 @@ export function checkRepoChannelMatch(
   const suggestedChannels = mappedChannelIds
     .map(id => channels.get(id))
     .filter((ch): ch is ChannelInfo => ch !== undefined);
+
+  logger.info('🧭 checkRepoChannelMatch → WRONG CHANNEL', {
+    repo,
+    currentChannel,
+    currentChannelName: currentChannelInfo?.name,
+    suggestedChannels: suggestedChannels.map(ch => ({ id: ch.id, name: ch.name, repos: ch.repos })),
+  });
 
   return { correct: false, suggestedChannels };
 }
@@ -215,7 +288,19 @@ function parseRepos(text: string): string[] {
     while ((match = pattern.exec(text)) !== null) {
       const repo = match[1].replace(/\.git$/, '').toLowerCase();
       repos.add(repo);
+      logger.debug('📎 parseRepos: found repo', {
+        repo,
+        pattern: pattern.source,
+        matchedText: match[0],
+      });
     }
+  }
+
+  if (repos.size === 0 && text.trim().length > 0) {
+    logger.debug('📎 parseRepos: no repos found in text', {
+      textPreview: text.substring(0, 150),
+      patterns: REPO_PATTERNS.map(p => p.source),
+    });
   }
 
   return [...repos];
@@ -235,10 +320,11 @@ function rebuildRepoIndex(): void {
   }
 
   const repoCount = repoToChannels.size;
-  if (repoCount > 0) {
-    logger.debug('Repo index rebuilt', {
-      repos: repoCount,
-      mappings: [...repoToChannels.entries()].map(([repo, chs]) => `${repo} → ${chs.length} channels`),
-    });
-  }
+  logger.info('🗂️ Repo index rebuilt', {
+    repos: repoCount,
+    totalChannels: channels.size,
+    mappings: [...repoToChannels.entries()].map(([repo, chs]) =>
+      `${repo} → [${chs.map(id => channels.get(id)?.name || id).join(', ')}]`
+    ),
+  });
 }
