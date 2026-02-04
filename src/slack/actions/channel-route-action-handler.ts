@@ -10,6 +10,9 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { MessageFormatter } from '../message-formatter';
+import { SessionLinks, SessionLink } from '../../types';
 
 const logger = new Logger('ChannelRouteAction');
 
@@ -91,6 +94,19 @@ export class ChannelRouteActionHandler {
         ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}`
         : `<@${userId}> 님의 작업 요청`;
 
+      const ownerName = await this.deps.slackApi.getUserName(userId);
+      const title = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
+      const links = this.buildLinks(value.prUrl);
+      const headerPayload = ThreadHeaderBuilder.build({
+        title,
+        workflow: 'default',
+        ownerName,
+        ownerId: userId,
+        activityState: 'idle',
+        lastActivity: new Date(),
+        links,
+      });
+
       logger.info('🔀 Creating thread in target channel', {
         targetChannel: value.targetChannel,
         targetChannelName: value.targetChannelName,
@@ -99,7 +115,11 @@ export class ChannelRouteActionHandler {
 
       const postResult = await this.deps.slackApi.postMessage(
         value.targetChannel,
-        threadRootText
+        headerPayload.text,
+        {
+          attachments: headerPayload.attachments,
+          blocks: headerPayload.blocks,
+        }
       );
 
       if (!postResult?.ts) {
@@ -205,6 +225,19 @@ export class ChannelRouteActionHandler {
     } catch (error) {
       logger.error('🔀 handleStop FAILED', error);
     }
+  }
+
+  private buildLinks(prUrl?: string): SessionLinks | undefined {
+    if (!prUrl) return undefined;
+    const provider: SessionLink['provider'] = prUrl.includes('github.com') ? 'github' : 'unknown';
+    return {
+      pr: {
+        url: prUrl,
+        type: 'pr',
+        provider,
+        label: 'PR',
+      },
+    };
   }
 }
 

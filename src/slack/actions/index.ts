@@ -5,6 +5,7 @@ import { ChoiceActionHandler } from './choice-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { PRActionHandler } from './pr-action-handler';
+import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
@@ -28,6 +29,7 @@ export class ActionHandlers {
   private formHandler: FormActionHandler;
   private jiraHandler: JiraActionHandler;
   private prHandler: PRActionHandler;
+  private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
@@ -47,6 +49,7 @@ export class ActionHandlers {
         slackApi: ctx.slackApi,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
+        actionPanelManager: ctx.actionPanelManager,
       },
       this.formStore
     );
@@ -56,6 +59,7 @@ export class ActionHandlers {
         slackApi: ctx.slackApi,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
+        actionPanelManager: ctx.actionPanelManager,
       },
       this.formStore,
       this.choiceHandler
@@ -68,6 +72,12 @@ export class ActionHandlers {
     });
 
     this.prHandler = new PRActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
+    });
+
+    this.actionPanelHandler = new ActionPanelActionHandler({
       slackApi: ctx.slackApi,
       claudeHandler: ctx.claudeHandler,
       messageHandler: ctx.messageHandler,
@@ -177,6 +187,12 @@ export class ActionHandlers {
     app.action(/^merge_pr_/, async ({ ack, body, respond }) => {
       await ack();
       await this.prHandler.handleMerge(body, respond);
+    });
+
+    // Action panel buttons
+    app.action(/^panel_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.actionPanelHandler.handleAction(body, respond);
     });
 
     // Channel routing actions (move to correct channel / stop)

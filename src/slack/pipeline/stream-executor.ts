@@ -19,6 +19,8 @@ import {
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
+import { ActionPanelManager } from '../action-panel-manager';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
@@ -48,6 +50,7 @@ interface StreamExecutorDeps {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
+  actionPanelManager?: ActionPanelManager;
 }
 
 interface StreamExecuteParams {
@@ -121,6 +124,7 @@ export class StreamExecutor {
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+    await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
 
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
@@ -250,6 +254,9 @@ export class StreamExecutor {
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
         },
+        onChoiceCreated: async (payload, ctx) => {
+          await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload);
+        },
       };
 
       // Create and run stream processor
@@ -283,6 +290,7 @@ export class StreamExecutor {
         threadTs,
         streamResult.hasUserChoice ? 'waiting' : 'idle'
       );
+      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -346,7 +354,7 @@ export class StreamExecutor {
       );
       return { success: false, messageCount: 0 };
     } finally {
-      this.cleanup(session, sessionKey);
+      await this.cleanup(session, sessionKey);
     }
   }
 
@@ -428,8 +436,16 @@ export class StreamExecutor {
     }
   }
 
-  private cleanup(session: ConversationSession, sessionKey: string): void {
+  private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {
     this.deps.requestCoordinator.removeController(sessionKey);
+    try {
+      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+    } catch (error) {
+      this.logger.debug('Failed to update action panel during cleanup', {
+        sessionKey,
+        error: (error as Error).message,
+      });
+    }
 
     // Schedule cleanup for todo tracking
     if (session?.sessionId) {
@@ -505,33 +521,14 @@ export class StreamExecutor {
     if (!session.threadRootTs) return;
 
     try {
-      const activityEmoji = session.activityState === 'working' ? '⚙️'
-        : session.activityState === 'waiting' ? '✋'
-        : '✅';
-      const workflow = session.workflow || 'default';
-
-      const parts: string[] = [];
-      parts.push(`${activityEmoji} *${session.title || 'Session'}*  ·  \`${workflow}\``);
-
-      if (session.ownerName) {
-        parts.push(`👤 ${session.ownerName}`);
-      }
-
-      // Links
-      const linkParts: string[] = [];
-      if (session.links?.pr?.url) {
-        linkParts.push(`PR: ${session.links.pr.url}`);
-      }
-      if (session.links?.issue?.url) {
-        linkParts.push(`Issue: ${session.links.issue.label || session.links.issue.url}`);
-      }
-      if (linkParts.length > 0) {
-        parts.push(linkParts.join(' · '));
-      }
-
-      const text = parts.join('\n');
-
-      await this.deps.slackApi.updateMessage(channel, session.threadRootTs, text);
+      const payload = ThreadHeaderBuilder.fromSession(session);
+      await this.deps.slackApi.updateMessage(
+        channel,
+        session.threadRootTs,
+        payload.text,
+        payload.blocks,
+        payload.attachments
+      );
     } catch (error) {
       this.logger.debug('Failed to update thread root', {
         error: (error as Error).message,

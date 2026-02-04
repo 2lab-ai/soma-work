@@ -6,11 +6,13 @@ import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
+import { ActionPanelManager } from '../action-panel-manager';
 
 interface FormActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
+  actionPanelManager?: ActionPanelManager;
 }
 
 /**
@@ -116,6 +118,8 @@ export class FormActionHandler {
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (session) {
+      await this.ctx.actionPanelManager?.clearChoice(sessionKey);
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
         { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: inputValue },
@@ -168,6 +172,8 @@ export class FormActionHandler {
     } catch (error) {
       this.logger.warn('Failed to update multi-choice form after custom input', error);
     }
+
+    await this.ctx.actionPanelManager?.attachChoice(sessionKey, updatedPayload);
 
     // 모든 질문 완료 시
     if (answeredCount === totalQuestions) {
