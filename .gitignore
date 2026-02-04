@@ -2,6 +2,7 @@
 node_modules/
 .claude/
 !.claude/skills/
+!.claude/rules/
 
 # Environment variables
 .env
