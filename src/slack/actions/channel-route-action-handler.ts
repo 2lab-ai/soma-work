@@ -184,11 +184,23 @@ export class ChannelRouteActionHandler {
         prUrl: value.prUrl,
       });
 
-      // Delete the advisory message
+      const reasonText = value.targetChannelName
+        ? `🛑 채널 이동하지 않음: 사용자 요청으로 현재 채널에서 계속 진행합니다. (권장 채널: #${value.targetChannelName})`
+        : '🛑 채널 이동하지 않음: 사용자 요청으로 현재 채널에서 계속 진행합니다.';
+
       try {
-        await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
-      } catch {
-        logger.debug('🔀 Advisory message already gone');
+        await respond({
+          text: reasonText,
+          replace_original: true,
+        });
+      } catch (error) {
+        logger.warn('🔀 Failed to update advisory message, posting reason in thread', { error });
+        const threadTs = value.originalThreadTs || body.message?.thread_ts || value.originalTs;
+        if (threadTs) {
+          await this.deps.slackApi.postMessage(value.originalChannel, reasonText, { threadTs });
+        } else {
+          await this.deps.slackApi.postMessage(value.originalChannel, reasonText);
+        }
       }
     } catch (error) {
       logger.error('🔀 handleStop FAILED', error);
