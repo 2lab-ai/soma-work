@@ -22,6 +22,9 @@ normalize_version() {
   local major="${parts[0]:-0}"
   local minor="${parts[1]:-0}"
   local patch="${parts[2]:-0}"
+  # Strip pre-release suffix (e.g., "0-dev" → "0")
+  patch="${patch%%-*}"
+  patch="${patch:-0}"
   echo "${major}.${minor}.${patch}"
 }
 
