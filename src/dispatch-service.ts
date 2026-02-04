@@ -299,6 +299,11 @@ export class DispatchService {
   private extractLinksFromText(text: string): SessionLinks {
     const links: SessionLinks = {};
 
+    this.logger.debug('🔗 extractLinksFromText', {
+      textLength: text.length,
+      textPreview: text.substring(0, 150),
+    });
+
     // Jira issue: atlassian.net/browse/XXX-123 or selectedIssue=XXX-123
     const jiraIssueMatch = text.match(/atlassian\.net\/browse\/(\w+-\d+)/) ||
       text.match(/selectedIssue=(\w+-\d+)/);
@@ -362,6 +367,20 @@ export class DispatchService {
           label: linearMatch[2],
         };
       }
+    }
+
+    const linkTypes = Object.keys(links);
+    if (linkTypes.length > 0) {
+      this.logger.info('🔗 extractLinksFromText: found links', {
+        types: linkTypes,
+        pr: links.pr?.url,
+        issue: links.issue?.url,
+        doc: links.doc?.url,
+      });
+    } else {
+      this.logger.debug('🔗 extractLinksFromText: no links found', {
+        textPreview: text.substring(0, 100),
+      });
     }
 
     return links;
