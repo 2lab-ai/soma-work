@@ -6,7 +6,38 @@
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
+import * as fs from 'fs';
 import * as path from 'path';
+
+const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
+
+export interface PermissionServerPathResult {
+  resolvedPath: string | null;
+  fallbackUsed: boolean;
+  triedPaths: string[];
+}
+
+export function resolvePermissionServerPath(
+  baseDir: string,
+  runtimeExt: '.ts' | '.js',
+  existsSync: (path: string) => boolean = fs.existsSync
+): PermissionServerPathResult {
+  const basePath = path.join(baseDir, PERMISSION_SERVER_BASENAME);
+  const preferredPath = `${basePath}${runtimeExt}`;
+  const fallbackExt = runtimeExt === '.ts' ? '.js' : '.ts';
+  const fallbackPath = `${basePath}${fallbackExt}`;
+  const triedPaths = [preferredPath, fallbackPath];
+
+  if (existsSync(preferredPath)) {
+    return { resolvedPath: preferredPath, fallbackUsed: false, triedPaths };
+  }
+
+  if (existsSync(fallbackPath)) {
+    return { resolvedPath: fallbackPath, fallbackUsed: true, triedPaths };
+  }
+
+  return { resolvedPath: null, fallbackUsed: false, triedPaths };
+}
 
 /**
  * Slack context for permission prompts
@@ -37,6 +68,8 @@ export interface McpConfig {
 export class McpConfigBuilder {
   private logger = new Logger('McpConfigBuilder');
   private mcpManager: McpManager;
+  private permissionServerPath: string | null = null;
+  private permissionServerPathChecked = false;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -107,16 +140,51 @@ export class McpConfigBuilder {
    * Build the permission prompt MCP server configuration
    */
   private buildPermissionServer(slackContext: SlackContext): Record<string, any> {
+    const permissionServerPath = this.getPermissionServerPath();
     return {
       'permission-prompt': {
         command: 'npx',
-        args: ['tsx', path.join(__dirname, `permission-mcp-server${__filename.endsWith('.ts') ? '.ts' : '.js'}`)],
+        args: ['tsx', permissionServerPath],
         env: {
           SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
           SLACK_CONTEXT: JSON.stringify(slackContext),
         },
       },
     };
+  }
+
+  private getPermissionServerPath(): string {
+    if (!this.permissionServerPathChecked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolvePermissionServerPath(__dirname, runtimeExt);
+      this.permissionServerPathChecked = true;
+
+      if (!result.resolvedPath) {
+        this.logger.error('Permission MCP server file not found', {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn('Permission MCP server path fallback used', {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+
+      this.permissionServerPath = result.resolvedPath;
+    }
+
+    if (!this.permissionServerPath) {
+      throw new Error(`Permission MCP server file not found. Tried: ${this.getPermissionServerTriedPaths().join(', ')}`);
+    }
+
+    return this.permissionServerPath;
+  }
+
+  private getPermissionServerTriedPaths(): string[] {
+    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+    return resolvePermissionServerPath(__dirname, runtimeExt).triedPaths;
   }
 
   /**

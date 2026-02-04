@@ -11,6 +11,7 @@ import {
   ReactionManager,
   ContextWindowManager,
   McpStatusDisplay,
+  McpHealthMonitor,
   SessionUiManager,
   ActionHandlers,
   ActionHandlerContext,
@@ -48,6 +49,7 @@ export class SlackHandler {
   private reactionManager: ReactionManager;
   private contextWindowManager: ContextWindowManager;
   private mcpStatusDisplay: McpStatusDisplay;
+  private mcpHealthMonitor: McpHealthMonitor;
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
   private eventRouter: EventRouter;
@@ -90,6 +92,7 @@ export class SlackHandler {
     this.reactionManager = new ReactionManager(this.slackApi);
     this.contextWindowManager = new ContextWindowManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
+    this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
 
@@ -119,7 +122,8 @@ export class SlackHandler {
       this.toolTracker,
       this.mcpStatusDisplay,
       mcpCallTracker,
-      this.assistantStatusManager
+      this.assistantStatusManager,
+      this.mcpHealthMonitor
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);

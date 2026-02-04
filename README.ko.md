@@ -1,4 +1,5 @@
 # Claude Code Slack Bot
+![CI](https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg)
 
 > *"In the beginning was the Word, and the Word was Code."*
 
