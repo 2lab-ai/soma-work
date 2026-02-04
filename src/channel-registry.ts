@@ -261,16 +261,18 @@ export function checkRepoChannelMatch(
     return { correct: true, suggestedChannels: [] };
   }
 
-  // Wrong channel — suggest the correct ones
+  // Wrong channel — suggest the correct ones, sorted by repo count ascending
+  // (fewer repos = more specialized channel = higher priority)
   const suggestedChannels = mappedChannelIds
     .map(id => channels.get(id))
-    .filter((ch): ch is ChannelInfo => ch !== undefined);
+    .filter((ch): ch is ChannelInfo => ch !== undefined)
+    .sort((a, b) => a.repos.length - b.repos.length);
 
   logger.info('🧭 checkRepoChannelMatch → WRONG CHANNEL', {
     repo,
     currentChannel,
     currentChannelName: currentChannelInfo?.name,
-    suggestedChannels: suggestedChannels.map(ch => ({ id: ch.id, name: ch.name, repos: ch.repos })),
+    suggestedChannels: suggestedChannels.map(ch => ({ id: ch.id, name: ch.name, repoCount: ch.repos.length })),
   });
 
   return { correct: false, suggestedChannels };
