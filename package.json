@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
     "prod": "node dist/index.js",
+    "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
@@ -20,7 +21,7 @@
   "devDependencies": {
     "@types/node": "=24.0.4",
     "tsx": "=4.20.3",
-    "typescript": "5.8.3",
+    "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },
   "dependencies": {
