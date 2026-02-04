@@ -203,9 +203,9 @@ describe('SlackApiHelper', () => {
 
   describe('postEphemeral', () => {
     it('should post ephemeral message', async () => {
-      mockApp.client.chat.postEphemeral.mockResolvedValue({});
+      mockApp.client.chat.postEphemeral.mockResolvedValue({ message_ts: '123.456' });
 
-      await helper.postEphemeral('C123', 'U456', 'Only you can see this');
+      const result = await helper.postEphemeral('C123', 'U456', 'Only you can see this');
 
       expect(mockApp.client.chat.postEphemeral).toHaveBeenCalledWith({
         channel: 'C123',
@@ -213,12 +213,13 @@ describe('SlackApiHelper', () => {
         text: 'Only you can see this',
         thread_ts: undefined,
       });
+      expect(result).toEqual({ ts: '123.456' });
     });
 
     it('should include threadTs when provided', async () => {
-      mockApp.client.chat.postEphemeral.mockResolvedValue({});
+      mockApp.client.chat.postEphemeral.mockResolvedValue({ message_ts: '789.101' });
 
-      await helper.postEphemeral('C123', 'U456', 'Hello', '111.222');
+      const result = await helper.postEphemeral('C123', 'U456', 'Hello', '111.222');
 
       expect(mockApp.client.chat.postEphemeral).toHaveBeenCalledWith({
         channel: 'C123',
@@ -226,6 +227,7 @@ describe('SlackApiHelper', () => {
         text: 'Hello',
         thread_ts: '111.222',
       });
+      expect(result).toEqual({ ts: '789.101' });
     });
   });
 

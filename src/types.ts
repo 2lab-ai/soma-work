@@ -81,6 +81,19 @@ export interface SessionLinks {
   doc?: SessionLink;
 }
 
+export interface ActionPanelState {
+  channelId?: string;
+  userId?: string;
+  threadTs?: string;
+  threadLink?: string;
+  messageTs?: string;
+  disabled?: boolean;
+  waitingForChoice?: boolean;
+  choiceBlocks?: any[];
+  renderKey?: string;
+  lastRenderedAt?: number;
+}
+
 export interface ConversationSession {
   ownerId: string;           // User who started the session
   ownerName?: string;        // Display name of owner
@@ -119,6 +132,7 @@ export interface ConversationSession {
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
+  actionPanel?: ActionPanelState;
   // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
   threadModel?: 'user-initiated' | 'bot-initiated';
   // For bot-initiated threads: the root message ts (used for chat.update)

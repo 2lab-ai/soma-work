@@ -358,9 +358,9 @@ export class SlackApiHelper {
     text: string,
     threadTs?: string,
     blocks?: any[]
-  ): Promise<void> {
+  ): Promise<{ ts?: string }> {
     try {
-      await this.enqueue(() =>
+      const result = await this.enqueue(() =>
         this.app.client.chat.postEphemeral({
           channel,
           user,
@@ -369,6 +369,7 @@ export class SlackApiHelper {
           blocks,
         })
       );
+      return { ts: (result as any).message_ts || (result as any).ts };
     } catch (error) {
       this.logger.warn('Failed to post ephemeral message', { channel, user, error });
       throw error;

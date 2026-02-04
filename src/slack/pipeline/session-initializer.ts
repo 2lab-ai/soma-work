@@ -14,6 +14,8 @@ import { AssistantStatusManager } from '../assistant-status-manager';
 import { checkRepoChannelMatch, getChannel } from '../../channel-registry';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { userSettingsStore } from '../../user-settings-store';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { ActionPanelManager } from '../action-panel-manager';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -30,6 +32,7 @@ interface SessionInitializerDeps {
   contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
+  actionPanelManager?: ActionPanelManager;
 }
 
 /**
@@ -304,10 +307,24 @@ export class SessionInitializer {
 
             // Post thread root message (bot owns this message → can update it)
             const prLabel = session.links?.pr?.label || 'PR';
-            const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${prUrl}`;
+            const headerPayload = ThreadHeaderBuilder.build({
+              title: session.title || prLabel,
+              workflow: session.workflow || 'default',
+              ownerName: session.ownerName,
+              ownerId: session.ownerId,
+              model: session.model,
+              activityState: 'idle',
+              lastActivity: session.lastActivity,
+              links: session.links,
+            });
 
-            this.logger.debug('🔀 Posting bot thread root message', { rootText: rootText.substring(0, 100) });
-            const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
+            this.logger.debug('🔀 Posting bot thread root message', {
+              rootText: headerPayload.text.substring(0, 100),
+            });
+            const rootResult = await this.deps.slackApi.postMessage(channel, headerPayload.text, {
+              attachments: headerPayload.attachments,
+              blocks: headerPayload.blocks,
+            });
 
             if (rootResult?.ts) {
               // Create a NEW session in the bot's thread
@@ -336,6 +353,10 @@ export class SessionInitializer {
               const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
               this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
               await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+
+              if (this.deps.actionPanelManager) {
+                await this.deps.actionPanelManager.ensurePanel(botSession, newSessionKey);
+              }
 
               this.logger.info('🔀 Bot-initiated thread created, session migrated', {
                 rootTs: rootResult.ts,
@@ -378,6 +399,10 @@ export class SessionInitializer {
       userName,
       session
     );
+
+    if (this.deps.actionPanelManager && (!session.actionPanel || isNewSession)) {
+      await this.deps.actionPanelManager.ensurePanel(session, sessionKey);
+    }
 
     return {
       session,

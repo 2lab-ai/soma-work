@@ -73,6 +73,7 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith('terminate_session', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_choice_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^multi_choice_/, expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith(/^panel_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('custom_input_single', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^custom_input_multi_/, expect.any(Function));
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));

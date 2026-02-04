@@ -5,11 +5,13 @@ import { UserChoices } from '../../types';
 import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
+import { ActionPanelManager } from '../action-panel-manager';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
+  actionPanelManager?: ActionPanelManager;
 }
 
 /**
@@ -60,6 +62,7 @@ export class ChoiceActionHandler {
       // 세션 확인 및 메시지 처리
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       if (session) {
+        await this.ctx.actionPanelManager?.clearChoice(sessionKey);
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
@@ -259,6 +262,8 @@ export class ChoiceActionHandler {
     } catch (error) {
       this.logger.warn('Failed to update form UI', error);
     }
+
+    await this.ctx.actionPanelManager?.attachChoice(pendingForm.sessionKey, updatedPayload);
   }
 
   async completeMultiChoiceForm(
@@ -301,6 +306,7 @@ export class ChoiceActionHandler {
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     if (session) {
+      await this.ctx.actionPanelManager?.clearChoice(pendingForm.sessionKey);
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
