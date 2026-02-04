@@ -60,7 +60,7 @@ describe('ConversationWebServer Authentication', () => {
       const response = await fetch(`${baseUrl}/api/conversations`);
 
       expect(response.status).toBe(200);
-      const data = await response.json();
+      const data = await response.json() as any;
       expect(data).toHaveProperty('conversations');
     });
 
@@ -76,7 +76,7 @@ describe('ConversationWebServer Authentication', () => {
       const response = await fetch(`${baseUrl}/health`);
 
       expect(response.status).toBe(200);
-      const data = await response.json();
+      const data = await response.json() as any;
       expect(data.status).toBe('ok');
     });
   });
@@ -96,7 +96,7 @@ describe('ConversationWebServer Authentication', () => {
       const response = await fetch(`${baseUrl}/api/conversations`);
 
       expect(response.status).toBe(401);
-      const data = await response.json();
+      const data = await response.json() as any;
       expect(data.error).toBe('Unauthorized');
     });
 
