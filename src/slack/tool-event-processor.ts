@@ -10,6 +10,7 @@ import { McpStatusDisplay } from './mcp-status-tracker';
 import { ToolFormatter, ToolResult } from './tool-formatter';
 import { ReactionManager } from './reaction-manager';
 import { AssistantStatusManager } from './assistant-status-manager';
+import { McpHealthMonitor } from './mcp-health-monitor';
 
 /**
  * Context for tool event processing
@@ -58,17 +59,20 @@ export class ToolEventProcessor {
   private mcpCallTracker: McpCallTracker;
   private reactionManager: ReactionManager | null = null;
   private assistantStatusManager: AssistantStatusManager | null;
+  private mcpHealthMonitor: McpHealthMonitor | null = null;
 
   constructor(
     toolTracker: ToolTracker,
     mcpStatusDisplay: McpStatusDisplay,
     mcpCallTrackerInstance: McpCallTracker = mcpCallTracker,
-    assistantStatusManager?: AssistantStatusManager
+    assistantStatusManager?: AssistantStatusManager,
+    mcpHealthMonitor?: McpHealthMonitor
   ) {
     this.toolTracker = toolTracker;
     this.mcpStatusDisplay = mcpStatusDisplay;
     this.mcpCallTracker = mcpCallTrackerInstance;
     this.assistantStatusManager = assistantStatusManager || null;
+    this.mcpHealthMonitor = mcpHealthMonitor || null;
   }
 
   /**
@@ -142,6 +146,15 @@ export class ToolEventProcessor {
 
       // End MCP call tracking and get duration
       const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
+
+      if (this.mcpHealthMonitor && toolResult.toolName?.startsWith('mcp__')) {
+        await this.mcpHealthMonitor.recordResult({
+          toolName: toolResult.toolName,
+          isError: toolResult.isError,
+          channel: context.channel,
+          threadTs: context.threadTs,
+        });
+      }
 
       this.logger.debug('Processing tool result', {
         toolName: toolResult.toolName,

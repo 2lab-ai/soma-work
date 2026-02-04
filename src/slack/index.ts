@@ -13,6 +13,7 @@ export { SlackApiHelper, MessageOptions } from './slack-api-helper';
 export { ReactionManager } from './reaction-manager';
 export { ContextWindowManager } from './context-window-manager';
 export { McpStatusDisplay } from './mcp-status-tracker';
+export { McpHealthMonitor } from './mcp-health-monitor';
 export { SessionUiManager, SayFn } from './session-manager';
 export { ActionHandlers, ActionHandlerContext, MessageHandler, MessageEvent } from './action-handlers';
 export { EventRouter, EventRouterDeps } from './event-router';
