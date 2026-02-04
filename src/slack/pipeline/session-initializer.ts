@@ -190,26 +190,54 @@ export class SessionInitializer {
     }
 
     // Check channel-repo routing for PR links after dispatch
+    this.logger.info('🔀 Channel routing check', {
+      isNewSession,
+      hasLinks: !!session.links,
+      hasPrLink: !!session.links?.pr?.url,
+      prUrl: session.links?.pr?.url || '(none)',
+      channel,
+      threadTs,
+      skipAutoBotThread,
+      workflow: session.workflow,
+      sessionState: session.state,
+    });
+
     if (isNewSession && session.links?.pr?.url) {
       const routeCheck = checkRepoChannelMatch(session.links.pr.url, channel);
+
+      this.logger.info('🔀 Channel routing result', {
+        correct: routeCheck.correct,
+        suggestedCount: routeCheck.suggestedChannels.length,
+        suggestedChannels: routeCheck.suggestedChannels.map(ch => ({ id: ch.id, name: ch.name })),
+      });
 
       if (!routeCheck.correct && routeCheck.suggestedChannels.length > 0) {
         // Wrong channel — show advisory with move/stop buttons
         const target = routeCheck.suggestedChannels[0];
-        this.logger.info('PR in wrong channel, showing routing advisory', {
+        this.logger.info('🔀 PR in wrong channel, showing routing advisory', {
           prUrl: session.links.pr.url,
           currentChannel: channel,
           suggestedChannel: target.id,
+          suggestedChannelName: target.name,
         });
 
         // Post advisory first to get its ts for deletion on button click
+        this.logger.info('🔀 Posting channel route advisory', {
+          channel,
+          threadTs,
+          targetChannel: target.id,
+          targetChannelName: target.name,
+        });
+
         const advisoryResult = await this.deps.slackApi.postMessage(channel,
           `🔀 이 repo는 #${target.name} 채널의 작업입니다.`,
           { threadTs }
         );
         const advisoryTs = advisoryResult?.ts || threadTs;
 
-        const { text: advText, blocks } = buildChannelRouteBlocks({
+        this.logger.debug('🔀 Advisory message posted', { advisoryTs, threadTs });
+
+        const routeBlockParams = {
           prUrl: session.links.pr.url,
           targetChannelName: target.name,
           targetChannelId: target.id,
@@ -218,6 +246,12 @@ export class SessionInitializer {
           originalThreadTs: threadTs,
           userMessage: dispatchText || text || '',
           userId: user,
+        };
+        const { text: advText, blocks } = buildChannelRouteBlocks(routeBlockParams);
+
+        this.logger.debug('🔀 Route blocks built', {
+          hasBlocks: blocks.length,
+          routeBlockParams: { ...routeBlockParams, userMessage: routeBlockParams.userMessage.substring(0, 50) },
         });
 
         // Update advisory with buttons
@@ -227,6 +261,12 @@ export class SessionInitializer {
           await this.deps.slackApi.postMessage(channel, advText, { threadTs, blocks });
         }
 
+        this.logger.info('🔀 Session halted — waiting for user to choose Move or Stop', {
+          sessionKey,
+          channel,
+          threadTs,
+        });
+
         // Don't register AbortController — no stream will run for halted sessions
         return {
           session, sessionKey, isNewSession, userName, workingDirectory,
@@ -234,7 +274,7 @@ export class SessionInitializer {
         };
       } else if (routeCheck.correct) {
         if (skipAutoBotThread) {
-          this.logger.info('Skipping auto bot thread creation (routed move)', {
+          this.logger.info('🔀 Skipping auto bot thread creation (routed move)', {
             prUrl: session.links.pr.url,
             channel,
             threadTs,
@@ -242,15 +282,25 @@ export class SessionInitializer {
         } else {
           // Correct channel — auto-create bot thread for PR workflow
           const currentChannelInfo = getChannel(channel);
+          this.logger.info('🔀 PR in correct channel, checking auto bot thread', {
+            prUrl: session.links.pr.url,
+            channel,
+            hasChannelInfo: !!currentChannelInfo,
+            channelName: currentChannelInfo?.name,
+            channelRepos: currentChannelInfo?.repos,
+          });
           if (currentChannelInfo) {
-            this.logger.info('PR in correct channel, auto-creating bot thread', {
+            this.logger.info('🔀 Auto-creating bot thread for PR workflow', {
               prUrl: session.links.pr.url,
               channel,
+              channelName: currentChannelInfo.name,
             });
 
             // Post thread root message (bot owns this message → can update it)
             const prLabel = session.links.pr.label || 'PR';
             const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${session.links.pr.url}`;
+
+            this.logger.debug('🔀 Posting bot thread root message', { rootText: rootText.substring(0, 100) });
             const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
 
             if (rootResult?.ts) {
@@ -281,10 +331,13 @@ export class SessionInitializer {
               this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
               await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
 
-              this.logger.info('Bot-initiated thread created, session migrated', {
+              this.logger.info('🔀 Bot-initiated thread created, session migrated', {
                 rootTs: rootResult.ts,
                 channel,
                 newSessionKey,
+                origSessionKey,
+                workflow: botSession.workflow,
+                title: botSession.title,
               });
 
               return {
@@ -295,10 +348,17 @@ export class SessionInitializer {
                 workingDirectory,
                 abortController,
               };
+            } else {
+              this.logger.warn('🔀 Failed to post bot thread root - no ts returned', { channel });
             }
           }
         }
       }
+    } else if (isNewSession) {
+      this.logger.debug('🔀 Channel routing skipped (no PR link in session)', {
+        isNewSession,
+        links: session.links,
+      });
     }
 
     // Handle concurrency control
@@ -422,9 +482,16 @@ export class SessionInitializer {
       // Store extracted links on the session
       if (result.links && Object.keys(result.links).length > 0) {
         this.deps.claudeHandler.setSessionLinks(channel, threadTs, result.links);
-        this.logger.debug('Stored session links from dispatch', {
+        this.logger.info('🔗 Stored session links from dispatch', {
           channel, threadTs,
           links: result.links,
+          hasPrLink: !!result.links.pr,
+          prUrl: result.links.pr?.url,
+        });
+      } else {
+        this.logger.info('🔗 No links extracted from dispatch', {
+          channel, threadTs,
+          textPreview: text.substring(0, 100),
         });
       }
 
