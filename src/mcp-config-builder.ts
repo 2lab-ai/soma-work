@@ -110,7 +110,7 @@ export class McpConfigBuilder {
     return {
       'permission-prompt': {
         command: 'npx',
-        args: ['tsx', path.join(__dirname, 'permission-mcp-server.ts')],
+        args: ['tsx', path.join(__dirname, `permission-mcp-server${__filename.endsWith('.ts') ? '.ts' : '.js'}`)],
         env: {
           SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
           SLACK_CONTEXT: JSON.stringify(slackContext),
