@@ -190,6 +190,11 @@ export class SessionInitializer {
     }
 
     // Check channel-repo routing for PR links after dispatch
+    // Only route for PR-specific workflows — default workflow (plain mention/command) skips routing
+    const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);
+    const prUrl = session.links?.pr?.url;
+    const shouldRoute = isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '');
+
     this.logger.info('🔀 Channel routing check', {
       isNewSession,
       hasLinks: !!session.links,
@@ -199,11 +204,12 @@ export class SessionInitializer {
       threadTs,
       skipAutoBotThread,
       workflow: session.workflow,
+      shouldRoute,
       sessionState: session.state,
     });
 
-    if (isNewSession && session.links?.pr?.url) {
-      const routeCheck = checkRepoChannelMatch(session.links.pr.url, channel);
+    if (shouldRoute && prUrl) {
+      const routeCheck = checkRepoChannelMatch(prUrl, channel);
 
       this.logger.info('🔀 Channel routing result', {
         correct: routeCheck.correct,
@@ -215,7 +221,7 @@ export class SessionInitializer {
         // Wrong channel — show advisory with move/stop buttons
         const target = routeCheck.suggestedChannels[0];
         this.logger.info('🔀 PR in wrong channel, showing routing advisory', {
-          prUrl: session.links.pr.url,
+          prUrl,
           currentChannel: channel,
           suggestedChannel: target.id,
           suggestedChannelName: target.name,
@@ -238,7 +244,7 @@ export class SessionInitializer {
         this.logger.debug('🔀 Advisory message posted', { advisoryTs, threadTs });
 
         const routeBlockParams = {
-          prUrl: session.links.pr.url,
+          prUrl,
           targetChannelName: target.name,
           targetChannelId: target.id,
           originalChannel: channel,
@@ -275,7 +281,7 @@ export class SessionInitializer {
       } else if (routeCheck.correct) {
         if (skipAutoBotThread) {
           this.logger.info('🔀 Skipping auto bot thread creation (routed move)', {
-            prUrl: session.links.pr.url,
+            prUrl,
             channel,
             threadTs,
           });
@@ -283,7 +289,7 @@ export class SessionInitializer {
           // Correct channel — auto-create bot thread for PR workflow
           const currentChannelInfo = getChannel(channel);
           this.logger.info('🔀 PR in correct channel, checking auto bot thread', {
-            prUrl: session.links.pr.url,
+            prUrl,
             channel,
             hasChannelInfo: !!currentChannelInfo,
             channelName: currentChannelInfo?.name,
@@ -291,14 +297,14 @@ export class SessionInitializer {
           });
           if (currentChannelInfo) {
             this.logger.info('🔀 Auto-creating bot thread for PR workflow', {
-              prUrl: session.links.pr.url,
+              prUrl,
               channel,
               channelName: currentChannelInfo.name,
             });
 
             // Post thread root message (bot owns this message → can update it)
-            const prLabel = session.links.pr.label || 'PR';
-            const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${session.links.pr.url}`;
+            const prLabel = session.links?.pr?.label || 'PR';
+            const rootText = `⚙️ *${session.title || prLabel}*\n👤 <@${user}> · ${prUrl}`;
 
             this.logger.debug('🔀 Posting bot thread root message', { rootText: rootText.substring(0, 100) });
             const rootResult = await this.deps.slackApi.postMessage(channel, rootText);
@@ -355,9 +361,11 @@ export class SessionInitializer {
         }
       }
     } else if (isNewSession) {
-      this.logger.debug('🔀 Channel routing skipped (no PR link in session)', {
+      this.logger.debug('🔀 Channel routing skipped', {
         isNewSession,
-        links: session.links,
+        hasPrLink: !!session.links?.pr?.url,
+        workflow: session.workflow,
+        reason: !session.links?.pr?.url ? 'no PR link' : `workflow '${session.workflow}' not routable`,
       });
     }
 
