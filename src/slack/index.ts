@@ -10,6 +10,9 @@ export { MessageFormatter } from './message-formatter';
 
 // New modules
 export { SlackApiHelper, MessageOptions } from './slack-api-helper';
+export { ActionPanelBuilder } from './action-panel-builder';
+export { ActionPanelManager } from './action-panel-manager';
+export { ThreadHeaderBuilder } from './thread-header-builder';
 export { ReactionManager } from './reaction-manager';
 export { ContextWindowManager } from './context-window-manager';
 export { McpStatusDisplay } from './mcp-status-tracker';

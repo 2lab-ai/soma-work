@@ -18,6 +18,7 @@ import {
   EventRouter,
   EventRouterDeps,
   RequestCoordinator,
+  ActionPanelManager,
   ToolTracker,
   CommandRouter,
   CommandDependencies,
@@ -53,6 +54,7 @@ export class SlackHandler {
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
   private eventRouter: EventRouter;
+  private actionPanelManager: ActionPanelManager;
 
   // Concurrency and tracking
   private requestCoordinator: RequestCoordinator;
@@ -95,6 +97,11 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
+    this.actionPanelManager = new ActionPanelManager({
+      slackApi: this.slackApi,
+      claudeHandler: this.claudeHandler,
+      requestCoordinator: this.requestCoordinator,
+    });
 
     // Command routing
     const commandDeps: CommandDependencies = {
@@ -135,6 +142,7 @@ export class SlackHandler {
       sessionManager: this.sessionUiManager,
       messageHandler: this.handleMessage.bind(this),
       reactionManager: this.reactionManager,
+      actionPanelManager: this.actionPanelManager,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -152,6 +160,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
+      actionPanelManager: this.actionPanelManager,
     });
 
     this.streamExecutor = new StreamExecutor({
@@ -167,6 +176,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
       assistantStatusManager: this.assistantStatusManager,
+      actionPanelManager: this.actionPanelManager,
     });
 
     // EventRouter for event handling

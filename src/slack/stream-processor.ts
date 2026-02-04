@@ -11,6 +11,7 @@ import {
   UserChoiceHandler,
   MessageFormatter,
 } from './index';
+import { SlackMessagePayload } from './choice-message-builder';
 import { SessionLinkDirectiveHandler } from './directives';
 
 /**
@@ -124,6 +125,8 @@ export interface StreamCallbacks {
   onUsageUpdate?: (usage: UsageData) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
+  /** Called when a user choice UI is rendered */
+  onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext) => Promise<void>;
 }
 
 /**
@@ -415,6 +418,10 @@ export class StreamProcessor {
         thread_ts: context.threadTs,
       });
 
+      if (this.callbacks.onChoiceCreated) {
+        await this.callbacks.onChoiceCreated(multiPayload, context);
+      }
+
       // Update form with message timestamp
       if (this.callbacks.getPendingForm && formResult?.ts) {
         const pendingForm = this.callbacks.getPendingForm(formId);
@@ -470,6 +477,10 @@ export class StreamProcessor {
         ...singlePayload,
         thread_ts: context.threadTs,
       });
+
+      if (this.callbacks.onChoiceCreated) {
+        await this.callbacks.onChoiceCreated(singlePayload, context);
+      }
     } catch (error: any) {
       this.logger.error('Failed to send single choice to Slack', {
         error: error.message,
