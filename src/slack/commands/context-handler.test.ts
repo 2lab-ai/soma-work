@@ -29,6 +29,9 @@ describe('ContextHandler', () => {
       claudeHandler: {
         getSession: vi.fn(),
       },
+      slackApi: {
+        postSystemMessage: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      },
     } as unknown as CommandDependencies;
     handler = new ContextHandler(mockDeps);
   });
@@ -88,8 +91,9 @@ describe('ContextHandler', () => {
 
       await handler.execute(ctx);
 
-      expect(mockSay).toHaveBeenCalledTimes(1);
-      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      expect(postSystemMessage).toHaveBeenCalledTimes(1);
+      const message = postSystemMessage.mock.calls[0][1];
 
       // PROOF: Context window shows 2.8k (2000 + 800), NOT 4.3k (cumulative)
       expect(message).toContain('*Context Window:* 2.8k / 200.0k');
@@ -144,7 +148,8 @@ describe('ContextHandler', () => {
         say: mockSay,
       });
 
-      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      const message = postSystemMessage.mock.calls[0][1];
       // (200000 - 50000) / 200000 * 100 = 75%
       expect(message).toContain('75% available');
     });
@@ -173,7 +178,8 @@ describe('ContextHandler', () => {
         say: mockSay,
       });
 
-      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      const message = postSystemMessage.mock.calls[0][1];
       expect(message).toContain('10% available');
       expect(message).toContain('⚠️ Context running low');
       expect(message).toContain('/renew');
@@ -202,7 +208,8 @@ describe('ContextHandler', () => {
         say: mockSay,
       });
 
-      const message = (mockSay as ReturnType<typeof vi.fn>).mock.calls[0][0].text;
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      const message = postSystemMessage.mock.calls[0][1];
       expect(message).toContain('Cache read: 3.0k');
       expect(message).toContain('Cache created: 500');
     });
@@ -220,9 +227,12 @@ describe('ContextHandler', () => {
         say: mockSay,
       });
 
-      expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({
-        text: expect.stringContaining('No active session'),
-      }));
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No active session'),
+        expect.objectContaining({ threadTs: 'ts' }),
+      );
     });
 
     it('should handle session without usage data', async () => {
@@ -238,9 +248,12 @@ describe('ContextHandler', () => {
         say: mockSay,
       });
 
-      expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({
-        text: expect.stringContaining('No usage data available'),
-      }));
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No usage data available'),
+        expect.objectContaining({ threadTs: 'ts' }),
+      );
     });
   });
 });
