@@ -56,3 +56,6 @@ usercontent/
 
 # bd (beads)
 .beads/daemon-error
+
+# Git worktrees
+.worktree/
