@@ -28,8 +28,8 @@ vi.mock('../../user-settings-store', () => ({
     getSlackJiraMapping: vi.fn().mockReturnValue({}),
     findJiraAccountBySlackId: vi.fn().mockReturnValue(undefined),
   },
-  AVAILABLE_MODELS: ['claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
-  DEFAULT_MODEL: 'claude-sonnet-4-5-20250929',
+  AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
+  DEFAULT_MODEL: 'claude-opus-4-6',
 }));
 
 vi.mock('../../conversation', () => ({

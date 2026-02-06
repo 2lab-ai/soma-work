@@ -7,6 +7,7 @@ const logger = new Logger('UserSettingsStore');
 
 // Available models
 export const AVAILABLE_MODELS = [
+  'claude-opus-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
@@ -18,13 +19,14 @@ export type ModelId = typeof AVAILABLE_MODELS[number];
 export const MODEL_ALIASES: Record<string, ModelId> = {
   'sonnet': 'claude-sonnet-4-5-20250929',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-  'opus': 'claude-opus-4-5-20251101',
+  'opus': 'claude-opus-4-6',
+  'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
   'haiku': 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
 };
 
-export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-5-20250929';
+export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
 export interface UserSettings {
   userId: string;
@@ -331,6 +333,8 @@ export class UserSettingsStore {
     switch (model) {
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
+      case 'claude-opus-4-6':
+        return 'Opus 4.6';
       case 'claude-opus-4-5-20251101':
         return 'Opus 4.5';
       case 'claude-haiku-4-5-20251001':

@@ -121,12 +121,10 @@ export class ActionPanelManager {
 
     if (!panelState.messageTs) {
       try {
-        const result = await this.deps.slackApi.postEphemeral(
+        const result = await this.deps.slackApi.postMessage(
           channelId,
-          userId,
           payload.text,
-          undefined,
-          payload.blocks
+          { blocks: payload.blocks }
         );
         panelState.messageTs = result?.ts;
         rendered = true;
