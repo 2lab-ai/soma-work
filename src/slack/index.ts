@@ -59,4 +59,9 @@ export { DirectoryFormatter } from './formatters';
 export { AssistantStatusManager } from './assistant-status-manager';
 
 // Response directives (model -> bot structured callbacks)
-export { SessionLinkDirectiveHandler, SessionLinkExtractResult } from './directives';
+export {
+  SessionLinkDirectiveHandler,
+  SessionLinkExtractResult,
+  ChannelMessageDirectiveHandler,
+  ChannelMessageExtractResult,
+} from './directives';

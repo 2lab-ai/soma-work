@@ -432,6 +432,7 @@ export class DispatchService {
     'pr-review',
     'pr-fix-and-update',
     'pr-docs-confluence',
+    'deploy',
     'default',
   ]);
 

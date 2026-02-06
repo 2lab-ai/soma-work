@@ -37,7 +37,7 @@ If user wants changes, guide them to use commands:
 - `bypass on/off` - Toggle permission prompts
 
 ### 4. Workflow Tour
-Briefly introduce the 7 available workflows:
+Briefly introduce the 8 available workflows:
 1. **jira-executive-summary** - Generate executive summaries for Jira issues
 2. **jira-brainstorming** - Brainstorm solutions with context from Jira
 3. **jira-planning** - Create implementation plans from Jira specs
@@ -45,6 +45,7 @@ Briefly introduce the 7 available workflows:
 5. **pr-review** - Review pull requests with code analysis
 6. **pr-fix-and-update** - Fix and update PRs based on feedback
 7. **pr-docs-confluence** - Generate Confluence docs from PRs
+8. **deploy** - Run source-to-target deployment flow with release notes
 
 ### 5. Demo Suggestion
 Offer to try a demo workflow:
