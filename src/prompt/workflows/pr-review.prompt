@@ -35,10 +35,46 @@ git log --oneline -10
 
 ## 리뷰 프로세스
 
-"review-pr" skill로 소스가 있는 작업폴더와 유저가 지시한 내용이 있으면 해당 내용을 전달하여 해당 스킬의 결과를 기다린다.
-모든 결과를 받으면 3로 넘어간다.
+### 1. review-pr skill 실행
+소스가 있는 작업폴더 기준으로 `review-pr` skill을 실행한다. 유저가 특정 검토 관점(예: 보안, 성능, 테스트)을 준 경우 함께 전달한다.
 
-### 3. 이슈 분류
+입력 예시:
+```json
+{
+  "workspace_path": "/path/to/repo",
+  "pr_url": "https://github.com/org/repo/pull/123",
+  "focus": ["correctness", "tests", "security"]
+}
+```
+
+### 2. review-pr 결과(JSON) 수신
+`review-pr` 결과는 아래 형태를 기준으로 파싱한다:
+```json
+{
+  "summary": {
+    "overall": "APPROVE | REQUEST_CHANGES",
+    "counts": {"P0": 0, "P1": 1, "P2": 2, "P3": 1}
+  },
+  "findings": [
+    {
+      "title": "Null check missing",
+      "priority": "P1",
+      "file": "src/foo.ts",
+      "line": 42,
+      "body": "Potential runtime crash when input is undefined.",
+      "suggestion": "if (!input) return;"
+    }
+  ]
+}
+```
+
+### 3. 결과 파싱 및 정규화
+- priority가 없거나 알 수 없으면 `P2`로 보정한다.
+- `file` 또는 `line`이 없는 finding은 "general finding"으로 분류하고, PR 본문 요약에는 포함하되 라인 코멘트는 생략한다.
+- `(file, line, title)`이 동일한 finding은 중복 제거한다.
+- 파싱 실패 시 `review-pr`를 1회 재시도하고, 재시도도 실패하면 원문을 보존해 수동 분류한다.
+
+### 4. 이슈 분류
 | Priority | 설명 | 조건 |
 |----------|------|------|
 | P0 | Drop everything | 릴리즈/운영 블로킹. 입력과 무관하게 발생 |
@@ -46,15 +82,16 @@ git log --oneline -10
 | P2 | Normal | 언젠가 수정 |
 | P3 | Low | Nice to have |
 
-### 4. 최종 판정
+### 5. 최종 판정
 - P0 또는 P1 이슈 있음 → **REQUEST_CHANGES**
 - P0, P1 없음 → **APPROVE**
+- `general finding`만 있고 P0/P1이 없으면 **APPROVE** 가능 (요약 코멘트로 안내)
 
-### 5. GitHub에 리뷰 제출
+### 6. GitHub에 리뷰 제출
 `mcp__github__create_pull_request_review` 사용:
 - 반드시 **실제 코드 라인**을 참조하여 각 이슈별 커멘트
-- 부하 MCP에게 받은 리뷰에 라인이 없으면 직접 해당 라인 찾아서 커멘트
-- 라인 참조 없는 커멘트는 무의미
+- skill 결과에 라인이 없으면 직접 diff에서 라인을 찾아 보정 후 커멘트
+- 라인 참조가 끝내 불가능한 항목은 리뷰 본문의 "General Findings" 섹션에 별도 기재
 
 ## 출력 형식
 

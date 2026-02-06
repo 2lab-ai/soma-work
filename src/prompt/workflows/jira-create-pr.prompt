@@ -2,7 +2,7 @@
 
 # Jira Create PR Workflow
 
-이 세션은 **Jira 이슈 기반 PR 생성** 전용이다. Implementation Spec을 기반으로 코드 뼈대와 실패하는 테스트를 작성한다.
+이 세션은 **Jira 이슈 기반 PR 생성** 전용이다. Implementation Spec을 기반으로 `Red -> Green -> Refactor` phase를 순차 실행한다.
 
 ## 전제 조건
 - Jira 이슈에 **승인된 Implementation Spec**이 있어야 함
@@ -12,15 +12,35 @@
 1. Jira 이슈에서 Implementation Spec 확인
 2. 관련 repo clone
 3. 이슈 키로 새 브랜치 생성
-4. 실패하는 테스트 먼저 작성 (TDD)
-5. 코드 뼈대 작성 (테스트 아직 통과 안 함)
-6. PR 생성
+4. Red phase 진행 (실패 테스트 + 최소 뼈대)
+5. Green phase 진행 여부를 `user_choice`로 확인
+6. Green 진행 시 구현 완료 및 테스트 통과
+7. Refactor 진행 여부를 `user_choice`로 확인
+8. Refactor 진행 시 코드 정리 + PR 마무리
 
 ## 브랜치 네이밍
 ```
 feature/[ISSUE-KEY]-short-description
 예: feature/PTN-123-add-user-auth
 ```
+
+## Phase 정의
+
+### Red phase (스캐폴드)
+- 실패하는 테스트를 먼저 작성한다.
+- 최소 구현 뼈대를 추가하되 테스트는 아직 실패 상태로 둔다.
+- PR은 `WIP` 또는 `Draft` 상태로 올린다.
+- 자연스러운 중단 지점: "PR 뼈대 생성 완료"
+
+### Green phase (구현 완료)
+- Red에서 만든 실패 테스트를 모두 통과시키는 최소 구현을 완성한다.
+- `test`, `build`를 실행해 회귀 없이 통과를 확인한다.
+- 자연스러운 중단 지점: "기능 구현 완료, 리팩터링 전"
+
+### Refactor phase (정리/출시 준비)
+- 중복 제거, 네이밍 개선, 구조 정리, 테스트 가독성 개선을 수행한다.
+- PR 본문/체크리스트/변경 요약을 최종 상태로 갱신한다.
+- 자연스러운 중단 지점: "리뷰 요청 가능한 상태"
 
 ## 작업 프로세스
 
@@ -29,16 +49,16 @@ feature/[ISSUE-KEY]-short-description
 - Implementation Spec 존재 여부 확인
 - Spec이 없으면: "Implementation Spec이 없습니다. `/plan` 또는 jira-planning 워크플로우로 먼저 Spec을 작성해주세요."
 
-### 2. 코드 작성 (TDD 방식)
-```
-1. 실패하는 테스트 작성 (Red)
-2. 테스트를 통과시키기 위한 최소 구현 뼈대 작성
-3. 아직 테스트는 실패 상태 (구현 미완성)
-```
-
-### 3. Git 작업
+### 2. 브랜치 생성
 ```bash
 git checkout -b feature/[ISSUE-KEY]-description
+```
+
+### 3. Red phase 실행
+- 실패하는 테스트 작성 (Red)
+- 최소 구현 뼈대 작성 (테스트는 실패 상태 유지)
+
+```bash
 git add .
 git commit -m "feat([scope]): [ISSUE-KEY] scaffold implementation
 
@@ -48,34 +68,10 @@ git commit -m "feat([scope]): [ISSUE-KEY] scaffold implementation
 git push -u origin feature/[ISSUE-KEY]-description
 ```
 
-### 4. PR 생성
-`gh pr create` 또는 `mcp__github__create_pull_request` 사용
+### 4. PR 생성 (Red 결과 반영)
+`gh pr create` 또는 `mcp__github__create_pull_request` 사용. 기본 상태는 `Draft`를 권장한다.
 
-## PR 생성 형식
-
-```markdown
-## Summary
-- **[ISSUE-KEY]** 이슈 제목
-- **Jira**: [이슈 링크]
-
-## Changes
-- 실패하는 테스트 추가
-- 구현 뼈대 작성
-
-## Test Plan
-- [ ] 현재 테스트 실패 확인 (의도적)
-- [ ] 구현 완료 후 테스트 통과 확인
-
-## Status
-🚧 **WIP** - 뼈대만 구현됨, 실제 로직 구현 필요
-
----
-Implements: [ISSUE-KEY]
-```
-
-## PR 생성 후
-
-PR 생성 즉시, 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+PR 생성 직후 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
 ```json
 {
   "type": "session_links",
@@ -84,21 +80,70 @@ PR 생성 즉시, 세션 링크를 자동 업데이트한다 (유저에게 표�
 }
 ```
 
-유저에게 다음 단계 확인:
+Red phase 완료 후, 유저에게 Green 진행 여부를 확인한다:
 ```json
 {
   "type": "user_choice",
-  "question": "PR이 생성되었습니다. 다음 단계를 선택해주세요.",
+  "question": "Red phase(PR 뼈대)가 완료되었습니다. Green phase로 구현을 계속할까요?",
   "options": [
-    {"id": "1", "label": "구현 계속 진행", "description": "테스트가 통과하도록 실제 로직 구현"},
-    {"id": "2", "label": "여기서 중단", "description": "PR만 만들고 나중에 직접 구현"}
+    {"id": "1", "label": "Green 진행", "description": "실제 로직 구현 후 테스트 통과까지 진행"},
+    {"id": "2", "label": "여기서 중단", "description": "현재 Draft PR 상태로 종료"}
   ]
 }
 ```
 
+### 5. Green phase 실행 (유저가 Green 진행 선택 시)
+- 실제 로직 구현
+- 실패 테스트 통과 확인
+- 빌드/테스트 실행
+
+```bash
+npm test
+npm run build
+git add .
+git commit -m "feat([scope]): [ISSUE-KEY] implement green phase"
+git push
+```
+
+Green phase 완료 후 Refactor 진행 여부를 확인한다:
+```json
+{
+  "type": "user_choice",
+  "question": "Green phase가 완료되었습니다. Refactor phase까지 진행할까요?",
+  "options": [
+    {"id": "1", "label": "Refactor 진행", "description": "구조 정리/가독성 개선 후 PR 완성"},
+    {"id": "2", "label": "여기서 중단", "description": "구현 완료 상태로 종료"}
+  ]
+}
+```
+
+### 6. Refactor phase 실행 (유저가 Refactor 진행 선택 시)
+- 코드 단순화/중복 제거/네이밍 개선
+- 테스트 재실행
+- PR 본문 상태를 `WIP`에서 완료 상태로 갱신
+
+```bash
+npm test
+npm run build
+git add .
+git commit -m "refactor([scope]): [ISSUE-KEY] cleanup after green phase"
+git push
+```
+
+## PR 본문 상태 가이드
+
+### Red까지만 완료된 경우
+- Status: `WIP (Red complete, Green pending)`
+
+### Green 완료된 경우
+- Status: `Implementation complete (Refactor optional)`
+
+### Refactor 완료된 경우
+- Status: `Ready for review`
+
 ## 🔄 다음 단계 안내
 
-PR 생성 후, 유저에게 다음 단계를 안내:
-- **PR 리뷰 요청**: "PR이 생성되었습니다. 리뷰를 받으려면 새 세션에서 PR 링크를 입력하세요."
+phase 진행이 종료되면, 유저에게 다음 단계를 안내:
+- **PR 리뷰 요청**: "리뷰를 받으려면 새 세션에서 PR 링크를 입력하세요."
 - **문서 작성**: "API 변경이 포함된 경우, Confluence 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
 - PR 링크는 `session_links` JSON directive로 자동 연결됨
