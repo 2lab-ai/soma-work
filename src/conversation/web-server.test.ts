@@ -36,7 +36,6 @@ describe('ConversationWebServer Authentication', () => {
   beforeEach(() => {
     vi.resetModules();
     mockConfig.conversation.viewerToken = '';
-    mockConfig.conversation.viewerPort = 0;
   });
 
   afterEach(async () => {
@@ -50,33 +49,35 @@ describe('ConversationWebServer Authentication', () => {
   describe('when CONVERSATION_VIEWER_TOKEN is not set', () => {
     it('should allow unauthenticated access to /api/conversations', async () => {
       mockConfig.conversation.viewerToken = '';
-      mockConfig.conversation.viewerPort = 34001;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/api/conversations`);
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/api/conversations',
+      });
 
-      expect(response.status).toBe(200);
-      const data = await response.json() as any;
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body) as any;
       expect(data).toHaveProperty('conversations');
     });
 
     it('should allow unauthenticated access to /health', async () => {
       mockConfig.conversation.viewerToken = '';
-      mockConfig.conversation.viewerPort = 34002;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/health`);
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/health',
+      });
 
-      expect(response.status).toBe(200);
-      const data = await response.json() as any;
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body) as any;
       expect(data.status).toBe('ok');
     });
   });
@@ -86,101 +87,105 @@ describe('ConversationWebServer Authentication', () => {
 
     it('should reject requests without Authorization header', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34003;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/api/conversations`);
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/api/conversations',
+      });
 
-      expect(response.status).toBe(401);
-      const data = await response.json() as any;
+      expect(response.statusCode).toBe(401);
+      const data = JSON.parse(response.body) as any;
       expect(data.error).toBe('Unauthorized');
     });
 
     it('should reject requests with invalid token', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34004;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/api/conversations`, {
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/api/conversations',
         headers: { Authorization: 'Bearer wrong-token' },
       });
 
-      expect(response.status).toBe(401);
+      expect(response.statusCode).toBe(401);
     });
 
     it('should accept requests with valid Bearer token', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34005;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/api/conversations`, {
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/api/conversations',
         headers: { Authorization: `Bearer ${TEST_TOKEN}` },
       });
 
-      expect(response.status).toBe(200);
+      expect(response.statusCode).toBe(200);
     });
 
     it('should accept requests with raw token (no Bearer prefix)', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34006;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/api/conversations`, {
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/api/conversations',
         headers: { Authorization: TEST_TOKEN },
       });
 
-      expect(response.status).toBe(200);
+      expect(response.statusCode).toBe(200);
     });
 
     it('should NOT require auth for /health endpoint', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34007;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-      const response = await fetch(`${baseUrl}/health`);
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/health',
+      });
 
-      expect(response.status).toBe(200);
+      expect(response.statusCode).toBe(200);
     });
 
     it('should require auth for HTML conversation list', async () => {
       mockConfig.conversation.viewerToken = TEST_TOKEN;
-      mockConfig.conversation.viewerPort = 34008;
 
-      const { startWebServer, getViewerBaseUrl } = await import('./web-server');
-      await startWebServer();
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
       server = true;
 
-      const baseUrl = getViewerBaseUrl();
-
       // Without token
-      const noAuthResponse = await fetch(`${baseUrl}/conversations`);
-      expect(noAuthResponse.status).toBe(401);
+      const noAuthResponse = await injectWebServer({
+        method: 'GET',
+        url: '/conversations',
+      });
+      expect(noAuthResponse.statusCode).toBe(401);
 
       // With token
-      const authResponse = await fetch(`${baseUrl}/conversations`, {
+      const authResponse = await injectWebServer({
+        method: 'GET',
+        url: '/conversations',
         headers: { Authorization: `Bearer ${TEST_TOKEN}` },
       });
-      expect(authResponse.status).toBe(200);
+      expect(authResponse.statusCode).toBe(200);
     });
   });
 });

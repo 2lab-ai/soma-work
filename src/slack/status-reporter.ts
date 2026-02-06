@@ -14,7 +14,7 @@ const STATUS_CONFIG: Record<StatusType, StatusConfig> = {
   waiting: { text: '✋ *Waiting for input...*', emoji: 'raised_hand' },
   completed: { text: '✅ *Task completed*', emoji: 'white_check_mark' },
   error: { text: '❌ *Error occurred*', emoji: 'x' },
-  cancelled: { text: '⏹️ *Cancelled*', emoji: 'stop_sign' },
+  cancelled: { text: '⏹️ *Cancelled*', emoji: 'octagonal_sign' },
 };
 
 export interface StatusMessage {
