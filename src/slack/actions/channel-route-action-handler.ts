@@ -360,6 +360,10 @@ export function buildChannelRouteBlocks(params: {
   userId: string;
   advisoryEphemeral?: boolean;
   allowStay?: boolean;
+  allowMove?: boolean;
+  moveButtonText?: string;
+  messageText?: string;
+  sectionText?: string;
 }): { text: string; blocks: any[] } {
   logger.info('🔀 buildChannelRouteBlocks', {
     prUrl: params.prUrl,
@@ -386,16 +390,45 @@ export function buildChannelRouteBlocks(params: {
   };
   const valueStr = JSON.stringify(value);
 
-  const text = `이 repo는 #${params.targetChannelName} 채널의 작업입니다. 이동하시겠습니까?`;
+  const text = params.messageText || `이 repo는 #${params.targetChannelName} 채널의 작업입니다. 이동하시겠습니까?`;
 
   const stayDisabled = params.allowStay !== true;
+  const showMove = params.allowMove !== false;
+  const moveButtonText = params.moveButtonText || '이동';
+  const sectionText = params.sectionText || `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`;
+
+  const actionElements: any[] = [];
+  if (showMove) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: moveButtonText, emoji: true },
+      style: 'primary',
+      value: valueStr,
+      action_id: 'channel_route_move',
+    });
+  }
+  actionElements.push(
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '작업 중지', emoji: true },
+      value: valueStr,
+      action_id: 'channel_route_stop',
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '현재 채널에서 진행', emoji: true },
+      value: valueStr,
+      action_id: 'channel_route_stay',
+      disabled: stayDisabled,
+    }
+  );
 
   const blocks = [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`,
+        text: sectionText,
       },
     },
     {
@@ -409,28 +442,7 @@ export function buildChannelRouteBlocks(params: {
     },
     {
       type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '이동', emoji: true },
-          style: 'primary',
-          value: valueStr,
-          action_id: 'channel_route_move',
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '작업 중지', emoji: true },
-          value: valueStr,
-          action_id: 'channel_route_stop',
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '현재 채널에서 진행', emoji: true },
-          value: valueStr,
-          action_id: 'channel_route_stay',
-          disabled: stayDisabled,
-        },
-      ],
+      elements: actionElements,
     },
   ];
 
