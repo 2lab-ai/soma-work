@@ -257,6 +257,8 @@ export class SlackHandler {
       return;
     }
 
+    await this.actionPanelManager?.ensurePanel(sessionResult.session, sessionResult.sessionKey);
+
     // Replace eyes with brain emoji - message is being sent to model
     // Skip for first message (creates thread) - model adds emoji via reactionManager
     await this.slackApi.removeReaction(channel, ts, 'eyes');
