@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
@@ -22,8 +22,10 @@ vi.mock('../../channel-registry', () => ({
   checkRepoChannelMatch: vi.fn().mockReturnValue({
     correct: false,
     suggestedChannels: [{ id: 'C999', name: 'target' }],
+    reason: 'mismatch',
   }),
   getChannel: vi.fn().mockReturnValue(null),
+  getAllChannels: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../dispatch-service', () => ({
@@ -46,6 +48,7 @@ vi.mock('../../dispatch-service', () => ({
 }));
 
 import { SessionInitializer } from './session-initializer';
+import * as channelRegistry from '../../channel-registry';
 
 describe('SessionInitializer - channel routing advisory', () => {
   let sessionInitializer: SessionInitializer;
@@ -57,10 +60,20 @@ describe('SessionInitializer - channel routing advisory', () => {
   let mockRequestCoordinator: any;
   let mockAssistantStatusManager: any;
   let sessionRef: any;
+  const mockCheckRepoChannelMatch = vi.mocked(channelRegistry.checkRepoChannelMatch);
+  const mockGetAllChannels = vi.mocked(channelRegistry.getAllChannels);
+  const originalDefaultUpdateChannel = process.env.DEFAULT_UPDATE_CHANNEL;
 
   beforeEach(() => {
     vi.clearAllMocks();
     sessionRef = undefined;
+    delete process.env.DEFAULT_UPDATE_CHANNEL;
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: false,
+      suggestedChannels: [{ id: 'C999', name: 'target' }],
+      reason: 'mismatch',
+    } as any);
+    mockGetAllChannels.mockReturnValue([]);
 
     mockClaudeHandler = {
       getSessionKey: vi.fn().mockReturnValue('C123:thread123'),
@@ -163,5 +176,81 @@ describe('SessionInitializer - channel routing advisory', () => {
     const actionsBlock = blocks.find((block: any) => block.type === 'actions');
     expect(actionsBlock).toBeDefined();
     expect(mockSlackApi.postEphemeral).not.toHaveBeenCalled();
+  });
+
+  it('shows fallback advisory when repo channel mapping is missing', async () => {
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: false,
+      suggestedChannels: [],
+      reason: 'no_mapping',
+    } as any);
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const callWithBlocks = mockSlackApi.postMessage.mock.calls.find((call: any[]) => Array.isArray(call[2]?.blocks));
+    expect(callWithBlocks).toBeDefined();
+    const blocks = callWithBlocks[2]?.blocks;
+    const sectionBlock = blocks.find((block: any) => block.type === 'section');
+    expect(sectionBlock.text.text).toContain('매핑된 채널을 찾지 못했습니다');
+    const actionsBlock = blocks.find((block: any) => block.type === 'actions');
+    const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
+    expect(actionIds).not.toContain('channel_route_move');
+    expect(actionIds).toContain('channel_route_stop');
+    expect(actionIds).toContain('channel_route_stay');
+  });
+
+  it('shows default-channel move option when DEFAULT_UPDATE_CHANNEL is configured', async () => {
+    process.env.DEFAULT_UPDATE_CHANNEL = '#ai-reports';
+    mockGetAllChannels.mockReturnValue([
+      {
+        id: 'C777',
+        name: 'ai-reports',
+        purpose: '',
+        topic: '',
+        repos: [],
+        joinedAt: Date.now(),
+      },
+    ] as any);
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: false,
+      suggestedChannels: [],
+      reason: 'no_mapping',
+    } as any);
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const callWithBlocks = mockSlackApi.postMessage.mock.calls.find((call: any[]) => Array.isArray(call[2]?.blocks));
+    expect(callWithBlocks).toBeDefined();
+    const blocks = callWithBlocks[2]?.blocks;
+    const actionsBlock = blocks.find((block: any) => block.type === 'actions');
+    const moveButton = actionsBlock.elements.find((el: any) => el.action_id === 'channel_route_move');
+    expect(moveButton).toBeDefined();
+    expect(moveButton.text.text).toBe('기본 채널로 이동');
+    const sectionBlock = blocks.find((block: any) => block.type === 'section');
+    expect(sectionBlock.text.text).toContain('<#C777>');
+  });
+
+  afterEach(() => {
+    if (originalDefaultUpdateChannel === undefined) {
+      delete process.env.DEFAULT_UPDATE_CHANNEL;
+      return;
+    }
+    process.env.DEFAULT_UPDATE_CHANNEL = originalDefaultUpdateChannel;
   });
 });

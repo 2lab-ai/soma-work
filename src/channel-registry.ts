@@ -24,6 +24,14 @@ export interface ChannelInfo {
   joinedAt: number;
 }
 
+export type RepoChannelMatchReason = 'no_repo' | 'no_mapping' | 'matched' | 'mismatch';
+
+export interface RepoChannelMatchResult {
+  correct: boolean;
+  suggestedChannels: ChannelInfo[];
+  reason: RepoChannelMatchReason;
+}
+
 // Registry state
 const channels = new Map<string, ChannelInfo>();
 const repoToChannels = new Map<string, string[]>(); // repo → channel IDs
@@ -221,7 +229,7 @@ export function getAllChannels(): ChannelInfo[] {
 export function checkRepoChannelMatch(
   prUrl: string,
   currentChannel: string
-): { correct: boolean; suggestedChannels: ChannelInfo[] } {
+): RepoChannelMatchResult {
   const currentChannelInfo = channels.get(currentChannel);
 
   logger.info('🧭 checkRepoChannelMatch START', {
@@ -235,19 +243,19 @@ export function checkRepoChannelMatch(
   const repo = extractRepoFromUrl(prUrl);
   if (!repo) {
     logger.info('🧭 checkRepoChannelMatch → correct (no repo extracted from URL)', { prUrl });
-    return { correct: true, suggestedChannels: [] };
+    return { correct: true, suggestedChannels: [], reason: 'no_repo' };
   }
 
   const mappedChannelIds = findChannelsForRepo(repo);
 
-  // No mapping exists — assume correct (no registry data)
+  // No mapping exists — treat as unresolved and let caller decide fallback.
   if (mappedChannelIds.length === 0) {
-    logger.info('🧭 checkRepoChannelMatch → correct (no channel mapping for repo)', {
+    logger.info('🧭 checkRepoChannelMatch → no mapping for repo', {
       repo,
       currentChannel,
       currentChannelName: currentChannelInfo?.name,
     });
-    return { correct: true, suggestedChannels: [] };
+    return { correct: false, suggestedChannels: [], reason: 'no_mapping' };
   }
 
   // Current channel is in the mapped channels
@@ -258,7 +266,7 @@ export function checkRepoChannelMatch(
       currentChannelName: currentChannelInfo?.name,
       mappedChannels: mappedChannelIds.map(id => ({ id, name: channels.get(id)?.name })),
     });
-    return { correct: true, suggestedChannels: [] };
+    return { correct: true, suggestedChannels: [], reason: 'matched' };
   }
 
   // Wrong channel — suggest the correct ones, sorted by repo count ascending
@@ -275,7 +283,7 @@ export function checkRepoChannelMatch(
     suggestedChannels: suggestedChannels.map(ch => ({ id: ch.id, name: ch.name, repoCount: ch.repos.length })),
   });
 
-  return { correct: false, suggestedChannels };
+  return { correct: false, suggestedChannels, reason: 'mismatch' };
 }
 
 // --- Internal helpers ---
