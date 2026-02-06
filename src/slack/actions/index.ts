@@ -206,6 +206,11 @@ export class ActionHandlers {
       await this.channelRouteHandler.handleStop(body, respond);
     });
 
+    app.action('channel_route_stay', async ({ ack, body, respond }) => {
+      await ack();
+      await this.channelRouteHandler.handleStay(body, respond);
+    });
+
     // 모달 핸들러
     app.view('custom_input_submit', async ({ ack, body, view }) => {
       await ack();
