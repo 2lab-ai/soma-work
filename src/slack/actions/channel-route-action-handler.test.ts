@@ -42,6 +42,27 @@ describe('buildChannelRouteBlocks', () => {
     const stayButton = actionsBlock.elements.find((el: any) => el.action_id === 'channel_route_stay');
     expect(stayButton?.disabled).toBeFalsy();
   });
+
+  it('hides move button when allowMove is false', () => {
+    const { blocks } = buildChannelRouteBlocks({
+      prUrl: 'https://github.com/acme/repo/pull/1',
+      targetChannelName: 'current',
+      targetChannelId: 'C999',
+      originalChannel: 'C999',
+      originalTs: '111.222',
+      originalThreadTs: '333.444',
+      userMessage: 'Review this PR',
+      userId: 'U123',
+      allowStay: true,
+      allowMove: false,
+    });
+
+    const actionsBlock = blocks.find(block => block.type === 'actions');
+    const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
+    expect(actionIds).not.toContain('channel_route_move');
+    expect(actionIds).toContain('channel_route_stop');
+    expect(actionIds).toContain('channel_route_stay');
+  });
 });
 
 describe('ChannelRouteActionHandler owner checks', () => {

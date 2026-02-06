@@ -11,7 +11,7 @@ import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession } from '../../types';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { AssistantStatusManager } from '../assistant-status-manager';
-import { checkRepoChannelMatch, getChannel } from '../../channel-registry';
+import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { userSettingsStore } from '../../user-settings-store';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
@@ -34,6 +34,8 @@ interface SessionInitializerDeps {
   assistantStatusManager?: AssistantStatusManager;
   actionPanelManager?: ActionPanelManager;
 }
+
+type ChannelRouteBlockParams = Parameters<typeof buildChannelRouteBlocks>[0];
 
 /**
  * 세션 초기화 및 동시성 제어
@@ -216,6 +218,7 @@ export class SessionInitializer {
 
       this.logger.info('🔀 Channel routing result', {
         correct: routeCheck.correct,
+        reason: routeCheck.reason,
         suggestedCount: routeCheck.suggestedChannels.length,
         suggestedChannels: routeCheck.suggestedChannels.map(ch => ({ id: ch.id, name: ch.name })),
       });
@@ -242,28 +245,7 @@ export class SessionInitializer {
           advisoryEphemeral: false,
           allowStay: true,
         };
-        const { text: advText, blocks } = buildChannelRouteBlocks(routeBlockParams);
-
-        this.logger.info('🔀 Posting channel route advisory (public)', {
-          channel,
-          threadTs,
-          targetChannel: target.id,
-          targetChannelName: target.name,
-        });
-
-        this.logger.debug('🔀 Route blocks built', {
-          hasBlocks: blocks.length,
-          routeBlockParams: { ...routeBlockParams, userMessage: routeBlockParams.userMessage.substring(0, 50) },
-        });
-
-        const advisoryResult = await this.deps.slackApi.postMessage(channel, advText, { blocks });
-        if (advisoryResult?.ts) {
-          const updatedBlocks = buildChannelRouteBlocks({
-            ...routeBlockParams,
-            advisoryTs: advisoryResult.ts,
-          }).blocks;
-          await this.deps.slackApi.updateMessage(channel, advisoryResult.ts, advText, updatedBlocks);
-        }
+        await this.postRouteAdvisory(channel, threadTs, routeBlockParams);
 
         this.logger.info('🔀 Session halted — waiting for user to choose Move or Stop', {
           sessionKey,
@@ -272,6 +254,56 @@ export class SessionInitializer {
         });
 
         // Don't register AbortController — no stream will run for halted sessions
+        return {
+          session, sessionKey, isNewSession, userName, workingDirectory,
+          abortController: new AbortController(), halted: true,
+        };
+      } else if (!routeCheck.correct && routeCheck.reason === 'no_mapping') {
+        const defaultRouteChannel = this.resolveDefaultRouteChannel(channel);
+        const currentChannelInfo = getChannel(channel);
+        const targetChannelId = defaultRouteChannel?.id || channel;
+        const targetChannelName = defaultRouteChannel?.name || currentChannelInfo?.name || '현재 채널';
+        const hasDefaultRoute = !!defaultRouteChannel;
+
+        this.logger.info('🔀 Repo channel mapping missing, showing fallback advisory', {
+          prUrl,
+          currentChannel: channel,
+          currentChannelName: currentChannelInfo?.name,
+          hasDefaultRoute,
+          defaultRouteChannelId: defaultRouteChannel?.id,
+          defaultRouteChannelName: defaultRouteChannel?.name,
+        });
+
+        const routeBlockParams: ChannelRouteBlockParams = {
+          prUrl,
+          targetChannelName,
+          targetChannelId,
+          originalChannel: channel,
+          originalTs: threadTs,
+          originalThreadTs: threadTs,
+          userMessage: dispatchText || text || '',
+          userId: user,
+          advisoryEphemeral: false,
+          allowStay: true,
+          allowMove: hasDefaultRoute,
+          moveButtonText: hasDefaultRoute ? '기본 채널로 이동' : undefined,
+          messageText: hasDefaultRoute
+            ? `이 repo와 매핑된 채널을 찾지 못했습니다. 기본 채널 #${targetChannelName}로 이동하거나 현재 채널에서 진행할 수 있습니다.`
+            : '이 repo와 매핑된 채널을 찾지 못했습니다. 현재 채널에서 진행할까요?',
+          sectionText: hasDefaultRoute
+            ? `⚠️ 이 repo와 매핑된 채널을 찾지 못했습니다.\n기본 채널 <#${targetChannelId}>로 이동하거나 현재 채널에서 진행할 수 있습니다.`
+            : '⚠️ 이 repo와 매핑된 채널을 찾지 못했습니다.\n현재 채널에서 진행할까요?',
+        };
+
+        await this.postRouteAdvisory(channel, threadTs, routeBlockParams);
+
+        this.logger.info('🔀 Session halted — waiting for fallback route choice', {
+          sessionKey,
+          channel,
+          threadTs,
+          hasDefaultRoute,
+        });
+
         return {
           session, sessionKey, isNewSession, userName, workingDirectory,
           abortController: new AbortController(), halted: true,
@@ -549,6 +581,61 @@ export class SessionInitializer {
       // Clean up the in-flight tracking and resolve waiting promises
       dispatchInFlight.delete(sessionKey);
       resolveTracking!();
+    }
+  }
+
+  private resolveDefaultRouteChannel(currentChannel: string): { id: string; name: string } | undefined {
+    const configured = process.env.DEFAULT_UPDATE_CHANNEL?.trim();
+    if (!configured) {
+      return undefined;
+    }
+
+    const channels = getAllChannels();
+    const isChannelId = /^[CG][A-Z0-9]+$/i.test(configured);
+    const normalizedName = configured.replace(/^#/, '').toLowerCase();
+    const resolved = isChannelId
+      ? channels.find(ch => ch.id === configured)
+      : channels.find(ch => ch.name.toLowerCase() === normalizedName);
+
+    if (!resolved || resolved.id === currentChannel) {
+      return undefined;
+    }
+
+    return {
+      id: resolved.id,
+      name: resolved.name || normalizedName,
+    };
+  }
+
+  private async postRouteAdvisory(
+    channel: string,
+    threadTs: string,
+    routeBlockParams: ChannelRouteBlockParams
+  ): Promise<void> {
+    const { text: advisoryText, blocks } = buildChannelRouteBlocks(routeBlockParams);
+    this.logger.info('🔀 Posting channel route advisory (public)', {
+      channel,
+      threadTs,
+      targetChannel: routeBlockParams.targetChannelId,
+      targetChannelName: routeBlockParams.targetChannelName,
+      allowMove: routeBlockParams.allowMove !== false,
+    });
+
+    this.logger.debug('🔀 Route blocks built', {
+      hasBlocks: blocks.length,
+      routeBlockParams: {
+        ...routeBlockParams,
+        userMessage: routeBlockParams.userMessage.substring(0, 50),
+      },
+    });
+
+    const advisoryResult = await this.deps.slackApi.postMessage(channel, advisoryText, { blocks });
+    if (advisoryResult?.ts) {
+      const updatedBlocks = buildChannelRouteBlocks({
+        ...routeBlockParams,
+        advisoryTs: advisoryResult.ts,
+      }).blocks;
+      await this.deps.slackApi.updateMessage(channel, advisoryResult.ts, advisoryText, updatedBlocks);
     }
   }
 
