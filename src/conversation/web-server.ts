@@ -1,4 +1,10 @@
-import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import Fastify, {
+  FastifyInstance,
+  FastifyRequest,
+  FastifyReply,
+  InjectOptions,
+  LightMyRequestResponse,
+} from 'fastify';
 import { Logger } from '../logger';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
@@ -55,6 +61,13 @@ const DEFAULT_PORT_MAIN = 3000;
 const DEFAULT_PORT_DEV = 33000;
 const MAX_PORT_RETRIES = 10;
 
+type InjectRequest = InjectOptions | string;
+type InjectResponse = LightMyRequestResponse;
+
+interface StartWebServerOptions {
+  listen?: boolean;
+}
+
 /**
  * Get the viewer port from config (default: 3000 for main, 33000 for dev)
  */
@@ -79,7 +92,7 @@ export function getConversationUrl(conversationId: string): string {
 /**
  * Start the conversation viewer web server
  */
-export async function startWebServer(): Promise<void> {
+export async function startWebServer(options: StartWebServerOptions = {}): Promise<void> {
   if (server) {
     logger.warn('Web server already running');
     return;
@@ -217,6 +230,12 @@ export async function startWebServer(): Promise<void> {
     reply.redirect('/conversations');
   });
 
+  if (options.listen === false) {
+    await server.ready();
+    logger.info('Conversation viewer initialized without network listener');
+    return;
+  }
+
   // Start listening — bind to localhost by default for security
   // Retry with port+1 on EADDRINUSE
   const basePort = getPort();
@@ -252,8 +271,20 @@ export async function stopWebServer(): Promise<void> {
   if (server) {
     await server.close();
     server = null;
+    activePort = null;
     logger.info('Conversation web server stopped');
   }
+}
+
+/**
+ * Inject an in-process HTTP request (for tests and internal callers)
+ */
+export async function injectWebServer(request: InjectRequest): Promise<InjectResponse> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+
+  return server.inject(request);
 }
 
 /**

@@ -28,14 +28,18 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).toEqual(expect.arrayContaining(['panel_pr_fix', 'panel_pr_approve']));
   });
 
-  it('respects disabled flag', () => {
+  it('shows disabled state in header without using unsupported button properties', () => {
     const disabledPayload = ActionPanelBuilder.build({ sessionKey: 'session-3', workflow: 'default' });
     const disabledButton = disabledPayload.blocks.find((block) => block.type === 'actions').elements[0];
-    expect(disabledButton.disabled).toBe(true);
+    expect(disabledButton.disabled).toBeUndefined();
+    const disabledHeader = disabledPayload.blocks.find((block) => block.type === 'context');
+    expect(disabledHeader.elements[1].text).toContain('비활성');
 
     const enabledPayload = ActionPanelBuilder.build({ sessionKey: 'session-4', workflow: 'default', disabled: false });
     const enabledButton = enabledPayload.blocks.find((block) => block.type === 'actions').elements[0];
     expect(enabledButton.disabled).toBeUndefined();
+    const enabledHeader = enabledPayload.blocks.find((block) => block.type === 'context');
+    expect(enabledHeader.elements[1].text).toContain('사용 가능');
   });
 
   it('appends choice blocks', () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { ChannelRouteActionHandler, buildChannelRouteBlocks } from './channel-route-action-handler';
 
 describe('buildChannelRouteBlocks', () => {
-  it('includes disabled stay-in-channel button by default', () => {
+  it('hides stay-in-channel button by default', () => {
     const { blocks } = buildChannelRouteBlocks({
       prUrl: 'https://github.com/acme/repo/pull/1',
       targetChannelName: 'dev',
@@ -19,10 +19,7 @@ describe('buildChannelRouteBlocks', () => {
     const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
     expect(actionIds).toContain('channel_route_move');
     expect(actionIds).toContain('channel_route_stop');
-    expect(actionIds).toContain('channel_route_stay');
-
-    const stayButton = actionsBlock.elements.find((el: any) => el.action_id === 'channel_route_stay');
-    expect(stayButton?.disabled).toBe(true);
+    expect(actionIds).not.toContain('channel_route_stay');
   });
 
   it('enables stay-in-channel button when allowStay is true', () => {
@@ -39,8 +36,8 @@ describe('buildChannelRouteBlocks', () => {
     });
 
     const actionsBlock = blocks.find(block => block.type === 'actions');
-    const stayButton = actionsBlock.elements.find((el: any) => el.action_id === 'channel_route_stay');
-    expect(stayButton?.disabled).toBeFalsy();
+    const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
+    expect(actionIds).toContain('channel_route_stay');
   });
 
   it('hides move button when allowMove is false', () => {

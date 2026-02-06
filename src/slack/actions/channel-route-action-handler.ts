@@ -392,7 +392,7 @@ export function buildChannelRouteBlocks(params: {
 
   const text = params.messageText || `이 repo는 #${params.targetChannelName} 채널의 작업입니다. 이동하시겠습니까?`;
 
-  const stayDisabled = params.allowStay !== true;
+  const showStay = params.allowStay === true;
   const showMove = params.allowMove !== false;
   const moveButtonText = params.moveButtonText || '이동';
   const sectionText = params.sectionText || `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`;
@@ -407,21 +407,20 @@ export function buildChannelRouteBlocks(params: {
       action_id: 'channel_route_move',
     });
   }
-  actionElements.push(
-    {
-      type: 'button',
-      text: { type: 'plain_text', text: '작업 중지', emoji: true },
-      value: valueStr,
-      action_id: 'channel_route_stop',
-    },
-    {
+  actionElements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: '작업 중지', emoji: true },
+    value: valueStr,
+    action_id: 'channel_route_stop',
+  });
+  if (showStay) {
+    actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '현재 채널에서 진행', emoji: true },
       value: valueStr,
       action_id: 'channel_route_stay',
-      disabled: stayDisabled,
-    }
-  );
+    });
+  }
 
   const blocks = [
     {

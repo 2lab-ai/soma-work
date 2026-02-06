@@ -65,7 +65,7 @@ export class ActionPanelBuilder {
     const disabled = params.disabled ?? true;
     const workflow = params.workflow || 'default';
     const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
-    const elements = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey, disabled));
+    const elements = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
     const actionBlocks = this.chunk(elements, 5).map((row) => ({ type: 'actions', elements: row }));
 
     const headerElements = [
@@ -91,7 +91,7 @@ export class ActionPanelBuilder {
     };
   }
 
-  private static buildButton(def: PanelActionDef, sessionKey: string, disabled: boolean): any {
+  private static buildButton(def: PanelActionDef, sessionKey: string): any {
     const button: any = {
       type: 'button',
       text: { type: 'plain_text', text: def.label, emoji: true },
@@ -101,10 +101,6 @@ export class ActionPanelBuilder {
 
     if (def.style) {
       button.style = def.style;
-    }
-
-    if (disabled) {
-      button.disabled = true;
     }
 
     return button;

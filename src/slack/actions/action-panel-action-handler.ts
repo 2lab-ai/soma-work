@@ -101,6 +101,15 @@ export class ActionPanelActionHandler {
         return;
       }
 
+      if (session.activityState === 'working' || session.activityState === 'waiting' || session.actionPanel?.waitingForChoice) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⏸️ 현재 세션이 처리 중이거나 입력 대기 상태입니다. 잠시 후 다시 시도해 주세요.',
+          replace_original: false,
+        });
+        return;
+      }
+
       const config = ACTION_CONFIG[value.action];
       if (!config) {
         await respond({
