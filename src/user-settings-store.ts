@@ -88,6 +88,24 @@ export class UserSettingsStore {
       if (fs.existsSync(this.settingsFile)) {
         const data = fs.readFileSync(this.settingsFile, 'utf8');
         this.settings = JSON.parse(data);
+        let didUpdate = false;
+        const validModels = new Set(AVAILABLE_MODELS as readonly string[]);
+        for (const userSettings of Object.values(this.settings)) {
+          if (
+            !userSettings.defaultModel ||
+            !validModels.has(userSettings.defaultModel) ||
+            userSettings.defaultModel === 'claude-opus-4-5-20251101'
+          ) {
+            userSettings.defaultModel = DEFAULT_MODEL;
+            didUpdate = true;
+          }
+        }
+        if (didUpdate) {
+          this.saveSettings();
+          logger.info('Updated user settings model defaults', {
+            userCount: Object.keys(this.settings).length,
+          });
+        }
         logger.info('Loaded user settings', {
           userCount: Object.keys(this.settings).length
         });

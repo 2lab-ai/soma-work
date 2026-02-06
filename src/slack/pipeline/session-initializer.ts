@@ -239,11 +239,12 @@ export class SessionInitializer {
           originalThreadTs: threadTs,
           userMessage: dispatchText || text || '',
           userId: user,
-          advisoryEphemeral: true,
+          advisoryEphemeral: false,
+          allowStay: true,
         };
         const { text: advText, blocks } = buildChannelRouteBlocks(routeBlockParams);
 
-        this.logger.info('🔀 Posting channel route advisory (ephemeral)', {
+        this.logger.info('🔀 Posting channel route advisory (public)', {
           channel,
           threadTs,
           targetChannel: target.id,
@@ -255,7 +256,14 @@ export class SessionInitializer {
           routeBlockParams: { ...routeBlockParams, userMessage: routeBlockParams.userMessage.substring(0, 50) },
         });
 
-        await this.deps.slackApi.postEphemeral(channel, user, advText, threadTs, blocks);
+        const advisoryResult = await this.deps.slackApi.postMessage(channel, advText, { blocks });
+        if (advisoryResult?.ts) {
+          const updatedBlocks = buildChannelRouteBlocks({
+            ...routeBlockParams,
+            advisoryTs: advisoryResult.ts,
+          }).blocks;
+          await this.deps.slackApi.updateMessage(channel, advisoryResult.ts, advText, updatedBlocks);
+        }
 
         this.logger.info('🔀 Session halted — waiting for user to choose Move or Stop', {
           sessionKey,
