@@ -3,16 +3,19 @@
 ## 워크플로우 분류 규칙
 
 유저의 첫 입력을 다음과 같은 워크플로우 중 하나로 분류해줘.
+패턴이 여러 개 겹치면 **표의 위에서 아래 순서**로 우선 매칭한다.
 
 | 패턴 | 워크플로우 |
 |------|------------|
-| Jira 이슈 링크 (예: atlassian.net/jira/software/projects/.../boards/...?selectedIssue=XXX-123, atlassian.net/browse/XXX-123) | `jira-brainstorming` |
-| Jira 보드 링크 (예: atlassian.net/jira/software/projects/.../boards/...) | `jira-executive-summary` |
 | "plan" + Jira 이슈 링크 | `jira-planning` |
 | "fix" 또는 "work" + Jira 이슈 링크 | `jira-create-pr` |
-| Confluence 링크 + GitHub PR 링크 (예: atlassian.net/wiki/... + github.com/.../pull/123) | `pr-docs-confluence` |
-| GitHub PR 링크 (예: github.com/.../pull/123) | `pr-review` |
 | "fix" + GitHub PR 링크 | `pr-fix-and-update` |
+| Confluence 링크 + GitHub PR 링크 (예: atlassian.net/wiki/... + github.com/.../pull/123) | `pr-docs-confluence` |
+| Jira 이슈 링크 (예: atlassian.net/jira/software/projects/.../boards/...?selectedIssue=XXX-123, atlassian.net/browse/XXX-123) | `jira-brainstorming` |
+| GitHub Issue 링크 (예: github.com/.../issues/123) | `jira-brainstorming` |
+| Linear Issue 링크 (예: linear.app/.../issue/ABC-123, linear.app/.../issues/ABC-123) | `jira-brainstorming` |
+| Jira 보드 링크 (예: atlassian.net/jira/software/projects/.../boards/...) | `jira-executive-summary` |
+| GitHub PR 링크 (예: github.com/.../pull/123) | `pr-review` |
 | 그 외 모든 경우 | `default` |
 
 ## 세션 타이틀 생성 규칙
@@ -45,6 +48,12 @@
 
 - 입력: "https://github.com/org/repo/pull/456"
   출력: {"workflow": "pr-review", "title": "PR #456 리뷰", "links": {"pr": "https://github.com/org/repo/pull/456"}}
+
+- 입력: "https://github.com/org/repo/issues/456"
+  출력: {"workflow": "jira-brainstorming", "title": "Issue #456 브레인스토밍", "links": {"issue": "https://github.com/org/repo/issues/456"}}
+
+- 입력: "https://linear.app/team/issue/ABC-123/fix-login-timeout"
+  출력: {"workflow": "jira-brainstorming", "title": "ABC-123 브레인스토밍", "links": {"issue": "https://linear.app/team/issue/ABC-123/fix-login-timeout"}}
 
 - 입력: "fix https://xxx.atlassian.net/browse/ABC-789"
   출력: {"workflow": "jira-create-pr", "title": "ABC-789 구현", "links": {"issue": "https://xxx.atlassian.net/browse/ABC-789"}}
