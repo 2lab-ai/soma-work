@@ -245,6 +245,22 @@ export class StreamExecutor {
             hasDoc: !!links.doc,
           });
         },
+        onChannelMessageDetected: async (messageText) => {
+          try {
+            await this.deps.slackApi.postMessage(channel, messageText, {});
+            this.logger.info('Channel root message posted from model directive', {
+              sessionKey,
+              channel,
+              textLength: messageText.length,
+            });
+          } catch (error) {
+            this.logger.error('Failed to post channel root message from model directive', {
+              sessionKey,
+              channel,
+              error: (error as Error).message,
+            });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 

@@ -55,6 +55,14 @@ describe('PromptBuilder', () => {
       expect(typeof prompt).toBe('string');
     });
 
+    it('should load deploy workflow prompt', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy');
+
+      expect(prompt).toBeDefined();
+      expect(typeof prompt).toBe('string');
+      expect(prompt!.toLowerCase()).toContain('deploy workflow');
+    });
+
     it('should fallback to default for unknown workflow', () => {
       const prompt = builder.loadWorkflowPrompt('nonexistent-workflow' as any);
 

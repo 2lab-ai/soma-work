@@ -260,6 +260,73 @@ describe('StreamProcessor', () => {
       );
     });
 
+    it('should detect channel_message directive and forward callback', async () => {
+      const onChannelMessageDetected = vi.fn();
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `Deploy complete.
+\`\`\`json
+{"type":"channel_message","text":"## Release Notes\\n- Deployed"}
+\`\`\``,
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ onChannelMessageDetected });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledWith(
+        '## Release Notes\n- Deployed',
+        mockContext
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'Deploy complete.',
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
+    it('should not send empty thread message for directive-only channel_message output', async () => {
+      const onChannelMessageDetected = vi.fn();
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `\`\`\`json
+{"type":"channel_message","text":"Root post only"}
+\`\`\``,
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ onChannelMessageDetected });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledWith('Root post only', mockContext);
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
     it('should not duplicate final result if already in currentMessages', async () => {
       const messages = [
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Same message' }] } },

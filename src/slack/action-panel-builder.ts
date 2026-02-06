@@ -56,6 +56,7 @@ const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
   'pr-review': ['pr_review', 'pr_fix', 'pr_approve', 'pr_docs'],
   'pr-fix-and-update': ['pr_fix', 'pr_review', 'pr_docs'],
   'pr-docs-confluence': ['pr_docs', 'pr_review'],
+  deploy: ['pr_create', 'pr_review', 'pr_docs'],
   default: DEFAULT_ACTIONS,
 };
 
