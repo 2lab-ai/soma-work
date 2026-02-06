@@ -230,45 +230,32 @@ export class SessionInitializer {
           suggestedChannelName: target.name,
         });
 
-        // Post advisory first to get its ts for deletion on button click
-        this.logger.info('🔀 Posting channel route advisory', {
+        const routeBlockParams = {
+          prUrl,
+          targetChannelName: target.name,
+          targetChannelId: target.id,
+          originalChannel: channel,
+          originalTs: threadTs,
+          originalThreadTs: threadTs,
+          userMessage: dispatchText || text || '',
+          userId: user,
+          advisoryEphemeral: true,
+        };
+        const { text: advText, blocks } = buildChannelRouteBlocks(routeBlockParams);
+
+        this.logger.info('🔀 Posting channel route advisory (ephemeral)', {
           channel,
           threadTs,
           targetChannel: target.id,
           targetChannelName: target.name,
         });
 
-        const advisoryResult = await this.deps.slackApi.postMessage(channel,
-          `🔀 이 repo는 #${target.name} 채널의 작업입니다.`,
-          { threadTs }
-        );
-        const advisoryTs = advisoryResult?.ts || threadTs;
-
-        this.logger.debug('🔀 Advisory message posted', { advisoryTs, threadTs });
-
-        const routeBlockParams = {
-          prUrl,
-          targetChannelName: target.name,
-          targetChannelId: target.id,
-          originalChannel: channel,
-          originalTs: advisoryTs,
-          originalThreadTs: threadTs,
-          userMessage: dispatchText || text || '',
-          userId: user,
-        };
-        const { text: advText, blocks } = buildChannelRouteBlocks(routeBlockParams);
-
         this.logger.debug('🔀 Route blocks built', {
           hasBlocks: blocks.length,
           routeBlockParams: { ...routeBlockParams, userMessage: routeBlockParams.userMessage.substring(0, 50) },
         });
 
-        // Update advisory with buttons
-        if (advisoryTs && advisoryTs !== threadTs) {
-          await this.deps.slackApi.updateMessage(channel, advisoryTs, advText, blocks);
-        } else {
-          await this.deps.slackApi.postMessage(channel, advText, { threadTs, blocks });
-        }
+        await this.deps.slackApi.postEphemeral(channel, user, advText, threadTs, blocks);
 
         this.logger.info('🔀 Session halted — waiting for user to choose Move or Stop', {
           sessionKey,

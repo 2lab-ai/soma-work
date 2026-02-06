@@ -113,4 +113,16 @@ describe('UserSettingsStore', () => {
       expect(result?.userId).toBe(userId);
     });
   });
+
+  describe('model aliases', () => {
+    it('should resolve opus alias to latest opus model', () => {
+      const result = store.resolveModelInput('opus');
+      expect(result).toBe('claude-opus-4-6');
+    });
+
+    it('should display opus 4.6 name', () => {
+      const display = store.getModelDisplayName('claude-opus-4-6' as any);
+      expect(display).toBe('Opus 4.6');
+    });
+  });
 });

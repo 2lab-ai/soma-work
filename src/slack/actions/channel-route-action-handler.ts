@@ -31,6 +31,7 @@ interface RouteActionValue {
   userMessage: string;
   userId: string;
   prUrl?: string;
+  advisoryEphemeral?: boolean;
 }
 
 export class ChannelRouteActionHandler {
@@ -47,6 +48,7 @@ export class ChannelRouteActionHandler {
       const userId = body.user?.id;
       const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
       const sessionThreadTs = originalThreadTs || value.originalTs;
+      const isEphemeralAdvisory = value.advisoryEphemeral === true;
 
       logger.info('🔀 handleMove START', {
         userId,
@@ -65,12 +67,14 @@ export class ChannelRouteActionHandler {
         return;
       }
 
-      // Delete the advisory message
-      try {
-        logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
-        await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
-      } catch (e) {
-        logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
+      if (!isEphemeralAdvisory) {
+        // Delete the advisory message
+        try {
+          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
+          await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
+        } catch (e) {
+          logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
+        }
       }
 
       if (!originalThreadTs) {
@@ -89,101 +93,72 @@ export class ChannelRouteActionHandler {
         this.deps.claudeHandler.terminateSession(origKey);
       }
 
-      // Create new thread in correct channel
-      const threadRootText = value.prUrl
-        ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}`
-        : `<@${userId}> 님의 작업 요청`;
-
-      const ownerName = await this.deps.slackApi.getUserName(userId);
-      const title = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
-      const links = this.buildLinks(value.prUrl);
-      const headerPayload = ThreadHeaderBuilder.build({
-        title,
-        workflow: 'default',
-        ownerName,
-        ownerId: userId,
-        activityState: 'idle',
-        lastActivity: new Date(),
-        links,
-      });
-
-      logger.info('🔀 Creating thread in target channel', {
-        targetChannel: value.targetChannel,
-        targetChannelName: value.targetChannelName,
-        threadRootText: threadRootText.substring(0, 80),
-      });
-
-      const postResult = await this.deps.slackApi.postMessage(
-        value.targetChannel,
-        headerPayload.text,
-        {
-          attachments: headerPayload.attachments,
-          blocks: headerPayload.blocks,
-        }
-      );
-
-      if (!postResult?.ts) {
-        logger.error('🔀 Failed to create thread in target channel - no ts returned', {
-          targetChannel: value.targetChannel,
-          postResult,
-        });
-        return;
-      }
-
-      logger.info('🔀 Thread root created, constructing synthetic event', {
-        targetChannel: value.targetChannel,
-        threadRootTs: postResult.ts,
-      });
-
-      // Simulate the user's original message in the new thread
-      const syntheticEvent = {
-        text: value.userMessage,
-        user: userId,
-        channel: value.targetChannel,
-        ts: `synthetic_${Date.now()}`,
-        thread_ts: postResult.ts,
-        routeContext: {
-          skipAutoBotThread: true,
-          sourceChannel: value.originalChannel,
-          sourceThreadTs: originalThreadTs,
-        },
-      };
-
-      const syntheticSay = async (msg: any) => {
-        return this.deps.slackApi.postMessage(
-          value.targetChannel,
-          msg.text,
-          { threadTs: postResult.ts, blocks: msg.blocks }
-        );
-      };
-
-      // Pre-mark bot-initiated thread
-      this.deps.claudeHandler.setBotThread(value.targetChannel, postResult.ts, postResult.ts);
-
-      logger.info('🔀 Processing synthetic message in target channel', {
-        channel: value.targetChannel,
-        threadTs: postResult.ts,
-        syntheticTs: syntheticEvent.ts,
-        skipAutoBotThread: true,
-      });
-
-      // Process the message in the new channel/thread
-      await this.deps.messageHandler(syntheticEvent, syntheticSay);
-
-      // Re-mark to ensure bot-initiated mode persists
-      this.deps.claudeHandler.setBotThread(value.targetChannel, postResult.ts, postResult.ts);
-
-      logger.info('🔀 handleMove COMPLETE — routed to correct channel', {
-        from: value.originalChannel,
-        to: value.targetChannel,
-        targetChannelName: value.targetChannelName,
-        user: userId,
-        threadRootTs: postResult.ts,
-      });
+      await this.routeToChannel(value, userId, value.targetChannel, value.targetChannelName, originalThreadTs);
     } catch (error) {
       logger.error('🔀 handleMove FAILED', error);
       try {
         await respond({ text: '⚠️ 채널 이동에 실패했습니다.', replace_original: true });
+      } catch {}
+    }
+  }
+
+  /**
+   * Handle "Continue in current channel" button click
+   */
+  async handleStay(body: any, respond: any): Promise<void> {
+    try {
+      const action = body.actions?.[0];
+      const rawValue = action?.value || '{}';
+      const value: RouteActionValue = JSON.parse(rawValue);
+      const userId = body.user?.id;
+      const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
+      const sessionThreadTs = originalThreadTs || value.originalTs;
+      const isEphemeralAdvisory = value.advisoryEphemeral === true;
+
+      logger.info('🔀 handleStay START', {
+        userId,
+        originalChannel: value.originalChannel,
+        originalTs: value.originalTs,
+        originalThreadTs,
+        sessionThreadTs,
+        prUrl: value.prUrl,
+        userMessage: value.userMessage?.substring(0, 50),
+      });
+
+      if (!value.originalChannel || !userId) {
+        logger.warn('🔀 handleStay: Invalid action value', { value, userId });
+        return;
+      }
+
+      if (!isEphemeralAdvisory) {
+        try {
+          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
+          await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
+        } catch (e) {
+          logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
+        }
+      }
+
+      if (!originalThreadTs) {
+        logger.warn('🔀 Missing original thread ts', { value });
+      } else {
+        logger.debug('🔀 Deleting bot messages in original thread', { channel: value.originalChannel, threadTs: originalThreadTs });
+        await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
+          excludeTs: value.originalTs ? [value.originalTs] : [],
+        });
+      }
+
+      if (sessionThreadTs) {
+        const origKey = this.deps.claudeHandler.getSessionKey(value.originalChannel, sessionThreadTs);
+        logger.info('🔀 Terminating original session', { origKey, channel: value.originalChannel, threadTs: sessionThreadTs });
+        this.deps.claudeHandler.terminateSession(origKey);
+      }
+
+      await this.routeToChannel(value, userId, value.originalChannel, 'current', originalThreadTs);
+    } catch (error) {
+      logger.error('🔀 handleStay FAILED', error);
+      try {
+        await respond({ text: '⚠️ 현재 채널에서 진행하지 못했습니다.', replace_original: true });
       } catch {}
     }
   }
@@ -239,6 +214,101 @@ export class ChannelRouteActionHandler {
       },
     };
   }
+
+  private async routeToChannel(
+    value: RouteActionValue,
+    userId: string,
+    targetChannel: string,
+    targetChannelName: string,
+    originalThreadTs?: string
+  ): Promise<void> {
+    const threadRootText = value.prUrl
+      ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}`
+      : `<@${userId}> 님의 작업 요청`;
+
+    const ownerName = await this.deps.slackApi.getUserName(userId);
+    const title = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
+    const links = this.buildLinks(value.prUrl);
+    const headerPayload = ThreadHeaderBuilder.build({
+      title,
+      workflow: 'default',
+      ownerName,
+      ownerId: userId,
+      activityState: 'idle',
+      lastActivity: new Date(),
+      links,
+    });
+
+    logger.info('🔀 Creating thread in target channel', {
+      targetChannel,
+      targetChannelName,
+      threadRootText: threadRootText.substring(0, 80),
+    });
+
+    const postResult = await this.deps.slackApi.postMessage(
+      targetChannel,
+      headerPayload.text,
+      {
+        attachments: headerPayload.attachments,
+        blocks: headerPayload.blocks,
+      }
+    );
+
+    if (!postResult?.ts) {
+      logger.error('🔀 Failed to create thread in target channel - no ts returned', {
+        targetChannel,
+        postResult,
+      });
+      return;
+    }
+
+    logger.info('🔀 Thread root created, constructing synthetic event', {
+      targetChannel,
+      threadRootTs: postResult.ts,
+    });
+
+    const syntheticEvent = {
+      text: value.userMessage,
+      user: userId,
+      channel: targetChannel,
+      ts: `synthetic_${Date.now()}`,
+      thread_ts: postResult.ts,
+      routeContext: {
+        skipAutoBotThread: true,
+        sourceChannel: value.originalChannel,
+        sourceThreadTs: originalThreadTs,
+      },
+    };
+
+    const syntheticSay = async (msg: any) => {
+      return this.deps.slackApi.postMessage(
+        targetChannel,
+        msg.text,
+        { threadTs: postResult.ts, blocks: msg.blocks }
+      );
+    };
+
+    this.deps.claudeHandler.setBotThread(targetChannel, postResult.ts, postResult.ts);
+
+    logger.info('🔀 Processing synthetic message in target channel', {
+      channel: targetChannel,
+      threadTs: postResult.ts,
+      syntheticTs: syntheticEvent.ts,
+      skipAutoBotThread: true,
+    });
+
+    await this.deps.messageHandler(syntheticEvent, syntheticSay);
+
+    this.deps.claudeHandler.setBotThread(targetChannel, postResult.ts, postResult.ts);
+
+    logger.info('🔀 routeToChannel COMPLETE', {
+      from: value.originalChannel,
+      to: targetChannel,
+      targetChannelName,
+      user: userId,
+      threadRootTs: postResult.ts,
+    });
+  }
 }
 
 /**
@@ -254,6 +324,7 @@ export function buildChannelRouteBlocks(params: {
   originalThreadTs: string;
   userMessage: string;
   userId: string;
+  advisoryEphemeral?: boolean;
 }): { text: string; blocks: any[] } {
   logger.info('🔀 buildChannelRouteBlocks', {
     prUrl: params.prUrl,
@@ -275,6 +346,7 @@ export function buildChannelRouteBlocks(params: {
     userMessage: params.userMessage,
     userId: params.userId,
     prUrl: params.prUrl,
+    advisoryEphemeral: params.advisoryEphemeral,
   };
   const valueStr = JSON.stringify(value);
 
@@ -303,6 +375,13 @@ export function buildChannelRouteBlocks(params: {
           text: { type: 'plain_text', text: '작업 중지', emoji: true },
           value: valueStr,
           action_id: 'channel_route_stop',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '현재 채널에서 진행', emoji: true },
+          value: valueStr,
+          action_id: 'channel_route_stay',
+          disabled: true,
         },
       ],
     },
