@@ -23,6 +23,7 @@
 | Jira + "구현"/"fix"/"work" | `jira-create-pr` |
 | GitHub PR 링크 | `pr-review` |
 | PR + "수정"/"fix" | `pr-fix-and-update` |
+| `repo source -> target` 배포 요청 | `deploy` |
 
 ## 코드 리뷰 기본 지침
 

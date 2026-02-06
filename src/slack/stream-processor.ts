@@ -12,7 +12,7 @@ import {
   MessageFormatter,
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
-import { SessionLinkDirectiveHandler } from './directives';
+import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
 
 /**
  * Context for stream processing
@@ -125,6 +125,8 @@ export interface StreamCallbacks {
   onUsageUpdate?: (usage: UsageData) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
+  /** Called when model outputs channel_message JSON directive */
+  onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
   onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext) => Promise<void>;
 }
@@ -287,6 +289,18 @@ export class StreamProcessor {
       if (this.callbacks.onSessionLinksDetected) {
         await this.callbacks.onSessionLinksDetected(linkResult.links, context);
       }
+    }
+
+    const channelMessageResult = ChannelMessageDirectiveHandler.extract(textContent);
+    if (channelMessageResult.messageText) {
+      textContent = channelMessageResult.cleanedText;
+      if (this.callbacks.onChannelMessageDetected) {
+        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    if (!textContent.trim()) {
+      return;
     }
 
     currentMessages.push(textContent);
@@ -669,6 +683,18 @@ export class StreamProcessor {
       if (this.callbacks.onSessionLinksDetected) {
         await this.callbacks.onSessionLinksDetected(linkResult.links, context);
       }
+    }
+
+    const channelMessageResult = ChannelMessageDirectiveHandler.extract(processedResult);
+    if (channelMessageResult.messageText) {
+      processedResult = channelMessageResult.cleanedText;
+      if (this.callbacks.onChannelMessageDetected) {
+        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    if (!processedResult.trim()) {
+      return;
     }
 
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
