@@ -125,4 +125,30 @@ describe('UserSettingsStore', () => {
       expect(display).toBe('Opus 4.6');
     });
   });
+
+  describe('settings migrations', () => {
+    it('migrates legacy opus model defaults to the latest opus', () => {
+      const userId = 'U_LEGACY_OPUS';
+      const settingsPath = path.join(testDir, 'user-settings.json');
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          [userId]: {
+            userId,
+            defaultDirectory: '',
+            bypassPermission: false,
+            persona: 'default',
+            defaultModel: 'claude-opus-4-5-20251101',
+            lastUpdated: new Date().toISOString(),
+          },
+        }, null, 2),
+        'utf8'
+      );
+
+      const store2 = new UserSettingsStore(testDir);
+      const loaded = store2.getUserSettings(userId);
+
+      expect(loaded?.defaultModel).toBe(DEFAULT_MODEL);
+    });
+  });
 });

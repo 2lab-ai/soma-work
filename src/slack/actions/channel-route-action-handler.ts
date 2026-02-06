@@ -28,6 +28,7 @@ interface RouteActionValue {
   originalChannel: string;
   originalTs: string;
   originalThreadTs?: string;
+  advisoryTs?: string;
   userMessage: string;
   userId: string;
   prUrl?: string;
@@ -46,6 +47,9 @@ export class ChannelRouteActionHandler {
       const rawValue = action?.value || '{}';
       const value: RouteActionValue = JSON.parse(rawValue);
       const userId = body.user?.id;
+      if (!(await this.enforceOwner(value, body, respond))) {
+        return;
+      }
       const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
       const sessionThreadTs = originalThreadTs || value.originalTs;
       const isEphemeralAdvisory = value.advisoryEphemeral === true;
@@ -67,14 +71,17 @@ export class ChannelRouteActionHandler {
         return;
       }
 
-      if (!isEphemeralAdvisory) {
+      const advisoryTs = value.advisoryTs;
+      if (!isEphemeralAdvisory && advisoryTs) {
         // Delete the advisory message
         try {
-          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
-          await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
+          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: advisoryTs });
+          await this.deps.slackApi.deleteMessage(value.originalChannel, advisoryTs);
         } catch (e) {
           logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
         }
+      } else if (!isEphemeralAdvisory && !advisoryTs) {
+        logger.warn('🔀 Advisory message ts missing; skip delete', { value });
       }
 
       if (!originalThreadTs) {
@@ -111,6 +118,9 @@ export class ChannelRouteActionHandler {
       const rawValue = action?.value || '{}';
       const value: RouteActionValue = JSON.parse(rawValue);
       const userId = body.user?.id;
+      if (!(await this.enforceOwner(value, body, respond))) {
+        return;
+      }
       const originalThreadTs = value.originalThreadTs || body.message?.thread_ts;
       const sessionThreadTs = originalThreadTs || value.originalTs;
       const isEphemeralAdvisory = value.advisoryEphemeral === true;
@@ -130,13 +140,16 @@ export class ChannelRouteActionHandler {
         return;
       }
 
-      if (!isEphemeralAdvisory) {
+      const advisoryTs = value.advisoryTs;
+      if (!isEphemeralAdvisory && advisoryTs) {
         try {
-          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: value.originalTs });
-          await this.deps.slackApi.deleteMessage(value.originalChannel, value.originalTs);
+          logger.debug('🔀 Deleting advisory message', { channel: value.originalChannel, ts: advisoryTs });
+          await this.deps.slackApi.deleteMessage(value.originalChannel, advisoryTs);
         } catch (e) {
           logger.debug('🔀 Advisory message already gone', { error: (e as Error).message });
         }
+      } else if (!isEphemeralAdvisory && !advisoryTs) {
+        logger.warn('🔀 Advisory message ts missing; skip delete', { value });
       }
 
       if (!originalThreadTs) {
@@ -170,6 +183,9 @@ export class ChannelRouteActionHandler {
     try {
       const action = body.actions?.[0];
       const value: RouteActionValue = JSON.parse(action?.value || '{}');
+      if (!(await this.enforceOwner(value, body, respond))) {
+        return;
+      }
 
       logger.info('🔀 handleStop — user declined channel route', {
         channel: value.originalChannel,
@@ -200,6 +216,23 @@ export class ChannelRouteActionHandler {
     } catch (error) {
       logger.error('🔀 handleStop FAILED', error);
     }
+  }
+
+  private async enforceOwner(value: RouteActionValue, body: any, respond: any): Promise<boolean> {
+    const actorId = body.user?.id;
+    if (!actorId || !value.userId || actorId !== value.userId) {
+      try {
+        await respond({
+          text: '⚠️ 세션 오너만 이 버튼을 사용할 수 있습니다.',
+          response_type: 'ephemeral',
+          replace_original: false,
+        });
+      } catch (error) {
+        logger.warn('🔀 Failed to respond to non-owner action', { error });
+      }
+      return false;
+    }
+    return true;
   }
 
   private buildLinks(prUrl?: string): SessionLinks | undefined {
@@ -322,9 +355,11 @@ export function buildChannelRouteBlocks(params: {
   originalChannel: string;
   originalTs: string;
   originalThreadTs: string;
+  advisoryTs?: string;
   userMessage: string;
   userId: string;
   advisoryEphemeral?: boolean;
+  allowStay?: boolean;
 }): { text: string; blocks: any[] } {
   logger.info('🔀 buildChannelRouteBlocks', {
     prUrl: params.prUrl,
@@ -343,6 +378,7 @@ export function buildChannelRouteBlocks(params: {
     originalChannel: params.originalChannel,
     originalTs: params.originalTs,
     originalThreadTs: params.originalThreadTs,
+    advisoryTs: params.advisoryTs,
     userMessage: params.userMessage,
     userId: params.userId,
     prUrl: params.prUrl,
@@ -352,6 +388,8 @@ export function buildChannelRouteBlocks(params: {
 
   const text = `이 repo는 #${params.targetChannelName} 채널의 작업입니다. 이동하시겠습니까?`;
 
+  const stayDisabled = params.allowStay !== true;
+
   const blocks = [
     {
       type: 'section',
@@ -359,6 +397,15 @@ export function buildChannelRouteBlocks(params: {
         type: 'mrkdwn',
         text: `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`,
       },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `👤 <@${params.userId}> 님만 버튼을 사용할 수 있습니다.`,
+        },
+      ],
     },
     {
       type: 'actions',
@@ -381,7 +428,7 @@ export function buildChannelRouteBlocks(params: {
           text: { type: 'plain_text', text: '현재 채널에서 진행', emoji: true },
           value: valueStr,
           action_id: 'channel_route_stay',
-          disabled: true,
+          disabled: stayDisabled,
         },
       ],
     },

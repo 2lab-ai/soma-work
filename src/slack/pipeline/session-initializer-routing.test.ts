@@ -144,7 +144,7 @@ describe('SessionInitializer - channel routing advisory', () => {
     });
   });
 
-  it('posts routing advisory as an ephemeral message', async () => {
+  it('posts routing advisory as a public message', async () => {
     const event = {
       user: 'U123',
       channel: 'C123',
@@ -155,12 +155,13 @@ describe('SessionInitializer - channel routing advisory', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.postEphemeral).toHaveBeenCalledTimes(1);
-    const call = mockSlackApi.postEphemeral.mock.calls[0];
-    expect(call[0]).toBe('C123');
-    expect(call[1]).toBe('U123');
-    const blocks = call[4];
+    expect(mockSlackApi.postMessage).toHaveBeenCalled();
+    const callWithBlocks = mockSlackApi.postMessage.mock.calls.find((call: any[]) => Array.isArray(call[2]?.blocks));
+    expect(callWithBlocks).toBeDefined();
+    expect(callWithBlocks[0]).toBe('C123');
+    const blocks = callWithBlocks[2]?.blocks;
     const actionsBlock = blocks.find((block: any) => block.type === 'actions');
     expect(actionsBlock).toBeDefined();
+    expect(mockSlackApi.postEphemeral).not.toHaveBeenCalled();
   });
 });
