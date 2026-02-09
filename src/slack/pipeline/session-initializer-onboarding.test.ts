@@ -99,6 +99,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
+      deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
     };
 
     // Create mock MessageValidator
@@ -322,6 +323,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       expect(headerCall).toBeDefined();
       expect(result.session.threadModel).toBe('bot-initiated');
       expect(result.session.threadRootTs).toBe('msg123');
+      expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
     });
   });
 });

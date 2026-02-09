@@ -117,6 +117,7 @@ describe('SessionInitializer - channel routing advisory', () => {
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
+      deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
     };
 
     mockMessageValidator = {
