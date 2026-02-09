@@ -112,4 +112,69 @@ describe('SlackHandler', () => {
       threadTs: '222.333',
     }));
   });
+
+  it('clears waiting choice panel when user sends direct text input', async () => {
+    const app = { client: {} } as any;
+    const claudeHandler = {
+      setActivityStateByKey: vi.fn(),
+    };
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const sessionResult = {
+      session: {
+        ownerId: 'U123',
+        channelId: 'C123',
+        actionPanel: {
+          waitingForChoice: true,
+          choiceBlocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'choice' } }],
+        },
+      },
+      sessionKey: 'C123:thread123',
+      isNewSession: false,
+      userName: 'Test User',
+      workingDirectory: '/tmp',
+      abortController: new AbortController(),
+      halted: false,
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue(sessionResult),
+    };
+    handlerAny.streamExecutor = {
+      execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }),
+    };
+
+    const clearChoice = vi.fn().mockResolvedValue(undefined);
+    handlerAny.actionPanelManager = {
+      ensurePanel: vi.fn().mockResolvedValue(undefined),
+      clearChoice,
+    };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      ts: '111.222',
+      text: '직접 입력으로 답변할게요',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(clearChoice).toHaveBeenCalledTimes(1);
+    expect(clearChoice).toHaveBeenCalledWith('C123:thread123');
+  });
 });
