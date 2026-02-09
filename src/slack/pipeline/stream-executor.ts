@@ -358,6 +358,7 @@ export class StreamExecutor {
 
       return { success: true, messageCount: streamResult.messageCount };
     } catch (error: any) {
+      const requestAborted = abortController.signal.aborted;
       await this.handleError(
         error,
         session,
@@ -366,7 +367,8 @@ export class StreamExecutor {
         threadTs,
         statusMessageTs,
         processedFiles,
-        say
+        say,
+        requestAborted
       );
       return { success: false, messageCount: 0 };
     } finally {
@@ -382,7 +384,8 @@ export class StreamExecutor {
     threadTs: string,
     statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
-    say: SayFn
+    say: SayFn,
+    requestAborted: boolean = false
   ): Promise<void> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
@@ -398,7 +401,8 @@ export class StreamExecutor {
       await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
     }
 
-    if (error.name !== 'AbortError') {
+    const isAbort = requestAborted || this.isAbortLikeError(error);
+    if (!isAbort) {
       this.logger.error('Error handling message', error);
 
       // Only clear session for Claude SDK errors (context overflow, auth, etc.)
@@ -450,6 +454,22 @@ export class StreamExecutor {
     if (processedFiles.length > 0) {
       await this.deps.fileHandler.cleanupTempFiles(processedFiles);
     }
+  }
+
+  private isAbortLikeError(error: any): boolean {
+    const name = String(error?.name || '').toLowerCase();
+    const message = String(error?.message || '').toLowerCase();
+
+    if (name === 'aborterror') {
+      return true;
+    }
+
+    return (
+      message.includes('aborted by user') ||
+      message.includes('process aborted by user') ||
+      message.includes('request was aborted') ||
+      message.includes('operation was aborted')
+    );
   }
 
   private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {

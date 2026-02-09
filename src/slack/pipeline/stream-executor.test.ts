@@ -2,9 +2,10 @@
  * StreamExecutor tests - focusing on continuation pattern
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Continuation } from '../../types';
 import { ExecuteResult } from './stream-executor';
+import { StreamExecutor } from './stream-executor';
 
 describe('Continuation type', () => {
   it('should have correct shape with prompt and resetSession', () => {
@@ -210,5 +211,66 @@ Continue with that context. If unsure what to do next, call 'oracle' agent for g
 
     // This is the key property - resetSession must be true for renew flow
     expect(continuation.resetSession).toBe(true);
+  });
+});
+
+describe('Abort handling', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: {
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {},
+      todoDisplayManager: {},
+      actionHandlers: {},
+      requestCoordinator: {},
+      slackApi: {},
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      },
+      actionPanelManager: undefined,
+    } as any;
+  }
+
+  it('treats "process aborted by user" as cancellation and preserves session', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Claude Code process aborted by user');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      'status123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.statusReporter.updateStatusDirect).toHaveBeenCalledWith(
+      'C123',
+      'status123',
+      'cancelled'
+    );
+    expect(deps.statusReporter.getStatusEmoji).toHaveBeenCalledWith('cancelled');
   });
 });
