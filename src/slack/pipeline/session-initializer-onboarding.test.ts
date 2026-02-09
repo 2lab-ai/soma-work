@@ -27,6 +27,7 @@ vi.mock('../../user-settings-store', () => ({
     loadSlackJiraMapping: vi.fn(),
     getSlackJiraMapping: vi.fn().mockReturnValue({}),
     findJiraAccountBySlackId: vi.fn().mockReturnValue(undefined),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
   },
   AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
   DEFAULT_MODEL: 'claude-opus-4-6',
@@ -289,6 +290,38 @@ describe('SessionInitializer - Onboarding Detection', () => {
 
       // Verify session.isOnboarding was set to true
       expect(capturedSession.isOnboarding).toBe(true);
+    });
+  });
+
+  describe('bot thread header creation', () => {
+    it('creates a new bot thread header for non-routable initiate message', async () => {
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U_EXISTING_USER',
+        defaultDirectory: '/some/dir',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+        lastUpdated: '2024-01-01',
+      } as any);
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      mockClaudeHandler.needsDispatch.mockReturnValue(true);
+
+      const event = {
+        user: 'U_EXISTING_USER',
+        channel: 'C123',
+        thread_ts: undefined,
+        ts: 'thread123',
+        text: 'Hello!',
+      };
+
+      const result = await sessionInitializer.initialize(event as any, '/test/dir');
+
+      const headerCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
+        Array.isArray(call[2]?.attachments)
+      );
+      expect(headerCall).toBeDefined();
+      expect(result.session.threadModel).toBe('bot-initiated');
+      expect(result.session.threadRootTs).toBe('msg123');
     });
   });
 });
