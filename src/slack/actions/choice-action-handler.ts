@@ -33,7 +33,9 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
+      const fallbackThreadTs = body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
@@ -60,7 +62,6 @@ export class ChoiceActionHandler {
       }
 
       // 세션 확인 및 메시지 처리
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       if (session) {
         await this.ctx.actionPanelManager?.clearChoice(sessionKey);
         // Transition waiting→working when user responds to a choice
@@ -161,7 +162,6 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
 
       this.logger.info('Form submit requested', { formId, userId });
 
@@ -188,6 +188,10 @@ export class ChoiceActionHandler {
         );
         return;
       }
+
+      const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
 
       // 제출 처리
       await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
@@ -270,7 +274,7 @@ export class ChoiceActionHandler {
     pendingForm: PendingChoiceFormData,
     userId: string,
     channel: string,
-    threadTs: string,
+    threadTs: string | undefined,
     messageTs: string
   ): Promise<void> {
     this.logger.info('All multi-choice selections complete', { formId: pendingForm.formId, selections: pendingForm.selections });
@@ -305,13 +309,14 @@ export class ChoiceActionHandler {
 
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
+    const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
       await this.ctx.actionPanelManager?.clearChoice(pendingForm.sessionKey);
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: combinedMessage },
+        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
         say
       );
     } else {
@@ -333,5 +338,9 @@ export class ChoiceActionHandler {
         attachments: msgArgs.attachments,
       });
     };
+  }
+
+  private resolveSessionThreadTs(session: any, fallbackThreadTs: string | undefined): string | undefined {
+    return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
   }
 }
