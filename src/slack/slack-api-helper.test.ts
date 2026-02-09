@@ -9,6 +9,7 @@ const createMockApp = () => ({
     },
     conversations: {
       info: vi.fn(),
+      history: vi.fn(),
     },
     chat: {
       getPermalink: vi.fn(),
@@ -104,6 +105,30 @@ describe('SlackApiHelper', () => {
       mockApp.client.chat.getPermalink.mockRejectedValue(new Error('API error'));
 
       const result = await helper.getPermalink('C123', '123.456');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getMessage', () => {
+    it('should return matching message when found', async () => {
+      mockApp.client.conversations.history.mockResolvedValue({
+        messages: [{ ts: '123.456', user: 'B123', text: 'hello' }],
+      });
+
+      const result = await helper.getMessage('C123', '123.456');
+      expect(result).toEqual({ ts: '123.456', user: 'B123', text: 'hello' });
+      expect(mockApp.client.conversations.history).toHaveBeenCalledWith({
+        channel: 'C123',
+        latest: '123.456',
+        oldest: '123.456',
+        inclusive: true,
+        limit: 1,
+      });
+    });
+
+    it('should return null when message is missing', async () => {
+      mockApp.client.conversations.history.mockResolvedValue({ messages: [] });
+      const result = await helper.getMessage('C123', '123.456');
       expect(result).toBeNull();
     });
   });

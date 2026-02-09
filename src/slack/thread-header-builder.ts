@@ -106,21 +106,25 @@ export class ThreadHeaderBuilder {
     if (!links) return [];
     const parts: string[] = [];
 
-    if (links.issue?.url) {
+    if (links.issue?.url && !this.isSlackMessageUrl(links.issue.url)) {
       const label = links.issue.label || 'Issue';
       parts.push(`🎫 <${links.issue.url}|${label}>`);
     }
 
-    if (links.pr?.url) {
+    if (links.pr?.url && !this.isSlackMessageUrl(links.pr.url)) {
       const label = links.pr.label || 'PR';
       parts.push(`🔀 <${links.pr.url}|${label}>`);
     }
 
-    if (links.doc?.url) {
+    if (links.doc?.url && !this.isSlackMessageUrl(links.doc.url)) {
       const label = links.doc.label || 'Doc';
       parts.push(`📄 <${links.doc.url}|${label}>`);
     }
 
     return parts;
+  }
+
+  private static isSlackMessageUrl(url: string): boolean {
+    return url.includes('slack.com/archives/') || url.includes('app.slack.com/client/');
   }
 }

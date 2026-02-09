@@ -204,6 +204,29 @@ export class SlackApiHelper {
   }
 
   /**
+   * Fetch a single message by channel and timestamp.
+   */
+  async getMessage(channel: string, ts: string): Promise<any | null> {
+    try {
+      const response = await this.enqueue(() =>
+        this.app.client.conversations.history({
+          channel,
+          latest: ts,
+          oldest: ts,
+          inclusive: true,
+          limit: 1,
+        })
+      );
+      const messages = (response.messages as any[]) || [];
+      const exact = messages.find((message) => message?.ts === ts);
+      return exact || messages[0] || null;
+    } catch (error) {
+      this.logger.warn('Failed to fetch message', { channel, ts, error });
+      return null;
+    }
+  }
+
+  /**
    * 봇 사용자 ID 조회 (캐싱됨)
    */
   async getBotUserId(): Promise<string> {
