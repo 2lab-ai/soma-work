@@ -35,7 +35,11 @@ export class ActionPanelManager {
     await this.renderPanel(session, sessionKey);
   }
 
-  async attachChoice(sessionKey: string, payload: SlackMessagePayload): Promise<void> {
+  async attachChoice(
+    sessionKey: string,
+    payload: SlackMessagePayload,
+    sourceMessageTs?: string
+  ): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
     if (!session) return;
 
@@ -51,6 +55,9 @@ export class ActionPanelManager {
 
     session.actionPanel.choiceBlocks = choiceBlocks;
     session.actionPanel.waitingForChoice = true;
+    if (sourceMessageTs) {
+      session.actionPanel.choiceMessageTs = sourceMessageTs;
+    }
 
     await this.renderPanel(session, sessionKey, true);
   }
@@ -67,6 +74,7 @@ export class ActionPanelManager {
 
     session.actionPanel.choiceBlocks = undefined;
     session.actionPanel.waitingForChoice = false;
+    session.actionPanel.choiceMessageTs = undefined;
 
     await this.renderPanel(session, sessionKey, true);
   }

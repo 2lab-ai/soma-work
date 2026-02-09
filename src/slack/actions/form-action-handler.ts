@@ -95,12 +95,14 @@ export class FormActionHandler {
     userId: string,
     inputValue: string
   ): Promise<void> {
+    const completionMessageTs = this.resolveChoiceMessageTs(sessionKey, messageTs);
+
     // 메시지 업데이트
-    if (messageTs && channel) {
+    if (completionMessageTs && channel) {
       try {
         await this.ctx.slackApi.updateMessage(
           channel,
-          messageTs,
+          completionMessageTs,
           `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`,
           [
             {
@@ -256,6 +258,11 @@ export class FormActionHandler {
   private resolveSessionThreadTs(sessionKey: string, fallbackThreadTs: string | undefined): string | undefined {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
+  }
+
+  private resolveChoiceMessageTs(sessionKey: string, fallbackMessageTs: string | undefined): string | undefined {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
   }
 
   private createSayFn(channel: string): SayFn {

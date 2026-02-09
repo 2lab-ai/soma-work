@@ -270,8 +270,8 @@ export class StreamExecutor {
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
         },
-        onChoiceCreated: async (payload, ctx) => {
-          await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload);
+        onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
+          await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
         },
       };
 

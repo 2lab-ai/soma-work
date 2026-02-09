@@ -36,15 +36,16 @@ export class ChoiceActionHandler {
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
+      const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
       // 선택 메시지 업데이트
-      if (messageTs && channel) {
+      if (completionMessageTs && channel) {
         try {
           await this.ctx.slackApi.updateMessage(
             channel,
-            messageTs,
+            completionMessageTs,
             `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
             [
               {
@@ -290,6 +291,8 @@ export class ChoiceActionHandler {
 
     this.formStore.delete(pendingForm.formId);
 
+    const completionMessageTs = pendingForm.messageTs || messageTs;
+
     // 완료 UI 업데이트
     try {
       const completedBlocks = [
@@ -302,7 +305,9 @@ export class ChoiceActionHandler {
         },
       ];
 
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '✅ 모든 선택 완료', completedBlocks);
+      if (completionMessageTs) {
+        await this.ctx.slackApi.updateMessage(channel, completionMessageTs, '✅ 모든 선택 완료', completedBlocks);
+      }
     } catch (error) {
       this.logger.warn('Failed to update completed form', error);
     }
@@ -342,5 +347,9 @@ export class ChoiceActionHandler {
 
   private resolveSessionThreadTs(session: any, fallbackThreadTs: string | undefined): string | undefined {
     return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
+  }
+
+  private resolveChoiceMessageTs(session: any, fallbackMessageTs: string | undefined): string | undefined {
+    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
   }
 }

@@ -128,7 +128,11 @@ export interface StreamCallbacks {
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
-  onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext) => Promise<void>;
+  onChoiceCreated?: (
+    payload: SlackMessagePayload,
+    context: StreamContext,
+    sourceMessageTs?: string
+  ) => Promise<void>;
 }
 
 /**
@@ -433,7 +437,7 @@ export class StreamProcessor {
       });
 
       if (this.callbacks.onChoiceCreated) {
-        await this.callbacks.onChoiceCreated(multiPayload, context);
+        await this.callbacks.onChoiceCreated(multiPayload, context, formResult?.ts);
       }
 
       // Update form with message timestamp
@@ -486,14 +490,14 @@ export class StreamProcessor {
     this.logger.debug('Built single choice blocks', { blockCount });
 
     try {
-      await context.say({
+      const choiceResult = await context.say({
         text: choice.question,
         ...singlePayload,
         thread_ts: context.threadTs,
       });
 
       if (this.callbacks.onChoiceCreated) {
-        await this.callbacks.onChoiceCreated(singlePayload, context);
+        await this.callbacks.onChoiceCreated(singlePayload, context, choiceResult?.ts);
       }
     } catch (error: any) {
       this.logger.error('Failed to send single choice to Slack', {

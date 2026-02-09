@@ -88,6 +88,7 @@ export interface ActionPanelState {
   threadTs?: string;
   threadLink?: string;
   messageTs?: string;
+  choiceMessageTs?: string;
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];
