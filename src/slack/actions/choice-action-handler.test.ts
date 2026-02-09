@@ -57,6 +57,9 @@ describe('ChoiceActionHandler', () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
+      actionPanel: {
+        choiceMessageTs: 'thread-choice-message-ts',
+      },
     });
 
     const body = {
@@ -77,6 +80,13 @@ describe('ChoiceActionHandler', () => {
 
     await handler.handleUserChoice(body);
 
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'thread-choice-message-ts',
+      expect.any(String),
+      expect.any(Array)
+    );
+
     expect(messageHandler).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'C123',
@@ -95,7 +105,7 @@ describe('ChoiceActionHandler', () => {
       sessionKey,
       channel: 'C123',
       threadTs: 'thread-root',
-      messageTs: 'form-message-ts',
+      messageTs: 'thread-form-message-ts',
       questions: [
         {
           id: 'q1',
@@ -132,6 +142,13 @@ describe('ChoiceActionHandler', () => {
     };
 
     await handler.handleFormSubmit(body);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'thread-form-message-ts',
+      expect.any(String),
+      expect.any(Array)
+    );
 
     expect(messageHandler).toHaveBeenCalledWith(
       expect.objectContaining({

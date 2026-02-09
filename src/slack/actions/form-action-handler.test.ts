@@ -78,4 +78,47 @@ describe('FormActionHandler', () => {
     expect(metadata.threadTs).toBe('thread-root');
     expect(metadata.messageTs).toBe('panel-message-ts');
   });
+
+  it('syncs single custom-input completion to the in-thread choice message', async () => {
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        choiceMessageTs: 'thread-choice-message-ts',
+      },
+    });
+
+    const body = {
+      user: { id: 'U123' },
+    };
+
+    const view = {
+      private_metadata: JSON.stringify({
+        sessionKey: 'C123:thread-root',
+        question: '상세 내용을 입력해 주세요',
+        channel: 'C123',
+        messageTs: 'panel-message-ts',
+        threadTs: 'panel-message-ts',
+        type: 'single',
+      }),
+      state: {
+        values: {
+          custom_input_block: {
+            custom_input_text: {
+              value: '직접 입력 답변',
+            },
+          },
+        },
+      },
+    };
+
+    await handler.handleCustomInputSubmit(body, view);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'thread-choice-message-ts',
+      expect.any(String),
+      expect.any(Array)
+    );
+  });
 });
