@@ -273,4 +273,73 @@ describe('Abort handling', () => {
     );
     expect(deps.statusReporter.getStatusEmoji).toHaveBeenCalledWith('cancelled');
   });
+
+  it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      'status123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  it('clears session for context-overflow errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Prompt is too long: maximum context length exceeded');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      'status123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  it('clears session for invalid resume/session-not-found errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Conversation not found: cannot resume this session');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      'status123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
 });
