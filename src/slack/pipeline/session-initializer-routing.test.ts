@@ -10,7 +10,9 @@ vi.mock('../../user-settings-store', () => ({
       defaultModel: 'claude-opus-4-6',
       lastUpdated: new Date().toISOString(),
     }),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
   },
+  DEFAULT_MODEL: 'claude-opus-4-6',
 }));
 
 vi.mock('../../conversation', () => ({
@@ -244,6 +246,31 @@ describe('SessionInitializer - channel routing advisory', () => {
     expect(moveButton.text.text).toBe('기본 채널로 이동');
     const sectionBlock = blocks.find((block: any) => block.type === 'section');
     expect(sectionBlock.text.text).toContain('<#C777>');
+  });
+
+  it('auto-creates a bot thread header even when channel metadata is missing', async () => {
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: true,
+      suggestedChannels: [],
+      reason: 'matched',
+    } as any);
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    const result = await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const headerCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
+      Array.isArray(call[2]?.attachments)
+    );
+    expect(headerCall).toBeDefined();
+    expect(result.session.threadModel).toBe('bot-initiated');
+    expect(result.session.threadRootTs).toBe('msg123');
   });
 
   afterEach(() => {
