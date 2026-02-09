@@ -194,7 +194,7 @@ export class SlackHandler {
    */
   async handleMessage(event: MessageEvent, say: any): Promise<void> {
     const { channel, thread_ts, ts } = event;
-    const threadTs = thread_ts || ts;
+    const originalThreadTs = thread_ts || ts;
 
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
@@ -257,6 +257,10 @@ export class SlackHandler {
       return;
     }
 
+    const activeChannel = sessionResult.session.channelId || channel;
+    const activeThreadTs =
+      sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+
     await this.actionPanelManager?.ensurePanel(sessionResult.session, sessionResult.sessionKey);
 
     // Replace eyes with brain emoji - message is being sent to model
@@ -281,8 +285,8 @@ export class SlackHandler {
         abortController: currentAbortController,
         processedFiles: currentText === effectiveText ? processedFiles : [], // Only pass files on first iteration
         text: currentText,
-        channel,
-        threadTs,
+        channel: activeChannel,
+        threadTs: activeThreadTs,
         user: event.user,
         say: wrappedSay,
       });
@@ -292,10 +296,10 @@ export class SlackHandler {
 
       // Reset session if requested (e.g., renew flow)
       if (result.continuation.resetSession) {
-        this.claudeHandler.resetSessionContext(channel, threadTs);
+        this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
         // Re-run dispatch with the appropriate text
         const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
-        await this.sessionInitializer.runDispatch(channel, threadTs, dispatchText);
+        await this.sessionInitializer.runDispatch(activeChannel, activeThreadTs, dispatchText);
       }
 
       // Prepare for next iteration
@@ -303,7 +307,7 @@ export class SlackHandler {
       currentAbortController = new AbortController();
 
       // Re-fetch session after potential reset
-      currentSession = this.claudeHandler.getSession(channel, threadTs)!;
+      currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs)!;
     }
   }
 
