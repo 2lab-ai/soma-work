@@ -325,86 +325,84 @@ export class SessionInitializer {
             channelName: currentChannelInfo?.name,
             channelRepos: currentChannelInfo?.repos,
           });
-          if (currentChannelInfo) {
-            this.logger.info('🔀 Auto-creating bot thread for PR workflow', {
-              prUrl,
-              channel,
-              channelName: currentChannelInfo.name,
-            });
+          this.logger.info('🔀 Auto-creating bot thread for PR workflow', {
+            prUrl,
+            channel,
+            channelName: currentChannelInfo?.name,
+          });
 
-            // Post thread root message (bot owns this message → can update it)
-            const prLabel = session.links?.pr?.label || 'PR';
-            const headerPayload = ThreadHeaderBuilder.build({
-              title: session.title || prLabel,
-              workflow: session.workflow || 'default',
-              ownerName: session.ownerName,
-              ownerId: session.ownerId,
-              model: session.model,
-              activityState: 'idle',
-              lastActivity: session.lastActivity,
-              links: session.links,
-            });
+          // Post thread root message (bot owns this message → can update it)
+          const prLabel = session.links?.pr?.label || 'PR';
+          const headerPayload = ThreadHeaderBuilder.build({
+            title: session.title || prLabel,
+            workflow: session.workflow || 'default',
+            ownerName: session.ownerName,
+            ownerId: session.ownerId,
+            model: session.model,
+            activityState: 'idle',
+            lastActivity: session.lastActivity,
+            links: session.links,
+          });
 
-            this.logger.debug('🔀 Posting bot thread root message', {
-              rootText: headerPayload.text.substring(0, 100),
-            });
-            const rootResult = await this.deps.slackApi.postMessage(channel, headerPayload.text, {
-              attachments: headerPayload.attachments,
-              blocks: headerPayload.blocks,
-            });
+          this.logger.debug('🔀 Posting bot thread root message', {
+            rootText: headerPayload.text.substring(0, 100),
+          });
+          const rootResult = await this.deps.slackApi.postMessage(channel, headerPayload.text, {
+            attachments: headerPayload.attachments,
+            blocks: headerPayload.blocks,
+          });
 
-            if (rootResult?.ts) {
-              // Create a NEW session in the bot's thread
-              const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts);
-              botSession.threadModel = 'bot-initiated';
-              botSession.threadRootTs = rootResult.ts;
-              botSession.links = session.links;
-              botSession.workflow = session.workflow;
-              botSession.title = session.title;
+          if (rootResult?.ts) {
+            // Create a NEW session in the bot's thread
+            const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts);
+            botSession.threadModel = 'bot-initiated';
+            botSession.threadRootTs = rootResult.ts;
+            botSession.links = session.links;
+            botSession.workflow = session.workflow;
+            botSession.title = session.title;
 
-              // Transition the bot session to MAIN
-              this.deps.claudeHandler.transitionToMain(channel, rootResult.ts, session.workflow || 'default', session.title || 'Session');
+            // Transition the bot session to MAIN
+            this.deps.claudeHandler.transitionToMain(channel, rootResult.ts, session.workflow || 'default', session.title || 'Session');
 
-              // Terminate the original session (cleanup)
-              const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
-              this.deps.claudeHandler.terminateSession(origSessionKey);
+            // Terminate the original session (cleanup)
+            const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+            this.deps.claudeHandler.terminateSession(origSessionKey);
 
-              // Notify user in original thread
-              await this.deps.slackApi.postMessage(channel,
-                `🔀 새 스레드에서 작업을 시작합니다 →`,
-                { threadTs }
-              );
+            // Notify user in original thread
+            await this.deps.slackApi.postMessage(channel,
+              `🔀 새 스레드에서 작업을 시작합니다 →`,
+              { threadTs }
+            );
 
-              // Return with the bot session and new threadTs
-              const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
-              const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
-              this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
-              await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+            // Return with the bot session and new threadTs
+            const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
+            const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
+            this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
+            await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
 
-              if (this.deps.actionPanelManager) {
-                await this.deps.actionPanelManager.ensurePanel(botSession, newSessionKey);
-              }
-
-              this.logger.info('🔀 Bot-initiated thread created, session migrated', {
-                rootTs: rootResult.ts,
-                channel,
-                newSessionKey,
-                origSessionKey,
-                workflow: botSession.workflow,
-                title: botSession.title,
-              });
-
-              return {
-                session: botSession,
-                sessionKey: newSessionKey,
-                isNewSession: true,
-                userName,
-                workingDirectory,
-                abortController,
-              };
-            } else {
-              this.logger.warn('🔀 Failed to post bot thread root - no ts returned', { channel });
+            if (this.deps.actionPanelManager) {
+              await this.deps.actionPanelManager.ensurePanel(botSession, newSessionKey);
             }
+
+            this.logger.info('🔀 Bot-initiated thread created, session migrated', {
+              rootTs: rootResult.ts,
+              channel,
+              newSessionKey,
+              origSessionKey,
+              workflow: botSession.workflow,
+              title: botSession.title,
+            });
+
+            return {
+              session: botSession,
+              sessionKey: newSessionKey,
+              isNewSession: true,
+              userName,
+              workingDirectory,
+              abortController,
+            };
+          } else {
+            this.logger.warn('🔀 Failed to post bot thread root - no ts returned', { channel });
           }
         }
       }
