@@ -599,6 +599,7 @@ export class SessionInitializer {
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
     await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+    await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
