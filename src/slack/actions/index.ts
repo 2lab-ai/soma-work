@@ -211,6 +211,16 @@ export class ActionHandlers {
       await this.channelRouteHandler.handleStay(body, respond);
     });
 
+    app.action('managed_message_delete_cancel', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleManagedDeleteCancel(body, respond);
+    });
+
+    app.action('managed_message_delete_confirm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleManagedDeleteConfirm(body, respond);
+    });
+
     // 모달 핸들러
     app.view('custom_input_submit', async ({ ack, body, view }) => {
       await ack();
@@ -275,5 +285,88 @@ export class ActionHandlers {
    */
   savePendingForms(): void {
     this.formStore.saveForms();
+  }
+
+  private parseManagedDeleteValue(rawValue: string): {
+    requesterId: string;
+    targetChannel: string;
+    targetTs: string;
+  } | null {
+    try {
+      const value = JSON.parse(rawValue || '{}');
+      if (
+        typeof value.requesterId !== 'string' ||
+        typeof value.targetChannel !== 'string' ||
+        typeof value.targetTs !== 'string'
+      ) {
+        return null;
+      }
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handleManagedDeleteCancel(body: any, respond: any): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseManagedDeleteValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid managed delete cancel payload', { rawValue, actorId });
+      return;
+    }
+
+    if (actorId !== value.requesterId) {
+      await respond({
+        text: '⚠️ 요청한 사용자만 이 버튼을 사용할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    await respond({
+      text: '삭제를 취소했습니다.',
+      replace_original: true,
+    });
+  }
+
+  private async handleManagedDeleteConfirm(body: any, respond: any): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseManagedDeleteValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid managed delete confirm payload', { rawValue, actorId });
+      return;
+    }
+
+    if (actorId !== value.requesterId) {
+      await respond({
+        text: '⚠️ 요청한 사용자만 이 버튼을 사용할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    try {
+      await this.ctx.slackApi.deleteMessage(value.targetChannel, value.targetTs);
+      await respond({
+        text: '🗑️ 메시지를 삭제했습니다.',
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to delete managed message', {
+        targetChannel: value.targetChannel,
+        targetTs: value.targetTs,
+        error,
+      });
+      await respond({
+        text: '⚠️ 메시지 삭제에 실패했습니다.',
+        replace_original: true,
+      });
+    }
   }
 }

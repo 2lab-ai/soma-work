@@ -36,6 +36,17 @@ import {
   MessageEvent,
 } from './slack/pipeline';
 
+interface SlackPermalinkTarget {
+  channelId: string;
+  messageTs: string;
+}
+
+interface ManagedDeleteActionValue {
+  requesterId: string;
+  targetChannel: string;
+  targetTs: string;
+}
+
 export class SlackHandler {
   private app: App;
   private claudeHandler: ClaudeHandler;
@@ -196,6 +207,13 @@ export class SlackHandler {
     const { channel, thread_ts, ts } = event;
     const originalThreadTs = thread_ts || ts;
 
+    if (channel.startsWith('D')) {
+      const handledCleanupRequest = await this.handleDmCleanupRequest(event, say);
+      if (handledCleanupRequest) {
+        return;
+      }
+    }
+
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
@@ -316,6 +334,156 @@ export class SlackHandler {
       // Re-fetch session after potential reset
       currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs)!;
     }
+  }
+
+  private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {
+    const target = this.extractSlackPermalinkTarget(event);
+    if (!target) {
+      return false;
+    }
+
+    const targetMessage = await this.slackApi.getMessage(target.channelId, target.messageTs);
+    if (!targetMessage) {
+      this.logger.info('DM cleanup target not found', target);
+      return true;
+    }
+
+    const botUserId = await this.slackApi.getBotUserId();
+    const isBotMessage = targetMessage.user === botUserId || !!targetMessage.bot_id;
+    if (!isBotMessage) {
+      return false;
+    }
+
+    const isManaged = this.isManagedBotMessage(
+      target.channelId,
+      target.messageTs,
+      targetMessage.thread_ts
+    );
+
+    if (isManaged) {
+      const value: ManagedDeleteActionValue = {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      };
+
+      await say({
+        text: '봇 관리 메시지 삭제 확인',
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '이 메시지는 봇이 관리하는 세션 메시지입니다. 정말 삭제하시겠습니까?',
+            },
+          },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                action_id: 'managed_message_delete_cancel',
+                text: { type: 'plain_text', text: '취소', emoji: true },
+                value: JSON.stringify(value),
+              },
+              {
+                type: 'button',
+                action_id: 'managed_message_delete_confirm',
+                text: { type: 'plain_text', text: '삭제', emoji: true },
+                style: 'danger',
+                value: JSON.stringify(value),
+              },
+            ],
+          },
+        ],
+      });
+
+      this.logger.info('DM cleanup requires confirmation for managed bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      });
+      return true;
+    }
+
+    try {
+      await this.slackApi.deleteMessage(target.channelId, target.messageTs);
+      this.logger.info('DM cleanup removed unmanaged bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      });
+    } catch (error) {
+      this.logger.warn('DM cleanup failed to delete unmanaged bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        error,
+      });
+    }
+
+    return true;
+  }
+
+  private isManagedBotMessage(channelId: string, messageTs: string, messageThreadTs?: string): boolean {
+    const threadTs = messageThreadTs || messageTs;
+
+    const sessionKey = this.claudeHandler.getSessionKey(channelId, threadTs);
+    if (this.claudeHandler.getSessionByKey(sessionKey)) {
+      return true;
+    }
+
+    for (const session of this.claudeHandler.getAllSessions().values()) {
+      if (session.channelId !== channelId) {
+        continue;
+      }
+      if (session.threadRootTs === messageTs) {
+        return true;
+      }
+      if (session.actionPanel?.messageTs === messageTs) {
+        return true;
+      }
+      if (session.threadTs === threadTs) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private extractSlackPermalinkTarget(event: MessageEvent): SlackPermalinkTarget | null {
+    const sources: string[] = [];
+    if (event.text) {
+      sources.push(event.text);
+    }
+
+    const rawBlocks = (event as any).blocks;
+    if (rawBlocks) {
+      sources.push(JSON.stringify(rawBlocks));
+    }
+
+    const rawAttachments = (event as any).attachments;
+    if (rawAttachments) {
+      sources.push(JSON.stringify(rawAttachments));
+    }
+
+    for (const source of sources) {
+      const match = source.match(/https?:\/\/[^\s>|]*slack\.com\/archives\/([A-Z0-9]+)\/p(\d{10,})/i);
+      if (!match) {
+        continue;
+      }
+
+      const channelId = match[1];
+      const rawTs = match[2];
+      if (rawTs.length <= 6) {
+        continue;
+      }
+
+      const messageTs = `${rawTs.slice(0, rawTs.length - 6)}.${rawTs.slice(-6)}`;
+      return { channelId, messageTs };
+    }
+
+    return null;
   }
 
   /**
