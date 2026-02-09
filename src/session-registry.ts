@@ -3,7 +3,15 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
-import { ConversationSession, SessionState, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
+import {
+  ConversationSession,
+  SessionState,
+  SessionLinks,
+  SessionLink,
+  WorkflowType,
+  ActivityState,
+  ActionPanelState,
+} from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
 import { DATA_DIR } from './env-paths';
@@ -49,6 +57,11 @@ interface SerializedSession {
   sleepStartedAt?: string; // ISO date string
   // Activity state
   activityState?: ActivityState;
+  // Action panel state
+  actionPanel?: ActionPanelState;
+  // Bot-initiated thread metadata
+  threadModel?: 'user-initiated' | 'bot-initiated';
+  threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
 }
@@ -674,6 +687,9 @@ export class SessionRegistry {
             links: session.links,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
+            actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
+            threadModel: session.threadModel,
+            threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
           });
         }
@@ -736,6 +752,9 @@ export class SessionRegistry {
           links: serialized.links,
           sleepStartedAt,
           activityState: 'idle', // Always idle on restore (no active streams after restart)
+          actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
+          threadModel: serialized.threadModel,
+          threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
         };
         this.sessions.set(serialized.key, session);
