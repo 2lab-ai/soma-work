@@ -392,12 +392,7 @@ export class StreamExecutor {
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error
-    const errorMessage = error.message?.toLowerCase() || '';
-    if (
-      errorMessage.includes('prompt is too long') ||
-      errorMessage.includes('context length exceeded') ||
-      errorMessage.includes('maximum context length')
-    ) {
+    if (this.isContextOverflowError(error)) {
       await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
     }
 
@@ -405,19 +400,18 @@ export class StreamExecutor {
     if (!isAbort) {
       this.logger.error('Error handling message', error);
 
-      // Only clear session for Claude SDK errors (context overflow, auth, etc.)
-      // Preserve session for Slack API errors (invalid_attachments, rate_limited, etc.)
-      const isSlackApiError = this.isSlackApiError(error);
-      const sessionCleared = !isSlackApiError;
+      // Clear session only when current conversation context is no longer reusable.
+      // Transient errors (Slack API, rate-limit, process exit) should preserve session.
+      const sessionCleared = this.shouldClearSessionOnError(error);
 
       if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
-        this.logger.info('Session cleared due to non-Slack error', {
+        this.logger.info('Session cleared due to non-recoverable error', {
           sessionKey,
           errorType: error.name || 'unknown',
         });
       } else {
-        this.logger.warn('Slack API error - session preserved', {
+        this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
           errorMessage: error.message,
         });
@@ -470,6 +464,71 @@ export class StreamExecutor {
       message.includes('request was aborted') ||
       message.includes('operation was aborted')
     );
+  }
+
+  private shouldClearSessionOnError(error: any): boolean {
+    if (this.isSlackApiError(error)) {
+      return false;
+    }
+
+    if (this.isRecoverableClaudeSdkError(error)) {
+      return false;
+    }
+
+    if (this.isContextOverflowError(error)) {
+      return true;
+    }
+
+    return this.isInvalidResumeSessionError(error);
+  }
+
+  private isContextOverflowError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    return (
+      message.includes('prompt is too long') ||
+      message.includes('context length exceeded') ||
+      message.includes('maximum context length')
+    );
+  }
+
+  private isRecoverableClaudeSdkError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    const recoverablePatterns = [
+      "you've hit your limit",
+      'rate limit',
+      'too many requests',
+      '429',
+      'process exited with code 1',
+      'temporarily unavailable',
+      'service unavailable',
+      'overloaded',
+      'timed out',
+      'timeout',
+      'network error',
+      'connection reset',
+      'ecconnreset',
+      'econnreset',
+      'etimedout',
+      'eai_again',
+    ];
+
+    return recoverablePatterns.some(pattern => message.includes(pattern));
+  }
+
+  private isInvalidResumeSessionError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    const invalidSessionPatterns = [
+      'conversation not found',
+      'session not found',
+      'cannot resume',
+      'invalid resume',
+      'resume session',
+    ];
+
+    return invalidSessionPatterns.some(pattern => message.includes(pattern));
   }
 
   private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {
