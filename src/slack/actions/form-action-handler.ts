@@ -35,7 +35,8 @@ export class FormActionHandler {
       const triggerId = body.trigger_id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
+      const fallbackThreadTs = body.message?.thread_ts || messageTs;
+      const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
 
       await client.views.open({
         trigger_id: triggerId,
@@ -54,7 +55,8 @@ export class FormActionHandler {
       const triggerId = body.trigger_id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
+      const fallbackThreadTs = body.message?.thread_ts || messageTs;
+      const threadTs = this.resolveSessionThreadTs(sessionKey, fallbackThreadTs);
 
       await client.views.open({
         trigger_id: triggerId,
@@ -89,7 +91,7 @@ export class FormActionHandler {
     question: string,
     channel: string,
     messageTs: string,
-    threadTs: string,
+    threadTs: string | undefined,
     userId: string,
     inputValue: string
   ): Promise<void> {
@@ -121,8 +123,9 @@ export class FormActionHandler {
       await this.ctx.actionPanelManager?.clearChoice(sessionKey);
       this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
       const say = this.createSayFn(channel);
+      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: inputValue },
+        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
         say
       );
     }
@@ -135,7 +138,7 @@ export class FormActionHandler {
     question: string,
     channel: string,
     messageTs: string,
-    threadTs: string,
+    threadTs: string | undefined,
     userId: string,
     inputValue: string
   ): Promise<void> {
@@ -177,7 +180,8 @@ export class FormActionHandler {
 
     // 모든 질문 완료 시
     if (answeredCount === totalQuestions) {
-      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
+      const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
+      await this.choiceHandler.completeMultiChoiceForm(pendingForm, userId, channel, resolvedThreadTs, messageTs);
     }
   }
 
@@ -186,7 +190,7 @@ export class FormActionHandler {
     question: string,
     channel: string,
     messageTs: string,
-    threadTs: string,
+    threadTs: string | undefined,
     type: 'single' | 'multi',
     formId?: string,
     questionId?: string
@@ -247,6 +251,11 @@ export class FormActionHandler {
         },
       ],
     };
+  }
+
+  private resolveSessionThreadTs(sessionKey: string, fallbackThreadTs: string | undefined): string | undefined {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
   }
 
   private createSayFn(channel: string): SayFn {
