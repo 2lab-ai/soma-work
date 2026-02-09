@@ -261,6 +261,13 @@ export class SlackHandler {
     const activeThreadTs =
       sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
 
+    const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
+    if (hasPendingChoice) {
+      await this.actionPanelManager?.clearChoice(sessionResult.sessionKey);
+      // Treat direct user message as completing manual input from choice UI.
+      this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+    }
+
     await this.actionPanelManager?.ensurePanel(sessionResult.session, sessionResult.sessionKey);
 
     // Replace eyes with brain emoji - message is being sent to model
