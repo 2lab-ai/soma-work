@@ -2,7 +2,7 @@ import { SlackApiHelper } from './slack-api-helper';
 import { ActionPanelBuilder } from './action-panel-builder';
 import { RequestCoordinator } from './request-coordinator';
 import { ClaudeHandler } from '../claude-handler';
-import { ActionPanelState, ConversationSession } from '../types';
+import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
 
@@ -94,18 +94,18 @@ export class ActionPanelManager {
     }
 
     const disabled = this.computeDisabled(sessionKey, session);
-    const styleVariant = this.resolveStyleVariant(panelState);
-    const panelTitle = this.resolvePanelTitle(session);
+    const contextUsagePercent = this.getContextUsagePercent(session);
 
     const payload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
       disabled,
-      panelTitle,
-      styleVariant,
       links: session.links,
       choiceBlocks: panelState.choiceBlocks,
       waitingForChoice: panelState.waitingForChoice,
+      activityState: session.activityState,
+      model: session.model,
+      contextUsagePercent,
     });
 
     const renderKey = JSON.stringify(payload.blocks || []);
@@ -150,7 +150,6 @@ export class ActionPanelManager {
 
     panelState.renderKey = renderKey;
     panelState.disabled = disabled;
-    panelState.styleVariant = styleVariant;
     panelState.channelId = channelId;
     panelState.userId = userId;
     panelState.lastRenderedAt = Date.now();
@@ -164,27 +163,17 @@ export class ActionPanelManager {
     return Boolean(isBusy || waitingForChoice || hasActiveRequest);
   }
 
-  private resolveStyleVariant(panelState: ActionPanelState): number {
-    if (typeof panelState.styleVariant === 'number') {
-      return panelState.styleVariant;
-    }
-
-    return Math.floor(Math.random() * ActionPanelBuilder.STYLE_VARIANT_COUNT);
-  }
-
-  private resolvePanelTitle(session: ConversationSession): string | undefined {
-    const candidate = session.actionPanel?.title;
-
-    if (!candidate) {
+  private getContextUsagePercent(session: ConversationSession): number | undefined {
+    const usage = session.usage;
+    if (!usage || usage.contextWindow <= 0) {
       return undefined;
     }
 
-    const title = candidate.trim();
-    if (title.length <= 40) {
-      return title;
-    }
-
-    return `${title.slice(0, 37)}...`;
+    const used = usage.currentInputTokens
+      + usage.currentCacheReadTokens
+      + usage.currentCacheCreateTokens;
+    const percent = Math.round((used / usage.contextWindow) * 100);
+    return Math.max(0, Math.min(100, percent));
   }
 
   private extractChoiceBlocks(payload: SlackMessagePayload): any[] {
