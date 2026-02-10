@@ -318,7 +318,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
       const headerCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
-        Array.isArray(call[2]?.attachments)
+        Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments)
       );
       expect(headerCall).toBeDefined();
       expect(result.session.threadModel).toBe('bot-initiated');

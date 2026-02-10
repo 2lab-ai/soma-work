@@ -93,12 +93,7 @@ export class ThreadHeaderBuilder {
 
     return {
       text: textParts.join('\n'),
-      attachments: [
-        {
-          color: status.color,
-          blocks,
-        },
-      ],
+      blocks,
     };
   }
 

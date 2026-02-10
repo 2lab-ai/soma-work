@@ -39,7 +39,7 @@ describe('ThreadHeaderBuilder', () => {
       },
     });
 
-    const blocks = (payload.attachments?.[0]?.blocks || []) as any[];
+    const blocks = (payload.blocks || payload.attachments?.[0]?.blocks || []) as any[];
     const linkContext = blocks.find((block) =>
       block.type === 'context' &&
       Array.isArray(block.elements) &&
@@ -50,5 +50,27 @@ describe('ThreadHeaderBuilder', () => {
     const linkTexts = linkContext.elements.map((el: any) => String(el.text));
     expect(linkTexts.join(' ')).toContain('github.com');
     expect(linkTexts.join(' ')).not.toContain('slack.com/archives');
+  });
+
+  it('builds thread header as top-level blocks to avoid duplicate attachment rendering', () => {
+    const payload = ThreadHeaderBuilder.build({
+      title: 'Header',
+      workflow: 'default',
+      ownerName: 'Tester',
+      activityState: 'idle',
+      lastActivity: new Date(),
+      links: {
+        pr: {
+          url: 'https://github.com/org/repo/pull/10',
+          type: 'pr',
+          provider: 'github',
+          label: 'PR #10',
+        },
+      },
+    });
+
+    expect(Array.isArray(payload.blocks)).toBe(true);
+    expect((payload.blocks || []).length).toBeGreaterThan(0);
+    expect(payload.attachments).toBeUndefined();
   });
 });
