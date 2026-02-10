@@ -93,7 +93,20 @@ export class ActionPanelManager {
       return;
     }
 
-    const disabled = this.computeDisabled(sessionKey, session);
+    const threadTs = session.threadRootTs || session.threadTs;
+    if (threadTs && panelState.threadTs !== threadTs) {
+      panelState.threadTs = threadTs;
+      panelState.threadLink = undefined;
+    }
+    if (!panelState.threadLink && !panelState.messageTs && panelState.threadTs) {
+      const permalink = await this.deps.slackApi.getPermalink(channelId, panelState.threadTs);
+      if (permalink) {
+        panelState.threadLink = permalink;
+      }
+    }
+
+    const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
+    const disabled = this.computeDisabled(session, hasActiveRequest);
     const contextUsagePercent = this.getContextUsagePercent(session);
 
     const payload = ActionPanelBuilder.build({
@@ -106,6 +119,11 @@ export class ActionPanelManager {
       activityState: session.activityState,
       model: session.model,
       contextUsagePercent,
+      hasActiveRequest,
+      threadLink: panelState.threadLink,
+      agentPhase: panelState.agentPhase,
+      activeTool: panelState.activeTool,
+      statusUpdatedAt: panelState.statusUpdatedAt,
     });
 
     const renderKey = JSON.stringify(payload.blocks || []);
@@ -156,10 +174,9 @@ export class ActionPanelManager {
     session.actionPanel = panelState;
   }
 
-  private computeDisabled(sessionKey: string, session: ConversationSession): boolean {
+  private computeDisabled(session: ConversationSession, hasActiveRequest: boolean): boolean {
     const isBusy = session.activityState === 'working' || session.activityState === 'waiting';
     const waitingForChoice = session.actionPanel?.waitingForChoice;
-    const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     return Boolean(isBusy || waitingForChoice || hasActiveRequest);
   }
 

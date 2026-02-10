@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
 
 function getSummaryText(payload: { blocks: any[] }): string {
-  const contextBlock = payload.blocks.find((block) => block.type === 'context');
-  const elements = contextBlock?.elements || [];
-  return elements.map((el: any) => String(el.text || '')).join(' | ');
+  const sectionBlock = payload.blocks.find((block) => block.type === 'section');
+  return String(sectionBlock?.text?.text || '');
 }
 
 describe('ActionPanelBuilder', () => {
@@ -58,6 +57,32 @@ describe('ActionPanelBuilder', () => {
     });
 
     expect(getSummaryText(payload)).toContain('✋ 입력 대기');
+  });
+
+  it('shows reactive agent status chips (phase/tool/live)', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-4b',
+      workflow: 'default',
+      disabled: false,
+      agentPhase: '워크플로우 분석 중',
+      activeTool: 'Read',
+      statusUpdatedAt: Date.now(),
+      hasActiveRequest: true,
+    });
+
+    const summary = getSummaryText(payload);
+    expect(summary).toContain('🛠 파일 읽기');
+    expect(summary).toContain('🟢 live');
+  });
+
+  it('renders thread link in summary when available', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-4c',
+      workflow: 'default',
+      threadLink: 'https://workspace.slack.com/archives/C123/p111222333',
+    });
+
+    expect(getSummaryText(payload)).toContain('<https://workspace.slack.com/archives/C123/p111222333|Thread>');
   });
 
   it('appends choice blocks', () => {

@@ -89,6 +89,9 @@ export interface ActionPanelState {
   threadLink?: string;
   title?: string;
   styleVariant?: number;
+  agentPhase?: string;
+  activeTool?: string;
+  statusUpdatedAt?: number;
   messageTs?: string;
   choiceMessageTs?: string;
   disabled?: boolean;

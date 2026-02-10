@@ -124,7 +124,11 @@ export class StreamExecutor {
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
-    await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+    await this.updateRuntimeStatus(session, sessionKey, {
+      agentPhase: '생각 중',
+      activeTool: undefined,
+      waitingForChoice: false,
+    });
 
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
@@ -198,6 +202,10 @@ export class StreamExecutor {
             const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
             await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
           }
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: toolName ? '도구 실행 중' : '작업 중',
+            activeTool: toolName,
+          });
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -206,6 +214,10 @@ export class StreamExecutor {
           });
         },
         onToolResult: async (toolResults, ctx) => {
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: '결과 반영 중',
+            activeTool: undefined,
+          });
           await this.deps.toolEventProcessor.handleToolResult(toolResults, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -271,6 +283,11 @@ export class StreamExecutor {
           }
         },
         onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: '입력 대기',
+            activeTool: undefined,
+            waitingForChoice: true,
+          });
           await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
         },
       };
@@ -306,7 +323,11 @@ export class StreamExecutor {
         threadTs,
         streamResult.hasUserChoice ? 'waiting' : 'idle'
       );
-      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: streamResult.hasUserChoice ? '입력 대기' : '사용자 액션 대기',
+        activeTool: undefined,
+        waitingForChoice: streamResult.hasUserChoice,
+      });
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -319,10 +340,6 @@ export class StreamExecutor {
       });
 
       // Update bot-initiated thread root with status
-      if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
-        await this.updateThreadRoot(session, channel);
-      }
-
       // Clean up temporary files
       if (processedFiles.length > 0) {
         await this.deps.fileHandler.cleanupTempFiles(processedFiles);
@@ -399,6 +416,11 @@ export class StreamExecutor {
     const isAbort = requestAborted || this.isAbortLikeError(error);
     if (!isAbort) {
       this.logger.error('Error handling message', error);
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '오류 발생',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
 
       // Clear session only when current conversation context is no longer reusable.
       // Transient errors (Slack API, rate-limit, process exit) should preserve session.
@@ -434,6 +456,11 @@ export class StreamExecutor {
     } else {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '요청 취소됨',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
 
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
@@ -603,6 +630,43 @@ export class StreamExecutor {
     }
 
     return lines.join('\n');
+  }
+
+  private async updateRuntimeStatus(
+    session: ConversationSession,
+    sessionKey: string,
+    patch: {
+      agentPhase?: string;
+      activeTool?: string;
+      waitingForChoice?: boolean;
+    }
+  ): Promise<void> {
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+
+    session.actionPanel.agentPhase = patch.agentPhase;
+    session.actionPanel.activeTool = patch.activeTool;
+    if (typeof patch.waitingForChoice === 'boolean') {
+      session.actionPanel.waitingForChoice = patch.waitingForChoice;
+    }
+    session.actionPanel.statusUpdatedAt = Date.now();
+
+    try {
+      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+    } catch (error) {
+      this.logger.debug('Failed to update action panel runtime status', {
+        sessionKey,
+        error: (error as Error).message,
+      });
+    }
+
+    if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
+      await this.updateThreadRoot(session, session.channelId);
+    }
   }
 
   /**

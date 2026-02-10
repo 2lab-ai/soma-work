@@ -86,6 +86,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       wakeFromSleep: vi.fn(),
       needsDispatch: vi.fn().mockReturnValue(true),
       transitionToMain: vi.fn(),
+      setActivityState: vi.fn(),
       canInterrupt: vi.fn().mockReturnValue(false),
       updateInitiator: vi.fn(),
       setSessionLinks: vi.fn(),
