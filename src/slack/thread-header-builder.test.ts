@@ -1,23 +1,42 @@
 import { describe, it, expect } from 'vitest';
 import { ThreadHeaderBuilder } from './thread-header-builder';
 
+function collectBlockTexts(blocks: any[]): string[] {
+  const lines: string[] = [];
+  for (const block of blocks) {
+    if (typeof block?.text?.text === 'string') {
+      lines.push(block.text.text);
+    }
+    if (Array.isArray(block?.elements)) {
+      for (const element of block.elements) {
+        if (typeof element?.text === 'string') {
+          lines.push(element.text);
+        }
+      }
+    }
+  }
+  return lines;
+}
+
 describe('ThreadHeaderBuilder', () => {
-  it('maps activity state to label and color', () => {
-    expect(ThreadHeaderBuilder.getStatusStyle('working')).toEqual({
-      label: '작업 중',
-      color: '#F2C744',
-      emoji: '⚙️',
+  it('renders static-only header metadata (title/workflow/owner)', () => {
+    const payload = ThreadHeaderBuilder.build({
+      title: 'projbeta /test-vsprots 페이지 개발',
+      workflow: 'default',
+      ownerName: 'Bash',
     });
-    expect(ThreadHeaderBuilder.getStatusStyle('waiting')).toEqual({
-      label: '입력 대기',
-      color: '#3B82F6',
-      emoji: '✋',
-    });
-    expect(ThreadHeaderBuilder.getStatusStyle('idle')).toEqual({
-      label: '대기',
-      color: '#36a64f',
-      emoji: '✅',
-    });
+
+    const blocks = (payload.blocks || []) as any[];
+    const lines = collectBlockTexts(blocks).join(' ');
+
+    expect(lines).toContain('projbeta /test-vsprots 페이지 개발');
+    expect(lines).toContain('`default`');
+    expect(lines).toContain('👤 Bash');
+    expect(lines).not.toContain('작업 중');
+    expect(lines).not.toContain('🧠');
+    expect(lines).not.toContain('🤖');
+    expect(lines).not.toContain('🕐');
+    expect(lines).not.toContain('⏳');
   });
 
   it('does not render Slack message links in thread header link context', () => {
@@ -41,9 +60,9 @@ describe('ThreadHeaderBuilder', () => {
 
     const blocks = (payload.blocks || payload.attachments?.[0]?.blocks || []) as any[];
     const linkContext = blocks.find((block) =>
-      block.type === 'context' &&
-      Array.isArray(block.elements) &&
-      block.elements.some((el: any) => String(el.text || '').includes('github.com'))
+      block.type === 'context'
+      && Array.isArray(block.elements)
+      && block.elements.some((el: any) => String(el.text || '').includes('github.com'))
     );
 
     expect(linkContext).toBeDefined();
@@ -52,27 +71,11 @@ describe('ThreadHeaderBuilder', () => {
     expect(linkTexts.join(' ')).not.toContain('slack.com/archives');
   });
 
-  it('renders agent runtime status in metadata context', () => {
-    const payload = ThreadHeaderBuilder.build({
-      title: 'Header',
-      activityState: 'working',
-      agentPhase: '워크플로우 분석 중',
-      activeTool: 'Read',
-    });
-
-    const blocks = (payload.blocks || []) as any[];
-    const metaContext = blocks.find((block) => block.type === 'context');
-    const texts = (metaContext?.elements || []).map((el: any) => String(el.text || ''));
-    expect(texts.join(' ')).toContain('🧠 Read');
-  });
-
   it('builds thread header as top-level blocks to avoid duplicate attachment rendering', () => {
     const payload = ThreadHeaderBuilder.build({
       title: 'Header',
       workflow: 'default',
       ownerName: 'Tester',
-      activityState: 'idle',
-      lastActivity: new Date(),
       links: {
         pr: {
           url: 'https://github.com/org/repo/pull/10',
