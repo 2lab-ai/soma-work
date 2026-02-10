@@ -11,7 +11,6 @@ export interface ActionPanelBuildParams {
   model?: string;
   contextUsagePercent?: number;
   hasActiveRequest?: boolean;
-  threadLink?: string;
   agentPhase?: string;
   activeTool?: string;
   statusUpdatedAt?: number;
@@ -88,7 +87,6 @@ export class ActionPanelBuilder {
       actionsCount: actions.length,
       model: params.model,
       contextUsagePercent: params.contextUsagePercent,
-      threadLink: params.threadLink,
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
@@ -158,7 +156,6 @@ export class ActionPanelBuilder {
     actionsCount: number;
     model?: string;
     contextUsagePercent?: number;
-    threadLink?: string;
     waitingForChoice?: boolean;
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
@@ -168,7 +165,7 @@ export class ActionPanelBuilder {
   }): string {
     const parts: string[] = [];
 
-    parts.push(params.threadLink ? `🧵 <${params.threadLink}|Thread>` : '🧵 Thread');
+    parts.push('🧵 Thread');
     parts.push(this.statusBadge(params.status));
 
     const agentChip = this.buildAgentChip({
@@ -282,13 +279,13 @@ export class ActionPanelBuilder {
     }
 
     const segments: string[] = [];
-    if (links.issue) {
+    if (links.issue && !this.isSlackMessageUrl(links.issue.url)) {
       segments.push(this.renderLinkSegment(links.issue, 'Issue'));
     }
-    if (links.pr) {
+    if (links.pr && !this.isSlackMessageUrl(links.pr.url)) {
       segments.push(this.renderLinkSegment(links.pr, 'PR'));
     }
-    if (links.doc) {
+    if (links.doc && !this.isSlackMessageUrl(links.doc.url)) {
       segments.push(this.renderLinkSegment(links.doc, 'Doc'));
     }
 
@@ -310,6 +307,10 @@ export class ActionPanelBuilder {
       return input;
     }
     return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  private static isSlackMessageUrl(url: string): boolean {
+    return url.includes('slack.com/archives/') || url.includes('app.slack.com/client/');
   }
 
   private static buildButton(def: PanelActionDef, sessionKey: string): any {
