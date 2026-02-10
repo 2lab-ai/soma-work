@@ -103,6 +103,7 @@ export class ActionPanelManager {
       disabled,
       panelTitle,
       styleVariant,
+      links: session.links,
       choiceBlocks: panelState.choiceBlocks,
       waitingForChoice: panelState.waitingForChoice,
     });
@@ -172,11 +173,7 @@ export class ActionPanelManager {
   }
 
   private resolvePanelTitle(session: ConversationSession): string | undefined {
-    const candidate = session.links?.issue?.label
-      || session.links?.pr?.label
-      || session.links?.doc?.label
-      || session.title
-      || (session.workflow && session.workflow !== 'default' ? session.workflow : undefined);
+    const candidate = session.actionPanel?.title;
 
     if (!candidate) {
       return undefined;
