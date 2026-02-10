@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
 
-function getDialogText(payload: { blocks: any[] }): string {
-  const sectionBlock = payload.blocks.find((block) => block.type === 'section');
-  const raw = sectionBlock?.text?.text || '';
-  return String(raw).replace(/^```/, '').replace(/```$/, '').trim();
+function getSectionText(payload: { blocks: any[] }): string {
+  return String(payload.blocks.find((block) => block.type === 'section')?.text?.text || '');
 }
 
 describe('ActionPanelBuilder', () => {
@@ -34,25 +32,30 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).toEqual(expect.arrayContaining(['panel_pr_fix', 'panel_pr_approve']));
   });
 
-  it('shows disabled state in header without using unsupported button properties', () => {
-    const disabledPayload = ActionPanelBuilder.build({
+  it('renders a text dashboard instead of ascii frame', () => {
+    const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
-      workflow: 'default',
-      styleVariant: 0,
+      workflow: 'jira-brainstorming',
+      disabled: true,
     });
-    const disabledButton = disabledPayload.blocks.find((block) => block.type === 'actions').elements[0];
-    expect(disabledButton.disabled).toBeUndefined();
-    expect(getDialogText(disabledPayload)).toContain('비활성');
 
-    const enabledPayload = ActionPanelBuilder.build({
+    const sectionText = getSectionText(payload);
+    expect(sectionText).toContain('*Thread Dashboard*');
+    expect(sectionText).toContain('상태: 비활성');
+    expect(sectionText).toContain('워크플로우: `jira-brainstorming`');
+    expect(sectionText).not.toContain('```');
+    expect(sectionText).not.toContain('+-<');
+    expect(sectionText).not.toContain('[이슈 리서치]');
+  });
+
+  it('shows waiting status when choice input is pending', () => {
+    const payload = ActionPanelBuilder.build({
       sessionKey: 'session-4',
       workflow: 'default',
-      disabled: false,
-      styleVariant: 0,
+      waitingForChoice: true,
     });
-    const enabledButton = enabledPayload.blocks.find((block) => block.type === 'actions').elements[0];
-    expect(enabledButton.disabled).toBeUndefined();
-    expect(getDialogText(enabledPayload)).toContain('사용 가능');
+
+    expect(getSectionText(payload)).toContain('상태: 입력 대기');
   });
 
   it('appends choice blocks', () => {
@@ -71,42 +74,9 @@ describe('ActionPanelBuilder', () => {
     expect(payload.blocks[payload.blocks.length - 1]).toEqual(choiceBlocks[0]);
   });
 
-  it('renders dialog text without thread permalink preview text', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-6',
-      workflow: 'default',
-      panelTitle: 'PTN-2411',
-      styleVariant: 3,
-    });
-
-    const allText = JSON.stringify(payload.blocks);
-    expect(allText).toContain('PTN-2411');
-    expect(allText).toContain('(Thread)');
-    expect(allText).not.toContain('|Thread');
-    expect(allText).not.toContain('Thread link unavailable');
-    expect(getDialogText(payload)).not.toContain('[이슈 리서치]');
-    expect(getDialogText(payload)).not.toContain('[PR 생성]');
-  });
-
-  it('supports 10 distinct dialog styles', () => {
-    const rendered = new Set<string>();
-
-    for (let i = 0; i < 10; i++) {
-      const payload = ActionPanelBuilder.build({
-        sessionKey: `session-style-${i}`,
-        workflow: 'default',
-        panelTitle: 'PTN-1234',
-        styleVariant: i,
-      });
-      rendered.add(getDialogText(payload));
-    }
-
-    expect(rendered.size).toBe(10);
-  });
-
   it('renders real clickable links in a separate context block', () => {
     const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-7',
+      sessionKey: 'session-6',
       workflow: 'default',
       links: {
         issue: {
