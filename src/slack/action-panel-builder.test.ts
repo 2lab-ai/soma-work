@@ -84,6 +84,8 @@ describe('ActionPanelBuilder', () => {
     expect(allText).toContain('(Thread)');
     expect(allText).not.toContain('|Thread');
     expect(allText).not.toContain('Thread link unavailable');
+    expect(getDialogText(payload)).not.toContain('[이슈 리서치]');
+    expect(getDialogText(payload)).not.toContain('[PR 생성]');
   });
 
   it('supports 10 distinct dialog styles', () => {
@@ -100,5 +102,31 @@ describe('ActionPanelBuilder', () => {
     }
 
     expect(rendered.size).toBe(10);
+  });
+
+  it('renders real clickable links in a separate context block', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-7',
+      workflow: 'default',
+      links: {
+        issue: {
+          type: 'issue',
+          provider: 'jira',
+          url: 'https://jira.example.com/browse/PTN-2411',
+          label: 'PTN-2411',
+        },
+        pr: {
+          type: 'pr',
+          provider: 'github',
+          url: 'https://github.com/acme/repo/pull/854',
+          label: 'PR #854',
+        },
+      },
+    });
+
+    const contextBlock = payload.blocks.find((block) => block.type === 'context');
+    expect(contextBlock).toBeDefined();
+    expect(contextBlock.elements[0].text).toContain('<https://jira.example.com/browse/PTN-2411|PTN-2411>');
+    expect(contextBlock.elements[0].text).toContain('<https://github.com/acme/repo/pull/854|PR #854>');
   });
 });

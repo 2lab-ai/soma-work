@@ -1,4 +1,4 @@
-import { WorkflowType } from '../types';
+import { SessionLink, SessionLinks, WorkflowType } from '../types';
 
 export interface ActionPanelBuildParams {
   sessionKey: string;
@@ -8,6 +8,7 @@ export interface ActionPanelBuildParams {
   waitingForChoice?: boolean;
   panelTitle?: string;
   styleVariant?: number;
+  links?: SessionLinks;
 }
 
 export interface ActionPanelPayload {
@@ -71,11 +72,9 @@ export class ActionPanelBuilder {
     const elements = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
     const actionBlocks = this.chunk(elements, 5).map((row) => ({ type: 'actions', elements: row }));
     const statusText = params.waitingForChoice ? '(Thread) 입력 대기' : (disabled ? '(Thread) 비활성' : '(Thread) 사용 가능');
-    const buttonPreview = this.buildButtonPreview(actions);
     const dialog = this.renderDialog({
       title: params.panelTitle,
       statusText,
-      buttonPreview,
       styleVariant: params.styleVariant ?? 0,
     });
 
@@ -87,8 +86,17 @@ export class ActionPanelBuilder {
           text: ['```', dialog, '```'].join('\n'),
         },
       },
-      ...actionBlocks,
     ];
+
+    const linksText = this.buildLinksText(params.links);
+    if (linksText) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: linksText }],
+      });
+    }
+
+    blocks.push(...actionBlocks);
 
     if (params.choiceBlocks && params.choiceBlocks.length > 0) {
       blocks.push(...params.choiceBlocks);
@@ -100,22 +108,14 @@ export class ActionPanelBuilder {
     };
   }
 
-  private static buildButtonPreview(actions: PanelActionKey[]): string {
-    const previews = actions.slice(0, 2).map((key) => `[${ACTION_DEFS[key].label}]`);
-    const remaining = actions.length - previews.length;
-    const suffix = remaining > 0 ? ` +${remaining}` : '';
-    return this.truncateLine(`${previews.join(' ')}${suffix}`, 64);
-  }
-
   private static renderDialog(params: {
     title?: string;
     statusText: string;
-    buttonPreview: string;
     styleVariant: number;
   }): string {
     const style = this.normalizeStyleVariant(params.styleVariant);
     if (style === 0) {
-      return this.renderTitleBarStyle(params.title, params.statusText, params.buttonPreview);
+      return this.renderTitleBarStyle(params.title, params.statusText);
     }
 
     const lines: string[] = [];
@@ -123,7 +123,6 @@ export class ActionPanelBuilder {
       lines.push(this.truncateLine(params.title, 48));
     }
     lines.push(params.statusText);
-    lines.push(params.buttonPreview);
 
     switch (style) {
       case 1:
@@ -151,11 +150,10 @@ export class ActionPanelBuilder {
 
   private static renderTitleBarStyle(
     title: string | undefined,
-    statusText: string,
-    buttonPreview: string
+    statusText: string
   ): string {
     const safeTitle = this.truncateLine(title || 'Thread', 36);
-    const body = [statusText, buttonPreview];
+    const body = [statusText];
     const bodyWidth = body.reduce((max, line) => Math.max(max, line.length), 0);
     const topLabel = `+-< ${safeTitle} >`;
     const top = topLabel + '-'.repeat(Math.max(0, bodyWidth + 4 - topLabel.length)) + '+';
@@ -188,6 +186,35 @@ export class ActionPanelBuilder {
       return input;
     }
     return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  private static buildLinksText(links: SessionLinks | undefined): string | undefined {
+    if (!links) {
+      return undefined;
+    }
+
+    const segments: string[] = [];
+    if (links.issue) {
+      segments.push(this.renderLinkSegment(links.issue, 'Issue'));
+    }
+    if (links.pr) {
+      segments.push(this.renderLinkSegment(links.pr, 'PR'));
+    }
+    if (links.doc) {
+      segments.push(this.renderLinkSegment(links.doc, 'Doc'));
+    }
+
+    if (segments.length === 0) {
+      return undefined;
+    }
+
+    return `🔗 ${segments.join(' · ')}`;
+  }
+
+  private static renderLinkSegment(link: SessionLink, fallbackLabel: string): string {
+    const rawLabel = (link.label || link.title || fallbackLabel).trim();
+    const label = this.truncateLine(rawLabel || fallbackLabel, 40);
+    return `<${link.url}|${label}>`;
   }
 
   private static buildButton(def: PanelActionDef, sessionKey: string): any {
