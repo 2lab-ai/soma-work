@@ -52,9 +52,12 @@ describe('ActionPanelManager', () => {
     expect(slackApi.getPermalink).not.toHaveBeenCalled();
 
     const blocks = getPostedBlocks(slackApi);
-    const sectionText = blocks.find((block: any) => block.type === 'section')?.text?.text || '';
-    expect(sectionText).toContain('*Thread Dashboard*');
-    expect(sectionText).toContain('워크플로우: `jira-brainstorming`');
+    const summaryContext = blocks.find((block: any) =>
+      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🧵 Thread')
+    );
+    expect(summaryContext).toBeDefined();
+    const summaryText = summaryContext.elements.map((el: any) => String(el.text || '')).join(' | ');
+    expect(summaryText).toContain('`jira-brainstorming`');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
     expect(actionsCount).toBeGreaterThan(0);
@@ -100,7 +103,10 @@ describe('ActionPanelManager', () => {
     await manager.updatePanel(session, 'C123:thread123');
 
     const updateBlocks = (slackApi.updateMessage.mock.calls[1]?.[3] as any[]) || [];
-    const sectionText = updateBlocks.find((block: any) => block.type === 'section')?.text?.text || '';
-    expect(sectionText).toContain('상태: 작업 중');
+    const summaryContext = updateBlocks.find((block: any) =>
+      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🧵 Thread')
+    );
+    const summaryText = summaryContext.elements.map((el: any) => String(el.text || '')).join(' | ');
+    expect(summaryText).toContain('🟠 작업 중');
   });
 });
