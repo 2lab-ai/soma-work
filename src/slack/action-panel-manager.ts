@@ -2,7 +2,7 @@ import { SlackApiHelper } from './slack-api-helper';
 import { ActionPanelBuilder } from './action-panel-builder';
 import { RequestCoordinator } from './request-coordinator';
 import { ClaudeHandler } from '../claude-handler';
-import { ConversationSession } from '../types';
+import { ActionPanelState, ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
 
@@ -93,14 +93,16 @@ export class ActionPanelManager {
       return;
     }
 
-    const threadLink = await this.resolveThreadLink(session);
     const disabled = this.computeDisabled(sessionKey, session);
+    const styleVariant = this.resolveStyleVariant(panelState);
+    const panelTitle = this.resolvePanelTitle(session);
 
     const payload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
       disabled,
-      threadLink,
+      panelTitle,
+      styleVariant,
       choiceBlocks: panelState.choiceBlocks,
       waitingForChoice: panelState.waitingForChoice,
     });
@@ -147,6 +149,7 @@ export class ActionPanelManager {
 
     panelState.renderKey = renderKey;
     panelState.disabled = disabled;
+    panelState.styleVariant = styleVariant;
     panelState.channelId = channelId;
     panelState.userId = userId;
     panelState.lastRenderedAt = Date.now();
@@ -160,20 +163,31 @@ export class ActionPanelManager {
     return Boolean(isBusy || waitingForChoice || hasActiveRequest);
   }
 
-  private async resolveThreadLink(session: ConversationSession): Promise<string | undefined> {
-    const threadTs = session.threadRootTs || session.threadTs;
-    if (!threadTs) return undefined;
-
-    if (session.actionPanel?.threadTs === threadTs && session.actionPanel.threadLink) {
-      return session.actionPanel.threadLink;
+  private resolveStyleVariant(panelState: ActionPanelState): number {
+    if (typeof panelState.styleVariant === 'number') {
+      return panelState.styleVariant;
     }
 
-    const link = await this.deps.slackApi.getPermalink(session.channelId, threadTs);
-    if (session.actionPanel) {
-      session.actionPanel.threadTs = threadTs;
-      session.actionPanel.threadLink = link || undefined;
+    return Math.floor(Math.random() * ActionPanelBuilder.STYLE_VARIANT_COUNT);
+  }
+
+  private resolvePanelTitle(session: ConversationSession): string | undefined {
+    const candidate = session.links?.issue?.label
+      || session.links?.pr?.label
+      || session.links?.doc?.label
+      || session.title
+      || (session.workflow && session.workflow !== 'default' ? session.workflow : undefined);
+
+    if (!candidate) {
+      return undefined;
     }
-    return link || undefined;
+
+    const title = candidate.trim();
+    if (title.length <= 40) {
+      return title;
+    }
+
+    return `${title.slice(0, 37)}...`;
   }
 
   private extractChoiceBlocks(payload: SlackMessagePayload): any[] {
