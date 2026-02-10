@@ -75,14 +75,14 @@ describe('ActionPanelBuilder', () => {
     expect(summary).toContain('🟢 live');
   });
 
-  it('renders thread link in summary when available', () => {
+  it('keeps summary compact without slack permalink unfurl', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-4c',
       workflow: 'default',
-      threadLink: 'https://workspace.slack.com/archives/C123/p111222333',
     });
 
-    expect(getSummaryText(payload)).toContain('<https://workspace.slack.com/archives/C123/p111222333|Thread>');
+    expect(getSummaryText(payload)).toContain('🧵 Thread');
+    expect(getSummaryText(payload)).not.toContain('slack.com/archives');
   });
 
   it('appends choice blocks', () => {
@@ -127,5 +127,25 @@ describe('ActionPanelBuilder', () => {
     expect(contextBlock).toBeDefined();
     expect(contextBlock.elements[0].text).toContain('<https://jira.example.com/browse/PTN-2411|PTN-2411>');
     expect(contextBlock.elements[0].text).toContain('<https://github.com/acme/repo/pull/854|PR #854>');
+  });
+
+  it('skips slack message links to prevent original message preview unfurl', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-7',
+      workflow: 'default',
+      links: {
+        issue: {
+          type: 'issue',
+          provider: 'unknown',
+          url: 'https://workspace.slack.com/archives/C123/p1739000000001000',
+          label: 'Thread header',
+        },
+      },
+    });
+
+    const linkContext = payload.blocks.find((block) =>
+      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🔗')
+    );
+    expect(linkContext).toBeUndefined();
   });
 });

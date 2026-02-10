@@ -362,10 +362,6 @@ export class SessionInitializer {
       session
     );
 
-    if (this.deps.actionPanelManager && (!session.actionPanel || isNewSession)) {
-      await this.deps.actionPanelManager.ensurePanel(session, sessionKey);
-    }
-
     return {
       session,
       sessionKey,
@@ -433,11 +429,10 @@ export class SessionInitializer {
       }
 
       this.deps.claudeHandler.setActivityState(channel, threadTs, state);
-      if (!dispatchSession.actionPanel) {
-        dispatchSession.actionPanel = {
-          channelId: dispatchSession.channelId,
-          userId: dispatchSession.ownerId,
-        };
+      // Do not create panel during dispatch for fresh sessions.
+      // Rendering starts once SlackHandler calls ensurePanel.
+      if (!dispatchSession.actionPanel?.messageTs) {
+        return;
       }
       dispatchSession.actionPanel.agentPhase = phase;
       dispatchSession.actionPanel.activeTool = state === 'working' ? 'dispatch' : undefined;
@@ -628,10 +623,6 @@ export class SessionInitializer {
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
     this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
     await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
-
-    if (this.deps.actionPanelManager) {
-      await this.deps.actionPanelManager.ensurePanel(botSession, newSessionKey);
-    }
 
     this.logger.info('🧵 Bot-initiated thread created, session migrated', {
       channel,

@@ -110,7 +110,7 @@ describe('ActionPanelManager', () => {
     expect(summaryText).toContain('⚙️ 작업 중');
   });
 
-  it('includes thread permalink in compact summary when thread is known', async () => {
+  it('does not fetch thread permalink while rendering panel', async () => {
     const slackApi = {
       postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
       updateMessage: vi.fn().mockResolvedValue(undefined),
@@ -143,9 +143,6 @@ describe('ActionPanelManager', () => {
 
     await manager.ensurePanel(session, 'C123:111.222');
 
-    expect(slackApi.getPermalink).toHaveBeenCalledWith('C123', '111.222');
-    const blocks = getPostedBlocks(slackApi);
-    const summarySection = blocks.find((block: any) => block.type === 'section');
-    expect(String(summarySection?.text?.text || '')).toContain('<https://workspace.slack.com/archives/C123/p111222333|Thread>');
+    expect(slackApi.getPermalink).not.toHaveBeenCalled();
   });
 });
