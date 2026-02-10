@@ -36,5 +36,51 @@ describe('ActionPanelManager', () => {
 
     expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
     expect(slackApi.postEphemeral).not.toHaveBeenCalled();
+    expect(slackApi.getPermalink).not.toHaveBeenCalled();
+    expect(session.actionPanel?.styleVariant).toBeTypeOf('number');
+    expect(session.actionPanel?.styleVariant).toBeGreaterThanOrEqual(0);
+    expect(session.actionPanel?.styleVariant).toBeLessThan(10);
+  });
+
+  it('keeps the same dialog style variant after initial random selection', async () => {
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.72);
+    const slackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      postEphemeral: vi.fn().mockResolvedValue({ ts: '999.000' }),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+    const claudeHandler = {
+      getSessionByKey: vi.fn(),
+    };
+    const requestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    };
+
+    const manager = new ActionPanelManager({
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+    });
+
+    const session: ConversationSession = {
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'idle',
+    };
+
+    await manager.ensurePanel(session, 'C123:thread123');
+    const initialVariant = session.actionPanel?.styleVariant;
+
+    session.activityState = 'working';
+    await manager.updatePanel(session, 'C123:thread123');
+
+    expect(initialVariant).toBe(7);
+    expect(session.actionPanel?.styleVariant).toBe(initialVariant);
+    expect(randomSpy).toHaveBeenCalledTimes(1);
+    randomSpy.mockRestore();
   });
 });
