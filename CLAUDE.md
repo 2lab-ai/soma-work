@@ -7,6 +7,11 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 `bd`로 태스크 관리. `bd ready`로 작업 확인, `bd update <id> --status in_progress`로 시작, `bd close <id> --reason "근거"`로 완료.
 상세 규칙은 `.claude/rules/issuetracking.md` 참조.
 
+## Slack Reference
+
+- Slack UI/API/AI 앱 구현 기준 문서는 `docs/slack-block-kit.md`.
+- Slack Block Kit payload 필드를 추가하거나 변경할 때는 `docs/slack-block-kit.md`의 제약과 공식 링크를 먼저 확인.
+
 ## Architecture
 
 **Facade Pattern** — 복잡한 서브시스템을 단순한 인터페이스로 제공:

@@ -58,5 +58,5 @@ Slack payload validation is strict. Any undocumented field can fail the whole re
 
 ### 8) Reference
 
-- Keep authoritative details in `docs/slack_api.md`.
+- Keep authoritative details in `docs/slack-block-kit.md`.
 - Before adding new Slack UI payload fields, verify against official Slack docs first.
