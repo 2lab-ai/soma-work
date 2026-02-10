@@ -1,6 +1,7 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
 
 interface PanelActionContext {
@@ -15,7 +16,8 @@ type PanelAction =
   | 'pr_review'
   | 'pr_docs'
   | 'pr_fix'
-  | 'pr_approve';
+  | 'pr_approve'
+  | 'focus_choice';
 
 interface PanelActionValue {
   sessionKey?: string;
@@ -28,7 +30,7 @@ interface ActionConfig {
   ackText: (label: string) => string;
 }
 
-const ACTION_CONFIG: Record<PanelAction, ActionConfig> = {
+const ACTION_CONFIG: Record<Exclude<PanelAction, 'focus_choice'>, ActionConfig> = {
   issue_research: {
     requires: 'issue',
     buildText: (url) => `이 이슈를 리서치해줘: ${url}`,
@@ -101,7 +103,13 @@ export class ActionPanelActionHandler {
         return;
       }
 
-      if (session.activityState === 'working' || session.activityState === 'waiting' || session.actionPanel?.waitingForChoice) {
+      const isFocusChoiceAction = value.action === 'focus_choice';
+      if (
+        !isFocusChoiceAction
+        && (session.activityState === 'working'
+          || session.activityState === 'waiting'
+          || session.actionPanel?.waitingForChoice)
+      ) {
         await respond({
           response_type: 'ephemeral',
           text: '⏸️ 현재 세션이 처리 중이거나 입력 대기 상태입니다. 잠시 후 다시 시도해 주세요.',
@@ -110,7 +118,12 @@ export class ActionPanelActionHandler {
         return;
       }
 
-      const config = ACTION_CONFIG[value.action];
+      if (isFocusChoiceAction) {
+        await this.handleFocusChoice(session, respond);
+        return;
+      }
+
+      const config = ACTION_CONFIG[value.action as Exclude<PanelAction, 'focus_choice'>];
       if (!config) {
         await respond({
           response_type: 'ephemeral',
@@ -167,6 +180,32 @@ export class ActionPanelActionHandler {
         });
       } catch {}
     }
+  }
+
+  private async handleFocusChoice(session: ConversationSession, respond: RespondFn): Promise<void> {
+    if (!session?.actionPanel?.waitingForChoice) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'ℹ️ 현재 대기 중인 질문이 없습니다.',
+        replace_original: false,
+      });
+      return;
+    }
+
+    const choiceMessageTs = session.actionPanel.choiceMessageTs;
+    const link = choiceMessageTs
+      ? await this.ctx.slackApi.getPermalink(session.channelId, choiceMessageTs)
+      : null;
+
+    const text = link
+      ? `❓ 질문 카드에서 답변해 주세요: ${link}`
+      : '❓ 이 스레드의 질문 카드에서 답변해 주세요.';
+
+    await respond({
+      response_type: 'ephemeral',
+      text,
+      replace_original: false,
+    });
   }
 
   private createSayFn(channel: string): SayFn {

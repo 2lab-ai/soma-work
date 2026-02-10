@@ -55,8 +55,11 @@ export class ActionPanelManager {
 
     session.actionPanel.choiceBlocks = choiceBlocks;
     session.actionPanel.waitingForChoice = true;
+    session.actionPanel.choiceMessageLink = undefined;
     if (sourceMessageTs) {
       session.actionPanel.choiceMessageTs = sourceMessageTs;
+    } else {
+      session.actionPanel.choiceMessageTs = undefined;
     }
 
     await this.renderPanel(session, sessionKey, true);
@@ -75,6 +78,7 @@ export class ActionPanelManager {
     session.actionPanel.choiceBlocks = undefined;
     session.actionPanel.waitingForChoice = false;
     session.actionPanel.choiceMessageTs = undefined;
+    session.actionPanel.choiceMessageLink = undefined;
 
     await this.renderPanel(session, sessionKey, true);
   }
@@ -96,16 +100,16 @@ export class ActionPanelManager {
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const disabled = this.computeDisabled(session, hasActiveRequest);
     const contextUsagePercent = this.getContextUsagePercent(session);
+    const choiceMessageLink = await this.ensureChoiceMessageLink(panelState, channelId);
 
     const payload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
       disabled,
-      links: session.links,
       choiceBlocks: panelState.choiceBlocks,
       waitingForChoice: panelState.waitingForChoice,
+      choiceMessageLink,
       activityState: session.activityState,
-      model: session.model,
       contextUsagePercent,
       hasActiveRequest,
       agentPhase: panelState.agentPhase,
@@ -186,5 +190,30 @@ export class ActionPanelManager {
     }
     if (payload.blocks) return payload.blocks;
     return [];
+  }
+
+  private async ensureChoiceMessageLink(
+    panelState: NonNullable<ConversationSession['actionPanel']>,
+    channelId: string
+  ): Promise<string | undefined> {
+    if (!panelState.waitingForChoice) {
+      return undefined;
+    }
+
+    if (panelState.choiceMessageLink) {
+      return panelState.choiceMessageLink;
+    }
+
+    if (!panelState.choiceMessageTs) {
+      return undefined;
+    }
+
+    const permalink = await this.deps.slackApi.getPermalink(channelId, panelState.choiceMessageTs);
+    if (permalink) {
+      panelState.choiceMessageLink = permalink;
+      return permalink;
+    }
+
+    return undefined;
   }
 }

@@ -267,8 +267,6 @@ export class ChannelRouteActionHandler {
       workflow: 'default',
       ownerName,
       ownerId: userId,
-      activityState: 'idle',
-      lastActivity: new Date(),
       links,
     });
 

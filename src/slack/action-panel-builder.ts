@@ -1,4 +1,4 @@
-import { ActivityState, SessionLink, SessionLinks, WorkflowType } from '../types';
+import { ActivityState, WorkflowType } from '../types';
 
 export interface ActionPanelBuildParams {
   sessionKey: string;
@@ -6,9 +6,8 @@ export interface ActionPanelBuildParams {
   disabled?: boolean;
   choiceBlocks?: any[];
   waitingForChoice?: boolean;
-  links?: SessionLinks;
+  choiceMessageLink?: string;
   activityState?: ActivityState;
-  model?: string;
   contextUsagePercent?: number;
   hasActiveRequest?: boolean;
   agentPhase?: string;
@@ -72,8 +71,6 @@ export class ActionPanelBuilder {
     const disabled = params.disabled ?? true;
     const workflow = params.workflow || 'default';
     const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
-    const elements = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
-    const actionBlocks = this.chunk(elements, 5).map((row) => ({ type: 'actions', elements: row }));
 
     const status = this.resolveStatus({
       waitingForChoice: params.waitingForChoice,
@@ -81,11 +78,18 @@ export class ActionPanelBuilder {
       hasActiveRequest: params.hasActiveRequest,
       disabled,
     });
+
+    const isQuestionPending = params.waitingForChoice === true;
+    const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
+    const actionBlocks = isQuestionPending
+      ? [{
+        type: 'actions',
+        elements: [this.buildChoiceCtaButton(params.sessionKey, params.choiceMessageLink)],
+      }]
+      : this.chunk(defaultButtons, 5).map((row) => ({ type: 'actions', elements: row }));
+
     const summaryText = this.buildSummaryLine({
       status,
-      workflow,
-      actionsCount: actions.length,
-      model: params.model,
       contextUsagePercent: params.contextUsagePercent,
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
@@ -94,26 +98,19 @@ export class ActionPanelBuilder {
       activeTool: params.activeTool,
       statusUpdatedAt: params.statusUpdatedAt,
     });
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: summaryText },
-      },
-    ];
 
-    const linksText = this.buildLinksText(params.links);
-    if (linksText) {
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: linksText }],
-      });
+    const blocks: any[] = [];
+
+    if (isQuestionPending) {
+      blocks.push(...this.buildChoiceSlotBlocks(params.choiceBlocks));
     }
+
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: summaryText },
+    });
 
     blocks.push(...actionBlocks);
-
-    if (params.choiceBlocks && params.choiceBlocks.length > 0) {
-      blocks.push(...params.choiceBlocks);
-    }
 
     return {
       text: `Action panel (${workflow}) - ${status}`,
@@ -152,9 +149,6 @@ export class ActionPanelBuilder {
 
   private static buildSummaryLine(params: {
     status: string;
-    workflow: WorkflowType;
-    actionsCount: number;
-    model?: string;
     contextUsagePercent?: number;
     waitingForChoice?: boolean;
     activityState?: ActivityState;
@@ -165,7 +159,6 @@ export class ActionPanelBuilder {
   }): string {
     const parts: string[] = [];
 
-    parts.push('🧵 Thread');
     parts.push(this.statusBadge(params.status));
 
     const agentChip = this.buildAgentChip({
@@ -179,16 +172,7 @@ export class ActionPanelBuilder {
       parts.push(agentChip);
     }
 
-    parts.push(`\`${params.workflow}\``);
-    parts.push(`🎛️ ${params.actionsCount}`);
-
-    if (params.model) {
-      parts.push(`🤖 \`${this.truncateLine(params.model, 18)}\``);
-    }
-
-    if (typeof params.contextUsagePercent === 'number') {
-      parts.push(`📦 ${params.contextUsagePercent}%`);
-    }
+    parts.push(this.contextChip(params.contextUsagePercent));
 
     if (params.statusUpdatedAt) {
       parts.push('🟢 live');
@@ -205,7 +189,7 @@ export class ActionPanelBuilder {
     activeTool?: string;
   }): string | undefined {
     if (params.waitingForChoice) {
-      return '🧩 선택 대기';
+      return '🧩 질문 응답 필요';
     }
 
     if (params.activeTool) {
@@ -229,6 +213,13 @@ export class ActionPanelBuilder {
     }
 
     return undefined;
+  }
+
+  private static contextChip(contextUsagePercent?: number): string {
+    if (typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)) {
+      return `📦 ${contextUsagePercent}%`;
+    }
+    return '📦 --%';
   }
 
   private static formatToolLabel(toolName: string): string {
@@ -273,33 +264,77 @@ export class ActionPanelBuilder {
     }
   }
 
-  private static buildLinksText(links: SessionLinks | undefined): string | undefined {
-    if (!links) {
-      return undefined;
+  private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
+    const prompt = this.extractChoicePrompt(choiceBlocks);
+    const hint = this.extractChoiceHint(choiceBlocks);
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: prompt
+            ? `❓ *User Ask*\n${this.truncateLine(prompt, 180)}`
+            : '❓ *User Ask*\n응답이 필요한 질문이 있습니다.',
+        },
+      },
+    ];
+
+    if (hint) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `💡 ${this.truncateLine(hint, 180)}` }],
+      });
     }
 
-    const segments: string[] = [];
-    if (links.issue && !this.isSlackMessageUrl(links.issue.url)) {
-      segments.push(this.renderLinkSegment(links.issue, 'Issue'));
-    }
-    if (links.pr && !this.isSlackMessageUrl(links.pr.url)) {
-      segments.push(this.renderLinkSegment(links.pr, 'PR'));
-    }
-    if (links.doc && !this.isSlackMessageUrl(links.doc.url)) {
-      segments.push(this.renderLinkSegment(links.doc, 'Doc'));
-    }
-
-    if (segments.length === 0) {
-      return undefined;
-    }
-
-    return `🔗 ${segments.join(' · ')}`;
+    return blocks;
   }
 
-  private static renderLinkSegment(link: SessionLink, fallbackLabel: string): string {
-    const rawLabel = (link.label || link.title || fallbackLabel).trim();
-    const label = this.truncateLine(rawLabel || fallbackLabel, 40);
-    return `<${link.url}|${label}>`;
+  private static extractChoicePrompt(choiceBlocks?: any[]): string | undefined {
+    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
+      return undefined;
+    }
+
+    const sectionBlocks = choiceBlocks.filter((block) =>
+      block?.type === 'section' && typeof block?.text?.text === 'string'
+    );
+    if (sectionBlocks.length === 0) {
+      return undefined;
+    }
+
+    const preferred = sectionBlocks.find((block) =>
+      String(block.text.text).includes('❓')
+    ) || sectionBlocks[0];
+    return this.normalizeMrkdwnText(String(preferred.text.text)).replace(/^❓\s*/, '');
+  }
+
+  private static extractChoiceHint(choiceBlocks?: any[]): string | undefined {
+    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
+      return undefined;
+    }
+
+    for (const block of choiceBlocks) {
+      if (block?.type !== 'context' || !Array.isArray(block?.elements)) {
+        continue;
+      }
+
+      for (const element of block.elements) {
+        const text = typeof element?.text === 'string' ? element.text : '';
+        if (!text || !text.includes('💡')) {
+          continue;
+        }
+        return this.normalizeMrkdwnText(text).replace(/^💡\s*/, '');
+      }
+    }
+
+    return undefined;
+  }
+
+  private static normalizeMrkdwnText(text: string): string {
+    return text
+      .replace(/<[^|>]+\|([^>]+)>/g, '$1')
+      .replace(/[*_`~]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private static truncateLine(input: string, maxLength: number): string {
@@ -309,8 +344,20 @@ export class ActionPanelBuilder {
     return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
   }
 
-  private static isSlackMessageUrl(url: string): boolean {
-    return url.includes('slack.com/archives/') || url.includes('app.slack.com/client/');
+  private static buildChoiceCtaButton(sessionKey: string, choiceMessageLink?: string): any {
+    const button: any = {
+      type: 'button',
+      text: { type: 'plain_text', text: '질문 응답', emoji: true },
+      style: 'primary',
+      action_id: 'panel_focus_choice',
+      value: JSON.stringify({ sessionKey, action: 'focus_choice' }),
+    };
+
+    if (choiceMessageLink) {
+      button.url = choiceMessageLink;
+    }
+
+    return button;
   }
 
   private static buildButton(def: PanelActionDef, sessionKey: string): any {
