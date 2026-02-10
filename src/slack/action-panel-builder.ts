@@ -83,16 +83,8 @@ export class ActionPanelBuilder {
       model: params.model,
       contextUsagePercent: params.contextUsagePercent,
     });
-
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: summaryLines.join('\n'),
-        },
-      },
-    ];
+    const summaryElements = summaryLines.map((line) => ({ type: 'mrkdwn', text: line }));
+    const blocks: any[] = [{ type: 'context', elements: summaryElements }];
 
     const linksText = this.buildLinksText(params.links);
     if (linksText) {
@@ -146,22 +138,36 @@ export class ActionPanelBuilder {
     contextUsagePercent?: number;
   }): string[] {
     const lines = [
-      '*Thread Dashboard*',
-      `• 상태: ${params.status}`,
-      `• 워크플로우: \`${params.workflow}\``,
-      `• 사용 가능 액션: ${params.actionsCount}개`,
+      '🧵 Thread',
+      this.statusBadge(params.status),
+      `\`${params.workflow}\``,
+      `🎛️ ${params.actionsCount}`,
     ];
 
     if (params.model) {
-      lines.push(`• 모델: \`${params.model}\``);
+      lines.push(`🤖 \`${this.truncateLine(params.model, 18)}\``);
     }
 
     if (typeof params.contextUsagePercent === 'number') {
-      lines.push(`• 컨텍스트 사용량: ${params.contextUsagePercent}%`);
+      lines.push(`📦 ${params.contextUsagePercent}%`);
     }
-
-    lines.push('• 동작: 아래 버튼/링크로 실행');
     return lines;
+  }
+
+  private static statusBadge(status: string): string {
+    switch (status) {
+      case '사용 가능':
+        return '✅ 사용 가능';
+      case '작업 중':
+        return '🟠 작업 중';
+      case '입력 대기':
+        return '✋ 입력 대기';
+      case '대기 중':
+        return '🟡 대기 중';
+      case '비활성':
+      default:
+        return '⏸️ 비활성';
+    }
   }
 
   private static buildLinksText(links: SessionLinks | undefined): string | undefined {
