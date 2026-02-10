@@ -426,6 +426,24 @@ export class SessionInitializer {
 
     // Track dispatch status message for updating
     let dispatchMessageTs: string | undefined;
+    const updateDispatchPanel = async (phase: string, state: 'working' | 'idle'): Promise<void> => {
+      const dispatchSession = this.deps.claudeHandler.getSession(channel, threadTs);
+      if (!dispatchSession) {
+        return;
+      }
+
+      this.deps.claudeHandler.setActivityState(channel, threadTs, state);
+      if (!dispatchSession.actionPanel) {
+        dispatchSession.actionPanel = {
+          channelId: dispatchSession.channelId,
+          userId: dispatchSession.ownerId,
+        };
+      }
+      dispatchSession.actionPanel.agentPhase = phase;
+      dispatchSession.actionPanel.activeTool = state === 'working' ? 'dispatch' : undefined;
+      dispatchSession.actionPanel.statusUpdatedAt = Date.now();
+      await this.deps.actionPanelManager?.updatePanel(dispatchSession, sessionKey);
+    };
 
     try {
       const dispatchService = getDispatchService();
@@ -433,6 +451,7 @@ export class SessionInitializer {
 
       // Native spinner during dispatch
       await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      await updateDispatchPanel('워크플로우 분석 중', 'working');
 
       // Add dispatching reaction and post status message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
@@ -492,6 +511,7 @@ export class SessionInitializer {
 
       // Transition session to MAIN state with determined workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, result.workflow, result.title);
+      await updateDispatchPanel('사용자 액션 대기', 'idle');
     } catch (error) {
       const elapsed = Date.now() - startTime;
       this.logger.error(`❌ Dispatch failed after ${elapsed}ms, using default workflow`, { error });
@@ -511,6 +531,7 @@ export class SessionInitializer {
       // Fallback to default workflow on error
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
+      await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises

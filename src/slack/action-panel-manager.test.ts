@@ -52,11 +52,11 @@ describe('ActionPanelManager', () => {
     expect(slackApi.getPermalink).not.toHaveBeenCalled();
 
     const blocks = getPostedBlocks(slackApi);
-    const summaryContext = blocks.find((block: any) =>
-      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🧵 Thread')
+    const summarySection = blocks.find((block: any) =>
+      block.type === 'section' && String(block.text?.text || '').includes('🧵')
     );
-    expect(summaryContext).toBeDefined();
-    const summaryText = summaryContext.elements.map((el: any) => String(el.text || '')).join(' | ');
+    expect(summarySection).toBeDefined();
+    const summaryText = String(summarySection.text?.text || '');
     expect(summaryText).toContain('`jira-brainstorming`');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
@@ -103,10 +103,49 @@ describe('ActionPanelManager', () => {
     await manager.updatePanel(session, 'C123:thread123');
 
     const updateBlocks = (slackApi.updateMessage.mock.calls[1]?.[3] as any[]) || [];
-    const summaryContext = updateBlocks.find((block: any) =>
-      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🧵 Thread')
+    const summarySection = updateBlocks.find((block: any) =>
+      block.type === 'section' && String(block.text?.text || '').includes('🧵')
     );
-    const summaryText = summaryContext.elements.map((el: any) => String(el.text || '')).join(' | ');
-    expect(summaryText).toContain('🟠 작업 중');
+    const summaryText = String(summarySection?.text?.text || '');
+    expect(summaryText).toContain('⚙️ 작업 중');
+  });
+
+  it('includes thread permalink in compact summary when thread is known', async () => {
+    const slackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      postEphemeral: vi.fn().mockResolvedValue({ ts: '999.000' }),
+      getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p111222333'),
+    };
+    const claudeHandler = {
+      getSessionByKey: vi.fn(),
+    };
+    const requestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    };
+
+    const manager = new ActionPanelManager({
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+    });
+
+    const session: ConversationSession = {
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      threadTs: '111.222',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'idle',
+      workflow: 'default',
+    };
+
+    await manager.ensurePanel(session, 'C123:111.222');
+
+    expect(slackApi.getPermalink).toHaveBeenCalledWith('C123', '111.222');
+    const blocks = getPostedBlocks(slackApi);
+    const summarySection = blocks.find((block: any) => block.type === 'section');
+    expect(String(summarySection?.text?.text || '')).toContain('<https://workspace.slack.com/archives/C123/p111222333|Thread>');
   });
 });

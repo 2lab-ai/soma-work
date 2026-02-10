@@ -52,6 +52,20 @@ describe('ThreadHeaderBuilder', () => {
     expect(linkTexts.join(' ')).not.toContain('slack.com/archives');
   });
 
+  it('renders agent runtime status in metadata context', () => {
+    const payload = ThreadHeaderBuilder.build({
+      title: 'Header',
+      activityState: 'working',
+      agentPhase: '워크플로우 분석 중',
+      activeTool: 'Read',
+    });
+
+    const blocks = (payload.blocks || []) as any[];
+    const metaContext = blocks.find((block) => block.type === 'context');
+    const texts = (metaContext?.elements || []).map((el: any) => String(el.text || ''));
+    expect(texts.join(' ')).toContain('🧠 Read');
+  });
+
   it('builds thread header as top-level blocks to avoid duplicate attachment rendering', () => {
     const payload = ThreadHeaderBuilder.build({
       title: 'Header',
