@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
 
-function getSectionText(payload: { blocks: any[] }): string {
-  return String(payload.blocks.find((block) => block.type === 'section')?.text?.text || '');
+function getSummaryText(payload: { blocks: any[] }): string {
+  const contextBlock = payload.blocks.find((block) => block.type === 'context');
+  const elements = contextBlock?.elements || [];
+  return elements.map((el: any) => String(el.text || '')).join(' | ');
 }
 
 describe('ActionPanelBuilder', () => {
@@ -39,13 +41,13 @@ describe('ActionPanelBuilder', () => {
       disabled: true,
     });
 
-    const sectionText = getSectionText(payload);
-    expect(sectionText).toContain('*Thread Dashboard*');
-    expect(sectionText).toContain('상태: 비활성');
-    expect(sectionText).toContain('워크플로우: `jira-brainstorming`');
-    expect(sectionText).not.toContain('```');
-    expect(sectionText).not.toContain('+-<');
-    expect(sectionText).not.toContain('[이슈 리서치]');
+    const summary = getSummaryText(payload);
+    expect(summary).toContain('🧵 Thread');
+    expect(summary).toContain('⏸️ 비활성');
+    expect(summary).toContain('`jira-brainstorming`');
+    expect(summary).toContain('🎛️ 2');
+    expect(summary).not.toContain('*Thread Dashboard*');
+    expect(summary).not.toContain('```');
   });
 
   it('shows waiting status when choice input is pending', () => {
@@ -55,7 +57,7 @@ describe('ActionPanelBuilder', () => {
       waitingForChoice: true,
     });
 
-    expect(getSectionText(payload)).toContain('상태: 입력 대기');
+    expect(getSummaryText(payload)).toContain('✋ 입력 대기');
   });
 
   it('appends choice blocks', () => {
@@ -94,7 +96,9 @@ describe('ActionPanelBuilder', () => {
       },
     });
 
-    const contextBlock = payload.blocks.find((block) => block.type === 'context');
+    const contextBlock = payload.blocks.find((block) =>
+      block.type === 'context' && String(block.elements?.[0]?.text || '').includes('🔗')
+    );
     expect(contextBlock).toBeDefined();
     expect(contextBlock.elements[0].text).toContain('<https://jira.example.com/browse/PROJ-2411|PROJ-2411>');
     expect(contextBlock.elements[0].text).toContain('<https://github.com/acme/repo/pull/854|PR #854>');
