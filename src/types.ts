@@ -87,6 +87,7 @@ export interface ActionPanelState {
   userId?: string;
   threadTs?: string;
   threadLink?: string;
+  styleVariant?: number;
   messageTs?: string;
   choiceMessageTs?: string;
   disabled?: boolean;
