@@ -598,6 +598,8 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
+    const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
+    await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
     await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
     await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
 
@@ -627,6 +629,44 @@ export class SessionInitializer {
       workingDirectory,
       abortController,
     };
+  }
+
+  private async postMigratedContextSummary(
+    channel: string,
+    newThreadTs: string,
+    oldThreadPermalink: string | null,
+    session: ConversationSession
+  ): Promise<void> {
+    const lines: string[] = ['📎 기존 대화 컨텍스트를 새 스레드로 복사했습니다.'];
+
+    if (oldThreadPermalink) {
+      lines.push(`• 이전 스레드: <${oldThreadPermalink}|열기>`);
+    }
+
+    if (session.conversationId) {
+      const conversationUrl = getConversationUrl(session.conversationId);
+      lines.push(`• 대화 기록: <${conversationUrl}|View conversation history>`);
+    }
+
+    if (session.links?.issue?.url) {
+      lines.push(`• 이슈: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);
+    }
+
+    if (session.links?.pr?.url) {
+      lines.push(`• PR: <${session.links.pr.url}|${session.links.pr.label || 'PR'}>`);
+    }
+
+    if (session.links?.doc?.url) {
+      lines.push(`• 문서: <${session.links.doc.url}|${session.links.doc.label || 'Doc'}>`);
+    }
+
+    if (lines.length <= 1) {
+      return;
+    }
+
+    await this.deps.slackApi.postMessage(channel, lines.join('\n'), {
+      threadTs: newThreadTs,
+    });
   }
 
   private async postRouteAdvisory(

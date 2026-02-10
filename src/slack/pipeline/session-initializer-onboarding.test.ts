@@ -96,6 +96,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
     mockSlackApi = {
       getUserName: vi.fn().mockResolvedValue('Test User'),
       postMessage: vi.fn().mockResolvedValue({ ts: 'msg123' }),
+      getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p1739000000001000'),
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
@@ -321,6 +322,12 @@ describe('SessionInitializer - Onboarding Detection', () => {
         Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments)
       );
       expect(headerCall).toBeDefined();
+      const migratedContextCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
+        call[2]?.threadTs === 'msg123' &&
+        String(call[1] || '').includes('View conversation history')
+      );
+      expect(migratedContextCall).toBeDefined();
+      expect(String(migratedContextCall?.[1] || '')).toContain('이전 스레드');
       expect(result.session.threadModel).toBe('bot-initiated');
       expect(result.session.threadRootTs).toBe('msg123');
       expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
