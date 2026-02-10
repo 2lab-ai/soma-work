@@ -10,6 +10,11 @@ export interface ActionPanelBuildParams {
   activityState?: ActivityState;
   model?: string;
   contextUsagePercent?: number;
+  hasActiveRequest?: boolean;
+  threadLink?: string;
+  agentPhase?: string;
+  activeTool?: string;
+  statusUpdatedAt?: number;
 }
 
 export interface ActionPanelPayload {
@@ -74,17 +79,29 @@ export class ActionPanelBuilder {
     const status = this.resolveStatus({
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
+      hasActiveRequest: params.hasActiveRequest,
       disabled,
     });
-    const summaryLines = this.buildDashboardLines({
+    const summaryText = this.buildSummaryLine({
       status,
       workflow,
       actionsCount: actions.length,
       model: params.model,
       contextUsagePercent: params.contextUsagePercent,
+      threadLink: params.threadLink,
+      waitingForChoice: params.waitingForChoice,
+      activityState: params.activityState,
+      hasActiveRequest: params.hasActiveRequest,
+      agentPhase: params.agentPhase,
+      activeTool: params.activeTool,
+      statusUpdatedAt: params.statusUpdatedAt,
     });
-    const summaryElements = summaryLines.map((line) => ({ type: 'mrkdwn', text: line }));
-    const blocks: any[] = [{ type: 'context', elements: summaryElements }];
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: summaryText },
+      },
+    ];
 
     const linksText = this.buildLinksText(params.links);
     if (linksText) {
@@ -101,7 +118,7 @@ export class ActionPanelBuilder {
     }
 
     return {
-      text: `Action panel (${workflow})`,
+      text: `Action panel (${workflow}) - ${status}`,
       blocks,
     };
   }
@@ -109,6 +126,7 @@ export class ActionPanelBuilder {
   private static resolveStatus(params: {
     waitingForChoice?: boolean;
     activityState?: ActivityState;
+    hasActiveRequest?: boolean;
     disabled: boolean;
   }): string {
     if (params.waitingForChoice) {
@@ -117,6 +135,10 @@ export class ActionPanelBuilder {
 
     if (params.activityState === 'working') {
       return '작업 중';
+    }
+
+    if (params.hasActiveRequest) {
+      return '요청 처리 중';
     }
 
     if (params.activityState === 'waiting') {
@@ -130,28 +152,110 @@ export class ActionPanelBuilder {
     return '사용 가능';
   }
 
-  private static buildDashboardLines(params: {
+  private static buildSummaryLine(params: {
     status: string;
     workflow: WorkflowType;
     actionsCount: number;
     model?: string;
     contextUsagePercent?: number;
-  }): string[] {
-    const lines = [
-      '🧵 Thread',
-      this.statusBadge(params.status),
-      `\`${params.workflow}\``,
-      `🎛️ ${params.actionsCount}`,
-    ];
+    threadLink?: string;
+    waitingForChoice?: boolean;
+    activityState?: ActivityState;
+    hasActiveRequest?: boolean;
+    agentPhase?: string;
+    activeTool?: string;
+    statusUpdatedAt?: number;
+  }): string {
+    const parts: string[] = [];
+
+    parts.push(params.threadLink ? `🧵 <${params.threadLink}|Thread>` : '🧵 Thread');
+    parts.push(this.statusBadge(params.status));
+
+    const agentChip = this.buildAgentChip({
+      waitingForChoice: params.waitingForChoice,
+      activityState: params.activityState,
+      hasActiveRequest: params.hasActiveRequest,
+      agentPhase: params.agentPhase,
+      activeTool: params.activeTool,
+    });
+    if (agentChip) {
+      parts.push(agentChip);
+    }
+
+    parts.push(`\`${params.workflow}\``);
+    parts.push(`🎛️ ${params.actionsCount}`);
 
     if (params.model) {
-      lines.push(`🤖 \`${this.truncateLine(params.model, 18)}\``);
+      parts.push(`🤖 \`${this.truncateLine(params.model, 18)}\``);
     }
 
     if (typeof params.contextUsagePercent === 'number') {
-      lines.push(`📦 ${params.contextUsagePercent}%`);
+      parts.push(`📦 ${params.contextUsagePercent}%`);
     }
-    return lines;
+
+    if (params.statusUpdatedAt) {
+      parts.push('🟢 live');
+    }
+
+    return parts.join(' · ');
+  }
+
+  private static buildAgentChip(params: {
+    waitingForChoice?: boolean;
+    activityState?: ActivityState;
+    hasActiveRequest?: boolean;
+    agentPhase?: string;
+    activeTool?: string;
+  }): string | undefined {
+    if (params.waitingForChoice) {
+      return '🧩 선택 대기';
+    }
+
+    if (params.activeTool) {
+      return `🛠 ${this.formatToolLabel(params.activeTool)}`;
+    }
+
+    if (params.agentPhase) {
+      return `🧠 ${this.truncateLine(params.agentPhase, 22)}`;
+    }
+
+    if (params.hasActiveRequest) {
+      return '⏳ 요청 처리';
+    }
+
+    if (params.activityState === 'working') {
+      return '🧠 응답 생성';
+    }
+
+    if (params.activityState === 'waiting') {
+      return '🧩 입력 대기';
+    }
+
+    return undefined;
+  }
+
+  private static formatToolLabel(toolName: string): string {
+    if (toolName.startsWith('mcp__')) {
+      const parts = toolName.split('__');
+      const serverName = parts[1] || 'mcp';
+      const actualTool = parts.slice(2).join('__');
+      const label = actualTool ? `${serverName}:${actualTool}` : serverName;
+      return this.truncateLine(label, 20);
+    }
+
+    const aliases: Record<string, string> = {
+      Read: '파일 읽기',
+      Write: '코드 작성',
+      Edit: '코드 수정',
+      Bash: '명령 실행',
+      Grep: '코드 검색',
+      Glob: '파일 탐색',
+      WebSearch: '웹 검색',
+      WebFetch: '웹 조회',
+      Task: '에이전트 위임',
+    };
+
+    return aliases[toolName] || this.truncateLine(toolName, 20);
   }
 
   private static statusBadge(status: string): string {
@@ -159,7 +263,9 @@ export class ActionPanelBuilder {
       case '사용 가능':
         return '✅ 사용 가능';
       case '작업 중':
-        return '🟠 작업 중';
+        return '⚙️ 작업 중';
+      case '요청 처리 중':
+        return '⏳ 요청 처리 중';
       case '입력 대기':
         return '✋ 입력 대기';
       case '대기 중':

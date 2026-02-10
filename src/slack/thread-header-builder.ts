@@ -9,6 +9,8 @@ export interface ThreadHeaderData {
   ownerId?: string;
   model?: string;
   activityState?: ActivityState;
+  agentPhase?: string;
+  activeTool?: string;
   lastActivity?: Date;
   links?: SessionLinks;
 }
@@ -40,6 +42,8 @@ export class ThreadHeaderBuilder {
       ownerId: session.ownerId,
       model: session.model,
       activityState: session.activityState,
+      agentPhase: session.actionPanel?.agentPhase,
+      activeTool: session.actionPanel?.activeTool,
       lastActivity: session.lastActivity,
       links: session.links,
     });
@@ -53,6 +57,7 @@ export class ThreadHeaderBuilder {
     const modelDisplay = data.model
       ? userSettingsStore.getModelDisplayName(data.model as any)
       : userSettingsStore.getModelDisplayName(DEFAULT_MODEL);
+    const agentStatus = this.formatAgentStatus(data.agentPhase, data.activeTool, data.activityState);
     const lastActivity = data.lastActivity || new Date();
     const timeAgo = MessageFormatter.formatTimeAgo(lastActivity);
     const expiresIn = MessageFormatter.formatExpiresIn(lastActivity);
@@ -62,6 +67,9 @@ export class ThreadHeaderBuilder {
     const metaElements: any[] = [];
     if (owner) {
       metaElements.push({ type: 'mrkdwn', text: `👤 ${owner}` });
+    }
+    if (agentStatus) {
+      metaElements.push({ type: 'mrkdwn', text: `🧠 ${agentStatus}` });
     }
     metaElements.push({ type: 'mrkdwn', text: `🤖 ${modelDisplay}` });
     metaElements.push({ type: 'mrkdwn', text: `🕐 ${timeAgo}` });
@@ -88,6 +96,7 @@ export class ThreadHeaderBuilder {
 
     const textParts: string[] = [headerText];
     if (owner) textParts.push(`👤 ${owner}`);
+    if (agentStatus) textParts.push(`🧠 ${agentStatus}`);
     textParts.push(`🤖 ${modelDisplay} | 🕐 ${timeAgo} | ⏳ ${expiresIn}`);
     if (linkParts.length > 0) textParts.push(linkParts.join(' · '));
 
@@ -121,5 +130,29 @@ export class ThreadHeaderBuilder {
 
   private static isSlackMessageUrl(url: string): boolean {
     return url.includes('slack.com/archives/') || url.includes('app.slack.com/client/');
+  }
+
+  private static formatAgentStatus(
+    agentPhase?: string,
+    activeTool?: string,
+    activityState?: ActivityState
+  ): string | undefined {
+    if (activeTool) {
+      if (activeTool.startsWith('mcp__')) {
+        const parts = activeTool.split('__');
+        const server = parts[1] || 'mcp';
+        const toolName = parts.slice(2).join('__');
+        return toolName ? `${server}:${toolName}` : server;
+      }
+      return activeTool;
+    }
+
+    if (agentPhase) {
+      return agentPhase;
+    }
+
+    if (activityState === 'working') return '응답 생성 중';
+    if (activityState === 'waiting') return '입력 대기 중';
+    return undefined;
   }
 }
