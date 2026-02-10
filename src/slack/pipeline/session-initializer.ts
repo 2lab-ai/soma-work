@@ -571,9 +571,6 @@ export class SessionInitializer {
       workflow: session.workflow || 'default',
       ownerName: session.ownerName,
       ownerId: session.ownerId,
-      model: session.model,
-      activityState: 'idle',
-      lastActivity: session.lastActivity,
       links: session.links,
     });
 

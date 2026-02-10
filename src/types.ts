@@ -94,6 +94,7 @@ export interface ActionPanelState {
   statusUpdatedAt?: number;
   messageTs?: string;
   choiceMessageTs?: string;
+  choiceMessageLink?: string;
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];

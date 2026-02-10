@@ -78,4 +78,45 @@ describe('ActionPanelActionHandler', () => {
     }));
     expect(messageHandler).not.toHaveBeenCalled();
   });
+
+  it('provides choice guidance link for focus_choice action', async () => {
+    const messageHandler = vi.fn();
+    const handler = new ActionPanelActionHandler({
+      slackApi: {
+        postMessage: vi.fn(),
+        getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p111222333'),
+      } as any,
+      claudeHandler: {
+        getSessionByKey: vi.fn().mockReturnValue({
+          ownerId: 'U123',
+          channelId: 'C123',
+          threadTs: '111.222',
+          activityState: 'waiting',
+          actionPanel: {
+            waitingForChoice: true,
+            choiceMessageTs: '111.222',
+          },
+        }),
+      } as any,
+      messageHandler,
+    });
+
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const body = {
+      user: { id: 'U123' },
+      actions: [
+        {
+          value: JSON.stringify({ sessionKey: 'session-1', action: 'focus_choice' }),
+        },
+      ],
+    };
+
+    await handler.handleAction(body, respond as any);
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
+      response_type: 'ephemeral',
+      text: expect.stringContaining('slack.com/archives'),
+    }));
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
 });
