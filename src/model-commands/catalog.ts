@@ -59,8 +59,78 @@ const ASK_USER_QUESTION_SCHEMA = {
   type: 'object',
   properties: {
     payload: {
-      type: 'object',
-      description: 'user_choice | user_choices | user_choice_group payload',
+      oneOf: [
+        {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['user_choice'] },
+            question: { type: 'string' },
+            context: { type: 'string' },
+            choices: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  label: { type: 'string' },
+                  description: { type: 'string' },
+                },
+                required: ['label'],
+              },
+            },
+          },
+          required: ['type', 'question', 'choices'],
+        },
+        {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['user_choice_group'] },
+            question: { type: 'string' },
+            context: { type: 'string' },
+            choices: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  question: { type: 'string' },
+                  context: { type: 'string' },
+                  options: {
+                    type: 'array',
+                    minItems: 1,
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        label: { type: 'string' },
+                        description: { type: 'string' },
+                      },
+                      required: ['label'],
+                    },
+                  },
+                  choices: {
+                    type: 'array',
+                    minItems: 1,
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        label: { type: 'string' },
+                        description: { type: 'string' },
+                      },
+                      required: ['label'],
+                    },
+                  },
+                },
+                required: ['question'],
+              },
+            },
+          },
+          required: ['type', 'question', 'choices'],
+        },
+      ],
+      description: 'Strict payload: user_choice or user_choice_group',
     },
   },
   required: ['payload'],

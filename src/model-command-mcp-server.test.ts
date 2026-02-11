@@ -144,6 +144,105 @@ describe('model-command MCP server helpers', () => {
     expect(result.error.code).toBe('INVALID_ARGS');
   });
 
+  it('returns detailed ASK_USER_QUESTION schema guidance on invalid payload', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          question: 'Choose next step',
+          options: ['A', 'B'],
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('ASK_USER_QUESTION');
+    expect(result.error.message).toContain('params.payload');
+    expect(result.error.message).toContain('"type":"user_choice"');
+    expect(result.error.message).toContain('user_choice');
+    expect(result.error.message).toContain('user_choice_group');
+    expect(result.error.message).toContain('"choices"');
+    expect(result.error.message).toContain('"label"');
+    expect(result.error.details).toMatchObject({
+      requiredTopLevel: ['payload'],
+      allowedPayloadTypes: ['user_choice', 'user_choice_group'],
+    });
+  });
+
+  it('rejects ASK_USER_QUESTION params.user_choice wrapper outside payload', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          user_choice: {
+            question: 'Choose next step',
+            options: [
+              { id: '1', label: 'Write spec' },
+              { id: '2', label: 'Start implementation' },
+            ],
+          },
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('params.payload');
+  });
+
+  it('rejects ASK_USER_QUESTION root question/options shape', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          question: 'MIN-63 브레인스토밍 완료. 다음 단계로 무엇을 진행할까요?',
+          options: [
+            { label: 'Implementation Spec 작성 (권장)' },
+            { label: '바로 구현 시작' },
+          ],
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('params.payload');
+  });
+
+  it('accepts ASK_USER_QUESTION when strict payload schema is satisfied', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'MIN-63 브레인스토밍 완료. 다음 단계로 무엇을 진행할까요?',
+            choices: [
+              { id: '1', label: 'Implementation Spec 작성 (권장)' },
+              { id: '2', label: '바로 구현 시작' },
+            ],
+          },
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('ASK_USER_QUESTION');
+    if (result.commandId !== 'ASK_USER_QUESTION') return;
+    expect(result.payload.question.type).toBe('user_choice');
+    if (result.payload.question.type !== 'user_choice') return;
+    expect(result.payload.question.choices).toHaveLength(2);
+  });
+
   it('rejects SAVE_CONTEXT_RESULT outside renew pending_save state', () => {
     const result = buildModelCommandRunResponse(
       {
