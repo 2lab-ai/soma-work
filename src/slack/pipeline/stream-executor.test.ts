@@ -378,6 +378,7 @@ describe('model-command integration', () => {
       actionHandlers: {
         setPendingForm: vi.fn(),
         getPendingForm: vi.fn(),
+        deletePendingForm: vi.fn(),
         invalidateOldForms: vi.fn().mockResolvedValue(undefined),
       },
       requestCoordinator: {
@@ -533,5 +534,188 @@ describe('model-command integration', () => {
     expect(continuation?.prompt).toContain('local:load');
     expect(session.renewState).toBeNull();
     expect(session.renewUserMessage).toBeUndefined();
+  });
+
+  it('surfaces warning when UPDATE_SESSION host apply fails', async () => {
+    const deps = createExecutorDeps();
+    deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+      ok: false,
+      reason: 'INVALID_OPERATION',
+      error: 'invalid request',
+      snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 0 },
+    });
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_update_fail',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'UPDATE_SESSION',
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 },
+              appliedOperations: 1,
+              request: {
+                operations: [
+                  {
+                    action: 'set_active',
+                    resourceType: 'issue',
+                  },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('Session update could not be applied'),
+    }));
+  });
+
+  it('ignores SAVE_CONTEXT_RESULT when renew is not pending_save', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = null;
+    session.renewSaveResult = {
+      success: true,
+      id: 'save_old',
+    };
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_save',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'SAVE_CONTEXT_RESULT',
+            ok: true,
+            payload: {
+              saveResult: {
+                success: true,
+                id: 'save_new',
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(session.renewSaveResult?.id).toBe('save_old');
+  });
+
+  it('falls back to plain text when command-driven single choice blocks fail', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn()
+      .mockRejectedValueOnce(new Error('invalid_blocks'))
+      .mockResolvedValue({ ts: 'fallback_ts' });
+
+    await expect((executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_choice_single',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '하나를 선택하세요',
+                choices: [
+                  { id: '1', label: '옵션 A' },
+                  { id: '2', label: '옵션 B' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    )).resolves.toBe(true);
+
+    expect(say).toHaveBeenCalledTimes(2);
+    expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
+  });
+
+  it('falls back to plain text when command-driven multi choice blocks fail', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn()
+      .mockRejectedValueOnce(new Error('invalid_blocks'))
+      .mockResolvedValue({ ts: 'fallback_multi_ts' });
+
+    await expect((executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_choice_multi',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choices',
+                title: '멀티 질문',
+                questions: [
+                  {
+                    id: 'q1',
+                    question: 'Q1',
+                    choices: [
+                      { id: '1', label: 'A' },
+                      { id: '2', label: 'B' },
+                    ],
+                  },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    )).resolves.toBe(true);
+
+    expect(say).toHaveBeenCalledTimes(2);
+    expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
   });
 });

@@ -20,21 +20,24 @@ import { WorkflowType } from './types.js';
 
 const logger = new StderrLogger('ModelCommandMCP');
 
-const DEFAULT_CONTEXT: ModelCommandContext = {
-  session: getDefaultSessionSnapshot(),
-};
+function createDefaultContext(): ModelCommandContext {
+  return {
+    session: getDefaultSessionSnapshot(),
+    renewState: null,
+  };
+}
 
 export function parseModelCommandContext(
   rawContext: string | undefined
 ): ModelCommandContext {
   if (!rawContext) {
-    return { ...DEFAULT_CONTEXT };
+    return createDefaultContext();
   }
 
   try {
     const parsed = JSON.parse(rawContext);
     if (!isRecord(parsed)) {
-      return { ...DEFAULT_CONTEXT };
+      return createDefaultContext();
     }
 
     return {
@@ -53,7 +56,7 @@ export function parseModelCommandContext(
     logger.warn('Failed to parse SOMA_COMMAND_CONTEXT, using default context', {
       error: (error as Error).message,
     });
-    return { ...DEFAULT_CONTEXT };
+    return createDefaultContext();
   }
 }
 
@@ -80,13 +83,38 @@ export function buildModelCommandRunResponse(
     };
   }
 
-  return runModelCommand(validated.request, context);
+  if (
+    validated.request.commandId === 'SAVE_CONTEXT_RESULT'
+    && context.renewState !== 'pending_save'
+  ) {
+    return {
+      type: 'model_command_result',
+      commandId: 'SAVE_CONTEXT_RESULT',
+      ok: false,
+      error: {
+        code: 'CONTEXT_ERROR',
+        message: 'SAVE_CONTEXT_RESULT is only available while renewState is pending_save',
+        details: { renewState: context.renewState ?? null },
+      },
+    };
+  }
+
+  const result = runModelCommand(validated.request, context);
+  if (result.ok && result.commandId === 'UPDATE_SESSION') {
+    context.session = result.payload.session;
+  }
+  if (result.ok && result.commandId === 'SAVE_CONTEXT_RESULT') {
+    context.renewState = 'pending_load';
+  }
+  return result;
 }
 
 class ModelCommandMcpServer {
   private server: Server;
+  private context: ModelCommandContext;
 
   constructor() {
+    this.context = parseModelCommandContext(process.env.SOMA_COMMAND_CONTEXT);
     this.server = new Server(
       {
         name: 'model-command',
@@ -137,10 +165,8 @@ class ModelCommandMcpServer {
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-      const context = parseModelCommandContext(process.env.SOMA_COMMAND_CONTEXT);
-
       if (request.params.name === 'list') {
-        const payload = buildModelCommandListResponse(context);
+        const payload = buildModelCommandListResponse(this.context);
         return {
           content: [
             {
@@ -152,7 +178,7 @@ class ModelCommandMcpServer {
       }
 
       if (request.params.name === 'run') {
-        const payload = buildModelCommandRunResponse(request.params.arguments, context);
+        const payload = buildModelCommandRunResponse(request.params.arguments, this.context);
         return {
           content: [
             {
