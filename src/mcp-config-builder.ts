@@ -6,10 +6,12 @@
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
+import { ModelCommandContext } from './model-commands/types';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
+const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 
 export interface PermissionServerPathResult {
   resolvedPath: string | null;
@@ -17,12 +19,13 @@ export interface PermissionServerPathResult {
   triedPaths: string[];
 }
 
-export function resolvePermissionServerPath(
+export function resolveInternalMcpServer(
   baseDir: string,
+  basename: string,
   runtimeExt: '.ts' | '.js',
   existsSync: (path: string) => boolean = fs.existsSync
 ): PermissionServerPathResult {
-  const basePath = path.join(baseDir, PERMISSION_SERVER_BASENAME);
+  const basePath = path.join(baseDir, basename);
   const preferredPath = `${basePath}${runtimeExt}`;
   const fallbackExt = runtimeExt === '.ts' ? '.js' : '.ts';
   const fallbackPath = `${basePath}${fallbackExt}`;
@@ -37,6 +40,22 @@ export function resolvePermissionServerPath(
   }
 
   return { resolvedPath: null, fallbackUsed: false, triedPaths };
+}
+
+export function resolvePermissionServerPath(
+  baseDir: string,
+  runtimeExt: '.ts' | '.js',
+  existsSync: (path: string) => boolean = fs.existsSync
+): PermissionServerPathResult {
+  return resolveInternalMcpServer(baseDir, PERMISSION_SERVER_BASENAME, runtimeExt, existsSync);
+}
+
+export function resolveModelCommandServerPath(
+  baseDir: string,
+  runtimeExt: '.ts' | '.js',
+  existsSync: (path: string) => boolean = fs.existsSync
+): PermissionServerPathResult {
+  return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
 }
 
 /**
@@ -70,6 +89,8 @@ export class McpConfigBuilder {
   private mcpManager: McpManager;
   private permissionServerPath: string | null = null;
   private permissionServerPathChecked = false;
+  private modelCommandServerPath: string | null = null;
+  private modelCommandServerPathChecked = false;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -78,7 +99,10 @@ export class McpConfigBuilder {
   /**
    * Build MCP configuration for a query
    */
-  async buildConfig(slackContext?: SlackContext): Promise<McpConfig> {
+  async buildConfig(
+    slackContext?: SlackContext,
+    modelCommandContext?: ModelCommandContext
+  ): Promise<McpConfig> {
     // Check if user has bypass permission enabled
     const userBypass = slackContext?.user
       ? userSettingsStore.getUserBypassPermission(slackContext.user)
@@ -90,17 +114,18 @@ export class McpConfigBuilder {
 
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
+    const internalServers: Record<string, any> = {};
+
+    if (slackContext) {
+      internalServers['model-command'] = this.buildModelCommandServer(
+        slackContext,
+        modelCommandContext
+      );
+    }
 
     // Add permission prompt server if needed
     if (slackContext && !userBypass) {
-      const permissionServer = this.buildPermissionServer(slackContext);
-
-      if (mcpServers) {
-        config.mcpServers = { ...mcpServers, ...permissionServer };
-      } else {
-        config.mcpServers = permissionServer;
-      }
-
+      internalServers['permission-prompt'] = this.buildPermissionServer(slackContext)['permission-prompt'];
       config.permissionPromptToolName = 'mcp__permission-prompt__permission_prompt';
 
       this.logger.debug('Configured permission prompts for Slack integration', {
@@ -108,8 +133,16 @@ export class McpConfigBuilder {
         user: slackContext.user,
         hasThread: !!slackContext.threadTs,
       });
-    } else if (mcpServers && Object.keys(mcpServers).length > 0) {
-      config.mcpServers = mcpServers;
+    }
+
+    const hasBaseServers = !!mcpServers && Object.keys(mcpServers).length > 0;
+    const hasInternalServers = Object.keys(internalServers).length > 0;
+
+    if (hasBaseServers || hasInternalServers) {
+      config.mcpServers = {
+        ...(mcpServers || {}),
+        ...internalServers,
+      };
     }
 
     // Build allowed tools list
@@ -153,6 +186,29 @@ export class McpConfigBuilder {
     };
   }
 
+  /**
+   * Build model-command MCP server configuration
+   */
+  private buildModelCommandServer(
+    slackContext: SlackContext,
+    modelCommandContext?: ModelCommandContext
+  ): Record<string, any> {
+    const modelCommandServerPath = this.getModelCommandServerPath();
+    const context: ModelCommandContext = modelCommandContext || {
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs,
+      user: slackContext.user,
+    };
+
+    return {
+      command: 'npx',
+      args: ['tsx', modelCommandServerPath],
+      env: {
+        SOMA_COMMAND_CONTEXT: JSON.stringify(context),
+      },
+    };
+  }
+
   private getPermissionServerPath(): string {
     if (!this.permissionServerPathChecked) {
       const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
@@ -187,6 +243,40 @@ export class McpConfigBuilder {
     return resolvePermissionServerPath(__dirname, runtimeExt).triedPaths;
   }
 
+  private getModelCommandServerPath(): string {
+    if (!this.modelCommandServerPathChecked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolveModelCommandServerPath(__dirname, runtimeExt);
+      this.modelCommandServerPathChecked = true;
+
+      if (!result.resolvedPath) {
+        this.logger.error('Model-command MCP server file not found', {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn('Model-command MCP server path fallback used', {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+
+      this.modelCommandServerPath = result.resolvedPath;
+    }
+
+    if (!this.modelCommandServerPath) {
+      throw new Error(`Model-command MCP server file not found. Tried: ${this.getModelCommandServerTriedPaths().join(', ')}`);
+    }
+
+    return this.modelCommandServerPath;
+  }
+
+  private getModelCommandServerTriedPaths(): string[] {
+    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+    return resolveModelCommandServerPath(__dirname, runtimeExt).triedPaths;
+  }
+
   /**
    * Build the list of allowed tools
    */
@@ -195,6 +285,10 @@ export class McpConfigBuilder {
 
     // Add Skill tool for local plugins
     allowedTools.push('Skill');
+
+    if (slackContext) {
+      allowedTools.push('mcp__model-command');
+    }
 
     // Add permission prompt tool if not bypassed
     if (slackContext && !userBypass) {

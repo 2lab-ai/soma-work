@@ -82,6 +82,83 @@ export interface SessionLinks {
   doc?: SessionLink;
 }
 
+/**
+ * History of resources linked to a session.
+ * Keeps chronological references while SessionLinks stores active pointers.
+ */
+export interface SessionLinkHistory {
+  issues: SessionLink[];
+  prs: SessionLink[];
+  docs: SessionLink[];
+}
+
+export type SessionResourceType = 'issue' | 'pr' | 'doc';
+
+export interface SessionResourceSnapshot {
+  issues: SessionLink[];
+  prs: SessionLink[];
+  docs: SessionLink[];
+  active: SessionLinks;
+  sequence: number;
+}
+
+export interface SessionResourceAddOperation {
+  action: 'add';
+  resourceType: SessionResourceType;
+  link: SessionLink;
+}
+
+export interface SessionResourceRemoveOperation {
+  action: 'remove';
+  resourceType: SessionResourceType;
+  url: string;
+}
+
+export interface SessionResourceSetActiveOperation {
+  action: 'set_active';
+  resourceType: SessionResourceType;
+  url?: string;
+}
+
+export type SessionResourceOperation =
+  | SessionResourceAddOperation
+  | SessionResourceRemoveOperation
+  | SessionResourceSetActiveOperation;
+
+export interface SessionResourceUpdateRequest {
+  expectedSequence?: number;
+  operations: SessionResourceOperation[];
+}
+
+export interface SessionResourceUpdateResult {
+  ok: boolean;
+  reason?: 'SESSION_NOT_FOUND' | 'INVALID_OPERATION' | 'SEQUENCE_MISMATCH';
+  error?: string;
+  snapshot: SessionResourceSnapshot;
+  sequenceMismatch?: {
+    expected: number;
+    actual: number;
+  };
+}
+
+export interface SaveContextResultFile {
+  name: string;
+  content: string;
+}
+
+export interface SaveContextResultPayload {
+  success?: boolean;
+  status?: string;
+  id?: string;
+  save_id?: string;
+  dir?: string;
+  path?: string;
+  summary?: string;
+  title?: string;
+  files?: SaveContextResultFile[];
+  error?: string;
+}
+
 export interface ActionPanelState {
   channelId?: string;
   userId?: string;
@@ -133,6 +210,12 @@ export interface ConversationSession {
   renewUserMessage?: string;
   // Links attached to this session (issue, PR, doc)
   links?: SessionLinks;
+  // History of linked resources
+  linkHistory?: SessionLinkHistory;
+  // Monotonic sequence for optimistic concurrency on session link updates
+  linkSequence?: number;
+  // Tool-driven save result used by renew command (preferred over text parsing)
+  renewSaveResult?: SaveContextResultPayload;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID

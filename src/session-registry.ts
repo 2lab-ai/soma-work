@@ -8,6 +8,12 @@ import {
   SessionState,
   SessionLinks,
   SessionLink,
+  SessionLinkHistory,
+  SessionResourceOperation,
+  SessionResourceSnapshot,
+  SessionResourceType,
+  SessionResourceUpdateRequest,
+  SessionResourceUpdateResult,
   WorkflowType,
   ActivityState,
   ActionPanelState,
@@ -32,6 +38,18 @@ const WARNING_INTERVALS = [
   10 * 60 * 1000,      // 10 minutes remaining - final warning
 ];
 
+const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
+  issue: 'issues',
+  pr: 'prs',
+  doc: 'docs',
+};
+
+const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = {
+  issue: 'issue',
+  pr: 'pr',
+  doc: 'doc',
+};
+
 /**
  * Serialized session for file persistence
  */
@@ -53,6 +71,8 @@ interface SerializedSession {
   workflow?: WorkflowType;
   // Session links
   links?: SessionLinks;
+  linkHistory?: SessionLinkHistory;
+  linkSequence?: number;
   // Sleep mode
   sleepStartedAt?: string; // ISO date string
   // Activity state
@@ -373,14 +393,15 @@ export class SessionRegistry {
     threadTs: string | undefined,
     link: SessionLink
   ): void {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      if (!session.links) {
-        session.links = {};
-      }
-      session.links[link.type] = link;
-      this.saveSessions();
-    }
+    this.updateSessionResources(channelId, threadTs, {
+      operations: [
+        {
+          action: 'add',
+          resourceType: link.type,
+          link,
+        },
+      ],
+    });
   }
 
   /**
@@ -391,11 +412,35 @@ export class SessionRegistry {
     threadTs: string | undefined,
     links: SessionLinks
   ): void {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      session.links = { ...session.links, ...links };
-      this.saveSessions();
+    const operations: SessionResourceOperation[] = [];
+
+    if (links.issue) {
+      operations.push({
+        action: 'add',
+        resourceType: 'issue',
+        link: links.issue,
+      });
     }
+    if (links.pr) {
+      operations.push({
+        action: 'add',
+        resourceType: 'pr',
+        link: links.pr,
+      });
+    }
+    if (links.doc) {
+      operations.push({
+        action: 'add',
+        resourceType: 'doc',
+        link: links.doc,
+      });
+    }
+
+    if (operations.length === 0) {
+      return;
+    }
+
+    this.updateSessionResources(channelId, threadTs, { operations });
   }
 
   /**
@@ -424,7 +469,227 @@ export class SessionRegistry {
    */
   getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
     const session = this.getSession(channelId, threadTs);
+    if (session) {
+      this.ensureSessionLinkState(session);
+    }
     return session?.links;
+  }
+
+  /**
+   * Get current session resource snapshot used by model-command tool.
+   */
+  getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
+    const session = this.getSession(channelId, threadTs);
+    return this.buildSessionResourceSnapshot(session);
+  }
+
+  /**
+   * Update session resources (issues/prs/docs + active links) with optimistic locking.
+   */
+  updateSessionResources(
+    channelId: string,
+    threadTs: string | undefined,
+    request: SessionResourceUpdateRequest
+  ): SessionResourceUpdateResult {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) {
+      return {
+        ok: false,
+        reason: 'SESSION_NOT_FOUND',
+        error: 'Session not found',
+        snapshot: this.buildSessionResourceSnapshot(undefined),
+      };
+    }
+
+    this.ensureSessionLinkState(session);
+
+    const currentSequence = session.linkSequence ?? 0;
+    if (
+      typeof request.expectedSequence === 'number'
+      && request.expectedSequence !== currentSequence
+    ) {
+      return {
+        ok: false,
+        reason: 'SEQUENCE_MISMATCH',
+        error: 'Session sequence mismatch',
+        sequenceMismatch: {
+          expected: request.expectedSequence,
+          actual: currentSequence,
+        },
+        snapshot: this.buildSessionResourceSnapshot(session),
+      };
+    }
+
+    const applyResult = this.applySessionResourceOperations(session, request.operations);
+    if (!applyResult.ok) {
+      return {
+        ok: false,
+        reason: 'INVALID_OPERATION',
+        error: applyResult.error,
+        snapshot: this.buildSessionResourceSnapshot(session),
+      };
+    }
+
+    if (applyResult.changed) {
+      session.linkSequence = (session.linkSequence ?? 0) + 1;
+      this.saveSessions();
+    }
+
+    return {
+      ok: true,
+      snapshot: this.buildSessionResourceSnapshot(session),
+    };
+  }
+
+  private buildSessionResourceSnapshot(session: ConversationSession | undefined): SessionResourceSnapshot {
+    if (!session) {
+      return {
+        issues: [],
+        prs: [],
+        docs: [],
+        active: {},
+        sequence: 0,
+      };
+    }
+
+    this.ensureSessionLinkState(session);
+    const history = session.linkHistory!;
+    return {
+      issues: history.issues.map((link) => ({ ...link })),
+      prs: history.prs.map((link) => ({ ...link })),
+      docs: history.docs.map((link) => ({ ...link })),
+      active: {
+        issue: session.links?.issue ? { ...session.links.issue } : undefined,
+        pr: session.links?.pr ? { ...session.links.pr } : undefined,
+        doc: session.links?.doc ? { ...session.links.doc } : undefined,
+      },
+      sequence: session.linkSequence ?? 0,
+    };
+  }
+
+  private ensureSessionLinkState(session: ConversationSession): void {
+    if (!session.links) {
+      session.links = {};
+    }
+
+    if (!session.linkHistory) {
+      session.linkHistory = {
+        issues: [],
+        prs: [],
+        docs: [],
+      };
+    }
+
+    for (const resourceType of Object.keys(HISTORY_KEY_BY_RESOURCE) as SessionResourceType[]) {
+      const historyKey = HISTORY_KEY_BY_RESOURCE[resourceType];
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[resourceType];
+
+      const deduped = new Map<string, SessionLink>();
+      for (const link of session.linkHistory[historyKey]) {
+        if (!link?.url) continue;
+        deduped.set(link.url, this.normalizeSessionLink(link, resourceType));
+      }
+
+      const activeLink = session.links[activeKey];
+      if (activeLink?.url) {
+        deduped.set(activeLink.url, this.normalizeSessionLink(activeLink, resourceType));
+      }
+
+      const normalizedHistory = Array.from(deduped.values());
+      session.linkHistory[historyKey] = normalizedHistory;
+
+      if (activeLink?.url) {
+        const foundActive = normalizedHistory.find((link) => link.url === activeLink.url);
+        session.links[activeKey] = foundActive ? { ...foundActive } : undefined;
+      } else if (!session.links[activeKey] && normalizedHistory.length > 0) {
+        session.links[activeKey] = { ...normalizedHistory[normalizedHistory.length - 1] };
+      }
+    }
+
+    if (!Number.isInteger(session.linkSequence)) {
+      session.linkSequence = 0;
+    }
+  }
+
+  private applySessionResourceOperations(
+    session: ConversationSession,
+    operations: SessionResourceOperation[]
+  ): { ok: true; changed: boolean } | { ok: false; changed: boolean; error: string } {
+    this.ensureSessionLinkState(session);
+
+    let changed = false;
+
+    for (const operation of operations) {
+      const historyKey = HISTORY_KEY_BY_RESOURCE[operation.resourceType];
+      const activeKey = ACTIVE_KEY_BY_RESOURCE[operation.resourceType];
+      const history = session.linkHistory![historyKey];
+
+      if (operation.action === 'add') {
+        if (!operation.link?.url) {
+          return {
+            ok: false,
+            changed,
+            error: `add operation requires link url (${operation.resourceType})`,
+          };
+        }
+
+        const normalized = this.normalizeSessionLink(operation.link, operation.resourceType);
+        const existingIndex = history.findIndex((link) => link.url === normalized.url);
+        if (existingIndex >= 0) {
+          history.splice(existingIndex, 1);
+        }
+        history.push(normalized);
+        session.links![activeKey] = { ...normalized };
+        changed = true;
+        continue;
+      }
+
+      if (operation.action === 'remove') {
+        const existingIndex = history.findIndex((link) => link.url === operation.url);
+        if (existingIndex >= 0) {
+          history.splice(existingIndex, 1);
+          changed = true;
+        }
+
+        if (session.links![activeKey]?.url === operation.url) {
+          session.links![activeKey] = history.length > 0 ? { ...history[history.length - 1] } : undefined;
+          changed = true;
+        }
+        continue;
+      }
+
+      if (!operation.url) {
+        if (session.links![activeKey]) {
+          session.links![activeKey] = undefined;
+          changed = true;
+        }
+        continue;
+      }
+
+      const found = history.find((link) => link.url === operation.url);
+      if (!found) {
+        return {
+          ok: false,
+          changed,
+          error: `set_active target not found in ${operation.resourceType} history: ${operation.url}`,
+        };
+      }
+
+      if (session.links![activeKey]?.url !== found.url) {
+        session.links![activeKey] = { ...found };
+        changed = true;
+      }
+    }
+
+    return { ok: true, changed };
+  }
+
+  private normalizeSessionLink(link: SessionLink, type: SessionResourceType): SessionLink {
+    return {
+      ...link,
+      type,
+      provider: link.provider || 'unknown',
+    };
   }
 
   /**
@@ -669,6 +934,7 @@ export class SessionRegistry {
       for (const [key, session] of this.sessions.entries()) {
         // Only save sessions with sessionId (meaning they have conversation history)
         if (session.sessionId) {
+          this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
             ownerId: session.ownerId,
@@ -685,6 +951,8 @@ export class SessionRegistry {
             state: session.state,
             workflow: session.workflow,
             links: session.links,
+            linkHistory: session.linkHistory,
+            linkSequence: session.linkSequence,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
@@ -750,6 +1018,8 @@ export class SessionRegistry {
           state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
+          linkHistory: serialized.linkHistory,
+          linkSequence: serialized.linkSequence,
           sleepStartedAt,
           activityState: 'idle', // Always idle on restore (no active streams after restart)
           actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
@@ -757,6 +1027,7 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
         };
+        this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
         loaded++;
       }
