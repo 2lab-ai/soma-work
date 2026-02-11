@@ -172,6 +172,70 @@ describe('model-command MCP server helpers', () => {
     expect(result.error.code).toBe('CONTEXT_ERROR');
   });
 
+  it('accepts SAVE_CONTEXT_RESULT when payload is nested as params.result.save_result', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'SAVE_CONTEXT_RESULT',
+        params: {
+          result: {
+            save_result: {
+              success: true,
+              id: 'save_nested',
+              dir: '.claude/omc/tasks/save/save_nested',
+            },
+          },
+        },
+      },
+      {
+        renewState: 'pending_save',
+        session: {
+          issues: [],
+          prs: [],
+          docs: [],
+          active: {},
+          sequence: 0,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('SAVE_CONTEXT_RESULT');
+    if (result.commandId !== 'SAVE_CONTEXT_RESULT') return;
+    expect(result.payload.saveResult.id).toBe('save_nested');
+    expect(result.payload.saveResult.success).toBe(true);
+  });
+
+  it('accepts SAVE_CONTEXT_RESULT when result is provided at top-level without params', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'SAVE_CONTEXT_RESULT',
+        result: {
+          success: true,
+          id: 'save_top_level',
+          dir: '.claude/omc/tasks/save/save_top_level',
+        },
+      },
+      {
+        renewState: 'pending_save',
+        session: {
+          issues: [],
+          prs: [],
+          docs: [],
+          active: {},
+          sequence: 0,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('SAVE_CONTEXT_RESULT');
+    if (result.commandId !== 'SAVE_CONTEXT_RESULT') return;
+    expect(result.payload.saveResult.id).toBe('save_top_level');
+    expect(result.payload.saveResult.success).toBe(true);
+  });
+
   it('keeps run state consistent across sequential calls with shared context', () => {
     const context = {
       renewState: null,
