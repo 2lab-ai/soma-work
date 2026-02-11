@@ -22,6 +22,49 @@ type ValidationResult =
 
 const RESOURCE_TYPES: SessionResourceType[] = ['issue', 'pr', 'doc'];
 
+const ASK_USER_QUESTION_ALLOWED_TYPES = ['user_choice', 'user_choice_group'] as const;
+
+const ASK_USER_QUESTION_EXAMPLES = {
+  user_choice: {
+    payload: {
+      type: 'user_choice',
+      question: 'Choose next step',
+      choices: [
+        { id: '1', label: 'Write implementation spec', description: 'Document API and tasks first' },
+        { id: '2', label: 'Start implementation', description: 'Code immediately from current context' },
+      ],
+    },
+  },
+  user_choice_group: {
+    payload: {
+      type: 'user_choice_group',
+      question: 'Choose implementation path',
+      context: 'Need a decision before coding',
+      choices: [
+        {
+          question: 'Which approach?',
+          options: [
+            { id: '1', label: 'Option A' },
+            { id: '2', label: 'Option B' },
+          ],
+        },
+      ],
+    },
+  },
+};
+
+const ASK_USER_QUESTION_INVALID_MESSAGE = [
+  'ASK_USER_QUESTION params must follow a strict schema.',
+  'Required top-level shape: params.payload = { ... }',
+  'Allowed payload.type values: "user_choice" | "user_choice_group".',
+  'Do not send wrapper formats like params.user_choice or root question/options.',
+  'Minimum user_choice schema:',
+  '{ "type":"user_choice", "question":"...", "choices":[{ "id":"1", "label":"Option A", "description":"optional" }] }',
+  'Minimum user_choice_group schema:',
+  '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "options":[{ "id":"1", "label":"Option A" }] }] }',
+  'Rules: "choices" or "options" must be a non-empty array of objects, and each item requires "label" (string).',
+].join('\n');
+
 export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   if (!isRecord(args)) {
     return invalidArgs('run arguments must be an object');
@@ -217,13 +260,24 @@ function parseAskUserQuestionParams(
   raw: unknown
 ): { ok: true; value: AskUserQuestionParams } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
-    return invalidArgs('ASK_USER_QUESTION params must be an object');
+    return invalidAskUserQuestionArgs(undefined, 'params_not_object');
   }
 
-  const payload = raw.payload ?? raw.question ?? raw;
+  if (!isRecord(raw.payload)) {
+    return invalidAskUserQuestionArgs(raw, 'missing_payload');
+  }
+
+  const payload = raw.payload;
+  if (
+    payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[0]
+    && payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[1]
+  ) {
+    return invalidAskUserQuestionArgs(raw, 'invalid_payload_type');
+  }
+
   const normalized = normalizeChoicePayload(payload);
   if (!normalized) {
-    return invalidArgs('ASK_USER_QUESTION payload must be user_choice, user_choices, or user_choice_group');
+    return invalidAskUserQuestionArgs(raw, 'payload_schema_invalid');
   }
 
   return {
@@ -282,6 +336,22 @@ function normalizeSaveContextResultFromVariants(raw: Record<string, unknown>): S
   }
 
   return null;
+}
+
+function invalidAskUserQuestionArgs(
+  raw: Record<string, unknown> | undefined,
+  reason: 'params_not_object' | 'missing_payload' | 'invalid_payload_type' | 'payload_schema_invalid'
+): { ok: false; error: ModelCommandError } {
+  const payloadType = raw && isRecord(raw.payload) ? raw.payload.type : undefined;
+  const details = {
+    reason,
+    requiredTopLevel: ['payload'],
+    allowedPayloadTypes: [...ASK_USER_QUESTION_ALLOWED_TYPES],
+    receivedKeys: raw ? Object.keys(raw) : [],
+    receivedPayloadType: typeof payloadType === 'string' ? payloadType : typeof payloadType,
+    examples: ASK_USER_QUESTION_EXAMPLES,
+  };
+  return invalidArgs(ASK_USER_QUESTION_INVALID_MESSAGE, details);
 }
 
 function normalizeLink(raw: unknown, resourceType: SessionResourceType): SessionLink | null {
@@ -461,12 +531,13 @@ function toProvider(raw: unknown): SessionLink['provider'] {
   return 'unknown';
 }
 
-function invalidArgs(message: string): { ok: false; error: ModelCommandError } {
+function invalidArgs(message: string, details?: unknown): { ok: false; error: ModelCommandError } {
   return {
     ok: false,
     error: {
       code: 'INVALID_ARGS',
       message,
+      ...(details !== undefined ? { details } : {}),
     },
   };
 }
