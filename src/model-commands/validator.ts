@@ -83,7 +83,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
-  const parsed = parseSaveContextResultParams(params);
+  const saveParams = params !== undefined
+    ? params
+    : buildSaveContextFallbackParams(args);
+  const parsed = parseSaveContextResultParams(saveParams);
   if (!parsed.ok) {
     return parsed;
   }
@@ -94,6 +97,22 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       params: parsed.value,
     },
   };
+}
+
+function buildSaveContextFallbackParams(
+  args: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const fallback: Record<string, unknown> = {};
+  if ('result' in args) {
+    fallback.result = args.result;
+  }
+  if ('save_result' in args) {
+    fallback.save_result = args.save_result;
+  }
+  if ('payload' in args) {
+    fallback.payload = args.payload;
+  }
+  return Object.keys(fallback).length > 0 ? fallback : undefined;
 }
 
 function parseUpdateSessionRequest(
@@ -222,8 +241,7 @@ function parseSaveContextResultParams(
     return invalidArgs('SAVE_CONTEXT_RESULT params must be an object');
   }
 
-  const source = isRecord(raw.result) ? raw.result : raw;
-  const result = normalizeSaveContextResult(source);
+  const result = normalizeSaveContextResultFromVariants(raw);
   if (!result) {
     return invalidArgs('SAVE_CONTEXT_RESULT payload is empty or invalid');
   }
@@ -234,6 +252,36 @@ function parseSaveContextResultParams(
       result,
     },
   };
+}
+
+function normalizeSaveContextResultFromVariants(raw: Record<string, unknown>): SaveContextResultPayload | null {
+  const candidates: unknown[] = [];
+
+  // Preferred shape from renew prompt.
+  candidates.push(raw.result);
+  // Frequent legacy/fallback envelopes.
+  candidates.push(raw.save_result);
+  candidates.push(raw.payload);
+  // Last resort: treat params itself as payload.
+  candidates.push(raw);
+
+  for (const candidate of candidates) {
+    if (!isRecord(candidate)) {
+      continue;
+    }
+    if (isRecord(candidate.save_result)) {
+      const nested = normalizeSaveContextResult(candidate.save_result);
+      if (nested) {
+        return nested;
+      }
+    }
+    const normalized = normalizeSaveContextResult(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
 }
 
 function normalizeLink(raw: unknown, resourceType: SessionResourceType): SessionLink | null {

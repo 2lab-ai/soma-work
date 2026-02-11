@@ -73,6 +73,9 @@ export class RenewHandler implements CommandHandler {
        "commandId": "SAVE_CONTEXT_RESULT",
        "params": { "result": <save-result-payload> }
      }
+   - <save-result-payload> means the INNER object only
+     (example: {"success": true, "id": "...", "dir": "..."}).
+     Do NOT wrap it as {"save_result": ...} inside params.result.
 3. If model-command tool is unavailable, output fallback JSON:
    {"save_result": <save-result-payload>}
 

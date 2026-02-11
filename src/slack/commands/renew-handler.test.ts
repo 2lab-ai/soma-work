@@ -36,6 +36,7 @@ describe('RenewHandler', () => {
 
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toContain('SAVE_CONTEXT_RESULT');
+    expect(result.continueWithPrompt).toContain('Do NOT wrap it as {"save_result": ...}');
     expect(session.renewState).toBe('pending_save');
     expect(session.renewSaveResult).toBeUndefined();
   });
