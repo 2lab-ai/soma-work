@@ -59,17 +59,21 @@ export class RenewHandler implements CommandHandler {
       { threadTs }
     );
 
-    // Return /save as the prompt to continue with
-    // CRITICAL: Claude must READ the skill body to get the JSON output format
-    const savePrompt = `**CRITICAL: You MUST execute the save skill correctly.**
+    // Return /save as the prompt to continue with.
+    // Tool-first strategy: SAVE_CONTEXT_RESULT command is preferred, JSON output is fallback only.
+    const savePrompt = `Follow this exact sequence:
 
-1. **READ the skill file first**: Use the Skill tool to invoke "local:save"
-2. The skill body contains the EXACT JSON output format required
-3. You MUST output a valid JSON block with "save_result" at the end
-4. Without the correct JSON output, the renew flow will FAIL
+1. Invoke Skill tool: skill="local:save"
+2. If save succeeds, invoke model-command tool:
+   - tool: mcp__model-command__run
+   - args: {
+       "commandId": "SAVE_CONTEXT_RESULT",
+       "params": { "result": <save-result-payload> }
+     }
+3. If model-command tool is unavailable, output fallback JSON:
+   {"save_result": <save-result-payload>}
 
-DO NOT improvise. DO NOT skip reading the skill instructions.
-Invoke the Skill tool with skill="local:save" NOW.`;
+Do not skip step 2 when model-command tool is available.`;
 
     return { handled: true, continueWithPrompt: savePrompt };
   }

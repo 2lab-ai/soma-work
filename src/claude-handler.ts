@@ -5,7 +5,16 @@
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
-import { ConversationSession, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
+import {
+  ConversationSession,
+  SessionLinks,
+  SessionLink,
+  SessionResourceSnapshot,
+  SessionResourceUpdateRequest,
+  SessionResourceUpdateResult,
+  WorkflowType,
+  ActivityState,
+} from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 
@@ -17,6 +26,7 @@ import { sendCredentialAlert } from './credential-alert';
 import { SessionRegistry, SessionExpiryCallbacks } from './session-registry';
 import { PromptBuilder, getAvailablePersonas } from './prompt-builder';
 import { McpConfigBuilder, SlackContext } from './mcp-config-builder';
+import { ModelCommandContext } from './model-commands/types';
 
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
@@ -133,6 +143,18 @@ export class ClaudeHandler {
 
   getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
     return this.sessionRegistry.getSessionLinks(channelId, threadTs);
+  }
+
+  getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
+    return this.sessionRegistry.getSessionResourceSnapshot(channelId, threadTs);
+  }
+
+  updateSessionResources(
+    channelId: string,
+    threadTs: string | undefined,
+    request: SessionResourceUpdateRequest
+  ): SessionResourceUpdateResult {
+    return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
 
   refreshSessionActivityByKey(sessionKey: string): boolean {
@@ -353,7 +375,8 @@ export class ClaudeHandler {
     };
 
     // Get MCP configuration
-    const mcpConfig = await this.mcpConfigBuilder.buildConfig(slackContext);
+    const modelCommandContext = this.buildModelCommandContext(session, slackContext);
+    const mcpConfig = await this.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext);
     options.permissionMode = mcpConfig.permissionMode;
 
     if (mcpConfig.mcpServers) {
@@ -437,5 +460,26 @@ export class ClaudeHandler {
       this.logger.error('Error in Claude query', error);
       throw error;
     }
+  }
+
+  private buildModelCommandContext(
+    session: ConversationSession | undefined,
+    slackContext: SlackContext | undefined
+  ): ModelCommandContext | undefined {
+    if (!slackContext) {
+      return undefined;
+    }
+
+    return {
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs,
+      user: slackContext.user,
+      workflow: session?.workflow,
+      renewState: session?.renewState ?? null,
+      session: this.sessionRegistry.getSessionResourceSnapshot(
+        slackContext.channel,
+        slackContext.threadTs
+      ),
+    };
   }
 }
