@@ -67,7 +67,7 @@ describe('ActionPanelBuilder', () => {
     expect(getSummaryText(payload)).toContain('📦 --%');
   });
 
-  it('replaces main actions with question response button when choice is pending', () => {
+  it('mirrors thread choice blocks in action panel when choice is pending', () => {
     const choiceBlocks = [
       {
         type: 'section',
@@ -76,6 +76,23 @@ describe('ActionPanelBuilder', () => {
       {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: '💡 릴리즈 공지 범위를 같이 정해야 합니다.' }],
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            action_id: 'user_choice_1',
+            text: { type: 'plain_text', text: '1️⃣ 옵션 A' },
+            value: '{"sessionKey":"session-5","choiceId":"1"}',
+          },
+          {
+            type: 'button',
+            action_id: 'user_choice_2',
+            text: { type: 'plain_text', text: '2️⃣ 옵션 B' },
+            value: '{"sessionKey":"session-5","choiceId":"2"}',
+          },
+        ],
       },
     ];
 
@@ -88,20 +105,17 @@ describe('ActionPanelBuilder', () => {
       contextUsagePercent: 73,
     });
 
-    const userAskSection = payload.blocks.find((block) =>
+    const mirroredQuestionSection = payload.blocks.find((block) =>
       block.type === 'section'
-      && String(block.text?.text || '').includes('*User Ask*')
+      && String(block.text?.text || '').includes('배포 타임라인')
     );
-    expect(userAskSection).toBeDefined();
-    expect(String(userAskSection.text.text)).toContain('배포 타임라인');
+    expect(mirroredQuestionSection).toBeDefined();
 
     const actionsBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    expect(actionsBlocks).toHaveLength(1);
-    expect(actionsBlocks[0].elements).toHaveLength(1);
-    expect(actionsBlocks[0].elements[0].action_id).toBe('panel_focus_choice');
-    expect(actionsBlocks[0].elements[0].style).toBe('primary');
-    expect(actionsBlocks[0].elements[0].url).toContain('slack.com/archives');
-    expect(actionsBlocks[0].elements[0].text.text).toBe('질문 응답');
+    const actionIds = actionsBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+    expect(actionIds).toContain('user_choice_1');
+    expect(actionIds).toContain('user_choice_2');
+    expect(actionIds).not.toContain('panel_focus_choice');
 
     const summary = getSummaryText(payload);
     expect(summary).toContain('✋ 입력 대기');

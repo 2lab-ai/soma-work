@@ -82,10 +82,7 @@ export class ActionPanelBuilder {
     const isQuestionPending = params.waitingForChoice === true;
     const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
     const actionBlocks = isQuestionPending
-      ? [{
-        type: 'actions',
-        elements: [this.buildChoiceCtaButton(params.sessionKey, params.choiceMessageLink)],
-      }]
+      ? []
       : this.chunk(defaultButtons, 5).map((row) => ({ type: 'actions', elements: row }));
 
     const summaryText = this.buildSummaryLine({
@@ -265,76 +262,23 @@ export class ActionPanelBuilder {
   }
 
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
-    const prompt = this.extractChoicePrompt(choiceBlocks);
-    const hint = this.extractChoiceHint(choiceBlocks);
-    const blocks: any[] = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: prompt
-            ? `❓ *User Ask*\n${this.truncateLine(prompt, 180)}`
-            : '❓ *User Ask*\n응답이 필요한 질문이 있습니다.',
+    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
+      return [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: '❓ *User Ask*\n응답이 필요한 질문이 있습니다.',
+          },
         },
-      },
-    ];
-
-    if (hint) {
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `💡 ${this.truncateLine(hint, 180)}` }],
-      });
+      ];
     }
 
-    return blocks;
+    return choiceBlocks.map((block) => this.cloneBlock(block));
   }
 
-  private static extractChoicePrompt(choiceBlocks?: any[]): string | undefined {
-    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
-      return undefined;
-    }
-
-    const sectionBlocks = choiceBlocks.filter((block) =>
-      block?.type === 'section' && typeof block?.text?.text === 'string'
-    );
-    if (sectionBlocks.length === 0) {
-      return undefined;
-    }
-
-    const preferred = sectionBlocks.find((block) =>
-      String(block.text.text).includes('❓')
-    ) || sectionBlocks[0];
-    return this.normalizeMrkdwnText(String(preferred.text.text)).replace(/^❓\s*/, '');
-  }
-
-  private static extractChoiceHint(choiceBlocks?: any[]): string | undefined {
-    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
-      return undefined;
-    }
-
-    for (const block of choiceBlocks) {
-      if (block?.type !== 'context' || !Array.isArray(block?.elements)) {
-        continue;
-      }
-
-      for (const element of block.elements) {
-        const text = typeof element?.text === 'string' ? element.text : '';
-        if (!text || !text.includes('💡')) {
-          continue;
-        }
-        return this.normalizeMrkdwnText(text).replace(/^💡\s*/, '');
-      }
-    }
-
-    return undefined;
-  }
-
-  private static normalizeMrkdwnText(text: string): string {
-    return text
-      .replace(/<[^|>]+\|([^>]+)>/g, '$1')
-      .replace(/[*_`~]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+  private static cloneBlock(block: any): any {
+    return JSON.parse(JSON.stringify(block));
   }
 
   private static truncateLine(input: string, maxLength: number): string {
@@ -342,22 +286,6 @@ export class ActionPanelBuilder {
       return input;
     }
     return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
-  }
-
-  private static buildChoiceCtaButton(sessionKey: string, choiceMessageLink?: string): any {
-    const button: any = {
-      type: 'button',
-      text: { type: 'plain_text', text: '질문 응답', emoji: true },
-      style: 'primary',
-      action_id: 'panel_focus_choice',
-      value: JSON.stringify({ sessionKey, action: 'focus_choice' }),
-    };
-
-    if (choiceMessageLink) {
-      button.url = choiceMessageLink;
-    }
-
-    return button;
   }
 
   private static buildButton(def: PanelActionDef, sessionKey: string): any {

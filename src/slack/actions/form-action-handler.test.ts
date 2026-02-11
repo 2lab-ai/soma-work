@@ -121,4 +121,74 @@ describe('FormActionHandler', () => {
       expect.any(Array)
     );
   });
+
+  it('syncs multi custom-input updates to both panel and thread form messages', async () => {
+    const pendingForm = {
+      formId: 'form-1',
+      sessionKey: 'C123:thread-root',
+      channel: 'C123',
+      threadTs: 'thread-root',
+      messageTs: 'thread-form-message-ts',
+      questions: [
+        {
+          id: 'q1',
+          question: '어떤 전략으로 진행할까요?',
+          choices: [{ id: '1', label: '빠른 수정' }],
+        },
+      ],
+      selections: {},
+      createdAt: Date.now(),
+    };
+    formStore.get.mockReturnValue(pendingForm);
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        choiceMessageTs: 'thread-form-message-ts',
+      },
+    });
+
+    const body = {
+      user: { id: 'U123' },
+    };
+
+    const view = {
+      private_metadata: JSON.stringify({
+        sessionKey: 'C123:thread-root',
+        question: '어떤 전략으로 진행할까요?',
+        channel: 'C123',
+        messageTs: 'panel-message-ts',
+        threadTs: 'thread-root',
+        type: 'multi',
+        formId: 'form-1',
+        questionId: 'q1',
+      }),
+      state: {
+        values: {
+          custom_input_block: {
+            custom_input_text: {
+              value: '직접 입력으로 세부 전략 제시',
+            },
+          },
+        },
+      },
+    };
+
+    await handler.handleCustomInputSubmit(body, view);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'panel-message-ts',
+      expect.any(String),
+      undefined,
+      expect.any(Array)
+    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'thread-form-message-ts',
+      expect.any(String),
+      undefined,
+      expect.any(Array)
+    );
+  });
 });

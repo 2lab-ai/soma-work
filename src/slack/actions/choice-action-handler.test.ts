@@ -158,4 +158,66 @@ describe('ChoiceActionHandler', () => {
       expect.any(Function)
     );
   });
+
+  it('syncs panel multi-choice selection back to thread choice message', async () => {
+    const sessionKey = 'C123:thread-root';
+    formStore.set('form-2', {
+      formId: 'form-2',
+      sessionKey,
+      channel: 'C123',
+      threadTs: 'thread-root',
+      messageTs: 'thread-form-message-ts',
+      questions: [
+        {
+          id: 'q1',
+          question: '어떤 전략으로 진행할까요?',
+          choices: [{ id: '1', label: '빠른 수정' }],
+        },
+      ],
+      selections: {},
+      createdAt: Date.now(),
+    });
+
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        choiceMessageTs: 'thread-form-message-ts',
+      },
+    });
+
+    const body = {
+      actions: [
+        {
+          value: JSON.stringify({
+            formId: 'form-2',
+            sessionKey,
+            questionId: 'q1',
+            choiceId: '1',
+            label: '빠른 수정',
+          }),
+        },
+      ],
+      user: { id: 'U123' },
+      channel: { id: 'C123' },
+      message: { ts: 'panel-message-ts' },
+    };
+
+    await handler.handleMultiChoice(body);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'panel-message-ts',
+      expect.any(String),
+      undefined,
+      expect.any(Array)
+    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'thread-form-message-ts',
+      expect.any(String),
+      undefined,
+      expect.any(Array)
+    );
+  });
 });

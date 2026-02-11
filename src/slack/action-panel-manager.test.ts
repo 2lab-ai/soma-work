@@ -187,6 +187,17 @@ describe('ActionPanelManager', () => {
             type: 'section',
             text: { type: 'mrkdwn', text: '❓ *질문이 있습니다*' },
           },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                action_id: 'user_choice_1',
+                text: { type: 'plain_text', text: '1️⃣ 옵션 A' },
+                value: '{"sessionKey":"C123:choice-thread","choiceId":"1"}',
+              },
+            ],
+          },
         ],
       },
     };
@@ -195,10 +206,64 @@ describe('ActionPanelManager', () => {
 
     expect(slackApi.getPermalink).toHaveBeenCalledTimes(1);
     const blocks = getPostedBlocks(slackApi);
-    const ctaBlock = blocks.find((block: any) =>
-      block.type === 'actions' && block.elements?.[0]?.action_id === 'panel_focus_choice'
+    const mirroredActionBlock = blocks.find((block: any) =>
+      block.type === 'actions' && block.elements?.some((el: any) => el.action_id === 'user_choice_1')
     );
-    expect(ctaBlock).toBeDefined();
-    expect(ctaBlock.elements[0].url).toContain('slack.com/archives');
+    expect(mirroredActionBlock).toBeDefined();
+  });
+
+  it('keeps existing thread choiceMessageTs when attachChoice is called without sourceMessageTs', async () => {
+    const slackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      postEphemeral: vi.fn().mockResolvedValue({ ts: '999.000' }),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+
+    const session: ConversationSession = {
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'waiting',
+      workflow: 'default',
+      actionPanel: {
+        channelId: 'C123',
+        userId: 'U123',
+        choiceMessageTs: 'thread-choice-ts',
+      },
+    };
+
+    const claudeHandler = {
+      getSessionByKey: vi.fn().mockReturnValue(session),
+    };
+    const requestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    };
+
+    const manager = new ActionPanelManager({
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+    });
+
+    await manager.attachChoice(
+      'C123:thread',
+      {
+        attachments: [
+          {
+            blocks: [
+              {
+                type: 'section',
+                text: { type: 'mrkdwn', text: '❓ *질문*' },
+              },
+            ],
+          },
+        ],
+      }
+    );
+
+    expect(session.actionPanel?.choiceMessageTs).toBe('thread-choice-ts');
   });
 });
