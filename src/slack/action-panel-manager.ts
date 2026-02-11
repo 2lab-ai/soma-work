@@ -58,8 +58,6 @@ export class ActionPanelManager {
     session.actionPanel.choiceMessageLink = undefined;
     if (sourceMessageTs) {
       session.actionPanel.choiceMessageTs = sourceMessageTs;
-    } else {
-      session.actionPanel.choiceMessageTs = undefined;
     }
 
     await this.renderPanel(session, sessionKey, true);
