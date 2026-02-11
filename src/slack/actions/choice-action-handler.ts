@@ -262,13 +262,30 @@ export class ChoiceActionHandler {
       pendingForm.selections
     );
 
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
-    } catch (error) {
-      this.logger.warn('Failed to update form UI', error);
+    const targetMessageTs = this.resolveChoiceSyncMessageTs(
+      pendingForm.sessionKey,
+      messageTs,
+      pendingForm.messageTs
+    );
+    for (const targetTs of targetMessageTs) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '📋 선택이 필요합니다',
+          undefined,
+          updatedPayload.attachments
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update form UI', { targetTs, error });
+      }
     }
 
-    await this.ctx.actionPanelManager?.attachChoice(pendingForm.sessionKey, updatedPayload);
+    await this.ctx.actionPanelManager?.attachChoice(
+      pendingForm.sessionKey,
+      updatedPayload,
+      pendingForm.messageTs
+    );
   }
 
   async completeMultiChoiceForm(
@@ -351,5 +368,26 @@ export class ChoiceActionHandler {
 
   private resolveChoiceMessageTs(session: any, fallbackMessageTs: string | undefined): string | undefined {
     return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
+  }
+
+  private resolveChoiceSyncMessageTs(
+    sessionKey: string,
+    sourceMessageTs: string | undefined,
+    threadMessageTs: string | undefined
+  ): string[] {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    const targets = new Set<string>();
+
+    if (sourceMessageTs) {
+      targets.add(sourceMessageTs);
+    }
+    if (threadMessageTs) {
+      targets.add(threadMessageTs);
+    }
+    if (session?.actionPanel?.choiceMessageTs) {
+      targets.add(session.actionPanel.choiceMessageTs);
+    }
+
+    return [...targets];
   }
 }

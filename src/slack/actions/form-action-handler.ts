@@ -172,13 +172,25 @@ export class FormActionHandler {
       pendingForm.selections
     );
 
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
-    } catch (error) {
-      this.logger.warn('Failed to update multi-choice form after custom input', error);
+    const targetMessageTs = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs);
+    for (const targetTs of targetMessageTs) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '📋 선택이 필요합니다',
+          undefined,
+          updatedPayload.attachments
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update multi-choice form after custom input', {
+          targetTs,
+          error,
+        });
+      }
     }
 
-    await this.ctx.actionPanelManager?.attachChoice(sessionKey, updatedPayload);
+    await this.ctx.actionPanelManager?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
 
     // 모든 질문 완료 시
     if (answeredCount === totalQuestions) {
@@ -263,6 +275,27 @@ export class FormActionHandler {
   private resolveChoiceMessageTs(sessionKey: string, fallbackMessageTs: string | undefined): string | undefined {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
+  }
+
+  private resolveChoiceSyncMessageTs(
+    sessionKey: string,
+    sourceMessageTs: string | undefined,
+    threadMessageTs: string | undefined
+  ): string[] {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    const targets = new Set<string>();
+
+    if (sourceMessageTs) {
+      targets.add(sourceMessageTs);
+    }
+    if (threadMessageTs) {
+      targets.add(threadMessageTs);
+    }
+    if (session?.actionPanel?.choiceMessageTs) {
+      targets.add(session.actionPanel.choiceMessageTs);
+    }
+
+    return [...targets];
   }
 
   private createSayFn(channel: string): SayFn {
