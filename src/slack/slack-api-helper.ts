@@ -5,6 +5,8 @@ export interface MessageOptions {
   threadTs?: string;
   blocks?: any[];
   attachments?: any[];
+  unfurlLinks?: boolean;
+  unfurlMedia?: boolean;
 }
 
 /**
@@ -14,6 +16,11 @@ interface RateLimitConfig {
   bucketSize: number;      // 최대 버스트 크기
   refillRate: number;      // 초당 리필 토큰 수
   minInterval: number;     // 최소 요청 간격 (ms)
+}
+
+interface UpdateMessageOptions {
+  unfurlLinks?: boolean;
+  unfurlMedia?: boolean;
 }
 
 const DEFAULT_RATE_LIMIT: RateLimitConfig = {
@@ -269,15 +276,22 @@ export class SlackApiHelper {
     options?: MessageOptions
   ): Promise<{ ts?: string; channel?: string }> {
     try {
-      const result = await this.enqueue(() =>
-        this.app.client.chat.postMessage({
-          channel,
-          text,
-          thread_ts: options?.threadTs,
-          blocks: options?.blocks,
-          attachments: options?.attachments,
-        })
-      );
+      const payload: any = {
+        channel,
+        text,
+        thread_ts: options?.threadTs,
+        blocks: options?.blocks,
+        attachments: options?.attachments,
+      };
+
+      if (typeof options?.unfurlLinks === 'boolean') {
+        payload.unfurl_links = options.unfurlLinks;
+      }
+      if (typeof options?.unfurlMedia === 'boolean') {
+        payload.unfurl_media = options.unfurlMedia;
+      }
+
+      const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
       return { ts: result.ts, channel: result.channel };
     } catch (error) {
       this.logger.error('Failed to post message', { channel, error });
@@ -293,18 +307,26 @@ export class SlackApiHelper {
     ts: string,
     text: string,
     blocks?: any[],
-    attachments?: any[]
+    attachments?: any[],
+    options?: UpdateMessageOptions
   ): Promise<void> {
     try {
-      await this.enqueue(() =>
-        this.app.client.chat.update({
-          channel,
-          ts,
-          text,
-          blocks,
-          attachments,
-        })
-      );
+      const payload: any = {
+        channel,
+        ts,
+        text,
+        blocks,
+        attachments,
+      };
+
+      if (typeof options?.unfurlLinks === 'boolean') {
+        payload.unfurl_links = options.unfurlLinks;
+      }
+      if (typeof options?.unfurlMedia === 'boolean') {
+        payload.unfurl_media = options.unfurlMedia;
+      }
+
+      await this.enqueue(() => this.app.client.chat.update(payload));
     } catch (error) {
       this.logger.warn('Failed to update message', { channel, ts, error });
       throw error;
