@@ -50,6 +50,8 @@ describe('ActionPanelManager', () => {
     expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
     expect(slackApi.postEphemeral).not.toHaveBeenCalled();
     expect(slackApi.getPermalink).not.toHaveBeenCalled();
+    expect((slackApi.postMessage.mock.calls[0]?.[2] as any)?.unfurlLinks).toBe(false);
+    expect((slackApi.postMessage.mock.calls[0]?.[2] as any)?.unfurlMedia).toBe(false);
 
     const blocks = getPostedBlocks(slackApi);
     const summarySection = blocks.find((block: any) =>
@@ -111,6 +113,10 @@ describe('ActionPanelManager', () => {
     );
     const summaryText = String(summarySection?.text?.text || '');
     expect(summaryText).toContain('⚙️ 작업 중');
+    expect(slackApi.updateMessage.mock.calls[1]?.[5]).toEqual({
+      unfurlLinks: false,
+      unfurlMedia: false,
+    });
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {

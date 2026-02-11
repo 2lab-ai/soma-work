@@ -189,6 +189,28 @@ describe('SlackApiHelper', () => {
       });
     });
 
+    it('should disable unfurl when requested', async () => {
+      mockApp.client.chat.postMessage.mockResolvedValue({
+        ts: '123.456',
+        channel: 'C123',
+      });
+
+      await helper.postMessage('C123', 'Hello', {
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+
+      expect(mockApp.client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C123',
+        text: 'Hello',
+        thread_ts: undefined,
+        blocks: undefined,
+        attachments: undefined,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+    });
+
     it('should throw on error', async () => {
       mockApp.client.chat.postMessage.mockRejectedValue(new Error('API error'));
 
@@ -222,6 +244,29 @@ describe('SlackApiHelper', () => {
         text: 'Updated',
         blocks: [{ type: 'section' }],
         attachments: undefined,
+      });
+    });
+
+    it('should disable unfurl when requested', async () => {
+      mockApp.client.chat.update.mockResolvedValue({});
+
+      await helper.updateMessage(
+        'C123',
+        '123.456',
+        'Updated',
+        [{ type: 'section' }],
+        undefined,
+        { unfurlLinks: false, unfurlMedia: false }
+      );
+
+      expect(mockApp.client.chat.update).toHaveBeenCalledWith({
+        channel: 'C123',
+        ts: '123.456',
+        text: 'Updated',
+        blocks: [{ type: 'section' }],
+        attachments: undefined,
+        unfurl_links: false,
+        unfurl_media: false,
       });
     });
   });

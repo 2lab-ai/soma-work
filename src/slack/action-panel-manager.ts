@@ -128,7 +128,12 @@ export class ActionPanelManager {
           channelId,
           panelState.messageTs,
           payload.text,
-          payload.blocks
+          payload.blocks,
+          undefined,
+          {
+            unfurlLinks: false,
+            unfurlMedia: false,
+          }
         );
         rendered = true;
       } catch (error) {
@@ -142,7 +147,11 @@ export class ActionPanelManager {
         const result = await this.deps.slackApi.postMessage(
           channelId,
           payload.text,
-          { blocks: payload.blocks }
+          {
+            blocks: payload.blocks,
+            unfurlLinks: false,
+            unfurlMedia: false,
+          }
         );
         panelState.messageTs = result?.ts;
         rendered = true;
