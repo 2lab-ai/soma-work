@@ -820,6 +820,15 @@ export class StreamExecutor {
       }
 
       if (parsed.commandId === 'SAVE_CONTEXT_RESULT') {
+        if (session.renewState !== 'pending_save') {
+          this.logger.warn('Ignoring SAVE_CONTEXT_RESULT outside pending_save renew state', {
+            sessionKey: context.sessionKey,
+            renewState: session.renewState ?? null,
+            id: parsed.payload.saveResult.id || parsed.payload.saveResult.save_id,
+          });
+          continue;
+        }
+
         session.renewSaveResult = parsed.payload.saveResult;
         this.logger.info('Captured SAVE_CONTEXT_RESULT from model-command', {
           sessionKey: context.sessionKey,
@@ -844,6 +853,10 @@ export class StreamExecutor {
             reason: updateResult.reason,
             error: updateResult.error,
             mismatch: updateResult.sequenceMismatch,
+          });
+          await context.say({
+            text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
+            thread_ts: context.threadTs,
           });
         } else {
           this.logger.info('Applied UPDATE_SESSION on host', {
@@ -884,17 +897,25 @@ export class StreamExecutor {
     context: StreamContext
   ): Promise<void> {
     const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey);
-    const result = await context.say({
-      text: question.question,
-      ...payload,
-      thread_ts: context.threadTs,
-    });
+    try {
+      const result = await context.say({
+        text: question.question,
+        ...payload,
+        thread_ts: context.threadTs,
+      });
 
-    await this.deps.actionPanelManager?.attachChoice(
-      context.sessionKey,
-      payload,
-      result?.ts
-    );
+      await this.deps.actionPanelManager?.attachChoice(
+        context.sessionKey,
+        payload,
+        result?.ts
+      );
+    } catch (error) {
+      this.logger.warn('Failed to render command-driven single choice blocks', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
+      await this.sendCommandChoiceFallback(question, context);
+    }
   }
 
   private async renderMultiChoiceFromCommand(
@@ -944,25 +965,80 @@ export class StreamExecutor {
         formId,
         context.sessionKey
       );
-      const result = await context.say({
-        text: chunk.title || '📋 선택이 필요합니다',
-        ...payload,
-        thread_ts: context.threadTs,
-      });
+      try {
+        const result = await context.say({
+          text: chunk.title || '📋 선택이 필요합니다',
+          ...payload,
+          thread_ts: context.threadTs,
+        });
 
-      if (result?.ts) {
-        const pending = this.deps.actionHandlers.getPendingForm(formId);
-        if (pending) {
-          pending.messageTs = result.ts;
+        if (result?.ts) {
+          const pending = this.deps.actionHandlers.getPendingForm(formId);
+          if (pending) {
+            pending.messageTs = result.ts;
+          }
         }
-      }
 
-      await this.deps.actionPanelManager?.attachChoice(
-        context.sessionKey,
-        payload,
-        result?.ts
-      );
+        await this.deps.actionPanelManager?.attachChoice(
+          context.sessionKey,
+          payload,
+          result?.ts
+        );
+      } catch (error) {
+        this.logger.warn('Failed to render command-driven multi choice blocks', {
+          sessionKey: context.sessionKey,
+          error: (error as Error).message,
+        });
+        this.deps.actionHandlers.deletePendingForm(formId);
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
     }
+  }
+
+  private async sendCommandChoiceFallback(
+    question: UserChoice | UserChoices,
+    context: StreamContext
+  ): Promise<void> {
+    let fallbackText = '';
+
+    if (question.type === 'user_choices') {
+      const lines = [
+        `📋 *${question.title || '선택이 필요합니다'}*`,
+        question.description ? `_${question.description}_` : '',
+        '',
+        ...question.questions.map((entry, index) => {
+          const options = (entry.choices || [])
+            .map((option, optionIndex) => {
+              return `  ${optionIndex + 1}. ${option.label}${option.description ? ` - ${option.description}` : ''}`;
+            })
+            .join('\n');
+          return `*Q${index + 1}. ${entry.question}*\n${options}`;
+        }),
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ];
+      fallbackText = lines.filter((line) => line !== '').join('\n');
+    } else {
+      const options = (question.choices || [])
+        .map((option, index) => {
+          return `${index + 1}. ${option.label}${option.description ? ` - ${option.description}` : ''}`;
+        })
+        .join('\n');
+      fallbackText = [
+        `❓ *${question.question}*`,
+        question.context ? `_${question.context}_` : '',
+        '',
+        options,
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ].filter((line) => line !== '').join('\n');
+    }
+
+    await context.say({
+      text: fallbackText,
+      thread_ts: context.threadTs,
+    });
   }
 
   /**

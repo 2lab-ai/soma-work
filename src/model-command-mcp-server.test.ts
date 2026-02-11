@@ -143,6 +143,84 @@ describe('model-command MCP server helpers', () => {
     if (result.ok) return;
     expect(result.error.code).toBe('INVALID_ARGS');
   });
+
+  it('rejects SAVE_CONTEXT_RESULT outside renew pending_save state', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'SAVE_CONTEXT_RESULT',
+        params: {
+          result: {
+            success: true,
+            id: 'save_1',
+          },
+        },
+      },
+      {
+        renewState: null,
+        session: {
+          issues: [],
+          prs: [],
+          docs: [],
+          active: {},
+          sequence: 0,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('CONTEXT_ERROR');
+  });
+
+  it('keeps run state consistent across sequential calls with shared context', () => {
+    const context = {
+      renewState: null,
+      session: {
+        issues: [],
+        prs: [],
+        docs: [],
+        active: {},
+        sequence: 0,
+      },
+    };
+
+    const update = buildModelCommandRunResponse(
+      {
+        commandId: 'UPDATE_SESSION',
+        params: {
+          operations: [
+            {
+              action: 'add',
+              resourceType: 'issue',
+              link: {
+                url: 'https://jira.example/PTN-999',
+                type: 'issue',
+                provider: 'jira',
+              },
+            },
+          ],
+        },
+      },
+      context
+    );
+
+    expect(update.ok).toBe(true);
+
+    const readBack = buildModelCommandRunResponse(
+      {
+        commandId: 'GET_SESSION',
+      },
+      context
+    );
+
+    expect(readBack.ok).toBe(true);
+    if (!readBack.ok) return;
+    expect(readBack.commandId).toBe('GET_SESSION');
+    if (readBack.commandId !== 'GET_SESSION') return;
+    expect(readBack.payload.session.sequence).toBe(1);
+    expect(readBack.payload.session.issues).toHaveLength(1);
+    expect(readBack.payload.session.issues[0]?.url).toBe('https://jira.example/PTN-999');
+  });
 });
 
 describe('validateModelCommandRunArgs', () => {

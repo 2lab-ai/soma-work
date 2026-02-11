@@ -143,4 +143,43 @@ describe('SessionRegistry persistence', () => {
     expect(stale.reason).toBe('SEQUENCE_MISMATCH');
     expect(stale.sequenceMismatch?.actual).toBe(first.snapshot.sequence);
   });
+
+  it('keeps active link cleared when set_active is called without url', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.005');
+    session.sessionId = 'session-5';
+
+    const addResult = registry.updateSessionResources('C123', '171.005', {
+      operations: [
+        {
+          action: 'add',
+          resourceType: 'issue',
+          link: {
+            url: 'https://jira.example/PTN-300',
+            type: 'issue',
+            provider: 'jira',
+          },
+        },
+      ],
+    });
+    expect(addResult.ok).toBe(true);
+    if (!addResult.ok) return;
+    expect(addResult.snapshot.active.issue?.url).toBe('https://jira.example/PTN-300');
+
+    const clearResult = registry.updateSessionResources('C123', '171.005', {
+      operations: [
+        {
+          action: 'set_active',
+          resourceType: 'issue',
+        },
+      ],
+    });
+
+    expect(clearResult.ok).toBe(true);
+    if (!clearResult.ok) return;
+    expect(clearResult.snapshot.active.issue).toBeUndefined();
+
+    const snapshot = registry.getSessionResourceSnapshot('C123', '171.005');
+    expect(snapshot.active.issue).toBeUndefined();
+  });
 });
