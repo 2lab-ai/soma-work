@@ -48,6 +48,9 @@ export class RenewHandler implements CommandHandler {
       return { handled: true };
     }
 
+    // Drop stale save payload before starting a new renew cycle.
+    session.renewSaveResult = undefined;
+
     // Set renew state and save user message for after load
     session.renewState = 'pending_save';
     session.renewUserMessage = userMessage || undefined;

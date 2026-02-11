@@ -601,8 +601,6 @@ export class SessionRegistry {
       if (activeLink?.url) {
         const foundActive = normalizedHistory.find((link) => link.url === activeLink.url);
         session.links[activeKey] = foundActive ? { ...foundActive } : undefined;
-      } else if (!session.links[activeKey] && normalizedHistory.length > 0) {
-        session.links[activeKey] = { ...normalizedHistory[normalizedHistory.length - 1] };
       }
     }
 
