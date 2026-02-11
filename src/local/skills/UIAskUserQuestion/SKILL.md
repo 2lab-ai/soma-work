@@ -1,11 +1,38 @@
 ---
-description: Output structured JSON choices when user decision is needed
-allowed-tools: Read, Grep, Glob
+description: Send user-choice questions through model-command tool (fallback: structured JSON)
+allowed-tools: Read, Grep, Glob, mcp__model-command__list, mcp__model-command__run
 ---
 
 # UIAskUserQuestion - Structured User Choice Interface
 
-When your turn ends and user input is required, provide structured JSON output so users can respond by number.
+When your turn ends and user input is required, use model-command tool first.
+
+## Primary Action (Tool-first)
+
+Call:
+
+```json
+{
+  "commandId": "ASK_USER_QUESTION",
+  "params": {
+    "payload": {
+      "type": "user_choice",
+      "question": "Your question",
+      "choices": [
+        { "id": "1", "label": "Option A", "description": "Tradeoff of A" },
+        { "id": "2", "label": "Option B", "description": "Tradeoff of B" }
+      ]
+    }
+  }
+}
+```
+
+- Use `mcp__model-command__run` with the payload above.
+- Use `mcp__model-command__list` first if command availability is unclear.
+
+## Fallback Output (Only if tool unavailable)
+
+If model-command tool is unavailable, output structured JSON so users can respond by number.
 
 ## Output Format
 

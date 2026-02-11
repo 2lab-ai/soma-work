@@ -1,7 +1,15 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession, SessionUsage, Continuation } from '../../types';
+import {
+  ConversationSession,
+  SessionResourceUpdateRequest,
+  SessionUsage,
+  Continuation,
+  SaveContextResultPayload,
+  UserChoices,
+  UserChoice,
+} from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
@@ -16,11 +24,13 @@ import {
   TodoDisplayManager,
   SlackApiHelper,
   AssistantStatusManager,
+  UserChoiceHandler,
 } from '../index';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ActionPanelManager } from '../action-panel-manager';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
@@ -121,6 +131,7 @@ export class StreamExecutor {
     } = params;
 
     let statusMessageTs: string | undefined;
+    let toolChoicePending = false;
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -224,6 +235,14 @@ export class StreamExecutor {
             sessionKey: ctx.sessionKey,
             say: ctx.say,
           });
+          const hasToolChoice = await this.handleModelCommandToolResults(
+            toolResults,
+            session,
+            ctx
+          );
+          if (hasToolChoice) {
+            toolChoicePending = true;
+          }
         },
         onTodoUpdate: async (input, ctx) => {
           await this.deps.todoDisplayManager.handleTodoUpdate(
@@ -307,7 +326,8 @@ export class StreamExecutor {
       }
 
       // Update status and reaction based on whether user choice is pending
-      const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
+      const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
       }
@@ -321,12 +341,12 @@ export class StreamExecutor {
       this.deps.claudeHandler.setActivityState(
         channel,
         threadTs,
-        streamResult.hasUserChoice ? 'waiting' : 'idle'
+        hasPendingChoice ? 'waiting' : 'idle'
       );
       await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: streamResult.hasUserChoice ? '입력 대기' : '사용자 액션 대기',
+        agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
         activeTool: undefined,
-        waitingForChoice: streamResult.hasUserChoice,
+        waitingForChoice: hasPendingChoice,
       });
 
       // Record assistant turn (fire-and-forget, non-blocking)
@@ -759,6 +779,192 @@ export class StreamExecutor {
     });
   }
 
+  private async handleModelCommandToolResults(
+    toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
+    session: ConversationSession,
+    context: StreamContext
+  ): Promise<boolean> {
+    let hasPendingChoice = false;
+
+    for (const toolResult of toolResults) {
+      if (toolResult.toolName !== 'mcp__model-command__run') {
+        continue;
+      }
+
+      const parsed = parseModelCommandRunResponse(toolResult.result);
+      if (!parsed) {
+        this.logger.warn('Failed to parse model-command tool result', {
+          sessionKey: context.sessionKey,
+          toolUseId: toolResult.toolUseId,
+        });
+        continue;
+      }
+
+      if (!parsed.ok) {
+        this.logger.warn('model-command run returned error', {
+          sessionKey: context.sessionKey,
+          commandId: parsed.commandId,
+          error: parsed.error,
+        });
+        continue;
+      }
+
+      if (parsed.commandId === 'ASK_USER_QUESTION') {
+        await this.renderAskUserQuestionFromCommand(
+          parsed.payload.question,
+          session,
+          context
+        );
+        hasPendingChoice = true;
+        continue;
+      }
+
+      if (parsed.commandId === 'SAVE_CONTEXT_RESULT') {
+        session.renewSaveResult = parsed.payload.saveResult;
+        this.logger.info('Captured SAVE_CONTEXT_RESULT from model-command', {
+          sessionKey: context.sessionKey,
+          success: parsed.payload.saveResult.success,
+          status: parsed.payload.saveResult.status,
+          id: parsed.payload.saveResult.id || parsed.payload.saveResult.save_id,
+        });
+        continue;
+      }
+
+      if (parsed.commandId === 'UPDATE_SESSION') {
+        const request = parsed.payload.request as SessionResourceUpdateRequest;
+        const updateResult = this.deps.claudeHandler.updateSessionResources(
+          context.channel,
+          context.threadTs,
+          request
+        );
+
+        if (!updateResult.ok) {
+          this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+            sessionKey: context.sessionKey,
+            reason: updateResult.reason,
+            error: updateResult.error,
+            mismatch: updateResult.sequenceMismatch,
+          });
+        } else {
+          this.logger.info('Applied UPDATE_SESSION on host', {
+            sessionKey: context.sessionKey,
+            sequence: updateResult.snapshot.sequence,
+            issueCount: updateResult.snapshot.issues.length,
+            prCount: updateResult.snapshot.prs.length,
+            docCount: updateResult.snapshot.docs.length,
+          });
+        }
+      }
+    }
+
+    return hasPendingChoice;
+  }
+
+  private async renderAskUserQuestionFromCommand(
+    question: UserChoice | UserChoices,
+    session: ConversationSession,
+    context: StreamContext
+  ): Promise<void> {
+    if (question.type === 'user_choices') {
+      await this.renderMultiChoiceFromCommand(question, context);
+    } else {
+      await this.renderSingleChoiceFromCommand(question, context);
+    }
+
+    this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
+    await this.updateRuntimeStatus(session, context.sessionKey, {
+      agentPhase: '입력 대기',
+      activeTool: undefined,
+      waitingForChoice: true,
+    });
+  }
+
+  private async renderSingleChoiceFromCommand(
+    question: UserChoice,
+    context: StreamContext
+  ): Promise<void> {
+    const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey);
+    const result = await context.say({
+      text: question.question,
+      ...payload,
+      thread_ts: context.threadTs,
+    });
+
+    await this.deps.actionPanelManager?.attachChoice(
+      context.sessionKey,
+      payload,
+      result?.ts
+    );
+  }
+
+  private async renderMultiChoiceFromCommand(
+    question: UserChoices,
+    context: StreamContext
+  ): Promise<void> {
+    const maxQuestionsPerForm = 6;
+    const chunks: UserChoices[] = [];
+    for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
+      const chunkQuestions = question.questions.slice(index, index + maxQuestionsPerForm);
+      const chunkLabel = question.questions.length > maxQuestionsPerForm
+        ? ` (${Math.floor(index / maxQuestionsPerForm) + 1}/${Math.ceil(question.questions.length / maxQuestionsPerForm)})`
+        : '';
+
+      chunks.push({
+        ...question,
+        title: `${question.title || '선택이 필요합니다'}${chunkLabel}`,
+        questions: chunkQuestions,
+      });
+    }
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+
+      this.deps.actionHandlers.setPendingForm(formId, {
+        formId,
+        sessionKey: context.sessionKey,
+        channel: context.channel,
+        threadTs: context.threadTs,
+        messageTs: '',
+        questions: chunk.questions,
+        selections: {},
+        createdAt: Date.now(),
+      });
+
+      if (index === 0) {
+        await this.deps.actionHandlers.invalidateOldForms(
+          context.sessionKey,
+          formId,
+          this.deps.slackApi
+        );
+      }
+
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(
+        chunk,
+        formId,
+        context.sessionKey
+      );
+      const result = await context.say({
+        text: chunk.title || '📋 선택이 필요합니다',
+        ...payload,
+        thread_ts: context.threadTs,
+      });
+
+      if (result?.ts) {
+        const pending = this.deps.actionHandlers.getPendingForm(formId);
+        if (pending) {
+          pending.messageTs = result.ts;
+        }
+      }
+
+      await this.deps.actionPanelManager?.attachChoice(
+        context.sessionKey,
+        payload,
+        result?.ts
+      );
+    }
+  }
+
   /**
    * Build continuation for renew flow after save completes
    * Returns Continuation object instead of recursively calling execute()
@@ -769,8 +975,10 @@ export class StreamExecutor {
     threadTs: string,
     say: SayFn
   ): Promise<Continuation | undefined> {
-    // Parse JSON result from save output
-    const saveResult = this.parseSaveResult(collectedText);
+    // Prefer tool-driven save result, then fall back to text parsing.
+    const saveResult = this.normalizeSaveResultPayload(session.renewSaveResult)
+      || this.parseSaveResult(collectedText);
+    session.renewSaveResult = undefined;
 
     if (!saveResult) {
       this.logger.warn('Renew save did not find save_result JSON', {
@@ -916,31 +1124,39 @@ ${userInstruction}`;
     try {
       const fullJson = `{"save_result":${jsonMatch[1]}}`;
       const parsed = JSON.parse(fullJson);
-      const raw = parsed.save_result;
-
-      // Normalize the result (lenient parsing)
-      // Success detection: success === true OR status === "saved" OR status === "success"
-      const success = raw.success === true ||
-        raw.status === 'saved' ||
-        raw.status === 'success';
-
-      // ID extraction: id OR save_id
-      const id = raw.id || raw.save_id;
-
-      // Return normalized result
-      return {
-        success,
-        id,
-        dir: raw.dir,
-        path: raw.path,
-        summary: raw.summary || raw.title,
-        files: raw.files,
-        error: raw.error,
-      };
+      return this.normalizeSaveResultPayload(parsed.save_result);
     } catch (error) {
       this.logger.warn('Failed to parse save_result JSON', { error });
       return null;
     }
+  }
+
+  private normalizeSaveResultPayload(raw: SaveContextResultPayload | undefined): {
+    success: boolean;
+    id?: string;
+    dir?: string;
+    path?: string;
+    summary?: string;
+    files?: Array<{ name: string; content: string }>;
+    error?: string;
+  } | null {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const success = raw.success === true
+      || raw.status === 'saved'
+      || raw.status === 'success';
+
+    return {
+      success,
+      id: raw.id || raw.save_id,
+      dir: raw.dir,
+      path: raw.path,
+      summary: raw.summary || raw.title,
+      files: raw.files,
+      error: raw.error,
+    };
   }
 
   /**

@@ -343,3 +343,195 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 });
+
+describe('model-command integration', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        updateSessionResources: vi.fn().mockReturnValue({
+          ok: true,
+          snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 1 },
+        }),
+      },
+      fileHandler: {
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+      },
+      todoDisplayManager: {
+        cleanup: vi.fn(),
+        cleanupSession: vi.fn(),
+      },
+      actionHandlers: {
+        setPendingForm: vi.fn(),
+        getPendingForm: vi.fn(),
+        invalidateOldForms: vi.fn().mockResolvedValue(undefined),
+      },
+      requestCoordinator: {
+        removeController: vi.fn(),
+      },
+      slackApi: {
+        updateMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      },
+      actionPanelManager: {
+        attachChoice: vi.fn().mockResolvedValue(undefined),
+        updatePanel: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  }
+
+  function createSession(): any {
+    return {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: '171.100',
+      isActive: true,
+      lastActivity: new Date(),
+      renewState: null,
+      activityState: 'idle',
+    };
+  }
+
+  it('applies UPDATE_SESSION command results on host session state', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const hasChoice = await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'UPDATE_SESSION',
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, sequence: 2 },
+              appliedOperations: 1,
+              request: {
+                operations: [
+                  {
+                    action: 'add',
+                    resourceType: 'issue',
+                    link: {
+                      url: 'https://jira.example/PTN-1',
+                      type: 'issue',
+                      provider: 'jira',
+                    },
+                  },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(hasChoice).toBe(false);
+    expect(deps.claudeHandler.updateSessionResources).toHaveBeenCalledWith(
+      'C1',
+      '171.100',
+      expect.objectContaining({
+        operations: expect.any(Array),
+      })
+    );
+  });
+
+  it('renders ASK_USER_QUESTION from command tool and marks waiting state', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'choice_ts' });
+
+    const hasChoice = await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_2',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '진행할 방법을 선택해주세요',
+                choices: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(hasChoice).toBe(true);
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: '진행할 방법을 선택해주세요',
+      thread_ts: '171.100',
+    }));
+    expect(deps.actionPanelManager.attachChoice).toHaveBeenCalled();
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+  });
+
+  it('buildRenewContinuation prefers tool-provided SAVE_CONTEXT_RESULT payload', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = 'pending_save';
+    session.renewSaveResult = {
+      success: true,
+      id: 'save_001',
+      files: [{ name: 'context.md', content: '# Saved context' }],
+    };
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    const continuation = await (executor as any).buildRenewContinuation(
+      session,
+      '',
+      '171.100',
+      say
+    );
+
+    expect(continuation).toBeDefined();
+    expect(continuation?.resetSession).toBe(true);
+    expect(continuation?.prompt).toContain('local:load');
+    expect(session.renewState).toBeNull();
+    expect(session.renewUserMessage).toBeUndefined();
+  });
+});
