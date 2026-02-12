@@ -10,7 +10,28 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+export interface TaskToolSummary {
+  subagentType?: string;
+  runInBackground?: boolean;
+  promptLength?: number;
+  promptPreview?: string;
+}
+
+export interface ToolUseLogSummary {
+  toolUseId: string;
+  toolName: string;
+  inputKeys: string[];
+  inputKeyCount: number;
+  task?: TaskToolSummary;
+}
+
 export class ToolFormatter {
+  private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
+
+  private static sanitizeInlineValue(value: string): string {
+    return value.replace(/`/g, "'");
+  }
+
   /**
    * Truncate a string to max length, adding ellipsis if truncated
    */
@@ -126,11 +147,108 @@ export class ToolFormatter {
   }
 
   /**
+   * Build Task tool summary from tool input
+   */
+  static getTaskToolSummary(input: unknown): TaskToolSummary {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return {};
+    }
+
+    const taskInput = input as {
+      subagent_type?: unknown;
+      run_in_background?: unknown;
+      prompt?: unknown;
+    };
+
+    const summary: TaskToolSummary = {};
+
+    if (typeof taskInput.subagent_type === 'string' && taskInput.subagent_type.trim()) {
+      summary.subagentType = taskInput.subagent_type.trim();
+    }
+
+    if (typeof taskInput.run_in_background === 'boolean') {
+      summary.runInBackground = taskInput.run_in_background;
+    }
+
+    if (typeof taskInput.prompt === 'string') {
+      const normalizedPrompt = taskInput.prompt.replace(/\s+/g, ' ').trim();
+      summary.promptLength = taskInput.prompt.length;
+      if (normalizedPrompt) {
+        summary.promptPreview = this.truncateString(
+          normalizedPrompt,
+          this.TASK_PROMPT_PREVIEW_LENGTH
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Format Task tool usage with key inputs for visibility
+   */
+  static formatTaskTool(input: unknown): string {
+    const summary = this.getTaskToolSummary(input);
+    const lines = ['🔧 *Using Task*'];
+
+    if (summary.subagentType) {
+      lines.push(`*subagent_type:* \`${this.sanitizeInlineValue(summary.subagentType)}\``);
+    }
+
+    if (summary.runInBackground !== undefined) {
+      lines.push(`*run_in_background:* \`${summary.runInBackground}\``);
+    }
+
+    if (summary.promptPreview) {
+      lines.push(`*prompt:* \`${this.sanitizeInlineValue(summary.promptPreview)}\``);
+    }
+
+    if (summary.promptLength !== undefined) {
+      lines.push(`*prompt_length:* \`${summary.promptLength}\``);
+    }
+
+    if (lines.length === 1) {
+      lines.push('_[No Task input details]_');
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build concise tool_use input summary for debug logging
+   */
+  static buildToolUseLogSummary(
+    toolUseId: string,
+    toolName: string,
+    input: unknown
+  ): ToolUseLogSummary {
+    const inputKeys = input && typeof input === 'object' && !Array.isArray(input)
+      ? Object.keys(input as Record<string, unknown>).sort()
+      : [];
+
+    const summary: ToolUseLogSummary = {
+      toolUseId,
+      toolName,
+      inputKeys,
+      inputKeyCount: inputKeys.length,
+    };
+
+    if (toolName === 'Task') {
+      summary.task = this.getTaskToolSummary(input);
+    }
+
+    return summary;
+  }
+
+  /**
    * Format generic tool usage
    */
   static formatGenericTool(toolName: string, input: any): string {
     if (toolName.startsWith('mcp__')) {
       return this.formatMcpTool(toolName, input);
+    }
+    if (toolName === 'Task') {
+      return this.formatTaskTool(input);
     }
     return `🔧 *Using ${toolName}*`;
   }

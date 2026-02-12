@@ -270,6 +270,14 @@ export class StreamProcessor {
         input: part.input,
       }));
 
+    for (const toolUse of toolUses) {
+      this.logger.debug('Received tool_use', ToolFormatter.buildToolUseLogSummary(
+        toolUse.id,
+        toolUse.name,
+        toolUse.input
+      ));
+    }
+
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
       await this.callbacks.onToolUse(toolUses, context);
     }
