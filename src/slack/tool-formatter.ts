@@ -12,6 +12,8 @@ export interface ToolResult {
 
 export interface TaskToolSummary {
   subagentType?: string;
+  subagentLabel?: string;
+  model?: string;
   runInBackground?: boolean;
   promptLength?: number;
   promptPreview?: string;
@@ -27,9 +29,23 @@ export interface ToolUseLogSummary {
 
 export class ToolFormatter {
   private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
+  private static readonly SUBAGENT_DISPLAY_MAP: Record<string, { label: string; model?: string }> = {
+    'oh-my-claude:explore': { label: 'Explorer', model: 'opus' },
+    'oh-my-claude:librarian': { label: 'Librarian', model: 'opus' },
+    'oh-my-claude:oracle': { label: 'Oracle', model: 'opus' },
+    'oh-my-claude:reviewer': { label: 'Reviewer', model: 'opus' },
+  };
 
   private static sanitizeInlineValue(value: string): string {
     return value.replace(/`/g, "'");
+  }
+
+  private static titleCaseSubagent(raw: string): string {
+    return raw
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
   }
 
   /**
@@ -156,6 +172,7 @@ export class ToolFormatter {
 
     const taskInput = input as {
       subagent_type?: unknown;
+      model?: unknown;
       run_in_background?: unknown;
       prompt?: unknown;
     };
@@ -164,6 +181,22 @@ export class ToolFormatter {
 
     if (typeof taskInput.subagent_type === 'string' && taskInput.subagent_type.trim()) {
       summary.subagentType = taskInput.subagent_type.trim();
+      const mapped = this.SUBAGENT_DISPLAY_MAP[summary.subagentType];
+      if (mapped) {
+        summary.subagentLabel = mapped.label;
+        if (!summary.model && mapped.model) {
+          summary.model = mapped.model;
+        }
+      } else {
+        const rawLabel = summary.subagentType.includes(':')
+          ? summary.subagentType.split(':').pop() || summary.subagentType
+          : summary.subagentType;
+        summary.subagentLabel = this.titleCaseSubagent(rawLabel);
+      }
+    }
+
+    if (typeof taskInput.model === 'string' && taskInput.model.trim()) {
+      summary.model = taskInput.model.trim();
     }
 
     if (typeof taskInput.run_in_background === 'boolean') {
@@ -189,26 +222,19 @@ export class ToolFormatter {
    */
   static formatTaskTool(input: unknown): string {
     const summary = this.getTaskToolSummary(input);
-    const lines = ['🔧 *Using Task*'];
+    const subagentName = summary.subagentLabel || 'Task';
+    const lines = [`🔧 Using Subagent: *${this.sanitizeInlineValue(subagentName)}*`];
 
-    if (summary.subagentType) {
-      lines.push(`*subagent_type:* \`${this.sanitizeInlineValue(summary.subagentType)}\``);
-    }
-
-    if (summary.runInBackground !== undefined) {
-      lines.push(`*run_in_background:* \`${summary.runInBackground}\``);
+    if (summary.model) {
+      lines.push(`model: *${this.sanitizeInlineValue(summary.model)}*`);
     }
 
     if (summary.promptPreview) {
-      lines.push(`*prompt:* \`${this.sanitizeInlineValue(summary.promptPreview)}\``);
+      lines.push(`prompt: ${this.sanitizeInlineValue(summary.promptPreview)}`);
     }
 
     if (summary.promptLength !== undefined) {
-      lines.push(`*prompt_length:* \`${summary.promptLength}\``);
-    }
-
-    if (lines.length === 1) {
-      lines.push('_[No Task input details]_');
+      lines.push(`prompt_length: ${summary.promptLength}`);
     }
 
     return lines.join('\n');
