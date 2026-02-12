@@ -253,11 +253,10 @@ npm run build
 
 **Task Tool (subagent delegation)**:
 ```
-🔧 *Using Task*
-*subagent_type:* `oh-my-claude:explore`
-*run_in_background:* `true`
-*prompt:* `Find code related to routing panel changes`
-*prompt_length:* `41`
+🔧 Using Subagent: *Explorer*
+model: *opus*
+prompt: Find code related to routing panel changes
+prompt_length: 41
 ```
 
 **MCP Tool**:

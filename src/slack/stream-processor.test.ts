@@ -115,13 +115,19 @@ describe('StreamProcessor', () => {
 
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining('subagent_type'),
+          text: expect.stringContaining('Using Subagent'),
           thread_ts: 'thread_ts',
         })
       );
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining('oh-my-claude:explore'),
+          text: expect.stringContaining('Explorer'),
+          thread_ts: 'thread_ts',
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('model: *opus*'),
           thread_ts: 'thread_ts',
         })
       );
