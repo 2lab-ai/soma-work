@@ -85,6 +85,48 @@ describe('StreamProcessor', () => {
       );
     });
 
+    it('should render Task tool details in tool use message', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool_task_1',
+                name: 'Task',
+                input: {
+                  subagent_type: 'oh-my-claude:explore',
+                  run_in_background: true,
+                  prompt: 'Find code related to task logging',
+                },
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('subagent_type'),
+          thread_ts: 'thread_ts',
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('oh-my-claude:explore'),
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
     it('should call onTodoUpdate for TodoWrite tool', async () => {
       const onTodoUpdate = vi.fn();
       const messages = [

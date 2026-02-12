@@ -154,9 +154,76 @@ describe('ToolFormatter', () => {
       expect(result).toContain('server');
     });
 
+    it('should format Task with task-specific details', () => {
+      const result = ToolFormatter.formatGenericTool('Task', {
+        subagent_type: 'oh-my-claude:explore',
+        run_in_background: true,
+        prompt: 'Find code related to routing panel update',
+      });
+
+      expect(result).toContain('Using Task');
+      expect(result).toContain('subagent_type');
+      expect(result).toContain('oh-my-claude:explore');
+      expect(result).toContain('run_in_background');
+      expect(result).toContain('true');
+      expect(result).toContain('prompt_length');
+      expect(result).toContain('prompt');
+    });
+
+    it('should keep Task fallback when input details are missing', () => {
+      const result = ToolFormatter.formatGenericTool('Task', {});
+      expect(result).toContain('Using Task');
+      expect(result).toContain('No Task input details');
+    });
+
     it('should format regular tools generically', () => {
       const result = ToolFormatter.formatGenericTool('CustomTool', {});
       expect(result).toContain('Using CustomTool');
+    });
+  });
+
+  describe('buildToolUseLogSummary', () => {
+    it('should summarize generic tool input keys', () => {
+      const result = ToolFormatter.buildToolUseLogSummary('tool_1', 'Read', {
+        file_path: '/tmp/test.ts',
+        encoding: 'utf-8',
+      });
+
+      expect(result).toEqual({
+        toolUseId: 'tool_1',
+        toolName: 'Read',
+        inputKeys: ['encoding', 'file_path'],
+        inputKeyCount: 2,
+      });
+    });
+
+    it('should include task metadata for Task tool', () => {
+      const result = ToolFormatter.buildToolUseLogSummary('tool_2', 'Task', {
+        subagent_type: 'oh-my-claude:oracle',
+        run_in_background: false,
+        prompt: 'Review architecture and identify risks',
+      });
+
+      expect(result.toolUseId).toBe('tool_2');
+      expect(result.toolName).toBe('Task');
+      expect(result.inputKeys).toEqual(['prompt', 'run_in_background', 'subagent_type']);
+      expect(result.task).toEqual({
+        subagentType: 'oh-my-claude:oracle',
+        runInBackground: false,
+        promptLength: 38,
+        promptPreview: 'Review architecture and identify risks',
+      });
+    });
+
+    it('should truncate long Task prompt preview in log summary', () => {
+      const longPrompt = `analyze ${'x'.repeat(300)}`;
+      const result = ToolFormatter.buildToolUseLogSummary('tool_3', 'Task', {
+        prompt: longPrompt,
+      });
+
+      expect(result.task?.promptLength).toBe(longPrompt.length);
+      expect(result.task?.promptPreview).toContain('...');
+      expect(result.task?.promptPreview?.length).toBeLessThanOrEqual(183);
     });
   });
 
