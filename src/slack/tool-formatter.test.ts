@@ -161,19 +161,17 @@ describe('ToolFormatter', () => {
         prompt: 'Find code related to routing panel update',
       });
 
-      expect(result).toContain('Using Task');
-      expect(result).toContain('subagent_type');
-      expect(result).toContain('oh-my-claude:explore');
-      expect(result).toContain('run_in_background');
-      expect(result).toContain('true');
-      expect(result).toContain('prompt_length');
-      expect(result).toContain('prompt');
+      expect(result).toContain('Using Subagent');
+      expect(result).toContain('Explorer');
+      expect(result).toContain('model: *opus*');
+      expect(result).toContain('prompt:');
+      expect(result).toContain('prompt_length:');
     });
 
     it('should keep Task fallback when input details are missing', () => {
       const result = ToolFormatter.formatGenericTool('Task', {});
-      expect(result).toContain('Using Task');
-      expect(result).toContain('No Task input details');
+      expect(result).toContain('Using Subagent');
+      expect(result).toContain('*Task*');
     });
 
     it('should format regular tools generically', () => {
@@ -209,6 +207,8 @@ describe('ToolFormatter', () => {
       expect(result.inputKeys).toEqual(['prompt', 'run_in_background', 'subagent_type']);
       expect(result.task).toEqual({
         subagentType: 'oh-my-claude:oracle',
+        subagentLabel: 'Oracle',
+        model: 'opus',
         runInBackground: false,
         promptLength: 38,
         promptPreview: 'Review architecture and identify risks',
@@ -224,6 +224,16 @@ describe('ToolFormatter', () => {
       expect(result.task?.promptLength).toBe(longPrompt.length);
       expect(result.task?.promptPreview).toContain('...');
       expect(result.task?.promptPreview?.length).toBeLessThanOrEqual(183);
+    });
+
+    it('should prefer explicit input model over default subagent model', () => {
+      const result = ToolFormatter.buildToolUseLogSummary('tool_4', 'Task', {
+        subagent_type: 'oh-my-claude:explore',
+        model: 'haiku',
+      });
+
+      expect(result.task?.model).toBe('haiku');
+      expect(result.task?.subagentLabel).toBe('Explorer');
     });
   });
 
