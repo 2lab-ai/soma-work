@@ -89,6 +89,12 @@ export class ToolEventProcessor {
    */
   async handleToolUse(toolUses: ToolUseEvent[], context: ToolEventContext): Promise<void> {
     for (const toolUse of toolUses) {
+      this.logger.debug('Handling tool_use', ToolFormatter.buildToolUseLogSummary(
+        toolUse.id,
+        toolUse.name,
+        toolUse.input
+      ));
+
       // Track tool use ID to name mapping
       this.toolTracker.trackToolUse(toolUse.id, toolUse.name);
 
