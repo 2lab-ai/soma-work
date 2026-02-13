@@ -213,6 +213,48 @@ describe('StreamProcessor', () => {
       );
     });
 
+    it('should append final response footer when callback is provided', async () => {
+      const buildFinalResponseFooter = vi.fn().mockResolvedValue('```Ctx ▓▓▓░░ 42.0% +0.5```');
+      const messages = [
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'Final response',
+          duration_ms: 1200,
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 300,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ buildFinalResponseFooter });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(buildFinalResponseFooter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: mockContext,
+          durationMs: 1200,
+          usage: expect.objectContaining({
+            inputTokens: 1200,
+            outputTokens: 300,
+          }),
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'Final response\n\n```Ctx ▓▓▓░░ 42.0% +0.5```',
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
     it('should stop processing on abort', async () => {
       const messages = [
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Message 1' }] } },

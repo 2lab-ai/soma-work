@@ -31,6 +31,7 @@ import { RequestCoordinator } from '../request-coordinator';
 import { ActionPanelManager } from '../action-panel-manager';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
+import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
@@ -75,6 +76,15 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+}
+
+interface FinalFooterData {
+  startedAt: Date;
+  durationMs?: number;
+  contextUsagePercentBefore?: number;
+  contextUsagePercentAfter?: number;
+  usageBefore?: ClaudeUsageSnapshot | null;
+  usageAfter?: ClaudeUsageSnapshot | null;
 }
 
 /**
@@ -132,6 +142,9 @@ export class StreamExecutor {
 
     let statusMessageTs: string | undefined;
     let toolChoicePending = false;
+    const requestStartedAt = new Date();
+    const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
+    const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -318,6 +331,22 @@ export class StreamExecutor {
             waitingForChoice: true,
           });
           await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
+        },
+        buildFinalResponseFooter: async ({ usage, durationMs }) => {
+          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const usageBefore = await usageBeforePromise;
+
+          return this.buildFinalResponseFooter({
+            startedAt: requestStartedAt,
+            durationMs,
+            contextUsagePercentBefore,
+            contextUsagePercentAfter: this.getContextUsagePercentFromResult(
+              usage,
+              session.usage?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+            ),
+            usageBefore,
+            usageAfter,
+          });
         },
       };
 
@@ -752,6 +781,119 @@ export class StreamExecutor {
     contextItems.push(`  <timestamp>${new Date().toISOString()}</timestamp>`);
 
     return ['<context>', ...contextItems, '</context>'].join('\n');
+  }
+
+  private getCurrentContextUsagePercent(usage?: SessionUsage): number | undefined {
+    if (!usage || usage.contextWindow <= 0) {
+      return undefined;
+    }
+
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const percent = (usedTokens / usage.contextWindow) * 100;
+    return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
+  }
+
+  private getContextUsagePercentFromResult(
+    usage: UsageData | undefined,
+    contextWindow: number
+  ): number | undefined {
+    if (!usage || contextWindow <= 0) {
+      return undefined;
+    }
+
+    const usedTokens = usage.inputTokens + usage.outputTokens;
+    const percent = (usedTokens / contextWindow) * 100;
+    return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
+  }
+
+  private buildFinalResponseFooter(data: FinalFooterData): string | undefined {
+    const lines: string[] = [];
+    const endedAt = typeof data.durationMs === 'number'
+      ? new Date(data.startedAt.getTime() + data.durationMs)
+      : new Date();
+
+    lines.push(
+      `⏰ ${this.formatClock(data.startedAt)} → ${this.formatClock(endedAt)} (${this.formatElapsed(endedAt.getTime() - data.startedAt.getTime())})`
+    );
+
+    if (typeof data.contextUsagePercentAfter === 'number') {
+      const contextAfter = data.contextUsagePercentAfter;
+      const contextDelta = typeof data.contextUsagePercentBefore === 'number'
+        ? contextAfter - data.contextUsagePercentBefore
+        : undefined;
+      const contextDeltaText = this.formatSignedDelta(contextDelta, 1);
+      const contextDeltaSuffix = contextDeltaText ? ` ${contextDeltaText}` : '';
+      lines.push(
+        `Ctx ${this.renderBar(contextAfter)} ${contextAfter.toFixed(1)}%${contextDeltaSuffix}`
+      );
+    }
+
+    const fiveHour = data.usageAfter?.fiveHour;
+    const sevenDay = data.usageAfter?.sevenDay;
+    const fiveHourDelta = typeof fiveHour === 'number' && typeof data.usageBefore?.fiveHour === 'number'
+      ? Math.round(fiveHour - data.usageBefore.fiveHour)
+      : undefined;
+    const sevenDayDelta = typeof sevenDay === 'number' && typeof data.usageBefore?.sevenDay === 'number'
+      ? Math.round(sevenDay - data.usageBefore.sevenDay)
+      : undefined;
+
+    const fiveHourPercent = this.formatPercent(fiveHour);
+    const sevenDayPercent = this.formatPercent(sevenDay);
+    const fiveHourDeltaText = this.formatSignedDelta(fiveHourDelta, 0) ?? '--';
+    const sevenDayDeltaText = this.formatSignedDelta(sevenDayDelta, 0) ?? '--';
+
+    lines.push(
+      `5h  ${this.renderBar(fiveHour ?? 0)} ${fiveHourPercent} ${fiveHourDeltaText}  `
+      + `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`
+    );
+
+    if (lines.length === 0) {
+      return undefined;
+    }
+
+    return ['```', ...lines, '```'].join('\n');
+  }
+
+  private formatClock(date: Date): string {
+    return date.toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  }
+
+  private formatElapsed(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  private renderBar(percent: number, width: number = 14): string {
+    const clamped = Math.max(0, Math.min(100, percent));
+    const filled = Math.round((clamped / 100) * width);
+    return '▓'.repeat(filled) + '░'.repeat(width - filled);
+  }
+
+  private formatPercent(percent?: number): string {
+    if (typeof percent !== 'number' || !Number.isFinite(percent)) {
+      return '--%';
+    }
+
+    return `${String(Math.round(percent)).padStart(3)}%`;
+  }
+
+  private formatSignedDelta(
+    delta: number | undefined,
+    decimals: number
+  ): string | undefined {
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) {
+      return undefined;
+    }
+
+    const sign = delta >= 0 ? '+' : '';
+    return decimals > 0 ? `${sign}${delta.toFixed(decimals)}` : `${sign}${Math.round(delta)}`;
   }
 
   /**

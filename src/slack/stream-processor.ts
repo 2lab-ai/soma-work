@@ -109,6 +109,12 @@ export interface UsageData {
   totalCostUsd: number;
 }
 
+export interface FinalResponseFooterParams {
+  context: StreamContext;
+  usage?: UsageData;
+  durationMs?: number;
+}
+
 /**
  * Stream processor callbacks
  */
@@ -133,6 +139,10 @@ export interface StreamCallbacks {
     context: StreamContext,
     sourceMessageTs?: string
   ) => Promise<void>;
+  /** Called before sending the final assistant message to append footer text */
+  buildFinalResponseFooter?: (
+    params: FinalResponseFooterParams
+  ) => Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -607,15 +617,17 @@ export class StreamProcessor {
       duration: message.duration_ms,
     });
 
+    const usage = this.extractUsageData(message);
+
     if (message.subtype === 'success' && message.result) {
       const finalResult = message.result;
       if (finalResult && !currentMessages.includes(finalResult)) {
         currentMessages.push(finalResult);
-        await this.handleFinalResult(finalResult, context);
+        await this.handleFinalResult(finalResult, context, usage, message.duration_ms);
       }
     }
 
-    return this.extractUsageData(message);
+    return usage;
   }
 
   /**
@@ -686,7 +698,12 @@ export class StreamProcessor {
   /**
    * Handle final result text
    */
-  private async handleFinalResult(result: string, context: StreamContext): Promise<void> {
+  private async handleFinalResult(
+    result: string,
+    context: StreamContext,
+    usage?: UsageData,
+    durationMs?: number
+  ): Promise<void> {
     // Extract response directives before user choice
     let processedResult = result;
     const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
@@ -709,7 +726,17 @@ export class StreamProcessor {
       return;
     }
 
-    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
+    let footer: string | undefined;
+    if (this.callbacks.buildFinalResponseFooter) {
+      footer = await this.callbacks.buildFinalResponseFooter({
+        context,
+        usage,
+        durationMs,
+      });
+    }
+
+    const combinedResult = footer ? `${processedResult}\n\n${footer}` : processedResult;
+    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(combinedResult);
 
     if (choices) {
       this._hasUserChoice = true;
@@ -718,7 +745,7 @@ export class StreamProcessor {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      const formatted = MessageFormatter.formatMessage(processedResult, true);
+      const formatted = MessageFormatter.formatMessage(combinedResult, true);
       await context.say({
         text: formatted,
         thread_ts: context.threadTs,
