@@ -246,7 +246,7 @@ export class SlackHandler {
     });
 
     // Step 2: Route commands
-    const { handled, continueWithPrompt } = await this.inputProcessor.routeCommand(event, wrappedSay);
+    const { handled, continueWithPrompt, forceWorkflow } = await this.inputProcessor.routeCommand(event, wrappedSay);
     if (handled && !continueWithPrompt) {
       // Command was handled - replace eyes with zap emoji
       await this.slackApi.removeReaction(channel, ts, 'eyes');
@@ -267,7 +267,12 @@ export class SlackHandler {
     }
 
     // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
-    const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!, effectiveText);
+    const sessionResult = await this.sessionInitializer.initialize(
+      event,
+      cwdResult.workingDirectory!,
+      effectiveText,
+      forceWorkflow
+    );
 
     // Channel routing check: if session was halted due to wrong channel, stop processing
     if (sessionResult.halted) {

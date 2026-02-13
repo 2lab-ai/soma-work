@@ -296,6 +296,57 @@ describe('SessionInitializer - Onboarding Detection', () => {
     });
   });
 
+  describe('forced workflow', () => {
+    it('forces onboarding workflow when command requests it', async () => {
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U_EXISTING_USER',
+        defaultDirectory: '/some/dir',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+        lastUpdated: '2024-01-01',
+      } as any);
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      mockClaudeHandler.needsDispatch.mockReturnValue(true);
+
+      let capturedSession: any = null;
+      mockClaudeHandler.createSession.mockImplementation(() => {
+        capturedSession = {
+          sessionId: 'session-123',
+          owner: 'U_EXISTING_USER',
+          ownerName: 'Existing User',
+          channel: 'C123',
+          threadTs: 'thread123',
+          isOnboarding: false,
+        };
+        return capturedSession;
+      });
+
+      const event = {
+        user: 'U_EXISTING_USER',
+        channel: 'C123',
+        thread_ts: undefined,
+        ts: 'thread123',
+        text: '/onboarding',
+      };
+
+      await sessionInitializer.initialize(
+        event as any,
+        '/test/dir',
+        '온보딩을 시작해줘.',
+        'onboarding'
+      );
+
+      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
+        'C123',
+        'thread123',
+        'onboarding',
+        'Onboarding'
+      );
+      expect(capturedSession.isOnboarding).toBe(true);
+    });
+  });
+
   describe('bot thread header creation', () => {
     it('creates a new bot thread header for non-routable initiate message', async () => {
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({

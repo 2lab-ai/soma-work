@@ -8,7 +8,7 @@ export interface ActionPanelBuildParams {
   waitingForChoice?: boolean;
   choiceMessageLink?: string;
   activityState?: ActivityState;
-  contextUsagePercent?: number;
+  contextRemainingPercent?: number;
   hasActiveRequest?: boolean;
   agentPhase?: string;
   activeTool?: string;
@@ -87,7 +87,7 @@ export class ActionPanelBuilder {
 
     const summaryText = this.buildSummaryLine({
       status,
-      contextUsagePercent: params.contextUsagePercent,
+      contextRemainingPercent: params.contextRemainingPercent,
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
@@ -146,7 +146,7 @@ export class ActionPanelBuilder {
 
   private static buildSummaryLine(params: {
     status: string;
-    contextUsagePercent?: number;
+    contextRemainingPercent?: number;
     waitingForChoice?: boolean;
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
@@ -169,7 +169,7 @@ export class ActionPanelBuilder {
       parts.push(agentChip);
     }
 
-    parts.push(this.contextChip(params.contextUsagePercent));
+    parts.push(this.contextChip(params.contextRemainingPercent));
 
     if (params.statusUpdatedAt) {
       parts.push('🟢 live');
@@ -212,11 +212,15 @@ export class ActionPanelBuilder {
     return undefined;
   }
 
-  private static contextChip(contextUsagePercent?: number): string {
-    if (typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)) {
-      return `📦 ${contextUsagePercent}%`;
+  private static contextChip(contextRemainingPercent?: number): string {
+    if (typeof contextRemainingPercent === 'number' && Number.isFinite(contextRemainingPercent)) {
+      return `📦 남은 ${this.formatPercent(contextRemainingPercent)}%`;
     }
-    return '📦 --%';
+    return '📦 남은 --%';
+  }
+
+  private static formatPercent(value: number): string {
+    return Number.isInteger(value) ? String(value) : value.toFixed(1);
   }
 
   private static formatToolLabel(toolName: string): string {

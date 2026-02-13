@@ -43,14 +43,14 @@ describe('ActionPanelBuilder', () => {
       disabled: false,
       activityState: 'working',
       activeTool: 'Read',
-      contextUsagePercent: 61,
+      contextRemainingPercent: 61,
       statusUpdatedAt: Date.now(),
     });
 
     const summary = getSummaryText(payload);
     expect(summary).toContain('⚙️ 작업 중');
     expect(summary).toContain('🛠 파일 읽기');
-    expect(summary).toContain('📦 61%');
+    expect(summary).toContain('📦 남은 61%');
     expect(summary).toContain('🟢 live');
     expect(summary).not.toContain('`jira-brainstorming`');
     expect(summary).not.toContain('🎛️');
@@ -64,7 +64,17 @@ describe('ActionPanelBuilder', () => {
       disabled: true,
     });
 
-    expect(getSummaryText(payload)).toContain('📦 --%');
+    expect(getSummaryText(payload)).toContain('📦 남은 --%');
+  });
+
+  it('shows one decimal for non-integer remaining context percent', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-4-1',
+      workflow: 'default',
+      contextRemainingPercent: 63.2,
+    });
+
+    expect(getSummaryText(payload)).toContain('📦 남은 63.2%');
   });
 
   it('mirrors thread choice blocks in action panel when choice is pending', () => {
@@ -102,7 +112,7 @@ describe('ActionPanelBuilder', () => {
       waitingForChoice: true,
       choiceBlocks,
       choiceMessageLink: 'https://workspace.slack.com/archives/C123/p111222333',
-      contextUsagePercent: 73,
+      contextRemainingPercent: 73,
     });
 
     const mirroredQuestionSection = payload.blocks.find((block) =>
@@ -120,7 +130,7 @@ describe('ActionPanelBuilder', () => {
     const summary = getSummaryText(payload);
     expect(summary).toContain('✋ 입력 대기');
     expect(summary).toContain('🧩 질문 응답 필요');
-    expect(summary).toContain('📦 73%');
+    expect(summary).toContain('📦 남은 73%');
   });
 
   it('keeps question slot with fallback text even without parsable choice blocks', () => {
