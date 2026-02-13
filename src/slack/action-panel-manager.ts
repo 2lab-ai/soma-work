@@ -97,7 +97,7 @@ export class ActionPanelManager {
 
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const disabled = this.computeDisabled(session, hasActiveRequest);
-    const contextUsagePercent = this.getContextUsagePercent(session);
+    const contextRemainingPercent = this.getContextRemainingPercent(session);
     const choiceMessageLink = await this.ensureChoiceMessageLink(panelState, channelId);
 
     const payload = ActionPanelBuilder.build({
@@ -108,7 +108,7 @@ export class ActionPanelManager {
       waitingForChoice: panelState.waitingForChoice,
       choiceMessageLink,
       activityState: session.activityState,
-      contextUsagePercent,
+      contextRemainingPercent,
       hasActiveRequest,
       agentPhase: panelState.agentPhase,
       activeTool: panelState.activeTool,
@@ -178,17 +178,15 @@ export class ActionPanelManager {
     return Boolean(isBusy || waitingForChoice || hasActiveRequest);
   }
 
-  private getContextUsagePercent(session: ConversationSession): number | undefined {
+  private getContextRemainingPercent(session: ConversationSession): number | undefined {
     const usage = session.usage;
     if (!usage || usage.contextWindow <= 0) {
       return undefined;
     }
 
-    const used = usage.currentInputTokens
-      + usage.currentCacheReadTokens
-      + usage.currentCacheCreateTokens;
-    const percent = Math.round((used / usage.contextWindow) * 100);
-    return Math.max(0, Math.min(100, percent));
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const remainingPercent = ((usage.contextWindow - usedTokens) / usage.contextWindow) * 100;
+    return Math.max(0, Math.min(100, Number(remainingPercent.toFixed(1))));
   }
 
   private extractChoiceBlocks(payload: SlackMessagePayload): any[] {

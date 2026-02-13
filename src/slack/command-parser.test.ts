@@ -416,6 +416,36 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('isOnboardingCommand', () => {
+    it('should match "onboarding"', () => {
+      expect(CommandParser.isOnboardingCommand('onboarding')).toBe(true);
+    });
+
+    it('should match "/onboarding"', () => {
+      expect(CommandParser.isOnboardingCommand('/onboarding')).toBe(true);
+    });
+
+    it('should match "onboarding start now"', () => {
+      expect(CommandParser.isOnboardingCommand('onboarding start now')).toBe(true);
+    });
+
+    it('should not match "onboard"', () => {
+      expect(CommandParser.isOnboardingCommand('onboard')).toBe(false);
+    });
+  });
+
+  describe('parseOnboardingCommand', () => {
+    it('should return empty prompt for "onboarding"', () => {
+      expect(CommandParser.parseOnboardingCommand('onboarding')).toEqual({ prompt: undefined });
+    });
+
+    it('should return prompt for "/onboarding 한국어로 안내해줘"', () => {
+      expect(CommandParser.parseOnboardingCommand('/onboarding 한국어로 안내해줘')).toEqual({
+        prompt: '한국어로 안내해줘',
+      });
+    });
+  });
+
   describe('getHelpMessage', () => {
     it('should return help message containing command sections', () => {
       const help = CommandParser.getHelpMessage();
@@ -433,6 +463,12 @@ describe('CommandParser', () => {
       const help = CommandParser.getHelpMessage();
       expect(help).toContain('new');
       expect(help).toContain('Reset session context');
+    });
+
+    it('should include onboarding command in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('onboarding');
+      expect(help).toContain('Run onboarding workflow anytime');
     });
   });
 

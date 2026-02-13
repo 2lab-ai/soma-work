@@ -300,6 +300,16 @@ export class StreamExecutor {
             const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
+
+          // Keep action panel context percentage in sync with latest usage.
+          try {
+            await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+          } catch (error) {
+            this.logger.debug('Failed to update action panel from usage callback', {
+              sessionKey,
+              error: (error as Error).message,
+            });
+          }
         },
         onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
           await this.updateRuntimeStatus(session, ctx.sessionKey, {
@@ -723,6 +733,9 @@ export class StreamExecutor {
     const slackName = settings?.slackName;
     const jiraName = userSettingsStore.getUserJiraName(userId);
     const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
+    const persona = userSettingsStore.getUserPersona(userId);
+    const defaultModel = userSettingsStore.getUserDefaultModel(userId);
+    const bypassPermission = userSettingsStore.getUserBypassPermission(userId);
 
     const contextItems: string[] = [];
 
@@ -730,6 +743,9 @@ export class StreamExecutor {
     if (slackName) contextItems.push(`  <slack-name>${slackName}</slack-name>`);
     if (jiraName) contextItems.push(`  <jira-name>${jiraName}</jira-name>`);
     if (jiraAccountId) contextItems.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
+    contextItems.push(`  <user-persona>${persona}</user-persona>`);
+    contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
+    contextItems.push(`  <user-bypass-permission>${bypassPermission ? 'on' : 'off'}</user-bypass-permission>`);
 
     // Environment context - always include cwd and timestamp
     contextItems.push(`  <cwd>${workingDirectory}</cwd>`);

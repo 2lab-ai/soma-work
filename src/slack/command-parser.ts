@@ -6,6 +6,7 @@ export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
+export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
 
@@ -137,6 +138,13 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an onboarding command
+   */
+  static isOnboardingCommand(text: string): boolean {
+    return /^\/?onboarding(?:\s+[\s\S]*)?$/i.test(text.trim());
+  }
+
+  /**
    * Parse /new command to extract optional prompt
    */
   static parseNewCommand(text: string): NewCommandResult {
@@ -145,6 +153,19 @@ export class CommandParser {
       return {};
     }
     // match[1] is the optional prompt (everything after /new)
+    const prompt = match[1]?.trim();
+    return { prompt: prompt || undefined };
+  }
+
+  /**
+   * Parse /onboarding command to extract optional prompt
+   */
+  static parseOnboardingCommand(text: string): OnboardingCommandResult {
+    const match = text.trim().match(/^\/?onboarding(?:\s+(.+))?$/is);
+    if (!match) {
+      return {};
+    }
+
     const prompt = match[1]?.trim();
     return { prompt: prompt || undefined };
   }
@@ -219,7 +240,7 @@ export class CommandParser {
     // Persona & Model
     'persona', 'model',
     // Sessions
-    'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew', 'close', 'link',
+    'sessions', 'terminate', 'kill', 'end', 'new', 'onboarding', 'context', 'renew', 'close', 'link',
     // Credentials
     'restore', 'credentials',
     // Help
@@ -268,6 +289,7 @@ export class CommandParser {
       '• `close` or `/close` - Close current thread\'s session',
       '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
       '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
+      '• `onboarding` or `/onboarding` - Run onboarding workflow anytime',
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '',

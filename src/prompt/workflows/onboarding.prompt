@@ -2,19 +2,38 @@
 
 # Onboarding Workflow
 
-Welcome new users and guide them through the bot setup process. Detect the user's language from their first message and respond in that language throughout the entire onboarding.
+Guide users through setup and operation basics. This workflow can run for first-time users or when they explicitly run `onboarding`/`/onboarding`.
 
 ## Success Criteria
 
 - User completes onboarding (or skips) and has a settings record created via `ensureUserExists`
 - If user's first message is a real task request, skip onboarding gracefully and process the request directly (after creating settings)
+- User sees current account status (model/persona/bypass/Jira mapping) before making changes
+- User understands what each workflow does and how to trigger it with concrete message examples
+- User gets a practical `new` vs `renew` guide and is encouraged to run `renew` at least once (or explicitly skip practice)
 
 ## Onboarding Steps
 
-### 1. Welcome & Introduction
-- Greet the user warmly in their detected language
-- Introduce yourself as an AI coding assistant
-- Explain what you can help with (PR review, Jira planning, code brainstorming, etc.)
+### 0. Account Status Check (Required)
+Inspect `<context>` and summarize current status first:
+- `<user-default-model>`
+- `<user-persona>`
+- `<user-bypass-permission>`
+- `<jira-name>`, `<jira-account-id>` (if available)
+- `<cwd>`
+
+Always show this as a short checklist:
+- Model
+- Persona
+- Permission bypass
+- Jira connection state
+
+If any field is missing/unknown, say so explicitly instead of guessing.
+
+### 1. Welcome & Intent
+- Greet in detected language
+- Explain this onboarding covers: account status, workflows, and `new`/`renew` operation
+- Mention user can skip anytime
 
 ### 2. Jira Account Connection
 Check `<context>` for `jira-name`:
@@ -22,46 +41,86 @@ Check `<context>` for `jira-name`:
 - If absent: Ask for their Jira display name using **UIAskUserQuestion** to update the mapping
 
 ### 3. Settings Confirmation
-Explain the default settings:
-- Model: Sonnet 4.5 (balanced speed/quality)
-- Persona: default (professional)
-- Permission bypass: off (safe mode)
+Explain current settings from `<context>` first, then explain defaults:
+- Model default: Opus 4.6
+- Persona default: `default`
+- Permission bypass default: off
 
 Use **UIAskUserQuestion** to offer changes:
-- "Would you like to customize any settings now? (Default settings work great for most users)"
+- "Would you like to customize settings now?"
 - Options: "Use defaults", "Change model", "Change persona", "Skip setup"
 
 If user wants changes, guide them to use commands:
 - `persona set <name>` - Change AI persona
-- `model set <name>` - Change default model (sonnet, opus, haiku)
+- `model set <name>` - Change default model
 - `bypass on/off` - Toggle permission prompts
 
 ### 4. Workflow Tour
-Briefly introduce the 8 available workflows:
-1. **jira-executive-summary** - Generate executive summaries for Jira issues
-2. **jira-brainstorming** - Brainstorm solutions with context from Jira
-3. **jira-planning** - Create implementation plans from Jira specs
-4. **jira-create-pr** - Generate PRs from Jira requirements
-5. **pr-review** - Review pull requests with code analysis
-6. **pr-fix-and-update** - Fix and update PRs based on feedback
-7. **pr-docs-confluence** - Generate Confluence docs from PRs
-8. **deploy** - Run source-to-target deployment flow with release notes
+Explain all workflows with "when to use" + "how to trigger":
+1. **jira-executive-summary**
+   - Use: Jira board snapshot/summary
+   - Trigger example: `https://xxx.atlassian.net/jira/software/projects/ABC/boards/123`
+2. **jira-brainstorming**
+   - Use: Discuss solution ideas from Jira/GitHub/Linear issue
+   - Trigger example: `https://xxx.atlassian.net/browse/ABC-123`
+3. **jira-planning**
+   - Use: turn issue into step-by-step plan
+   - Trigger example: `plan https://xxx.atlassian.net/browse/ABC-123`
+4. **jira-create-pr**
+   - Use: implement/fix based on Jira issue
+   - Trigger example: `fix https://xxx.atlassian.net/browse/ABC-123`
+5. **pr-review**
+   - Use: PR quality/bug/risk review
+   - Trigger example: `https://github.com/org/repo/pull/123`
+6. **pr-fix-and-update**
+   - Use: apply PR feedback and update branch
+   - Trigger example: `fix https://github.com/org/repo/pull/123`
+7. **pr-docs-confluence**
+   - Use: write Confluence doc from PR changes
+   - Trigger example: `https://xxx.atlassian.net/wiki/... https://github.com/org/repo/pull/123`
+8. **deploy**
+   - Use: source→target deployment flow
+   - Trigger example: `repo main -> prod`
 
-### 5. Demo Suggestion
-Offer to try a demo workflow:
-- "Would you like to try a quick demo? I recommend starting with:"
-  - PR Review (if they have a PR URL ready)
-  - Jira Brainstorming (if they have a Jira issue)
+Keep each explanation to 1-2 lines and ask if user wants a demo message template.
+
+### 5. `new` vs `renew` Deep Guide
+Must explain in detail with clear comparison:
+- `new`: discard current conversation context and start fresh in same thread
+  - Example: `new 이 PR만 새로 리뷰해줘`
+- `renew`: save current context, reset session, load saved context, then continue
+  - Example: `renew 지금까지 논의 저장하고 다음 액션만 정리해줘`
+- When to use:
+  - `new`: topic changed completely
+  - `renew`: topic same, but context window is running low
+
+Also explain context indicators:
+- Action panel shows remaining context as `📦 남은 XX%`
+- `context` command shows detailed token/cost info
+
+### 6. Practice (renew encouraged)
+Use **UIAskUserQuestion**:
+- Ask if user wants hands-on practice now
+- Options: "Try renew now", "Try new now", "Skip practice"
+
+If user picks **Try renew now**:
+- Give one copy-paste command:
+  - `renew 지금까지 설정 상태를 저장하고, 온보딩을 마무리해줘`
+- Explicitly ask them to run it in the current thread.
+- After they return, acknowledge and continue onboarding completion.
+
+If user picks **Try new now**:
+- Provide safe example command and explain it resets session context.
 
 ## Important Rules
 
 1. **Skip Option**: Always provide a skip option. If the user's first message is clearly a real work request (contains a URL, code, or specific task), skip onboarding and process it directly.
 
-2. **Language Detection**: Detect language from user's first message. If Korean, respond in Korean. If English, respond in English. If ambiguous, default to English.
+2. **Language Detection**: Detect language from user's first message. If Korean, respond in Korean. If English, respond in English. If ambiguous command-like input (e.g., `/onboarding`), infer from surrounding user phrasing when available; otherwise default to English.
 
 3. **UIAskUserQuestion**: ALWAYS use `UIAskUserQuestion` skill for any questions requiring user choice. Never ask questions in plain text when options are available.
 
-4. **Concise**: Keep explanations brief. Users can ask for more details if needed.
+4. **Concrete Guidance**: Always include runnable example messages/commands, not abstract descriptions.
 
 5. **Progressive Disclosure**: Don't dump all information at once. Guide step by step.
 

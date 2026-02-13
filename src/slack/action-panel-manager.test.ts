@@ -60,7 +60,7 @@ describe('ActionPanelManager', () => {
     );
     expect(summarySection).toBeDefined();
     const summaryText = String(summarySection.text?.text || '');
-    expect(summaryText).toContain('📦 --%');
+    expect(summaryText).toContain('📦 남은 --%');
     expect(summaryText).not.toContain('`jira-brainstorming`');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
@@ -117,6 +117,58 @@ describe('ActionPanelManager', () => {
       unfurlLinks: false,
       unfurlMedia: false,
     });
+  });
+
+  it('renders remaining context percent based on input+output tokens', async () => {
+    const slackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      postEphemeral: vi.fn().mockResolvedValue({ ts: '999.000' }),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+    const claudeHandler = {
+      getSessionByKey: vi.fn(),
+    };
+    const requestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    };
+
+    const manager = new ActionPanelManager({
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+    });
+
+    const session: ConversationSession = {
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'idle',
+      workflow: 'default',
+      usage: {
+        currentInputTokens: 70000,
+        currentOutputTokens: 10000,
+        currentCacheReadTokens: 5000,
+        currentCacheCreateTokens: 2000,
+        contextWindow: 200000,
+        totalInputTokens: 70000,
+        totalOutputTokens: 10000,
+        totalCostUsd: 0,
+        lastUpdated: Date.now(),
+      },
+    };
+
+    await manager.ensurePanel(session, 'C123:context-thread');
+
+    const blocks = getPostedBlocks(slackApi);
+    const summarySection = blocks.find((block: any) =>
+      block.type === 'section'
+        && /(비활성|작업 중|입력 대기|사용 가능|요청 처리 중|대기 중)/.test(String(block.text?.text || ''))
+    );
+    const summaryText = String(summarySection?.text?.text || '');
+    expect(summaryText).toContain('📦 남은 60%');
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {
