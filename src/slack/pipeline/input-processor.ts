@@ -1,6 +1,7 @@
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
 import { Logger } from '../../logger';
+import { WorkflowType } from '../../types';
 import { MessageEvent, SayFn, InputProcessResult } from './types';
 import { CommandRouter } from '../commands';
 
@@ -54,7 +55,7 @@ export class InputProcessor {
   async routeCommand(
     event: MessageEvent,
     say: SayFn
-  ): Promise<{ handled: boolean; continueWithPrompt?: string }> {
+  ): Promise<{ handled: boolean; continueWithPrompt?: string; forceWorkflow?: WorkflowType }> {
     const { user, channel, thread_ts, ts, text } = event;
 
     if (!text) {
@@ -72,6 +73,7 @@ export class InputProcessor {
     return {
       handled: commandResult.handled,
       continueWithPrompt: commandResult.continueWithPrompt,
+      forceWorkflow: commandResult.forceWorkflow,
     };
   }
 }

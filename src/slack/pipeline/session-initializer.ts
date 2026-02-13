@@ -8,7 +8,7 @@ import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
-import { ConversationSession } from '../../types';
+import { ConversationSession, WorkflowType } from '../../types';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { AssistantStatusManager } from '../assistant-status-manager';
 import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
@@ -75,7 +75,8 @@ export class SessionInitializer {
   async initialize(
     event: MessageEvent,
     workingDirectory: string,
-    effectiveText?: string
+    effectiveText?: string,
+    forceWorkflow?: WorkflowType
   ): Promise<SessionInitResult> {
     const { user, channel, thread_ts, ts, text } = event;
     const threadTs = thread_ts || ts;
@@ -158,31 +159,50 @@ export class SessionInitializer {
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
-      // Check if dispatch is already in flight for this session (race condition prevention)
-      const existingDispatch = dispatchInFlight.get(sessionKey);
-      if (existingDispatch) {
-        this.logger.debug('Dispatch already in progress, waiting for completion', { sessionKey });
-        // Add secondary timeout to prevent infinite hang if existing dispatch never settles
-        let waitTimeoutId: ReturnType<typeof setTimeout> | undefined;
-        const waitTimeoutPromise = new Promise<void>((_, reject) => {
-          waitTimeoutId = setTimeout(() => reject(new Error('Dispatch wait timeout')), DISPATCH_TIMEOUT_MS);
-        });
-        try {
-          await Promise.race([existingDispatch, waitTimeoutPromise]);
-        } catch (err) {
-          this.logger.warn('Timed out waiting for existing dispatch', { sessionKey, error: (err as Error).message });
-          // Fallback: transition to default if still INITIALIZING after timeout
-          if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
-            this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
-          }
-        } finally {
-          if (waitTimeoutId) clearTimeout(waitTimeoutId);
+      if (forceWorkflow) {
+        if (forceWorkflow === 'onboarding') {
+          session.isOnboarding = true;
+        } else {
+          session.isOnboarding = false;
         }
-      } else if (dispatchText) {
-        await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+
+        this.logger.info('Forcing session workflow from command', {
+          sessionKey,
+          workflow: forceWorkflow,
+        });
+        this.deps.claudeHandler.transitionToMain(
+          channel,
+          threadTs,
+          forceWorkflow,
+          forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session'
+        );
       } else {
-        // No text available - use default workflow
-        this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+        // Check if dispatch is already in flight for this session (race condition prevention)
+        const existingDispatch = dispatchInFlight.get(sessionKey);
+        if (existingDispatch) {
+          this.logger.debug('Dispatch already in progress, waiting for completion', { sessionKey });
+          // Add secondary timeout to prevent infinite hang if existing dispatch never settles
+          let waitTimeoutId: ReturnType<typeof setTimeout> | undefined;
+          const waitTimeoutPromise = new Promise<void>((_, reject) => {
+            waitTimeoutId = setTimeout(() => reject(new Error('Dispatch wait timeout')), DISPATCH_TIMEOUT_MS);
+          });
+          try {
+            await Promise.race([existingDispatch, waitTimeoutPromise]);
+          } catch (err) {
+            this.logger.warn('Timed out waiting for existing dispatch', { sessionKey, error: (err as Error).message });
+            // Fallback: transition to default if still INITIALIZING after timeout
+            if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+              this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+            }
+          } finally {
+            if (waitTimeoutId) clearTimeout(waitTimeoutId);
+          }
+        } else if (dispatchText) {
+          await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+        } else {
+          // No text available - use default workflow
+          this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+        }
       }
     } else if (!isNewSession) {
       this.logger.debug('Using existing session', {

@@ -9,6 +9,7 @@ import { HelpHandler } from './help-handler';
 import { SessionHandler } from './session-handler';
 import { RestoreHandler } from './restore-handler';
 import { NewHandler } from './new-handler';
+import { OnboardingHandler } from './onboarding-handler';
 import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
 import { LinkHandler } from './link-handler';
@@ -33,6 +34,7 @@ export class CommandRouter {
       new ModelHandler(),
       new RestoreHandler(),
       new NewHandler(deps),
+      new OnboardingHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
       new LinkHandler(deps),
