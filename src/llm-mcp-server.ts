@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'child_process';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -54,9 +55,26 @@ const clients: Record<Backend, McpClient | null> = {
   gemini: null,
 };
 
+function cliExists(command: string): boolean {
+  try {
+    execFileSync('which', [command], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function getClient(backend: Backend): Promise<McpClient> {
   if (clients[backend]?.isReady()) {
     return clients[backend]!;
+  }
+
+  // Check CLI availability before attempting to start
+  if (backend === 'codex' && !cliExists('codex')) {
+    throw new Error('Codex CLI not installed. Run: brew install --cask codex');
+  }
+  if (backend === 'gemini' && !cliExists('gemini')) {
+    throw new Error('Gemini CLI not installed. Run: brew install gemini-cli');
   }
 
   // Clean up old client if exists
