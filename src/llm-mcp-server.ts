@@ -102,14 +102,32 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
-function storeSession(backend: Backend, backendResult: any): string {
-  const backendSessionId = backend === 'codex'
-    ? backendResult.threadId
-    : backendResult.sessionId;
+function extractBackendSessionId(backend: Backend, parsed: any, rawResult?: any): string {
+  const key = backend === 'codex' ? 'threadId' : 'sessionId';
 
-  if (!backendSessionId) return '';
+  // 1. Check parsed text content (JSON response body)
+  if (parsed[key]) return parsed[key];
 
-  // Use the backend session ID as our session ID for simplicity
+  // 2. Check raw MCP result object (top-level field)
+  if (rawResult?.[key]) return rawResult[key];
+
+  // 3. Check _meta in MCP result
+  if (rawResult?._meta?.[key]) return rawResult._meta[key];
+
+  return '';
+}
+
+function storeSession(backend: Backend, parsed: any, rawResult?: any): string {
+  const backendSessionId = extractBackendSessionId(backend, parsed, rawResult);
+
+  if (!backendSessionId) {
+    logger.warn(`No session ID found for ${backend}`, {
+      parsedKeys: Object.keys(parsed),
+      rawResultKeys: rawResult ? Object.keys(rawResult) : [],
+    });
+    return '';
+  }
+
   sessions.set(backendSessionId, { backend, backendSessionId });
   return backendSessionId;
 }
@@ -144,11 +162,12 @@ async function handleChat(args: Record<string, unknown>) {
   const result = await client.callTool(toolName, backendArgs, 600_000);
 
   // Extract text content and session ID
-  const text = result.content?.find(c => c.type === 'text')?.text || '';
+  const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
   let parsed: any = {};
   try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
 
-  const sessionId = storeSession(route.backend, parsed);
+  logger.debug(`${route.backend} raw result keys`, { keys: Object.keys(result as any) });
+  const sessionId = storeSession(route.backend, parsed, result);
 
   return {
     content: [
@@ -189,14 +208,12 @@ async function handleChatReply(args: Record<string, unknown>) {
   const toolName = session.backend === 'codex' ? 'codex-reply' : 'gemini-reply';
   const result = await client.callTool(toolName, backendArgs, 600_000);
 
-  const text = result.content?.find(c => c.type === 'text')?.text || '';
+  const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
   let parsed: any = {};
   try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
 
   // Update session ID if backend returned a new one
-  const newBackendSessionId = session.backend === 'codex'
-    ? parsed.threadId
-    : parsed.sessionId;
+  const newBackendSessionId = extractBackendSessionId(session.backend, parsed, result);
   if (newBackendSessionId && newBackendSessionId !== session.backendSessionId) {
     sessions.delete(sessionId!);
     sessions.set(newBackendSessionId, { backend: session.backend, backendSessionId: newBackendSessionId });
