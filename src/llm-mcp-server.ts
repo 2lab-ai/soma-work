@@ -1,0 +1,314 @@
+#!/usr/bin/env node
+
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { McpClient } from './mcp-client.js';
+import { StderrLogger } from './stderr-logger.js';
+
+const logger = new StderrLogger('LlmMCP');
+
+// ── Model Routing ──────────────────────────────────────────
+
+type Backend = 'codex' | 'gemini';
+
+interface RouteResult {
+  backend: Backend;
+  model: string;
+  configOverride?: Record<string, unknown>;
+}
+
+const MODEL_ALIASES: Record<string, RouteResult> = {
+  codex: {
+    backend: 'codex',
+    model: 'gpt-5.3-codex',
+    configOverride: { model_reasoning_effort: 'xhigh' },
+  },
+  gemini: {
+    backend: 'gemini',
+    model: 'gemini-3.1-pro-preview',
+  },
+};
+
+function routeModel(model: string): RouteResult {
+  // Check exact alias first
+  const alias = MODEL_ALIASES[model];
+  if (alias) return alias;
+
+  // Prefix-based routing
+  if (model.startsWith('gpt-') || model.startsWith('o')) {
+    return { backend: 'codex', model };
+  }
+  if (model.startsWith('gemini-')) {
+    return { backend: 'gemini', model };
+  }
+
+  // Default to codex
+  return { backend: 'codex', model };
+}
+
+// ── Backend Client Management ──────────────────────────────
+
+const clients: Record<Backend, McpClient | null> = {
+  codex: null,
+  gemini: null,
+};
+
+async function getClient(backend: Backend): Promise<McpClient> {
+  if (clients[backend]?.isReady()) {
+    return clients[backend]!;
+  }
+
+  // Clean up old client if exists
+  if (clients[backend]) {
+    try { await clients[backend]!.stop(); } catch { /* ignore */ }
+  }
+
+  const config = backend === 'codex'
+    ? { command: 'codex', args: ['mcp-server'] }
+    : { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
+
+  const client = new McpClient(config, `LlmMCP:${backend}`);
+  await client.start();
+  clients[backend] = client;
+  logger.info(`Started ${backend} backend`);
+  return client;
+}
+
+// ── Session Tracking ───────────────────────────────────────
+
+interface Session {
+  backend: Backend;
+  backendSessionId: string; // threadId (codex) or sessionId (gemini)
+}
+
+const sessions = new Map<string, Session>();
+
+function storeSession(backend: Backend, backendResult: any): string {
+  const backendSessionId = backend === 'codex'
+    ? backendResult.threadId
+    : backendResult.sessionId;
+
+  if (!backendSessionId) return '';
+
+  // Use the backend session ID as our session ID for simplicity
+  sessions.set(backendSessionId, { backend, backendSessionId });
+  return backendSessionId;
+}
+
+// ── Tool Handlers ──────────────────────────────────────────
+
+async function handleChat(args: Record<string, unknown>) {
+  const prompt = args.prompt as string;
+  const model = (args.model as string) || 'codex';
+  const cwd = args.cwd as string | undefined;
+  const config = args.config as Record<string, unknown> | undefined;
+
+  const route = routeModel(model);
+  logger.info(`Routing chat to ${route.backend}`, { model, resolvedModel: route.model });
+
+  const client = await getClient(route.backend);
+
+  // Build backend-specific args
+  const backendArgs: Record<string, unknown> = { prompt, model: route.model };
+
+  if (route.backend === 'codex') {
+    if (cwd) backendArgs.cwd = cwd;
+    // Merge config: route override + user config
+    const mergedConfig = { ...route.configOverride, ...config };
+    if (Object.keys(mergedConfig).length > 0) {
+      backendArgs.config = mergedConfig;
+    }
+  }
+  // gemini: only prompt and model are supported
+
+  const toolName = route.backend === 'codex' ? 'codex' : 'gemini';
+  const result = await client.callTool(toolName, backendArgs, 600_000);
+
+  // Extract text content and session ID
+  const text = result.content?.find(c => c.type === 'text')?.text || '';
+  let parsed: any = {};
+  try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
+
+  const sessionId = storeSession(route.backend, parsed);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          sessionId,
+          content: parsed.content || text,
+          backend: route.backend,
+          model: route.model,
+        }),
+      },
+    ],
+  };
+}
+
+async function handleChatReply(args: Record<string, unknown>) {
+  const prompt = args.prompt as string;
+  const sessionId = args.sessionId as string | undefined;
+
+  // Look up session to find backend
+  const session = sessionId ? sessions.get(sessionId) : undefined;
+  if (!session) {
+    throw new Error(
+      `Unknown session: ${sessionId}. Use 'chat' first to start a session.`
+    );
+  }
+
+  const client = await getClient(session.backend);
+
+  const backendArgs: Record<string, unknown> = { prompt };
+  if (session.backend === 'codex') {
+    backendArgs.threadId = session.backendSessionId;
+  } else {
+    backendArgs.sessionId = session.backendSessionId;
+  }
+
+  const toolName = session.backend === 'codex' ? 'codex-reply' : 'gemini-reply';
+  const result = await client.callTool(toolName, backendArgs, 600_000);
+
+  const text = result.content?.find(c => c.type === 'text')?.text || '';
+  let parsed: any = {};
+  try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
+
+  // Update session ID if backend returned a new one
+  const newBackendSessionId = session.backend === 'codex'
+    ? parsed.threadId
+    : parsed.sessionId;
+  if (newBackendSessionId && newBackendSessionId !== session.backendSessionId) {
+    sessions.delete(sessionId!);
+    sessions.set(newBackendSessionId, { backend: session.backend, backendSessionId: newBackendSessionId });
+  }
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          sessionId: newBackendSessionId || sessionId,
+          content: parsed.content || text,
+          backend: session.backend,
+        }),
+      },
+    ],
+  };
+}
+
+// ── MCP Server ─────────────────────────────────────────────
+
+class LlmMCPServer {
+  private server: Server;
+
+  constructor() {
+    this.server = new Server(
+      { name: 'llm-mcp-server', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    this.setupHandlers();
+  }
+
+  private setupHandlers() {
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: 'chat',
+          description:
+            'Start a new LLM chat session. Routes to codex or gemini backend based on model name.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              prompt: {
+                type: 'string',
+                description: 'The prompt to start the session with.',
+              },
+              model: {
+                type: 'string',
+                description:
+                  'Model name or alias. Use "codex", "gemini" for latest of each model. ',
+              },
+              config: {
+                type: 'object',
+                description: 'Optional config overrides',
+                additionalProperties: true,
+              },
+              cwd: {
+                type: 'string',
+                description: 'Working directory',
+              },
+            },
+            required: ['prompt'],
+          },
+        },
+        {
+          name: 'chat-reply',
+          description: 'Continue an existing LLM chat session.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              prompt: {
+                type: 'string',
+                description: 'The prompt to continue the conversation.',
+              },
+              sessionId: {
+                type: 'string',
+                description: 'The session ID from a previous chat call.',
+              },
+            },
+            required: ['prompt', 'sessionId'],
+          },
+        },
+      ],
+    }));
+
+    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const { name, arguments: args } = request.params;
+      logger.debug(`Tool call: ${name}`, args);
+
+      try {
+        switch (name) {
+          case 'chat':
+            return await handleChat(args as Record<string, unknown>);
+          case 'chat-reply':
+            return await handleChatReply(args as Record<string, unknown>);
+          default:
+            throw new Error(`Unknown tool: ${name}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`Tool ${name} failed`, error);
+        return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
+      }
+    });
+  }
+
+  async run() {
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+    logger.info('LLM MCP Server started');
+
+    // Cleanup on exit
+    process.on('SIGINT', () => this.cleanup());
+    process.on('SIGTERM', () => this.cleanup());
+  }
+
+  private async cleanup() {
+    logger.info('Shutting down...');
+    for (const [backend, client] of Object.entries(clients)) {
+      if (client) {
+        try { await client.stop(); } catch { /* ignore */ }
+        logger.info(`Stopped ${backend} backend`);
+      }
+    }
+    process.exit(0);
+  }
+}
+
+const server = new LlmMCPServer();
+server.run().catch((error) => {
+  logger.error('Failed to start LLM MCP Server', error);
+  process.exit(1);
+});

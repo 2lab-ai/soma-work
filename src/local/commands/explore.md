@@ -8,8 +8,8 @@ allowed-tools:
   - Grep
   - Glob
   - AskUserQuestion
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini-reply
+  - mcp__llm__chat
+  - mcp__llm__chat-reply
 ---
 
 **Always read commands body** even if you knew it.**
