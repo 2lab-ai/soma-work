@@ -58,7 +58,7 @@ function resolveChannel(client: WebClient, channelName: string): Promise<string 
   });
 }
 
-function formatTimestamp(isoTime: string): string {
+export function formatTimestamp(isoTime: string): string {
   try {
     const date = new Date(isoTime);
     return `<!date^${Math.floor(date.getTime() / 1000)}^{date_short_pretty} {time}|${isoTime}>`;

@@ -223,7 +223,7 @@ export class ToolFormatter {
   static formatTaskTool(input: unknown): string {
     const summary = this.getTaskToolSummary(input);
     const subagentName = summary.subagentLabel || 'Task';
-    const lines = [`🔧 Using Subagent: *${this.sanitizeInlineValue(subagentName)}*`];
+    const lines = [`🤖 Using Subagent: *${this.sanitizeInlineValue(subagentName)}*`];
 
     if (summary.model) {
       lines.push(`model: *${this.sanitizeInlineValue(summary.model)}*`);

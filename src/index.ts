@@ -8,7 +8,7 @@ import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
 import { initRecorder, startWebServer, stopWebServer } from './conversation';
-import { notifyRelease } from './release-notifier';
+import { notifyRelease, getVersionInfo, formatTimestamp } from './release-notifier';
 import { scanChannels } from './channel-registry';
 
 const logger = new Logger('Main');
@@ -153,15 +153,84 @@ async function start() {
     // Send startup notification to channel
     const STARTUP_CHANNEL_ID = 'C0A25HMBC49';
     try {
+      const versionInfo = getVersionInfo();
+      const mcpNames = mcpConfig ? Object.keys(mcpConfig.mcpServers) : [];
+      const blocks: any[] = [];
+
+      if (versionInfo) {
+        const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
+          versionInfo.version !== versionInfo.previousVersion;
+        blocks.push(
+          {
+            type: 'header',
+            text: {
+              type: 'plain_text',
+              text: isUpgrade
+                ? `🚀 v${versionInfo.version} Started (${versionInfo.previousVersion} → ${versionInfo.version})`
+                : `🚀 v${versionInfo.version} Started`,
+              emoji: true,
+            },
+          },
+          {
+            type: 'section',
+            fields: [
+              { type: 'mrkdwn', text: `*Version*\n\`${versionInfo.tag}\`` },
+              { type: 'mrkdwn', text: `*Branch*\n\`${versionInfo.branch}\`` },
+              { type: 'mrkdwn', text: `*Commit*\n\`${versionInfo.commitHashShort}\`` },
+              { type: 'mrkdwn', text: `*Started*\n${formatTimestamp(new Date().toISOString())}` },
+            ],
+          },
+        );
+      } else {
+        blocks.push({
+          type: 'header',
+          text: { type: 'plain_text', text: '🚀 soma-work Started (dev)', emoji: true },
+        });
+      }
+
+      // Operational status
+      blocks.push({
+        type: 'section',
+        fields: [
+          { type: 'mrkdwn', text: `*MCP*\n${mcpNames.length > 0 ? mcpNames.map(n => `\`${n}\``).join(', ') : '_none_'}` },
+          { type: 'mrkdwn', text: `*Sessions*\n${loadedSessions} restored` },
+        ],
+      });
+
+      // Changelog
+      if (versionInfo?.releaseNotes) {
+        const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
+          versionInfo.version !== versionInfo.previousVersion;
+        blocks.push(
+          { type: 'divider' },
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*📋 변경 사항*${isUpgrade ? ` _(${versionInfo.previousTag} → ${versionInfo.tag})_` : ''}\n\n${versionInfo.releaseNotes}`,
+            },
+          },
+        );
+      }
+
+      // Footer
+      const footerParts: string[] = [];
+      if (versionInfo) {
+        footerParts.push(`commit: \`${versionInfo.commitHash.substring(0, 12)}\``);
+        footerParts.push(`built: ${formatTimestamp(versionInfo.buildTime)}`);
+      }
+      footerParts.push('_Reply to test events_');
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: footerParts.join(' | ') }],
+      });
+
       await app.client.chat.postMessage({
         channel: STARTUP_CHANNEL_ID,
-        text: `🚀 *Bot Started Successfully*\n` +
-          `• Time: ${new Date().toISOString()}\n` +
-          `• MCP Servers: ${mcpConfig ? Object.keys(mcpConfig.mcpServers).join(', ') : 'none'}\n` +
-          `• Sessions restored: ${loadedSessions}\n` +
-          `• Forms restored: ${loadedForms}\n` +
-          `• Socket Mode: Connected\n\n` +
-          `_Reply to this message to test if events are working._`,
+        text: versionInfo ? `Bot Started - v${versionInfo.version} (${versionInfo.branch})` : 'Bot Started',
+        blocks,
+        unfurl_links: false,
+        unfurl_media: false,
       });
       logger.info('Startup notification sent', { channel: STARTUP_CHANNEL_ID });
     } catch (err) {
