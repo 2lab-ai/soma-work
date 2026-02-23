@@ -87,8 +87,15 @@ export class ToolEventProcessor {
    * Handle tool use events from assistant message
    * - Track tool use IDs
    * - Start MCP call tracking for MCP tools
+   * - Detect parallel batches for consolidated progress
    */
   async handleToolUse(toolUses: ToolUseEvent[], context: ToolEventContext): Promise<void> {
+    // Detect parallel batch: multiple trackable tools in a single message
+    const trackableTools = toolUses.filter(t => t.name.startsWith('mcp__') || t.name === 'Task');
+    const groupId = trackableTools.length > 1
+      ? `group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      : null;
+
     for (const toolUse of toolUses) {
       this.logger.debug('Handling tool_use', ToolFormatter.buildToolUseLogSummary(
         toolUse.id,
@@ -101,12 +108,12 @@ export class ToolEventProcessor {
 
       // Start MCP call tracking for MCP tools
       if (toolUse.name.startsWith('mcp__')) {
-        await this.startMcpTracking(toolUse, context);
+        await this.startMcpTracking(toolUse, context, groupId);
       }
 
       // Start subagent tracking for Task tools
       if (toolUse.name === 'Task') {
-        await this.startSubagentTracking(toolUse, context);
+        await this.startSubagentTracking(toolUse, context, groupId);
       }
     }
   }
@@ -114,7 +121,7 @@ export class ToolEventProcessor {
   /**
    * Start MCP call tracking and status display
    */
-  private async startMcpTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
+  private async startMcpTracking(toolUse: ToolUseEvent, context: ToolEventContext, groupId: string | null = null): Promise<void> {
     const nameParts = toolUse.name.split('__');
     const serverName = nameParts[1] || 'unknown';
     const actualToolName = nameParts.slice(2).join('__') || toolUse.name;
@@ -134,19 +141,24 @@ export class ToolEventProcessor {
       await this.assistantStatusManager.setStatus(context.channel, context.threadTs, statusText);
     }
 
-    // Start periodic status update display
-    this.mcpStatusDisplay.startStatusUpdate(callId, {
+    const config = {
       displayType: 'MCP',
       displayLabel: `${serverName} → ${actualToolName}`,
       initialDelay: serverName === 'codex' ? 0 : 10000,
       predictKey: { serverName, toolName: actualToolName },
-    }, context.channel, context.threadTs);
+    };
+
+    if (groupId) {
+      await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
+    } else {
+      await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+    }
   }
 
   /**
    * Start subagent tracking and status display for Task tools
    */
-  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
+  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext, groupId: string | null = null): Promise<void> {
     const summary = ToolFormatter.getTaskToolSummary(toolUse.input);
     const subagentName = summary.subagentLabel || 'Task';
 
@@ -155,13 +167,18 @@ export class ToolEventProcessor {
     this.toolTracker.trackMcpCall(toolUse.id, callId);
     this.subagentCallIds.add(callId);
 
-    // Start periodic status update display
-    this.mcpStatusDisplay.startStatusUpdate(callId, {
+    const config = {
       displayType: 'Subagent',
       displayLabel: subagentName,
       initialDelay: 0,
       predictKey: { serverName: '_subagent', toolName: subagentName },
-    }, context.channel, context.threadTs);
+    };
+
+    if (groupId) {
+      await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
+    } else {
+      await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+    }
   }
 
   /**
@@ -220,8 +237,12 @@ export class ToolEventProcessor {
       this.subagentCallIds.delete(callId);
     }
 
-    // Unified status display stop
-    await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
+    // Route to group or individual status display
+    if (this.mcpStatusDisplay.isInGroup(callId)) {
+      await this.mcpStatusDisplay.stopGroupStatusUpdate(callId, duration);
+    } else {
+      await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
+    }
 
     return duration;
   }

@@ -16,6 +16,26 @@ export interface StatusUpdateConfig {
   predictKey: { serverName: string; toolName: string };
 }
 
+interface ProgressEntry {
+  callId: string;
+  displayType: string;
+  displayLabel: string;
+  status: 'running' | 'completed';
+  startTime: number;
+  duration?: number;
+  predicted: number | null;
+}
+
+interface ConsolidatedGroup {
+  groupId: string;
+  channel: string;
+  threadTs: string;
+  messageTs: string | null;
+  entries: Map<string, ProgressEntry>;
+  debounceTimer: NodeJS.Timeout | null;
+  updateInterval: NodeJS.Timeout | null;
+}
+
 /**
  * 도구 실행 상태 메시지를 관리하는 클래스
  * MCP 호출, Subagent 등 실행 시간이 긴 호출에 대해 진행 상황을 표시
@@ -24,6 +44,8 @@ export class McpStatusDisplay {
   private logger = new Logger('McpStatusDisplay');
   private statusIntervals: Map<string, NodeJS.Timeout> = new Map();
   private statusMessages: Map<string, StatusMessage> = new Map();
+  private groups: Map<string, ConsolidatedGroup> = new Map();
+  private callIdToGroupId: Map<string, string> = new Map();
 
   constructor(
     private slackApi: SlackApiHelper,
@@ -192,5 +214,202 @@ export class McpStatusDisplay {
    */
   getActiveCount(): number {
     return this.statusIntervals.size;
+  }
+
+  // --- Consolidated Group Methods ---
+
+  /**
+   * 그룹에 상태 업데이트 시작 (병렬 배치용)
+   */
+  async startGroupStatusUpdate(
+    groupId: string,
+    callId: string,
+    config: StatusUpdateConfig,
+    channel: string,
+    threadTs: string
+  ): Promise<void> {
+    const predicted = this.mcpCallTracker.getPredictedDuration(
+      config.predictKey.serverName,
+      config.predictKey.toolName
+    );
+
+    this.callIdToGroupId.set(callId, groupId);
+
+    let group = this.groups.get(groupId);
+    if (!group) {
+      group = {
+        groupId,
+        channel,
+        threadTs,
+        messageTs: null,
+        entries: new Map(),
+        debounceTimer: null,
+        updateInterval: null,
+      };
+      this.groups.set(groupId, group);
+    }
+
+    group.entries.set(callId, {
+      callId,
+      displayType: config.displayType,
+      displayLabel: config.displayLabel,
+      status: 'running',
+      startTime: Date.now(),
+      predicted,
+    });
+
+    // 그룹 내에서는 initialDelay 무시, 즉시 렌더
+    this.scheduleGroupRender(groupId, 300);
+
+    // 첫 엔트리일 때만 주기적 업데이트 시작 (10초)
+    if (!group.updateInterval) {
+      group.updateInterval = setInterval(() => {
+        this.renderGroup(groupId);
+      }, 10000);
+    }
+  }
+
+  /**
+   * 그룹 내 개별 작업 완료 처리
+   */
+  async stopGroupStatusUpdate(callId: string, duration?: number | null): Promise<void> {
+    const groupId = this.callIdToGroupId.get(callId);
+    if (!groupId) return;
+
+    const group = this.groups.get(groupId);
+    if (!group) return;
+
+    const entry = group.entries.get(callId);
+    if (entry) {
+      entry.status = 'completed';
+      entry.duration = duration ?? undefined;
+    }
+
+    // 전체 완료 확인
+    const allCompleted = Array.from(group.entries.values()).every(e => e.status === 'completed');
+
+    if (allCompleted) {
+      // 최종 렌더 후 정리
+      await this.renderGroup(groupId);
+      this.cleanupGroup(groupId);
+    } else {
+      // 디바운스 렌더
+      this.scheduleGroupRender(groupId, 300);
+    }
+  }
+
+  /**
+   * callId가 그룹에 속하는지 확인
+   */
+  isInGroup(callId: string): boolean {
+    return this.callIdToGroupId.has(callId);
+  }
+
+  /**
+   * 디바운스된 그룹 렌더 예약
+   */
+  private scheduleGroupRender(groupId: string, delayMs: number = 300): void {
+    const group = this.groups.get(groupId);
+    if (!group) return;
+
+    if (group.debounceTimer) {
+      clearTimeout(group.debounceTimer);
+    }
+
+    group.debounceTimer = setTimeout(() => {
+      group.debounceTimer = null;
+      this.renderGroup(groupId);
+    }, delayMs);
+  }
+
+  /**
+   * 최신 상태로 그룹 메시지 생성/업데이트
+   */
+  private async renderGroup(groupId: string): Promise<void> {
+    const group = this.groups.get(groupId);
+    if (!group) return;
+
+    const statusText = this.buildGroupStatusText(group);
+
+    if (!group.messageTs) {
+      try {
+        const result = await this.slackApi.postMessage(group.channel, statusText, { threadTs: group.threadTs });
+        if (result.ts) {
+          group.messageTs = result.ts;
+        }
+      } catch (error) {
+        this.logger.warn('Failed to create group status message', error);
+      }
+    } else {
+      try {
+        await this.slackApi.updateMessage(group.channel, group.messageTs, statusText);
+      } catch (error) {
+        this.logger.warn('Failed to update group status message', error);
+      }
+    }
+  }
+
+  /**
+   * 통합 메시지 텍스트 빌드
+   */
+  private buildGroupStatusText(group: ConsolidatedGroup): string {
+    const entries = Array.from(group.entries.values());
+    const total = entries.length;
+    const completed = entries.filter(e => e.status === 'completed').length;
+    const allDone = completed === total;
+
+    let header: string;
+    if (allDone) {
+      header = `✅ ${total}개 작업 완료`;
+    } else {
+      header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
+    }
+
+    const lines = entries.map(entry => {
+      if (entry.status === 'completed') {
+        let line = `✅ ${entry.displayLabel}`;
+        if (entry.duration !== undefined) {
+          line += ` (${McpCallTracker.formatDuration(entry.duration)})`;
+        }
+        return line;
+      } else {
+        const elapsed = this.mcpCallTracker.getElapsedTime(entry.callId);
+        const elapsedMs = elapsed ?? (Date.now() - entry.startTime);
+        let line = `⏳ ${entry.displayLabel} — ${McpCallTracker.formatDuration(elapsedMs)}`;
+
+        if (entry.predicted) {
+          const progress = Math.min(100, (elapsedMs / entry.predicted) * 100);
+          const barLen = 20;
+          const filled = Math.round((progress / 100) * barLen);
+          const empty = barLen - filled;
+          line += ` \`${'█'.repeat(filled)}${'░'.repeat(empty)}\``;
+        }
+        return line;
+      }
+    });
+
+    return `${header}\n\n${lines.join('\n')}`;
+  }
+
+  /**
+   * 그룹 리소스 정리
+   */
+  private cleanupGroup(groupId: string): void {
+    const group = this.groups.get(groupId);
+    if (!group) return;
+
+    if (group.debounceTimer) {
+      clearTimeout(group.debounceTimer);
+    }
+    if (group.updateInterval) {
+      clearInterval(group.updateInterval);
+    }
+
+    for (const callId of group.entries.keys()) {
+      this.callIdToGroupId.delete(callId);
+    }
+
+    this.groups.delete(groupId);
+    this.logger.debug('Cleaned up group', { groupId });
   }
 }
