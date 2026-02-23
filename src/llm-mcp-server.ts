@@ -105,14 +105,22 @@ const sessions = new Map<string, Session>();
 function extractBackendSessionId(backend: Backend, parsed: any, rawResult?: any): string {
   const key = backend === 'codex' ? 'threadId' : 'sessionId';
 
-  // 1. Check parsed text content (JSON response body)
+  // 1. Check structuredContent (Codex uses this for threadId)
+  if (rawResult?.structuredContent?.[key]) return rawResult.structuredContent[key];
+
+  // 2. Check parsed text content (JSON response body)
   if (parsed[key]) return parsed[key];
 
-  // 2. Check raw MCP result object (top-level field)
+  // 3. Check raw MCP result object (top-level field)
   if (rawResult?.[key]) return rawResult[key];
 
-  // 3. Check _meta in MCP result
+  // 4. Check _meta in MCP result
   if (rawResult?._meta?.[key]) return rawResult._meta[key];
+
+  // 5. Fallback: parse "Session ID: <uuid>" from text content (Gemini embeds it in text)
+  const text = rawResult?.content?.find((c: any) => c.type === 'text')?.text || '';
+  const match = text.match(/Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  if (match) return match[1];
 
   return '';
 }
@@ -169,13 +177,21 @@ async function handleChat(args: Record<string, unknown>) {
   logger.debug(`${route.backend} raw result keys`, { keys: Object.keys(result as any) });
   const sessionId = storeSession(route.backend, parsed, result);
 
+  // Get response content, preferring structuredContent for codex
+  let responseContent = (result as any).structuredContent?.content || parsed.content || text;
+
+  // Strip "Session ID: <uuid>" line from Gemini text responses
+  if (typeof responseContent === 'string') {
+    responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+  }
+
   return {
     content: [
       {
         type: 'text',
         text: JSON.stringify({
           sessionId,
-          content: parsed.content || text,
+          content: responseContent,
           backend: route.backend,
           model: route.model,
         }),
@@ -219,13 +235,21 @@ async function handleChatReply(args: Record<string, unknown>) {
     sessions.set(newBackendSessionId, { backend: session.backend, backendSessionId: newBackendSessionId });
   }
 
+  // Get response content, preferring structuredContent for codex
+  let responseContent = (result as any).structuredContent?.content || parsed.content || text;
+
+  // Strip "Session ID: <uuid>" line from Gemini text responses
+  if (typeof responseContent === 'string') {
+    responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+  }
+
   return {
     content: [
       {
         type: 'text',
         text: JSON.stringify({
           sessionId: newBackendSessionId || sessionId,
-          content: parsed.content || text,
+          content: responseContent,
           backend: session.backend,
         }),
       },
