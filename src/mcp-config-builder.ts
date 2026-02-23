@@ -12,6 +12,7 @@ import * as path from 'path';
 
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
+const LLM_SERVER_BASENAME = 'llm-mcp-server';
 
 export interface PermissionServerPathResult {
   resolvedPath: string | null;
@@ -91,6 +92,8 @@ export class McpConfigBuilder {
   private permissionServerPathChecked = false;
   private modelCommandServerPath: string | null = null;
   private modelCommandServerPathChecked = false;
+  private llmServerPath: string | null = null;
+  private llmServerPathChecked = false;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -115,6 +118,9 @@ export class McpConfigBuilder {
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
     const internalServers: Record<string, any> = {};
+
+    // Always add LLM aggregate server (wraps codex + gemini)
+    internalServers['llm'] = this.buildLlmServer();
 
     if (slackContext) {
       internalServers['model-command'] = this.buildModelCommandServer(
@@ -277,6 +283,44 @@ export class McpConfigBuilder {
     return resolveModelCommandServerPath(__dirname, runtimeExt).triedPaths;
   }
 
+  private buildLlmServer(): Record<string, any> {
+    const llmServerPath = this.getLlmServerPath();
+    return {
+      command: 'npx',
+      args: ['tsx', llmServerPath],
+    };
+  }
+
+  private getLlmServerPath(): string {
+    if (!this.llmServerPathChecked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt);
+      this.llmServerPathChecked = true;
+
+      if (!result.resolvedPath) {
+        this.logger.error('LLM MCP server file not found', {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn('LLM MCP server path fallback used', {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+
+      this.llmServerPath = result.resolvedPath;
+    }
+
+    if (!this.llmServerPath) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      throw new Error(`LLM MCP server file not found. Tried: ${resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt).triedPaths.join(', ')}`);
+    }
+
+    return this.llmServerPath;
+  }
+
   /**
    * Build the list of allowed tools
    */
@@ -285,6 +329,9 @@ export class McpConfigBuilder {
 
     // Add Skill tool for local plugins
     allowedTools.push('Skill');
+
+    // Always allow LLM aggregate tools
+    allowedTools.push('mcp__llm');
 
     if (slackContext) {
       allowedTools.push('mcp__model-command');
