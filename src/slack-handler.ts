@@ -217,6 +217,37 @@ export class SlackHandler {
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
+    // Check for abort command: "!" or "!{prompt}"
+    const trimmedText = (event.text || '').trim();
+    if (trimmedText.startsWith('!')) {
+      const sessionKey = this.claudeHandler.getSessionKey(channel, originalThreadTs);
+      const aborted = this.requestCoordinator.abortSession(sessionKey);
+      const followUpPrompt = trimmedText.slice(1).trim();
+
+      if (followUpPrompt) {
+        // "!{prompt}" — abort current request, continue pipeline with new prompt
+        if (aborted) {
+          this.logger.info('Aborted active request, continuing with new prompt', {
+            sessionKey,
+            user: event.user,
+            prompt: followUpPrompt.substring(0, 100),
+          });
+        }
+        event.text = followUpPrompt;
+      } else {
+        // "!" only — abort and stop pipeline
+        await this.slackApi.removeReaction(channel, ts, 'eyes');
+        if (aborted) {
+          await this.slackApi.addReaction(channel, ts, 'octagonal_sign');
+          this.logger.info('Request aborted by user', { sessionKey, user: event.user });
+        } else {
+          await this.slackApi.addReaction(channel, ts, 'heavy_multiplication_x');
+          this.logger.debug('Abort requested but no active request', { sessionKey, user: event.user });
+        }
+        return;
+      }
+    }
+
     // Wrap say function
     const wrappedSay = async (args: any) => {
       const result = await say({
