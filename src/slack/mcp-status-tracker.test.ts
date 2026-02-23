@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { McpStatusDisplay } from './mcp-status-tracker';
+import { McpStatusDisplay, StatusUpdateConfig } from './mcp-status-tracker';
 import { SlackApiHelper } from './slack-api-helper';
 import { McpCallTracker } from '../mcp-call-tracker';
 
@@ -14,6 +14,16 @@ const createMockMcpCallTracker = () => ({
   getElapsedTime: vi.fn().mockReturnValue(5000),
   getPredictedDuration: vi.fn().mockReturnValue(null),
 });
+
+// Helper to create MCP config
+function mcpConfig(serverName: string, toolName: string): StatusUpdateConfig {
+  return {
+    displayType: 'MCP',
+    displayLabel: `${serverName} → ${toolName}`,
+    initialDelay: serverName === 'codex' ? 0 : 10000,
+    predictKey: { serverName, toolName },
+  };
+}
 
 describe('McpStatusDisplay', () => {
   let mockSlackApi: ReturnType<typeof createMockSlackApi>;
@@ -35,9 +45,9 @@ describe('McpStatusDisplay', () => {
   });
 
   describe('startStatusUpdate', () => {
-    describe('for codex server', () => {
+    describe('for codex server (immediate)', () => {
       it('should create status message immediately', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
         expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
           'C123',
@@ -47,7 +57,7 @@ describe('McpStatusDisplay', () => {
       });
 
       it('should update message every 30 seconds', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
         mockSlackApi.postMessage.mockClear();
 
         // Advance 30 seconds
@@ -57,7 +67,7 @@ describe('McpStatusDisplay', () => {
       });
 
       it('should stop updating when elapsed returns null', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
         mockMcpCallTracker.getElapsedTime.mockReturnValue(null);
         await vi.advanceTimersByTimeAsync(30000);
@@ -66,15 +76,15 @@ describe('McpStatusDisplay', () => {
       });
     });
 
-    describe('for other servers', () => {
+    describe('for other servers (delayed)', () => {
       it('should not create status message immediately', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('jira', 'search'), 'C123', '111.222');
 
         expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
       });
 
       it('should create status message after 10 seconds', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('jira', 'search'), 'C123', '111.222');
 
         await vi.advanceTimersByTimeAsync(10000);
 
@@ -86,7 +96,7 @@ describe('McpStatusDisplay', () => {
       });
 
       it('should not create message if call completes before 10 seconds', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+        await display.startStatusUpdate('call1', mcpConfig('jira', 'search'), 'C123', '111.222');
 
         mockMcpCallTracker.getElapsedTime.mockReturnValue(null);
         await vi.advanceTimersByTimeAsync(10000);
@@ -95,11 +105,28 @@ describe('McpStatusDisplay', () => {
       });
     });
 
+    describe('for subagent (immediate)', () => {
+      it('should create status message immediately for subagent', async () => {
+        await display.startStatusUpdate('call1', {
+          displayType: 'Subagent',
+          displayLabel: 'General Purpose',
+          initialDelay: 0,
+          predictKey: { serverName: '_subagent', toolName: 'General Purpose' },
+        }, 'C123', '111.222');
+
+        expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+          'C123',
+          expect.stringContaining('Subagent 실행 중: General Purpose'),
+          { threadTs: '111.222' }
+        );
+      });
+    });
+
     it('should include progress bar when prediction is available', async () => {
       mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000);
       mockMcpCallTracker.getElapsedTime.mockReturnValue(30000);
 
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         'C123',
@@ -116,7 +143,7 @@ describe('McpStatusDisplay', () => {
 
   describe('stopStatusUpdate', () => {
     it('should clear interval and update message to completed', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       mockSlackApi.updateMessage.mockClear();
 
       await display.stopStatusUpdate('call1', 5000);
@@ -134,12 +161,30 @@ describe('McpStatusDisplay', () => {
       expect(display.getActiveCount()).toBe(0);
     });
 
+    it('should show subagent completion text', async () => {
+      await display.startStatusUpdate('call1', {
+        displayType: 'Subagent',
+        displayLabel: 'Explorer',
+        initialDelay: 0,
+        predictKey: { serverName: '_subagent', toolName: 'Explorer' },
+      }, 'C123', '111.222');
+      mockSlackApi.updateMessage.mockClear();
+
+      await display.stopStatusUpdate('call1', 3000);
+
+      expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
+        'C123',
+        '123.456',
+        expect.stringContaining('Subagent 완료: Explorer')
+      );
+    });
+
     it('should not throw if no status message exists', async () => {
       await expect(display.stopStatusUpdate('unknown', 5000)).resolves.not.toThrow();
     });
 
     it('should handle undefined duration', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       mockSlackApi.updateMessage.mockClear();
 
       await display.stopStatusUpdate('call1');
@@ -154,14 +199,14 @@ describe('McpStatusDisplay', () => {
 
   describe('getStatusMessageInfo', () => {
     it('should return status message info', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
       const info = display.getStatusMessageInfo('call1');
       expect(info).toEqual({
         ts: '123.456',
         channel: 'C123',
-        serverName: 'codex',
-        toolName: 'search',
+        displayType: 'MCP',
+        displayLabel: 'codex → search',
       });
     });
 
@@ -174,10 +219,10 @@ describe('McpStatusDisplay', () => {
     it('should return number of active status updates', async () => {
       expect(display.getActiveCount()).toBe(0);
 
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       expect(display.getActiveCount()).toBe(1);
 
-      await display.startStatusUpdate('call2', 'codex', 'search', 'C123', '111.222');
+      await display.startStatusUpdate('call2', mcpConfig('codex', 'search'), 'C123', '111.222');
       expect(display.getActiveCount()).toBe(2);
 
       await display.stopStatusUpdate('call1');

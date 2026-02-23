@@ -70,8 +70,12 @@ describe('ToolEventProcessor', () => {
       expect(toolTracker.getMcpCallId('tool_1')).toBe('call_123');
       expect(mcpStatusDisplay.startStatusUpdate).toHaveBeenCalledWith(
         'call_123',
-        'jira',
-        'search_issues',
+        {
+          displayType: 'MCP',
+          displayLabel: 'jira → search_issues',
+          initialDelay: 10000,
+          predictKey: { serverName: 'jira', toolName: 'search_issues' },
+        },
         'C123',
         'thread_ts'
       );
