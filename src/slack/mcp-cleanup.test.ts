@@ -60,13 +60,12 @@ class MockToolTracker {
 // Mock MCP Status Display
 class MockMcpStatusDisplay {
   private statusIntervals: Map<string, NodeJS.Timeout> = new Map();
-  private statusMessages: Map<string, { channel: string; ts: string; serverName: string; toolName: string }> = new Map();
+  private statusMessages: Map<string, { channel: string; ts: string; displayType: string; displayLabel: string }> = new Map();
   private updateCount: Map<string, number> = new Map();
 
   startStatusUpdate(
     callId: string,
-    serverName: string,
-    toolName: string,
+    config: { displayType: string; displayLabel: string; initialDelay: number; predictKey: { serverName: string; toolName: string } },
     channel: string,
     threadTs: string
   ): void {
@@ -74,8 +73,8 @@ class MockMcpStatusDisplay {
     this.statusMessages.set(callId, {
       channel,
       ts: threadTs,
-      serverName,
-      toolName,
+      displayType: config.displayType,
+      displayLabel: config.displayLabel,
     });
 
     // Start interval (simulated with 100ms for testing)
@@ -255,7 +254,7 @@ describe('MCP Status Cleanup', () => {
     it('should start status update with tracking', () => {
       const callId = 'call_123';
 
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId, { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } }, 'C123', '111.222');
 
       expect(mcpStatusDisplay.isTracking(callId)).toBe(true);
       expect(mcpStatusDisplay.hasStatusMessage(callId)).toBe(true);
@@ -265,7 +264,7 @@ describe('MCP Status Cleanup', () => {
     it('should stop status update and clear tracking', async () => {
       const callId = 'call_123';
 
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId, { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } }, 'C123', '111.222');
 
       expect(mcpStatusDisplay.isTracking(callId)).toBe(true);
 
@@ -280,9 +279,9 @@ describe('MCP Status Cleanup', () => {
       const callId2 = 'call_2';
       const callId3 = 'call_3';
 
-      mcpStatusDisplay.startStatusUpdate(callId1, 'github', 'create_issue', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId2, 'codex', 'search', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId3, 'filesystem', 'read', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId1, { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } }, 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId2, { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } }, 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId3, { displayType: 'MCP', displayLabel: 'filesystem → read', initialDelay: 10000, predictKey: { serverName: 'filesystem', toolName: 'read' } }, 'C123', '111.222');
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(3);
 
@@ -296,8 +295,8 @@ describe('MCP Status Cleanup', () => {
     });
 
     it('should stop all tracking on abort', async () => {
-      mcpStatusDisplay.startStatusUpdate('call_1', 'github', 'create_issue', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate('call_2', 'codex', 'search', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate('call_1', { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } }, 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate('call_2', { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } }, 'C123', '111.222');
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(2);
 
@@ -349,7 +348,7 @@ describe('MCP Status Cleanup', () => {
       toolTracker.trackMcpCall(toolUseId, callId);
 
       // 3. Start status display
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId, { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } }, 'C123', '111.222');
 
       // Verify all tracking is active
       expect(toolTracker.getToolUseCount()).toBe(1);
@@ -383,7 +382,7 @@ describe('MCP Status Cleanup', () => {
       toolTracker.trackToolUse(toolUseId, toolName);
       const callId = mcpCallTracker.startCall('codex', 'search');
       toolTracker.trackMcpCall(toolUseId, callId);
-      mcpStatusDisplay.startStatusUpdate(callId, 'codex', 'search', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId, { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } }, 'C123', '111.222');
 
       // Verify all active
       expect(mcpStatusDisplay.getActiveCount()).toBe(1);
@@ -417,8 +416,8 @@ describe('MCP Status Cleanup', () => {
       toolTracker.trackMcpCall(toolUse1, callId1);
       toolTracker.trackMcpCall(toolUse2, callId2);
 
-      mcpStatusDisplay.startStatusUpdate(callId1, 'github', 'list_issues', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId2, 'codex', 'search', 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId1, { displayType: 'MCP', displayLabel: 'github → list_issues', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'list_issues' } }, 'C123', '111.222');
+      mcpStatusDisplay.startStatusUpdate(callId2, { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } }, 'C123', '111.222');
 
       // Tool 1 completes normally
       const duration1 = mcpCallTracker.endCall(callId1);

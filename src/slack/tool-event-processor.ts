@@ -60,6 +60,7 @@ export class ToolEventProcessor {
   private reactionManager: ReactionManager | null = null;
   private assistantStatusManager: AssistantStatusManager | null;
   private mcpHealthMonitor: McpHealthMonitor | null = null;
+  private subagentCallIds: Set<string> = new Set();
 
   constructor(
     toolTracker: ToolTracker,
@@ -102,6 +103,11 @@ export class ToolEventProcessor {
       if (toolUse.name.startsWith('mcp__')) {
         await this.startMcpTracking(toolUse, context);
       }
+
+      // Start subagent tracking for Task tools
+      if (toolUse.name === 'Task') {
+        await this.startSubagentTracking(toolUse, context);
+      }
     }
   }
 
@@ -129,13 +135,33 @@ export class ToolEventProcessor {
     }
 
     // Start periodic status update display
-    this.mcpStatusDisplay.startStatusUpdate(
-      callId,
-      serverName,
-      actualToolName,
-      context.channel,
-      context.threadTs
-    );
+    this.mcpStatusDisplay.startStatusUpdate(callId, {
+      displayType: 'MCP',
+      displayLabel: `${serverName} → ${actualToolName}`,
+      initialDelay: serverName === 'codex' ? 0 : 10000,
+      predictKey: { serverName, toolName: actualToolName },
+    }, context.channel, context.threadTs);
+  }
+
+  /**
+   * Start subagent tracking and status display for Task tools
+   */
+  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
+    const summary = ToolFormatter.getTaskToolSummary(toolUse.input);
+    const subagentName = summary.subagentLabel || 'Task';
+
+    // Start call tracking with virtual server name
+    const callId = this.mcpCallTracker.startCall('_subagent', subagentName);
+    this.toolTracker.trackMcpCall(toolUse.id, callId);
+    this.subagentCallIds.add(callId);
+
+    // Start periodic status update display
+    this.mcpStatusDisplay.startStatusUpdate(callId, {
+      displayType: 'Subagent',
+      displayLabel: subagentName,
+      initialDelay: 0,
+      predictKey: { serverName: '_subagent', toolName: subagentName },
+    }, context.channel, context.threadTs);
   }
 
   /**
@@ -176,7 +202,7 @@ export class ToolEventProcessor {
   }
 
   /**
-   * End MCP tracking for a tool and return duration
+   * End MCP or subagent tracking for a tool and return duration
    */
   private async endMcpTracking(toolUseId: string, sessionKey?: string): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
@@ -185,12 +211,16 @@ export class ToolEventProcessor {
     const duration = this.mcpCallTracker.endCall(callId);
     this.toolTracker.removeMcpCallId(toolUseId);
 
-    // Clear hourglass reaction for MCP pending
-    if (this.reactionManager && sessionKey) {
-      await this.reactionManager.clearMcpPending(sessionKey, callId);
+    // MCP-specific cleanup (reactions)
+    if (!this.subagentCallIds.has(callId)) {
+      if (this.reactionManager && sessionKey) {
+        await this.reactionManager.clearMcpPending(sessionKey, callId);
+      }
+    } else {
+      this.subagentCallIds.delete(callId);
     }
 
-    // Stop status update display
+    // Unified status display stop
     await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
 
     return duration;
