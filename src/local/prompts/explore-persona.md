@@ -27,8 +27,8 @@ Glob("**/auth*.ts")
 ### Step 2: Use Gemini for Complex Questions
 When simple grep isn't enough:
 ```
-mcp__plugin_ohmyclaude_gemini-as-mcp__gemini:
-  model: "gemini-3-pro-preview"
+mcp__llm__chat:
+  model: "gemini"
   prompt: |
     Analyze this codebase structure:
     [relevant files/code]

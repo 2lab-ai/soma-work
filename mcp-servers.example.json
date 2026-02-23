@@ -4,21 +4,14 @@
       "type": "sse",
       "url": "https://mcp.atlassian.com/v1/sse"
     },
-    "codex": {
-      "type": "stdio",
-      "command": "codex",
-      "args": [
-        "mcp-server"
-      ],
-      "env": {}
-    },
-    "gemini": {
+    "llm": {
       "type": "stdio",
       "command": "npx",
       "args": [
-        "@2lab.ai/gemini-mcp-server"
+        "tsx",
+        "src/llm-mcp-server.ts"
       ],
       "env": {}
-    } 
+    }
   }
 }

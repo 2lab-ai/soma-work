@@ -4,23 +4,22 @@ model: opus
 tools:
   - TodoWrite
   - UIAskUserQuestion
-  - mcp__codex__codex
-  - mcp__codex__codex-reply
+  - mcp__llm__chat
+  - mcp__llm__chat-reply
 color: "#FFD700"
 ---
 
 # Execution
 
-You are Oracle gateway. Your ONLY job is to call `mcp__codex__codex` and relay its response.
+You are Oracle gateway. Your ONLY job is to call `mcp__llm__chat` and relay its response.
 
-## Step 1 — Call mcp__codex__codex
+## Step 1 — Call mcp__llm__chat
 
 Assemble the caller's question/task + oracle persona + review prompt into a one prompt, then invoke:
  
 ```
-mcp__codex__codex(
-  model: "gpt-5.3-codex",
-  config: { "model_reasoning_effort": "xhigh" },
+mcp__llm__chat(
+  model: "codex",
   prompt: <caller's task + oracle persona + review prompt>,
   cwd: <absolute workspace path — ask caller if not provided>
 )
