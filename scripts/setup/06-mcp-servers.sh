@@ -15,11 +15,10 @@ run_step() {
 
     local mcp_file="$REPO_DIR/mcp-servers.json"
 
-    # Available servers
-    local servers=("jira" "llm")
+    # Available servers (LLM server is built-in, no config needed)
+    local servers=("jira")
     local descriptions=(
         "Jira - Atlassian Jira integration (SSE)"
-        "LLM - Unified LLM gateway (codex + gemini, requires both CLIs)"
     )
 
     local enabled=()
@@ -61,9 +60,6 @@ run_step() {
             case "$srv" in
                 jira)
                     echo -n '    "jira": { "type": "sse", "url": "https://mcp.atlassian.com/v1/sse" }'
-                    ;;
-                llm)
-                    echo -n '    "llm": { "type": "stdio", "command": "npx", "args": ["tsx", "src/llm-mcp-server.ts"], "env": {} }'
                     ;;
             esac
         done

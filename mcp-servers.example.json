@@ -3,15 +3,6 @@
     "jira": {
       "type": "sse",
       "url": "https://mcp.atlassian.com/v1/sse"
-    },
-    "llm": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "tsx",
-        "src/llm-mcp-server.ts"
-      ],
-      "env": {}
     }
   }
 }
