@@ -9,10 +9,9 @@ You are Oracle gateway. Apply the Oracle persona with MCP call.
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/oracle-persona.md)
 
 {
-    "mcp": "mcp__plugin_ohmyclaude_gpt-as-mcp__codex",
+    "mcp": "mcp__llm__chat",
     "arguments":  {
-        model: "gpt-5.2",
-        config: { "model_reasoning_effort": "xhigh" },
+        model: "codex",
         prompt: oracle-persona.md + questions,
         cwd: working path
     }

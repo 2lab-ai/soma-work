@@ -16,11 +16,10 @@ run_step() {
     local mcp_file="$REPO_DIR/mcp-servers.json"
 
     # Available servers
-    local servers=("jira" "codex" "gemini")
+    local servers=("jira" "llm")
     local descriptions=(
         "Jira - Atlassian Jira integration (SSE)"
-        "Codex - OpenAI Codex integration (requires 'codex' CLI)"
-        "Gemini - Google Gemini integration (requires @2lab.ai/gemini-mcp-server)"
+        "LLM - Unified LLM gateway (codex + gemini, requires both CLIs)"
     )
 
     local enabled=()
@@ -63,11 +62,8 @@ run_step() {
                 jira)
                     echo -n '    "jira": { "type": "sse", "url": "https://mcp.atlassian.com/v1/sse" }'
                     ;;
-                codex)
-                    echo -n '    "codex": { "type": "stdio", "command": "codex", "args": ["mcp-server"], "env": {} }'
-                    ;;
-                gemini)
-                    echo -n '    "gemini": { "type": "stdio", "command": "npx", "args": ["@2lab.ai/gemini-mcp-server"], "env": {} }'
+                llm)
+                    echo -n '    "llm": { "type": "stdio", "command": "npx", "args": ["tsx", "src/llm-mcp-server.ts"], "env": {} }'
                     ;;
             esac
         done

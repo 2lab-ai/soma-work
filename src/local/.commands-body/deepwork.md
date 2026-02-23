@@ -14,17 +14,16 @@ Ralph loop with triple AI review gate. All 3 reviewers must score ≥9.5.
 
 ### ALL THREE reviewers must pass (≥9.5)
 
-#### 1. GPT-5.2 Reviewer
+#### 1. Codex Reviewer
 ```
-mcp__plugin_ohmyclaude_gpt-as-mcp__codex:
-  model: "gpt-5.2"
-  config: { "model_reasoning_effort": "xhigh" }
+mcp__llm__chat:
+  model: "codex"
 ```
 
-#### 2. Gemini-3 Reviewer
+#### 2. Gemini Reviewer
 ```
-mcp__plugin_ohmyclaude_gemini-as-mcp__gemini:
-  model: "gemini-3-pro-preview"
+mcp__llm__chat:
+  model: "gemini"
 ```
 
 #### 3. Opus-4.5 Reviewer
