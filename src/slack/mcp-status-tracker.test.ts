@@ -229,4 +229,166 @@ describe('McpStatusDisplay', () => {
       expect(display.getActiveCount()).toBe(1);
     });
   });
+
+  describe('Consolidated Group', () => {
+    const subagentConfig = (label: string): StatusUpdateConfig => ({
+      displayType: 'Subagent',
+      displayLabel: label,
+      initialDelay: 0,
+      predictKey: { serverName: '_subagent', toolName: label },
+    });
+
+    describe('startGroupStatusUpdate', () => {
+      it('should create group and track callId', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+
+        expect(display.isInGroup('call1')).toBe(true);
+        expect(display.isInGroup('unknown')).toBe(false);
+      });
+
+      it('should post consolidated message after debounce', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('Silent Failure Hunter'), 'C123', '111.222');
+
+        // Before debounce fires
+        expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+
+        // After debounce (300ms)
+        await vi.advanceTimersByTimeAsync(300);
+
+        expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+        expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+          'C123',
+          expect.stringContaining('2개 작업 실행 중'),
+          { threadTs: '111.222' }
+        );
+      });
+
+      it('should include all entries in consolidated message', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('Oracle Reviewer'), 'C123', '111.222');
+
+        await vi.advanceTimersByTimeAsync(300);
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        expect(messageText).toContain('Code Reviewer');
+        expect(messageText).toContain('Oracle Reviewer');
+        expect(messageText).toContain('⏳');
+      });
+
+      it('should debounce multiple renders into one', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('A'), 'C123', '111.222');
+        // Second entry added within debounce window
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('B'), 'C123', '111.222');
+        // Third entry added within debounce window
+        await display.startGroupStatusUpdate('g1', 'call3', subagentConfig('C'), 'C123', '111.222');
+
+        await vi.advanceTimersByTimeAsync(300);
+
+        // Only one postMessage despite 3 entries added
+        expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+        expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+          'C123',
+          expect.stringContaining('3개 작업 실행 중'),
+          { threadTs: '111.222' }
+        );
+      });
+    });
+
+    describe('stopGroupStatusUpdate', () => {
+      it('should mark entry as completed and update message', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('Oracle Reviewer'), 'C123', '111.222');
+
+        // Let initial render happen
+        await vi.advanceTimersByTimeAsync(300);
+        mockSlackApi.postMessage.mockClear();
+
+        // Complete first entry
+        await display.stopGroupStatusUpdate('call1', 3700);
+
+        // Debounce
+        await vi.advanceTimersByTimeAsync(300);
+
+        expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+        const updateText = mockSlackApi.updateMessage.mock.calls[0][2];
+        expect(updateText).toContain('1/2 완료');
+        expect(updateText).toContain('✅ Code Reviewer');
+        expect(updateText).toContain('⏳ Oracle Reviewer');
+      });
+
+      it('should show all-completed state when all entries done', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('Oracle Reviewer'), 'C123', '111.222');
+
+        await vi.advanceTimersByTimeAsync(300);
+        mockSlackApi.updateMessage.mockClear();
+
+        await display.stopGroupStatusUpdate('call1', 3700);
+        await display.stopGroupStatusUpdate('call2', 11600);
+
+        // Final render is synchronous (no debounce), all entries completed
+        const updateText = mockSlackApi.updateMessage.mock.calls[0][2];
+        expect(updateText).toContain('2개 작업 완료');
+        expect(updateText).toContain('✅ Code Reviewer');
+        expect(updateText).toContain('✅ Oracle Reviewer');
+      });
+
+      it('should clean up group after all entries complete', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('A'), 'C123', '111.222');
+
+        await vi.advanceTimersByTimeAsync(300);
+
+        await display.stopGroupStatusUpdate('call1', 1000);
+
+        expect(display.isInGroup('call1')).toBe(false);
+      });
+
+      it('should not throw for unknown callId', async () => {
+        await expect(display.stopGroupStatusUpdate('unknown')).resolves.not.toThrow();
+      });
+    });
+
+    describe('isInGroup', () => {
+      it('should return false for individual (non-group) calls', async () => {
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+        expect(display.isInGroup('call1')).toBe(false);
+      });
+
+      it('should return true for group calls', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('A'), 'C123', '111.222');
+        expect(display.isInGroup('call1')).toBe(true);
+      });
+    });
+
+    describe('periodic group update', () => {
+      it('should update group message every 10 seconds', async () => {
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('A'), 'C123', '111.222');
+        await display.startGroupStatusUpdate('g1', 'call2', subagentConfig('B'), 'C123', '111.222');
+
+        // Initial render
+        await vi.advanceTimersByTimeAsync(300);
+        expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+
+        // After 10 seconds — periodic update
+        await vi.advanceTimersByTimeAsync(10000);
+
+        expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+      });
+    });
+
+    describe('progress bar in group entries', () => {
+      it('should show progress bar for entries with predictions', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000);
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(30000);
+
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await vi.advanceTimersByTimeAsync(300);
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        expect(messageText).toContain('█');
+        expect(messageText).toContain('░');
+      });
+    });
+  });
 });
