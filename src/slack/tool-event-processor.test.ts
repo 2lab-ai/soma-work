@@ -28,7 +28,10 @@ describe('ToolEventProcessor', () => {
     toolTracker = new ToolTracker();
     mcpStatusDisplay = {
       startStatusUpdate: vi.fn(),
+      startGroupStatusUpdate: vi.fn(),
       stopStatusUpdate: vi.fn().mockResolvedValue(undefined),
+      stopGroupStatusUpdate: vi.fn().mockResolvedValue(undefined),
+      isInGroup: vi.fn().mockReturnValue(false),
     };
     mcpCallTracker = {
       startCall: vi.fn().mockReturnValue('call_123'),
@@ -100,6 +103,62 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolUse(toolUses, mockContext);
 
       expect(mcpCallTracker.startCall).toHaveBeenCalledWith('github', 'repos__list_branches');
+    });
+
+    describe('batch detection', () => {
+      it('should use individual tracking for single trackable tool', async () => {
+        const toolUses: ToolUseEvent[] = [
+          { id: 'tool_1', name: 'mcp__jira__search', input: {} },
+        ];
+
+        await processor.handleToolUse(toolUses, mockContext);
+
+        expect(mcpStatusDisplay.startStatusUpdate).toHaveBeenCalled();
+        expect(mcpStatusDisplay.startGroupStatusUpdate).not.toHaveBeenCalled();
+      });
+
+      it('should use group tracking for multiple trackable tools', async () => {
+        mcpCallTracker.startCall.mockReturnValueOnce('call_1').mockReturnValueOnce('call_2');
+        const toolUses: ToolUseEvent[] = [
+          { id: 'tool_1', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
+          { id: 'tool_2', name: 'Task', input: { description: 'hunt', prompt: 'test', subagent_type: 'silent-failure-hunter' } },
+        ];
+
+        await processor.handleToolUse(toolUses, mockContext);
+
+        expect(mcpStatusDisplay.startGroupStatusUpdate).toHaveBeenCalledTimes(2);
+        expect(mcpStatusDisplay.startStatusUpdate).not.toHaveBeenCalled();
+        // Both calls should share the same groupId
+        const groupId1 = mcpStatusDisplay.startGroupStatusUpdate.mock.calls[0][0];
+        const groupId2 = mcpStatusDisplay.startGroupStatusUpdate.mock.calls[1][0];
+        expect(groupId1).toBe(groupId2);
+      });
+
+      it('should not group non-trackable tools with trackable ones', async () => {
+        const toolUses: ToolUseEvent[] = [
+          { id: 'tool_1', name: 'Read', input: {} },
+          { id: 'tool_2', name: 'mcp__jira__search', input: {} },
+        ];
+
+        await processor.handleToolUse(toolUses, mockContext);
+
+        // Only one trackable tool → individual tracking
+        expect(mcpStatusDisplay.startStatusUpdate).toHaveBeenCalled();
+        expect(mcpStatusDisplay.startGroupStatusUpdate).not.toHaveBeenCalled();
+      });
+
+      it('should group mixed MCP and Task tools', async () => {
+        mcpCallTracker.startCall.mockReturnValueOnce('call_1').mockReturnValueOnce('call_2');
+        const toolUses: ToolUseEvent[] = [
+          { id: 'tool_1', name: 'mcp__codex__search', input: {} },
+          { id: 'tool_2', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
+        ];
+
+        await processor.handleToolUse(toolUses, mockContext);
+
+        expect(mcpStatusDisplay.startGroupStatusUpdate).toHaveBeenCalledTimes(2);
+        expect(mcpStatusDisplay.startStatusUpdate).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -194,6 +253,36 @@ describe('ToolEventProcessor', () => {
 
       // TodoWrite results are skipped
       expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('should route to stopGroupStatusUpdate when callId is in a group', async () => {
+      toolTracker.trackToolUse('tool_1', 'mcp__jira__search');
+      toolTracker.trackMcpCall('tool_1', 'call_123');
+      mcpStatusDisplay.isInGroup.mockReturnValue(true);
+
+      const toolResults: ToolResultEvent[] = [
+        { toolUseId: 'tool_1', toolName: 'mcp__jira__search', result: '[]' },
+      ];
+
+      await processor.handleToolResult(toolResults, mockContext);
+
+      expect(mcpStatusDisplay.stopGroupStatusUpdate).toHaveBeenCalledWith('call_123', 1000);
+      expect(mcpStatusDisplay.stopStatusUpdate).not.toHaveBeenCalled();
+    });
+
+    it('should route to stopStatusUpdate when callId is not in a group', async () => {
+      toolTracker.trackToolUse('tool_1', 'mcp__jira__search');
+      toolTracker.trackMcpCall('tool_1', 'call_123');
+      mcpStatusDisplay.isInGroup.mockReturnValue(false);
+
+      const toolResults: ToolResultEvent[] = [
+        { toolUseId: 'tool_1', toolName: 'mcp__jira__search', result: '[]' },
+      ];
+
+      await processor.handleToolResult(toolResults, mockContext);
+
+      expect(mcpStatusDisplay.stopStatusUpdate).toHaveBeenCalledWith('call_123', 1000);
+      expect(mcpStatusDisplay.stopGroupStatusUpdate).not.toHaveBeenCalled();
     });
   });
 
