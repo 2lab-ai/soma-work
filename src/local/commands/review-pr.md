@@ -35,7 +35,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), oracle-reviewer
+   - **Always applicable**: code-reviewer (general quality), oracle-reviewer, oracle-gemini-reviewer
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
