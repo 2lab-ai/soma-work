@@ -586,7 +586,7 @@ export class StreamExecutor {
       'rate limit',
       'too many requests',
       '429',
-      'process exited with code 1',
+      'process exited with code',
       'temporarily unavailable',
       'service unavailable',
       'overloaded',

@@ -320,11 +320,24 @@ export class ClaudeHandler {
       }
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
-        error: (error as Error).message,
-        messagesReceived: messageCount,
-      });
-      throw error;
+
+      // If we already collected assistant text, the response is likely complete
+      // even though the process didn't exit cleanly (e.g., SIGTERM / exit code 143)
+      if (assistantText.trim()) {
+        this.logger.warn(`⚠️ DISPATCH: Process error after ${elapsed}ms but response available, using it`, {
+          error: (error as Error).message,
+          messagesReceived: messageCount,
+          responseLength: assistantText.length,
+          preview: assistantText.substring(0, 100),
+        });
+        // Fall through to return the collected text
+      } else {
+        this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
+          error: (error as Error).message,
+          messagesReceived: messageCount,
+        });
+        throw error;
+      }
     }
 
     const totalTime = Date.now() - startTime;
