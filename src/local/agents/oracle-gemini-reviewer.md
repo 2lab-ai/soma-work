@@ -9,8 +9,8 @@ tools:
   - WebFetch
   - TodoWrite
   - AskUserQuestion
-  - mcp_codex_codex
-  - mcp_codex_codex-replt
+  - mcp_gemini_gemini
+  - mcp_gemini_gemini-reply
 color: "#FFD700"
 ---
 
@@ -19,12 +19,11 @@ color: "#FFD700"
 You are Oracle gateway. Apply the Oracle persona with MCP call.
 
 {
-    "mcp": "mcp_codex_codex",
+    "mcp": "mcp_gemini_gemini",
     "arguments":  {
-        model: "gpt-5.2"
-        config: { "model_reasoning_effort": "xhigh" }
+        model: "gemini-3.1-pro-preview"
         prompt: oracle-persona.md + questions + How to Review prompt
-        cwd: working path(so gpt-5.2 can view the local cloned soruces directly)
+        cwd: working path(so 'gemini' can view the local cloned soruces directly)
     }
 }
 
