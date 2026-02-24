@@ -34,19 +34,21 @@ export class StatusReporter {
 
   /**
    * Create initial status message and return its timestamp
+   * @param tag Optional verbose tag prefix (e.g. "[STATUS_MESSAGE @compact]")
    */
   async createStatusMessage(
     channel: string,
     threadTs: string,
     sessionKey: string,
-    initialStatus: StatusType = 'thinking'
+    initialStatus: StatusType = 'thinking',
+    tag: string = ''
   ): Promise<string | undefined> {
     try {
       const config = STATUS_CONFIG[initialStatus];
       const result = await this.client.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        text: config.text,
+        text: tag + config.text,
       });
 
       if (result.ts) {
@@ -89,18 +91,20 @@ export class StatusReporter {
 
   /**
    * Update status message using explicit channel and ts (for callback contexts)
+   * @param tag Optional verbose tag prefix
    */
   async updateStatusDirect(
     channel: string,
     ts: string,
-    status: StatusType
+    status: StatusType,
+    tag: string = ''
   ): Promise<void> {
     try {
       const config = STATUS_CONFIG[status];
       await this.client.chat.update({
         channel,
         ts,
-        text: config.text,
+        text: tag + config.text,
       });
       this.logger.debug('Updated status message directly', { channel, ts, status });
     } catch (error) {
