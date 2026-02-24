@@ -85,8 +85,20 @@ interface UserChoiceGroup {
 
 - Always use review with **`oracle-reviewer` Skill**, **`oracle-gemini-reviewer`** Skill togather in paralel if you don't have any review with this choices.
 
-- You should include all CONTEXT in that question. Do not let the user scroll up with saying "WHAT THE FUCK IT IS GOING TO DOING?".
-- User should know what will you do if the option chosen by the user.
+### Context Completeness (MANDATORY)
+
+유저가 질문만 보고 스크롤업 없이 결정할 수 있어야 한다. 질문에 반드시 포함:
+
+1. **현재 상태** — 지금 코드/시스템이 어떻게 되어있는지 (코드 스니펫 포함)
+2. **문제/이유** — 왜 결정이 필요한지 (실제 영향: 성능? 안정성? 데이터 유실?)
+3. **각 선택지의 구체적 행동** — 선택하면 정확히 뭘 하는 건지 (어떤 파일, 어떤 변경, 작업량)
+4. **트레이드오프** — 각 옵션의 장단점, 리스크
+
+코드 리뷰 결정이면 문제 코드 스니펫 + 수정 코드 예시가 **반드시** 있어야 한다.
+하나라도 빠지면 유저가 "이게 대체 뭔데?" 하면서 스크롤업해야 한다 → 이 UI의 존재 가치가 없다.
+
+### Slack UI Constraints
+
 - Slack UI renders up to 4 options as buttons (plus 1 "custom input" button). Keep options to **2-4**.
 
 ### USE UserChoice when:
