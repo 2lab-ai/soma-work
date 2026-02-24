@@ -35,11 +35,11 @@ export interface ActionPanelPayload {
 }
 
 type PanelActionKey =
-  | 'issue_research'
-  | 'pr_create'
-  | 'pr_review'
+  | 'pr_fix_new'
+  | 'pr_fix_renew'
+  | 'pr_review_new'
+  | 'pr_review_renew'
   | 'pr_docs'
-  | 'pr_fix'
   | 'pr_approve'
   | 'pr_merge';
 
@@ -51,35 +51,28 @@ interface PanelActionDef {
 }
 
 const ACTION_DEFS: Record<PanelActionKey, PanelActionDef> = {
-  issue_research: { key: 'issue_research', actionId: 'panel_issue_research', label: '이슈 리서치' },
-  pr_create: { key: 'pr_create', actionId: 'panel_pr_create', label: 'PR 생성' },
-  pr_review: { key: 'pr_review', actionId: 'panel_pr_review', label: 'PR 리뷰' },
+  pr_fix_new: { key: 'pr_fix_new', actionId: 'panel_pr_fix_new', label: '🆕 Fix' },
+  pr_fix_renew: { key: 'pr_fix_renew', actionId: 'panel_pr_fix_renew', label: '♻️ Fix' },
+  pr_review_new: { key: 'pr_review_new', actionId: 'panel_pr_review_new', label: '🆕 리뷰' },
+  pr_review_renew: { key: 'pr_review_renew', actionId: 'panel_pr_review_renew', label: '♻️ 리뷰' },
   pr_docs: { key: 'pr_docs', actionId: 'panel_pr_docs', label: 'PR 문서화' },
-  pr_fix: { key: 'pr_fix', actionId: 'panel_pr_fix', label: 'PR 수정' },
   pr_approve: { key: 'pr_approve', actionId: 'panel_pr_approve', label: 'PR 승인', style: 'primary' },
   pr_merge: { key: 'pr_merge', actionId: 'panel_pr_merge', label: '🔀 Merge', style: 'primary' },
 };
 
-const DEFAULT_ACTIONS: PanelActionKey[] = [
-  'issue_research',
-  'pr_create',
-  'pr_review',
-  'pr_docs',
-  'pr_fix',
-  'pr_approve',
-];
+const DEFAULT_ACTIONS: PanelActionKey[] = [];
 
 const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
-  onboarding: DEFAULT_ACTIONS,
-  'jira-executive-summary': ['issue_research', 'pr_create'],
-  'jira-brainstorming': ['issue_research', 'pr_create'],
-  'jira-planning': ['issue_research', 'pr_create'],
-  'jira-create-pr': ['pr_create', 'issue_research'],
-  'pr-review': ['pr_review', 'pr_fix', 'pr_approve', 'pr_docs'],
-  'pr-fix-and-update': ['pr_fix', 'pr_review', 'pr_docs'],
-  'pr-docs-confluence': ['pr_docs', 'pr_review'],
-  deploy: ['pr_create', 'pr_review', 'pr_docs'],
-  default: DEFAULT_ACTIONS,
+  onboarding: [],
+  'jira-executive-summary': [],
+  'jira-brainstorming': [],
+  'jira-planning': [],
+  'jira-create-pr': [],
+  'pr-review': ['pr_fix_new', 'pr_fix_renew', 'pr_approve', 'pr_docs'],
+  'pr-fix-and-update': ['pr_review_new', 'pr_review_renew', 'pr_docs'],
+  'pr-docs-confluence': ['pr_review_new', 'pr_review_renew'],
+  deploy: [],
+  default: [],
 };
 
 export class ActionPanelBuilder {
@@ -118,10 +111,19 @@ export class ActionPanelBuilder {
     const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
     const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
 
+    // Dynamic: add review buttons when PR exists and workflow doesn't already have them
+    if (params.prUrl && !actions.some(k => k.startsWith('pr_review'))) {
+      defaultButtons.push(this.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
+      defaultButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
+    }
+
     // Add merge button when PR is mergeable
     if (params.prStatus?.mergeable && params.prUrl) {
       defaultButtons.push(this.buildMergeButton(params));
     }
+
+    // Close button always at the end
+    defaultButtons.push(this.buildCloseButton(params.sessionKey));
 
     // Add stop button when session is actively working
     if (isWorking) {
@@ -160,13 +162,7 @@ export class ActionPanelBuilder {
     });
     if (metricsCtx) blocks.push(metricsCtx);
 
-    // 3. Choice slot (divider + choice blocks, only when waiting)
-    if (isQuestionPending) {
-      blocks.push({ type: 'divider' });
-      blocks.push(...this.buildChoiceSlotBlocks(params.choiceBlocks));
-    }
-
-    // 4. Action buttons (only when NOT waiting for choice)
+    // 3. Action buttons (hidden when waiting for choice — choice UI stays in thread only)
     blocks.push(...actionBlocks);
 
     return {
@@ -407,31 +403,27 @@ export class ActionPanelBuilder {
     };
   }
 
-  private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
-    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
-      return [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: '❓ *User Ask*\n응답이 필요한 질문이 있습니다.',
-          },
-        },
-      ];
-    }
-
-    return choiceBlocks.map((block) => this.cloneBlock(block));
-  }
-
-  private static cloneBlock(block: any): any {
-    return JSON.parse(JSON.stringify(block));
-  }
 
   private static truncateLine(input: string, maxLength: number): string {
     if (input.length <= maxLength) {
       return input;
     }
     return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  private static buildCloseButton(sessionKey: string): any {
+    return {
+      type: 'button',
+      text: { type: 'plain_text', text: '🔒 종료', emoji: true },
+      action_id: 'panel_close',
+      value: JSON.stringify({ sessionKey, action: 'close' }),
+      confirm: {
+        title: { type: 'plain_text', text: '세션 종료' },
+        text: { type: 'mrkdwn', text: '이 세션을 종료하시겠습니까?' },
+        confirm: { type: 'plain_text', text: '종료' },
+        deny: { type: 'plain_text', text: '취소' },
+      },
+    };
   }
 
   private static buildButton(def: PanelActionDef, sessionKey: string): any {
