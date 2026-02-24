@@ -2,17 +2,17 @@
 
 # PR Fix and Update Workflow
 
-**GitHub PR 피드백 반영 및 수정** 워크플로우. 새로운 리뷰가 아닌, 기존 리뷰 피드백을 반영하여 코드를 수정한다.
+**GitHub PR 피드백 반영 및 수정** 워크플로우. 기존 리뷰 피드백을 반영하여 코드를 수정한다.
 
 ## 목표
 PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
+**한번의 유저 확인으로 모든 수정을 완료**하는 것이 목표.
 
 ## 미해결 대화 처리 방법
-- **코드 수정**: 직접 코드를 수정하여 해결
+- **자율 수정 (tiny/small)**: switching cost < small → 3명 다수결로 즉시 수정. 유저에게 묻지 않음.
+- **유저 확인 (medium+)**: switching cost >= medium → UIAskUserQuestion으로 수정 방안 확인
 - **Followup 이슈**: PR 범위를 벗어나는 경우 Jira 이슈 생성
 - **Skip**: 유저의 결정으로 현재 수정하지 않음
-
-작업 완료 후 미해결 이슈가 있으면 UIAskUserQuestion으로 Jira 이슈 생성 여부를 확인한다.
 
 ## 성공 조건
 
@@ -25,8 +25,6 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
    - 리뷰, 코멘트, 변경 파일, 메타데이터 모두 포함
    - 워크플로우 액션에 필요한 ID (comment.id, node_id, html_url) 유지
 3. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
-4. 모든 리뷰 커멘트 각각에 대해서 유저의 컨펌이 필요한 모든 내용을 우선순위대로 정리해서 유저에게 한번에 UIAskUserQuestion으로 컨펌을 받고 해당 내용으로 작업을 진행한다.
-5. 수정 완료 후 commit & push
 
 ## 작업 프로세스
 
@@ -37,28 +35,58 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 resolved 된 댓글은 무시하고 읽지도 않는다.
 
 ### 2. 피드백 현재 최신 코드 기준 문제 여부 파악
- 
+
 실제 아직 존재하는 문제인지 파악하고 문제가 해결되었거나 다른 이슈나 하지 않음으로 결정되었으면 해당 댓글을 달고 해당 리뷰를 resolve 처리한다.
 반드시 이미 해결된 리뷰에 대한 커멘트는 모두 conversation resolve 처리하고 유저에게 하겠냐고 묻지 않는다. 그리고 이렇게 처리된 내용은 그냥 처리된 갯수만 말하고 내용은 이야기 하지 않는다.
- 
-### 3. 피드백 분류 및 정리
-| # | 파일 | 라인 | 피드백 내용 | 우선순위 |
-|---|------|------|-------------|---------|
-| 1 | file.ts | 42 | ... | P1 |
-| 2 | other.ts | 15 | ... | P2 |
 
-### 현존하는 피드백별 문제 해결 방법 모색
+### 3. 피드백 분류 — Priority + Switching Cost Tier
 
-남아 있는 각각의 피드백에 대해서 명확한 해결책이 떠오르면 명확한 해결 방안들을 정리한다.
-만약 명확한 해결 방안이 애매하다면 oracle agent에게 질의하여 그 의견을 반영하여 해결 방안들을 정리한다. (oracle agent를 각각의 이슈에 대해서 병렬로 호출한다) 
+남아있는 각 피드백에 대해 두 가지를 분류한다:
 
-### 4. UIAskUserQuestion
+| # | 파일 | 라인 | 피드백 내용 | 우선순위 | Tier | ~Lines |
+|---|------|------|-------------|---------|------|--------|
+| 1 | file.ts | 42 | ... | P1 | medium | ~50 |
+| 2 | other.ts | 15 | ... | P2 | tiny | ~5 |
 
-남아 있는 모든 이슈에 대해서 유저에게 해결 방안을 최종 컨펌을 받는다.
-UIASkUSerQuestion으로 최대한 유저에게 많은 결정 방법을 선제시한다. 권장하는 방법을 1번에 두고 나머지 다양한 해결 방법을 추가로 제시해준다.
+### 4. Decision Gate — 자율 수정 vs 유저 확인
 
-### 5. 유저의 피드백에 따른 코드 수정 + 검증 + push
+`decision-gate` Skill 참조하여 각 피드백을 분류:
+
+```
+for each feedback:
+  if switching_cost < small (~20줄):
+    → [자율 수정] 3명 다수결로 수정 방향 결정
+    → oracle-reviewer + oracle-gemini-reviewer 병렬 호출
+    → 2/3 이상 동의하면 즉시 수정 진행
+    → 유저에게 묻지 않음
+
+  elif switching_cost >= medium (~50줄):
+    → [유저 확인] 수정 방안을 정리하여 UIAskUserQuestion
+    → 3명 리뷰 결과 + 추천안 포함
+    → [tier ~N줄] 표기 필수
+```
+
+### 5. 자율 수정 실행 (tiny/small)
+
+리뷰 합의가 된 tiny/small 이슈를 즉시 수정:
 - 우선순위 높은 것부터 처리
+- 수정 후 해당 PR conversation에 수정 내용 커멘트 + resolve
+- Auto-Decision 로그 기록
+
+### 6. UIAskUserQuestion (medium+ 이슈만)
+
+남아있는 medium+ 이슈에 대해 유저에게 **한번에** 확인 요청:
+
+- `user_choice_group`으로 모든 medium+ 이슈를 묶어서 질문
+- 각 이슈의 question에 `[tier ~N줄]` prefix 표기
+- 각 이슈에 현재 코드 스니펫 + 수정안 + 3명 리뷰 합의 포함
+- 선택지: Fix in this PR / Defer to followup issue / Skip
+
+**자율 수정 건은 이 질문에 포함하지 않는다** — 이미 처리 완료.
+
+### 7. 유저 피드백에 따른 코드 수정 + 검증 + push
+
+- 자율 수정 건 (이미 완료) + 유저 결정 건을 합쳐서 최종 커밋
 - 각 피드백에 대해:
   1. 파일 열기
   2. 해당 라인 수정
@@ -90,7 +118,7 @@ git push
 ```
 Jira 이슈가 연관되어 있으면 `"jira": "URL"`도 포함한다.
 
-### 6. 코드 정리 (rebase + code-simplify)
+### 8. 코드 정리 (rebase + code-simplify)
 
 1. `origin/develop` 최신 기준으로 rebase:
 ```bash
@@ -113,10 +141,17 @@ git rebase --continue
 
 ### 📋 피드백 반영 현황
 
-| # | 피드백 | 상태 | 수정 내용 |
-|---|--------|------|----------|
-| 1 | [P1] XXX 이슈 | ✅ 완료 | 수정 설명 |
-| 2 | [P2] YYY 이슈 | ✅ 완료 | 수정 설명 |
+**자율 처리 완료 (tiny/small):**
+| # | 피드백 | Tier | 결정 | 투표 |
+|---|--------|------|------|------|
+| 1 | [P2] 변수명 오타 | tiny ~5줄 | 즉시 수정 | 3/3 |
+| 2 | [P3] null check 추가 | small ~15줄 | 즉시 수정 | 2/3 |
+
+**유저 결정 반영:**
+| # | 피드백 | Tier | 유저 결정 | 수정 내용 |
+|---|--------|------|----------|----------|
+| 3 | [P1] 예외 처리 | medium ~50줄 | Fix | catch 필터 수정 |
+| 4 | [P1] 스키마 변경 | large ~100줄 | Defer | JIRA-123 생성 |
 
 ### 🔧 변경된 파일
 - `path/to/file.ts` - XXX 수정
@@ -129,6 +164,7 @@ git rebase --continue
 ```
 Pushed to branch: feature/xxx
 All review feedback addressed.
+자율 처리: N건, 유저 결정: M건, Defer: K건
 ```
 
 ## 수정 완료 후
