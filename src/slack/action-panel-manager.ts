@@ -107,6 +107,8 @@ export class ActionPanelManager {
       choiceBlocks: panelState.choiceBlocks,
       waitingForChoice: panelState.waitingForChoice,
       choiceMessageLink,
+      latestResponseLink: panelState.latestResponseLink,
+      turnSummary: panelState.turnSummary,
       activityState: session.activityState,
       contextRemainingPercent,
       hasActiveRequest,

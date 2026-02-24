@@ -154,6 +154,7 @@ export class SlackHandler {
       messageHandler: this.handleMessage.bind(this),
       reactionManager: this.reactionManager,
       actionPanelManager: this.actionPanelManager,
+      requestCoordinator: this.requestCoordinator,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 

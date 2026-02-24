@@ -14,6 +14,7 @@ import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
 import { LinkHandler } from './link-handler';
 import { CloseHandler } from './close-handler';
+import { VerbosityHandler } from './verbosity-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -32,6 +33,7 @@ export class CommandRouter {
       new BypassHandler(),
       new PersonaHandler(),
       new ModelHandler(),
+      new VerbosityHandler(deps),
       new RestoreHandler(),
       new NewHandler(deps),
       new OnboardingHandler(deps),
