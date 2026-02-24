@@ -109,6 +109,37 @@ Ask directly in plain text:
 
 ## Bad Examples (NEVER do these)
 
+### BAD: Context-free code review question
+
+This is the WORST kind of question. The user sees cryptic one-liners and has NO IDEA what's going on:
+
+```
+:question: PR #944에서 P1 이슈 2건이 발견되었습니다. 어떻게 처리할까요?
+
+P1-1: DbUpdateException을 when (IsDuplicateKeyException(ex)) 필터로 변경
+P1-2: SoftDelete에서 entity.EffectiveTo = DateTime.UtcNow 추가
+
+1️⃣ 이슈 수정 진행
+2️⃣ PR 저자에게 위임
+3️⃣ P2까지 같이 수정
+```
+
+**Why this is UNACCEPTABLE:**
+
+- **ZERO context** — "DbUpdateException을 when 필터로 변경"이 뭔 소리인지 사용자가 알 수가 없다. 현재 코드가 뭔지, 뭐가 문제인지, 어디를 고치는 건지 하나도 안 적혀있다.
+- **결정 불가** — 이게 1줄 고치는 건지 100줄 리팩터링인지, 위험한 건지 안전한 건지 판단할 근거가 전혀 없다.
+- **스크롤업 강요** — 사용자가 "이게 대체 뭔데?" 하면서 위로 올라가서 리뷰 전문을 다시 읽어야 한다. 그 순간 이 UI는 존재 가치가 없다.
+
+**코드 리뷰 결정을 묻는 질문은 반드시 다음을 포함해야 한다:**
+1. 현재 문제 코드 스니펫 (어디서 뭐가 잘못됐는지)
+2. 왜 문제인지 (실제 영향: 데이터 유실? 크래시? 보안?)
+3. 수정 방법 구체안 (어떤 파일, 어떤 변경, 얼마나 복잡한지)
+4. 각 선택지를 고르면 정확히 뭘 하는 건지
+
+**아래 Good Examples 섹션의 `user_choice_group` 포맷을 반드시 따를 것.**
+
+### BAD: Requires additional input
+
 ```json
 // BAD - Requires additional input, button does nothing useful
 {
