@@ -6,13 +6,13 @@ import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
-import { ActionPanelManager } from '../action-panel-manager';
+import { ThreadPanel } from '../thread-panel';
 
 interface FormActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
-  actionPanelManager?: ActionPanelManager;
+  threadPanel?: ThreadPanel;
 }
 
 /**
@@ -122,7 +122,7 @@ export class FormActionHandler {
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (session) {
-      await this.ctx.actionPanelManager?.clearChoice(sessionKey);
+      await this.ctx.threadPanel?.clearChoice(sessionKey);
       this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
       const say = this.createSayFn(channel);
       const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
@@ -190,7 +190,7 @@ export class FormActionHandler {
       }
     }
 
-    await this.ctx.actionPanelManager?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
+    await this.ctx.threadPanel?.attachChoice(sessionKey, updatedPayload, pendingForm.messageTs);
 
     // 모든 질문 완료 시
     if (answeredCount === totalQuestions) {

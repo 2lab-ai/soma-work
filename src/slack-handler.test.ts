@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SlackHandler } from './slack-handler';
 
 describe('SlackHandler', () => {
-  it('ensures action panel after session initialization', async () => {
+  it('creates thread panel after session initialization', async () => {
     const app = { client: {} } as any;
     const claudeHandler = {};
     const mcpManager = {};
@@ -37,8 +37,8 @@ describe('SlackHandler', () => {
     handlerAny.streamExecutor = {
       execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }),
     };
-    const ensurePanel = vi.fn().mockResolvedValue(undefined);
-    handlerAny.actionPanelManager = { ensurePanel };
+    const create = vi.fn().mockResolvedValue(undefined);
+    handlerAny.threadPanel = { create };
 
     const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
     const event = {
@@ -50,8 +50,8 @@ describe('SlackHandler', () => {
 
     await handler.handleMessage(event as any, say);
 
-    expect(ensurePanel).toHaveBeenCalledTimes(1);
-    expect(ensurePanel).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
   });
 
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {
@@ -94,7 +94,7 @@ describe('SlackHandler', () => {
     };
     const execute = vi.fn().mockResolvedValue({ success: true, messageCount: 1 });
     handlerAny.streamExecutor = { execute };
-    handlerAny.actionPanelManager = { ensurePanel: vi.fn().mockResolvedValue(undefined) };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
 
     const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
     const event = {
@@ -159,8 +159,8 @@ describe('SlackHandler', () => {
     };
 
     const clearChoice = vi.fn().mockResolvedValue(undefined);
-    handlerAny.actionPanelManager = {
-      ensurePanel: vi.fn().mockResolvedValue(undefined),
+    handlerAny.threadPanel = {
+      create: vi.fn().mockResolvedValue(undefined),
       clearChoice,
     };
 

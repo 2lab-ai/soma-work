@@ -5,13 +5,13 @@ import { UserChoices } from '../../types';
 import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
-import { ActionPanelManager } from '../action-panel-manager';
+import { ThreadPanel } from '../thread-panel';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
-  actionPanelManager?: ActionPanelManager;
+  threadPanel?: ThreadPanel;
 }
 
 /**
@@ -64,7 +64,7 @@ export class ChoiceActionHandler {
 
       // 세션 확인 및 메시지 처리
       if (session) {
-        await this.ctx.actionPanelManager?.clearChoice(sessionKey);
+        await this.ctx.threadPanel?.clearChoice(sessionKey);
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
@@ -281,7 +281,7 @@ export class ChoiceActionHandler {
       }
     }
 
-    await this.ctx.actionPanelManager?.attachChoice(
+    await this.ctx.threadPanel?.attachChoice(
       pendingForm.sessionKey,
       updatedPayload,
       pendingForm.messageTs
@@ -333,7 +333,7 @@ export class ChoiceActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
-      await this.ctx.actionPanelManager?.clearChoice(pendingForm.sessionKey);
+      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);

@@ -243,7 +243,7 @@ describe('Abort handling', () => {
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
       },
-      actionPanelManager: undefined,
+      threadPanel: undefined,
     } as any;
   }
 
@@ -413,9 +413,10 @@ describe('model-command integration', () => {
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
       },
-      actionPanelManager: {
+      threadPanel: {
         attachChoice: vi.fn().mockResolvedValue(undefined),
         updatePanel: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
       },
     } as any;
   }
@@ -529,7 +530,7 @@ describe('model-command integration', () => {
       text: '진행할 방법을 선택해주세요',
       thread_ts: '171.100',
     }));
-    expect(deps.actionPanelManager.attachChoice).toHaveBeenCalled();
+    expect(deps.threadPanel.attachChoice).toHaveBeenCalled();
     expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
   });
 
