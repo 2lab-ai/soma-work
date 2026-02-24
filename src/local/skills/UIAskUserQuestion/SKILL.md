@@ -83,6 +83,8 @@ interface UserChoiceGroup {
 
 ## Rules
 
+- Always use review with **`oracle-reviewer` Skill**, **`oracle-gemini-reviewer`** Skill togather in paralel if you don't have any review with this choices.
+
 - You should include all CONTEXT in that question. Do not let the user scroll up with saying "WHAT THE FUCK IT IS GOING TO DOING?".
 - User should know what will you do if the option chosen by the user.
 - Slack UI renders up to 4 options as buttons (plus 1 "custom input" button). Keep options to **2-4**.
@@ -127,29 +129,58 @@ Ask directly in plain text:
 
 ```json
 {
-  "type": "user_choice_group",
-  "question": "How should we implement the caching layer?",
-  "context": "The API currently makes redundant database calls. Caching will improve response times.",
-  "choices": [
-    {
-      "type": "user_choice",
-      "question": "Which caching strategy?",
-      "options": [
-        { "id": "1", "label": "Redis cache", "description": "Distributed, persistent, requires infrastructure" },
-        { "id": "2", "label": "In-memory cache", "description": "Fast, simple, lost on restart" },
-        { "id": "3", "label": "Both with fallback", "description": "Redis primary, memory fallback. More complex." }
-      ]
-    },
-    {
-      "type": "user_choice",
-      "question": "Cache invalidation strategy?",
-      "options": [
-        { "id": "1", "label": "TTL-based", "description": "Simple, eventual consistency" },
-        { "id": "2", "label": "Event-driven", "description": "Immediate consistency, more complex" }
+  "commandId": "ASK_USER_QUESTION",
+  "params": {
+    "payload": {
+      "type": "user_choice_group",
+      "question": "Summary title (e.g., 'PR #123 — 2 unresolved feedback items')",
+      "context": "Overall status summary (what's already resolved, how many remain)\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 Issue 1: [Priority] Title\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n▸ Current problem:\nProblem description + code snippet\n```lang\n// problematic code\n```\n\n▸ Impact: Actual behavior caused by this problem\n\n▸ Required changes:\nFix approach + example code\n```lang\n// fix code example\n```\nChange scope summary (number of files, difficulty)\n\n▸ 🤖 Codex opinion:\nAI analysis (recommended direction, risk, rationale)\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 Issue 2: [Priority] Title\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n(same structure repeated)",
+      "choices": [
+        {
+          "question": "[Priority] Issue title — change scope summary (difficulty hint)",
+          "options": [
+            {
+              "id": "issue1_fix",
+              "label": "Fix in this PR (Recommended)",
+              "description": "Specific changes: which files, what modifications, how"
+            },
+            {
+              "id": "issue1_defer",
+              "label": "Defer to followup issue",
+              "description": "Create separate issue + PR comment explaining out-of-scope"
+            },
+            {
+              "id": "issue1_skip",
+              "label": "Skip",
+              "description": "Reason or condition for not fixing"
+            }
+          ]
+        },
+        {
+          "question": "[Priority] Issue title — change scope summary (difficulty hint)",
+          "options": [
+            {
+              "id": "issue2_fix",
+              "label": "Fix",
+              "description": "Specific changes"
+            },
+            {
+              "id": "issue2_skip",
+              "label": "Skip",
+              "description": "Do not fix"
+            },
+            {
+              "id": "issue2_defer",
+              "label": "Create followup issue",
+              "description": "Track in separate issue"
+            }
+          ]
+        }
       ]
     }
-  ]
+  }
 }
+
 ```
 
 ## Key Principle
