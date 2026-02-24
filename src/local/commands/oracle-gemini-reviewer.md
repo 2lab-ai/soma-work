@@ -1,5 +1,5 @@
 ---
-description: "Oracle Gemini code reviewer — spawns general-purpose subagent with MCP access"
+description: "Oracle Gemini code reviewer"
 argument-hint: "[review task or diff description]"
 allowed-tools:
   - Task
@@ -14,17 +14,12 @@ allowed-tools:
 
 Review code changes using Gemini backend via `mcp__llm__chat`.
 
-**Workaround for Claude Code [#13605](https://github.com/anthropics/claude-code/issues/13605):**
-Custom agents cannot access MCP tools. This command spawns a **general-purpose built-in subagent** instead, which correctly inherits MCP server connections.
-
 ## Task: "$ARGUMENTS"
 
 ## Execution
 
 Use the **Task tool** to spawn a `general-purpose` subagent with the prompt below.
 The subagent MUST call `mcp__llm__chat` with `model: "gemini"` — do NOT answer the review yourself.
-
-**IMPORTANT**: Run the subagent in **foreground** (do NOT use `run_in_background: true`), because background agents also cannot access MCP tools.
 
 ```
 Task tool parameters:
