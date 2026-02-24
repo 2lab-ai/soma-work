@@ -238,12 +238,15 @@ export class ChannelRouteActionHandler {
   private buildLinks(prUrl?: string): SessionLinks | undefined {
     if (!prUrl) return undefined;
     const provider: SessionLink['provider'] = prUrl.includes('github.com') ? 'github' : 'unknown';
+    // Extract PR number from URL (e.g., /pull/591 → "PR #591")
+    const prMatch = prUrl.match(/\/pull\/(\d+)/);
+    const label = prMatch ? `PR #${prMatch[1]}` : 'PR';
     return {
       pr: {
         url: prUrl,
         type: 'pr',
         provider,
-        label: 'PR',
+        label,
       },
     };
   }
@@ -260,8 +263,10 @@ export class ChannelRouteActionHandler {
       : `<@${userId}> 님의 작업 요청`;
 
     const ownerName = await this.deps.slackApi.getUserName(userId);
-    const title = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
     const links = this.buildLinks(value.prUrl);
+    // Generate title from user message, but fall back to PR label if it's just a URL placeholder
+    const generated = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
+    const title = (generated === '[link]' || generated === '새 대화') ? undefined : generated;
     const headerPayload = ThreadHeaderBuilder.build({
       title,
       workflow: 'default',
