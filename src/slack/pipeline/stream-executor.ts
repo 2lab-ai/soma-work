@@ -845,7 +845,6 @@ export class StreamExecutor {
     channel: string
   ): Promise<void> {
     if (!session.threadRootTs) return;
-    if (!shouldOutput(OutputFlag.THREAD_HEADER, session.logVerbosity ?? LOG_DETAIL)) return;
 
     try {
       const payload = ThreadHeaderBuilder.fromSession(session);
