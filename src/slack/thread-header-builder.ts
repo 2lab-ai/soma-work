@@ -6,6 +6,7 @@ export interface ThreadHeaderData {
   ownerName?: string;
   ownerId?: string;
   links?: SessionLinks;
+  closed?: boolean;
 }
 
 export interface ThreadHeaderPayload {
@@ -15,13 +16,14 @@ export interface ThreadHeaderPayload {
 }
 
 export class ThreadHeaderBuilder {
-  static fromSession(session: ConversationSession): ThreadHeaderPayload {
+  static fromSession(session: ConversationSession, overrides?: { closed?: boolean }): ThreadHeaderPayload {
     return this.build({
       title: session.title,
       workflow: session.workflow,
       ownerName: session.ownerName,
       ownerId: session.ownerId,
       links: session.links,
+      ...overrides,
     });
   }
 
@@ -29,7 +31,9 @@ export class ThreadHeaderBuilder {
     const title = data.title || data.links?.pr?.label || data.links?.issue?.label || 'Session';
     const workflow = data.workflow || 'default';
     const owner = data.ownerName || data.ownerId;
-    const headerText = `🧵 *${title}*  ·  \`${workflow}\``;
+    const icon = data.closed ? '🔒' : '🧵';
+    const suffix = data.closed ? '  ·  _종료됨_' : '';
+    const headerText = `${icon} *${title}*  ·  \`${workflow}\`${suffix}`;
 
     const metaElements: any[] = [];
     if (owner) {

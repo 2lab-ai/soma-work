@@ -1,10 +1,11 @@
 import { SlackApiHelper } from './slack-api-helper';
-import { ActionPanelBuilder } from './action-panel-builder';
+import { ActionPanelBuilder, PRStatusInfo } from './action-panel-builder';
 import { RequestCoordinator } from './request-coordinator';
 import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
+import { fetchGitHubPRDetails, isPRMergeable } from '../link-metadata-fetcher';
 
 interface ActionPanelManagerDeps {
   slackApi: SlackApiHelper;
@@ -100,6 +101,9 @@ export class ActionPanelManager {
     const contextRemainingPercent = this.getContextRemainingPercent(session);
     const choiceMessageLink = await this.ensureChoiceMessageLink(panelState, channelId);
 
+    // Fetch PR status if a GitHub PR link is attached
+    const prStatusInfo = await this.fetchPRStatus(session);
+
     const payload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -115,6 +119,8 @@ export class ActionPanelManager {
       agentPhase: panelState.agentPhase,
       activeTool: panelState.activeTool,
       statusUpdatedAt: panelState.statusUpdatedAt,
+      prStatus: prStatusInfo?.prStatus,
+      prUrl: prStatusInfo?.prUrl,
     });
 
     const renderKey = JSON.stringify(payload.blocks || []);
@@ -197,6 +203,44 @@ export class ActionPanelManager {
     }
     if (payload.blocks) return payload.blocks;
     return [];
+  }
+
+  private async fetchPRStatus(
+    session: ConversationSession
+  ): Promise<{ prStatus: PRStatusInfo; prUrl: string } | undefined> {
+    const prLink = session.links?.pr;
+    if (!prLink || prLink.provider !== 'github') return undefined;
+
+    try {
+      const details = await fetchGitHubPRDetails(prLink);
+      if (!details) return undefined;
+
+      const prStatus: PRStatusInfo = {
+        state: details.merged ? 'merged' : details.state,
+        mergeable: isPRMergeable(details),
+        draft: details.draft,
+        merged: details.merged,
+        head: details.head,
+        base: details.base,
+      };
+
+      // Cache in session state for use by action handlers
+      if (session.actionPanel) {
+        session.actionPanel.prStatus = {
+          state: prStatus.state,
+          mergeable: prStatus.mergeable,
+          draft: prStatus.draft,
+          merged: prStatus.merged,
+          head: prStatus.head,
+          base: prStatus.base,
+        };
+      }
+
+      return { prStatus, prUrl: prLink.url };
+    } catch (error) {
+      this.logger.debug('Failed to fetch PR status for action panel', { error });
+      return undefined;
+    }
   }
 
   private async ensureChoiceMessageLink(
