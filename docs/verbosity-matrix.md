@@ -46,6 +46,11 @@ These three flags are active regardless of verbosity level:
 - `PERMISSION` — Permission approval prompts are critical for security
 - `ERROR` — Error messages must never be suppressed
 
+**Structural UI flags** (defined in level presets but never gated in code — always output):
+
+- `ACTION_PANEL` — Action panel is the user's control surface (abort, choices)
+- `THREAD_HEADER` — Thread root message is the structural entry point of bot-initiated threads
+
 ## Gating Implementation
 
 Each flag is checked at the point of output using `shouldOutput(flag, verbosityMask)`.
@@ -63,8 +68,8 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 | `STATUS_SPINNER` | `stream-executor.ts` | Native Slack spinner |
 | `USER_CHOICE` | _(always on)_ | Never suppressed |
 | `PERMISSION` | _(always on)_ | Never suppressed |
-| `ACTION_PANEL` | `action-panel-manager.ts` | Early return in `renderPanel()` |
-| `THREAD_HEADER` | `stream-executor.ts`, `session-initializer.ts` | Thread root update + dispatch message |
+| `ACTION_PANEL` | _(ungated — structural UI)_ | Always rendered; user control surface |
+| `THREAD_HEADER` | _(ungated — structural UI)_ | Always rendered; thread entry point |
 | `SESSION_FOOTER` | `stream-executor.ts` | `buildFinalResponseFooter` callback |
 | `CONTEXT_EMOJI` | `stream-executor.ts` | `onUsageUpdate` callback |
 | `TODO_UPDATE` | `stream-executor.ts` | `onTodoUpdate` callback |

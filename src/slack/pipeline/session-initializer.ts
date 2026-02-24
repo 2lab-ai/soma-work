@@ -474,14 +474,10 @@ export class SessionInitializer {
 
       // Add dispatching reaction and post status message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
-      const dispatchSession = this.deps.claudeHandler.getSession(channel, threadTs);
-      const dispatchVerbosity = dispatchSession?.logVerbosity ?? LOG_DETAIL;
-      if (shouldOutput(OutputFlag.THREAD_HEADER, dispatchVerbosity)) {
-        const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
-          threadTs,
-        });
-        dispatchMessageTs = msgResult?.ts;
-      }
+      const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
+        threadTs,
+      });
+      dispatchMessageTs = msgResult?.ts;
 
       this.logger.info('🎯 Starting dispatch classification', {
         channel,
