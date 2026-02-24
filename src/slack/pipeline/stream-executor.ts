@@ -303,6 +303,7 @@ export class StreamExecutor {
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
+            logVerbosity: verbosityMask,
           });
           const hasToolChoice = await this.handleModelCommandToolResults(
             toolResults,
@@ -336,6 +337,13 @@ export class StreamExecutor {
             newFormId,
             this.deps.slackApi
           );
+        },
+        onUpdateMessage: async (ch, ts, text) => {
+          try {
+            await this.deps.slackApi.getClient().chat.update({ channel: ch, ts, text });
+          } catch (error) {
+            this.logger.debug('Failed to update tool call message', { ts, error: (error as Error).message });
+          }
         },
         onSessionLinksDetected: async (links) => {
           this.deps.claudeHandler.setSessionLinks(channel, threadTs, links);

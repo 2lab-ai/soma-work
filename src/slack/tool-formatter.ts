@@ -2,6 +2,7 @@
  * Tool formatting utilities for Slack bot
  */
 import { McpCallTracker } from '../mcp-call-tracker';
+import { type RenderMode } from './output-flags';
 
 export interface ToolResult {
   toolName?: string;
@@ -280,9 +281,14 @@ export class ToolFormatter {
   }
 
   /**
-   * Format tool_use content from assistant message
+   * Format tool_use content from assistant message (default = detail mode)
    */
-  static formatToolUse(content: any[]): string {
+  static formatToolUse(content: any[], mode: RenderMode = 'detail'): string {
+    if (mode === 'hidden') return '';
+    if (mode === 'compact') return this.formatToolUseCompact(content);
+    if (mode === 'verbose') return this.formatToolUseVerbose(content);
+
+    // detail mode — current behavior
     const parts: string[] = [];
 
     for (const part of content) {
@@ -307,10 +313,8 @@ export class ToolFormatter {
             parts.push(this.formatBashTool(input));
             break;
           case 'TodoWrite':
-            // TodoWrite is handled separately
             return '';
           case 'mcp__permission-prompt__permission_prompt':
-            // Permission prompt is handled internally
             return '';
           default:
             parts.push(this.formatGenericTool(toolName, input));
@@ -319,6 +323,128 @@ export class ToolFormatter {
     }
 
     return parts.join('\n\n');
+  }
+
+  // ── Compact mode: single-line per tool ─────────────────────────────
+
+  static formatToolUseCompact(content: any[]): string {
+    const parts: string[] = [];
+
+    for (const part of content) {
+      if (part.type !== 'tool_use') continue;
+      const { name, input } = part;
+
+      if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
+
+      parts.push(this.formatOneLineToolUse(name, input));
+    }
+
+    return parts.join('\n');
+  }
+
+  /** Format a single tool use as one line: `emoji ToolName — context` */
+  static formatOneLineToolUse(toolName: string, input: any): string {
+    const emoji = this.getToolEmoji(toolName);
+
+    switch (toolName) {
+      case 'Edit':
+      case 'MultiEdit':
+        return `${emoji} Edit \`${this.compactPath(input.file_path)}\``;
+      case 'Write':
+        return `${emoji} Write \`${this.compactPath(input.file_path)}\``;
+      case 'Read':
+        return `${emoji} Read \`${this.compactPath(input.file_path)}\``;
+      case 'Bash':
+        return `${emoji} Bash \`${this.truncateString(String(input.command || ''), 40)}\``;
+      case 'Glob':
+        return `${emoji} Glob \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+      case 'Grep':
+        return `${emoji} Grep \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+      case 'Task': {
+        const summary = this.getTaskToolSummary(input);
+        return `${emoji} Task: *${summary.subagentLabel || 'Agent'}*${summary.promptPreview ? ' — ' + this.truncateString(summary.promptPreview, 30) : ''}`;
+      }
+      default:
+        if (toolName.startsWith('mcp__')) {
+          const parts = toolName.split('__');
+          return `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
+        }
+        return `${emoji} ${toolName}`;
+    }
+  }
+
+  private static getToolEmoji(toolName: string): string {
+    if (toolName === 'Edit' || toolName === 'MultiEdit') return '📝';
+    if (toolName === 'Write') return '📄';
+    if (toolName === 'Read') return '👁️';
+    if (toolName === 'Bash') return '🖥️';
+    if (toolName === 'Glob' || toolName === 'Grep') return '🔍';
+    if (toolName === 'Task') return '🤖';
+    if (toolName.startsWith('mcp__')) return '🔌';
+    return '🔧';
+  }
+
+  private static compactPath(filePath: string): string {
+    if (!filePath) return '?';
+    const parts = filePath.split('/');
+    return parts.length > 2
+      ? `.../${parts.slice(-2).join('/')}`
+      : filePath;
+  }
+
+  // ── Verbose mode: extended output ──────────────────────────────────
+
+  private static readonly VERBOSE_TEXT_LIMIT = 2000;
+
+  static formatToolUseVerbose(content: any[]): string {
+    const parts: string[] = [];
+
+    for (const part of content) {
+      if (part.type === 'text') {
+        parts.push(part.text);
+      } else if (part.type === 'tool_use') {
+        const { name, input } = part;
+        if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
+
+        switch (name) {
+          case 'Edit':
+          case 'MultiEdit': {
+            const edits = name === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
+            let result = `📝 *Editing \`${input.file_path}\`*\n`;
+            for (const edit of edits) {
+              result += '\n```diff\n';
+              result += `- ${this.truncateString(edit.old_string, this.VERBOSE_TEXT_LIMIT)}\n`;
+              result += `+ ${this.truncateString(edit.new_string, this.VERBOSE_TEXT_LIMIT)}\n`;
+              result += '```';
+            }
+            parts.push(result);
+            break;
+          }
+          case 'Write':
+            parts.push(`📄 *Creating \`${input.file_path}\`*\n\`\`\`\n${this.truncateString(input.content, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            break;
+          case 'Bash':
+            parts.push(`🖥️ *Running command:*\n\`\`\`bash\n${this.truncateString(input.command, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            break;
+          default:
+            if (name.startsWith('mcp__')) {
+              parts.push(this.formatMcpTool(name, input));
+            } else if (name === 'Task') {
+              parts.push(this.formatTaskTool(input));
+            } else {
+              parts.push(`🔧 *Using ${name}*\n\`\`\`json\n${this.truncateString(JSON.stringify(input, null, 2), this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            }
+        }
+      }
+    }
+
+    return parts.join('\n\n');
+  }
+
+  /** Format a compact completion line for in-place tool message update */
+  static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
+    const icon = isError ? '❌' : '✅';
+    return this.formatOneLineToolUse(toolName, input).replace(/^./, icon);
   }
 
   /**

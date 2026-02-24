@@ -127,6 +127,33 @@ export function getVerbosityName(mask: number): LogVerbosity | 'custom' {
   return 'custom';
 }
 
+// ── Render mode (per-category verbosity dispatch) ───────────────────
+
+/** How a category should be rendered at a given verbosity level */
+export type RenderMode = 'hidden' | 'compact' | 'detail' | 'verbose';
+
+/** Resolve the render mode for tool call output */
+export function getToolCallRenderMode(mask: number): RenderMode {
+  if (!shouldOutput(OutputFlag.TOOL_CALL, mask)) return 'hidden';
+  if (shouldOutput(OutputFlag.RAW_DATA, mask))    return 'verbose';
+  if (shouldOutput(OutputFlag.TOOL_DETAIL, mask)) return 'detail';
+  return 'compact';
+}
+
+/** Resolve the render mode for tool result output */
+export function getToolResultRenderMode(mask: number): RenderMode {
+  if (!shouldOutput(OutputFlag.TOOL_CALL, mask))   return 'hidden';
+  if (shouldOutput(OutputFlag.RAW_DATA, mask))     return 'verbose';
+  if (shouldOutput(OutputFlag.TOOL_RESULT, mask))  return 'detail';
+  return 'compact';  // compact = no separate result, update tool call in-place
+}
+
+/** Resolve the render mode for thinking output */
+export function getThinkingRenderMode(mask: number): RenderMode {
+  if (!shouldOutput(OutputFlag.THINKING, mask)) return 'hidden';
+  return 'detail'; // compact+ shows thinking fully
+}
+
 // ── Verbose tagging (debug annotations) ─────────────────────────────
 
 /** Reverse map: flag value → name */
