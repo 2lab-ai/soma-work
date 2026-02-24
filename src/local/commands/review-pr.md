@@ -1,7 +1,7 @@
 ---
 description: "Comprehensive PR review using specialized agents"
 argument-hint: "[review-aspects]"
-allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
+allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task", "TaskOutput", "Skill"]
 ---
 
 # Comprehensive PR Review
@@ -35,12 +35,17 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), oracle-reviewer, oracle-gemini-reviewer
+   - **Always applicable**: code-reviewer (general quality), `/oracle-reviewer` command, `/oracle-gemini-reviewer` command
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
    - **If types added/modified**: type-design-analyzer
    - **After passing review**: code-simplifier (polish and refine)
+
+   **IMPORTANT — Oracle reviewers**:
+   Use `/oracle-reviewer` and `/oracle-gemini-reviewer` **commands** (via Skill tool), NOT the deprecated agents.
+   Custom agents cannot access MCP tools (Claude Code [#13605](https://github.com/anthropics/claude-code/issues/13605)).
+   The commands spawn general-purpose built-in subagents that correctly inherit MCP connections.
 
 5. **Launch Review Agents**
 
