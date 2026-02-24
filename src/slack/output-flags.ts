@@ -126,3 +126,44 @@ export function getVerbosityName(mask: number): LogVerbosity | 'custom' {
   }
   return 'custom';
 }
+
+// ── Verbose tagging (debug annotations) ─────────────────────────────
+
+/** Reverse map: flag value → name */
+const FLAG_NAME_MAP: Record<number, string> = Object.fromEntries(
+  Object.entries(OutputFlag).map(([name, value]) => [value, name])
+);
+
+/** Ordered levels for determining minimum level that includes a flag */
+const LEVELS_ASC: { name: string; mask: number }[] = [
+  { name: 'always',  mask: ALWAYS },
+  { name: 'minimal', mask: LOG_MINIMAL },
+  { name: 'compact', mask: LOG_COMPACT },
+  { name: 'detail',  mask: LOG_DETAIL },
+  { name: 'verbose', mask: LOG_VERBOSE },
+];
+
+/** Get the human-readable name of an OutputFlag value */
+export function getOutputFlagName(flag: number): string {
+  return FLAG_NAME_MAP[flag] ?? `FLAG_${flag}`;
+}
+
+/** Get the minimum verbosity level that includes the given flag */
+export function getMinVerbosityLevel(flag: number): string {
+  for (const { name, mask } of LEVELS_ASC) {
+    if ((mask & flag) !== 0) return name;
+  }
+  return 'verbose';
+}
+
+/**
+ * Returns a `[CATEGORY @level]` prefix when verbose mode is active.
+ * Returns empty string otherwise. Use to annotate Slack messages
+ * so users can see which flag/level controls each output.
+ */
+export function verboseTag(flag: number, verbosityMask: number): string {
+  if (!shouldOutput(OutputFlag.RAW_DATA, verbosityMask)) return '';
+  const name = getOutputFlagName(flag);
+  const level = getMinVerbosityLevel(flag);
+  return `\`[${name} @${level}]\` `;
+}
