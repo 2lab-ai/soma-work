@@ -49,7 +49,7 @@ export class ActionHandlers {
         slackApi: ctx.slackApi,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
-        actionPanelManager: ctx.actionPanelManager,
+        threadPanel: ctx.threadPanel,
       },
       this.formStore
     );
@@ -59,7 +59,7 @@ export class ActionHandlers {
         slackApi: ctx.slackApi,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
-        actionPanelManager: ctx.actionPanelManager,
+        threadPanel: ctx.threadPanel,
       },
       this.formStore,
       this.choiceHandler
