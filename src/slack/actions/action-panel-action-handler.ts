@@ -1,5 +1,6 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { ClaudeHandler } from '../../claude-handler';
+import { RequestCoordinator } from '../request-coordinator';
 import { Logger } from '../../logger';
 import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
@@ -8,6 +9,7 @@ interface PanelActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
+  requestCoordinator?: RequestCoordinator;
 }
 
 type PanelAction =
@@ -17,7 +19,8 @@ type PanelAction =
   | 'pr_docs'
   | 'pr_fix'
   | 'pr_approve'
-  | 'focus_choice';
+  | 'focus_choice'
+  | 'stop';
 
 interface PanelActionValue {
   sessionKey?: string;
@@ -30,7 +33,7 @@ interface ActionConfig {
   ackText: (label: string) => string;
 }
 
-const ACTION_CONFIG: Record<Exclude<PanelAction, 'focus_choice'>, ActionConfig> = {
+const ACTION_CONFIG: Record<Exclude<PanelAction, 'focus_choice' | 'stop'>, ActionConfig> = {
   issue_research: {
     requires: 'issue',
     buildText: (url) => `이 이슈를 리서치해줘: ${url}`,
@@ -103,6 +106,12 @@ export class ActionPanelActionHandler {
         return;
       }
 
+      // Stop action: abort the active request
+      if (value.action === 'stop') {
+        await this.handleStop(value.sessionKey!, session, respond);
+        return;
+      }
+
       const isFocusChoiceAction = value.action === 'focus_choice';
       if (
         !isFocusChoiceAction
@@ -123,7 +132,7 @@ export class ActionPanelActionHandler {
         return;
       }
 
-      const config = ACTION_CONFIG[value.action as Exclude<PanelAction, 'focus_choice'>];
+      const config = ACTION_CONFIG[value.action as Exclude<PanelAction, 'focus_choice' | 'stop'>];
       if (!config) {
         await respond({
           response_type: 'ephemeral',
@@ -179,6 +188,32 @@ export class ActionPanelActionHandler {
           replace_original: false,
         });
       } catch {}
+    }
+  }
+
+  private async handleStop(sessionKey: string, session: ConversationSession, respond: RespondFn): Promise<void> {
+    if (!this.ctx.requestCoordinator) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '❌ 중지 기능을 사용할 수 없습니다.',
+        replace_original: false,
+      });
+      return;
+    }
+
+    const aborted = this.ctx.requestCoordinator.abortSession(sessionKey);
+    if (aborted) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '🛑 요청을 중지했습니다.',
+        replace_original: false,
+      });
+    } else {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'ℹ️ 현재 처리 중인 요청이 없습니다.',
+        replace_original: false,
+      });
     }
   }
 

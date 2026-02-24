@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Logger } from './logger.js';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
+import { type LogVerbosity, DEFAULT_LOG_VERBOSITY, getVerbosityFlags, VERBOSITY_NAMES } from './slack/output-flags';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -34,6 +35,7 @@ export interface UserSettings {
   bypassPermission: boolean;
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
+  defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -323,6 +325,50 @@ export class UserSettingsStore {
     }
     this.saveSettings();
     logger.info('Set user default model', { userId, model });
+  }
+
+  /**
+   * Get user's default log verbosity
+   */
+  getUserDefaultLogVerbosity(userId: string): LogVerbosity {
+    return this.settings[userId]?.defaultLogVerbosity ?? DEFAULT_LOG_VERBOSITY;
+  }
+
+  /**
+   * Get user's default log verbosity as bitmask
+   */
+  getUserLogVerbosityFlags(userId: string): number {
+    return getVerbosityFlags(this.getUserDefaultLogVerbosity(userId));
+  }
+
+  /**
+   * Set user's default log verbosity
+   */
+  setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
+    if (this.settings[userId]) {
+      this.settings[userId].defaultLogVerbosity = verbosity;
+      this.settings[userId].lastUpdated = new Date().toISOString();
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: DEFAULT_MODEL,
+        defaultLogVerbosity: verbosity,
+        lastUpdated: new Date().toISOString(),
+      };
+    }
+    this.saveSettings();
+    logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Resolve verbosity input string to LogVerbosity
+   */
+  resolveVerbosityInput(input: string): LogVerbosity | null {
+    const normalized = input.toLowerCase().trim();
+    return VERBOSITY_NAMES.includes(normalized as LogVerbosity) ? (normalized as LogVerbosity) : null;
   }
 
   /**

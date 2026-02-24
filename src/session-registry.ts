@@ -77,6 +77,8 @@ interface SerializedSession {
   sleepStartedAt?: string; // ISO date string
   // Activity state
   activityState?: ActivityState;
+  // Log verbosity bitmask
+  logVerbosity?: number;
   // Action panel state
   actionPanel?: ActionPanelState;
   // Bot-initiated thread metadata
@@ -185,6 +187,7 @@ export class SessionRegistry {
       isActive: true,
       lastActivity: new Date(),
       model: sessionModel,
+      logVerbosity: userSettingsStore.getUserLogVerbosityFlags(ownerId),
       state: 'INITIALIZING', // Start in INITIALIZING state
       activityState: 'idle',
     };
@@ -953,6 +956,7 @@ export class SessionRegistry {
             linkSequence: session.linkSequence,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
+            logVerbosity: session.logVerbosity,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
@@ -1020,6 +1024,7 @@ export class SessionRegistry {
           linkSequence: serialized.linkSequence,
           sleepStartedAt,
           activityState: 'idle', // Always idle on restore (no active streams after restart)
+          logVerbosity: serialized.logVerbosity,
           actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,

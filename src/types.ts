@@ -172,6 +172,9 @@ export interface ActionPanelState {
   messageTs?: string;
   choiceMessageTs?: string;
   choiceMessageLink?: string;
+  latestResponseTs?: string;
+  latestResponseLink?: string;
+  turnSummary?: string;
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];
@@ -224,6 +227,8 @@ export interface ConversationSession {
   activityState?: ActivityState;
   activityStateChangedAt?: number;
   actionPanel?: ActionPanelState;
+  // Log verbosity bitmask (controls which output types are shown in Slack)
+  logVerbosity?: number;
   // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
   threadModel?: 'user-initiated' | 'bot-initiated';
   // For bot-initiated threads: the root message ts (used for chat.update)
