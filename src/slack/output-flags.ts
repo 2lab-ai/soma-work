@@ -118,3 +118,11 @@ export function shouldOutput(flag: number, verbosityMask: number): boolean {
 
 /** All valid verbosity names (for command parsing) */
 export const VERBOSITY_NAMES = Object.keys(VERBOSITY_MAP) as LogVerbosity[];
+
+/** Reverse-resolve a verbosity bitmask to its level name (falls back to 'custom') */
+export function getVerbosityName(mask: number): LogVerbosity | 'custom' {
+  for (const [name, flags] of Object.entries(VERBOSITY_MAP)) {
+    if (flags === mask) return name as LogVerbosity;
+  }
+  return 'custom';
+}

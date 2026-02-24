@@ -1,17 +1,19 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
+import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { userSettingsStore, AVAILABLE_MODELS, MODEL_ALIASES } from '../../user-settings-store';
 
 /**
- * Handles model commands (status/list/set)
+ * Handles model commands (status/list/set) — persists to user default
  */
 export class ModelHandler implements CommandHandler {
+  constructor(private deps: CommandDependencies) {}
+
   canHandle(text: string): boolean {
     return CommandParser.isModelCommand(text);
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, text, threadTs, say } = ctx;
+    const { user, channel, text, threadTs, say } = ctx;
     const modelAction = CommandParser.parseModelCommand(text);
 
     if (modelAction.action === 'status') {
@@ -42,9 +44,16 @@ export class ModelHandler implements CommandHandler {
       const resolvedModel = userSettingsStore.resolveModelInput(modelAction.model);
       if (resolvedModel) {
         userSettingsStore.setUserDefaultModel(user, resolvedModel);
+
+        // Also apply to current session (like verbosity does)
+        const session = this.deps.claudeHandler.getSession(channel, threadTs);
+        if (session) {
+          session.model = resolvedModel;
+        }
+
         const displayName = userSettingsStore.getModelDisplayName(resolvedModel);
         await say({
-          text: `✅ *Model Changed*\n\nYour default model is now: *${displayName}*\n\`${resolvedModel}\`\n\n_New sessions will use this model._`,
+          text: `✅ *Model Changed*\n\nYour default model is now: *${displayName}*\n\`${resolvedModel}\`\n\n_Applied to current and future sessions._`,
           thread_ts: threadTs,
         });
       } else {
