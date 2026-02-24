@@ -29,8 +29,7 @@ import {
 import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
-import { ActionPanelManager } from '../action-panel-manager';
-import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { ThreadPanel } from '../thread-panel';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { SayFn, MessageEvent } from './types';
@@ -62,7 +61,7 @@ interface StreamExecutorDeps {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
-  actionPanelManager?: ActionPanelManager;
+  threadPanel?: ThreadPanel;
 }
 
 interface StreamExecuteParams {
@@ -383,7 +382,7 @@ export class StreamExecutor {
 
           // Keep action panel context percentage in sync with latest usage.
           try {
-            await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+            await this.deps.threadPanel?.updatePanel(session, sessionKey);
           } catch (error) {
             this.logger.debug('Failed to update action panel from usage callback', {
               sessionKey,
@@ -397,7 +396,7 @@ export class StreamExecutor {
             activeTool: undefined,
             waitingForChoice: true,
           });
-          await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
+          await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
         },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
@@ -699,7 +698,7 @@ export class StreamExecutor {
   private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {
     this.deps.requestCoordinator.removeController(sessionKey);
     try {
-      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
+      await this.deps.threadPanel?.updatePanel(session, sessionKey);
     } catch (error) {
       this.logger.debug('Failed to update action panel during cleanup', {
         sessionKey,
@@ -779,32 +778,7 @@ export class StreamExecutor {
       waitingForChoice?: boolean;
     }
   ): Promise<void> {
-    if (!session.actionPanel) {
-      session.actionPanel = {
-        channelId: session.channelId,
-        userId: session.ownerId,
-      };
-    }
-
-    session.actionPanel.agentPhase = patch.agentPhase;
-    session.actionPanel.activeTool = patch.activeTool;
-    if (typeof patch.waitingForChoice === 'boolean') {
-      session.actionPanel.waitingForChoice = patch.waitingForChoice;
-    }
-    session.actionPanel.statusUpdatedAt = Date.now();
-
-    try {
-      await this.deps.actionPanelManager?.updatePanel(session, sessionKey);
-    } catch (error) {
-      this.logger.debug('Failed to update action panel runtime status', {
-        sessionKey,
-        error: (error as Error).message,
-      });
-    }
-
-    if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
-      await this.updateThreadRoot(session, session.channelId);
-    }
+    await this.deps.threadPanel?.setStatus(session, sessionKey, patch);
   }
 
   /**
@@ -833,32 +807,6 @@ export class StreamExecutor {
       if (permalink) {
         session.actionPanel.latestResponseLink = permalink;
       }
-    }
-  }
-
-  /**
-   * Update the root message of a bot-initiated thread with current status.
-   * Shows workflow, activity state, and linked resources.
-   */
-  private async updateThreadRoot(
-    session: ConversationSession,
-    channel: string
-  ): Promise<void> {
-    if (!session.threadRootTs) return;
-
-    try {
-      const payload = ThreadHeaderBuilder.fromSession(session);
-      await this.deps.slackApi.updateMessage(
-        channel,
-        session.threadRootTs,
-        payload.text,
-        payload.blocks,
-        payload.attachments
-      );
-    } catch (error) {
-      this.logger.debug('Failed to update thread root', {
-        error: (error as Error).message,
-      });
     }
   }
 
@@ -1200,7 +1148,7 @@ export class StreamExecutor {
         thread_ts: context.threadTs,
       });
 
-      await this.deps.actionPanelManager?.attachChoice(
+      await this.deps.threadPanel?.attachChoice(
         context.sessionKey,
         payload,
         result?.ts
@@ -1275,7 +1223,7 @@ export class StreamExecutor {
           }
         }
 
-        await this.deps.actionPanelManager?.attachChoice(
+        await this.deps.threadPanel?.attachChoice(
           context.sessionKey,
           payload,
           result?.ts

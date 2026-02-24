@@ -21,7 +21,7 @@ describe('ChoiceActionHandler', () => {
   let slackApi: any;
   let claudeHandler: any;
   let messageHandler: any;
-  let actionPanelManager: any;
+  let threadPanel: any;
   let handler: ChoiceActionHandler;
 
   beforeEach(() => {
@@ -36,7 +36,7 @@ describe('ChoiceActionHandler', () => {
       setActivityStateByKey: vi.fn(),
     };
     messageHandler = vi.fn().mockResolvedValue(undefined);
-    actionPanelManager = {
+    threadPanel = {
       clearChoice: vi.fn().mockResolvedValue(undefined),
       attachChoice: vi.fn().mockResolvedValue(undefined),
     };
@@ -46,7 +46,7 @@ describe('ChoiceActionHandler', () => {
         slackApi,
         claudeHandler,
         messageHandler,
-        actionPanelManager,
+        threadPanel,
       } as any,
       formStore as any
     );

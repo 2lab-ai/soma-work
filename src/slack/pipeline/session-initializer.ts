@@ -15,7 +15,7 @@ import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { userSettingsStore } from '../../user-settings-store';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
-import { ActionPanelManager } from '../action-panel-manager';
+import { ThreadPanel } from '../thread-panel';
 import { shouldOutput, OutputFlag, LOG_DETAIL } from '../output-flags';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
@@ -33,7 +33,7 @@ interface SessionInitializerDeps {
   contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
-  actionPanelManager?: ActionPanelManager;
+  threadPanel?: ThreadPanel;
 }
 
 type ChannelRouteBlockParams = Parameters<typeof buildChannelRouteBlocks>[0];
@@ -461,7 +461,7 @@ export class SessionInitializer {
       dispatchSession.actionPanel.agentPhase = phase;
       dispatchSession.actionPanel.activeTool = state === 'working' ? 'dispatch' : undefined;
       dispatchSession.actionPanel.statusUpdatedAt = Date.now();
-      await this.deps.actionPanelManager?.updatePanel(dispatchSession, sessionKey);
+      await this.deps.threadPanel?.updatePanel(dispatchSession, sessionKey);
     };
 
     try {

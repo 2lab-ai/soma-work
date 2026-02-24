@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ActionPanelManager } from './action-panel-manager';
+import { ThreadPanel } from './thread-panel';
 import { ConversationSession } from '../types';
 
 function getPostedBlocks(slackApi: { postMessage: ReturnType<typeof vi.fn> }): any[] {
   return (slackApi.postMessage.mock.calls[0]?.[2] as any)?.blocks || [];
 }
 
-describe('ActionPanelManager', () => {
+describe('ThreadPanel', () => {
   it('posts a public dashboard panel with interactive controls', async () => {
     const slackApi = {
       postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
@@ -21,7 +21,7 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
@@ -45,7 +45,7 @@ describe('ActionPanelManager', () => {
       },
     };
 
-    await manager.ensurePanel(session, 'C123:thread123');
+    await panel.create(session, 'C123:thread123');
 
     expect(slackApi.postMessage).toHaveBeenCalledTimes(1);
     expect(slackApi.postEphemeral).not.toHaveBeenCalled();
@@ -54,14 +54,21 @@ describe('ActionPanelManager', () => {
     expect((slackApi.postMessage.mock.calls[0]?.[2] as any)?.unfurlMedia).toBe(false);
 
     const blocks = getPostedBlocks(slackApi);
-    const summarySection = blocks.find((block: any) =>
+    // Status section block
+    const statusSection = blocks.find((block: any) =>
       block.type === 'section'
-        && /(비활성|작업 중|입력 대기|사용 가능|요청 처리 중|대기 중)/.test(String(block.text?.text || ''))
+        && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || ''))
     );
-    expect(summarySection).toBeDefined();
-    const summaryText = String(summarySection.text?.text || '');
-    expect(summaryText).toContain('📦 남은 --%');
-    expect(summaryText).not.toContain('`jira-brainstorming`');
+    expect(statusSection).toBeDefined();
+
+    // Metrics context block
+    const metricsCtx = blocks.find((block: any) =>
+      block.type === 'context'
+        && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
+    );
+    expect(metricsCtx).toBeDefined();
+    const metricsText = String(metricsCtx.elements?.[0]?.text || '');
+    expect(metricsText).toContain('📦 --%');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
     expect(actionsCount).toBeGreaterThan(0);
@@ -81,7 +88,7 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
@@ -102,17 +109,17 @@ describe('ActionPanelManager', () => {
       },
     };
 
-    await manager.updatePanel(session, 'C123:thread123');
+    await panel.updatePanel(session, 'C123:thread123');
     session.activityState = 'working';
-    await manager.updatePanel(session, 'C123:thread123');
+    await panel.updatePanel(session, 'C123:thread123');
 
     const updateBlocks = (slackApi.updateMessage.mock.calls[1]?.[3] as any[]) || [];
-    const summarySection = updateBlocks.find((block: any) =>
+    const statusSection = updateBlocks.find((block: any) =>
       block.type === 'section'
-        && /(비활성|작업 중|입력 대기|사용 가능|요청 처리 중|대기 중)/.test(String(block.text?.text || ''))
+        && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || ''))
     );
-    const summaryText = String(summarySection?.text?.text || '');
-    expect(summaryText).toContain('⚙️ 작업 중');
+    const statusText = String(statusSection?.text?.text || '');
+    expect(statusText).toContain('⚙️ *작업 중*');
     expect(slackApi.updateMessage.mock.calls[1]?.[5]).toEqual({
       unfurlLinks: false,
       unfurlMedia: false,
@@ -133,7 +140,7 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
@@ -160,15 +167,15 @@ describe('ActionPanelManager', () => {
       },
     };
 
-    await manager.ensurePanel(session, 'C123:context-thread');
+    await panel.create(session, 'C123:context-thread');
 
     const blocks = getPostedBlocks(slackApi);
-    const summarySection = blocks.find((block: any) =>
-      block.type === 'section'
-        && /(비활성|작업 중|입력 대기|사용 가능|요청 처리 중|대기 중)/.test(String(block.text?.text || ''))
+    const metricsCtx = blocks.find((block: any) =>
+      block.type === 'context'
+        && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
     );
-    const summaryText = String(summarySection?.text?.text || '');
-    expect(summaryText).toContain('📦 남은 60%');
+    const metricsText = String(metricsCtx?.elements?.[0]?.text || '');
+    expect(metricsText).toContain('📦 60%');
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {
@@ -185,7 +192,7 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
@@ -202,7 +209,7 @@ describe('ActionPanelManager', () => {
       workflow: 'default',
     };
 
-    await manager.ensurePanel(session, 'C123:111.222');
+    await panel.create(session, 'C123:111.222');
 
     expect(slackApi.getPermalink).not.toHaveBeenCalled();
   });
@@ -221,7 +228,7 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
@@ -260,7 +267,7 @@ describe('ActionPanelManager', () => {
       },
     };
 
-    await manager.ensurePanel(session, 'C123:choice-thread');
+    await panel.create(session, 'C123:choice-thread');
 
     expect(slackApi.getPermalink).toHaveBeenCalledTimes(1);
     const blocks = getPostedBlocks(slackApi);
@@ -300,13 +307,13 @@ describe('ActionPanelManager', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
     };
 
-    const manager = new ActionPanelManager({
+    const panel = new ThreadPanel({
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
     });
 
-    await manager.attachChoice(
+    await panel.attachChoice(
       'C123:thread',
       {
         attachments: [
@@ -323,5 +330,54 @@ describe('ActionPanelManager', () => {
     );
 
     expect(session.actionPanel?.choiceMessageTs).toBe('thread-choice-ts');
+  });
+
+  it('setStatus updates panel and thread header for bot-initiated threads', async () => {
+    const slackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+    const claudeHandler = {
+      getSessionByKey: vi.fn(),
+    };
+    const requestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    };
+
+    const panel = new ThreadPanel({
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+    });
+
+    const session: ConversationSession = {
+      ownerId: 'U123',
+      userId: 'U123',
+      channelId: 'C123',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'working',
+      workflow: 'default',
+      threadModel: 'bot-initiated',
+      threadRootTs: '100.200',
+      actionPanel: {
+        channelId: 'C123',
+        userId: 'U123',
+        messageTs: '123.456',
+      },
+    };
+
+    await panel.setStatus(session, 'C123:100.200', {
+      agentPhase: '도구 실행 중',
+      activeTool: 'Edit',
+    });
+
+    // Should have called updateMessage twice: once for panel, once for header
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(2);
+    // Panel update
+    expect(slackApi.updateMessage.mock.calls[0][1]).toBe('123.456');
+    // Header update
+    expect(slackApi.updateMessage.mock.calls[1][1]).toBe('100.200');
   });
 });

@@ -6,19 +6,20 @@ import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
 import { fetchGitHubPRDetails, isPRMergeable } from '../link-metadata-fetcher';
+import { ThreadHeaderBuilder } from './thread-header-builder';
 
-interface ActionPanelManagerDeps {
+interface ThreadPanelDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   requestCoordinator: RequestCoordinator;
 }
 
-export class ActionPanelManager {
-  private logger = new Logger('ActionPanelManager');
+export class ThreadPanel {
+  private logger = new Logger('ThreadPanel');
 
-  constructor(private deps: ActionPanelManagerDeps) {}
+  constructor(private deps: ThreadPanelDeps) {}
 
-  async ensurePanel(session: ConversationSession, sessionKey: string): Promise<void> {
+  async create(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!session.actionPanel) {
       session.actionPanel = {
         channelId: session.channelId,
@@ -28,12 +29,45 @@ export class ActionPanelManager {
     await this.renderPanel(session, sessionKey);
   }
 
-  async updatePanel(session: ConversationSession, sessionKey: string): Promise<void> {
-    if (!session.actionPanel) {
-      await this.ensurePanel(session, sessionKey);
-      return;
+  async setStatus(
+    session: ConversationSession,
+    sessionKey: string,
+    patch: {
+      agentPhase?: string;
+      activeTool?: string;
+      waitingForChoice?: boolean;
     }
-    await this.renderPanel(session, sessionKey);
+  ): Promise<void> {
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+
+    session.actionPanel.agentPhase = patch.agentPhase;
+    session.actionPanel.activeTool = patch.activeTool;
+    if (typeof patch.waitingForChoice === 'boolean') {
+      session.actionPanel.waitingForChoice = patch.waitingForChoice;
+    }
+    session.actionPanel.statusUpdatedAt = Date.now();
+
+    try {
+      await this.renderPanel(session, sessionKey);
+    } catch (error) {
+      this.logger.debug('Failed to update panel runtime status', {
+        sessionKey,
+        error: (error as Error).message,
+      });
+    }
+
+    if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
+      await this.renderHeader(session);
+    }
+  }
+
+  async updateHeader(session: ConversationSession): Promise<void> {
+    await this.renderHeader(session);
   }
 
   async attachChoice(
@@ -80,6 +114,48 @@ export class ActionPanelManager {
     session.actionPanel.choiceMessageLink = undefined;
 
     await this.renderPanel(session, sessionKey, true);
+  }
+
+  async updatePanel(session: ConversationSession, sessionKey: string): Promise<void> {
+    if (!session.actionPanel) {
+      await this.create(session, sessionKey);
+      return;
+    }
+    await this.renderPanel(session, sessionKey);
+  }
+
+  async close(session: ConversationSession, sessionKey: string): Promise<void> {
+    // Update panel to closed state
+    if (session.actionPanel) {
+      await this.renderPanel(session, sessionKey, true);
+    }
+
+    // Update header to closed state
+    if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
+      await this.renderHeader(session, { closed: true });
+    }
+  }
+
+  private async renderHeader(
+    session: ConversationSession,
+    overrides?: { closed?: boolean }
+  ): Promise<void> {
+    if (!session.threadRootTs) return;
+
+    try {
+      const payload = ThreadHeaderBuilder.fromSession(session, overrides);
+      await this.deps.slackApi.updateMessage(
+        session.channelId,
+        session.threadRootTs,
+        payload.text,
+        payload.blocks,
+        payload.attachments
+      );
+    } catch (error) {
+      this.logger.debug('Failed to update thread root', {
+        error: (error as Error).message,
+      });
+    }
   }
 
   private async renderPanel(

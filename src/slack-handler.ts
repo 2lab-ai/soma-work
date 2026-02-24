@@ -18,7 +18,7 @@ import {
   EventRouter,
   EventRouterDeps,
   RequestCoordinator,
-  ActionPanelManager,
+  ThreadPanel,
   ToolTracker,
   CommandRouter,
   CommandDependencies,
@@ -65,7 +65,7 @@ export class SlackHandler {
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
   private eventRouter: EventRouter;
-  private actionPanelManager: ActionPanelManager;
+  private threadPanel: ThreadPanel;
 
   // Concurrency and tracking
   private requestCoordinator: RequestCoordinator;
@@ -108,7 +108,7 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
-    this.actionPanelManager = new ActionPanelManager({
+    this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
@@ -153,7 +153,7 @@ export class SlackHandler {
       sessionManager: this.sessionUiManager,
       messageHandler: this.handleMessage.bind(this),
       reactionManager: this.reactionManager,
-      actionPanelManager: this.actionPanelManager,
+      threadPanel: this.threadPanel,
       requestCoordinator: this.requestCoordinator,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
@@ -172,7 +172,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
-      actionPanelManager: this.actionPanelManager,
+      threadPanel: this.threadPanel,
     });
 
     this.streamExecutor = new StreamExecutor({
@@ -188,7 +188,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
       assistantStatusManager: this.assistantStatusManager,
-      actionPanelManager: this.actionPanelManager,
+      threadPanel: this.threadPanel,
     });
 
     // EventRouter for event handling
@@ -318,12 +318,12 @@ export class SlackHandler {
 
     const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
     if (hasPendingChoice) {
-      await this.actionPanelManager?.clearChoice(sessionResult.sessionKey);
+      await this.threadPanel?.clearChoice(sessionResult.sessionKey);
       // Treat direct user message as completing manual input from choice UI.
       this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
     }
 
-    await this.actionPanelManager?.ensurePanel(sessionResult.session, sessionResult.sessionKey);
+    await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
 
     // Replace eyes with brain emoji - message is being sent to model
     // Skip for first message (creates thread) - model adds emoji via reactionManager

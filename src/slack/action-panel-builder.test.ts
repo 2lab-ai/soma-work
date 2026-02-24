@@ -1,12 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
 
-function getSummaryText(payload: { blocks: any[] }): string {
+function getStatusSectionText(payload: { blocks: any[] }): string {
   const sectionBlock = payload.blocks.find(
     (block) => block.type === 'section'
-      && /(비활성|작업 중|입력 대기|사용 가능|요청 처리 중|대기 중)/.test(String(block?.text?.text || ''))
+      && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중|종료됨)/.test(String(block?.text?.text || ''))
   );
   return String(sectionBlock?.text?.text || '');
+}
+
+function getMetricsContextText(payload: { blocks: any[] }): string {
+  const ctxBlock = payload.blocks.find(
+    (block) => block.type === 'context'
+      && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
+  );
+  if (!ctxBlock) return '';
+  return String(ctxBlock.elements?.[0]?.text || '');
 }
 
 describe('ActionPanelBuilder', () => {
@@ -36,7 +45,7 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).toEqual(expect.arrayContaining(['panel_pr_fix', 'panel_pr_approve']));
   });
 
-  it('renders dynamic summary only (status/tool/context/live)', () => {
+  it('renders structural layout with section + context blocks', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
       workflow: 'jira-brainstorming',
@@ -47,14 +56,16 @@ describe('ActionPanelBuilder', () => {
       statusUpdatedAt: Date.now(),
     });
 
-    const summary = getSummaryText(payload);
-    expect(summary).toContain('⚙️ 작업 중');
-    expect(summary).toContain('🛠 파일 읽기');
-    expect(summary).toContain('📦 남은 61%');
-    expect(summary).toContain('🟢 live');
-    expect(summary).not.toContain('`jira-brainstorming`');
-    expect(summary).not.toContain('🎛️');
-    expect(summary).not.toContain('🔗');
+    // Status section (big text)
+    const statusText = getStatusSectionText(payload);
+    expect(statusText).toContain('⚙️ *작업 중*');
+    expect(statusText).toContain('🛠 파일 읽기');
+    expect(statusText).not.toContain('📦'); // metrics are in context block
+
+    // Metrics context (small text)
+    const metricsText = getMetricsContextText(payload);
+    expect(metricsText).toContain('📦 61%');
+    expect(metricsText).toContain('🟢 live');
   });
 
   it('shows context usage placeholder when usage is unavailable', () => {
@@ -64,7 +75,8 @@ describe('ActionPanelBuilder', () => {
       disabled: true,
     });
 
-    expect(getSummaryText(payload)).toContain('📦 남은 --%');
+    const metricsText = getMetricsContextText(payload);
+    expect(metricsText).toContain('📦 --%');
   });
 
   it('shows one decimal for non-integer remaining context percent', () => {
@@ -74,10 +86,11 @@ describe('ActionPanelBuilder', () => {
       contextRemainingPercent: 63.2,
     });
 
-    expect(getSummaryText(payload)).toContain('📦 남은 63.2%');
+    const metricsText = getMetricsContextText(payload);
+    expect(metricsText).toContain('📦 63.2%');
   });
 
-  it('mirrors thread choice blocks in action panel when choice is pending', () => {
+  it('mirrors thread choice blocks with divider when choice is pending', () => {
     const choiceBlocks = [
       {
         type: 'section',
@@ -115,6 +128,10 @@ describe('ActionPanelBuilder', () => {
       contextRemainingPercent: 73,
     });
 
+    // Divider before choice blocks
+    const dividerIdx = payload.blocks.findIndex((b) => b.type === 'divider');
+    expect(dividerIdx).toBeGreaterThan(0);
+
     const mirroredQuestionSection = payload.blocks.find((block) =>
       block.type === 'section'
       && String(block.text?.text || '').includes('배포 타임라인')
@@ -127,10 +144,12 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).toContain('user_choice_2');
     expect(actionIds).not.toContain('panel_focus_choice');
 
-    const summary = getSummaryText(payload);
-    expect(summary).toContain('✋ 입력 대기');
-    expect(summary).toContain('🧩 질문 응답 필요');
-    expect(summary).toContain('📦 남은 73%');
+    const statusText = getStatusSectionText(payload);
+    expect(statusText).toContain('✋ *입력 대기*');
+    expect(statusText).toContain('🧩 질문 응답 필요');
+
+    const metricsText = getMetricsContextText(payload);
+    expect(metricsText).toContain('📦 73%');
   });
 
   it('keeps question slot with fallback text even without parsable choice blocks', () => {
@@ -147,5 +166,44 @@ describe('ActionPanelBuilder', () => {
     );
     expect(userAskSection).toBeDefined();
     expect(String(userAskSection.text?.text || '')).toContain('응답이 필요한 질문이 있습니다');
+  });
+
+  it('renders closed state with section + context blocks', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-7',
+      workflow: 'default',
+      closed: true,
+      contextRemainingPercent: 62,
+      prStatus: { state: 'merged', mergeable: false, draft: false, merged: true },
+    });
+
+    const statusText = getStatusSectionText(payload);
+    expect(statusText).toContain('🔒 *종료됨*');
+    expect(statusText).toContain('🟣 Merged');
+
+    const metricsText = getMetricsContextText(payload);
+    expect(metricsText).toContain('📦 62%');
+
+    // No action buttons in closed state
+    const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
+    expect(actionBlocks).toHaveLength(0);
+  });
+
+  it('block order: status section → metrics context → actions', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-8',
+      workflow: 'default',
+      activityState: 'idle',
+      contextRemainingPercent: 90,
+      turnSummary: '⏱ 1:30 · 🛠 5',
+    });
+
+    const types = payload.blocks.map((b) => b.type);
+    const sectionIdx = types.indexOf('section');
+    const contextIdx = types.indexOf('context');
+    const actionsIdx = types.indexOf('actions');
+
+    expect(sectionIdx).toBeLessThan(contextIdx);
+    expect(contextIdx).toBeLessThan(actionsIdx);
   });
 });
