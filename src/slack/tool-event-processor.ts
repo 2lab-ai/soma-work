@@ -11,6 +11,7 @@ import { ToolFormatter, ToolResult } from './tool-formatter';
 import { ReactionManager } from './reaction-manager';
 import { AssistantStatusManager } from './assistant-status-manager';
 import { McpHealthMonitor } from './mcp-health-monitor';
+import { getToolResultRenderMode, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for tool event processing
@@ -20,6 +21,8 @@ export interface ToolEventContext {
   threadTs: string;
   sessionKey: string;
   say: SayFunction;
+  /** Verbosity bitmask — controls result display behavior */
+  logVerbosity?: number;
 }
 
 /**
@@ -248,13 +251,17 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Format and send tool result message
+   * Format and send tool result message (skipped in compact mode)
    */
   private async sendToolResult(
     toolResult: ToolResultEvent,
     duration: number | null,
     context: ToolEventContext
   ): Promise<void> {
+    // In compact mode, results are handled via in-place updates — skip separate messages
+    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (resultMode === 'compact' || resultMode === 'hidden') return;
+
     const result: ToolResult = {
       toolName: toolResult.toolName,
       toolUseId: toolResult.toolUseId,
