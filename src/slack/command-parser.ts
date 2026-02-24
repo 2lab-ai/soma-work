@@ -102,6 +102,25 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a verbosity command
+   */
+  static isVerbosityCommand(text: string): boolean {
+    return /^\/?verbosity(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse verbosity command
+   */
+  static parseVerbosityCommand(text: string): { action: 'status' | 'set'; level?: string } {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?verbosity\s+(\S+)$/i);
+    if (match && match[1] !== 'status') {
+      return { action: 'set', level: match[1] };
+    }
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is a restore credentials command
    */
   static isRestoreCommand(text: string): boolean {
@@ -237,8 +256,8 @@ export class CommandParser {
     'mcp', 'servers',
     // Permissions
     'bypass',
-    // Persona & Model
-    'persona', 'model',
+    // Persona & Model & Verbosity
+    'persona', 'model', 'verbosity',
     // Sessions
     'sessions', 'terminate', 'kill', 'end', 'new', 'onboarding', 'context', 'renew', 'close', 'link',
     // Credentials
@@ -315,6 +334,8 @@ export class CommandParser {
       '*Model:*',
       '• `model` or `/model` - Show current default model',
       '• `model list` or `/model list` - List available models',
+      '• `verbosity` or `/verbosity` - Show current log verbosity',
+      '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '• `model <name>` or `/model <name>` - Set default model (e.g., `model opus-4.5`)',
       '',
       '*Credentials:*',

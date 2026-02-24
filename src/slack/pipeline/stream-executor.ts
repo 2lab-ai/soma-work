@@ -26,6 +26,7 @@ import {
   AssistantStatusManager,
   UserChoiceHandler,
 } from '../index';
+import { OutputFlag, shouldOutput, LOG_DETAIL } from '../output-flags';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ActionPanelManager } from '../action-panel-manager';
@@ -85,6 +86,17 @@ interface FinalFooterData {
   contextUsagePercentAfter?: number;
   usageBefore?: ClaudeUsageSnapshot | null;
   usageAfter?: ClaudeUsageSnapshot | null;
+  toolStats?: RequestToolStats;
+}
+
+/** Per-request tool call statistics */
+interface ToolStatEntry {
+  count: number;
+  totalDurationMs: number;
+}
+
+interface RequestToolStats {
+  [toolName: string]: ToolStatEntry;
 }
 
 /**
@@ -146,6 +158,17 @@ export class StreamExecutor {
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
+    // Verbosity filtering
+    const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
+    const isOutputEnabled = (flag: number) => shouldOutput(flag, verbosityMask);
+
+    // Per-request tool statistics
+    const toolStats: RequestToolStats = {};
+    const toolStartTimes = new Map<string, number>();
+
+    // Track latest response message ts for shortcut link
+    let latestResponseTs: string | undefined;
+
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
     await this.updateRuntimeStatus(session, sessionKey, {
@@ -171,20 +194,26 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message
-      statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-        channel,
-        threadTs,
-        sessionKey,
-        'thinking'
-      );
+      // Send initial status message (gated by verbosity)
+      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
+        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
+          channel,
+          threadTs,
+          sessionKey,
+          'thinking'
+        );
+      }
 
-      // Add thinking reaction + native spinner
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('thinking')
-      );
-      await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
+      // Add thinking reaction + native spinner (gated by verbosity)
+      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji('thinking')
+        );
+      }
+      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
+      }
 
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(
@@ -199,6 +228,7 @@ export class StreamExecutor {
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
+        logVerbosity: verbosityMask,
         say: async (msg) => {
           const result = await say({
             text: msg.text,
@@ -206,6 +236,9 @@ export class StreamExecutor {
             blocks: msg.blocks,
             attachments: msg.attachments,
           });
+          if (result?.ts) {
+            latestResponseTs = result.ts;
+          }
           return { ts: result?.ts };
         },
       };
@@ -213,23 +246,32 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (statusMessageTs) {
+          if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
             await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
           }
-          await this.deps.reactionManager.updateReaction(
-            sessionKey,
-            this.deps.statusReporter.getStatusEmoji('working')
-          );
-          // Native spinner with tool-specific text
-          const toolName = toolUses[0]?.name;
-          if (toolName) {
-            const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+          if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+            await this.deps.reactionManager.updateReaction(
+              sessionKey,
+              this.deps.statusReporter.getStatusEmoji('working')
+            );
           }
+          // Native spinner with tool-specific text
+          if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+            const toolName = toolUses[0]?.name;
+            if (toolName) {
+              const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+              await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+            }
+          }
+          const toolName = toolUses[0]?.name;
           await this.updateRuntimeStatus(session, ctx.sessionKey, {
             agentPhase: toolName ? '도구 실행 중' : '작업 중',
             activeTool: toolName,
           });
+          // Track tool start times for per-request stats
+          for (const tu of toolUses) {
+            toolStartTimes.set(tu.id, Date.now());
+          }
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -238,6 +280,18 @@ export class StreamExecutor {
           });
         },
         onToolResult: async (toolResults, ctx) => {
+          // Accumulate per-request tool stats
+          for (const tr of toolResults) {
+            const name = tr.toolName || 'unknown';
+            const startTime = toolStartTimes.get(tr.toolUseId);
+            const duration = startTime ? Date.now() - startTime : 0;
+            toolStartTimes.delete(tr.toolUseId);
+            if (!toolStats[name]) {
+              toolStats[name] = { count: 0, totalDurationMs: 0 };
+            }
+            toolStats[name].count++;
+            toolStats[name].totalDurationMs += duration;
+          }
           await this.updateRuntimeStatus(session, ctx.sessionKey, {
             agentPhase: '결과 반영 중',
             activeTool: undefined,
@@ -258,6 +312,7 @@ export class StreamExecutor {
           }
         },
         onTodoUpdate: async (input, ctx) => {
+          if (!isOutputEnabled(OutputFlag.TODO_UPDATE)) return;
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
@@ -309,7 +364,7 @@ export class StreamExecutor {
           this.updateSessionUsage(session, usage);
 
           // Update context window emoji
-          if (session.usage) {
+          if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
             const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
@@ -333,6 +388,8 @@ export class StreamExecutor {
           await this.deps.actionPanelManager?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
         },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
+          if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
+
           const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
           const usageBefore = await usageBeforePromise;
 
@@ -346,6 +403,7 @@ export class StreamExecutor {
             ),
             usageBefore,
             usageAfter,
+            toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
           });
         },
       };
@@ -367,14 +425,18 @@ export class StreamExecutor {
       // Update status and reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
-      if (statusMessageTs) {
+      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
       }
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji(finalStatus)
-      );
-      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji(finalStatus)
+        );
+      }
+      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+        await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      }
 
       // Transition activity state
       this.deps.claudeHandler.setActivityState(
@@ -387,6 +449,26 @@ export class StreamExecutor {
         activeTool: undefined,
         waitingForChoice: hasPendingChoice,
       });
+
+      // Update action panel with turn summary and latest response link
+      if (session.actionPanel) {
+        // Turn summary: duration + tool count
+        const elapsedMs = Date.now() - requestStartedAt.getTime();
+        const totalToolCalls = Object.values(toolStats).reduce((sum, s) => sum + s.count, 0);
+        const elapsedText = this.formatElapsed(elapsedMs);
+        session.actionPanel.turnSummary = totalToolCalls > 0
+          ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}`
+          : `⏱ ${elapsedText}`;
+
+        // Latest response shortcut link
+        if (latestResponseTs) {
+          session.actionPanel.latestResponseTs = latestResponseTs;
+          const permalink = await this.deps.slackApi.getPermalink(channel, latestResponseTs).catch(() => null);
+          if (permalink) {
+            session.actionPanel.latestResponseLink = permalink;
+          }
+        }
+      }
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -847,6 +929,14 @@ export class StreamExecutor {
       + `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`
     );
 
+    // Per-request tool statistics
+    if (data.toolStats) {
+      const toolLine = this.formatToolStats(data.toolStats);
+      if (toolLine) {
+        lines.push(toolLine);
+      }
+    }
+
     if (lines.length === 0) {
       return undefined;
     }
@@ -882,6 +972,28 @@ export class StreamExecutor {
     }
 
     return `${String(Math.round(percent)).padStart(3)}%`;
+  }
+
+  /** Format per-request tool stats as compact line: "🛠 Edit×3 Bash×2 Read×5" */
+  private formatToolStats(stats: RequestToolStats): string | undefined {
+    const entries = Object.entries(stats)
+      .sort((a, b) => b[1].count - a[1].count);
+    if (entries.length === 0) return undefined;
+
+    const totalCalls = entries.reduce((sum, [, s]) => sum + s.count, 0);
+    const parts = entries
+      .slice(0, 6)
+      .map(([name, s]) => {
+        const shortName = name.startsWith('mcp__')
+          ? name.split('__').slice(1, 3).join(':')
+          : name;
+        return `${shortName}×${s.count}`;
+      });
+    if (entries.length > 6) {
+      parts.push(`+${entries.length - 6}`);
+    }
+
+    return `🛠 ${totalCalls} calls: ${parts.join(' ')}`;
   }
 
   private formatSignedDelta(

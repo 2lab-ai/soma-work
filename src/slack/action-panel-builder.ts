@@ -7,6 +7,8 @@ export interface ActionPanelBuildParams {
   choiceBlocks?: any[];
   waitingForChoice?: boolean;
   choiceMessageLink?: string;
+  latestResponseLink?: string;
+  turnSummary?: string;
   activityState?: ActivityState;
   contextRemainingPercent?: number;
   hasActiveRequest?: boolean;
@@ -80,7 +82,20 @@ export class ActionPanelBuilder {
     });
 
     const isQuestionPending = params.waitingForChoice === true;
+    const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
     const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
+
+    // Add stop button when session is actively working
+    if (isWorking) {
+      defaultButtons.unshift({
+        type: 'button',
+        text: { type: 'plain_text', text: '🛑 중지', emoji: true },
+        action_id: 'panel_stop',
+        value: JSON.stringify({ sessionKey: params.sessionKey, action: 'stop' }),
+        style: 'danger',
+      });
+    }
+
     const actionBlocks = isQuestionPending
       ? []
       : this.chunk(defaultButtons, 5).map((row) => ({ type: 'actions', elements: row }));
@@ -89,6 +104,8 @@ export class ActionPanelBuilder {
       status,
       contextRemainingPercent: params.contextRemainingPercent,
       waitingForChoice: params.waitingForChoice,
+      latestResponseLink: params.latestResponseLink,
+      turnSummary: params.turnSummary,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
       agentPhase: params.agentPhase,
@@ -148,6 +165,8 @@ export class ActionPanelBuilder {
     status: string;
     contextRemainingPercent?: number;
     waitingForChoice?: boolean;
+    latestResponseLink?: string;
+    turnSummary?: string;
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
     agentPhase?: string;
@@ -170,6 +189,14 @@ export class ActionPanelBuilder {
     }
 
     parts.push(this.contextChip(params.contextRemainingPercent));
+
+    if (params.turnSummary) {
+      parts.push(params.turnSummary);
+    }
+
+    if (params.latestResponseLink) {
+      parts.push(`<${params.latestResponseLink}|💬 최신 응답>`);
+    }
 
     if (params.statusUpdatedAt) {
       parts.push('🟢 live');

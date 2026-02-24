@@ -81,6 +81,7 @@ export class ActionHandlers {
       slackApi: ctx.slackApi,
       claudeHandler: ctx.claudeHandler,
       messageHandler: ctx.messageHandler,
+      requestCoordinator: ctx.requestCoordinator,
     });
 
     this.channelRouteHandler = new ChannelRouteActionHandler({

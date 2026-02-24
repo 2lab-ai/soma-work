@@ -13,6 +13,7 @@ import {
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
 import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
+import { OutputFlag, shouldOutput as checkOutputFlag, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for stream processing
@@ -23,6 +24,8 @@ export interface StreamContext {
   sessionKey: string;
   sessionId?: string;
   say: SayFunction;
+  /** Verbosity bitmask — controls which output types are shown */
+  logVerbosity?: number;
 }
 
 /**
@@ -172,6 +175,11 @@ export class StreamProcessor {
     this.callbacks = callbacks;
   }
 
+  /** Check whether a given output flag is enabled for the stream's verbosity */
+  private shouldOutput(flag: number, context: StreamContext): boolean {
+    return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
+  }
+
   /**
    * Process the stream of messages from Claude SDK
    */
@@ -262,13 +270,15 @@ export class StreamProcessor {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
 
-    // Format and send tool use messages
-    const toolContent = ToolFormatter.formatToolUse(content);
-    if (toolContent) {
-      await context.say({
-        text: toolContent,
-        thread_ts: context.threadTs,
-      });
+    // Format and send tool use messages (gated by TOOL_CALL verbosity flag)
+    if (this.shouldOutput(OutputFlag.TOOL_CALL, context)) {
+      const toolContent = ToolFormatter.formatToolUse(content);
+      if (toolContent) {
+        await context.say({
+          text: toolContent,
+          thread_ts: context.threadTs,
+        });
+      }
     }
 
     // Collect and notify about tool use events
