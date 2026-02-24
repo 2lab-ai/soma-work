@@ -4,6 +4,7 @@ import { RequestCoordinator } from '../request-coordinator';
 import { Logger } from '../../logger';
 import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
+import { mergeGitHubPR } from '../../link-metadata-fetcher';
 
 interface PanelActionContext {
   slackApi: SlackApiHelper;
@@ -19,12 +20,19 @@ type PanelAction =
   | 'pr_docs'
   | 'pr_fix'
   | 'pr_approve'
+  | 'pr_merge'
   | 'focus_choice'
   | 'stop';
+
+/** Actions that map to a resource link (issue or PR) and drive a prompt */
+type ResourceAction = Exclude<PanelAction, 'focus_choice' | 'stop' | 'pr_merge'>;
 
 interface PanelActionValue {
   sessionKey?: string;
   action?: PanelAction;
+  prUrl?: string;
+  headBranch?: string;
+  baseBranch?: string;
 }
 
 interface ActionConfig {
@@ -33,7 +41,7 @@ interface ActionConfig {
   ackText: (label: string) => string;
 }
 
-const ACTION_CONFIG: Record<Exclude<PanelAction, 'focus_choice' | 'stop'>, ActionConfig> = {
+const ACTION_CONFIG: Record<ResourceAction, ActionConfig> = {
   issue_research: {
     requires: 'issue',
     buildText: (url) => `이 이슈를 리서치해줘: ${url}`,
@@ -112,6 +120,12 @@ export class ActionPanelActionHandler {
         return;
       }
 
+      // Merge action: direct GitHub API call (no model invocation)
+      if (value.action === 'pr_merge') {
+        await this.handleMerge(value as PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string }, session, respond);
+        return;
+      }
+
       const isFocusChoiceAction = value.action === 'focus_choice';
       if (
         !isFocusChoiceAction
@@ -132,7 +146,7 @@ export class ActionPanelActionHandler {
         return;
       }
 
-      const config = ACTION_CONFIG[value.action as Exclude<PanelAction, 'focus_choice' | 'stop'>];
+      const config = ACTION_CONFIG[value.action as ResourceAction];
       if (!config) {
         await respond({
           response_type: 'ephemeral',
@@ -188,6 +202,56 @@ export class ActionPanelActionHandler {
           replace_original: false,
         });
       } catch {}
+    }
+  }
+
+  private async handleMerge(
+    value: PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string },
+    session: ConversationSession,
+    respond: RespondFn
+  ): Promise<void> {
+    const { prUrl, headBranch, baseBranch } = value;
+    if (!prUrl) {
+      await respond({ response_type: 'ephemeral', text: '❌ PR URL을 찾을 수 없습니다.', replace_original: false });
+      return;
+    }
+
+    await respond({
+      response_type: 'ephemeral',
+      text: '🔀 PR 머지를 진행합니다...',
+      replace_original: false,
+    });
+
+    const result = await mergeGitHubPR(prUrl);
+
+    if (result.success) {
+      const threadTs = session.threadRootTs || session.threadTs;
+      if (threadTs) {
+        const branchInfo = headBranch && baseBranch ? `\`${headBranch}\` → \`${baseBranch}\`` : '';
+        await this.ctx.slackApi.postMessage(
+          session.channelId,
+          `🔀 PR merged (squash)${branchInfo ? `: ${branchInfo}` : ''}`,
+          { threadTs }
+        );
+      }
+
+      // Update PR status in session to reflect merged state
+      if (session.actionPanel) {
+        session.actionPanel.prStatus = {
+          state: 'merged',
+          mergeable: false,
+          draft: false,
+          merged: true,
+          head: headBranch,
+          base: baseBranch,
+        };
+      }
+    } else {
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ ${result.message}`,
+        replace_original: false,
+      });
     }
   }
 

@@ -159,6 +159,15 @@ export interface SaveContextResultPayload {
   error?: string;
 }
 
+export interface ActionPanelPRStatus {
+  state: string;      // 'open' | 'closed' | 'merged'
+  mergeable: boolean;
+  draft: boolean;
+  merged: boolean;
+  head?: string;      // source branch
+  base?: string;      // target branch
+}
+
 export interface ActionPanelState {
   channelId?: string;
   userId?: string;
@@ -180,6 +189,7 @@ export interface ActionPanelState {
   choiceBlocks?: any[];
   renderKey?: string;
   lastRenderedAt?: number;
+  prStatus?: ActionPanelPRStatus;
 }
 
 export interface ConversationSession {

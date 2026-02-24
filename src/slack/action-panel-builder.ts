@@ -1,9 +1,19 @@
 import { ActivityState, WorkflowType } from '../types';
 
+export interface PRStatusInfo {
+  state: string;      // 'open' | 'closed' | 'merged'
+  mergeable: boolean;
+  draft: boolean;
+  merged: boolean;
+  head?: string;      // source branch
+  base?: string;      // target branch
+}
+
 export interface ActionPanelBuildParams {
   sessionKey: string;
   workflow?: WorkflowType;
   disabled?: boolean;
+  closed?: boolean;
   choiceBlocks?: any[];
   waitingForChoice?: boolean;
   choiceMessageLink?: string;
@@ -15,6 +25,8 @@ export interface ActionPanelBuildParams {
   agentPhase?: string;
   activeTool?: string;
   statusUpdatedAt?: number;
+  prStatus?: PRStatusInfo;
+  prUrl?: string;
 }
 
 export interface ActionPanelPayload {
@@ -28,7 +40,8 @@ type PanelActionKey =
   | 'pr_review'
   | 'pr_docs'
   | 'pr_fix'
-  | 'pr_approve';
+  | 'pr_approve'
+  | 'pr_merge';
 
 interface PanelActionDef {
   key: PanelActionKey;
@@ -44,6 +57,7 @@ const ACTION_DEFS: Record<PanelActionKey, PanelActionDef> = {
   pr_docs: { key: 'pr_docs', actionId: 'panel_pr_docs', label: 'PR 문서화' },
   pr_fix: { key: 'pr_fix', actionId: 'panel_pr_fix', label: 'PR 수정' },
   pr_approve: { key: 'pr_approve', actionId: 'panel_pr_approve', label: 'PR 승인', style: 'primary' },
+  pr_merge: { key: 'pr_merge', actionId: 'panel_pr_merge', label: '🔀 Merge', style: 'primary' },
 };
 
 const DEFAULT_ACTIONS: PanelActionKey[] = [
@@ -72,6 +86,21 @@ export class ActionPanelBuilder {
   static build(params: ActionPanelBuildParams): ActionPanelPayload {
     const disabled = params.disabled ?? true;
     const workflow = params.workflow || 'default';
+
+    // Closed state: no buttons, only summary
+    if (params.closed) {
+      const summaryText = this.buildSummaryLine({
+        status: '종료됨',
+        contextRemainingPercent: params.contextRemainingPercent,
+        prStatus: params.prStatus,
+      });
+
+      return {
+        text: `Action panel (${workflow}) - 종료됨`,
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: summaryText } }],
+      };
+    }
+
     const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
 
     const status = this.resolveStatus({
@@ -84,6 +113,11 @@ export class ActionPanelBuilder {
     const isQuestionPending = params.waitingForChoice === true;
     const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
     const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
+
+    // Add merge button when PR is mergeable
+    if (params.prStatus?.mergeable && params.prUrl) {
+      defaultButtons.push(this.buildMergeButton(params));
+    }
 
     // Add stop button when session is actively working
     if (isWorking) {
@@ -111,6 +145,7 @@ export class ActionPanelBuilder {
       agentPhase: params.agentPhase,
       activeTool: params.activeTool,
       statusUpdatedAt: params.statusUpdatedAt,
+      prStatus: params.prStatus,
     });
 
     const blocks: any[] = [];
@@ -137,7 +172,12 @@ export class ActionPanelBuilder {
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
     disabled: boolean;
+    closed?: boolean;
   }): string {
+    if (params.closed) {
+      return '종료됨';
+    }
+
     if (params.waitingForChoice) {
       return '입력 대기';
     }
@@ -172,10 +212,15 @@ export class ActionPanelBuilder {
     agentPhase?: string;
     activeTool?: string;
     statusUpdatedAt?: number;
+    prStatus?: PRStatusInfo;
   }): string {
     const parts: string[] = [];
 
     parts.push(this.statusBadge(params.status));
+
+    if (params.prStatus) {
+      parts.push(this.prStatusChip(params.prStatus));
+    }
 
     const agentChip = this.buildAgentChip({
       waitingForChoice: params.waitingForChoice,
@@ -286,10 +331,50 @@ export class ActionPanelBuilder {
         return '✋ 입력 대기';
       case '대기 중':
         return '🟡 대기 중';
+      case '종료됨':
+        return '🔒 종료됨';
       case '비활성':
       default:
         return '⏸️ 비활성';
     }
+  }
+
+  private static prStatusChip(prStatus: PRStatusInfo): string {
+    if (prStatus.merged) return '🟣 Merged';
+    if (prStatus.draft) return '⚪ Draft';
+    if (prStatus.state === 'closed') return '🔴 Closed';
+    if (prStatus.mergeable) return '✅ Merge 가능';
+    if (prStatus.state === 'open') return '⚠️ Merge 불가';
+    return '';
+  }
+
+  private static buildMergeButton(params: ActionPanelBuildParams): any {
+    const prLabel = params.prStatus?.head
+      ? `${params.prStatus.head} → ${params.prStatus.base}`
+      : 'PR';
+
+    return {
+      type: 'button',
+      text: { type: 'plain_text', text: '🔀 Merge', emoji: true },
+      action_id: 'panel_pr_merge',
+      style: 'primary',
+      value: JSON.stringify({
+        sessionKey: params.sessionKey,
+        action: 'pr_merge',
+        prUrl: params.prUrl,
+        headBranch: params.prStatus?.head,
+        baseBranch: params.prStatus?.base,
+      }),
+      confirm: {
+        title: { type: 'plain_text', text: 'PR 머지' },
+        text: {
+          type: 'mrkdwn',
+          text: `*${prLabel}*을(를) 머지하시겠습니까?\n\nSquash merge로 진행되며, 머지 후 소스 브랜치가 삭제됩니다.`,
+        },
+        confirm: { type: 'plain_text', text: '머지' },
+        deny: { type: 'plain_text', text: '취소' },
+      },
+    };
   }
 
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {

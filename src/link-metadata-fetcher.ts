@@ -321,6 +321,76 @@ export function isPRMergeable(details: GitHubPRDetails): boolean {
   );
 }
 
+/**
+ * Merge a GitHub PR via the API.
+ * After successful merge, deletes the source branch.
+ */
+export async function mergeGitHubPR(
+  prUrl: string,
+  mergeMethod: 'squash' | 'merge' | 'rebase' = 'squash'
+): Promise<{ success: boolean; message: string }> {
+  const token = await getGitHubToken();
+  if (!token) return { success: false, message: 'GitHub 인증 토큰을 찾을 수 없습니다.' };
+
+  const prInfo = extractGitHubPRInfo(prUrl);
+  if (!prInfo) return { success: false, message: 'PR URL을 파싱할 수 없습니다.' };
+
+  const headers = {
+    Authorization: `token ${token}`,
+    Accept: 'application/vnd.github.v3+json',
+    'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    // Fetch PR to get source branch
+    const prResponse = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`,
+      { headers }
+    );
+    if (!prResponse.ok) {
+      return { success: false, message: `PR 조회 실패: ${prResponse.status}` };
+    }
+    const prData = await prResponse.json() as { head?: { ref?: string }; title?: string };
+    const sourceBranch = prData.head?.ref;
+
+    // Merge
+    const mergeResponse = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/merge`,
+      {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ merge_method: mergeMethod }),
+      }
+    );
+
+    if (!mergeResponse.ok) {
+      const errorData = await mergeResponse.json().catch(() => ({})) as { message?: string };
+      return { success: false, message: `머지 실패: ${(errorData as any).message || mergeResponse.status}` };
+    }
+
+    // Delete source branch
+    if (sourceBranch) {
+      try {
+        await fetch(
+          `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/git/refs/heads/${sourceBranch}`,
+          { method: 'DELETE', headers }
+        );
+      } catch (error) {
+        logger.warn('Failed to delete source branch after merge', { sourceBranch, error: (error as Error).message });
+      }
+    }
+
+    // Invalidate cache for this PR
+    metadataCache.delete(prUrl);
+
+    return { success: true, message: `PR #${prInfo.number} 머지 완료 (${mergeMethod})` };
+  } catch (error) {
+    logger.error('Error merging GitHub PR', { prUrl, error: (error as Error).message });
+    return { success: false, message: `머지 중 오류: ${(error as Error).message}` };
+  }
+}
+
 function truncateTitle(title: string, maxLen: number): string {
   if (title.length <= maxLen) return title;
   return title.substring(0, maxLen - 1) + '…';
