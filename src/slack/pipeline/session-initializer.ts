@@ -16,6 +16,7 @@ import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler
 import { userSettingsStore } from '../../user-settings-store';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { ActionPanelManager } from '../action-panel-manager';
+import { shouldOutput, OutputFlag, LOG_DETAIL } from '../output-flags';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -131,11 +132,13 @@ export class SessionInitializer {
         const conversationId = createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Send conversation URL to the thread
+        // Send conversation URL to the thread (gated by SYSTEM verbosity)
         const conversationUrl = getConversationUrl(conversationId);
-        await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
-          threadTs,
-        });
+        if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
+          await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
+            threadTs,
+          });
+        }
         this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
@@ -471,10 +474,14 @@ export class SessionInitializer {
 
       // Add dispatching reaction and post status message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
-      const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
-        threadTs,
-      });
-      dispatchMessageTs = msgResult?.ts;
+      const dispatchSession = this.deps.claudeHandler.getSession(channel, threadTs);
+      const dispatchVerbosity = dispatchSession?.logVerbosity ?? LOG_DETAIL;
+      if (shouldOutput(OutputFlag.THREAD_HEADER, dispatchVerbosity)) {
+        const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
+          threadTs,
+        });
+        dispatchMessageTs = msgResult?.ts;
+      }
 
       this.logger.info('🎯 Starting dispatch classification', {
         channel,
@@ -632,9 +639,11 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
-    const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
-    await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
-    await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+    if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
+      const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
+      await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
+      await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+    }
     await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);

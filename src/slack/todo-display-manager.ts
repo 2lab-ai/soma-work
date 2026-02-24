@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api';
 import { TodoManager, Todo } from '../todo-manager';
 import { ReactionManager } from './reaction-manager';
 import { Logger } from '../logger';
+import { shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
@@ -35,7 +36,8 @@ export class TodoDisplayManager {
     sessionId: string | undefined,
     channel: string,
     threadTs: string,
-    say: SayFunction
+    say: SayFunction,
+    logVerbosity?: number
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -78,7 +80,9 @@ export class TodoDisplayManager {
       }
 
       // Update reaction based on overall progress
-      await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
+      if (shouldOutput(OutputFlag.TODO_REACTION, logVerbosity ?? LOG_DETAIL)) {
+        await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
+      }
     }
   }
 

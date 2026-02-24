@@ -11,7 +11,7 @@ import { ToolFormatter, ToolResult } from './tool-formatter';
 import { ReactionManager } from './reaction-manager';
 import { AssistantStatusManager } from './assistant-status-manager';
 import { McpHealthMonitor } from './mcp-health-monitor';
-import { getToolResultRenderMode, LOG_DETAIL } from './output-flags';
+import { getToolResultRenderMode, shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for tool event processing
@@ -151,10 +151,12 @@ export class ToolEventProcessor {
       predictKey: { serverName, toolName: actualToolName },
     };
 
-    if (groupId) {
-      await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
-    } else {
-      await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+      if (groupId) {
+        await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
+      } else {
+        await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+      }
     }
   }
 
@@ -177,10 +179,12 @@ export class ToolEventProcessor {
       predictKey: { serverName: '_subagent', toolName: subagentName },
     };
 
-    if (groupId) {
-      await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
-    } else {
-      await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+      if (groupId) {
+        await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
+      } else {
+        await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
+      }
     }
   }
 
