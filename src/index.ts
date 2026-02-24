@@ -133,7 +133,9 @@ async function start() {
     // Start the app
     await app.start();
     timing('Slack socket connected');
-    logger.info('⚡️ Claude Code Slack bot is running!');
+    const versionInfoForLog = getVersionInfo();
+    const versionTag = versionInfoForLog ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})` : 'dev';
+    logger.info(`⚡️ Claude Code Slack bot is running! [${versionTag}]`);
 
     // Scan channels the bot is a member of (non-blocking)
     scanChannels(app.client).then(count => {

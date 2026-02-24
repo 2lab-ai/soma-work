@@ -172,8 +172,8 @@ export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
-  /** Maps tool_use_id → message ts (for compact mode in-place updates) */
-  private toolCallMessageTs = new Map<string, string>();
+  /** Maps tool_use_id → { ts, toolName, input } (for compact mode in-place updates) */
+  private toolCallMessageTs = new Map<string, { ts: string; toolName: string; input: any }>();
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -315,11 +315,11 @@ export class StreamProcessor {
           text: tag + toolContent,
           thread_ts: context.threadTs,
         });
-        // Track message ts for compact mode in-place updates
+        // Track message ts + tool info for compact mode in-place updates
         if (toolCallMode === 'compact' && result?.ts) {
           for (const part of content) {
             if (part.type === 'tool_use' && part.id) {
-              this.toolCallMessageTs.set(part.id, result.ts);
+              this.toolCallMessageTs.set(part.id, { ts: result.ts, toolName: part.name, input: part.input });
             }
           }
         }
@@ -655,12 +655,11 @@ export class StreamProcessor {
     const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
       for (const tr of toolResults) {
-        const msgTs = this.toolCallMessageTs.get(tr.toolUseId);
-        if (msgTs) {
-          const toolName = tr.toolName || 'unknown';
+        const entry = this.toolCallMessageTs.get(tr.toolUseId);
+        if (entry) {
           const icon = tr.isError ? '❌' : '✅';
-          const line = ToolFormatter.formatOneLineToolUse(toolName, {}).replace(/^./, icon);
-          await this.callbacks.onUpdateMessage(context.channel, msgTs, line);
+          const line = ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input).replace(/^./, icon);
+          await this.callbacks.onUpdateMessage(context.channel, entry.ts, line);
           this.toolCallMessageTs.delete(tr.toolUseId);
         }
       }

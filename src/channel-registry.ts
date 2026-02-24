@@ -21,6 +21,7 @@ export interface ChannelInfo {
   purpose: string;
   topic: string;
   repos: string[];      // Parsed repo URLs/names (e.g., "owner/repo")
+  confluenceUrl?: string; // First Confluence wiki URL found in purpose/topic
   joinedAt: number;
 }
 
@@ -42,6 +43,9 @@ const REPO_PATTERNS = [
   /\brepo:\s*([a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+)/gi,
   /\brepository:\s*([a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+)/gi,
 ];
+
+// Confluence wiki URL pattern
+const CONFLUENCE_PATTERN = /https?:\/\/[a-zA-Z0-9_-]+\.atlassian\.net\/wiki\/[^\s<>)]+/gi;
 
 /**
  * Scan all channels the bot is a member of.
@@ -73,15 +77,17 @@ export async function scanChannels(client: WebClient): Promise<number> {
           joinedAt: Date.now(),
         };
 
-        // Parse repos from purpose + topic
+        // Parse repos and confluence URL from purpose + topic
         const rawText = `${info.purpose}\n${info.topic}`;
         info.repos = parseRepos(rawText);
+        info.confluenceUrl = parseConfluenceUrl(rawText);
 
         if (info.repos.length > 0) {
           logger.info('📦 Channel has repo mapping', {
             channelId: channel.id,
             channelName: info.name,
             repos: info.repos,
+            confluenceUrl: info.confluenceUrl,
             purpose: info.purpose.substring(0, 100),
             topic: info.topic.substring(0, 100),
           });
@@ -139,6 +145,7 @@ export async function registerChannel(
 
     const rawText = `${info.purpose}\n${info.topic}`;
     info.repos = parseRepos(rawText);
+    info.confluenceUrl = parseConfluenceUrl(rawText);
 
     channels.set(channelId, info);
     rebuildRepoIndex();
@@ -220,6 +227,13 @@ export function getChannel(channelId: string): ChannelInfo | undefined {
  */
 export function getAllChannels(): ChannelInfo[] {
   return [...channels.values()];
+}
+
+/**
+ * Get Confluence URL for a channel (from purpose/topic).
+ */
+export function getChannelConfluenceUrl(channelId: string): string | undefined {
+  return channels.get(channelId)?.confluenceUrl;
 }
 
 /**
@@ -314,6 +328,12 @@ function parseRepos(text: string): string[] {
   }
 
   return [...repos];
+}
+
+function parseConfluenceUrl(text: string): string | undefined {
+  CONFLUENCE_PATTERN.lastIndex = 0;
+  const match = CONFLUENCE_PATTERN.exec(text);
+  return match ? match[0] : undefined;
 }
 
 function rebuildRepoIndex(): void {
