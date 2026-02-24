@@ -26,7 +26,7 @@ import {
   AssistantStatusManager,
   UserChoiceHandler,
 } from '../index';
-import { OutputFlag, shouldOutput, LOG_DETAIL } from '../output-flags';
+import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ActionPanelManager } from '../action-panel-manager';
@@ -161,6 +161,7 @@ export class StreamExecutor {
     // Verbosity filtering
     const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
     const isOutputEnabled = (flag: number) => shouldOutput(flag, verbosityMask);
+    const vtag = (flag: number) => verboseTag(flag, verbosityMask);
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -200,7 +201,8 @@ export class StreamExecutor {
           channel,
           threadTs,
           sessionKey,
-          'thinking'
+          'thinking',
+          vtag(OutputFlag.STATUS_MESSAGE)
         );
       }
 
@@ -247,7 +249,7 @@ export class StreamExecutor {
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
           if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
+            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working', vtag(OutputFlag.STATUS_MESSAGE));
           }
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
@@ -393,7 +395,7 @@ export class StreamExecutor {
           const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
           const usageBefore = await usageBeforePromise;
 
-          return this.buildFinalResponseFooter({
+          const footer = this.buildFinalResponseFooter({
             startedAt: requestStartedAt,
             durationMs,
             contextUsagePercentBefore,
@@ -405,6 +407,8 @@ export class StreamExecutor {
             usageAfter,
             toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
           });
+          const tag = vtag(OutputFlag.SESSION_FOOTER);
+          return tag ? `${tag}${footer}` : footer;
         },
       };
 
@@ -426,7 +430,7 @@ export class StreamExecutor {
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
+        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus, vtag(OutputFlag.STATUS_MESSAGE));
       }
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
@@ -450,25 +454,8 @@ export class StreamExecutor {
         waitingForChoice: hasPendingChoice,
       });
 
-      // Update action panel with turn summary and latest response link
-      if (session.actionPanel) {
-        // Turn summary: duration + tool count
-        const elapsedMs = Date.now() - requestStartedAt.getTime();
-        const totalToolCalls = Object.values(toolStats).reduce((sum, s) => sum + s.count, 0);
-        const elapsedText = this.formatElapsed(elapsedMs);
-        session.actionPanel.turnSummary = totalToolCalls > 0
-          ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}`
-          : `⏱ ${elapsedText}`;
-
-        // Latest response shortcut link
-        if (latestResponseTs) {
-          session.actionPanel.latestResponseTs = latestResponseTs;
-          const permalink = await this.deps.slackApi.getPermalink(channel, latestResponseTs).catch(() => null);
-          if (permalink) {
-            session.actionPanel.latestResponseLink = permalink;
-          }
-        }
-      }
+      // Update action panel with turn summary and latest response permalink
+      await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -807,6 +794,35 @@ export class StreamExecutor {
 
     if (session.threadModel === 'bot-initiated' && session.threadRootTs) {
       await this.updateThreadRoot(session, session.channelId);
+    }
+  }
+
+  /**
+   * Write turn duration, tool-call count, and latest response permalink into
+   * session.actionPanel so the panel builder can surface them.
+   */
+  private async updateActionPanelTurnMeta(
+    session: ConversationSession,
+    channel: string,
+    requestStartedAt: Date,
+    toolStats: RequestToolStats,
+    latestResponseTs: string | undefined
+  ): Promise<void> {
+    if (!session.actionPanel) return;
+
+    const elapsedMs = Date.now() - requestStartedAt.getTime();
+    const totalToolCalls = Object.values(toolStats).reduce((sum, s) => sum + s.count, 0);
+    const elapsedText = this.formatElapsed(elapsedMs);
+    session.actionPanel.turnSummary = totalToolCalls > 0
+      ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}`
+      : `⏱ ${elapsedText}`;
+
+    if (latestResponseTs) {
+      session.actionPanel.latestResponseTs = latestResponseTs;
+      const permalink = await this.deps.slackApi.getPermalink(channel, latestResponseTs).catch(() => null);
+      if (permalink) {
+        session.actionPanel.latestResponseLink = permalink;
+      }
     }
   }
 

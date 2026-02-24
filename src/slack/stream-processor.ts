@@ -13,7 +13,7 @@ import {
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
 import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
-import { OutputFlag, shouldOutput as checkOutputFlag, LOG_DETAIL } from './output-flags';
+import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for stream processing
@@ -180,6 +180,11 @@ export class StreamProcessor {
     return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
   }
 
+  /** Returns verbose category tag prefix (empty string when not verbose) */
+  private vtag(flag: number, context: StreamContext): string {
+    return verboseTag(flag, context.logVerbosity ?? LOG_DETAIL);
+  }
+
   /**
    * Process the stream of messages from Claude SDK
    */
@@ -275,7 +280,7 @@ export class StreamProcessor {
       const toolContent = ToolFormatter.formatToolUse(content);
       if (toolContent) {
         await context.say({
-          text: toolContent,
+          text: this.vtag(OutputFlag.TOOL_CALL, context) + toolContent,
           thread_ts: context.threadTs,
         });
       }
@@ -350,7 +355,7 @@ export class StreamProcessor {
       // Regular message
       const formatted = MessageFormatter.formatMessage(textContent, false);
       await context.say({
-        text: formatted,
+        text: this.vtag(OutputFlag.FINAL_RESULT, context) + formatted,
         thread_ts: context.threadTs,
       });
     }
@@ -757,7 +762,7 @@ export class StreamProcessor {
     } else {
       const formatted = MessageFormatter.formatMessage(combinedResult, true);
       await context.say({
-        text: formatted,
+        text: this.vtag(OutputFlag.FINAL_RESULT, context) + formatted,
         thread_ts: context.threadTs,
       });
     }
