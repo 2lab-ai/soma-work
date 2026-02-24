@@ -279,6 +279,7 @@ export class StreamExecutor {
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
+            logVerbosity: verbosityMask,
           });
         },
         onToolResult: async (toolResults, ctx) => {
@@ -322,7 +323,8 @@ export class StreamExecutor {
             ctx.sessionId,
             ctx.channel,
             ctx.threadTs,
-            ctx.say
+            ctx.say,
+            verbosityMask
           );
         },
         onPendingFormCreate: (formId, form) => {
@@ -843,6 +845,7 @@ export class StreamExecutor {
     channel: string
   ): Promise<void> {
     if (!session.threadRootTs) return;
+    if (!shouldOutput(OutputFlag.THREAD_HEADER, session.logVerbosity ?? LOG_DETAIL)) return;
 
     try {
       const payload = ThreadHeaderBuilder.fromSession(session);
