@@ -218,7 +218,8 @@ export class SessionInitializer {
     // Only route for PR-specific workflows — default workflow (plain mention/command) skips routing
     const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);
     const prUrl = session.links?.pr?.url;
-    const shouldRoute = isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '');
+    // Skip channel routing for synthetic events that were already routed (e.g., after "현재 채널에서 진행")
+    const shouldRoute = isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') && !skipAutoBotThread;
 
     this.logger.info('🔀 Channel routing check', {
       isNewSession,
