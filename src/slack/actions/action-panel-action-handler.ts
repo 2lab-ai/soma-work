@@ -5,6 +5,7 @@ import { Logger } from '../../logger';
 import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
 import { mergeGitHubPR } from '../../link-metadata-fetcher';
+import { getChannelConfluenceUrl } from '../../channel-registry';
 
 interface PanelActionContext {
   slackApi: SlackApiHelper;
@@ -19,13 +20,18 @@ type PanelAction =
   | 'pr_review'
   | 'pr_docs'
   | 'pr_fix'
+  | 'pr_fix_new'
+  | 'pr_fix_renew'
+  | 'pr_review_new'
+  | 'pr_review_renew'
   | 'pr_approve'
   | 'pr_merge'
+  | 'close'
   | 'focus_choice'
   | 'stop';
 
 /** Actions that map to a resource link (issue or PR) and drive a prompt */
-type ResourceAction = Exclude<PanelAction, 'focus_choice' | 'stop' | 'pr_merge'>;
+type ResourceAction = Exclude<PanelAction, 'focus_choice' | 'stop' | 'pr_merge' | 'close'>;
 
 interface PanelActionValue {
   sessionKey?: string;
@@ -72,6 +78,26 @@ const ACTION_CONFIG: Record<ResourceAction, ActionConfig> = {
     buildText: (url) => `PR 승인해줘: ${url}`,
     ackText: (label) => `🔀 ${label} 승인 요청을 전달합니다...`,
   },
+  pr_fix_new: {
+    requires: 'pr',
+    buildText: (url) => `new fix ${url}`,
+    ackText: () => '🆕 컨텍스트 초기화 후 수정 시작...',
+  },
+  pr_fix_renew: {
+    requires: 'pr',
+    buildText: (url) => `renew fix ${url}`,
+    ackText: () => '♻️ 컨텍스트 유지하며 수정 시작...',
+  },
+  pr_review_new: {
+    requires: 'pr',
+    buildText: (url) => `new ${url}`,
+    ackText: () => '🆕 컨텍스트 초기화 후 리뷰 시작...',
+  },
+  pr_review_renew: {
+    requires: 'pr',
+    buildText: (url) => `renew ${url}`,
+    ackText: () => '♻️ 컨텍스트 유지하며 리뷰 시작...',
+  },
 };
 
 export class ActionPanelActionHandler {
@@ -117,6 +143,12 @@ export class ActionPanelActionHandler {
       // Stop action: abort the active request
       if (value.action === 'stop') {
         await this.handleStop(value.sessionKey!, session, respond);
+        return;
+      }
+
+      // Close action: terminate the session
+      if (value.action === 'close') {
+        await this.handleClose(value.sessionKey!, session, respond);
         return;
       }
 
@@ -186,7 +218,16 @@ export class ActionPanelActionHandler {
         replace_original: false,
       });
 
-      const injectedText = config.buildText(requiredUrl);
+      // pr_docs: auto-inject confluence URL if available
+      let injectedText: string;
+      if (value.action === 'pr_docs') {
+        const confluenceUrl = getChannelConfluenceUrl(session.channelId);
+        injectedText = confluenceUrl
+          ? `new ${confluenceUrl} ${requiredUrl}`
+          : config.buildText(requiredUrl);
+      } else {
+        injectedText = config.buildText(requiredUrl);
+      }
       this.ctx.claudeHandler.setActivityStateByKey(value.sessionKey, 'working');
       const say = this.createSayFn(session.channelId);
       await this.ctx.messageHandler(
@@ -276,6 +317,23 @@ export class ActionPanelActionHandler {
       await respond({
         response_type: 'ephemeral',
         text: 'ℹ️ 현재 처리 중인 요청이 없습니다.',
+        replace_original: false,
+      });
+    }
+  }
+
+  private async handleClose(sessionKey: string, session: ConversationSession, respond: RespondFn): Promise<void> {
+    const success = this.ctx.claudeHandler.terminateSession(sessionKey);
+    if (success) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '🔒 세션이 종료되었습니다.',
+        replace_original: false,
+      });
+    } else {
+      await respond({
+        response_type: 'ephemeral',
+        text: '❌ 세션 종료에 실패했습니다.',
         replace_original: false,
       });
     }

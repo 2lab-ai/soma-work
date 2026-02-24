@@ -79,6 +79,43 @@ describe('ActionPanelActionHandler', () => {
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
+  it('closes session via close action', async () => {
+    const messageHandler = vi.fn();
+    const handler = new ActionPanelActionHandler({
+      slackApi: {
+        postMessage: vi.fn(),
+      } as any,
+      claudeHandler: {
+        getSessionByKey: vi.fn().mockReturnValue({
+          ownerId: 'U123',
+          channelId: 'C123',
+          threadTs: '111.222',
+          activityState: 'idle',
+          links: {},
+        }),
+        terminateSession: vi.fn().mockReturnValue(true),
+      } as any,
+      messageHandler,
+    });
+
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const body = {
+      user: { id: 'U123' },
+      actions: [
+        {
+          value: JSON.stringify({ sessionKey: 'session-1', action: 'close' }),
+        },
+      ],
+    };
+
+    await handler.handleAction(body, respond as any);
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('종료'),
+    }));
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+
   it('provides choice guidance link for focus_choice action', async () => {
     const messageHandler = vi.fn();
     const handler = new ActionPanelActionHandler({

@@ -19,30 +19,54 @@ function getMetricsContextText(payload: { blocks: any[] }): string {
 }
 
 describe('ActionPanelBuilder', () => {
-  it('builds two action rows for default workflow', () => {
+  it('builds close-only action row for default workflow', () => {
     const payload = ActionPanelBuilder.build({ sessionKey: 'session-1', workflow: 'default' });
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
 
-    expect(actionBlocks).toHaveLength(2);
-    expect(actionBlocks[0].elements).toHaveLength(5);
-    expect(actionBlocks[1].elements).toHaveLength(1);
-    expect(actionIds).toEqual(expect.arrayContaining([
-      'panel_issue_research',
-      'panel_pr_create',
-      'panel_pr_review',
-      'panel_pr_docs',
-      'panel_pr_fix',
-      'panel_pr_approve',
-    ]));
+    expect(actionBlocks).toHaveLength(1);
+    expect(actionIds).toEqual(['panel_close']);
   });
 
-  it('includes fix/approve buttons for pr-review workflow', () => {
+  it('includes fix_new/fix_renew/approve/docs/close buttons for pr-review workflow', () => {
     const payload = ActionPanelBuilder.build({ sessionKey: 'session-2', workflow: 'pr-review' });
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
 
-    expect(actionIds).toEqual(expect.arrayContaining(['panel_pr_fix', 'panel_pr_approve']));
+    expect(actionIds).toEqual(expect.arrayContaining([
+      'panel_pr_fix_new',
+      'panel_pr_fix_renew',
+      'panel_pr_approve',
+      'panel_pr_docs',
+      'panel_close',
+    ]));
+  });
+
+  it('dynamically adds review buttons when prUrl exists and workflow has no review buttons', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-2b',
+      workflow: 'jira-create-pr',
+      prUrl: 'https://github.com/org/repo/pull/1',
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+
+    expect(actionIds).toContain('panel_pr_review_new');
+    expect(actionIds).toContain('panel_pr_review_renew');
+    expect(actionIds).toContain('panel_close');
+  });
+
+  it('does not duplicate review buttons when workflow already has them', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-2c',
+      workflow: 'pr-fix-and-update',
+      prUrl: 'https://github.com/org/repo/pull/1',
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+
+    const reviewCount = actionIds.filter((id: string) => id === 'panel_pr_review_new').length;
+    expect(reviewCount).toBe(1);
   });
 
   it('renders structural layout with section + context blocks', () => {
@@ -90,82 +114,33 @@ describe('ActionPanelBuilder', () => {
     expect(metricsText).toContain('📦 63.2%');
   });
 
-  it('mirrors thread choice blocks with divider when choice is pending', () => {
-    const choiceBlocks = [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: '❓ *배포 타임라인을 어떤 방식으로 정리할까요?*' },
-      },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: '💡 릴리즈 공지 범위를 같이 정해야 합니다.' }],
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            action_id: 'user_choice_1',
-            text: { type: 'plain_text', text: '1️⃣ 옵션 A' },
-            value: '{"sessionKey":"session-5","choiceId":"1"}',
-          },
-          {
-            type: 'button',
-            action_id: 'user_choice_2',
-            text: { type: 'plain_text', text: '2️⃣ 옵션 B' },
-            value: '{"sessionKey":"session-5","choiceId":"2"}',
-          },
-        ],
-      },
-    ];
-
+  it('shows status only (no choice preview) when choice is pending', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-5',
       workflow: 'default',
       waitingForChoice: true,
-      choiceBlocks,
-      choiceMessageLink: 'https://workspace.slack.com/archives/C123/p111222333',
+      choiceBlocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } },
+      ],
       contextRemainingPercent: 73,
     });
 
-    // Divider before choice blocks
+    // No divider, no mirrored choice blocks in panel
     const dividerIdx = payload.blocks.findIndex((b) => b.type === 'divider');
-    expect(dividerIdx).toBeGreaterThan(0);
+    expect(dividerIdx).toBe(-1);
 
-    const mirroredQuestionSection = payload.blocks.find((block) =>
-      block.type === 'section'
-      && String(block.text?.text || '').includes('배포 타임라인')
-    );
-    expect(mirroredQuestionSection).toBeDefined();
-
+    // No choice action buttons mirrored
     const actionsBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionsBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-    expect(actionIds).toContain('user_choice_1');
-    expect(actionIds).toContain('user_choice_2');
-    expect(actionIds).not.toContain('panel_focus_choice');
+    expect(actionIds).not.toContain('user_choice_1');
 
+    // Status section still shows waiting
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('✋ *입력 대기*');
     expect(statusText).toContain('🧩 질문 응답 필요');
 
     const metricsText = getMetricsContextText(payload);
     expect(metricsText).toContain('📦 73%');
-  });
-
-  it('keeps question slot with fallback text even without parsable choice blocks', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-6',
-      workflow: 'default',
-      waitingForChoice: true,
-      choiceBlocks: [],
-    });
-
-    const userAskSection = payload.blocks.find((block) =>
-      block.type === 'section'
-      && String(block.text?.text || '').includes('*User Ask*')
-    );
-    expect(userAskSection).toBeDefined();
-    expect(String(userAskSection.text?.text || '')).toContain('응답이 필요한 질문이 있습니다');
   });
 
   it('renders closed state with section + context blocks', () => {
