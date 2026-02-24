@@ -241,31 +241,39 @@ export class UserSettingsStore {
   }
 
   /**
+   * Patch one or more fields on a user's settings record.
+   * Creates a new record with defaults if the user does not yet exist.
+   * Saves to disk after applying the patch.
+   */
+  private patchUserSettings(userId: string, patch: Partial<UserSettings>): void {
+    if (this.settings[userId]) {
+      Object.assign(this.settings[userId], patch, { lastUpdated: new Date().toISOString() });
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: DEFAULT_MODEL,
+        lastUpdated: new Date().toISOString(),
+        ...patch,
+      };
+    }
+    this.saveSettings();
+  }
+
+  /**
    * Get user's bypass permission setting
    */
   getUserBypassPermission(userId: string): boolean {
-    const userSettings = this.settings[userId];
-    return userSettings?.bypassPermission ?? false;
+    return this.settings[userId]?.bypassPermission ?? false;
   }
 
   /**
    * Set user's bypass permission setting
    */
   setUserBypassPermission(userId: string, bypass: boolean): void {
-    if (this.settings[userId]) {
-      this.settings[userId].bypassPermission = bypass;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: bypass,
-        persona: 'default',
-        defaultModel: DEFAULT_MODEL,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { bypassPermission: bypass });
     logger.info('Set user bypass permission', { userId, bypass });
   }
 
@@ -273,28 +281,14 @@ export class UserSettingsStore {
    * Get user's persona setting
    */
   getUserPersona(userId: string): string {
-    const userSettings = this.settings[userId];
-    return userSettings?.persona ?? 'default';
+    return this.settings[userId]?.persona ?? 'default';
   }
 
   /**
    * Set user's persona setting
    */
   setUserPersona(userId: string, persona: string): void {
-    if (this.settings[userId]) {
-      this.settings[userId].persona = persona;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona,
-        defaultModel: DEFAULT_MODEL,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { persona });
     logger.info('Set user persona', { userId, persona });
   }
 
@@ -302,28 +296,14 @@ export class UserSettingsStore {
    * Get user's default model
    */
   getUserDefaultModel(userId: string): ModelId {
-    const userSettings = this.settings[userId];
-    return userSettings?.defaultModel ?? DEFAULT_MODEL;
+    return this.settings[userId]?.defaultModel ?? DEFAULT_MODEL;
   }
 
   /**
    * Set user's default model
    */
   setUserDefaultModel(userId: string, model: ModelId): void {
-    if (this.settings[userId]) {
-      this.settings[userId].defaultModel = model;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona: 'default',
-        defaultModel: model,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { defaultModel: model });
     logger.info('Set user default model', { userId, model });
   }
 
@@ -345,21 +325,7 @@ export class UserSettingsStore {
    * Set user's default log verbosity
    */
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
-    if (this.settings[userId]) {
-      this.settings[userId].defaultLogVerbosity = verbosity;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona: 'default',
-        defaultModel: DEFAULT_MODEL,
-        defaultLogVerbosity: verbosity,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
   }
 

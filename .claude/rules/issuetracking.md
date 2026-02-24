@@ -31,6 +31,27 @@ bd close <id> --reason "done"
 bd close <id> --reason "구현 완료"
 ```
 
+## phase:review event 이슈 처리
+
+`bd set-state <id> phase=review`를 실행하면 자식 event 이슈가 자동 생성된다.
+이 event 이슈는 **실제 코드 리뷰 게이트** 역할이다.
+
+### 리뷰 절차
+
+1. event 이슈의 부모를 확인하고, 부모의 변경 사항(커밋, diff)을 실제 코드 리뷰한다
+2. 리뷰 항목:
+   - 변경된 코드가 이슈의 AC(Acceptance Criteria)를 충족하는가
+   - 테스트가 통과하는가 (`npx vitest run`, `npx tsc --noEmit`)
+   - 보안/품질 이슈가 없는가
+3. 리뷰 통과 시: event 이슈를 닫고 (`bd close <event-id> --reason "리뷰 근거"`), 부모도 닫는다
+4. 리뷰 실패 시: `bd set-state <parent-id> phase=coding --reason "피드백 내용"`으로 되돌린다
+
+### 주의
+
+- **event 이슈를 리뷰 없이 닫지 말 것** — 이것이 존재하는 이유는 리뷰 강제
+- `bd ready`에 event 이슈가 보이면 리뷰가 밀려있다는 의미
+- 부모가 이미 closed인 orphan event는 정리 가능 (이미 배가 떠남)
+
 ## 규칙
 
 - **구현 완료 시 바로 `bd close` 하지 말 것** — 반드시 `phase=review` 거쳐야 함

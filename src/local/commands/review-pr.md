@@ -35,7 +35,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), `/oracle-reviewer` command, `/oracle-gemini-reviewer` command
+   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill, `oracle-gemini-reviewer` Skill
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
@@ -43,9 +43,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
    - **After passing review**: code-simplifier (polish and refine)
 
    **IMPORTANT — Oracle reviewers**:
-   Use `/oracle-reviewer` and `/oracle-gemini-reviewer` **commands** (via Skill tool), NOT the deprecated agents.
-   Custom agents cannot access MCP tools (Claude Code [#13605](https://github.com/anthropics/claude-code/issues/13605)).
-   The commands spawn general-purpose built-in subagents that correctly inherit MCP connections.
+   Use `oracle-reviewer` and `oracle-gemini-reviewer` Skill, not subagents
 
 5. **Launch Review Agents**
 
@@ -118,6 +116,12 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 ```
 
 ## Agent Descriptions:
+
+**oracle-reviewer** SKILL(not subagent):
+- Reviews general code quality with high intelligent
+
+**oracle-gemini-reviewer** SKILL(not subagent):
+- Reviews general code quality with high intelligent
 
 **comment-analyzer**:
 - Verifies comment accuracy vs code
