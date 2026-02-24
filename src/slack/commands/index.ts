@@ -17,3 +17,4 @@ export { ContextHandler } from './context-handler';
 export { RenewHandler } from './renew-handler';
 export { LinkHandler } from './link-handler';
 export { CloseHandler } from './close-handler';
+export { SessionCommandHandler } from './session-command-handler';

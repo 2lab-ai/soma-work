@@ -9,6 +9,10 @@ export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
+export type SessionCommandAction =
+  | { type: 'info' }
+  | { type: 'model'; action: 'status' | 'set'; model?: string }
+  | { type: 'verbosity'; action: 'status' | 'set'; level?: string };
 
 export class CommandParser {
   /**
@@ -247,6 +251,37 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a session command ($ prefix)
+   * Matches: $, $model, $model opus, $verbosity, $verbosity compact
+   */
+  static isSessionCommand(text: string): boolean {
+    return /^\$(?:model|verbosity)?(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse session command ($, $model [value], $verbosity [value])
+   */
+  static parseSessionCommand(text: string): SessionCommandAction {
+    const trimmed = text.trim();
+
+    const modelMatch = trimmed.match(/^\$model(?:\s+(\S+))?$/i);
+    if (modelMatch) {
+      return modelMatch[1]
+        ? { type: 'model', action: 'set', model: modelMatch[1] }
+        : { type: 'model', action: 'status' };
+    }
+
+    const verbosityMatch = trimmed.match(/^\$verbosity(?:\s+(\S+))?$/i);
+    if (verbosityMatch) {
+      return verbosityMatch[1]
+        ? { type: 'verbosity', action: 'set', level: verbosityMatch[1] }
+        : { type: 'verbosity', action: 'status' };
+    }
+
+    return { type: 'info' };
+  }
+
+  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
@@ -275,6 +310,11 @@ export class CommandParser {
   static isPotentialCommand(text: string): { isPotential: boolean; keyword?: string } {
     const trimmed = text.trim().toLowerCase();
     const firstWord = trimmed.split(/\s+/)[0];
+
+    // Starts with $ - session command
+    if (trimmed.startsWith('$')) {
+      return { isPotential: true, keyword: firstWord };
+    }
 
     // Starts with slash - likely a command attempt
     if (trimmed.startsWith('/')) {
@@ -331,12 +371,19 @@ export class CommandParser {
       '• `persona list` or `/persona list` - List available personas',
       '• `persona set <name>` or `/persona set <name>` - Set persona',
       '',
-      '*Model:*',
-      '• `model` or `/model` - Show current default model',
-      '• `model list` or `/model list` - List available models',
-      '• `verbosity` or `/verbosity` - Show current log verbosity',
+      '*Model & Verbosity:*',
+      '• `model` - Show/set default model (persists across sessions)',
+      '• `model <name>` - Set default model (e.g., `model opus`)',
+      '• `model list` - List available models',
+      '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
-      '• `model <name>` or `/model <name>` - Set default model (e.g., `model opus-4.5`)',
+      '',
+      '*Session Settings ($ prefix):*',
+      '• `$` - Show current session info (model, verbosity, context, etc.)',
+      '• `$model` - Show session model',
+      '• `$model <name>` - Change model for this session only',
+      '• `$verbosity` - Show session verbosity',
+      '• `$verbosity <level>` - Change verbosity for this session only',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
