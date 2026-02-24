@@ -13,7 +13,7 @@ import {
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
 import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
-import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, LOG_DETAIL } from './output-flags';
+import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for stream processing
@@ -124,6 +124,8 @@ export interface FinalResponseFooterParams {
 export interface StreamCallbacks {
   onToolUse?: (toolUses: ToolUseEvent[], context: StreamContext) => Promise<void>;
   onToolResult?: (toolResults: ToolResultEvent[], context: StreamContext) => Promise<void>;
+  /** Update an existing message in-place (for compact tool call completion) */
+  onUpdateMessage?: (channel: string, ts: string, text: string) => Promise<void>;
   onTodoUpdate?: TodoUpdateHandler;
   onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled') => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
@@ -170,6 +172,8 @@ export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
+  /** Maps tool_use_id → message ts (for compact mode in-place updates) */
+  private toolCallMessageTs = new Map<string, string>();
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -251,11 +255,37 @@ export class StreamProcessor {
     const content = message.message.content;
     const hasToolUse = content?.some((part: any) => part.type === 'tool_use');
 
+    // Extract and output thinking blocks (compact+)
+    await this.handleThinkingContent(content, context);
+
     if (hasToolUse) {
       await this.handleToolUseMessage(content, context);
     } else {
       await this.handleTextMessage(content, context, currentMessages);
     }
+  }
+
+  /**
+   * Extract and output thinking/reasoning content from assistant message
+   */
+  private async handleThinkingContent(content: any[], context: StreamContext): Promise<void> {
+    const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (thinkingMode === 'hidden') return;
+
+    const thinkingParts = content
+      .filter((part: any) => part.type === 'thinking' && part.thinking)
+      .map((part: any) => part.thinking as string);
+
+    if (thinkingParts.length === 0) return;
+
+    const thinkingText = thinkingParts.join('\n\n');
+    if (!thinkingText.trim()) return;
+
+    const tag = this.vtag(OutputFlag.THINKING, context);
+    await context.say({
+      text: `${tag}💭 _${ToolFormatter.truncateString(thinkingText, 3000)}_`,
+      thread_ts: context.threadTs,
+    });
   }
 
   /**
@@ -275,14 +305,24 @@ export class StreamProcessor {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
 
-    // Format and send tool use messages (gated by TOOL_CALL verbosity flag)
-    if (this.shouldOutput(OutputFlag.TOOL_CALL, context)) {
-      const toolContent = ToolFormatter.formatToolUse(content);
+    // Format and send tool use messages (render mode dispatch)
+    const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (toolCallMode !== 'hidden') {
+      const toolContent = ToolFormatter.formatToolUse(content, toolCallMode);
       if (toolContent) {
-        await context.say({
-          text: this.vtag(OutputFlag.TOOL_CALL, context) + toolContent,
+        const tag = this.vtag(OutputFlag.TOOL_CALL, context);
+        const result = await context.say({
+          text: tag + toolContent,
           thread_ts: context.threadTs,
         });
+        // Track message ts for compact mode in-place updates
+        if (toolCallMode === 'compact' && result?.ts) {
+          for (const part of content) {
+            if (part.type === 'tool_use' && part.id) {
+              this.toolCallMessageTs.set(part.id, result.ts);
+            }
+          }
+        }
       }
     }
 
@@ -610,6 +650,21 @@ export class StreamProcessor {
     if (!content) return;
 
     const toolResults = ToolFormatter.extractToolResults(content);
+
+    // Compact mode: update tool call messages in-place instead of separate result messages
+    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
+      for (const tr of toolResults) {
+        const msgTs = this.toolCallMessageTs.get(tr.toolUseId);
+        if (msgTs) {
+          const toolName = tr.toolName || 'unknown';
+          const icon = tr.isError ? '❌' : '✅';
+          const line = ToolFormatter.formatOneLineToolUse(toolName, {}).replace(/^./, icon);
+          await this.callbacks.onUpdateMessage(context.channel, msgTs, line);
+          this.toolCallMessageTs.delete(tr.toolUseId);
+        }
+      }
+    }
 
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
