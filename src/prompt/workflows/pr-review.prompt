@@ -20,23 +20,14 @@ PR 리뷰를 수행하고, 리뷰 내용을 분류하여 GitHub PR에 라인 리
    - 불필요한 필드 제거되어 컨텍스트 절약
 
 3. 소스 clone
-먼저 현재 타임스탬프를 이용하여 작업 폴더를 생성한다. 디폴트 작업 디렉토리가 설정되어 있으므로 해당 폴더 밑에 생성한다. 해당 작업 폴더에 소스를 받는다.
-너는 리뷰어가 아니라 리뷰어 에이전트 코디네이터고 리뷰어들이 바로 리뷰할 수 있도록 소스와 diff를 준비한다.
-
-```bash
-# 1. Clone and checkout
-git clone <repo_url> .
-git checkout <pr_branch>
-
-# 2. Analyze diff
-git diff <base_branch>...<pr_branch> --stat --no-renames | head -50
-git log --oneline -10
-```
+현재 타임스탬프를 이용하여 항상 유니크한 작업 폴더를 생성한다. (예: '$WORKING_DIR/20260101_1532_Gucci_pr_123') 
+해당 작업 폴더에 소스를 받는다.
+너는 리뷰어가 아니라 리뷰어 에이전트 코디네이터고 리뷰어들이 바로 리뷰할 수 있도록 소스와 diff만 준비한다. 지금 리뷰하지 않는다.
 
 ## 리뷰 프로세스
 
 ### 1. review-pr skill 실행
-소스가 있는 작업폴더 기준으로 `review-pr` skill을 실행한다. 유저가 특정 검토 관점(예: 보안, 성능, 테스트)을 준 경우 함께 전달한다.
+소스가 있는 작업폴더 기준으로 `review-pr` skill을 실행
 
 입력 예시:
 ```json
