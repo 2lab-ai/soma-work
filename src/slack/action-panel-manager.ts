@@ -5,6 +5,7 @@ import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
+import { shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
 
 interface ActionPanelManagerDeps {
   slackApi: SlackApiHelper;
@@ -86,6 +87,8 @@ export class ActionPanelManager {
     sessionKey: string,
     force: boolean = false
   ): Promise<void> {
+    if (!force && !shouldOutput(OutputFlag.ACTION_PANEL, session.logVerbosity ?? LOG_DETAIL)) return;
+
     const panelState = session.actionPanel || {};
     const channelId = panelState.channelId || session.channelId;
     const userId = panelState.userId || session.ownerId;
