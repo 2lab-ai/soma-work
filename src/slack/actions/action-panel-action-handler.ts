@@ -6,6 +6,7 @@ import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
 import { mergeGitHubPR } from '../../link-metadata-fetcher';
 import { getChannelConfluenceUrl } from '../../channel-registry';
+import { ActionPanelBuilder } from '../action-panel-builder';
 
 interface PanelActionContext {
   slackApi: SlackApiHelper;
@@ -323,6 +324,29 @@ export class ActionPanelActionHandler {
   }
 
   private async handleClose(sessionKey: string, session: ConversationSession, respond: RespondFn): Promise<void> {
+    // Update action panel to closed state BEFORE terminating (session is deleted on terminate)
+    if (session.actionPanel?.messageTs) {
+      try {
+        const panelPayload = ActionPanelBuilder.build({
+          sessionKey,
+          workflow: session.workflow,
+          closed: true,
+          contextRemainingPercent: this.getContextRemainingPercent(session),
+          prStatus: session.actionPanel.prStatus
+            ? { ...session.actionPanel.prStatus }
+            : undefined,
+        });
+        await this.ctx.slackApi.updateMessage(
+          session.channelId,
+          session.actionPanel.messageTs,
+          panelPayload.text,
+          panelPayload.blocks
+        );
+      } catch (error) {
+        // Non-blocking: panel update failure shouldn't prevent termination
+      }
+    }
+
     const success = this.ctx.claudeHandler.terminateSession(sessionKey);
     if (success) {
       await respond({
@@ -337,6 +361,14 @@ export class ActionPanelActionHandler {
         replace_original: false,
       });
     }
+  }
+
+  private getContextRemainingPercent(session: ConversationSession): number | undefined {
+    const usage = session.usage;
+    if (!usage || usage.contextWindow <= 0) return undefined;
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const remainingPercent = ((usage.contextWindow - usedTokens) / usage.contextWindow) * 100;
+    return Math.max(0, Math.min(100, Number(remainingPercent.toFixed(1))));
   }
 
   private async handleFocusChoice(session: ConversationSession, respond: RespondFn): Promise<void> {
