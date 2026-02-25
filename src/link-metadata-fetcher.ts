@@ -391,6 +391,61 @@ export async function mergeGitHubPR(
   }
 }
 
+/**
+ * Fetch GitHub PR review status (approved / changes_requested / pending).
+ * Evaluates the latest review per user to determine the aggregate state.
+ */
+export async function fetchGitHubPRReviewStatus(
+  link: SessionLink
+): Promise<'approved' | 'changes_requested' | 'pending' | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+
+  const prInfo = extractGitHubPRInfo(link.url);
+  if (!prInfo) return undefined;
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/reviews`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+      }
+    );
+
+    if (!response.ok) return undefined;
+
+    const reviews = await response.json() as Array<{
+      user?: { login?: string };
+      state?: string;
+      submitted_at?: string;
+    }>;
+
+    if (!reviews || reviews.length === 0) return 'pending';
+
+    // Get the latest review per user
+    const latestByUser = new Map<string, string>();
+    for (const review of reviews) {
+      const login = review.user?.login;
+      const state = review.state;
+      if (!login || !state) continue;
+      // reviews are returned chronologically, so later entries overwrite
+      latestByUser.set(login, state);
+    }
+
+    const states = [...latestByUser.values()];
+    if (states.some(s => s === 'CHANGES_REQUESTED')) return 'changes_requested';
+    if (states.some(s => s === 'APPROVED')) return 'approved';
+    return 'pending';
+  } catch (error) {
+    logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
+}
+
 function truncateTitle(title: string, maxLen: number): string {
   if (title.length <= maxLen) return title;
   return title.substring(0, maxLen - 1) + '…';

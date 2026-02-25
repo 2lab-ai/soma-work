@@ -270,12 +270,12 @@ describe('ThreadPanel', () => {
     await panel.create(session, 'C123:choice-thread');
 
     expect(slackApi.getPermalink).toHaveBeenCalledTimes(1);
-    // Choice blocks should NOT be mirrored in the panel (no preview)
+    // Choice blocks are restored in the panel (without message preview)
     const blocks = getPostedBlocks(slackApi);
     const mirroredActionBlock = blocks.find((block: any) =>
       block.type === 'actions' && block.elements?.some((el: any) => el.action_id === 'user_choice_1')
     );
-    expect(mirroredActionBlock).toBeUndefined();
+    expect(mirroredActionBlock).toBeDefined();
   });
 
   it('keeps existing thread choiceMessageTs when attachChoice is called without sourceMessageTs', async () => {
