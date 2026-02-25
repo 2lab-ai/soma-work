@@ -114,10 +114,9 @@ export class McpConfigBuilder {
       ? userSettingsStore.getUserBypassPermission(slackContext.user)
       : false;
 
-    // Without Slack context (CLI/test mode): bypass permissions (no UI to show)
-    // With Slack context: ALWAYS use 'default' mode — bypass is handled by PermissionRequest hook
-    // which auto-approves non-dangerous commands and forces Slack UI for dangerous ones
-    const config: McpConfig = !slackContext
+    // Without Slack context or bypass ON: bypass permissions
+    // Bypass ON still gets permission-prompt server for dangerous command interception via PreToolUse hook
+    const config: McpConfig = !slackContext || userBypass
       ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
       : { permissionMode: 'default', userBypass };
 
@@ -174,9 +173,8 @@ export class McpConfigBuilder {
     }
 
     if (slackContext && userBypass) {
-      this.logger.debug('User has bypass enabled — non-dangerous commands will auto-approve via hook', {
+      this.logger.debug('Bypass ON — dangerous Bash commands intercepted via PreToolUse hook', {
         user: slackContext.user,
-        bypassEnabled: true,
       });
     }
 
