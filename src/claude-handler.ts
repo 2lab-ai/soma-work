@@ -3,7 +3,8 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
-import { query, type SDKMessage, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import { isDangerousCommand } from './dangerous-command-filter';
 import * as path from 'path';
 import {
   ConversationSession,
@@ -401,6 +402,48 @@ export class ClaudeHandler {
     }
     if (mcpConfig.permissionPromptToolName) {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
+    }
+
+    // Add PermissionRequest hook for dangerous command filtering + bypass auto-approve
+    if (slackContext) {
+      options.hooks = {
+        ...options.hooks,
+        PermissionRequest: [{
+          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+            if (input.hook_event_name !== 'PermissionRequest') {
+              return { continue: true };
+            }
+
+            const { tool_name, tool_input } = input;
+            const command = typeof (tool_input as any)?.command === 'string'
+              ? (tool_input as any).command
+              : '';
+
+            // Dangerous commands ALWAYS require explicit user approval via Slack UI
+            if (tool_name === 'Bash' && isDangerousCommand(command)) {
+              this.logger.warn('Dangerous command detected — forcing Slack permission UI', {
+                tool_name,
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return { continue: true };
+            }
+
+            // Bypass users: auto-approve non-dangerous commands
+            if (mcpConfig.userBypass) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PermissionRequest',
+                  decision: { behavior: 'allow' },
+                },
+              };
+            }
+
+            // Non-bypass users: let Slack UI handle all permission requests
+            return { continue: true };
+          }],
+        }],
+      };
     }
 
     // Set model from session or user's default model
