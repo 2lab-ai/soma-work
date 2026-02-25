@@ -29,12 +29,21 @@ export class SlackPermissionMessenger {
     approvalId: string,
     user?: string
   ): any[] {
+    const userMention = user ? `<@${user}>` : 'Unknown';
+
     return [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `🔐 Permission Request — ${toolName}`,
+        },
+      },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `🔐 *Permission Request*\n\nClaude wants to use the tool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          text: `${userMention} Claude wants to use the tool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
         },
       },
       {
@@ -68,15 +77,6 @@ export class SlackPermissionMessenger {
             },
             action_id: 'explain_tool',
             value: approvalId,
-          },
-        ],
-      },
-      {
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `Requested by: <@${user}> | Tool: ${toolName}`,
           },
         ],
       },
