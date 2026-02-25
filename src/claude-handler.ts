@@ -3,7 +3,7 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
-import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKMessage, type Options } from '@anthropic-ai/claude-agent-sdk';
 import * as path from 'path';
 import {
   ConversationSession,
@@ -250,14 +250,12 @@ export class ClaudeHandler {
     }
 
     // Build query options for one-shot dispatch
-    const options: any = {
-      outputFormat: 'stream-json',
+    const options: Options = {
       settingSources: [],
       plugins: [],
       systemPrompt: dispatchPrompt,
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
-      // Note: persistSession is not a query option - SDK doesn't persist by default when no session ID is provided
     };
 
     if (model) {
@@ -286,14 +284,14 @@ export class ClaudeHandler {
         // Log all message types for debugging
         this.logger.debug(`📨 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
           type: message.type,
-          subtype: (message as any).subtype,
+          subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
         // Handle system init message
-        if (message.type === 'system' && (message as any).subtype === 'init') {
+        if (message.type === 'system' && message.subtype === 'init') {
           this.logger.info(`✅ DISPATCH: SDK initialized (${elapsed}ms)`, {
-            model: (message as any).model,
-            sessionId: (message as any).session_id,
+            model: message.model,
+            sessionId: message.session_id,
           });
         }
 
@@ -315,6 +313,7 @@ export class ClaudeHandler {
           this.logger.info(`🏁 DISPATCH: Query completed (${elapsed}ms)`, {
             totalMessages: messageCount,
             responseLength: assistantText.length,
+            stopReason: message.subtype === 'success' ? message.stop_reason : undefined,
           });
         }
       }
@@ -379,8 +378,7 @@ export class ClaudeHandler {
     }
 
     // Build query options
-    const options: any = {
-      outputFormat: 'stream-json',
+    const options: Options = {
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
       settingSources: ['project'],
       // Load local plugins (skills, etc.) from src/local directory
@@ -391,6 +389,9 @@ export class ClaudeHandler {
     const modelCommandContext = this.buildModelCommandContext(session, slackContext);
     const mcpConfig = await this.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext);
     options.permissionMode = mcpConfig.permissionMode;
+    if (mcpConfig.allowDangerouslySkipPermissions) {
+      options.allowDangerouslySkipPermissions = true;
+    }
 
     if (mcpConfig.mcpServers) {
       options.mcpServers = mcpConfig.mcpServers;
@@ -462,8 +463,8 @@ export class ClaudeHandler {
             session.sessionId = message.session_id;
             this.logger.info('Session initialized', {
               sessionId: message.session_id,
-              model: (message as any).model,
-              tools: (message as any).tools?.length || 0,
+              model: message.model,
+              tools: message.tools?.length || 0,
             });
           }
         }
