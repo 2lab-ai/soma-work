@@ -31,39 +31,40 @@ export class ThreadHeaderBuilder {
     const title = data.title || data.links?.pr?.label || data.links?.issue?.label || 'Session';
     const workflow = data.workflow || 'default';
     const owner = data.ownerName || data.ownerId;
-    const icon = data.closed ? '🔒' : '🧵';
-    const suffix = data.closed ? '  ·  _종료됨_' : '';
-    const headerText = `${icon} *${title}*  ·  \`${workflow}\`${suffix}`;
 
-    const metaElements: any[] = [];
-    if (owner) {
-      metaElements.push({ type: 'mrkdwn', text: `👤 ${owner}` });
-    }
-
-    const linkParts = this.formatLinks(data.links);
     const blocks: any[] = [
       {
-        type: 'section',
-        text: { type: 'mrkdwn', text: headerText },
+        type: 'header',
+        text: { type: 'plain_text', text: title, emoji: true },
       },
     ];
 
-    if (metaElements.length > 0) {
+    // Single context line: workflow + owner + links + closed
+    const contextElements: any[] = [];
+    contextElements.push({ type: 'mrkdwn', text: `\`${workflow}\`` });
+
+    if (owner) {
+      contextElements.push({ type: 'mrkdwn', text: `*${owner}*` });
+    }
+
+    const linkParts = this.formatLinks(data.links);
+    for (const linkText of linkParts) {
+      contextElements.push({ type: 'mrkdwn', text: linkText });
+    }
+
+    if (data.closed) {
+      contextElements.push({ type: 'mrkdwn', text: '_종료됨_' });
+    }
+
+    if (contextElements.length > 0) {
       blocks.push({
         type: 'context',
-        elements: metaElements,
+        elements: contextElements,
       });
     }
 
-    if (linkParts.length > 0) {
-      blocks.push({
-        type: 'context',
-        elements: linkParts.map((text) => ({ type: 'mrkdwn', text })),
-      });
-    }
-
-    const textParts: string[] = [headerText];
-    if (owner) textParts.push(`👤 ${owner}`);
+    const textParts: string[] = [title];
+    if (owner) textParts.push(owner);
     if (linkParts.length > 0) textParts.push(linkParts.join(' · '));
 
     return {
@@ -78,17 +79,17 @@ export class ThreadHeaderBuilder {
 
     if (links.issue?.url && !this.isSlackMessageUrl(links.issue.url)) {
       const label = links.issue.label || 'Issue';
-      parts.push(`🎫 <${links.issue.url}|${label}>`);
+      parts.push(`<${links.issue.url}|${label}>`);
     }
 
     if (links.pr?.url && !this.isSlackMessageUrl(links.pr.url)) {
       const label = links.pr.label || 'PR';
-      parts.push(`🔀 <${links.pr.url}|${label}>`);
+      parts.push(`<${links.pr.url}|${label}>`);
     }
 
     if (links.doc?.url && !this.isSlackMessageUrl(links.doc.url)) {
       const label = links.doc.label || 'Doc';
-      parts.push(`📄 <${links.doc.url}|${label}>`);
+      parts.push(`<${links.doc.url}|${label}>`);
     }
 
     return parts;

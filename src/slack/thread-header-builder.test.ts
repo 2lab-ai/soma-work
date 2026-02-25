@@ -19,7 +19,7 @@ function collectBlockTexts(blocks: any[]): string[] {
 }
 
 describe('ThreadHeaderBuilder', () => {
-  it('renders static-only header metadata (title/workflow/owner)', () => {
+  it('renders header block + context metadata (title/workflow/owner)', () => {
     const payload = ThreadHeaderBuilder.build({
       title: 'Prada /test-vsprots 페이지 개발',
       workflow: 'default',
@@ -29,9 +29,15 @@ describe('ThreadHeaderBuilder', () => {
     const blocks = (payload.blocks || []) as any[];
     const lines = collectBlockTexts(blocks).join(' ');
 
-    expect(lines).toContain('Prada /test-vsprots 페이지 개발');
+    // Header block with title
+    const headerBlock = blocks.find((b) => b.type === 'header');
+    expect(headerBlock).toBeDefined();
+    expect(headerBlock.text.text).toBe('Prada /test-vsprots 페이지 개발');
+
+    // Context with workflow and owner (bold, no emoji)
     expect(lines).toContain('`default`');
-    expect(lines).toContain('👤 Bash');
+    expect(lines).toContain('*Bash*');
+    expect(lines).not.toContain('👤');
     expect(lines).not.toContain('작업 중');
     expect(lines).not.toContain('🧠');
     expect(lines).not.toContain('🤖');

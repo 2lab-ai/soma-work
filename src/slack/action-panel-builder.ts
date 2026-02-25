@@ -81,17 +81,15 @@ export class ActionPanelBuilder {
     const disabled = params.disabled ?? true;
     const workflow = params.workflow || 'default';
 
-    // Closed state: section + context, no buttons
+    // Closed state: status blocks only, no buttons
     if (params.closed) {
-      const blocks: any[] = [];
-      blocks.push(this.buildStatusSection({
-        status: '종료됨',
-        prStatus: params.prStatus,
-      }));
-      const metricsCtx = this.buildMetricsContext({
-        contextRemainingPercent: params.contextRemainingPercent,
-      });
-      if (metricsCtx) blocks.push(metricsCtx);
+      const blocks: any[] = [
+        ...this.buildStatusBlocks({
+          status: '종료됨',
+          prStatus: params.prStatus,
+          contextRemainingPercent: params.contextRemainingPercent,
+        }),
+      ];
 
       return {
         text: `Action panel (${workflow}) - 종료됨`,
@@ -111,56 +109,61 @@ export class ActionPanelBuilder {
     const isQuestionPending = params.waitingForChoice === true;
     const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
 
-    // Build close button (always present, separated with divider)
     const closeButton = this.buildCloseButton(params.sessionKey);
 
-    // Build workflow action blocks
-    let actionBlocks: any[];
+    // Build final action rows with close button merged in
+    let actionRows: any[];
 
     if (isWorking) {
-      // Working: show only stop button; close button after divider
+      // Working: [중지(default)] [세션 종료(danger)] in one row
       const stopButton = {
         type: 'button',
         text: { type: 'plain_text', text: '중지', emoji: true },
         action_id: 'panel_stop',
         value: JSON.stringify({ sessionKey: params.sessionKey, action: 'stop' }),
-        style: 'danger' as const,
       };
-      actionBlocks = [{ type: 'actions', elements: [stopButton] }];
+      actionRows = [{ type: 'actions', elements: [stopButton, closeButton] }];
     } else if (isQuestionPending) {
-      // Waiting for choice: no workflow buttons
-      actionBlocks = [];
+      // Question: [세션 종료(danger)] alone
+      actionRows = [{ type: 'actions', elements: [closeButton] }];
     } else {
-      // Idle: show workflow buttons
+      // Idle: workflow buttons chunked, close appended to last row
       const workflowButtons = actions
         .filter((key) => {
-          // Hide pr_approve when PR is already approved or merged
           if (key === 'pr_approve' && params.prStatus?.approved) return false;
           if (key === 'pr_approve' && params.prStatus?.merged) return false;
           return true;
         })
         .map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
 
-      // Dynamic: add review buttons when PR exists and workflow doesn't already have them
       if (params.prUrl && !actions.some(k => k.startsWith('pr_review'))) {
         workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
         workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
       }
 
-      // Add merge button when PR is mergeable
       if (params.prStatus?.mergeable && params.prUrl) {
         workflowButtons.push(this.buildMergeButton(params));
       }
 
-      actionBlocks = workflowButtons.length > 0
-        ? this.chunk(workflowButtons, 5).map((row) => ({ type: 'actions', elements: row }))
-        : [];
+      if (workflowButtons.length > 0) {
+        const chunks = this.chunk(workflowButtons, 5);
+        actionRows = chunks.map((row) => ({ type: 'actions', elements: row }));
+        // Append close button to last row (if room) or as new row
+        const lastRow = actionRows[actionRows.length - 1];
+        if (lastRow.elements.length < 5) {
+          lastRow.elements.push(closeButton);
+        } else {
+          actionRows.push({ type: 'actions', elements: [closeButton] });
+        }
+      } else {
+        actionRows = [{ type: 'actions', elements: [closeButton] }];
+      }
     }
 
     const blocks: any[] = [];
 
-    // 1. Status section (big text: status + PR chip + agent chip)
-    blocks.push(this.buildStatusSection({
+    // 1. Status blocks (hero section + fields section)
+    blocks.push(...this.buildStatusBlocks({
       status,
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
@@ -168,11 +171,11 @@ export class ActionPanelBuilder {
       agentPhase: params.agentPhase,
       activeTool: params.activeTool,
       prStatus: params.prStatus,
+      contextRemainingPercent: params.contextRemainingPercent,
     }));
 
-    // 2. Metrics context (small text: context% + time + tools + link + live)
+    // 2. Metrics context (small text: time + tools + link + live)
     const metricsCtx = this.buildMetricsContext({
-      contextRemainingPercent: params.contextRemainingPercent,
       turnSummary: params.turnSummary,
       latestResponseLink: params.latestResponseLink,
       statusUpdatedAt: params.statusUpdatedAt,
@@ -185,12 +188,9 @@ export class ActionPanelBuilder {
       blocks.push(...this.buildChoiceSlotBlocks(params.choiceBlocks));
     }
 
-    // 4. Action buttons
-    blocks.push(...actionBlocks);
-
-    // 5. Divider + close button (always present)
+    // 4. Divider + action rows (with close button merged)
     blocks.push({ type: 'divider' });
-    blocks.push({ type: 'actions', elements: [closeButton] });
+    blocks.push(...actionRows);
 
     return {
       text: `Action panel (${workflow}) - ${status}`,
@@ -233,9 +233,9 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Status section: status badge + PR chip + agent chip → section block (big text)
+   * Status blocks: hero section (badge + italic subtitle) + fields section (PR + context%)
    */
-  private static buildStatusSection(params: {
+  private static buildStatusBlocks(params: {
     status: string;
     waitingForChoice?: boolean;
     activityState?: ActivityState;
@@ -243,16 +243,12 @@ export class ActionPanelBuilder {
     agentPhase?: string;
     activeTool?: string;
     prStatus?: PRStatusInfo;
-  }): any {
-    const parts: string[] = [];
+    contextRemainingPercent?: number;
+  }): any[] {
+    const blocks: any[] = [];
 
-    parts.push(this.statusBadge(params.status));
-
-    if (params.prStatus) {
-      const chip = this.prStatusChip(params.prStatus);
-      if (chip) parts.push(chip);
-    }
-
+    // Hero section: badge + italic subtitle
+    const badge = this.statusBadge(params.status);
     const agentChip = this.buildAgentChip({
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
@@ -260,46 +256,58 @@ export class ActionPanelBuilder {
       agentPhase: params.agentPhase,
       activeTool: params.activeTool,
     });
-    if (agentChip) {
-      parts.push(agentChip);
-    }
 
-    return {
+    const heroText = agentChip ? `${badge}\n_${agentChip}_` : badge;
+    blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: parts.join('  ·  ') },
-    };
+      text: { type: 'mrkdwn', text: heroText },
+    });
+
+    // Fields section: PR status + context percent (2-column)
+    const fields: any[] = [];
+    if (params.prStatus) {
+      const chip = this.prStatusChip(params.prStatus);
+      if (chip) {
+        fields.push({ type: 'mrkdwn', text: `*PR*\n${chip}` });
+      }
+    }
+    fields.push({ type: 'mrkdwn', text: `*컨텍스트*\n${this.contextChip(params.contextRemainingPercent)}` });
+
+    blocks.push({
+      type: 'section',
+      fields,
+    });
+
+    return blocks;
   }
 
   /**
-   * Metrics context: context% + time + tools + link + live → context block (small text)
+   * Metrics context: time + tools + link + live → context block (small text, separate elements)
    */
   private static buildMetricsContext(params: {
-    contextRemainingPercent?: number;
     turnSummary?: string;
     latestResponseLink?: string;
     statusUpdatedAt?: number;
   }): any | null {
-    const parts: string[] = [];
-
-    parts.push(this.contextChip(params.contextRemainingPercent));
+    const elements: any[] = [];
 
     if (params.turnSummary) {
-      parts.push(params.turnSummary);
+      elements.push({ type: 'mrkdwn', text: params.turnSummary });
     }
 
     if (params.latestResponseLink) {
-      parts.push(`<${params.latestResponseLink}|💬 최신 응답>`);
+      elements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|💬 최신 응답>` });
     }
 
     if (params.statusUpdatedAt) {
-      parts.push('🟢 live');
+      elements.push({ type: 'mrkdwn', text: '🟢 live' });
     }
 
-    if (parts.length === 0) return null;
+    if (elements.length === 0) return null;
 
     return {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: parts.join('  ·  ') }],
+      elements,
     };
   }
 
@@ -311,27 +319,27 @@ export class ActionPanelBuilder {
     activeTool?: string;
   }): string | undefined {
     if (params.waitingForChoice) {
-      return '🧩 질문 응답 필요';
+      return '질문 응답 필요';
     }
 
     if (params.activeTool) {
-      return `🛠 ${this.formatToolLabel(params.activeTool)}`;
+      return this.formatToolLabel(params.activeTool);
     }
 
     if (params.agentPhase) {
-      return `🧠 ${this.truncateLine(params.agentPhase, 22)}`;
+      return this.truncateLine(params.agentPhase, 22);
     }
 
     if (params.hasActiveRequest) {
-      return '⏳ 요청 처리';
+      return '요청 처리';
     }
 
     if (params.activityState === 'working') {
-      return '🧠 응답 생성';
+      return '응답 생성';
     }
 
     if (params.activityState === 'waiting') {
-      return '🧩 입력 대기';
+      return '입력 대기';
     }
 
     return undefined;
@@ -339,9 +347,9 @@ export class ActionPanelBuilder {
 
   private static contextChip(contextRemainingPercent?: number): string {
     if (typeof contextRemainingPercent === 'number' && Number.isFinite(contextRemainingPercent)) {
-      return `📦 ${this.formatPercent(contextRemainingPercent)}%`;
+      return `${this.formatPercent(contextRemainingPercent)}%`;
     }
-    return '📦 --%';
+    return '--%';
   }
 
   private static formatPercent(value: number): string {
@@ -375,30 +383,30 @@ export class ActionPanelBuilder {
   private static statusBadge(status: string): string {
     switch (status) {
       case '사용 가능':
-        return '✅ 사용 가능';
+        return '⚪ 사용 가능';
       case '작업 중':
-        return '⚙️ *작업 중*';
+        return '🟢 *작업 중*';
       case '요청 처리 중':
-        return '⏳ *요청 처리 중*';
+        return '🟢 *요청 처리 중*';
       case '입력 대기':
-        return '✋ *입력 대기*';
+        return '🟡 *입력 대기*';
       case '대기 중':
-        return '🟡 대기 중';
+        return '⚪ 대기 중';
       case '종료됨':
-        return '🔒 *종료됨*';
+        return '⚫ *종료됨*';
       case '비활성':
       default:
-        return '⏸️ 대기';
+        return '⚪ 대기';
     }
   }
 
   private static prStatusChip(prStatus: PRStatusInfo): string {
     if (prStatus.merged) return '🟣 Merged';
-    if (prStatus.draft) return '⚪ Draft';
+    if (prStatus.draft) return '_Draft_';
     if (prStatus.state === 'closed') return '🔴 Closed';
-    if (prStatus.approved && prStatus.mergeable) return '👍 Approved · ✅ Merge 가능';
-    if (prStatus.approved) return '👍 Approved';
-    if (prStatus.mergeable) return '✅ Merge 가능';
+    if (prStatus.approved && prStatus.mergeable) return 'Approved · Merge 가능';
+    if (prStatus.approved) return 'Approved';
+    if (prStatus.mergeable) return 'Merge 가능';
     if (prStatus.state === 'open') return '⚠️ Merge 불가';
     return '';
   }
