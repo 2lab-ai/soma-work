@@ -431,12 +431,11 @@ export class ClaudeHandler {
 
             // Bypass users: auto-approve non-dangerous commands
             if (mcpConfig.userBypass) {
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PermissionRequest',
-                  decision: { behavior: 'allow' },
-                },
-              };
+              this.logger.debug('Bypass user — auto-approving non-dangerous tool', {
+                tool_name,
+                user: slackContext.user,
+              });
+              return { decision: 'approve' };
             }
 
             // Non-bypass users: let Slack UI handle all permission requests
