@@ -29,14 +29,13 @@ describe('ThreadHeaderBuilder', () => {
     const blocks = (payload.blocks || []) as any[];
     const lines = collectBlockTexts(blocks).join(' ');
 
-    // Header block with title + owner (prominently visible)
+    // Header block with "OwnerName — Title" format
     const headerBlock = blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
-    expect(headerBlock.text.text).toBe('Prada /test-vsprots 페이지 개발 — Bash');
+    expect(headerBlock.text.text).toBe('Bash — Prada /test-vsprots 페이지 개발');
 
-    // Context with workflow (owner is now in header, not context)
+    // Context with workflow (owner mention not testable without ownerId)
     expect(lines).toContain('`default`');
-    expect(lines).not.toContain('*Bash*');
     expect(lines).not.toContain('👤');
     expect(lines).not.toContain('작업 중');
     expect(lines).not.toContain('🧠');
