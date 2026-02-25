@@ -211,8 +211,10 @@ git tag -a "$NEW_TAG" -m "Release $NEW_TAG" HEAD
 echo "[version-bump] Created tag: $NEW_TAG"
 
 # Push tag (uses default git credentials from checkout action)
-git push origin "$NEW_TAG" 2>/dev/null || {
-  echo "[version-bump] Warning: failed to push tag (non-fatal)"
+git push origin "$NEW_TAG" || {
+  echo "[version-bump] ERROR: failed to push tag $NEW_TAG — version will not persist!"
+  echo "[version-bump] Next deploy will re-create the same version number."
+  exit 1
 }
 
 echo "[version-bump] Done: $NEW_TAG"

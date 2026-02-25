@@ -60,6 +60,15 @@ export class SlackPermissionMessenger {
             action_id: 'deny_tool',
             value: approvalId,
           },
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '💡 Explain',
+            },
+            action_id: 'explain_tool',
+            value: approvalId,
+          },
         ],
       },
       {
@@ -80,14 +89,21 @@ export class SlackPermissionMessenger {
   buildResultBlocks(
     toolName: string,
     input: any,
-    approved: boolean
+    result: 'approved' | 'denied' | 'explained'
   ): any[] {
+    const statusMap = {
+      approved: '✅ Approved',
+      denied: '❌ Denied',
+      explained: '💡 Explain Requested',
+    };
+    const status = statusMap[result];
+
     return [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `🔐 *Permission Request* - ${approved ? '✅ Approved' : '❌ Denied'}\n\nTool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          text: `🔐 *Permission Request* - ${status}\n\nTool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
         },
       },
       {
@@ -95,7 +111,7 @@ export class SlackPermissionMessenger {
         elements: [
           {
             type: 'mrkdwn',
-            text: `${approved ? 'Approved' : 'Denied'} by user | Tool: ${toolName}`,
+            text: `${status} by user | Tool: ${toolName}`,
           },
         ],
       },
@@ -136,14 +152,19 @@ export class SlackPermissionMessenger {
     ts: string,
     blocks: any[],
     toolName: string,
-    approved: boolean
+    result: 'approved' | 'denied' | 'explained'
   ): Promise<void> {
     try {
+      const textMap = {
+        approved: 'approved',
+        denied: 'denied',
+        explained: 'explanation requested',
+      };
       await this.slack.chat.update({
         channel,
         ts,
         blocks,
-        text: `Permission ${approved ? 'approved' : 'denied'} for ${toolName}`,
+        text: `Permission ${textMap[result]} for ${toolName}`,
       });
     } catch (error) {
       logger.error('Failed to update permission message:', error);

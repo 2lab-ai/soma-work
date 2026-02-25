@@ -63,4 +63,33 @@ export class PermissionActionHandler {
       });
     }
   }
+
+  async handleExplain(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const approvalId = body.actions[0].value;
+      const user = body.user?.id;
+
+      this.logger.info('Tool explanation requested', { approvalId, user });
+
+      const response: PermissionResponse = {
+        behavior: 'deny',
+        message:
+          'User requested explanation: Before retrying this tool, explain in the conversation why you need to use this tool, what it will do, and what the expected outcome is. Then request permission again.',
+      };
+      await sharedStore.storePermissionResponse(approvalId, response);
+
+      await respond({
+        response_type: 'ephemeral',
+        text: '💡 Explanation requested. Claude will explain the action and ask for permission again.',
+        replace_original: false,
+      });
+    } catch (error) {
+      this.logger.error('Error processing explanation request', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: '❌ Error processing request. The request may have already been handled.',
+        replace_original: false,
+      });
+    }
+  }
 }
