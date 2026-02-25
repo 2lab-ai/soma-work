@@ -32,8 +32,8 @@ export class ThreadHeaderBuilder {
     const workflow = data.workflow || 'default';
     const owner = data.ownerName || data.ownerId;
 
-    // Header: "Title — OwnerName" (owner prominently visible)
-    const headerText = owner ? `${title} — ${owner}` : title;
+    // Header: "OwnerName — Title" (owner first, prominently visible)
+    const headerText = owner ? `${owner} — ${title}` : title;
     const blocks: any[] = [
       {
         type: 'header',
@@ -41,8 +41,11 @@ export class ThreadHeaderBuilder {
       },
     ];
 
-    // Context line: workflow + links + closed (owner is already in header)
+    // Context line: @mention + workflow + links + closed
     const contextElements: any[] = [];
+    if (data.ownerId) {
+      contextElements.push({ type: 'mrkdwn', text: `<@${data.ownerId}>` });
+    }
     contextElements.push({ type: 'mrkdwn', text: `\`${workflow}\`` });
 
     const linkParts = this.formatLinks(data.links);
