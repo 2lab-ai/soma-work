@@ -237,7 +237,7 @@ describe('ToolEventProcessor', () => {
 
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining('❌'),
+          text: expect.stringContaining('🔴'),
         })
       );
     });

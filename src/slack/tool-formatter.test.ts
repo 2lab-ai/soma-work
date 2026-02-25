@@ -317,7 +317,7 @@ describe('ToolFormatter', () => {
         toolUseId: 'id',
         result: 'command output',
       });
-      expect(result).toContain('✅');
+      expect(result).toContain('🟢');
       expect(result).toContain('Bash');
       expect(result).toContain('command output');
     });
@@ -329,7 +329,7 @@ describe('ToolFormatter', () => {
         result: 'error message',
         isError: true,
       });
-      expect(result).toContain('❌');
+      expect(result).toContain('🔴');
     });
 
     it('should return null for empty result', () => {

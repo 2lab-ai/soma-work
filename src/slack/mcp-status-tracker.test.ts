@@ -192,7 +192,7 @@ describe('McpStatusDisplay', () => {
       expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
         'C123',
         '123.456',
-        '✅ *MCP 완료: codex → search*'
+        '🟢 *MCP 완료: codex → search*'
       );
     });
   });
@@ -313,7 +313,7 @@ describe('McpStatusDisplay', () => {
         expect(mockSlackApi.updateMessage).toHaveBeenCalled();
         const updateText = mockSlackApi.updateMessage.mock.calls[0][2];
         expect(updateText).toContain('1/2 완료');
-        expect(updateText).toContain('✅ Code Reviewer');
+        expect(updateText).toContain('🟢 Code Reviewer');
         expect(updateText).toContain('⏳ Oracle Reviewer');
       });
 
@@ -330,8 +330,8 @@ describe('McpStatusDisplay', () => {
         // Final render is synchronous (no debounce), all entries completed
         const updateText = mockSlackApi.updateMessage.mock.calls[0][2];
         expect(updateText).toContain('2개 작업 완료');
-        expect(updateText).toContain('✅ Code Reviewer');
-        expect(updateText).toContain('✅ Oracle Reviewer');
+        expect(updateText).toContain('🟢 Code Reviewer');
+        expect(updateText).toContain('🟢 Oracle Reviewer');
       });
 
       it('should clean up group after all entries complete', async () => {
