@@ -135,17 +135,22 @@ class PermissionMCPServer {
 
       // Update the message to show the result
       if (result.ts && result.channel) {
+        const resultType = response.behavior === 'allow'
+          ? 'approved' as const
+          : response.message?.startsWith('User requested explanation')
+            ? 'explained' as const
+            : 'denied' as const;
         const resultBlocks = this.messenger.buildResultBlocks(
           tool_name,
           input,
-          response.behavior === 'allow'
+          resultType
         );
         await this.messenger.updateWithResult(
           result.channel,
           result.ts,
           resultBlocks,
           tool_name,
-          response.behavior === 'allow'
+          resultType
         );
       }
 

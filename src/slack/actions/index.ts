@@ -106,6 +106,11 @@ export class ActionHandlers {
       await this.permissionHandler.handleDeny(body, respond);
     });
 
+    app.action('explain_tool', async ({ ack, body, respond }) => {
+      await ack();
+      await this.permissionHandler.handleExplain(body, respond);
+    });
+
     // 세션 액션
     app.action('terminate_session', async ({ ack, body, respond }) => {
       await ack();
