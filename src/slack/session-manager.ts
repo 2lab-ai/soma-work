@@ -9,6 +9,7 @@ import {
   getStatusEmoji,
   fetchJiraTransitions,
   fetchGitHubPRDetails,
+  fetchGitHubPRReviewStatus,
   isPRMergeable,
   extractJiraKey,
   JiraTransition,
@@ -623,7 +624,17 @@ export class SessionUiManager {
       const title = !links.issue && prMeta?.title ? `: ${prMeta.title}` : '';
       const statusEmoji = getStatusEmoji(prMeta?.status, 'pr');
       const statusText = prMeta?.status ? ` ${statusEmoji}${prMeta.status}` : '';
-      parts.push(`🔀 <${links.pr.url}|${label}${title}>${statusText}`);
+
+      // Fetch review status for open PRs
+      let reviewChip = '';
+      if (links.pr.provider === 'github' && prMeta?.status === 'open') {
+        const reviewStatus = await fetchGitHubPRReviewStatus(links.pr);
+        if (reviewStatus === 'approved') reviewChip = ' · ✅ Approved';
+        else if (reviewStatus === 'changes_requested') reviewChip = ' · 🔴 Changes Requested';
+        else if (reviewStatus === 'pending') reviewChip = ' · ⏳ Review 대기';
+      }
+
+      parts.push(`🔀 <${links.pr.url}|${label}${title}>${statusText}${reviewChip}`);
     }
     if (links.doc) {
       parts.push(`📄 <${links.doc.url}|${links.doc.label || '문서'}>`);
