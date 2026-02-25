@@ -151,25 +151,116 @@ describe('ActionPanelBuilder', () => {
     expect(fieldsText).toContain('73%');
   });
 
-  it('renders closed state with status blocks only', () => {
+  it('renders closed state with hero + divider + summary grid + footer', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-7',
       workflow: 'default',
       closed: true,
       contextRemainingPercent: 62,
       prStatus: { state: 'merged', mergeable: false, draft: false, merged: true },
+      turnSummary: '⏱ 3:20 · 🛠 12',
+      latestResponseLink: 'https://workspace.slack.com/archives/C123/p111',
+    });
+
+    // Hero: status + PR inline
+    const statusText = getStatusSectionText(payload);
+    expect(statusText).toContain('⚫ *종료됨*');
+    expect(statusText).toContain('Merged');
+
+    // Summary fields grid
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('소요 시간');
+    expect(fieldsText).toContain('3:20');
+    expect(fieldsText).toContain('도구 사용');
+    expect(fieldsText).toContain('12회');
+    expect(fieldsText).toContain('62%');
+
+    // Divider present
+    const hasDivider = payload.blocks.some((b) => b.type === 'divider');
+    expect(hasDivider).toBe(true);
+
+    // Footer context with timestamp and link
+    const footerCtx = payload.blocks.find(
+      (b) => b.type === 'context'
+        && b.elements?.some((el: any) => /종료/.test(String(el?.text || '')))
+    );
+    expect(footerCtx).toBeDefined();
+    const footerTexts = footerCtx.elements.map((el: any) => String(el.text)).join(' ');
+    expect(footerTexts).toContain('최신 응답');
+
+    // No action buttons in closed state
+    const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
+    expect(actionBlocks).toHaveLength(0);
+  });
+
+  it('renders closed state without turnSummary (minimal)', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-7b',
+      workflow: 'default',
+      closed: true,
+      contextRemainingPercent: 45,
     });
 
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('⚫ *종료됨*');
 
     const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('🟣 Merged');
-    expect(fieldsText).toContain('62%');
+    expect(fieldsText).toContain('45%');
+    expect(fieldsText).not.toContain('소요 시간');
 
-    // No action buttons in closed state
     const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
     expect(actionBlocks).toHaveLength(0);
+  });
+
+  it('separates workflow_actions and control_actions block_ids', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-9',
+      workflow: 'pr-review',
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+
+    // workflow_actions + control_actions = 2 action blocks
+    expect(actionBlocks.length).toBeGreaterThanOrEqual(2);
+    expect(actionBlocks[0].block_id).toBe('workflow_actions');
+    expect(actionBlocks[actionBlocks.length - 1].block_id).toBe('control_actions');
+
+    // Close button is in control_actions, not workflow_actions
+    const controlIds = actionBlocks[actionBlocks.length - 1].elements.map((el: any) => el.action_id);
+    expect(controlIds).toEqual(['panel_close']);
+  });
+
+  it('enforces max 1 primary when merge and approve coexist', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-10',
+      workflow: 'pr-review',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: false },
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const allButtons = actionBlocks.flatMap((block: any) => block.elements);
+    const primaryButtons = allButtons.filter((b: any) => b.style === 'primary');
+
+    expect(primaryButtons.length).toBeLessThanOrEqual(1);
+    // Merge button should be the primary (last primary wins)
+    if (primaryButtons.length === 1) {
+      expect(primaryButtons[0].action_id).toBe('panel_pr_merge');
+    }
+  });
+
+  it('stop button shows ⏸ emoji prefix when working', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-11',
+      workflow: 'default',
+      activityState: 'working',
+      hasActiveRequest: true,
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const stopButton = actionBlocks
+      .flatMap((b: any) => b.elements)
+      .find((el: any) => el.action_id === 'panel_stop');
+
+    expect(stopButton).toBeDefined();
+    expect(stopButton.text.text).toBe('⏸ 중지');
   });
 
   it('block order: hero section → fields section → metrics context → actions', () => {

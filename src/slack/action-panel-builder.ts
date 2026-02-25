@@ -81,20 +81,9 @@ export class ActionPanelBuilder {
     const disabled = params.disabled ?? true;
     const workflow = params.workflow || 'default';
 
-    // Closed state: status blocks only, no buttons
+    // Closed state: status + divider + summary grid + footer
     if (params.closed) {
-      const blocks: any[] = [
-        ...this.buildStatusBlocks({
-          status: '종료됨',
-          prStatus: params.prStatus,
-          contextRemainingPercent: params.contextRemainingPercent,
-        }),
-      ];
-
-      return {
-        text: `Action panel (${workflow}) - 종료됨`,
-        blocks,
-      };
+      return this.buildClosedPanel(params);
     }
 
     const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
@@ -115,17 +104,17 @@ export class ActionPanelBuilder {
     let actionRows: any[];
 
     if (isWorking) {
-      // Working: [중지(default)] [세션 종료(danger)] in one row
+      // Working: [⏸ 중지(default)] [세션 종료(danger)] in control row
       const stopButton = {
         type: 'button',
-        text: { type: 'plain_text', text: '중지', emoji: true },
+        text: { type: 'plain_text', text: '⏸ 중지', emoji: true },
         action_id: 'panel_stop',
         value: JSON.stringify({ sessionKey: params.sessionKey, action: 'stop' }),
       };
-      actionRows = [{ type: 'actions', elements: [stopButton, closeButton] }];
+      actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [stopButton, closeButton] }];
     } else if (isQuestionPending) {
-      // Question: [세션 종료(danger)] alone
-      actionRows = [{ type: 'actions', elements: [closeButton] }];
+      // Question: [세션 종료(danger)] alone in control row
+      actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [closeButton] }];
     } else {
       // Idle: workflow buttons chunked, close appended to last row
       const workflowButtons = actions
@@ -145,18 +134,20 @@ export class ActionPanelBuilder {
         workflowButtons.push(this.buildMergeButton(params));
       }
 
+      // Enforce max 1 primary button (recommended action only)
+      this.enforceMaxOnePrimary(workflowButtons);
+
       if (workflowButtons.length > 0) {
         const chunks = this.chunk(workflowButtons, 5);
-        actionRows = chunks.map((row) => ({ type: 'actions', elements: row }));
-        // Append close button to last row (if room) or as new row
-        const lastRow = actionRows[actionRows.length - 1];
-        if (lastRow.elements.length < 5) {
-          lastRow.elements.push(closeButton);
-        } else {
-          actionRows.push({ type: 'actions', elements: [closeButton] });
-        }
+        actionRows = chunks.map((row, i) => ({
+          type: 'actions',
+          block_id: `workflow_actions${i > 0 ? `_${i}` : ''}`,
+          elements: row,
+        }));
+        // Close in separate control row
+        actionRows.push({ type: 'actions', block_id: 'control_actions', elements: [closeButton] });
       } else {
-        actionRows = [{ type: 'actions', elements: [closeButton] }];
+        actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [closeButton] }];
       }
     }
 
@@ -466,7 +457,7 @@ export class ActionPanelBuilder {
       value: JSON.stringify({ sessionKey, action: 'close' }),
       confirm: {
         title: { type: 'plain_text', text: '세션 종료' },
-        text: { type: 'mrkdwn', text: '이 세션을 종료하시겠습니까?' },
+        text: { type: 'mrkdwn', text: '세션을 종료하시겠습니까?\n이 작업은 되돌릴 수 없습니다.' },
         confirm: { type: 'plain_text', text: '종료' },
         deny: { type: 'plain_text', text: '취소' },
       },
@@ -486,6 +477,87 @@ export class ActionPanelBuilder {
     }
 
     return button;
+  }
+
+  /**
+   * Closed panel: hero (status + PR inline) → divider → summary fields grid → context footer
+   */
+  private static buildClosedPanel(params: ActionPanelBuildParams): ActionPanelPayload {
+    const workflow = params.workflow || 'default';
+    const prChip = params.prStatus ? this.prStatusChip(params.prStatus) : '';
+    const heroText = prChip ? `⚫ *종료됨*  ·  ${prChip}` : '⚫ *종료됨*';
+
+    const blocks: any[] = [
+      { type: 'section', text: { type: 'mrkdwn', text: heroText } },
+      { type: 'divider' },
+    ];
+
+    // Summary fields grid (2-column layout)
+    const fields: any[] = [];
+    if (params.turnSummary) {
+      const { elapsed, toolCount } = this.parseTurnSummary(params.turnSummary);
+      if (elapsed) {
+        fields.push({ type: 'mrkdwn', text: `*소요 시간*\n${elapsed}` });
+      }
+      if (toolCount !== undefined) {
+        fields.push({ type: 'mrkdwn', text: `*도구 사용*\n${toolCount}회` });
+      }
+    }
+    fields.push({ type: 'mrkdwn', text: `*컨텍스트*\n${this.contextChip(params.contextRemainingPercent)}` });
+
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*작업 요약*' },
+      fields,
+    });
+
+    // Context footer: timestamp + link
+    const footerElements: any[] = [];
+    footerElements.push({ type: 'mrkdwn', text: `${this.formatCloseTimestamp()} 종료` });
+
+    if (params.latestResponseLink) {
+      footerElements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|최신 응답>` });
+    }
+
+    blocks.push({ type: 'context', elements: footerElements });
+
+    return {
+      text: `Action panel (${workflow}) - 종료됨`,
+      blocks,
+    };
+  }
+
+  /**
+   * Ensure at most 1 primary button. Last primary wins (merge > approve).
+   */
+  private static enforceMaxOnePrimary(buttons: any[]): void {
+    const primaryIndices = buttons.reduce<number[]>((acc, b, i) => {
+      if (b.style === 'primary') acc.push(i);
+      return acc;
+    }, []);
+    if (primaryIndices.length <= 1) return;
+    // Keep only the last primary (merge takes priority over approve)
+    for (let i = 0; i < primaryIndices.length - 1; i++) {
+      delete buttons[primaryIndices[i]].style;
+    }
+  }
+
+  private static parseTurnSummary(turnSummary: string): { elapsed?: string; toolCount?: number } {
+    const timeMatch = turnSummary.match(/⏱\s*(.+?)(?:\s*·|$)/);
+    const toolMatch = turnSummary.match(/🛠\s*(\d+)/);
+    return {
+      elapsed: timeMatch?.[1]?.trim(),
+      toolCount: toolMatch ? parseInt(toolMatch[1], 10) : undefined,
+    };
+  }
+
+  private static formatCloseTimestamp(): string {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mi = String(now.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${mi}`;
   }
 
   private static chunk<T>(items: T[], size: number): T[][] {
