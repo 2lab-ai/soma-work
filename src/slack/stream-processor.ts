@@ -213,7 +213,7 @@ export class StreamProcessor {
 
         this.logger.debug('Received message from Claude SDK', {
           type: message.type,
-          subtype: (message as any).subtype,
+          subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
         if (message.type === 'assistant') {

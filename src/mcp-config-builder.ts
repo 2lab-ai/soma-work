@@ -77,6 +77,7 @@ export interface McpConfig {
   allowedTools?: string[];
   permissionPromptToolName?: string;
   permissionMode: 'default' | 'bypassPermissions';
+  allowDangerouslySkipPermissions?: boolean;
 }
 
 /**
@@ -113,6 +114,7 @@ export class McpConfigBuilder {
 
     const config: McpConfig = {
       permissionMode: !slackContext || userBypass ? 'bypassPermissions' : 'default',
+      ...(!slackContext || userBypass ? { allowDangerouslySkipPermissions: true } : {}),
     };
 
     // Get base MCP server configuration
