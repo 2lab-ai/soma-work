@@ -20,12 +20,6 @@ export class PermissionActionHandler {
         message: 'Approved by user',
       };
       await sharedStore.storePermissionResponse(approvalId, response);
-
-      await respond({
-        response_type: 'ephemeral',
-        text: '✅ Tool execution approved. Claude will now proceed with the operation.',
-        replace_original: false,
-      });
     } catch (error) {
       this.logger.error('Error processing tool approval', error);
       await respond({
@@ -48,12 +42,6 @@ export class PermissionActionHandler {
         message: 'Denied by user',
       };
       await sharedStore.storePermissionResponse(approvalId, response);
-
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Tool execution denied. Claude will not proceed with this operation.',
-        replace_original: false,
-      });
     } catch (error) {
       this.logger.error('Error processing tool denial', error);
       await respond({
@@ -77,12 +65,6 @@ export class PermissionActionHandler {
           'User requested explanation: Before retrying this tool, explain in the conversation why you need to use this tool, what it will do, and what the expected outcome is. Then request permission again.',
       };
       await sharedStore.storePermissionResponse(approvalId, response);
-
-      await respond({
-        response_type: 'ephemeral',
-        text: '💡 Explanation requested. Claude will explain the action and ask for permission again.',
-        replace_original: false,
-      });
     } catch (error) {
       this.logger.error('Error processing explanation request', error);
       await respond({
