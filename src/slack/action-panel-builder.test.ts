@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
+import { LOG_DETAIL } from './output-flags';
 
 function getStatusSectionText(payload: { blocks: any[] }): string {
   const sectionBlock = payload.blocks.find(
@@ -76,7 +77,7 @@ describe('ActionPanelBuilder', () => {
       activityState: 'working',
       activeTool: 'Read',
       contextRemainingPercent: 61,
-      statusUpdatedAt: Date.now(),
+      logVerbosity: LOG_DETAIL,
     });
 
     // Hero section (badge + italic subtitle)
@@ -89,10 +90,10 @@ describe('ActionPanelBuilder', () => {
     const fieldsText = getFieldsSectionText(payload);
     expect(fieldsText).toContain('61%');
 
-    // Metrics context (live indicator)
+    // Metrics context (verbosity label)
     const ctxBlock = payload.blocks.find(
       (block) => block.type === 'context'
-        && block.elements?.some((el: any) => /live/.test(String(el?.text || '')))
+        && block.elements?.some((el: any) => /detail/.test(String(el?.text || '')))
     );
     expect(ctxBlock).toBeDefined();
   });
