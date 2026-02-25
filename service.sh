@@ -35,6 +35,36 @@ resolve_env() {
     LOGS_DIR="$PROJECT_DIR/logs"
     NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
     USER_HOME="$HOME"
+
+    resolve_tool_paths
+}
+
+# Discover paths for essential CLI tools (git, gh, aws, dotnet)
+# Sets TOOL_PATHS as colon-separated directory list
+resolve_tool_paths() {
+    TOOL_PATHS=""
+    local tools="git gh aws dotnet"
+    local search_dirs="/opt/homebrew/bin /usr/local/bin /usr/local/share/dotnet $HOME/.dotnet"
+
+    for tool in $tools; do
+        local tool_bin
+        tool_bin="$(command -v "$tool" 2>/dev/null)"
+        if [[ -z "$tool_bin" ]]; then
+            for dir in $search_dirs; do
+                if [[ -x "$dir/$tool" ]]; then
+                    tool_bin="$dir/$tool"
+                    break
+                fi
+            done
+        fi
+        if [[ -n "$tool_bin" ]]; then
+            local tool_dir
+            tool_dir="$(dirname "$tool_bin")"
+            if [[ ":$TOOL_PATHS:" != *":$tool_dir:"* ]]; then
+                TOOL_PATHS="${TOOL_PATHS:+$TOOL_PATHS:}$tool_dir"
+            fi
+        fi
+    done
 }
 
 # Parse arguments: [env] <command> [args...]
@@ -83,7 +113,7 @@ generate_plist() {
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; node dist/index.js</string>
+        <string>export PATH=$NODE_PATH:$TOOL_PATHS:\$PATH; cd $PROJECT_DIR; node dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -92,7 +122,7 @@ generate_plist() {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
+        <string>$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$USER_HOME</string>
         <key>SOMA_CONFIG_DIR</key>
@@ -207,8 +237,21 @@ cmd_restart() {
     cmd_start
 }
 
+warn_missing_tools() {
+    local missing=()
+    for tool in git gh aws dotnet; do
+        if ! command -v "$tool" &>/dev/null; then
+            missing+=("$tool")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        print_warning "Tools not in PATH: ${missing[*]} (run './service.sh check-env' to fix)"
+    fi
+}
+
 cmd_install() {
     print_status "Installing $SERVICE_NAME as LaunchAgent..."
+    warn_missing_tools
 
     if [[ ! -d "$PROJECT_DIR" ]]; then
         print_error "Project directory not found: $PROJECT_DIR"
@@ -283,6 +326,7 @@ cmd_logs() {
 
 cmd_reinstall() {
     print_status "Reinstalling $SERVICE_NAME..."
+    warn_missing_tools
     echo ""
 
     # Step 1: Stop
@@ -401,6 +445,81 @@ cmd_status_all() {
     done
 }
 
+cmd_check_env() {
+    echo "=================================="
+    echo "soma-work - Environment Check"
+    echo "=================================="
+    echo ""
+
+    local missing=""
+
+    for tool in git gh aws dotnet; do
+        local tool_bin
+        tool_bin="$(command -v "$tool" 2>/dev/null)"
+        if [[ -n "$tool_bin" ]]; then
+            local version
+            version="$("$tool" --version 2>/dev/null | head -1)"
+            print_success "$tool: $tool_bin ($version)"
+        else
+            print_error "$tool: NOT FOUND"
+            missing="$missing $tool"
+        fi
+    done
+
+    # Node (always required)
+    echo ""
+    local node_bin
+    node_bin="$(command -v node 2>/dev/null)"
+    if [[ -n "$node_bin" ]]; then
+        print_success "node: $node_bin ($(node --version 2>/dev/null))"
+    else
+        print_error "node: NOT FOUND (required)"
+    fi
+
+    # Resolved TOOL_PATHS
+    echo ""
+    print_status "Resolved TOOL_PATHS: ${TOOL_PATHS:-<empty>}"
+    print_status "NODE_PATH: $NODE_PATH"
+
+    # Offer to install missing tools
+    if [[ -n "$missing" ]]; then
+        echo ""
+        print_warning "Missing tools:$missing"
+        echo ""
+        for tool in $missing; do
+            case "$tool" in
+                git)    echo "  $tool: xcode-select --install" ;;
+                gh)     echo "  $tool: brew install gh" ;;
+                aws)    echo "  $tool: brew install awscli" ;;
+                dotnet) echo "  $tool: brew install dotnet" ;;
+            esac
+        done
+        echo ""
+        read -r -p "Install missing tools via Homebrew? [y/N] " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            for tool in $missing; do
+                local install_cmd
+                case "$tool" in
+                    git)    install_cmd="xcode-select --install" ;;
+                    gh)     install_cmd="brew install gh" ;;
+                    aws)    install_cmd="brew install awscli" ;;
+                    dotnet) install_cmd="brew install dotnet" ;;
+                esac
+                print_status "Running: $install_cmd"
+                eval "$install_cmd"
+            done
+            echo ""
+            print_status "Re-checking after install..."
+            resolve_tool_paths
+            echo ""
+            print_status "Updated TOOL_PATHS: ${TOOL_PATHS:-<empty>}"
+        fi
+    else
+        echo ""
+        print_success "All tools available"
+    fi
+}
+
 # --- Main ---
 case "$COMMAND" in
     status)
@@ -433,6 +552,9 @@ case "$COMMAND" in
     logs)
         cmd_logs "$1" "$2"
         ;;
+    check-env)
+        cmd_check_env
+        ;;
     *)
         echo "soma-work - Service Manager"
         echo ""
@@ -453,6 +575,7 @@ case "$COMMAND" in
         echo "  install      Install as LaunchAgent"
         echo "  uninstall    Remove LaunchAgent"
         echo "  setup        Initialize deployment directory (config only)"
+        echo "  check-env    Verify CLI tools and offer to install missing ones"
         echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
         echo ""
         echo "Examples:"
