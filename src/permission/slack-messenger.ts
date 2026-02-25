@@ -84,41 +84,6 @@ export class SlackPermissionMessenger {
   }
 
   /**
-   * Build result blocks for completed permission request
-   */
-  buildResultBlocks(
-    toolName: string,
-    input: any,
-    result: 'approved' | 'denied' | 'explained'
-  ): any[] {
-    const statusMap = {
-      approved: '✅ Approved',
-      denied: '❌ Denied',
-      explained: '💡 Explain Requested',
-    };
-    const status = statusMap[result];
-
-    return [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `🔐 *Permission Request* - ${status}\n\nTool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
-        },
-      },
-      {
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `${status} by user | Tool: ${toolName}`,
-          },
-        ],
-      },
-    ];
-  }
-
-  /**
    * Send permission request message to Slack
    */
   async sendPermissionRequest(
@@ -144,31 +109,4 @@ export class SlackPermissionMessenger {
     }
   }
 
-  /**
-   * Update permission message with result
-   */
-  async updateWithResult(
-    channel: string,
-    ts: string,
-    blocks: any[],
-    toolName: string,
-    result: 'approved' | 'denied' | 'explained'
-  ): Promise<void> {
-    try {
-      const textMap = {
-        approved: 'approved',
-        denied: 'denied',
-        explained: 'explanation requested',
-      };
-      await this.slack.chat.update({
-        channel,
-        ts,
-        blocks,
-        text: `Permission ${textMap[result]} for ${toolName}`,
-      });
-    } catch (error) {
-      logger.error('Failed to update permission message:', error);
-      throw error;
-    }
-  }
 }
