@@ -78,6 +78,8 @@ export interface McpConfig {
   permissionPromptToolName?: string;
   permissionMode: 'default' | 'bypassPermissions';
   allowDangerouslySkipPermissions?: boolean;
+  /** Whether the user has bypass enabled (used by PermissionRequest hook for auto-approve) */
+  userBypass: boolean;
 }
 
 /**
@@ -112,10 +114,12 @@ export class McpConfigBuilder {
       ? userSettingsStore.getUserBypassPermission(slackContext.user)
       : false;
 
-    const config: McpConfig = {
-      permissionMode: !slackContext || userBypass ? 'bypassPermissions' : 'default',
-      ...(!slackContext || userBypass ? { allowDangerouslySkipPermissions: true } : {}),
-    };
+    // Without Slack context (CLI/test mode): bypass permissions (no UI to show)
+    // With Slack context: ALWAYS use 'default' mode — bypass is handled by PermissionRequest hook
+    // which auto-approves non-dangerous commands and forces Slack UI for dangerous ones
+    const config: McpConfig = !slackContext
+      ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
+      : { permissionMode: 'default', userBypass };
 
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
@@ -131,8 +135,9 @@ export class McpConfigBuilder {
       );
     }
 
-    // Add permission prompt server if needed
-    if (slackContext && !userBypass) {
+    // Always add permission prompt server when in Slack context
+    // Even bypass users need the MCP server for dangerous command approval via Slack UI
+    if (slackContext) {
       internalServers['permission-prompt'] = this.buildPermissionServer(slackContext)['permission-prompt'];
       config.permissionPromptToolName = 'mcp__permission-prompt__permission_prompt';
 
@@ -140,6 +145,7 @@ export class McpConfigBuilder {
         channel: slackContext.channel,
         user: slackContext.user,
         hasThread: !!slackContext.threadTs,
+        userBypass,
       });
     }
 
@@ -168,7 +174,7 @@ export class McpConfigBuilder {
     }
 
     if (slackContext && userBypass) {
-      this.logger.debug('Bypassing permission prompts for user', {
+      this.logger.debug('User has bypass enabled — non-dangerous commands will auto-approve via hook', {
         user: slackContext.user,
         bypassEnabled: true,
       });
@@ -339,8 +345,8 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__model-command');
     }
 
-    // Add permission prompt tool if not bypassed
-    if (slackContext && !userBypass) {
+    // Always add permission prompt tool (even for bypass users, needed for dangerous commands)
+    if (slackContext) {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
     }
 
