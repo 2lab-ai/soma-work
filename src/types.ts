@@ -164,6 +164,7 @@ export interface ActionPanelPRStatus {
   mergeable: boolean;
   draft: boolean;
   merged: boolean;
+  approved?: boolean; // true if PR has been approved
   head?: string;      // source branch
   base?: string;      // target branch
 }

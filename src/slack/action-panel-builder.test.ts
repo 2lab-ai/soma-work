@@ -114,7 +114,7 @@ describe('ActionPanelBuilder', () => {
     expect(metricsText).toContain('📦 63.2%');
   });
 
-  it('shows status only (no choice preview) when choice is pending', () => {
+  it('shows choice blocks in panel when choice is pending', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-5',
       workflow: 'default',
@@ -125,14 +125,16 @@ describe('ActionPanelBuilder', () => {
       contextRemainingPercent: 73,
     });
 
-    // No divider, no mirrored choice blocks in panel
-    const dividerIdx = payload.blocks.findIndex((b) => b.type === 'divider');
-    expect(dividerIdx).toBe(-1);
+    // Choice blocks are rendered in the panel (restored behavior)
+    const choiceSection = payload.blocks.find(
+      (b) => b.type === 'section' && b.text?.text === '❓ *질문*'
+    );
+    expect(choiceSection).toBeDefined();
 
-    // No choice action buttons mirrored
+    // Workflow buttons are hidden (only close button remains after divider)
     const actionsBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionsBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
-    expect(actionIds).not.toContain('user_choice_1');
+    expect(actionIds).toEqual(['panel_close']);
 
     // Status section still shows waiting
     const statusText = getStatusSectionText(payload);
