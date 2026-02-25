@@ -285,11 +285,29 @@ export class StreamProcessor {
     const thinkingText = thinkingParts.join('\n\n');
     if (!thinkingText.trim()) return;
 
+    const truncated = this.truncateThinking(thinkingText, thinkingMode);
+    if (!truncated) return;
+
     const tag = this.vtag(OutputFlag.THINKING, context);
     await context.say({
-      text: `${tag}💭 _${ToolFormatter.truncateString(thinkingText, 3000)}_`,
+      text: `${tag}💭 _${truncated}_`,
       thread_ts: context.threadTs,
     });
+  }
+
+  /** Truncate thinking output based on render mode */
+  private truncateThinking(text: string, mode: 'compact' | 'detail' | 'verbose'): string | null {
+    const lines = text.split('\n').filter((l) => l.trim());
+    if (lines.length === 0) return null;
+
+    switch (mode) {
+      case 'compact':
+        return ToolFormatter.truncateString(lines[0], 200);
+      case 'detail':
+        return ToolFormatter.truncateString(lines.slice(0, 10).join('\n'), 2000);
+      case 'verbose':
+        return ToolFormatter.truncateString(text, 3000);
+    }
   }
 
   /**
