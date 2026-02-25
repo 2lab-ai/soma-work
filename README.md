@@ -118,6 +118,7 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 |---------|-------------|
 | `cwd` | Show current working directory |
 | `mcp` / `mcp reload` | List MCP servers / reload config |
+| `bypass [on/off]` | Toggle permission prompt bypass |
 | `persona [name]` | Switch persona |
 | `model [name]` | Switch model (sonnet, opus, haiku) |
 | `sessions` | List active sessions |

@@ -29,14 +29,17 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 ```
 src/
 ├── slack/           # Slack 모듈 (SRP 분리)
-│   ├── actions/     # 인터랙티브 액션 핸들러
+│   ├── actions/     # 인터랙티브 액션 핸들러 (8개)
 │   ├── pipeline/    # 스트림 처리 파이프라인
-│   ├── commands/    # 슬래시 명령어 핸들러 (14개)
+│   ├── commands/    # 슬래시 명령어 핸들러 (16개)
+│   ├── directives/  # 채널/세션 링크 디렉티브
 │   └── formatters/  # 출력 포맷터
+├── conversation/    # 대화 기록 및 리플레이
+├── model-commands/  # 모델 커맨드 카탈로그 & 검증
 ├── mcp/             # MCP 서버 관리
 ├── github/          # GitHub App 인증 + Git 자격증명
 ├── permission/      # Slack 권한 프롬프트
-├── prompt/          # 시스템 프롬프트 + 워크플로우 (7개)
+├── prompt/          # 시스템 프롬프트 + 워크플로우 (9개)
 ├── persona/         # 봇 페르소나 (12개)
 └── local/           # Claude Code SDK 로컬 플러그인
 ```
@@ -74,5 +77,10 @@ src/
 | `model [name]` | 모델 변경 (sonnet/opus/haiku) |
 | `sessions` | 활성 세션 목록 |
 | `new` / `renew` | 세션 초기화 / 갱신 |
+| `close` | 현재 스레드 세션 종료 |
 | `context` | 컨텍스트 윈도우 상태 |
 | `restore` | 세션 복원 |
+| `link [url]` | 세션에 이슈/PR/문서 링크 첨부 |
+| `onboarding` | 온보딩 워크플로우 실행 |
+| `verbosity [level]` | 출력 상세도 설정 |
+| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) |
