@@ -9,13 +9,12 @@ function getStatusSectionText(payload: { blocks: any[] }): string {
   return String(sectionBlock?.text?.text || '');
 }
 
-function getMetricsContextText(payload: { blocks: any[] }): string {
-  const ctxBlock = payload.blocks.find(
-    (block) => block.type === 'context'
-      && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
+function getFieldsSectionText(payload: { blocks: any[] }): string {
+  const fieldsBlock = payload.blocks.find(
+    (block) => block.type === 'section' && Array.isArray(block.fields)
   );
-  if (!ctxBlock) return '';
-  return String(ctxBlock.elements?.[0]?.text || '');
+  if (!fieldsBlock) return '';
+  return fieldsBlock.fields.map((f: any) => String(f.text || '')).join(' ');
 }
 
 describe('ActionPanelBuilder', () => {
@@ -69,7 +68,7 @@ describe('ActionPanelBuilder', () => {
     expect(reviewCount).toBe(1);
   });
 
-  it('renders structural layout with section + context blocks', () => {
+  it('renders structural layout with hero section + fields section + context blocks', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
       workflow: 'jira-brainstorming',
@@ -80,16 +79,22 @@ describe('ActionPanelBuilder', () => {
       statusUpdatedAt: Date.now(),
     });
 
-    // Status section (big text)
+    // Hero section (badge + italic subtitle)
     const statusText = getStatusSectionText(payload);
-    expect(statusText).toContain('⚙️ *작업 중*');
-    expect(statusText).toContain('🛠 파일 읽기');
-    expect(statusText).not.toContain('📦'); // metrics are in context block
+    expect(statusText).toContain('🟢 *작업 중*');
+    expect(statusText).toContain('_파일 읽기_');
+    expect(statusText).not.toContain('📦');
 
-    // Metrics context (small text)
-    const metricsText = getMetricsContextText(payload);
-    expect(metricsText).toContain('📦 61%');
-    expect(metricsText).toContain('🟢 live');
+    // Fields section (context% in fields)
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('61%');
+
+    // Metrics context (live indicator)
+    const ctxBlock = payload.blocks.find(
+      (block) => block.type === 'context'
+        && block.elements?.some((el: any) => /live/.test(String(el?.text || '')))
+    );
+    expect(ctxBlock).toBeDefined();
   });
 
   it('shows context usage placeholder when usage is unavailable', () => {
@@ -99,8 +104,8 @@ describe('ActionPanelBuilder', () => {
       disabled: true,
     });
 
-    const metricsText = getMetricsContextText(payload);
-    expect(metricsText).toContain('📦 --%');
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('--%');
   });
 
   it('shows one decimal for non-integer remaining context percent', () => {
@@ -110,8 +115,8 @@ describe('ActionPanelBuilder', () => {
       contextRemainingPercent: 63.2,
     });
 
-    const metricsText = getMetricsContextText(payload);
-    expect(metricsText).toContain('📦 63.2%');
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('63.2%');
   });
 
   it('shows choice blocks in panel when choice is pending', () => {
@@ -125,27 +130,28 @@ describe('ActionPanelBuilder', () => {
       contextRemainingPercent: 73,
     });
 
-    // Choice blocks are rendered in the panel (restored behavior)
+    // Choice blocks are rendered in the panel
     const choiceSection = payload.blocks.find(
       (b) => b.type === 'section' && b.text?.text === '❓ *질문*'
     );
     expect(choiceSection).toBeDefined();
 
-    // Workflow buttons are hidden (only close button remains after divider)
+    // Workflow buttons are hidden (only close button remains)
     const actionsBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionsBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
     expect(actionIds).toEqual(['panel_close']);
 
-    // Status section still shows waiting
+    // Hero section shows waiting
     const statusText = getStatusSectionText(payload);
-    expect(statusText).toContain('✋ *입력 대기*');
-    expect(statusText).toContain('🧩 질문 응답 필요');
+    expect(statusText).toContain('🟡 *입력 대기*');
+    expect(statusText).toContain('_질문 응답 필요_');
 
-    const metricsText = getMetricsContextText(payload);
-    expect(metricsText).toContain('📦 73%');
+    // Fields section shows context%
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('73%');
   });
 
-  it('renders closed state with section + context blocks', () => {
+  it('renders closed state with status blocks only', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-7',
       workflow: 'default',
@@ -155,18 +161,18 @@ describe('ActionPanelBuilder', () => {
     });
 
     const statusText = getStatusSectionText(payload);
-    expect(statusText).toContain('🔒 *종료됨*');
-    expect(statusText).toContain('🟣 Merged');
+    expect(statusText).toContain('⚫ *종료됨*');
 
-    const metricsText = getMetricsContextText(payload);
-    expect(metricsText).toContain('📦 62%');
+    const fieldsText = getFieldsSectionText(payload);
+    expect(fieldsText).toContain('🟣 Merged');
+    expect(fieldsText).toContain('62%');
 
     // No action buttons in closed state
     const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
     expect(actionBlocks).toHaveLength(0);
   });
 
-  it('block order: status section → metrics context → actions', () => {
+  it('block order: hero section → fields section → metrics context → actions', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-8',
       workflow: 'default',
@@ -176,11 +182,13 @@ describe('ActionPanelBuilder', () => {
     });
 
     const types = payload.blocks.map((b) => b.type);
-    const sectionIdx = types.indexOf('section');
+    const heroIdx = types.indexOf('section');
+    const fieldsIdx = types.indexOf('section', heroIdx + 1);
     const contextIdx = types.indexOf('context');
     const actionsIdx = types.indexOf('actions');
 
-    expect(sectionIdx).toBeLessThan(contextIdx);
+    expect(heroIdx).toBeLessThan(fieldsIdx);
+    expect(fieldsIdx).toBeLessThan(contextIdx);
     expect(contextIdx).toBeLessThan(actionsIdx);
   });
 });
