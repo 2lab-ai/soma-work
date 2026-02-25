@@ -364,6 +364,18 @@ export class ToolFormatter {
         const summary = this.getTaskToolSummary(input);
         return `${emoji} Task: *${summary.subagentLabel || 'Agent'}*${summary.promptPreview ? ' — ' + this.truncateString(summary.promptPreview, 30) : ''}`;
       }
+      case 'Skill': {
+        const skillName = input?.skill || input?.name || '';
+        return skillName
+          ? `${emoji} Skill: *${skillName}*`
+          : `${emoji} Skill`;
+      }
+      case 'TaskOutput': {
+        const taskId = input?.task_id || '';
+        return taskId
+          ? `${emoji} TaskOutput: \`${this.truncateString(taskId, 20)}\``
+          : `${emoji} TaskOutput`;
+      }
       default:
         if (toolName.startsWith('mcp__')) {
           const parts = toolName.split('__');
@@ -444,7 +456,7 @@ export class ToolFormatter {
   /** Format a compact completion line for in-place tool message update */
   static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
     const icon = isError ? '❌' : '✅';
-    return this.formatOneLineToolUse(toolName, input).replace(/^./, icon);
+    return `${icon}${this.formatOneLineToolUse(toolName, input)}`;
   }
 
   /**
