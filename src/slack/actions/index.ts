@@ -42,6 +42,7 @@ export class ActionHandlers {
       claudeHandler: ctx.claudeHandler,
       sessionManager: ctx.sessionManager,
       reactionManager: ctx.reactionManager,
+      requestCoordinator: ctx.requestCoordinator,
     });
 
     this.choiceHandler = new ChoiceActionHandler(

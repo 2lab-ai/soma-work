@@ -29,14 +29,14 @@ describe('ThreadHeaderBuilder', () => {
     const blocks = (payload.blocks || []) as any[];
     const lines = collectBlockTexts(blocks).join(' ');
 
-    // Header block with title
+    // Header block with title + owner (prominently visible)
     const headerBlock = blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
-    expect(headerBlock.text.text).toBe('Prada /test-vsprots 페이지 개발');
+    expect(headerBlock.text.text).toBe('Prada /test-vsprots 페이지 개발 — Bash');
 
-    // Context with workflow and owner (bold, no emoji)
+    // Context with workflow (owner is now in header, not context)
     expect(lines).toContain('`default`');
-    expect(lines).toContain('*Bash*');
+    expect(lines).not.toContain('*Bash*');
     expect(lines).not.toContain('👤');
     expect(lines).not.toContain('작업 중');
     expect(lines).not.toContain('🧠');

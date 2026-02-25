@@ -1,6 +1,7 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
 import { ReactionManager } from '../reaction-manager';
+import { RequestCoordinator } from '../request-coordinator';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { ActionPanelBuilder } from '../action-panel-builder';
 import { ClaudeHandler } from '../../claude-handler';
@@ -13,6 +14,7 @@ interface SessionActionContext {
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
   reactionManager?: ReactionManager;
+  requestCoordinator?: RequestCoordinator;
 }
 
 /**
@@ -57,6 +59,9 @@ export class SessionActionHandler {
 
       // Update UI to closed state before terminating
       await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -128,6 +133,9 @@ export class SessionActionHandler {
 
       // Update UI to closed state before terminating
       await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -251,6 +259,9 @@ export class SessionActionHandler {
 
       // Update UI to closed state before terminating
       await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
