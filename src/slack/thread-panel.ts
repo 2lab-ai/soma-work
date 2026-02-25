@@ -195,6 +195,7 @@ export class ThreadPanel {
       agentPhase: panelState.agentPhase,
       activeTool: panelState.activeTool,
       statusUpdatedAt: panelState.statusUpdatedAt,
+      logVerbosity: session.logVerbosity,
       prStatus: prStatusInfo?.prStatus,
       prUrl: prStatusInfo?.prUrl,
     });

@@ -1,4 +1,5 @@
 import { ActivityState, WorkflowType } from '../types';
+import { getVerbosityName, LogVerbosity } from './output-flags';
 
 export interface PRStatusInfo {
   state: string;      // 'open' | 'closed' | 'merged'
@@ -26,6 +27,7 @@ export interface ActionPanelBuildParams {
   agentPhase?: string;
   activeTool?: string;
   statusUpdatedAt?: number;
+  logVerbosity?: number;
   prStatus?: PRStatusInfo;
   prUrl?: string;
 }
@@ -165,11 +167,11 @@ export class ActionPanelBuilder {
       contextRemainingPercent: params.contextRemainingPercent,
     }));
 
-    // 2. Metrics context (small text: time + tools + link + live)
+    // 2. Metrics context (small text: time + tools + link + verbosity)
     const metricsCtx = this.buildMetricsContext({
       turnSummary: params.turnSummary,
       latestResponseLink: params.latestResponseLink,
-      statusUpdatedAt: params.statusUpdatedAt,
+      logVerbosity: params.logVerbosity,
     });
     if (metricsCtx) blocks.push(metricsCtx);
 
@@ -273,12 +275,12 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Metrics context: time + tools + link + live → context block (small text, separate elements)
+   * Metrics context: time + tools + link + verbosity → context block (small text, separate elements)
    */
   private static buildMetricsContext(params: {
     turnSummary?: string;
     latestResponseLink?: string;
-    statusUpdatedAt?: number;
+    logVerbosity?: number;
   }): any | null {
     const elements: any[] = [];
 
@@ -290,8 +292,8 @@ export class ActionPanelBuilder {
       elements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|💬 최신 응답>` });
     }
 
-    if (params.statusUpdatedAt) {
-      elements.push({ type: 'mrkdwn', text: '🟢 live' });
+    if (params.logVerbosity !== undefined) {
+      elements.push({ type: 'mrkdwn', text: this.verbosityLabel(params.logVerbosity) });
     }
 
     if (elements.length === 0) return null;
@@ -300,6 +302,17 @@ export class ActionPanelBuilder {
       type: 'context',
       elements,
     };
+  }
+
+  private static verbosityLabel(mask: number): string {
+    const LABELS: Record<LogVerbosity, string> = {
+      minimal: '🔇 minimal',
+      compact: '📎 compact',
+      detail:  '📋 detail',
+      verbose: '📢 verbose',
+    };
+    const name = getVerbosityName(mask);
+    return name === 'custom' ? `🔧 custom` : LABELS[name];
   }
 
   private static buildAgentChip(params: {
