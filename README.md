@@ -36,19 +36,19 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
                        │
                 ┌──────▼──────┐
                 │ SlackHandler │ ← Facade
-                │   (314 LOC)  │
+                │   (567 LOC)  │
                 └──────┬──────┘
                        │
           ┌────────────┼────────────────┐
           │            │                │
    ┌──────▼──────┐ ┌──▼───────┐ ┌─────▼──────┐
    │ EventRouter │ │ Command  │ │  Stream    │
-   │   (272)     │ │ Router   │ │ Processor  │
-   │             │ │  (95)    │ │  (512)     │
+   │   (293)     │ │ Router   │ │ Processor  │
+   │             │ │  (105)   │ │  (837)     │
    └──────┬──────┘ └──┬───────┘ └─────┬──────┘
           │            │                │
           │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 14 Command  │  │  Pipeline  │
+          │     │ 16 Command  │  │  Pipeline  │
           │     │  Handlers   │  │ input →    │
           │     └─────────────┘  │ session →  │
           │                      │ stream     │
@@ -56,11 +56,11 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
           │                            │
    ┌──────▼────────────────────────────▼──────┐
    │              ClaudeHandler               │
-   │                (381 LOC)                 │
+   │                (498 LOC)                 │
    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
    │  │ Session  │ │ Prompt   │ │ Dispatch │ │
    │  │ Registry │ │ Builder  │ │ Service  │ │
-   │  │  (522)   │ │  (298)   │ │  (368)   │ │
+   │  │ (1,048)  │ │  (299)   │ │  (509)   │ │
    │  └──────────┘ └──────────┘ └──────────┘ │
    └──────────────────┬───────────────────────┘
                       │
@@ -87,6 +87,9 @@ Analyzes user input and automatically selects the optimal workflow.
 | Jira Planning | Jira issue + planning | Task decomposition + planning |
 | Jira Summary | Jira issue + summary | Executive report generation |
 | Jira Brainstorming | Jira + brainstorm | Idea divergence + synthesis |
+| Jira Create PR | Jira issue + "PR" | Auto-create pull request |
+| Deploy | Deploy-related request | Deployment workflow |
+| Onboarding | New user / `onboarding` | Interactive onboarding guide |
 | Default | All other input | General-purpose coding assistant |
 
 ### 12 Personas
@@ -118,11 +121,15 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 | `persona [name]` | Switch persona |
 | `model [name]` | Switch model (sonnet, opus, haiku) |
 | `sessions` | List active sessions |
-| `new [prompt]` | Reset current session and continue with empty memory |
+| `new [prompt]` | Reset current session with empty memory |
 | `renew [prompt]` | Renew session (optionally retain prompt) |
 | `restore [session]` | Restore a session |
-| `terminate [session]` | Terminate a session |
+| `close` | Close current thread's session |
 | `context` | Show context window status |
+| `link [url]` | Attach issue/PR/doc links to session |
+| `onboarding` | Run onboarding workflow |
+| `verbosity [level]` | Set output verbosity level |
+| `$` / `$model` / `$verbosity` | Session-only settings (non-persistent) |
 | `help` | Show help |
 
 ## Quick Start
@@ -241,40 +248,50 @@ When GitHub App is configured, it takes priority. Otherwise falls back to PAT.
 ## Project Structure
 
 ```
-src/                            # ~13,800 lines of TypeScript
+src/                            # ~27,000 lines of TypeScript
 ├── slack/                      # Slack module (SRP separation)
-│   ├── actions/                # Interactive action handlers (7 files)
+│   ├── actions/                # Interactive action handlers (8 handlers)
 │   ├── pipeline/               # Stream processing pipeline (5 files)
-│   ├── commands/               # Command handlers (14 files)
+│   ├── commands/               # Command handlers (16 handlers)
+│   ├── directives/             # Channel/session link directives
 │   └── formatters/             # Output formatters
+├── conversation/               # Conversation recording & replay
+├── model-commands/             # Model command catalog & validation
 ├── mcp/                        # MCP server management
 ├── github/                     # GitHub App auth + Git CLI
 ├── permission/                 # Permission service + Slack UI
 ├── prompt/                     # System prompts
-│   └── workflows/              # Workflow prompts (7 workflows)
-└── persona/                    # Bot personas (12 personas)
+│   └── workflows/              # Workflow prompts (9 workflows)
+├── persona/                    # Bot personas (12 personas)
+└── local/                      # Claude Code SDK local plugins
+    ├── agents/                 # Agent definitions
+    ├── skills/                 # Skill implementations
+    ├── hooks/                  # Git/build hooks
+    ├── commands/               # Local slash commands
+    └── prompts/                # Local prompts
 
 data/                           # Runtime data (auto-generated)
-docs/                           # Architecture + spec docs (12 specs)
+docs/                           # Architecture + spec docs (14 specs)
 scripts/                        # Utility scripts
 ```
 
 | Category | Count |
 |----------|-------|
-| Source (excl. test/local) | 85 files, ~13,800 LOC |
-| Tests | 20 files, ~5,600 LOC |
+| Source (excl. test/local) | 122 files, ~27,000 LOC |
+| Tests | 43 files, ~11,100 LOC |
 | Personas | 12 files, ~4,700 LOC |
-| Prompts | 12 files, ~1,900 LOC |
+| Prompts/Workflows | ~2,150 LOC |
 
 ## Design Decisions
 
 1. **Facade Pattern** — Simplifies complex subsystems behind 3 facades
-2. **Single Responsibility** — One responsibility per file (85 modules)
+2. **Single Responsibility** — One responsibility per file (122 modules)
 3. **Pipeline Architecture** — Input preprocessing → session init → stream execution
-4. **Workflow Dispatch** — Input classification → specialized workflow prompts
+4. **Workflow Dispatch** — Input classification → specialized workflow prompts (9 workflows)
 5. **Append-Only Messages** — New messages instead of message edits
 6. **Session-Based Context** — Per-thread session persistence
 7. **Dependency Injection** — Testability through injected dependencies
+8. **Hierarchical CWD** — Thread > Channel > User working directory priority
 
 ## Testing
 
@@ -284,7 +301,7 @@ npx vitest run      # Single run
 npx vitest --watch  # Watch mode
 ```
 
-20 test files cover critical paths: event routing, stream processing, command parsing, permission validation, tool formatting, session management, and more.
+43 test files (~11,100 LOC) cover critical paths: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, and more.
 
 ## Troubleshooting
 
