@@ -174,6 +174,10 @@ export class StreamProcessor {
   private _hasUserChoice = false;
   /** Maps tool_use_id → { ts, toolName, input } (for compact mode in-place updates) */
   private toolCallMessageTs = new Map<string, { ts: string; toolName: string; input: any }>();
+  /** Maps Task tool_use_id → input (for correlating TaskOutput with original Task) */
+  private pendingTaskInputs = new Map<string, any>();
+  /** Maps background task_id → original Task input metadata (for TaskOutput display) */
+  private backgroundTaskMeta = new Map<string, { name?: string; subagentLabel?: string; promptPreview?: string }>();
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -305,10 +309,25 @@ export class StreamProcessor {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
 
+    // Track Task tool inputs for TaskOutput correlation
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.name === 'Task' && part.id) {
+        this.pendingTaskInputs.set(part.id, part.input);
+      }
+    }
+
+    // Enrich TaskOutput inputs with original Task metadata before formatting
+    const enrichedContent = content.map((part: any) => {
+      if (part.type === 'tool_use' && part.name === 'TaskOutput') {
+        return { ...part, input: this.enrichTaskOutputInput(part.input) };
+      }
+      return part;
+    });
+
     // Format and send tool use messages (render mode dispatch)
     const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (toolCallMode !== 'hidden') {
-      const toolContent = ToolFormatter.formatToolUse(content, toolCallMode);
+      const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
         const result = await context.say({
@@ -317,7 +336,7 @@ export class StreamProcessor {
         });
         // Track message ts + tool info for compact mode in-place updates
         if (toolCallMode === 'compact' && result?.ts) {
-          for (const part of content) {
+          for (const part of enrichedContent) {
             if (part.type === 'tool_use' && part.id) {
               this.toolCallMessageTs.set(part.id, { ts: result.ts, toolName: part.name, input: part.input });
             }
@@ -651,14 +670,21 @@ export class StreamProcessor {
 
     const toolResults = ToolFormatter.extractToolResults(content);
 
+    // Correlate Task results with background task IDs for TaskOutput display
+    this.correlateTaskResults(toolResults);
+
     // Compact mode: update tool call messages in-place instead of separate result messages
     const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
       for (const tr of toolResults) {
         const entry = this.toolCallMessageTs.get(tr.toolUseId);
         if (entry) {
-          const icon = tr.isError ? '❌' : '✅';
-          const line = `${icon}${ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input)}`;
+          const icon = tr.isError ? '🔴' : '🟢';
+          // Enrich TaskOutput with original Task metadata
+          const input = entry.toolName === 'TaskOutput'
+            ? this.enrichTaskOutputInput(entry.input)
+            : entry.input;
+          const line = `${icon} ${ToolFormatter.formatOneLineToolUse(entry.toolName, input)}`;
           await this.callbacks.onUpdateMessage(context.channel, entry.ts, line);
           this.toolCallMessageTs.delete(tr.toolUseId);
         }
@@ -833,5 +859,71 @@ export class StreamProcessor {
       .map((part: any) => part.text);
 
     return textParts.length > 0 ? textParts.join('') : null;
+  }
+
+  /**
+   * Correlate Task tool results with background task IDs.
+   * When a background Task result returns, it contains the task_id.
+   * We store the original Task input metadata keyed by task_id for later TaskOutput use.
+   */
+  private correlateTaskResults(toolResults: ToolResultEvent[]): void {
+    for (const tr of toolResults) {
+      const taskInput = this.pendingTaskInputs.get(tr.toolUseId);
+      if (!taskInput) continue;
+
+      // Extract task_id from the result text (SDK returns it in the result)
+      const taskId = this.extractTaskIdFromResult(tr.result);
+      if (taskId) {
+        const summary = ToolFormatter.getTaskToolSummary(taskInput);
+        this.backgroundTaskMeta.set(taskId, {
+          name: summary.subagentLabel || summary.subagentType,
+          subagentLabel: summary.subagentLabel,
+          promptPreview: summary.promptPreview,
+        });
+      }
+      this.pendingTaskInputs.delete(tr.toolUseId);
+    }
+  }
+
+  /**
+   * Extract task_id from a Task tool result.
+   * The SDK returns text like "Task started in background. output_file: /path task_id: abc123"
+   * or the result may contain structured data.
+   */
+  private extractTaskIdFromResult(result: any): string | undefined {
+    if (!result) return undefined;
+
+    // If result is a string, search for task_id pattern
+    if (typeof result === 'string') {
+      const match = result.match(/task_id[:\s]+(\S+)/i);
+      return match?.[1];
+    }
+
+    // If result is an array (common SDK format), search text parts
+    if (Array.isArray(result)) {
+      for (const part of result) {
+        const text = typeof part === 'string' ? part : part?.text;
+        if (typeof text === 'string') {
+          const match = text.match(/task_id[:\s]+(\S+)/i);
+          if (match) return match[1];
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Enrich TaskOutput input with original Task metadata for display.
+   * Adds _taskMeta to the input so the formatter can show meaningful info.
+   */
+  private enrichTaskOutputInput(input: any): any {
+    const taskId = input?.task_id;
+    if (!taskId) return input;
+
+    const meta = this.backgroundTaskMeta.get(taskId);
+    if (!meta) return input;
+
+    return { ...input, _taskMeta: meta };
   }
 }

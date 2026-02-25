@@ -336,7 +336,7 @@ export class ToolFormatter {
 
       if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
 
-      parts.push(this.formatOneLineToolUse(name, input));
+      parts.push(`⚪ ${this.formatOneLineToolUse(name, input)}`);
     }
 
     return parts.join('\n');
@@ -371,6 +371,13 @@ export class ToolFormatter {
           : `${emoji} Skill`;
       }
       case 'TaskOutput': {
+        const meta = input?._taskMeta;
+        if (meta?.subagentLabel || meta?.name) {
+          const label = meta.subagentLabel || meta.name;
+          return meta.promptPreview
+            ? `${emoji} TaskOutput: *${label}* — ${this.truncateString(meta.promptPreview, 30)}`
+            : `${emoji} TaskOutput: *${label}*`;
+        }
         const taskId = input?.task_id || '';
         return taskId
           ? `${emoji} TaskOutput: \`${this.truncateString(taskId, 20)}\``
@@ -455,8 +462,8 @@ export class ToolFormatter {
 
   /** Format a compact completion line for in-place tool message update */
   static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
-    const icon = isError ? '❌' : '✅';
-    return `${icon}${this.formatOneLineToolUse(toolName, input)}`;
+    const icon = isError ? '🔴' : '🟢';
+    return `${icon} ${this.formatOneLineToolUse(toolName, input)}`;
   }
 
   /**
@@ -499,7 +506,7 @@ export class ToolFormatter {
       return null;
     }
 
-    const statusIcon = isError ? '❌' : '✅';
+    const statusIcon = isError ? '🔴' : '🟢';
     let formatted = `${statusIcon} *${toolName} 결과*\n`;
 
     if (result) {
@@ -561,7 +568,7 @@ export class ToolFormatter {
       actualToolName = parts.slice(2).join('__') || toolName;
     }
 
-    const statusIcon = isError ? '❌' : '✅';
+    const statusIcon = isError ? '🔴' : '🟢';
     let formatted = `${statusIcon} *MCP Result: ${serverName} → ${actualToolName}*`;
 
     if (duration !== null && duration !== undefined) {
