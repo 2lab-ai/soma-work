@@ -156,7 +156,7 @@ export class McpStatusDisplay {
     const msgInfo = this.statusMessages.get(callId);
     if (msgInfo) {
       try {
-        let completedText = `✅ *${msgInfo.displayType} 완료: ${msgInfo.displayLabel}*`;
+        let completedText = `🟢 *${msgInfo.displayType} 완료: ${msgInfo.displayLabel}*`;
         if (duration !== null && duration !== undefined) {
           completedText += ` (${McpCallTracker.formatDuration(duration)})`;
         }
@@ -360,14 +360,14 @@ export class McpStatusDisplay {
 
     let header: string;
     if (allDone) {
-      header = `✅ ${total}개 작업 완료`;
+      header = `🟢 ${total}개 작업 완료`;
     } else {
       header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
     }
 
     const lines = entries.map(entry => {
       if (entry.status === 'completed') {
-        let line = `✅ ${entry.displayLabel}`;
+        let line = `🟢 ${entry.displayLabel}`;
         if (entry.duration !== undefined) {
           line += ` (${McpCallTracker.formatDuration(entry.duration)})`;
         }
