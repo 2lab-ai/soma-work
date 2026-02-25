@@ -404,42 +404,36 @@ export class ClaudeHandler {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
     }
 
-    // Add PermissionRequest hook for dangerous command filtering + bypass auto-approve
-    if (slackContext) {
+    // PreToolUse hook: bypass auto-approve + dangerous command filtering
+    // Uses permissionDecision in PreToolUseHookSpecificOutput (reliable SDK mechanism)
+    if (slackContext && mcpConfig.userBypass) {
       options.hooks = {
         ...options.hooks,
-        PermissionRequest: [{
+        PreToolUse: [{
           hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-            if (input.hook_event_name !== 'PermissionRequest') {
-              return { continue: true };
+            const { tool_name, tool_input } = input as { tool_name: string; tool_input: unknown };
+
+            // Dangerous Bash commands → fall through to Slack permission UI
+            if (tool_name === 'Bash') {
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+              if (isDangerousCommand(command)) {
+                this.logger.warn('Dangerous command detected — forcing Slack permission UI', {
+                  tool_name,
+                  command: command.substring(0, 100),
+                  user: slackContext.user,
+                });
+                return { continue: true };
+              }
             }
 
-            const { tool_name, tool_input } = input;
-            const command = typeof (tool_input as any)?.command === 'string'
-              ? (tool_input as any).command
-              : '';
-
-            // Dangerous commands ALWAYS require explicit user approval via Slack UI
-            if (tool_name === 'Bash' && isDangerousCommand(command)) {
-              this.logger.warn('Dangerous command detected — forcing Slack permission UI', {
-                tool_name,
-                command: command.substring(0, 100),
-                user: slackContext.user,
-              });
-              return { continue: true };
-            }
-
-            // Bypass users: auto-approve non-dangerous commands
-            if (mcpConfig.userBypass) {
-              this.logger.debug('Bypass user — auto-approving non-dangerous tool', {
-                tool_name,
-                user: slackContext.user,
-              });
-              return { decision: 'approve' };
-            }
-
-            // Non-bypass users: let Slack UI handle all permission requests
-            return { continue: true };
+            // Bypass user: auto-approve all non-dangerous tools
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+              },
+            };
           }],
         }],
       };
