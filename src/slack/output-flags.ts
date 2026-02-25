@@ -72,6 +72,7 @@ export const LOG_COMPACT =
   LOG_MINIMAL |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
+  OutputFlag.MCP_PROGRESS |
   OutputFlag.STATUS_MESSAGE |
   OutputFlag.STATUS_REACTION |
   OutputFlag.STATUS_SPINNER |

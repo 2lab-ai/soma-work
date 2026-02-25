@@ -5,7 +5,7 @@ import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
-import { fetchGitHubPRDetails, isPRMergeable } from '../link-metadata-fetcher';
+import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
 import { ThreadHeaderBuilder } from './thread-header-builder';
 
 interface ThreadPanelDeps {
@@ -288,7 +288,10 @@ export class ThreadPanel {
     if (!prLink || prLink.provider !== 'github') return undefined;
 
     try {
-      const details = await fetchGitHubPRDetails(prLink);
+      const [details, reviewStatus] = await Promise.all([
+        fetchGitHubPRDetails(prLink),
+        fetchGitHubPRReviewStatus(prLink),
+      ]);
       if (!details) return undefined;
 
       const prStatus: PRStatusInfo = {
@@ -296,6 +299,7 @@ export class ThreadPanel {
         mergeable: isPRMergeable(details),
         draft: details.draft,
         merged: details.merged,
+        approved: reviewStatus === 'approved',
         head: details.head,
         base: details.base,
       };
@@ -307,6 +311,7 @@ export class ThreadPanel {
           mergeable: prStatus.mergeable,
           draft: prStatus.draft,
           merged: prStatus.merged,
+          approved: prStatus.approved,
           head: prStatus.head,
           base: prStatus.base,
         };

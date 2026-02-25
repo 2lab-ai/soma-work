@@ -5,6 +5,7 @@ export interface PRStatusInfo {
   mergeable: boolean;
   draft: boolean;
   merged: boolean;
+  approved?: boolean; // true if PR has been approved
   head?: string;      // source branch
   base?: string;      // target branch
 }
@@ -51,13 +52,13 @@ interface PanelActionDef {
 }
 
 const ACTION_DEFS: Record<PanelActionKey, PanelActionDef> = {
-  pr_fix_new: { key: 'pr_fix_new', actionId: 'panel_pr_fix_new', label: '🆕 Fix' },
-  pr_fix_renew: { key: 'pr_fix_renew', actionId: 'panel_pr_fix_renew', label: '♻️ Fix' },
-  pr_review_new: { key: 'pr_review_new', actionId: 'panel_pr_review_new', label: '🆕 리뷰' },
-  pr_review_renew: { key: 'pr_review_renew', actionId: 'panel_pr_review_renew', label: '♻️ 리뷰' },
+  pr_fix_new: { key: 'pr_fix_new', actionId: 'panel_pr_fix_new', label: 'New Fix' },
+  pr_fix_renew: { key: 'pr_fix_renew', actionId: 'panel_pr_fix_renew', label: 'Renew Fix' },
+  pr_review_new: { key: 'pr_review_new', actionId: 'panel_pr_review_new', label: 'New 리뷰' },
+  pr_review_renew: { key: 'pr_review_renew', actionId: 'panel_pr_review_renew', label: 'Renew 리뷰' },
   pr_docs: { key: 'pr_docs', actionId: 'panel_pr_docs', label: 'PR 문서화' },
   pr_approve: { key: 'pr_approve', actionId: 'panel_pr_approve', label: 'PR 승인', style: 'primary' },
-  pr_merge: { key: 'pr_merge', actionId: 'panel_pr_merge', label: '🔀 Merge', style: 'primary' },
+  pr_merge: { key: 'pr_merge', actionId: 'panel_pr_merge', label: 'Merge', style: 'primary' },
 };
 
 const DEFAULT_ACTIONS: PanelActionKey[] = [];
@@ -109,36 +110,52 @@ export class ActionPanelBuilder {
 
     const isQuestionPending = params.waitingForChoice === true;
     const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
-    const defaultButtons = actions.map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
 
-    // Dynamic: add review buttons when PR exists and workflow doesn't already have them
-    if (params.prUrl && !actions.some(k => k.startsWith('pr_review'))) {
-      defaultButtons.push(this.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
-      defaultButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
-    }
+    // Build close button (always present, separated with divider)
+    const closeButton = this.buildCloseButton(params.sessionKey);
 
-    // Add merge button when PR is mergeable
-    if (params.prStatus?.mergeable && params.prUrl) {
-      defaultButtons.push(this.buildMergeButton(params));
-    }
+    // Build workflow action blocks
+    let actionBlocks: any[];
 
-    // Close button always at the end
-    defaultButtons.push(this.buildCloseButton(params.sessionKey));
-
-    // Add stop button when session is actively working
     if (isWorking) {
-      defaultButtons.unshift({
+      // Working: show only stop button; close button after divider
+      const stopButton = {
         type: 'button',
-        text: { type: 'plain_text', text: '🛑 중지', emoji: true },
+        text: { type: 'plain_text', text: '중지', emoji: true },
         action_id: 'panel_stop',
         value: JSON.stringify({ sessionKey: params.sessionKey, action: 'stop' }),
-        style: 'danger',
-      });
-    }
+        style: 'danger' as const,
+      };
+      actionBlocks = [{ type: 'actions', elements: [stopButton] }];
+    } else if (isQuestionPending) {
+      // Waiting for choice: no workflow buttons
+      actionBlocks = [];
+    } else {
+      // Idle: show workflow buttons
+      const workflowButtons = actions
+        .filter((key) => {
+          // Hide pr_approve when PR is already approved or merged
+          if (key === 'pr_approve' && params.prStatus?.approved) return false;
+          if (key === 'pr_approve' && params.prStatus?.merged) return false;
+          return true;
+        })
+        .map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
 
-    const actionBlocks = isQuestionPending
-      ? []
-      : this.chunk(defaultButtons, 5).map((row) => ({ type: 'actions', elements: row }));
+      // Dynamic: add review buttons when PR exists and workflow doesn't already have them
+      if (params.prUrl && !actions.some(k => k.startsWith('pr_review'))) {
+        workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
+        workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
+      }
+
+      // Add merge button when PR is mergeable
+      if (params.prStatus?.mergeable && params.prUrl) {
+        workflowButtons.push(this.buildMergeButton(params));
+      }
+
+      actionBlocks = workflowButtons.length > 0
+        ? this.chunk(workflowButtons, 5).map((row) => ({ type: 'actions', elements: row }))
+        : [];
+    }
 
     const blocks: any[] = [];
 
@@ -162,8 +179,18 @@ export class ActionPanelBuilder {
     });
     if (metricsCtx) blocks.push(metricsCtx);
 
-    // 3. Action buttons (hidden when waiting for choice — choice UI stays in thread only)
+    // 3. Choice slot (when waiting for user input)
+    if (isQuestionPending && params.choiceBlocks) {
+      blocks.push({ type: 'divider' });
+      blocks.push(...this.buildChoiceSlotBlocks(params.choiceBlocks));
+    }
+
+    // 4. Action buttons
     blocks.push(...actionBlocks);
+
+    // 5. Divider + close button (always present)
+    blocks.push({ type: 'divider' });
+    blocks.push({ type: 'actions', elements: [closeButton] });
 
     return {
       text: `Action panel (${workflow}) - ${status}`,
@@ -369,6 +396,8 @@ export class ActionPanelBuilder {
     if (prStatus.merged) return '🟣 Merged';
     if (prStatus.draft) return '⚪ Draft';
     if (prStatus.state === 'closed') return '🔴 Closed';
+    if (prStatus.approved && prStatus.mergeable) return '👍 Approved · ✅ Merge 가능';
+    if (prStatus.approved) return '👍 Approved';
     if (prStatus.mergeable) return '✅ Merge 가능';
     if (prStatus.state === 'open') return '⚠️ Merge 불가';
     return '';
@@ -381,7 +410,7 @@ export class ActionPanelBuilder {
 
     return {
       type: 'button',
-      text: { type: 'plain_text', text: '🔀 Merge', emoji: true },
+      text: { type: 'plain_text', text: 'Merge', emoji: true },
       action_id: 'panel_pr_merge',
       style: 'primary',
       value: JSON.stringify({
@@ -403,6 +432,15 @@ export class ActionPanelBuilder {
     };
   }
 
+  private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
+    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
+      return [{
+        type: 'section',
+        text: { type: 'mrkdwn', text: '❓ *응답이 필요한 질문이 있습니다.*' },
+      }];
+    }
+    return choiceBlocks.map((block) => JSON.parse(JSON.stringify(block)));
+  }
 
   private static truncateLine(input: string, maxLength: number): string {
     if (input.length <= maxLength) {
@@ -414,8 +452,9 @@ export class ActionPanelBuilder {
   private static buildCloseButton(sessionKey: string): any {
     return {
       type: 'button',
-      text: { type: 'plain_text', text: '🔒 종료', emoji: true },
+      text: { type: 'plain_text', text: '세션 종료', emoji: true },
       action_id: 'panel_close',
+      style: 'danger',
       value: JSON.stringify({ sessionKey, action: 'close' }),
       confirm: {
         title: { type: 'plain_text', text: '세션 종료' },
