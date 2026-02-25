@@ -152,7 +152,9 @@ export function getToolResultRenderMode(mask: number): RenderMode {
 /** Resolve the render mode for thinking output */
 export function getThinkingRenderMode(mask: number): RenderMode {
   if (!shouldOutput(OutputFlag.THINKING, mask)) return 'hidden';
-  return 'detail'; // compact+ shows thinking fully
+  if (shouldOutput(OutputFlag.RAW_DATA, mask))   return 'verbose';
+  if (shouldOutput(OutputFlag.TOOL_DETAIL, mask)) return 'detail';
+  return 'compact';
 }
 
 // ── Verbose tagging (debug annotations) ─────────────────────────────
