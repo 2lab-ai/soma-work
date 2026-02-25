@@ -658,7 +658,7 @@ export class StreamProcessor {
         const entry = this.toolCallMessageTs.get(tr.toolUseId);
         if (entry) {
           const icon = tr.isError ? '❌' : '✅';
-          const line = ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input).replace(/^./, icon);
+          const line = `${icon}${ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input)}`;
           await this.callbacks.onUpdateMessage(context.channel, entry.ts, line);
           this.toolCallMessageTs.delete(tr.toolUseId);
         }
