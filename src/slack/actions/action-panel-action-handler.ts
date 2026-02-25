@@ -335,6 +335,8 @@ export class ActionPanelActionHandler {
           prStatus: session.actionPanel.prStatus
             ? { ...session.actionPanel.prStatus }
             : undefined,
+          turnSummary: session.actionPanel.turnSummary,
+          latestResponseLink: session.actionPanel.latestResponseLink,
         });
         await this.ctx.slackApi.updateMessage(
           session.channelId,
