@@ -101,50 +101,59 @@ type PreToolUseHookSpecificOutput = {
 - `'deny'` — 이 툴 호출을 거부
 - `'ask'` — 유저에게 직접 물어봄
 
-### 구현
+### 최종 구현 (bypassPermissions 모드 복원)
+
+위 접근도 아키텍처가 뒤집힌 상태였다 (default 모드 + hook으로 매 툴마다 allow).
+올바른 설계: **bypass 모드를 유지하고, 위험 Bash만 hook으로 차단**.
+
+`mcp-config-builder.ts`:
+
+```typescript
+// bypass 유저 → bypassPermissions 모드 복원 (원래대로)
+// permission-prompt MCP 서버는 모든 Slack 유저에게 생성 (위험 명령 ask용)
+const config: McpConfig = !slackContext || userBypass
+  ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
+  : { permissionMode: 'default', userBypass };
+```
 
 `claude-handler.ts`:
 
 ```typescript
-// bypass 유저에게만 PreToolUse hook 등록
+// bypass 유저에게만 PreToolUse hook 등록, Bash 매칭만
 if (slackContext && mcpConfig.userBypass) {
   options.hooks = {
     ...options.hooks,
     PreToolUse: [{
+      matcher: 'Bash',  // Bash 툴에서만 hook 실행
       hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-        const { tool_name, tool_input } = input as { tool_name: string; tool_input: unknown };
+        const { tool_input } = input as { tool_input: unknown };
+        const toolRecord = tool_input as Record<string, unknown> | undefined;
+        const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-        // 위험 명령 → Slack UI로 넘김
-        if (tool_name === 'Bash') {
-          const toolRecord = tool_input as Record<string, unknown> | undefined;
-          const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
-          if (isDangerousCommand(command)) {
-            return { continue: true };
-          }
+        if (isDangerousCommand(command)) {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'ask',  // bypass 모드 override → Slack UI 표시
+            },
+          };
         }
 
-        // 안전한 명령 → 자동 승인
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'allow',
-          },
-        };
+        return { continue: true };  // bypass 모드가 자동 승인
       }],
     }],
   };
 }
 ```
 
-`mcp-config-builder.ts`는 유지 (모든 Slack 유저 `default` 모드).
-
 ### 분기표
 
-| 유저 상태 | 툴 종류 | hook | 결과 |
-|-----------|---------|------|------|
-| bypass ON | 안전한 명령 | PreToolUse → `permissionDecision: 'allow'` | 자동 승인, UI 안 뜸 |
-| bypass ON | 위험한 명령 (kill, rm -rf 등) | PreToolUse → `{ continue: true }` | Slack UI 퍼미션 표시 |
-| bypass OFF | 모든 명령 | hook 미등록 | 기존대로 Slack UI 퍼미션 표시 |
+| 유저 상태 | 툴 종류 | 동작 |
+|-----------|---------|------|
+| bypass ON | Bash 이외 모든 툴 | `bypassPermissions` 모드가 자동 승인. hook 안 탐. |
+| bypass ON | Bash + 안전한 명령 | hook이 `{ continue: true }` → bypass 모드가 자동 승인 |
+| bypass ON | Bash + 위험한 명령 | hook이 `permissionDecision: 'ask'` → Slack UI 퍼미션 표시 |
+| bypass OFF | 모든 명령 | `default` 모드. hook 미등록. Slack UI 퍼미션 표시. |
 
 ### 위험 명령 목록 (`dangerous-command-filter.ts`)
 
@@ -171,14 +180,11 @@ if (slackContext && mcpConfig.userBypass) {
 
 ## 남은 문제
 
-### 아키텍처 뒤집힘
+### bypassPermissions 모드에서 PreToolUse permissionDecision 존중 여부
 
-bypass 유저가 원래 `bypassPermissions` 모드였는데, 현재는 `default` 모드 + PreToolUse hook으로 우회하는 구조.
-동작은 하지만 모든 툴 호출마다 hook이 실행되는 오버헤드가 있고, bypass의 원래 의미("SDK 레벨에서 퍼미션 자체를 건너뜀")와 다르다.
-
-이상적으로는 bypass 유저를 `bypassPermissions` 모드로 돌리고 위험 명령만 별도 차단하는 것이 맞으나,
-`bypassPermissions` 모드에서는 `PreToolUse` hook의 `permissionDecision`이 존중되는지 검증되지 않았다.
-현재 방식이 동작하는 현실적 타협점.
+`bypassPermissions` 모드에서 PreToolUse hook의 `permissionDecision: 'ask'`가 실제로 Slack UI를 트리거하는지
+배포 후 실제 테스트로 검증 필요. 만약 bypass 모드가 hook을 무시하면, 위험 명령도 자동 승인될 수 있다.
+그 경우 `permissionDecision: 'deny'`로 전환하여 명령 자체를 차단하는 방식으로 폴백.
 
 ### 정규식 빈틈
 

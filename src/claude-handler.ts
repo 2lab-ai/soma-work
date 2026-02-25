@@ -404,36 +404,32 @@ export class ClaudeHandler {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
     }
 
-    // PreToolUse hook: bypass auto-approve + dangerous command filtering
-    // Uses permissionDecision in PreToolUseHookSpecificOutput (reliable SDK mechanism)
+    // PreToolUse hook: intercept dangerous Bash commands even in bypass mode
+    // bypassPermissions auto-approves everything; this hook overrides with 'ask' for dangerous commands only
     if (slackContext && mcpConfig.userBypass) {
       options.hooks = {
         ...options.hooks,
         PreToolUse: [{
+          matcher: 'Bash',
           hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-            const { tool_name, tool_input } = input as { tool_name: string; tool_input: unknown };
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-            // Dangerous Bash commands → fall through to Slack permission UI
-            if (tool_name === 'Bash') {
-              const toolRecord = tool_input as Record<string, unknown> | undefined;
-              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
-              if (isDangerousCommand(command)) {
-                this.logger.warn('Dangerous command detected — forcing Slack permission UI', {
-                  tool_name,
-                  command: command.substring(0, 100),
-                  user: slackContext.user,
-                });
-                return { continue: true };
-              }
+            if (isDangerousCommand(command)) {
+              this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'ask',
+                },
+              };
             }
 
-            // Bypass user: auto-approve all non-dangerous tools
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'allow',
-              },
-            };
+            return { continue: true };
           }],
         }],
       };
