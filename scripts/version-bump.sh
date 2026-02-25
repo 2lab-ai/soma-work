@@ -4,13 +4,24 @@
 # Usage: ./scripts/version-bump.sh [branch]
 #   branch: 'main' or 'dev' (default: current git branch)
 #
+# Version scheme:
+#   Base tags:   v0.2, v0.3 (manual milestones)
+#   Main deploy: v0.2.1, v0.2.2, ... (auto patch bump from latest non-dev tag)
+#   Dev deploy:  v0.2.1-dev, v0.2.2-dev, ... (auto patch bump, -dev suffix)
+#
 # Outputs: dist/version.json with version metadata and release notes
-# Side effect: creates and pushes a new git tag (vX.Y.Z)
+# Side effect: creates and pushes a new git tag (vX.Y.Z or vX.Y.Z-dev)
 
 set -euo pipefail
 
 BRANCH="${1:-$(git branch --show-current)}"
 DIST_DIR="dist"
+
+# --- Ensure tags are synced (critical for self-hosted runners) ---
+
+git fetch --tags --prune-tags --force 2>/dev/null || {
+  echo "[version-bump] Warning: failed to fetch tags (using local only)"
+}
 
 # --- Semver helpers ---
 
@@ -37,14 +48,62 @@ bump_patch() {
   echo "${major}.${minor}.$((patch + 1))"
 }
 
-# --- Find latest version tag ---
-# Use branch-specific tag prefix to prevent collision between main and dev
-TAG_PREFIX="v"
-if [[ "$BRANCH" == "dev" ]]; then
-  TAG_PREFIX="v"  # Both use v* prefix, but dev gets -dev suffix
-fi
+# --- Find latest version tag (branch-aware) ---
+#
+# Strategy:
+#   1. Find branch-specific tags first (dev → *-dev, main → non-dev)
+#   2. Also find the latest base/release tag as fallback
+#   3. Pick whichever is newer (higher version)
 
-LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -1)
+find_latest_tag() {
+  local branch="$1"
+  local branch_tag=""
+  local base_tag=""
+
+  if [[ "$branch" == "dev" ]]; then
+    # Dev: look for -dev tags first
+    branch_tag=$(git tag -l 'v*-dev' --sort=-version:refname | head -1)
+  else
+    # Main: look for non-dev tags (exclude -dev suffix)
+    branch_tag=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' | head -1)
+  fi
+
+  # Also find the latest base release tag (no -dev, used as milestone)
+  base_tag=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' | head -1)
+
+  # Compare and pick the higher version
+  if [[ -z "$branch_tag" && -z "$base_tag" ]]; then
+    echo ""
+    return
+  fi
+
+  if [[ -z "$branch_tag" ]]; then
+    echo "$base_tag"
+    return
+  fi
+
+  if [[ -z "$base_tag" ]]; then
+    echo "$branch_tag"
+    return
+  fi
+
+  # Normalize both and compare
+  local branch_ver base_ver
+  branch_ver=$(normalize_version "$branch_tag")
+  base_ver=$(normalize_version "$base_tag")
+
+  # Use sort -V to find the higher version
+  local higher
+  higher=$(printf '%s\n%s\n' "$branch_ver" "$base_ver" | sort -V | tail -1)
+
+  if [[ "$higher" == "$branch_ver" ]]; then
+    echo "$branch_tag"
+  else
+    echo "$base_tag"
+  fi
+}
+
+LATEST_TAG=$(find_latest_tag "$BRANCH")
 
 if [[ -z "$LATEST_TAG" ]]; then
   echo "[version-bump] No existing tags found, starting at v0.1.0"
