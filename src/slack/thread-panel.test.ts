@@ -61,14 +61,13 @@ describe('ThreadPanel', () => {
     );
     expect(statusSection).toBeDefined();
 
-    // Metrics context block
-    const metricsCtx = blocks.find((block: any) =>
-      block.type === 'context'
-        && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
+    // Fields section block (context% in fields)
+    const fieldsSection = blocks.find((block: any) =>
+      block.type === 'section' && Array.isArray(block.fields)
     );
-    expect(metricsCtx).toBeDefined();
-    const metricsText = String(metricsCtx.elements?.[0]?.text || '');
-    expect(metricsText).toContain('📦 --%');
+    expect(fieldsSection).toBeDefined();
+    const fieldsText = fieldsSection.fields.map((f: any) => String(f.text || '')).join(' ');
+    expect(fieldsText).toContain('--%');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
     expect(actionsCount).toBeGreaterThan(0);
@@ -119,7 +118,7 @@ describe('ThreadPanel', () => {
         && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || ''))
     );
     const statusText = String(statusSection?.text?.text || '');
-    expect(statusText).toContain('⚙️ *작업 중*');
+    expect(statusText).toContain('🟢 *작업 중*');
     expect(slackApi.updateMessage.mock.calls[1]?.[5]).toEqual({
       unfurlLinks: false,
       unfurlMedia: false,
@@ -170,12 +169,11 @@ describe('ThreadPanel', () => {
     await panel.create(session, 'C123:context-thread');
 
     const blocks = getPostedBlocks(slackApi);
-    const metricsCtx = blocks.find((block: any) =>
-      block.type === 'context'
-        && block.elements?.some((el: any) => /📦/.test(String(el?.text || '')))
+    const fieldsSection = blocks.find((block: any) =>
+      block.type === 'section' && Array.isArray(block.fields)
     );
-    const metricsText = String(metricsCtx?.elements?.[0]?.text || '');
-    expect(metricsText).toContain('📦 60%');
+    const fieldsText = fieldsSection?.fields?.map((f: any) => String(f.text || '')).join(' ') || '';
+    expect(fieldsText).toContain('60%');
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {
