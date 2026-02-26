@@ -423,6 +423,12 @@ export class StreamExecutor {
 
       // Create and run stream processor
       const processor = new StreamProcessor(streamCallbacks);
+
+      // Wire compact duration callback: tool-event-processor → stream-processor
+      this.deps.toolEventProcessor.setCompactDurationCallback(
+        (toolUseId, duration, ch) => processor.updateToolCallDuration(toolUseId, duration, ch)
+      );
+
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
         streamContext,
