@@ -21,6 +21,9 @@ export interface VersionInfo {
   branch: string;
   buildTime: string;
   releaseNotes: string;
+  isRollback?: boolean;
+  rollbackTargetTag?: string | null;
+  rollbackTargetVersion?: string | null;
 }
 
 function loadVersionInfo(): VersionInfo | null {
@@ -89,17 +92,22 @@ export async function notifyRelease(client: WebClient): Promise<void> {
 
   const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
     versionInfo.version !== versionInfo.previousVersion;
+  const isRollback = versionInfo.isRollback === true;
 
-  const headerText = isUpgrade
-    ? `🚀 *v${versionInfo.version}* 배포 완료  _(v${versionInfo.previousVersion} → v${versionInfo.version})_`
-    : `🚀 *v${versionInfo.version}* 배포 완료`;
+  const headerText = isRollback
+    ? `⏪ *v${versionInfo.version}* 롤백 완료  _(v${versionInfo.previousVersion} → ${versionInfo.rollbackTargetTag || 'previous'})_`
+    : isUpgrade
+      ? `🚀 *v${versionInfo.version}* 배포 완료  _(v${versionInfo.previousVersion} → v${versionInfo.version})_`
+      : `🚀 *v${versionInfo.version}* 배포 완료`;
 
   const blocks: any[] = [
     {
       type: 'header',
       text: {
         type: 'plain_text',
-        text: `🚀 soma-work v${versionInfo.version} 배포`,
+        text: isRollback
+          ? `⏪ soma-work v${versionInfo.version} 롤백`
+          : `🚀 soma-work v${versionInfo.version} 배포`,
         emoji: true,
       },
     },

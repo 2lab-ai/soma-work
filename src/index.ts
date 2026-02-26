@@ -162,14 +162,18 @@ async function start() {
       if (versionInfo) {
         const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
           versionInfo.version !== versionInfo.previousVersion;
+        const isRollback = versionInfo.isRollback === true;
+        const headerText = isRollback
+          ? `⏪ v${versionInfo.version} Rollback (${versionInfo.previousVersion} → ${versionInfo.rollbackTargetVersion || 'previous'})`
+          : isUpgrade
+            ? `🚀 v${versionInfo.version} Started (${versionInfo.previousVersion} → ${versionInfo.version})`
+            : `🚀 v${versionInfo.version} Started`;
         blocks.push(
           {
             type: 'header',
             text: {
               type: 'plain_text',
-              text: isUpgrade
-                ? `🚀 v${versionInfo.version} Started (${versionInfo.previousVersion} → ${versionInfo.version})`
-                : `🚀 v${versionInfo.version} Started`,
+              text: headerText,
               emoji: true,
             },
           },
@@ -201,15 +205,22 @@ async function start() {
 
       // Changelog
       if (versionInfo?.releaseNotes) {
-        const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
+        const isVersionChange = versionInfo.previousVersion !== '0.0.0' &&
           versionInfo.version !== versionInfo.previousVersion;
+        const rollback = versionInfo.isRollback === true;
+        const changelogLabel = rollback ? '*⏪ 롤백*' : '*📋 변경 사항*';
+        const tagTransition = rollback
+          ? ` _(${versionInfo.previousTag} → ${versionInfo.rollbackTargetTag || 'previous'})_`
+          : isVersionChange
+            ? ` _(${versionInfo.previousTag} → ${versionInfo.tag})_`
+            : '';
         blocks.push(
           { type: 'divider' },
           {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `*📋 변경 사항*${isUpgrade ? ` _(${versionInfo.previousTag} → ${versionInfo.tag})_` : ''}\n\n${versionInfo.releaseNotes}`,
+              text: `${changelogLabel}${tagTransition}\n\n${versionInfo.releaseNotes}`,
             },
           },
         );
