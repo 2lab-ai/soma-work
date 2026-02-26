@@ -59,8 +59,8 @@ export class SessionCommandHandler implements CommandHandler {
     const userDefault = userSettingsStore.getUserDefaultModel(user);
     const isModelOverridden = session.model && session.model !== userDefault;
 
-    const effortLevel = session.effort || 'max';
-    const isEffortOverridden = session.effort != null && session.effort !== 'max';
+    const effortLevel = session.effort || 'default';
+    const isEffortOverridden = session.effort != null;
 
     const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
     const verbosityName = getVerbosityName(verbosityMask);
@@ -222,11 +222,11 @@ export class SessionCommandHandler implements CommandHandler {
     session: any
   ): Promise<CommandResult> {
     const { say, threadTs } = ctx;
-    const effortLevel = session.effort || 'max';
-    const isOverridden = session.effort != null && session.effort !== 'max';
+    const effortLevel = session.effort || 'default';
+    const isOverridden = session.effort != null;
 
     await say({
-      text: `🧠 *Session Effort:* ${effortLevel}${isOverridden ? '\n⚡ _Overridden for this session (default: max)_' : ''}`,
+      text: `🧠 *Session Effort:* ${effortLevel}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
       thread_ts: threadTs,
     });
     return { handled: true };
@@ -244,15 +244,16 @@ export class SessionCommandHandler implements CommandHandler {
     if (!valid.includes(normalized as any)) {
       const validStr = valid.map(v => `\`${v}\``).join(', ');
       await say({
-        text: `❌ Unknown effort level \`${input}\`.\n*Available:* ${validStr}`,
+        text: `❌ Unknown effort level \`${input}\`.\n*Available:* ${validStr}\n_⚠️ \`max\` requires API key (not available for Claude.ai subscribers)_`,
         thread_ts: threadTs,
       });
       return { handled: true };
     }
 
     session.effort = normalized as typeof valid[number];
+    const warning = normalized === 'max' ? '\n_⚠️ \`max\` requires API key — will fail on Claude.ai subscription_' : '';
     await say({
-      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*\n_Default is \`max\`. Use \`$effort max\` to restore._`,
+      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`$effort high\` to restore default._`,
       thread_ts: threadTs,
     });
     return { handled: true };
