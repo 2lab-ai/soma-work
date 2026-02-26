@@ -34,6 +34,7 @@
     "dotenv": "=16.6.0",
     "fastify": "^5.7.2",
     "jsonwebtoken": "=9.0.2",
+    "markdown-to-slack-blocks": "^1.4.1",
     "node-fetch": "=3.3.2"
   }
 }
