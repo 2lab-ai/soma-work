@@ -383,7 +383,9 @@ export class ClaudeHandler {
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
       settingSources: ['project'],
       // Load local plugins (skills, etc.) from src/local directory
-      plugins: [{ type: 'local', path: LOCAL_PLUGINS_DIR }],
+      plugins: [
+        { type: 'local', path: LOCAL_PLUGINS_DIR }
+      ],
     };
 
     // Get MCP configuration
@@ -444,6 +446,12 @@ export class ClaudeHandler {
       options.model = userModel;
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
+
+    // Set adaptive thinking and effort level
+    options.thinking = { type: 'adaptive' };
+    const effort = session?.effort || 'max';
+    options.effort = effort;
+    this.logger.debug('Using thinking config', { thinking: 'adaptive', effort });
 
     // Build system prompt with persona and workflow
     const workflow = session?.workflow || 'default';

@@ -79,6 +79,8 @@ interface SerializedSession {
   activityState?: ActivityState;
   // Log verbosity bitmask
   logVerbosity?: number;
+  // Effort level for Claude thinking
+  effort?: 'low' | 'medium' | 'high' | 'max';
   // Action panel state
   actionPanel?: ActionPanelState;
   // Bot-initiated thread metadata
@@ -957,6 +959,7 @@ export class SessionRegistry {
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
             logVerbosity: session.logVerbosity,
+            effort: session.effort,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
@@ -1025,6 +1028,7 @@ export class SessionRegistry {
           sleepStartedAt,
           activityState: 'idle', // Always idle on restore (no active streams after restart)
           logVerbosity: serialized.logVerbosity,
+          effort: serialized.effort,
           actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,

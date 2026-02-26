@@ -240,6 +240,8 @@ export interface ConversationSession {
   actionPanel?: ActionPanelState;
   // Log verbosity bitmask (controls which output types are shown in Slack)
   logVerbosity?: number;
+  // Effort level for Claude thinking (low/medium/high/max)
+  effort?: 'low' | 'medium' | 'high' | 'max';
   // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
   threadModel?: 'user-initiated' | 'bot-initiated';
   // For bot-initiated threads: the root message ts (used for chat.update)

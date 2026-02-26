@@ -12,7 +12,8 @@ export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string 
 export type SessionCommandAction =
   | { type: 'info' }
   | { type: 'model'; action: 'status' | 'set'; model?: string }
-  | { type: 'verbosity'; action: 'status' | 'set'; level?: string };
+  | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
+  | { type: 'effort'; action: 'status' | 'set'; level?: string };
 
 export class CommandParser {
   /**
@@ -255,7 +256,7 @@ export class CommandParser {
    * Matches: $, $model, $model opus, $verbosity, $verbosity compact
    */
   static isSessionCommand(text: string): boolean {
-    return /^\$(?:model|verbosity)?(?:\s+\S+)?$/i.test(text.trim());
+    return /^\$(?:model|verbosity|effort)?(?:\s+\S+)?$/i.test(text.trim());
   }
 
   /**
@@ -276,6 +277,13 @@ export class CommandParser {
       return verbosityMatch[1]
         ? { type: 'verbosity', action: 'set', level: verbosityMatch[1] }
         : { type: 'verbosity', action: 'status' };
+    }
+
+    const effortMatch = trimmed.match(/^\$effort(?:\s+(\S+))?$/i);
+    if (effortMatch) {
+      return effortMatch[1]
+        ? { type: 'effort', action: 'set', level: effortMatch[1] }
+        : { type: 'effort', action: 'status' };
     }
 
     return { type: 'info' };
@@ -379,9 +387,11 @@ export class CommandParser {
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '',
       '*Session Settings ($ prefix):*',
-      '• `$` - Show current session info (model, verbosity, context, etc.)',
+      '• `$` - Show current session info (model, effort, verbosity, context, etc.)',
       '• `$model` - Show session model',
       '• `$model <name>` - Change model for this session only',
+      '• `$effort` - Show session effort level',
+      '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
       '• `$verbosity` - Show session verbosity',
       '• `$verbosity <level>` - Change verbosity for this session only',
       '',
