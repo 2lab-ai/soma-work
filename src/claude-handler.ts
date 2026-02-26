@@ -257,6 +257,9 @@ export class ClaudeHandler {
       systemPrompt: dispatchPrompt,
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
+      stderr: (data: string) => {
+        this.logger.warn('DISPATCH stderr', { data: data.trimEnd() });
+      },
     };
 
     if (model) {
@@ -492,6 +495,11 @@ export class ClaudeHandler {
     if (abortController) {
       options.abortController = abortController;
     }
+
+    // Capture Claude process stderr for debugging exit code 1 etc.
+    options.stderr = (data: string) => {
+      this.logger.warn('Claude stderr', { data: data.trimEnd() });
+    };
 
     this.logger.debug('Claude query options', options);
 
