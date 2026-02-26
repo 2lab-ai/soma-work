@@ -247,10 +247,24 @@ describe('Abort handling', () => {
     } as any;
   }
 
+  function createMockRenderer() {
+    return {
+      start: vi.fn().mockResolvedValue(undefined),
+      onToolStart: vi.fn().mockResolvedValue(undefined),
+      onToolComplete: vi.fn().mockResolvedValue(undefined),
+      onText: vi.fn().mockResolvedValue(undefined),
+      onThinking: vi.fn().mockResolvedValue(undefined),
+      onStatusChange: vi.fn().mockResolvedValue(undefined),
+      finish: vi.fn().mockResolvedValue(undefined),
+      abort: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
   it('treats "process aborted by user" as cancellation and preserves session', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
+    const mockRenderer = createMockRenderer();
     const error = new Error('Claude Code process aborted by user');
 
     await (executor as any).handleError(
@@ -259,25 +273,21 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
+      mockRenderer,
       [],
       say
     );
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).not.toHaveBeenCalled();
-    expect(deps.statusReporter.updateStatusDirect).toHaveBeenCalledWith(
-      'C123',
-      'status123',
-      'cancelled'
-    );
-    expect(deps.statusReporter.getStatusEmoji).toHaveBeenCalledWith('cancelled');
+    expect(mockRenderer.finish).toHaveBeenCalledWith({ status: 'cancelled' });
   });
 
   it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
+    const mockRenderer = createMockRenderer();
     const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
 
     await (executor as any).handleError(
@@ -286,7 +296,7 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
+      mockRenderer,
       [],
       say
     );
@@ -295,12 +305,14 @@ describe('Abort handling', () => {
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* ✅ 유지됨');
+    expect(mockRenderer.abort).toHaveBeenCalled();
   });
 
   it('preserves session for process exit code 143 (SIGTERM) errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
+    const mockRenderer = createMockRenderer();
     const error = new Error('Claude Code process exited with code 143');
 
     await (executor as any).handleError(
@@ -309,7 +321,7 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
+      mockRenderer,
       [],
       say
     );
@@ -318,12 +330,14 @@ describe('Abort handling', () => {
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* ✅ 유지됨');
+    expect(mockRenderer.abort).toHaveBeenCalled();
   });
 
   it('clears session for context-overflow errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
+    const mockRenderer = createMockRenderer();
     const error = new Error('Prompt is too long: maximum context length exceeded');
 
     await (executor as any).handleError(
@@ -332,7 +346,7 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
+      mockRenderer,
       [],
       say
     );
@@ -341,12 +355,14 @@ describe('Abort handling', () => {
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(mockRenderer.abort).toHaveBeenCalled();
   });
 
   it('clears session for invalid resume/session-not-found errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
+    const mockRenderer = createMockRenderer();
     const error = new Error('Conversation not found: cannot resume this session');
 
     await (executor as any).handleError(
@@ -355,7 +371,7 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
+      mockRenderer,
       [],
       say
     );
@@ -364,6 +380,7 @@ describe('Abort handling', () => {
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(mockRenderer.abort).toHaveBeenCalled();
   });
 });
 

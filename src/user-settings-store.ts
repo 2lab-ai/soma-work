@@ -3,6 +3,7 @@ import path from 'path';
 import { Logger } from './logger.js';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { type LogVerbosity, DEFAULT_LOG_VERBOSITY, getVerbosityFlags, VERBOSITY_NAMES } from './slack/output-flags';
+import { type UiMode, DEFAULT_UI_MODE, isValidUiMode, UI_MODE_NAMES } from './slack/progress/ui-mode';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -36,6 +37,7 @@ export interface UserSettings {
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
   defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
+  defaultUiMode?: UiMode;  // default UI mode for progress rendering
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -327,6 +329,29 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Get user's default UI mode
+   */
+  getUserDefaultUiMode(userId: string): UiMode {
+    return this.settings[userId]?.defaultUiMode ?? DEFAULT_UI_MODE;
+  }
+
+  /**
+   * Set user's default UI mode
+   */
+  setUserDefaultUiMode(userId: string, uiMode: UiMode): void {
+    this.patchUserSettings(userId, { defaultUiMode: uiMode });
+    logger.info('Set user default UI mode', { userId, uiMode });
+  }
+
+  /**
+   * Resolve UI mode input string to UiMode
+   */
+  resolveUiModeInput(input: string): UiMode | null {
+    const normalized = input.toLowerCase().trim();
+    return isValidUiMode(normalized) ? normalized : null;
   }
 
   /**

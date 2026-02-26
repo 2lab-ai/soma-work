@@ -15,6 +15,7 @@ import { RenewHandler } from './renew-handler';
 import { LinkHandler } from './link-handler';
 import { CloseHandler } from './close-handler';
 import { VerbosityHandler } from './verbosity-handler';
+import { UiHandler } from './ui-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { CommandParser } from '../command-parser';
 
@@ -36,6 +37,7 @@ export class CommandRouter {
       new PersonaHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
+      new UiHandler(deps),
       new RestoreHandler(),
       new NewHandler(deps),
       new OnboardingHandler(deps),

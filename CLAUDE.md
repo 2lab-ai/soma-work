@@ -31,7 +31,8 @@ src/
 ├── slack/           # Slack 모듈 (SRP 분리)
 │   ├── actions/     # 인터랙티브 액션 핸들러 (8개)
 │   ├── pipeline/    # 스트림 처리 파이프라인
-│   ├── commands/    # 슬래시 명령어 핸들러 (16개)
+│   ├── commands/    # 슬래시 명령어 핸들러 (17개)
+│   ├── progress/    # 도구 진행 렌더링 추상화 (Strategy 패턴)
 │   ├── directives/  # 채널/세션 링크 디렉티브
 │   └── formatters/  # 출력 포맷터
 ├── conversation/    # 대화 기록 및 리플레이
@@ -54,6 +55,7 @@ src/
 6. **Hierarchical CWD**: Thread > Channel > User 우선순위
 7. **Workflow Dispatch**: 입력 분류 → 전문 워크플로우 프롬프트 적용
 8. **Dependency Injection**: 테스트 용이성을 위한 의존성 주입
+9. **Strategy Pattern (Progress)**: `ToolProgressEvent` → `ProgressRenderer` 인터페이스로 도구 진행 렌더링 추상화
 
 ## Key Gotchas
 
@@ -83,4 +85,5 @@ src/
 | `link [url]` | 세션에 이슈/PR/문서 링크 첨부 |
 | `onboarding` | 온보딩 워크플로우 실행 |
 | `verbosity [level]` | 출력 상세도 설정 |
-| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) |
+| `ui [message/agent]` | UI 모드 변경 (message=기존 메시지, agent=Thinking Steps) |
+| `$` / `$model` / `$verbosity` / `$ui` | 세션 전용 설정 (비영속) |
