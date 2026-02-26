@@ -336,7 +336,10 @@ export class ToolFormatter {
 
       if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
 
-      parts.push(`⚪ ${this.formatOneLineToolUse(name, input)}`);
+      // Async tools (MCP, Task/Subagent) get ⏳; sync tools get ⚪
+      const isAsync = name.startsWith('mcp__') || name === 'Task';
+      const icon = isAsync ? '⏳' : '⚪';
+      parts.push(`${icon} ${this.formatOneLineToolUse(name, input)}`);
     }
 
     return parts.join('\n');
@@ -386,10 +389,30 @@ export class ToolFormatter {
       default:
         if (toolName.startsWith('mcp__')) {
           const parts = toolName.split('__');
-          return `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
+          const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
+          const params = this.formatCompactParams(input);
+          return params ? `${base} ${params}` : base;
         }
-        return `${emoji} ${toolName}`;
+        {
+          const params = this.formatCompactParams(input);
+          return params ? `${emoji} ${toolName} ${params}` : `${emoji} ${toolName}`;
+        }
     }
+  }
+
+  /** Format a completed tool line with status icon and optional duration */
+  static formatOneLineToolComplete(
+    toolName: string,
+    input: any,
+    isError: boolean,
+    duration?: number | null
+  ): string {
+    const icon = isError ? '🔴' : '🟢';
+    const line = this.formatOneLineToolUse(toolName, input);
+    if (duration !== null && duration !== undefined) {
+      return `${icon} ${line} — ${McpCallTracker.formatDuration(duration)}`;
+    }
+    return `${icon} ${line}`;
   }
 
   private static getToolEmoji(toolName: string): string {
@@ -409,6 +432,63 @@ export class ToolFormatter {
     return parts.length > 2
       ? `.../${parts.slice(-2).join('/')}`
       : filePath;
+  }
+
+  /**
+   * Format up to 2 compact parameters from tool input for one-line display.
+   * Returns `(key: val, key2: val2)` or empty string if no suitable params.
+   * Budget controls the total max length of the parenthesized string.
+   */
+  static formatCompactParams(input: unknown, budget = 60): string {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+
+    const entries = Object.entries(input as Record<string, unknown>);
+    if (entries.length === 0) return '';
+
+    // Filter to short, displayable values (string/number/boolean, skip internal keys)
+    const candidates = entries
+      .filter(([key, val]) => {
+        if (key.startsWith('_')) return false;
+        if (val === null || val === undefined) return false;
+        if (typeof val === 'object') return false;
+        return true;
+      })
+      .map(([key, val]) => {
+        const strVal = String(val);
+        return { key, val: strVal, len: key.length + strVal.length + 2 }; // +2 for ": "
+      })
+      // Prioritize shorter values first for better fit
+      .sort((a, b) => a.len - b.len);
+
+    if (candidates.length === 0) return '';
+
+    // Budget includes parentheses `()` = 2 chars
+    const innerBudget = budget - 2;
+    const parts: string[] = [];
+    let used = 0;
+
+    for (const c of candidates) {
+      if (parts.length >= 2) break;
+
+      // Separator ", " = 2 chars between params
+      const separator = parts.length > 0 ? 2 : 0;
+      const available = innerBudget - used - separator;
+      if (available < 8) break; // minimum "k: v..." = ~8 chars
+
+      let display: string;
+      const maxValLen = available - c.key.length - 2; // -2 for ": "
+      if (maxValLen <= 0) break;
+
+      const truncVal = c.val.length > maxValLen
+        ? c.val.substring(0, maxValLen - 1) + '…'
+        : c.val;
+      display = `${c.key}: ${truncVal}`;
+
+      parts.push(display);
+      used += display.length + separator;
+    }
+
+    return parts.length > 0 ? `(${parts.join(', ')})` : '';
   }
 
   // ── Verbose mode: extended output ──────────────────────────────────

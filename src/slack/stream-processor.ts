@@ -102,6 +102,16 @@ export interface PendingForm {
 }
 
 /**
+ * Compact mode tool call entry for batch-aware in-place updates
+ */
+export interface CompactToolCallEntry {
+  toolName: string;
+  input: any;
+  status: 'pending' | 'done' | 'error';
+  duration?: number | null;
+}
+
+/**
  * Usage data extracted from result message
  */
 export interface UsageData {
@@ -172,8 +182,10 @@ export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
-  /** Maps tool_use_id → { ts, toolName, input } (for compact mode in-place updates) */
-  private toolCallMessageTs = new Map<string, { ts: string; toolName: string; input: any }>();
+  /** Maps message ts → Map<toolUseId, entry> for compact in-place updates (batch-aware) */
+  private compactMessageEntries = new Map<string, Map<string, CompactToolCallEntry>>();
+  /** Reverse lookup: toolUseId → message ts */
+  private toolUseToMessageTs = new Map<string, string>();
   /** Maps Task tool_use_id → input (for correlating TaskOutput with original Task) */
   private pendingTaskInputs = new Map<string, any>();
   /** Maps background task_id → original Task input metadata (for TaskOutput display) */
@@ -352,11 +364,21 @@ export class StreamProcessor {
           text: tag + toolContent,
           thread_ts: context.threadTs,
         });
-        // Track message ts + tool info for compact mode in-place updates
+        // Track message ts + tool info for compact mode in-place updates (batch-aware)
         if (toolCallMode === 'compact' && result?.ts) {
+          const ts = result.ts;
+          if (!this.compactMessageEntries.has(ts)) {
+            this.compactMessageEntries.set(ts, new Map());
+          }
+          const entries = this.compactMessageEntries.get(ts)!;
           for (const part of enrichedContent) {
             if (part.type === 'tool_use' && part.id) {
-              this.toolCallMessageTs.set(part.id, { ts: result.ts, toolName: part.name, input: part.input });
+              entries.set(part.id, {
+                toolName: part.name,
+                input: part.input,
+                status: 'pending',
+              });
+              this.toolUseToMessageTs.set(part.id, ts);
             }
           }
         }
@@ -691,27 +713,87 @@ export class StreamProcessor {
     // Correlate Task results with background task IDs for TaskOutput display
     this.correlateTaskResults(toolResults);
 
-    // Compact mode: update tool call messages in-place instead of separate result messages
+    // Compact mode: update tool call messages in-place (batch-aware)
     const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
+      // Collect which message ts's need rebuilding
+      const affectedTs = new Set<string>();
       for (const tr of toolResults) {
-        const entry = this.toolCallMessageTs.get(tr.toolUseId);
-        if (entry) {
-          const icon = tr.isError ? '🔴' : '🟢';
-          // Enrich TaskOutput with original Task metadata
-          const input = entry.toolName === 'TaskOutput'
-            ? this.enrichTaskOutputInput(entry.input)
-            : entry.input;
-          const line = `${icon} ${ToolFormatter.formatOneLineToolUse(entry.toolName, input)}`;
-          await this.callbacks.onUpdateMessage(context.channel, entry.ts, line);
-          this.toolCallMessageTs.delete(tr.toolUseId);
+        const ts = this.toolUseToMessageTs.get(tr.toolUseId);
+        if (!ts) continue;
+        const entries = this.compactMessageEntries.get(ts);
+        if (!entries) continue;
+        const entry = entries.get(tr.toolUseId);
+        if (!entry) continue;
+
+        // Enrich TaskOutput with original Task metadata
+        if (entry.toolName === 'TaskOutput') {
+          entry.input = this.enrichTaskOutputInput(entry.input);
         }
+
+        entry.status = tr.isError ? 'error' : 'done';
+        affectedTs.add(ts);
+      }
+
+      // Rebuild and update all affected messages
+      for (const ts of affectedTs) {
+        await this.rebuildCompactMessage(ts, context.channel);
       }
     }
 
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
+  }
+
+  /**
+   * Rebuild a compact message from all tracked tool entries for the given ts.
+   * Each line shows the correct status icon (⏳/⚪/🟢/🔴) and optional duration.
+   */
+  private async rebuildCompactMessage(ts: string, channel: string): Promise<void> {
+    const entries = this.compactMessageEntries.get(ts);
+    if (!entries || !this.callbacks.onUpdateMessage) return;
+
+    const lines: string[] = [];
+    for (const [, entry] of entries) {
+      if (entry.status === 'done' || entry.status === 'error') {
+        lines.push(ToolFormatter.formatOneLineToolComplete(
+          entry.toolName, entry.input, entry.status === 'error', entry.duration
+        ));
+      } else {
+        const isAsync = entry.toolName.startsWith('mcp__') || entry.toolName === 'Task';
+        const icon = isAsync ? '⏳' : '⚪';
+        lines.push(`${icon} ${ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input)}`);
+      }
+    }
+
+    const text = lines.join('\n');
+    await this.callbacks.onUpdateMessage(channel, ts, text);
+
+    // Cleanup fully completed messages
+    const allDone = Array.from(entries.values()).every(e => e.status !== 'pending');
+    if (allDone) {
+      for (const toolUseId of entries.keys()) {
+        this.toolUseToMessageTs.delete(toolUseId);
+      }
+      this.compactMessageEntries.delete(ts);
+    }
+  }
+
+  /**
+   * Update a tool call entry with duration (called by tool-event-processor after MCP completes).
+   * Triggers a rebuild of the compact message containing this tool.
+   */
+  async updateToolCallDuration(toolUseId: string, duration: number | null, channel: string): Promise<void> {
+    const ts = this.toolUseToMessageTs.get(toolUseId);
+    if (!ts) return;
+    const entries = this.compactMessageEntries.get(ts);
+    if (!entries) return;
+    const entry = entries.get(toolUseId);
+    if (!entry) return;
+
+    entry.duration = duration;
+    await this.rebuildCompactMessage(ts, channel);
   }
 
   /**
