@@ -9,10 +9,12 @@ export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
+export type UiCommandResult = { action: 'status' | 'set'; mode?: string };
 export type SessionCommandAction =
   | { type: 'info' }
   | { type: 'model'; action: 'status' | 'set'; model?: string }
-  | { type: 'verbosity'; action: 'status' | 'set'; level?: string };
+  | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
+  | { type: 'ui'; action: 'status' | 'set'; mode?: string };
 
 export class CommandParser {
   /**
@@ -251,15 +253,33 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a session command ($ prefix)
-   * Matches: $, $model, $model opus, $verbosity, $verbosity compact
+   * Check if text is a ui command
    */
-  static isSessionCommand(text: string): boolean {
-    return /^\$(?:model|verbosity)?(?:\s+\S+)?$/i.test(text.trim());
+  static isUiCommand(text: string): boolean {
+    return /^\/?ui(?:\s+\S+)?$/i.test(text.trim());
   }
 
   /**
-   * Parse session command ($, $model [value], $verbosity [value])
+   * Parse ui command
+   */
+  static parseUiCommand(text: string): UiCommandResult {
+    const match = text.trim().match(/^\/?ui(?:\s+(\S+))?$/i);
+    if (match?.[1]) {
+      return { action: 'set', mode: match[1] };
+    }
+    return { action: 'status' };
+  }
+
+  /**
+   * Check if text is a session command ($ prefix)
+   * Matches: $, $model, $model opus, $verbosity, $verbosity compact, $ui, $ui agent
+   */
+  static isSessionCommand(text: string): boolean {
+    return /^\$(?:model|verbosity|ui)?(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse session command ($, $model [value], $verbosity [value], $ui [value])
    */
   static parseSessionCommand(text: string): SessionCommandAction {
     const trimmed = text.trim();
@@ -278,6 +298,13 @@ export class CommandParser {
         : { type: 'verbosity', action: 'status' };
     }
 
+    const uiMatch = trimmed.match(/^\$ui(?:\s+(\S+))?$/i);
+    if (uiMatch) {
+      return uiMatch[1]
+        ? { type: 'ui', action: 'set', mode: uiMatch[1] }
+        : { type: 'ui', action: 'status' };
+    }
+
     return { type: 'info' };
   }
 
@@ -291,8 +318,8 @@ export class CommandParser {
     'mcp', 'servers',
     // Permissions
     'bypass',
-    // Persona & Model & Verbosity
-    'persona', 'model', 'verbosity',
+    // Persona & Model & Verbosity & UI
+    'persona', 'model', 'verbosity', 'ui',
     // Sessions
     'sessions', 'terminate', 'kill', 'end', 'new', 'onboarding', 'context', 'renew', 'close', 'link',
     // Credentials
@@ -377,13 +404,17 @@ export class CommandParser {
       '• `model list` - List available models',
       '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
+      '• `ui` - Show current UI mode',
+      '• `ui <mode>` - Set UI mode (message/agent)',
       '',
       '*Session Settings ($ prefix):*',
-      '• `$` - Show current session info (model, verbosity, context, etc.)',
+      '• `$` - Show current session info (model, verbosity, UI mode, etc.)',
       '• `$model` - Show session model',
       '• `$model <name>` - Change model for this session only',
       '• `$verbosity` - Show session verbosity',
       '• `$verbosity <level>` - Change verbosity for this session only',
+      '• `$ui` - Show session UI mode',
+      '• `$ui <mode>` - Change UI mode for this session only',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',

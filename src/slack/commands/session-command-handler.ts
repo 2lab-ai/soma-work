@@ -2,6 +2,7 @@ import { CommandHandler, CommandContext, CommandResult, CommandDependencies } fr
 import { CommandParser } from '../command-parser';
 import { userSettingsStore, MODEL_ALIASES, type ModelId } from '../../user-settings-store';
 import { getVerbosityFlags, getVerbosityName, VERBOSITY_NAMES, LOG_DETAIL } from '../output-flags';
+import { UI_MODE_NAMES, type UiMode } from '../progress/ui-mode';
 
 /**
  * Handles $ prefix commands for current-session-only settings.
@@ -41,6 +42,10 @@ export class SessionCommandHandler implements CommandHandler {
         return parsed.action === 'set'
           ? this.setSessionVerbosity(ctx, session, parsed.level!)
           : this.showSessionVerbosity(ctx, session);
+      case 'ui':
+        return parsed.action === 'set'
+          ? this.setSessionUiMode(ctx, session, parsed.mode!)
+          : this.showSessionUiMode(ctx, session);
     }
   }
 
@@ -60,11 +65,16 @@ export class SessionCommandHandler implements CommandHandler {
     const userVerbosity = userSettingsStore.getUserDefaultLogVerbosity(user);
     const isVerbosityOverridden = verbosityName !== userVerbosity;
 
+    const sessionUiMode = session.uiMode ?? userSettingsStore.getUserDefaultUiMode(user);
+    const userUiMode = userSettingsStore.getUserDefaultUiMode(user);
+    const isUiModeOverridden = session.uiMode != null && session.uiMode !== userUiMode;
+
     const lines: string[] = [
       '📋 *Session Info*',
       '',
       `*Model:* ${modelDisplay} (\`${modelId}\`)${isModelOverridden ? ' ⚡' : ''}`,
       `*Verbosity:* ${verbosityName}${isVerbosityOverridden ? ' ⚡' : ''}`,
+      `*UI Mode:* ${sessionUiMode}${isUiModeOverridden ? ' ⚡' : ''}`,
     ];
 
     if (session.ownerName || session.ownerId) {
@@ -119,7 +129,7 @@ export class SessionCommandHandler implements CommandHandler {
 
     lines.push('');
     lines.push('_⚡ = overridden for this session (differs from user default)_');
-    lines.push('_Use `$model <name>` or `$verbosity <level>` to change session settings._');
+    lines.push('_Use `$model <name>`, `$verbosity <level>`, or `$ui <mode>` to change session settings._');
 
     await say({ text: lines.join('\n'), thread_ts: threadTs });
     return { handled: true };
@@ -205,6 +215,47 @@ export class SessionCommandHandler implements CommandHandler {
     session.logVerbosity = getVerbosityFlags(resolved);
     await say({
       text: `⚡ *Session Verbosity Changed*\n\nThis session now uses: *${resolved}*\n_User default unchanged. Use \`verbosity ${input}\` to change permanently._`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async showSessionUiMode(
+    ctx: CommandContext,
+    session: any
+  ): Promise<CommandResult> {
+    const { say, threadTs, user } = ctx;
+    const uiMode = session.uiMode ?? userSettingsStore.getUserDefaultUiMode(user);
+    const userDefault = userSettingsStore.getUserDefaultUiMode(user);
+    const isOverridden = session.uiMode != null && session.uiMode !== userDefault;
+
+    await say({
+      text: `🖥️ *Session UI Mode:* ${uiMode}${isOverridden ? '\n⚡ _Overridden for this session (default: ' + userDefault + ')_' : ''}`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async setSessionUiMode(
+    ctx: CommandContext,
+    session: any,
+    input: string
+  ): Promise<CommandResult> {
+    const { say, threadTs } = ctx;
+    const resolved = userSettingsStore.resolveUiModeInput(input);
+
+    if (!resolved) {
+      const valid = UI_MODE_NAMES.map(n => `\`${n}\``).join(', ');
+      await say({
+        text: `❌ Unknown UI mode \`${input}\`.\n*Available:* ${valid}`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    session.uiMode = resolved;
+    await say({
+      text: `⚡ *Session UI Mode Changed*\n\nThis session now uses: *${resolved}*\n_User default unchanged. Use \`ui ${input}\` to change permanently._`,
       thread_ts: threadTs,
     });
     return { handled: true };

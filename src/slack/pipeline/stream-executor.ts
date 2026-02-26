@@ -30,6 +30,8 @@ import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flag
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ThreadPanel } from '../thread-panel';
+import { createRenderer, mapToolUses, mapToolResults, type ProgressRenderer } from '../progress';
+import { resolveSessionUiMode } from '../progress/ui-mode';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { SayFn, MessageEvent } from './types';
@@ -151,7 +153,6 @@ export class StreamExecutor {
       say,
     } = params;
 
-    let statusMessageTs: string | undefined;
     let toolChoicePending = false;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
@@ -168,6 +169,7 @@ export class StreamExecutor {
 
     // Track latest response message ts for shortcut link
     let latestResponseTs: string | undefined;
+    let renderer: ProgressRenderer | undefined;
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -194,27 +196,28 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message (gated by verbosity)
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
-        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-          channel,
-          threadTs,
-          sessionKey,
-          'thinking',
-          vtag(OutputFlag.STATUS_MESSAGE)
-        );
-      }
-
-      // Add thinking reaction + native spinner (gated by verbosity)
-      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
-        await this.deps.reactionManager.updateReaction(
-          sessionKey,
-          this.deps.statusReporter.getStatusEmoji('thinking')
-        );
-      }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
-      }
+      // Create progress renderer and initialize
+      const uiMode = resolveSessionUiMode(
+        session.uiMode,
+        userSettingsStore.getUserDefaultUiMode(user)
+      );
+      renderer = createRenderer({
+        uiMode,
+        deps: {
+          toolEventProcessor: this.deps.toolEventProcessor,
+          statusReporter: this.deps.statusReporter,
+          reactionManager: this.deps.reactionManager,
+          assistantStatusManager: this.deps.assistantStatusManager,
+          say: async (msg) => {
+            const result = await say({
+              text: msg.text,
+              thread_ts: msg.thread_ts,
+            });
+            return { ts: result?.ts };
+          },
+        },
+      });
+      await renderer.start({ channel, threadTs, sessionKey, verbosityMask });
 
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(
@@ -247,23 +250,7 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working', vtag(OutputFlag.STATUS_MESSAGE));
-          }
-          if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
-            await this.deps.reactionManager.updateReaction(
-              sessionKey,
-              this.deps.statusReporter.getStatusEmoji('working')
-            );
-          }
-          // Native spinner with tool-specific text
-          if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-            const toolName = toolUses[0]?.name;
-            if (toolName) {
-              const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
-            }
-          }
+          const events = mapToolUses(toolUses);
           const toolName = toolUses[0]?.name;
           await this.updateRuntimeStatus(session, ctx.sessionKey, {
             agentPhase: toolName ? '도구 실행 중' : '작업 중',
@@ -273,13 +260,10 @@ export class StreamExecutor {
           for (const tu of toolUses) {
             toolStartTimes.set(tu.id, Date.now());
           }
-          await this.deps.toolEventProcessor.handleToolUse(toolUses, {
-            channel: ctx.channel,
-            threadTs: ctx.threadTs,
-            sessionKey: ctx.sessionKey,
-            say: ctx.say,
-            logVerbosity: verbosityMask,
-          });
+          // Delegate status/reaction/spinner + MCP tracking to renderer
+          for (const event of events) {
+            await renderer!.onToolStart(event);
+          }
         },
         onToolResult: async (toolResults, ctx) => {
           // Accumulate per-request tool stats
@@ -298,13 +282,14 @@ export class StreamExecutor {
             agentPhase: '결과 반영 중',
             activeTool: undefined,
           });
-          await this.deps.toolEventProcessor.handleToolResult(toolResults, {
-            channel: ctx.channel,
-            threadTs: ctx.threadTs,
-            sessionKey: ctx.sessionKey,
-            say: ctx.say,
-            logVerbosity: verbosityMask,
-          });
+          // Delegate MCP tracking end + result formatting to renderer
+          const completeEvents = mapToolResults(
+            toolResults,
+            (id) => this.deps.toolTracker.getToolName(id)
+          );
+          for (const event of completeEvents) {
+            await renderer!.onToolComplete(event);
+          }
           const hasToolChoice = await this.handleModelCommandToolResults(
             toolResults,
             session,
@@ -441,21 +426,10 @@ export class StreamExecutor {
         throw abortError;
       }
 
-      // Update status and reaction based on whether user choice is pending
+      // Finalize renderer (status message, reaction, spinner)
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus, vtag(OutputFlag.STATUS_MESSAGE));
-      }
-      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
-        await this.deps.reactionManager.updateReaction(
-          sessionKey,
-          this.deps.statusReporter.getStatusEmoji(finalStatus)
-        );
-      }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
-      }
+      await renderer.finish({ status: finalStatus });
 
       // Transition activity state
       this.deps.claudeHandler.setActivityState(
@@ -525,7 +499,7 @@ export class StreamExecutor {
         sessionKey,
         channel,
         threadTs,
-        statusMessageTs,
+        renderer,
         processedFiles,
         say,
         requestAborted
@@ -542,7 +516,7 @@ export class StreamExecutor {
     sessionKey: string,
     channel: string,
     threadTs: string,
-    statusMessageTs: string | undefined,
+    renderer: ProgressRenderer | undefined,
     processedFiles: ProcessedFile[],
     say: SayFn,
     requestAborted: boolean = false
@@ -582,13 +556,15 @@ export class StreamExecutor {
         });
       }
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
+      // Delegate error status to renderer (or fallback to direct calls)
+      if (renderer) {
+        await renderer.abort(error);
+      } else {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji('error')
+        );
       }
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('error')
-      );
 
       // Notify user with detailed error info
       const errorDetails = this.formatErrorForUser(error, sessionCleared);
@@ -605,13 +581,15 @@ export class StreamExecutor {
         waitingForChoice: false,
       });
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
+      // Use renderer for cancelled status (or fallback)
+      if (renderer) {
+        await renderer.finish({ status: 'cancelled' });
+      } else {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji('cancelled')
+        );
       }
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('cancelled')
-      );
     }
 
     // Clean up temporary files
