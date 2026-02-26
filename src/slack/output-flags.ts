@@ -62,10 +62,11 @@ const ALWAYS =
   OutputFlag.PERMISSION |
   OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions only */
+/** MINIMAL — final result + essential interactions + long-running status */
 export const LOG_MINIMAL =
   ALWAYS |
-  OutputFlag.FINAL_RESULT;
+  OutputFlag.FINAL_RESULT |
+  OutputFlag.MCP_PROGRESS;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
 export const LOG_COMPACT =
