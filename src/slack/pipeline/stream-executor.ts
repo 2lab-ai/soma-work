@@ -157,10 +157,10 @@ export class StreamExecutor {
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
-    // Verbosity filtering
-    const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
-    const isOutputEnabled = (flag: number) => shouldOutput(flag, verbosityMask);
-    const vtag = (flag: number) => verboseTag(flag, verbosityMask);
+    // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
+    const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
+    const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
+    const vtag = (flag: number) => verboseTag(flag, getVerbosity());
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -223,13 +223,13 @@ export class StreamExecutor {
       );
       const slackContext = { channel, threadTs, user, channelDescription };
 
-      // Create stream context
+      // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
       const streamContext: StreamContext = {
         channel,
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
-        logVerbosity: verbosityMask,
+        get logVerbosity() { return session.logVerbosity ?? LOG_DETAIL; },
         say: async (msg) => {
           const result = await say({
             text: msg.text,
@@ -278,7 +278,7 @@ export class StreamExecutor {
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
-            logVerbosity: verbosityMask,
+            logVerbosity: getVerbosity(),
           });
         },
         onToolResult: async (toolResults, ctx) => {
@@ -303,7 +303,7 @@ export class StreamExecutor {
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
-            logVerbosity: verbosityMask,
+            logVerbosity: getVerbosity(),
           });
           const hasToolChoice = await this.handleModelCommandToolResults(
             toolResults,
@@ -323,7 +323,7 @@ export class StreamExecutor {
             ctx.channel,
             ctx.threadTs,
             ctx.say,
-            verbosityMask
+            getVerbosity()
           );
         },
         onPendingFormCreate: (formId, form) => {
