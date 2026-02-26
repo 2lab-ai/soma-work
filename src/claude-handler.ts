@@ -447,10 +447,11 @@ export class ClaudeHandler {
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
 
-    // Set effort level (default: max)
-    const effort = session?.effort || 'max';
+    // Set effort level (max is Opus 4.6 only)
+    const isOpus = options.model?.includes('opus') ?? false;
+    const effort = session?.effort || (isOpus ? 'max' : 'high');
     options.effort = effort;
-    this.logger.debug('Using effort level', { effort });
+    this.logger.debug('Using effort level', { effort, model: options.model });
 
     // Build system prompt with persona and workflow
     const workflow = session?.workflow || 'default';
