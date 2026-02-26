@@ -770,9 +770,15 @@ export class StreamProcessor {
     const text = lines.join('\n');
     await this.callbacks.onUpdateMessage(channel, ts, text);
 
-    // Cleanup fully completed messages
+    // Cleanup only when all entries are finalized:
+    // - all statuses resolved (done/error)
+    // - async tools (MCP/Task) have duration set (or won't get one)
     const allDone = Array.from(entries.values()).every(e => e.status !== 'pending');
-    if (allDone) {
+    const allDurationsResolved = Array.from(entries.values()).every(e => {
+      const isAsync = e.toolName.startsWith('mcp__') || e.toolName === 'Task';
+      return !isAsync || e.duration !== undefined;
+    });
+    if (allDone && allDurationsResolved) {
       for (const toolUseId of entries.keys()) {
         this.toolUseToMessageTs.delete(toolUseId);
       }
