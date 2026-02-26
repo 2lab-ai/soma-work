@@ -160,6 +160,7 @@ export class ToolEventProcessor {
       displayLabel: `${serverName} → ${actualToolName}`,
       initialDelay: serverName === 'codex' ? 0 : 10000,
       predictKey: { serverName, toolName: actualToolName },
+      paramsSummary: ToolFormatter.formatCompactParams(toolUse.input),
     };
 
     if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
@@ -188,6 +189,9 @@ export class ToolEventProcessor {
       displayLabel: subagentName,
       initialDelay: 0,
       predictKey: { serverName: '_subagent', toolName: subagentName },
+      paramsSummary: summary.promptPreview
+        ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})`
+        : '',
     };
 
     if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {

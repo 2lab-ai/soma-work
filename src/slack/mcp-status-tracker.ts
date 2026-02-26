@@ -7,6 +7,7 @@ interface StatusMessage {
   channel: string;
   displayType: string;
   displayLabel: string;
+  paramsSummary?: string;
 }
 
 export interface StatusUpdateConfig {
@@ -14,12 +15,14 @@ export interface StatusUpdateConfig {
   displayLabel: string;  // "codex → query", "General Purpose", etc.
   initialDelay: number;  // 0 = immediate, 10000 = 10s delay
   predictKey: { serverName: string; toolName: string };
+  paramsSummary?: string; // compact params e.g. "(prompt: hello world)"
 }
 
 interface ProgressEntry {
   callId: string;
   displayType: string;
   displayLabel: string;
+  paramsSummary?: string;
   status: 'running' | 'completed';
   startTime: number;
   duration?: number;
@@ -70,7 +73,7 @@ export class McpStatusDisplay {
       const elapsed = this.mcpCallTracker.getElapsedTime(callId);
       if (elapsed === null) return;
 
-      const statusText = this.buildStatusText(config.displayType, config.displayLabel, elapsed, predicted);
+      const statusText = this.buildStatusText(config.displayType, config.displayLabel, elapsed, predicted, config.paramsSummary);
       const msgInfo = this.statusMessages.get(callId);
 
       if (isInitial || !msgInfo) {
@@ -82,6 +85,7 @@ export class McpStatusDisplay {
               channel,
               displayType: config.displayType,
               displayLabel: config.displayLabel,
+              paramsSummary: config.paramsSummary,
             });
           }
         } catch (error) {
@@ -157,6 +161,9 @@ export class McpStatusDisplay {
     if (msgInfo) {
       try {
         let completedText = `🟢 *${msgInfo.displayType} 완료: ${msgInfo.displayLabel}*`;
+        if (msgInfo.paramsSummary) {
+          completedText += ` ${msgInfo.paramsSummary}`;
+        }
         if (duration !== null && duration !== undefined) {
           completedText += ` (${McpCallTracker.formatDuration(duration)})`;
         }
@@ -177,10 +184,14 @@ export class McpStatusDisplay {
     displayType: string,
     displayLabel: string,
     elapsed: number,
-    predicted: number | null
+    predicted: number | null,
+    paramsSummary?: string
   ): string {
-    let statusText = `⏳ *${displayType} 실행 중: ${displayLabel}*\n`;
-    statusText += `경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
+    let statusText = `⏳ *${displayType} 실행 중: ${displayLabel}*`;
+    if (paramsSummary) {
+      statusText += ` ${paramsSummary}`;
+    }
+    statusText += `\n경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
 
     if (predicted) {
       const remaining = Math.max(0, predicted - elapsed);
@@ -253,6 +264,7 @@ export class McpStatusDisplay {
       callId,
       displayType: config.displayType,
       displayLabel: config.displayLabel,
+      paramsSummary: config.paramsSummary,
       status: 'running',
       startTime: Date.now(),
       predicted,
@@ -366,8 +378,9 @@ export class McpStatusDisplay {
     }
 
     const lines = entries.map(entry => {
+      const params = entry.paramsSummary ? ` ${entry.paramsSummary}` : '';
       if (entry.status === 'completed') {
-        let line = `🟢 ${entry.displayLabel}`;
+        let line = `🟢 ${entry.displayLabel}${params}`;
         if (entry.duration !== undefined) {
           line += ` (${McpCallTracker.formatDuration(entry.duration)})`;
         }
@@ -375,7 +388,7 @@ export class McpStatusDisplay {
       } else {
         const elapsed = this.mcpCallTracker.getElapsedTime(entry.callId);
         const elapsedMs = elapsed ?? (Date.now() - entry.startTime);
-        let line = `⏳ ${entry.displayLabel} — ${McpCallTracker.formatDuration(elapsedMs)}`;
+        let line = `⏳ ${entry.displayLabel}${params} — ${McpCallTracker.formatDuration(elapsedMs)}`;
 
         if (entry.predicted) {
           const progress = Math.min(100, (elapsedMs / entry.predicted) * 100);
