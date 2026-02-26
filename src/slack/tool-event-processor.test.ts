@@ -78,6 +78,7 @@ describe('ToolEventProcessor', () => {
           displayLabel: 'jira → search_issues',
           initialDelay: 10000,
           predictKey: { serverName: 'jira', toolName: 'search_issues' },
+          paramsSummary: '(query: test)',
         },
         'C123',
         'thread_ts'
