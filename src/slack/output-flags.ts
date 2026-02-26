@@ -105,7 +105,7 @@ const VERBOSITY_MAP: Record<LogVerbosity, number> = {
   verbose: LOG_VERBOSE,
 };
 
-export const DEFAULT_LOG_VERBOSITY: LogVerbosity = 'detail';
+export const DEFAULT_LOG_VERBOSITY: LogVerbosity = 'compact';
 
 /** Resolve a verbosity name to its flag mask */
 export function getVerbosityFlags(level: LogVerbosity): number {
