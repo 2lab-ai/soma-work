@@ -246,6 +246,8 @@ export interface ConversationSession {
   threadRootTs?: string;
   // Onboarding flag: true when session is an onboarding flow for first-time user
   isOnboarding?: boolean;
+  // UI mode for progress rendering (message = traditional, agent = Thinking Steps)
+  uiMode?: 'message' | 'agent';
 }
 
 export interface WorkingDirectoryConfig {
