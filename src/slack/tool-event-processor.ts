@@ -162,9 +162,7 @@ export class ToolEventProcessor {
       predictKey: { serverName, toolName: actualToolName },
     };
 
-    // In compact mode, skip separate status display — tool call message handles everything
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
-    if (resultMode !== 'compact' && shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
       if (groupId) {
         await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
       } else {
@@ -192,9 +190,7 @@ export class ToolEventProcessor {
       predictKey: { serverName: '_subagent', toolName: subagentName },
     };
 
-    // In compact mode, skip separate status display — tool call message handles everything
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
-    if (resultMode !== 'compact' && shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
       if (groupId) {
         await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
       } else {
@@ -209,9 +205,6 @@ export class ToolEventProcessor {
    * - Format and send results
    */
   async handleToolResult(toolResults: ToolResultEvent[], context: ToolEventContext): Promise<void> {
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
-    const isCompact = resultMode === 'compact';
-
     for (const toolResult of toolResults) {
       // Lookup tool name from tracking if not set
       if (!toolResult.toolName && toolResult.toolUseId) {
@@ -219,10 +212,10 @@ export class ToolEventProcessor {
       }
 
       // End MCP call tracking and get duration
-      const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey, isCompact);
+      const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
 
-      // In compact mode, update the tool call message with duration
-      if (isCompact && duration !== null && this.onCompactDurationUpdate) {
+      // Update compact tool call message with duration (in-place)
+      if (duration !== null && this.onCompactDurationUpdate) {
         await this.onCompactDurationUpdate(toolResult.toolUseId, duration, context.channel);
       }
 
@@ -251,7 +244,7 @@ export class ToolEventProcessor {
   /**
    * End MCP or subagent tracking for a tool and return duration
    */
-  private async endMcpTracking(toolUseId: string, sessionKey?: string, isCompact = false): Promise<number | null> {
+  private async endMcpTracking(toolUseId: string, sessionKey?: string): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
     if (!callId) return null;
 
@@ -267,13 +260,11 @@ export class ToolEventProcessor {
       this.subagentCallIds.delete(callId);
     }
 
-    // In compact mode, status display was never started — skip stop
-    if (!isCompact) {
-      if (this.mcpStatusDisplay.isInGroup(callId)) {
-        await this.mcpStatusDisplay.stopGroupStatusUpdate(callId, duration);
-      } else {
-        await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
-      }
+    // Route to group or individual status display
+    if (this.mcpStatusDisplay.isInGroup(callId)) {
+      await this.mcpStatusDisplay.stopGroupStatusUpdate(callId, duration);
+    } else {
+      await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
     }
 
     return duration;
