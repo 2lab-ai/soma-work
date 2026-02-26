@@ -41,6 +41,10 @@ export class SessionCommandHandler implements CommandHandler {
         return parsed.action === 'set'
           ? this.setSessionVerbosity(ctx, session, parsed.level!)
           : this.showSessionVerbosity(ctx, session);
+      case 'effort':
+        return parsed.action === 'set'
+          ? this.setSessionEffort(ctx, session, parsed.level!)
+          : this.showSessionEffort(ctx, session);
     }
   }
 
@@ -55,6 +59,9 @@ export class SessionCommandHandler implements CommandHandler {
     const userDefault = userSettingsStore.getUserDefaultModel(user);
     const isModelOverridden = session.model && session.model !== userDefault;
 
+    const effortLevel = session.effort || 'max';
+    const isEffortOverridden = session.effort != null && session.effort !== 'max';
+
     const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
     const verbosityName = getVerbosityName(verbosityMask);
     const userVerbosity = userSettingsStore.getUserDefaultLogVerbosity(user);
@@ -64,6 +71,7 @@ export class SessionCommandHandler implements CommandHandler {
       '📋 *Session Info*',
       '',
       `*Model:* ${modelDisplay} (\`${modelId}\`)${isModelOverridden ? ' ⚡' : ''}`,
+      `*Effort:* ${effortLevel}${isEffortOverridden ? ' ⚡' : ''}`,
       `*Verbosity:* ${verbosityName}${isVerbosityOverridden ? ' ⚡' : ''}`,
     ];
 
@@ -205,6 +213,46 @@ export class SessionCommandHandler implements CommandHandler {
     session.logVerbosity = getVerbosityFlags(resolved);
     await say({
       text: `⚡ *Session Verbosity Changed*\n\nThis session now uses: *${resolved}*\n_User default unchanged. Use \`verbosity ${input}\` to change permanently._`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+  private async showSessionEffort(
+    ctx: CommandContext,
+    session: any
+  ): Promise<CommandResult> {
+    const { say, threadTs } = ctx;
+    const effortLevel = session.effort || 'max';
+    const isOverridden = session.effort != null && session.effort !== 'max';
+
+    await say({
+      text: `🧠 *Session Effort:* ${effortLevel}${isOverridden ? '\n⚡ _Overridden for this session (default: max)_' : ''}`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async setSessionEffort(
+    ctx: CommandContext,
+    session: any,
+    input: string
+  ): Promise<CommandResult> {
+    const { say, threadTs } = ctx;
+    const valid = ['low', 'medium', 'high', 'max'] as const;
+    const normalized = input.toLowerCase();
+
+    if (!valid.includes(normalized as any)) {
+      const validStr = valid.map(v => `\`${v}\``).join(', ');
+      await say({
+        text: `❌ Unknown effort level \`${input}\`.\n*Available:* ${validStr}`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    session.effort = normalized as typeof valid[number];
+    await say({
+      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*\n_Default is \`max\`. Use \`$effort max\` to restore._`,
       thread_ts: threadTs,
     });
     return { handled: true };
