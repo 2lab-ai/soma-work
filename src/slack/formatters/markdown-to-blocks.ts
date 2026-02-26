@@ -19,11 +19,19 @@
 
 import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import { Logger } from '../../logger';
+import { MessageFormatter } from '../message-formatter';
 
 const logger = new Logger('MarkdownToBlocks');
 
-/** Maximum blocks per Slack message (leaving room for header/footer) */
+/**
+ * Maximum blocks per Slack message.
+ * Slack limit is 50; we reserve 5 for header/footer blocks that may be added
+ * by the stream processor (vtag, action panel, etc).
+ */
 const MAX_BLOCKS_PER_MESSAGE = 45;
+
+/** Maximum characters for header block text (Slack limit) */
+const MAX_HEADER_TEXT = 150;
 
 /** Maximum rows per table block */
 const MAX_TABLE_ROWS = 100;
@@ -107,12 +115,15 @@ function sanitizeBlocks(blocks: SlackBlock[]): SlackBlock[] {
     if (block.type === 'table') {
       return sanitizeTable(block);
     }
+    if (block.type === 'header') {
+      return sanitizeHeader(block);
+    }
     return block;
-  }).filter(block => block !== null) as SlackBlock[];
+  });
 }
 
 /**
- * Ensure table block stays within Slack limits.
+ * Ensure table block stays within Slack limits (rows, columns, column_settings).
  */
 function sanitizeTable(block: SlackBlock): SlackBlock {
   const rows = block.rows as any[][];
@@ -123,7 +134,29 @@ function sanitizeTable(block: SlackBlock): SlackBlock {
     row => row.slice(0, MAX_TABLE_COLUMNS)
   );
 
-  return { ...block, rows: truncatedCols };
+  return {
+    ...block,
+    rows: truncatedCols,
+    ...(block.column_settings
+      ? { column_settings: block.column_settings.slice(0, MAX_TABLE_COLUMNS) }
+      : {}),
+  };
+}
+
+/**
+ * Ensure header block text stays within 150 char limit.
+ */
+function sanitizeHeader(block: SlackBlock): SlackBlock {
+  const text = block.text?.text || '';
+  if (text.length <= MAX_HEADER_TEXT) return block;
+
+  return {
+    ...block,
+    text: {
+      ...block.text,
+      text: text.slice(0, MAX_HEADER_TEXT - 3) + '...',
+    },
+  };
 }
 
 /**
@@ -179,13 +212,8 @@ function countTables(blocks: SlackBlock[]): number {
 }
 
 /**
- * Simple markdown-to-Slack mrkdwn conversion for fallback text.
- * Converts standard markdown to Slack's mrkdwn format.
+ * Generate fallback text using existing MessageFormatter mrkdwn conversion.
  */
 function markdownToMrkdwn(text: string): string {
-  return text
-    .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, _lang, code) => '```' + code + '```')
-    .replace(/`([^`]+)`/g, '`$1`')
-    .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-    .replace(/__([^_]+)__/g, '_$1_');
+  return MessageFormatter.formatMessage(text, false);
 }
