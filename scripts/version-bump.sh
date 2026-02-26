@@ -125,6 +125,39 @@ else
 fi
 echo "[version-bump] New version: $NEW_TAG"
 
+# --- Detect rollback ---
+# Rollback = HEAD is an ancestor of the previous tag (we went backwards)
+
+IS_ROLLBACK="false"
+ROLLBACK_TARGET=""
+ROLLBACK_TARGET_VERSION=""
+
+if [[ -n "$PREV_TAG" ]]; then
+  PREV_TAG_COMMIT=$(git rev-parse "${PREV_TAG}^{commit}" 2>/dev/null || echo "")
+  HEAD_COMMIT=$(git rev-parse HEAD)
+
+  if [[ -n "$PREV_TAG_COMMIT" && "$PREV_TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+    if git merge-base --is-ancestor HEAD "$PREV_TAG" 2>/dev/null; then
+      IS_ROLLBACK="true"
+      echo "[version-bump] Rollback detected: HEAD is behind $PREV_TAG"
+
+      # Find which tag HEAD matches (branch-aware)
+      if [[ "$BRANCH" == "dev" ]]; then
+        ROLLBACK_TARGET=$(git tag --points-at HEAD | grep '\-dev$' | head -1)
+      else
+        ROLLBACK_TARGET=$(git tag --points-at HEAD | grep -v '\-dev$' | head -1)
+      fi
+      [[ -z "$ROLLBACK_TARGET" ]] && ROLLBACK_TARGET=$(git tag --points-at HEAD | head -1)
+      [[ -z "$ROLLBACK_TARGET" ]] && ROLLBACK_TARGET=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
+
+      if [[ -n "$ROLLBACK_TARGET" ]]; then
+        ROLLBACK_TARGET_VERSION=$(normalize_version "$ROLLBACK_TARGET")
+      fi
+      echo "[version-bump] Rollback target: ${ROLLBACK_TARGET:-unknown} (${ROLLBACK_TARGET_VERSION:-?})"
+    fi
+  fi
+fi
+
 # --- Collect commit metadata ---
 
 COMMIT_HASH=$(git rev-parse HEAD)
@@ -179,6 +212,15 @@ if [[ -z "$RELEASE_NOTES" ]]; then
   fi
 fi
 
+# Override release notes for rollback
+if [[ "$IS_ROLLBACK" == "true" ]]; then
+  if [[ -n "$ROLLBACK_TARGET" ]]; then
+    RELEASE_NOTES="• ⏪ ${PREV_TAG}에서 ${ROLLBACK_TARGET}(으)로 롤백"
+  else
+    RELEASE_NOTES="• ⏪ ${PREV_TAG}에서 이전 버전으로 롤백"
+  fi
+fi
+
 # --- Write version.json ---
 
 mkdir -p "$DIST_DIR"
@@ -196,11 +238,14 @@ const data = {
   branch: process.argv[8],
   buildTime: process.argv[9],
   releaseNotes: process.argv[10],
+  isRollback: process.argv[11] === 'true',
+  rollbackTargetTag: process.argv[12] || null,
+  rollbackTargetVersion: process.argv[13] || null,
 };
 process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 " "$NEW_VERSION" "$PREV_VERSION" "$NEW_TAG" "${PREV_TAG:-none}" \
   "$COMMIT_HASH" "$COMMIT_HASH_SHORT" "$COMMIT_TIME" "$BRANCH" \
-  "$BUILD_TIME" "$RELEASE_NOTES" > "$DIST_DIR/version.json"
+  "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" > "$DIST_DIR/version.json"
 
 echo "[version-bump] Wrote $DIST_DIR/version.json"
 cat "$DIST_DIR/version.json"
