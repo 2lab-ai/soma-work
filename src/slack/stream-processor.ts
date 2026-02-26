@@ -13,6 +13,7 @@ import {
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
 import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
+import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
 
 /**
@@ -301,8 +302,10 @@ export class StreamProcessor {
     if (!truncated) return;
 
     const tag = this.vtag(OutputFlag.THINKING, context);
+    const fallbackText = `${tag}💭 _${truncated}_`;
     await context.say({
-      text: `${tag}💭 _${truncated}_`,
+      text: fallbackText,
+      blocks: [thinkingToQuoteBlock(truncated)],
       thread_ts: context.threadTs,
     });
   }
@@ -451,12 +454,8 @@ export class StreamProcessor {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      // Regular message
-      const formatted = MessageFormatter.formatMessage(textContent, false);
-      await context.say({
-        text: this.vtag(OutputFlag.FINAL_RESULT, context) + formatted,
-        thread_ts: context.threadTs,
-      });
+      // Regular message — convert to Block Kit
+      await this.sayWithBlockKit(textContent, context);
     }
   }
 
@@ -946,11 +945,57 @@ export class StreamProcessor {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      const formatted = MessageFormatter.formatMessage(combinedResult, true);
-      await context.say({
-        text: this.vtag(OutputFlag.FINAL_RESULT, context) + formatted,
-        thread_ts: context.threadTs,
-      });
+      // Final result — convert to Block Kit
+      await this.sayWithBlockKit(combinedResult, context);
+    }
+  }
+
+  /**
+   * Send message with Block Kit blocks, with fallback to plain text.
+   * Handles overflow messages (content exceeding 45-block limit).
+   */
+  private async sayWithBlockKit(text: string, context: StreamContext): Promise<void> {
+    const tag = this.vtag(OutputFlag.FINAL_RESULT, context);
+    const { blocks, fallbackText, overflow } = markdownToBlocks(text);
+
+    try {
+      if (blocks.length > 0) {
+        await context.say({
+          text: tag + fallbackText,
+          blocks,
+          thread_ts: context.threadTs,
+        });
+
+        // Send overflow messages
+        for (const overflowBlocks of overflow) {
+          await context.say({
+            text: '_(continued)_',
+            blocks: overflowBlocks,
+            thread_ts: context.threadTs,
+          });
+        }
+      } else {
+        // No blocks produced — use plain text fallback
+        await context.say({
+          text: tag + fallbackText,
+          thread_ts: context.threadTs,
+        });
+      }
+    } catch (error: any) {
+      // Fallback: if Block Kit fails, send as plain text
+      if (error?.data?.error === 'invalid_blocks') {
+        this.logger.warn('Block Kit rendering failed, falling back to plain text', {
+          error: error.message,
+          blockCount: blocks.length,
+        });
+        const formatted = MessageFormatter.formatMessage(text, true);
+        await context.say({
+          text: tag + formatted,
+          thread_ts: context.threadTs,
+        });
+      } else {
+        throw error;
+      }
     }
   }
 

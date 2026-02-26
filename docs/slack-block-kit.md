@@ -41,6 +41,23 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 - `markdown` block:
   - payload 내 markdown text 총합 최대 12000
   - `block_id` 무시
+  - 테이블, 구문 강조, 수평선, 태스크 리스트 미지원
+- `rich_text` block:
+  - 서브 엘리먼트: `rich_text_section`, `rich_text_preformatted`, `rich_text_quote`, `rich_text_list`
+  - 인라인 엘리먼트: `text`, `link`, `emoji`, `user`, `channel`, `usergroup`, `broadcast`, `color`, `date`
+  - 텍스트 스타일: `bold`, `italic`, `strike`, `code`, `underline`, `highlight`
+  - `rich_text_list`: `style`(`bullet`|`ordered`), `indent`(0-8), `offset`, `border`
+  - `rich_text_preformatted`: 코드 블록, `border` 옵션
+  - `rich_text_quote`: 인용문, `border` 옵션
+- `table` block:
+  - `rows`: 최대 100행, 각 행 최대 20열
+  - 셀 타입: `raw_text`(단순 텍스트) | `rich_text`(서식 포함)
+  - `column_settings`: `align`(`left`|`center`|`right`), `is_wrapped`(boolean)
+  - **메시지당 1개만 허용** (초과 시 `invalid_attachments` + `only_one_table_allowed`)
+  - attachments로 메시지 하단에 렌더링
+- `header` block:
+  - `text`: `plain_text` 타입, 최대 150자
+  - H1/H2 수준의 제목 표시
 
 3. element/object 한도
 - `text object`:
@@ -282,6 +299,10 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 
 ### Block Kit / Messaging / Interactivity
 - https://docs.slack.dev/reference/block-kit/blocks/
+- https://docs.slack.dev/reference/block-kit/blocks/rich-text-block/
+- https://docs.slack.dev/reference/block-kit/blocks/table-block/
+- https://docs.slack.dev/reference/block-kit/blocks/markdown-block/
+- https://docs.slack.dev/block-kit/formatting-with-rich-text/
 - https://docs.slack.dev/reference/block-kit/blocks/actions-block/
 - https://docs.slack.dev/reference/block-kit/blocks/context-actions-block/
 - https://docs.slack.dev/reference/block-kit/blocks/context-block/
