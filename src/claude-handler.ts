@@ -447,11 +447,10 @@ export class ClaudeHandler {
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
 
-    // Set adaptive thinking and effort level
-    options.thinking = { type: 'adaptive' };
+    // Set effort level (default: max)
     const effort = session?.effort || 'max';
     options.effort = effort;
-    this.logger.debug('Using thinking config', { thinking: 'adaptive', effort });
+    this.logger.debug('Using effort level', { effort });
 
     // Build system prompt with persona and workflow
     const workflow = session?.workflow || 'default';
