@@ -188,6 +188,42 @@ describe('markdownToBlocks table sanitization', () => {
   });
 });
 
+describe('markdownToBlocks header sanitization', () => {
+  it('truncates headers exceeding 150 chars', () => {
+    const longTitle = 'A'.repeat(200);
+    const result = markdownToBlocks(`# ${longTitle}`);
+
+    const headerBlock = result.blocks.find(b => b.type === 'header');
+    expect(headerBlock).toBeDefined();
+    expect(headerBlock!.text.text.length).toBeLessThanOrEqual(150);
+    expect(headerBlock!.text.text).toContain('...');
+  });
+
+  it('preserves headers within 150 chars', () => {
+    const result = markdownToBlocks('# Short Title');
+    const headerBlock = result.blocks.find(b => b.type === 'header');
+    expect(headerBlock).toBeDefined();
+    expect(headerBlock!.text.text).toBe('Short Title');
+  });
+});
+
+describe('markdownToBlocks error handling', () => {
+  it('returns empty blocks with fallback on invalid input', () => {
+    // null/undefined-like edge cases
+    const result = markdownToBlocks('');
+    expect(result.blocks).toEqual([]);
+    expect(result.overflow).toEqual([]);
+  });
+
+  it('always provides usable fallback text', () => {
+    const md = '# Hello\n\n**World** with `code`';
+    const result = markdownToBlocks(md);
+    expect(result.fallbackText).toBeTruthy();
+    // Fallback should convert ** to * for Slack mrkdwn
+    expect(result.fallbackText).toContain('*World*');
+  });
+});
+
 describe('thinkingToQuoteBlock', () => {
   it('wraps thinking text in rich_text_quote', () => {
     const block = thinkingToQuoteBlock('I am thinking about this');

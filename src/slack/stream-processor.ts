@@ -983,8 +983,15 @@ export class StreamProcessor {
       }
     } catch (error: any) {
       // Fallback: if Block Kit fails, send as plain text
-      if (error?.data?.error === 'invalid_blocks') {
+      const slackError = error?.data?.error;
+      const isBlockKitError = slackError === 'invalid_blocks'
+        || slackError === 'invalid_attachments'
+        || slackError === 'too_many_blocks'
+        || slackError === 'invalid_blocks_format';
+
+      if (isBlockKitError) {
         this.logger.warn('Block Kit rendering failed, falling back to plain text', {
+          slackError,
           error: error.message,
           blockCount: blocks.length,
         });
