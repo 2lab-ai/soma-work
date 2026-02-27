@@ -55,6 +55,29 @@ src/
 7. **Workflow Dispatch**: 입력 분류 → 전문 워크플로우 프롬프트 적용
 8. **Dependency Injection**: 테스트 용이성을 위한 의존성 주입
 
+## Testing (TDD Required)
+
+**모든 코드 변경은 Red-Green-Refactor TDD 프로세스 필수.**
+
+### 워크플로우
+
+1. **RED**: 실패하는 테스트 작성 → `npx vitest run` → 테스트 실패 확인
+2. **GREEN**: 최소한의 구현 → `npx vitest run` → 테스트 통과 확인
+3. **REFACTOR**: 코드 정리 → 테스트 여전히 통과 확인
+
+### Push 규칙
+
+- TDD 증명(RED→GREEN 로그) 없으면 `git push` 금지
+- 커밋 전 반드시: `npx tsc --noEmit && npx vitest run`
+- 새 기능/버그 수정 시 테스트가 먼저 존재해야 함
+
+### Mock 전략
+
+- **Slack Mock**: `src/test-utils/mock-slack-api.ts` — SlackApiHelper mock factory
+- **Model Mock**: `src/test-utils/mock-claude-handler.ts` — ClaudeHandler mock factory
+- **Session Mock**: `src/test-utils/mock-session.ts` — Session mock factory
+- 모든 기능은 Mock 기반 e2e 테스트 커버리지 확보 목표
+
 ## Key Gotchas
 
 - **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.
