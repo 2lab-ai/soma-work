@@ -1,0 +1,10 @@
+{
+  "name": "soma-work",
+  "version": "1.0.0",
+  "plugins": {
+    "omc": {
+      "path": "src/local",
+      "description": "Oh My Claude - agents, commands, skills, hooks, prompts"
+    }
+  }
+}

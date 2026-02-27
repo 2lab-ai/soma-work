@@ -35,6 +35,8 @@ const root = process.cwd();
 let envFile: string;
 let systemPromptFile: string;
 let mcpConfigFile: string;
+let configFile: string;
+let pluginsDir: string;
 let dataDir: string;
 let mode: string;
 
@@ -43,6 +45,8 @@ if (configDir) {
   envFile = path.join(configDir, '.env');
   systemPromptFile = path.join(configDir, '.system.prompt');
   mcpConfigFile = path.join(configDir, 'mcp-servers.json');
+  configFile = path.join(configDir, 'config.json');
+  pluginsDir = path.join(configDir, 'plugins');
   dataDir = path.join(configDir, 'data');
   mode = `config-dir=${configDir}`;
 } else {
@@ -50,6 +54,8 @@ if (configDir) {
   envFile = path.join(root, isMain ? '.env' : '.env.dev');
   systemPromptFile = path.join(root, isMain ? '.system.prompt' : '.system.prompt.dev');
   mcpConfigFile = path.join(root, isMain ? 'mcp-servers.json' : 'mcp-servers.dev.json');
+  configFile = path.join(root, isMain ? 'config.json' : 'config.dev.json');
+  pluginsDir = path.join(root, 'plugins');
   dataDir = path.join(root, isMain ? 'data' : 'data.dev');
   mode = `branch=${branch}`;
 }
@@ -58,10 +64,12 @@ export const IS_DEV = !!configDir || !isMain;
 export const ENV_FILE = envFile;
 export const SYSTEM_PROMPT_FILE = systemPromptFile;
 export const MCP_CONFIG_FILE = mcpConfigFile;
+export const CONFIG_FILE = configFile;
+export const PLUGINS_DIR = pluginsDir;
 export const DATA_DIR = dataDir;
 
 // Load environment variables from the resolved .env file
 dotenv.config({ path: ENV_FILE });
 
 // Startup log
-console.log(`[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} mcp=${MCP_CONFIG_FILE} prompt=${SYSTEM_PROMPT_FILE}`);
+console.log(`[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} mcp=${MCP_CONFIG_FILE} config=${CONFIG_FILE} plugins=${PLUGINS_DIR} prompt=${SYSTEM_PROMPT_FILE}`);
