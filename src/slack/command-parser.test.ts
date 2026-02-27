@@ -470,6 +470,206 @@ describe('CommandParser', () => {
       expect(help).toContain('onboarding');
       expect(help).toContain('Run onboarding workflow anytime');
     });
+
+    it('should include marketplace commands in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('Marketplace');
+      expect(help).toContain('marketplace');
+      expect(help).toContain('marketplace add');
+      expect(help).toContain('marketplace remove');
+    });
+
+    it('should include plugins commands in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('Plugins');
+      expect(help).toContain('plugins');
+      expect(help).toContain('plugins add');
+      expect(help).toContain('plugins remove');
+    });
+  });
+
+  describe('isMarketplaceCommand', () => {
+    it('should match "marketplace"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace')).toBe(true);
+    });
+
+    it('should match "/marketplace"', () => {
+      expect(CommandParser.isMarketplaceCommand('/marketplace')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work --name custom"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work --ref dev"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev')).toBe(true);
+    });
+
+    it('should match "marketplace remove soma-work"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace remove soma-work')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isMarketplaceCommand('Marketplace')).toBe(true);
+      expect(CommandParser.isMarketplaceCommand('MARKETPLACE add foo/bar')).toBe(true);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isMarketplaceCommand('hello marketplace')).toBe(false);
+    });
+
+    it('should not match "marketplaces"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplaces')).toBe(false);
+    });
+  });
+
+  describe('parseMarketplaceCommand', () => {
+    it('should return list for "marketplace"', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace')).toEqual({ action: 'list' });
+    });
+
+    it('should return list for "/marketplace"', () => {
+      expect(CommandParser.parseMarketplaceCommand('/marketplace')).toEqual({ action: 'list' });
+    });
+
+    it('should parse add with repo', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+      });
+    });
+
+    it('should parse add with --name option', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+      });
+    });
+
+    it('should parse add with --ref option', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse add with both --name and --ref options', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom --ref dev')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse add with --ref before --name', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev --name custom')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse remove with name', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace remove soma-work')).toEqual({
+        action: 'remove',
+        name: 'soma-work',
+      });
+    });
+
+    it('should be case-insensitive for subcommands', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace ADD 2lab-ai/repo')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/repo',
+      });
+      expect(CommandParser.parseMarketplaceCommand('marketplace REMOVE my-market')).toEqual({
+        action: 'remove',
+        name: 'my-market',
+      });
+    });
+  });
+
+  describe('isPluginsCommand', () => {
+    it('should match "plugins"', () => {
+      expect(CommandParser.isPluginsCommand('plugins')).toBe(true);
+    });
+
+    it('should match "/plugins"', () => {
+      expect(CommandParser.isPluginsCommand('/plugins')).toBe(true);
+    });
+
+    it('should match "plugins add omc@soma-work"', () => {
+      expect(CommandParser.isPluginsCommand('plugins add omc@soma-work')).toBe(true);
+    });
+
+    it('should match "plugins remove omc@soma-work"', () => {
+      expect(CommandParser.isPluginsCommand('plugins remove omc@soma-work')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isPluginsCommand('Plugins')).toBe(true);
+      expect(CommandParser.isPluginsCommand('PLUGINS add foo@bar')).toBe(true);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isPluginsCommand('hello plugins')).toBe(false);
+    });
+
+    it('should not match "plugin" without s', () => {
+      expect(CommandParser.isPluginsCommand('plugin')).toBe(false);
+    });
+  });
+
+  describe('parsePluginsCommand', () => {
+    it('should return list for "plugins"', () => {
+      expect(CommandParser.parsePluginsCommand('plugins')).toEqual({ action: 'list' });
+    });
+
+    it('should return list for "/plugins"', () => {
+      expect(CommandParser.parsePluginsCommand('/plugins')).toEqual({ action: 'list' });
+    });
+
+    it('should parse add with pluginRef', () => {
+      expect(CommandParser.parsePluginsCommand('plugins add omc@soma-work')).toEqual({
+        action: 'add',
+        pluginRef: 'omc@soma-work',
+      });
+    });
+
+    it('should parse remove with pluginRef', () => {
+      expect(CommandParser.parsePluginsCommand('plugins remove omc@soma-work')).toEqual({
+        action: 'remove',
+        pluginRef: 'omc@soma-work',
+      });
+    });
+
+    it('should be case-insensitive for subcommands', () => {
+      expect(CommandParser.parsePluginsCommand('plugins ADD tool@market')).toEqual({
+        action: 'add',
+        pluginRef: 'tool@market',
+      });
+      expect(CommandParser.parsePluginsCommand('plugins REMOVE tool@market')).toEqual({
+        action: 'remove',
+        pluginRef: 'tool@market',
+      });
+    });
+  });
+
+  describe('isPotentialCommand recognizes marketplace and plugins', () => {
+    it('should recognize "marketplace" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('marketplace')).toEqual({ isPotential: true, keyword: 'marketplace' });
+    });
+
+    it('should recognize "plugins" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('plugins')).toEqual({ isPotential: true, keyword: 'plugins' });
+    });
   });
 
   describe('isRenewCommand', () => {

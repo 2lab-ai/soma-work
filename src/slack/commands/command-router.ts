@@ -16,6 +16,8 @@ import { LinkHandler } from './link-handler';
 import { CloseHandler } from './close-handler';
 import { VerbosityHandler } from './verbosity-handler';
 import { SessionCommandHandler } from './session-command-handler';
+import { MarketplaceHandler } from './marketplace-handler';
+import { PluginsHandler } from './plugins-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -31,6 +33,8 @@ export class CommandRouter {
     this.handlers = [
       new CwdHandler(deps),
       new McpHandler(deps),
+      new MarketplaceHandler(deps),
+      new PluginsHandler(deps),
       new SessionCommandHandler(deps),  // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new PersonaHandler(),
