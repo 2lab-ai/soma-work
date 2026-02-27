@@ -3,25 +3,45 @@
  *
  * Coordinates config parsing, marketplace fetching, caching,
  * and provides SDK-ready plugin paths.
+ *
+ * CRUD methods (addMarketplace, removeMarketplace, addPlugin, removePlugin)
+ * mutate the in-memory config using immutable patterns (new objects),
+ * then persist to config.json via saveUnifiedConfig.
  */
 
 import * as path from 'path';
 import { PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef } from './types';
-import { parsePluginRef } from './config-parser';
+import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { fetchPlugin } from './marketplace-fetcher';
+import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { Logger } from '../logger';
 
 const logger = new Logger('PluginManager');
 
+/** Standardised result for CRUD operations. */
+export interface CrudResult {
+  success: boolean;
+  error?: string;
+}
+
 export class PluginManager {
-  private readonly pluginConfig: PluginConfig;
+  private pluginConfig: PluginConfig;
   private readonly pluginsDir: string;
+  private readonly configFile: string | undefined;
+  private readonly mcpFallback: string | undefined;
   private resolved: readonly ResolvedPlugin[] = [];
   private initialized = false;
 
-  constructor(pluginConfig: PluginConfig, pluginsDir: string) {
+  constructor(
+    pluginConfig: PluginConfig,
+    pluginsDir: string,
+    configFile?: string,
+    mcpFallback?: string,
+  ) {
     this.pluginConfig = pluginConfig;
     this.pluginsDir = path.resolve(pluginsDir);
+    this.configFile = configFile;
+    this.mcpFallback = mcpFallback;
   }
 
   /**
@@ -119,6 +139,117 @@ export class PluginManager {
   getResolvedPlugins(): readonly ResolvedPlugin[] {
     return this.resolved;
   }
+
+  // =========================================================================
+  // CRUD — Marketplace management
+  // =========================================================================
+
+  /** Get current marketplace list (returns a defensive copy). */
+  getMarketplaces(): readonly MarketplaceEntry[] {
+    return [...(this.pluginConfig.marketplace || [])];
+  }
+
+  /** Get current installed plugin refs (returns a defensive copy). */
+  getInstalledPlugins(): readonly string[] {
+    return [...(this.pluginConfig.plugins || [])];
+  }
+
+  /** Add a marketplace source. Persists to config.json when configFile is set. */
+  addMarketplace(entry: MarketplaceEntry): CrudResult {
+    if (!validateMarketplaceEntry(entry)) {
+      return { success: false, error: `Marketplace entry is invalid (bad name or repo format)` };
+    }
+
+    const existing = this.pluginConfig.marketplace || [];
+    if (existing.some(m => m.name === entry.name)) {
+      return { success: false, error: `Marketplace "${entry.name}" already exists` };
+    }
+
+    this.pluginConfig = {
+      ...this.pluginConfig,
+      marketplace: [...existing, entry],
+    };
+
+    this.saveConfig();
+    logger.info('Marketplace added', { name: entry.name, repo: entry.repo });
+    return { success: true };
+  }
+
+  /** Remove a marketplace by name. Persists to config.json when configFile is set. */
+  removeMarketplace(name: string): CrudResult {
+    const existing = this.pluginConfig.marketplace || [];
+    if (!existing.some(m => m.name === name)) {
+      return { success: false, error: `Marketplace "${name}" not found` };
+    }
+
+    this.pluginConfig = {
+      ...this.pluginConfig,
+      marketplace: existing.filter(m => m.name !== name),
+    };
+
+    this.saveConfig();
+    logger.info('Marketplace removed', { name });
+    return { success: true };
+  }
+
+  /** Add a plugin ref (e.g., "omc@soma-work"). Persists to config.json when configFile is set. */
+  addPlugin(pluginRef: string): CrudResult {
+    const parsed = parsePluginRef(pluginRef);
+    if (!parsed) {
+      return { success: false, error: `Plugin ref "${pluginRef}" is invalid (expected "name@marketplace")` };
+    }
+
+    const existing = this.pluginConfig.plugins || [];
+    if (existing.includes(pluginRef)) {
+      return { success: false, error: `Plugin "${pluginRef}" is already installed` };
+    }
+
+    this.pluginConfig = {
+      ...this.pluginConfig,
+      plugins: [...existing, pluginRef],
+    };
+
+    this.saveConfig();
+    logger.info('Plugin added', { pluginRef });
+    return { success: true };
+  }
+
+  /** Remove a plugin ref. Persists to config.json when configFile is set. */
+  removePlugin(pluginRef: string): CrudResult {
+    const existing = this.pluginConfig.plugins || [];
+    if (!existing.includes(pluginRef)) {
+      return { success: false, error: `Plugin "${pluginRef}" not found` };
+    }
+
+    this.pluginConfig = {
+      ...this.pluginConfig,
+      plugins: existing.filter(p => p !== pluginRef),
+    };
+
+    this.saveConfig();
+    logger.info('Plugin removed', { pluginRef });
+    return { success: true };
+  }
+
+  // =========================================================================
+  // Config persistence
+  // =========================================================================
+
+  /**
+   * Reload the full unified config from disk, update the plugin section,
+   * and write back atomically. Preserves the mcpServers section.
+   */
+  private saveConfig(): void {
+    if (!this.configFile) return;
+
+    const full = loadUnifiedConfig(this.configFile, this.mcpFallback || '');
+    const updated = { ...full, plugin: this.pluginConfig };
+    saveUnifiedConfig(this.configFile, updated);
+  }
+
+  // =========================================================================
+  // Private helpers
+  // =========================================================================
 
   private buildMarketplaceMap(): Map<string, MarketplaceEntry> {
     const map = new Map<string, MarketplaceEntry>();

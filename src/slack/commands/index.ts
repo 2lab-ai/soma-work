@@ -18,3 +18,5 @@ export { RenewHandler } from './renew-handler';
 export { LinkHandler } from './link-handler';
 export { CloseHandler } from './close-handler';
 export { SessionCommandHandler } from './session-command-handler';
+export { MarketplaceHandler } from './marketplace-handler';
+export { PluginsHandler } from './plugins-handler';

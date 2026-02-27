@@ -77,3 +77,20 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
   logger.warn('No configuration file found', { configFile, mcpFallback });
   return {};
 }
+
+/**
+ * Save unified config to config.json using atomic write.
+ *
+ * Writes to a temporary file first, then renames to the target path.
+ * This prevents corruption if the process crashes mid-write.
+ *
+ * @param configFile  Path to the unified config.json
+ * @param config      The UnifiedConfig to persist
+ */
+export function saveUnifiedConfig(configFile: string, config: UnifiedConfig): void {
+  const tmpFile = configFile + '.tmp';
+  const content = JSON.stringify(config, null, 2) + '\n';
+  fs.writeFileSync(tmpFile, content, 'utf-8');
+  fs.renameSync(tmpFile, configFile);
+  logger.info('Saved unified config', { path: configFile });
+}
