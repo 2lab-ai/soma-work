@@ -178,6 +178,13 @@ export class McpStatusDisplay {
   }
 
   /**
+   * adaptive prediction 조정 표시 텍스트 생성
+   */
+  private static formatAdaptiveIndicator(original: number, adjusted: number): string {
+    return ` _🐢 ${McpCallTracker.formatDuration(original)} → ${McpCallTracker.formatDuration(adjusted)}_`;
+  }
+
+  /**
    * 상태 텍스트 생성
    */
   private buildStatusText(
@@ -193,10 +200,15 @@ export class McpStatusDisplay {
     }
     statusText += `\n경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
 
-    if (predicted) {
-      const remaining = Math.max(0, predicted - elapsed);
-      const progress = Math.min(100, (elapsed / predicted) * 100);
-      statusText += `\n예상 시간: ${McpCallTracker.formatDuration(predicted)}`;
+    if (predicted !== null && predicted > 0) {
+      const adaptive = McpCallTracker.computeAdaptivePrediction(elapsed, predicted);
+      const remaining = Math.max(0, adaptive.predicted - elapsed);
+      const progress = Math.min(100, (elapsed / adaptive.predicted) * 100);
+
+      statusText += `\n예상 시간: ${McpCallTracker.formatDuration(adaptive.predicted)}`;
+      if (adaptive.wasAdjusted) {
+        statusText += McpStatusDisplay.formatAdaptiveIndicator(adaptive.originalPredicted, adaptive.predicted);
+      }
       if (remaining > 0) {
         statusText += ` | 남은 시간: ~${McpCallTracker.formatDuration(remaining)}`;
       }
@@ -293,8 +305,11 @@ export class McpStatusDisplay {
 
     const entry = group.entries.get(callId);
     if (entry) {
-      entry.status = 'completed';
-      entry.duration = duration ?? undefined;
+      group.entries.set(callId, {
+        ...entry,
+        status: 'completed',
+        duration: duration ?? undefined,
+      });
     }
 
     // 전체 완료 확인
@@ -390,8 +405,12 @@ export class McpStatusDisplay {
         const elapsedMs = elapsed ?? (Date.now() - entry.startTime);
         let line = `⏳ ${entry.displayLabel}${params} — ${McpCallTracker.formatDuration(elapsedMs)}`;
 
-        if (entry.predicted) {
-          const progress = Math.min(100, (elapsedMs / entry.predicted) * 100);
+        if (entry.predicted !== null && entry.predicted > 0) {
+          const adaptive = McpCallTracker.computeAdaptivePrediction(elapsedMs, entry.predicted);
+          const progress = Math.min(100, (elapsedMs / adaptive.predicted) * 100);
+          if (adaptive.wasAdjusted) {
+            line += McpStatusDisplay.formatAdaptiveIndicator(adaptive.originalPredicted, adaptive.predicted);
+          }
           const barLen = 20;
           const filled = Math.round((progress / 100) * barLen);
           const empty = barLen - filled;

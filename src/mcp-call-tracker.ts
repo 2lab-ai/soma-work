@@ -140,6 +140,26 @@ export class McpCallTracker {
   }
 
   /**
+   * 예상 시간 초과 시 adaptive prediction 계산.
+   * elapsed > predicted이면 predicted를 2배씩 늘림.
+   */
+  static computeAdaptivePrediction(
+    elapsed: number,
+    originalPredicted: number
+  ): { predicted: number; wasAdjusted: boolean; originalPredicted: number } {
+    if (originalPredicted <= 0) {
+      return { predicted: originalPredicted, wasAdjusted: false, originalPredicted };
+    }
+    const doublings = Math.max(0, Math.ceil(Math.log2(elapsed / originalPredicted)));
+    const predicted = originalPredicted * Math.pow(2, doublings);
+    return {
+      predicted,
+      wasAdjusted: doublings > 0,
+      originalPredicted,
+    };
+  }
+
+  /**
    * Format duration as human readable string
    */
   static formatDuration(ms: number): string {
@@ -169,11 +189,18 @@ export class McpCallTracker {
     let message = `⏳ *MCP: ${call.serverName} → ${call.toolName}*\n`;
     message += `경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
 
-    if (predicted) {
-      const remaining = Math.max(0, predicted - elapsed);
-      const progress = Math.min(100, (elapsed / predicted) * 100);
-      message += `\n예상 시간: ${McpCallTracker.formatDuration(predicted)}`;
-      message += `\n남은 시간: ~${McpCallTracker.formatDuration(remaining)}`;
+    if (predicted !== null && predicted > 0) {
+      const adaptive = McpCallTracker.computeAdaptivePrediction(elapsed, predicted);
+      const remaining = Math.max(0, adaptive.predicted - elapsed);
+      const progress = Math.min(100, (elapsed / adaptive.predicted) * 100);
+
+      message += `\n예상 시간: ${McpCallTracker.formatDuration(adaptive.predicted)}`;
+      if (adaptive.wasAdjusted) {
+        message += ` _🐢 ${McpCallTracker.formatDuration(predicted)} → ${McpCallTracker.formatDuration(adaptive.predicted)}_`;
+      }
+      if (remaining > 0) {
+        message += `\n남은 시간: ~${McpCallTracker.formatDuration(remaining)}`;
+      }
       message += `\n진행률: ${progress.toFixed(0)}%`;
     }
 
