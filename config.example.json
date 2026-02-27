@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "jira": {
+      "type": "sse",
+      "url": "https://mcp.atlassian.com/v1/sse"
+    }
+  },
+  "plugin": {
+    "marketplace": [
+      {
+        "name": "soma-work",
+        "repo": "2lab-ai/soma-work",
+        "ref": "main"
+      }
+    ],
+    "plugins": [
+      "omc@soma-work"
+    ],
+    "localOverrides": []
+  }
+}

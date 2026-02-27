@@ -6,6 +6,7 @@
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { isDangerousCommand } from './dangerous-command-filter';
 import * as path from 'path';
+import type { SdkPluginPath } from './plugin/types';
 import {
   ConversationSession,
   SessionLinks,
@@ -19,7 +20,7 @@ import {
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 
-// Local plugins directory (contains skills, etc.)
+// Fallback local plugins directory (used when no PluginManager is configured)
 const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
 import { userSettingsStore } from './user-settings-store';
 import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
@@ -41,11 +42,31 @@ export class ClaudeHandler {
   private promptBuilder: PromptBuilder;
   private mcpConfigBuilder: McpConfigBuilder;
 
+  /** Plugin paths injected by PluginManager (overrides LOCAL_PLUGINS_DIR fallback) */
+  private pluginPaths: SdkPluginPath[] | null = null;
+
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
     this.promptBuilder = new PromptBuilder();
     this.mcpConfigBuilder = new McpConfigBuilder(mcpManager);
+  }
+
+  /**
+   * Set plugin paths from PluginManager. When set, these replace the
+   * default LOCAL_PLUGINS_DIR fallback. Empty arrays are ignored to
+   * preserve the fallback.
+   */
+  setPluginPaths(paths: SdkPluginPath[]): void {
+    if (paths.length === 0) {
+      this.logger.debug('Empty plugin paths provided, keeping LOCAL_PLUGINS_DIR fallback');
+      return;
+    }
+    this.pluginPaths = paths;
+    this.logger.info('Plugin paths configured', {
+      count: paths.length,
+      paths: paths.map(p => p.path),
+    });
   }
 
   // ===== Session Registry Delegation =====
@@ -385,10 +406,8 @@ export class ClaudeHandler {
     const options: Options = {
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
       settingSources: ['project'],
-      // Load local plugins (skills, etc.) from src/local directory
-      plugins: [
-        { type: 'local', path: LOCAL_PLUGINS_DIR }
-      ],
+      // Load plugins from PluginManager or fallback to local directory
+      plugins: this.pluginPaths ?? [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }],
     };
 
     // Get MCP configuration

@@ -13,6 +13,8 @@ node_modules/
 # Local config (not committed)
 mcp-servers.json
 mcp-servers.dev.json
+config.json
+config.dev.json
 .system.prompt
 .system.prompt.dev
 .setup-state
@@ -36,6 +38,9 @@ Thumbs.db
 logs/
 *.log
 nohup.out
+
+# Plugin marketplace cache
+plugins/
 
 # User data
 data/
