@@ -15,6 +15,16 @@ export type SessionCommandAction =
   | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
   | { type: 'effort'; action: 'status' | 'set'; level?: string };
 
+export type MarketplaceAction =
+  | { action: 'list' }
+  | { action: 'add'; repo: string; name?: string; ref?: string }
+  | { action: 'remove'; name: string };
+
+export type PluginsAction =
+  | { action: 'list' }
+  | { action: 'add'; pluginRef: string }
+  | { action: 'remove'; pluginRef: string };
+
 export class CommandParser {
   /**
    * Check if text is an MCP info command
@@ -252,6 +262,78 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a marketplace command
+   */
+  static isMarketplaceCommand(text: string): boolean {
+    return /^\/?marketplace(?:\s+(?:add|remove)\s+\S+(?:\s+--\S+\s+\S+)*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse marketplace command
+   */
+  static parseMarketplaceCommand(text: string): MarketplaceAction {
+    const trimmed = text.trim();
+
+    // Match: marketplace add owner/repo [--name x] [--ref y]
+    const addMatch = trimmed.match(/^\/?marketplace\s+add\s+(\S+)(.*)?$/i);
+    if (addMatch) {
+      const repo = addMatch[1];
+      const rest = addMatch[2] || '';
+      const nameMatch = rest.match(/--name\s+(\S+)/i);
+      const refMatch = rest.match(/--ref\s+(\S+)/i);
+      const result: MarketplaceAction = { action: 'add', repo };
+      const name = nameMatch?.[1];
+      const ref = refMatch?.[1];
+      if (name && ref) {
+        return { action: 'add', repo, name, ref };
+      }
+      if (name) {
+        return { action: 'add', repo, name };
+      }
+      if (ref) {
+        return { action: 'add', repo, ref };
+      }
+      return result;
+    }
+
+    // Match: marketplace remove <name>
+    const removeMatch = trimmed.match(/^\/?marketplace\s+remove\s+(\S+)$/i);
+    if (removeMatch) {
+      return { action: 'remove', name: removeMatch[1] };
+    }
+
+    return { action: 'list' };
+  }
+
+  /**
+   * Check if text is a plugins command
+   */
+  static isPluginsCommand(text: string): boolean {
+    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse plugins command
+   */
+  static parsePluginsCommand(text: string): PluginsAction {
+    const trimmed = text.trim();
+
+    // Match: plugins add <pluginRef>
+    const addMatch = trimmed.match(/^\/?plugins\s+add\s+(\S+)$/i);
+    if (addMatch) {
+      return { action: 'add', pluginRef: addMatch[1] };
+    }
+
+    // Match: plugins remove <pluginRef>
+    const removeMatch = trimmed.match(/^\/?plugins\s+remove\s+(\S+)$/i);
+    if (removeMatch) {
+      return { action: 'remove', pluginRef: removeMatch[1] };
+    }
+
+    return { action: 'list' };
+  }
+
+  /**
    * Check if text is a session command ($ prefix)
    * Matches: $, $model, $model opus, $verbosity, $verbosity compact
    */
@@ -307,6 +389,8 @@ export class CommandParser {
     'restore', 'credentials',
     // Help
     'help', 'commands',
+    // Marketplace & Plugins
+    'marketplace', 'plugins',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
   ]);
@@ -394,6 +478,18 @@ export class CommandParser {
       '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
       '• `$verbosity` - Show session verbosity',
       '• `$verbosity <level>` - Change verbosity for this session only',
+      '',
+      '*Marketplace:*',
+      '• `marketplace` or `/marketplace` - Show registered marketplaces',
+      '• `marketplace add owner/repo` - Add a marketplace from GitHub repo',
+      '• `marketplace add owner/repo --name custom` - Add with custom name',
+      '• `marketplace add owner/repo --ref branch` - Add with specific git ref',
+      '• `marketplace remove name` - Remove a marketplace by name',
+      '',
+      '*Plugins:*',
+      '• `plugins` or `/plugins` - Show installed plugins',
+      '• `plugins add pluginName@marketplaceName` - Install a plugin',
+      '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
