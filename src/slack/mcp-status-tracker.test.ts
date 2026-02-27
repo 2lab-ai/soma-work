@@ -122,6 +122,73 @@ describe('McpStatusDisplay', () => {
       });
     });
 
+    describe('adaptive prediction when elapsed exceeds predicted', () => {
+      it('should double predicted time and show adjustment indicator', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(34800); // 34.8s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(40000); // 40s elapsed
+
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // Should NOT show 100% progress, should adapt to doubled predicted (69.6s)
+        expect(messageText).not.toContain('100%');
+        // Should show remaining time based on adapted prediction
+        expect(messageText).toContain('남은 시간');
+        // Should show adjustment indicator
+        expect(messageText).toContain('🐢');
+        expect(messageText).toContain('→');
+      });
+
+      it('should show original and new predicted times', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(34800); // 34.8s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(40000); // 40s elapsed
+
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // Should show: 예상 시간: 1m 9s _🐢 34.8s → 1m 9s_
+        expect(messageText).toContain('34.8s');
+        expect(messageText).toContain('1m 10s');
+      });
+
+      it('should calculate progress based on adapted prediction', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(30000); // 30s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(45000); // 45s elapsed
+
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // Adapted prediction: 60s (30 * 2)
+        // Progress: 45/60 = 75%
+        expect(messageText).toContain('75%');
+      });
+
+      it('should double multiple times when very overdue', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(10000); // 10s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(25000); // 25s
+
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // 10 → 20 (< 25) → 40s
+        // Progress: 25/40 = 62.5% ≈ 63%
+        expect(messageText).toContain('63%');
+        expect(messageText).toContain('40.0s');
+      });
+
+      it('should not adapt when elapsed is within predicted time', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000); // 60s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(30000); // 30s
+
+        await display.startStatusUpdate('call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // No adaptation needed
+        expect(messageText).not.toContain('🐢');
+        expect(messageText).toContain('50%');
+      });
+    });
+
     it('should include progress bar when prediction is available', async () => {
       mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000);
       mockMcpCallTracker.getElapsedTime.mockReturnValue(30000);
@@ -374,6 +441,49 @@ describe('McpStatusDisplay', () => {
         await vi.advanceTimersByTimeAsync(10000);
 
         expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+      });
+    });
+
+    describe('adaptive prediction in group entries', () => {
+      it('should double predicted time when elapsed exceeds prediction', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(30000); // 30s predicted
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(45000); // 45s elapsed (exceeds 30s)
+
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Code Reviewer'), 'C123', '111.222');
+        await vi.advanceTimersByTimeAsync(300);
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // Progress should NOT be 100% — should be recalculated against doubled prediction (60s)
+        // 45000 / 60000 = 75%
+        expect(messageText).not.toContain('100%');
+        // Should show adjustment indicator
+        expect(messageText).toContain('🐢');
+      });
+
+      it('should show original and adjusted prediction in group text', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(10000); // 10s predicted
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(15000); // 15s elapsed
+
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Reviewer'), 'C123', '111.222');
+        await vi.advanceTimersByTimeAsync(300);
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // Should show: _🐢 10.0s → 20.0s_
+        expect(messageText).toContain('10.0s');
+        expect(messageText).toContain('20.0s');
+        expect(messageText).toContain('→');
+      });
+
+      it('should double multiple times if needed', async () => {
+        mockMcpCallTracker.getPredictedDuration.mockReturnValue(10000); // 10s
+        mockMcpCallTracker.getElapsedTime.mockReturnValue(25000); // 25s > 20s, needs 40s
+
+        await display.startGroupStatusUpdate('g1', 'call1', subagentConfig('Reviewer'), 'C123', '111.222');
+        await vi.advanceTimersByTimeAsync(300);
+
+        const messageText = mockSlackApi.postMessage.mock.calls[0][1];
+        // 10s → 20s (still < 25s) → 40s
+        expect(messageText).toContain('40.0s');
       });
     });
 
