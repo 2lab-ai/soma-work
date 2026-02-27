@@ -1,6 +1,7 @@
 import { McpConfigLoader, McpServerFactory, McpInfoFormatter } from './mcp/index';
 import { MCP_CONFIG_FILE } from './env-paths';
 import type { McpServerConfig, McpConfiguration } from './mcp/index';
+import type { PluginManager } from './plugin/plugin-manager';
 
 // Re-export types for backward compatibility
 export type { McpServerConfig, McpConfiguration };
@@ -22,11 +23,30 @@ export class McpManager {
   private configLoader: McpConfigLoader;
   private serverFactory: McpServerFactory;
   private infoFormatter: McpInfoFormatter;
+  private pluginManager?: PluginManager;
 
   constructor(configPath: string = MCP_CONFIG_FILE) {
     this.configLoader = new McpConfigLoader(configPath);
     this.serverFactory = new McpServerFactory();
     this.infoFormatter = new McpInfoFormatter();
+  }
+
+  /**
+   * Create McpManager from a pre-parsed server config record.
+   * Used by unified-config-loader integration.
+   */
+  static fromParsedServers(servers: Record<string, McpServerConfig>): McpManager {
+    const manager = new McpManager();
+    manager.configLoader = McpConfigLoader.fromParsedConfig(servers);
+    return manager;
+  }
+
+  setPluginManager(pm: PluginManager): void {
+    this.pluginManager = pm;
+  }
+
+  getPluginManager(): PluginManager | undefined {
+    return this.pluginManager;
   }
 
   /**

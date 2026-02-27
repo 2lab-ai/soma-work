@@ -4,6 +4,9 @@ import { config, validateConfig, runPreflightChecks } from './config';
 import { ClaudeHandler } from './claude-handler';
 import { SlackHandler } from './slack-handler';
 import { McpManager } from './mcp-manager';
+import { PluginManager } from './plugin/plugin-manager';
+import { loadUnifiedConfig } from './unified-config-loader';
+import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
@@ -66,10 +69,26 @@ async function start() {
 
     timing('Slack App initialized');
 
-    // Initialize MCP manager
-    const mcpManager = new McpManager();
+    // Load unified config (config.json → fallback mcp-servers.json)
+    const unifiedConfig = loadUnifiedConfig(CONFIG_FILE, MCP_CONFIG_FILE);
+    timing('Unified config loaded');
+
+    // Initialize MCP manager (from unified config or legacy path)
+    const mcpManager = unifiedConfig.mcpServers
+      ? McpManager.fromParsedServers(unifiedConfig.mcpServers)
+      : new McpManager();
     const mcpConfig = mcpManager.loadConfiguration();
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
+
+    // Initialize Plugin manager
+    const pluginManager = new PluginManager(unifiedConfig.plugin || {}, PLUGINS_DIR);
+    try {
+      await pluginManager.initialize();
+      mcpManager.setPluginManager(pluginManager);
+      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
+    } catch (error) {
+      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
+    }
 
     // Initialize GitHub App authentication and auto-refresh if configured
     if (isGitHubAppConfigured()) {
@@ -91,6 +110,11 @@ async function start() {
 
     // Initialize handlers
     const claudeHandler = new ClaudeHandler(mcpManager);
+    // Inject plugin paths if PluginManager resolved any plugins
+    const pluginPaths = pluginManager.getPluginPaths();
+    if (pluginPaths.length > 0) {
+      claudeHandler.setPluginPaths(pluginPaths);
+    }
     timing('ClaudeHandler initialized');
 
     // Initialize dispatch service with ClaudeHandler for unified auth
