@@ -424,6 +424,9 @@ export class ClaudeHandler {
     if (mcpConfig.allowedTools && mcpConfig.allowedTools.length > 0) {
       options.allowedTools = mcpConfig.allowedTools;
     }
+    if (mcpConfig.disallowedTools && mcpConfig.disallowedTools.length > 0) {
+      options.disallowedTools = mcpConfig.disallowedTools;
+    }
     if (mcpConfig.permissionPromptToolName) {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
     }

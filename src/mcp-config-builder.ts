@@ -14,6 +14,9 @@ const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
 
+/** Native SDK tools that require terminal interaction — disallowed in Slack context */
+const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+
 export interface PermissionServerPathResult {
   resolvedPath: string | null;
   fallbackUsed: boolean;
@@ -75,6 +78,8 @@ export interface SlackContext {
 export interface McpConfig {
   mcpServers?: Record<string, any>;
   allowedTools?: string[];
+  /** Tools to completely remove from the model's context (e.g. native interactive tools in Slack) */
+  disallowedTools?: string[];
   permissionPromptToolName?: string;
   permissionMode: 'default' | 'bypassPermissions';
   allowDangerouslySkipPermissions?: boolean;
@@ -170,6 +175,12 @@ export class McpConfigBuilder {
         userBypass,
         permissionMode: config.permissionMode,
       });
+    }
+
+    // Disallow native interactive tools in Slack context
+    // These tools expect terminal input which doesn't exist in Slack
+    if (slackContext) {
+      config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS];
     }
 
     if (slackContext && userBypass) {
