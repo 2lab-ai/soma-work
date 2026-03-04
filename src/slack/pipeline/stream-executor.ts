@@ -703,6 +703,10 @@ export class StreamExecutor {
 
   private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {
     this.deps.requestCoordinator.removeController(sessionKey);
+
+    // Cleanup active MCP status tracking to prevent stuck timers
+    this.deps.toolEventProcessor.cleanup(sessionKey);
+
     try {
       await this.deps.threadPanel?.updatePanel(session, sessionKey);
     } catch (error) {

@@ -2,53 +2,54 @@ import { SlackApiHelper } from './slack-api-helper';
 import { McpCallTracker } from '../mcp-call-tracker';
 import { Logger } from '../logger';
 
-interface StatusMessage {
-  ts: string;
-  channel: string;
-  displayType: string;
-  displayLabel: string;
-  paramsSummary?: string;
-}
-
 export interface StatusUpdateConfig {
   displayType: string;   // "MCP", "Subagent", etc.
   displayLabel: string;  // "codex → query", "General Purpose", etc.
-  initialDelay: number;  // 0 = immediate, 10000 = 10s delay
+  initialDelay: number;  // ignored in session-tick model (kept for API compat)
   predictKey: { serverName: string; toolName: string };
   paramsSummary?: string; // compact params e.g. "(prompt: hello world)"
 }
 
-interface ProgressEntry {
+interface ActiveCallEntry {
   callId: string;
-  displayType: string;
-  displayLabel: string;
-  paramsSummary?: string;
-  status: 'running' | 'completed';
+  sessionKey: string;
+  config: StatusUpdateConfig;
+  channel: string;
+  threadTs: string;
   startTime: number;
+  status: 'running' | 'completed' | 'timed_out';
   duration?: number;
   predicted: number | null;
 }
 
-interface ConsolidatedGroup {
-  groupId: string;
+interface SessionTick {
+  sessionKey: string;
   channel: string;
   threadTs: string;
   messageTs: string | null;
-  entries: Map<string, ProgressEntry>;
-  debounceTimer: NodeJS.Timeout | null;
-  updateInterval: NodeJS.Timeout | null;
+  interval: NodeJS.Timeout | null;
+  currentIntervalMs: number;
+}
+
+const MCP_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function getAdaptiveInterval(elapsedMs: number): number {
+  if (elapsedMs < 60_000) return 10_000;
+  if (elapsedMs < 600_000) return 30_000;
+  if (elapsedMs < 1_800_000) return 60_000;
+  return 300_000;
 }
 
 /**
- * 도구 실행 상태 메시지를 관리하는 클래스
- * MCP 호출, Subagent 등 실행 시간이 긴 호출에 대해 진행 상황을 표시
+ * Session-level MCP status display.
+ * Instead of per-call timers, uses a single tick per session
+ * that renders all active calls in a consolidated message.
+ * Maximum 1 Slack API call per tick.
  */
 export class McpStatusDisplay {
   private logger = new Logger('McpStatusDisplay');
-  private statusIntervals: Map<string, NodeJS.Timeout> = new Map();
-  private statusMessages: Map<string, StatusMessage> = new Map();
-  private groups: Map<string, ConsolidatedGroup> = new Map();
-  private callIdToGroupId: Map<string, string> = new Map();
+  private activeCalls: Map<string, ActiveCallEntry> = new Map();
+  private sessionTicks: Map<string, SessionTick> = new Map();
 
   constructor(
     private slackApi: SlackApiHelper,
@@ -56,154 +57,289 @@ export class McpStatusDisplay {
   ) {}
 
   /**
-   * 호출에 대한 주기적 상태 업데이트 시작
+   * Register a new MCP/subagent call for session-level tracking.
    */
-  async startStatusUpdate(
+  registerCall(
+    sessionKey: string,
     callId: string,
     config: StatusUpdateConfig,
     channel: string,
     threadTs: string
-  ): Promise<void> {
+  ): void {
     const predicted = this.mcpCallTracker.getPredictedDuration(
       config.predictKey.serverName,
       config.predictKey.toolName
     );
 
-    const createOrUpdateStatusMessage = async (isInitial: boolean) => {
-      const elapsed = this.mcpCallTracker.getElapsedTime(callId);
-      if (elapsed === null) return;
+    this.activeCalls.set(callId, {
+      callId,
+      sessionKey,
+      config,
+      channel,
+      threadTs,
+      startTime: Date.now(),
+      status: 'running',
+      predicted,
+    });
 
-      const statusText = this.buildStatusText(config.displayType, config.displayLabel, elapsed, predicted, config.paramsSummary);
-      const msgInfo = this.statusMessages.get(callId);
-
-      if (isInitial || !msgInfo) {
-        try {
-          const result = await this.slackApi.postMessage(channel, statusText, { threadTs });
-          if (result.ts) {
-            this.statusMessages.set(callId, {
-              ts: result.ts,
-              channel,
-              displayType: config.displayType,
-              displayLabel: config.displayLabel,
-              paramsSummary: config.paramsSummary,
-            });
-          }
-        } catch (error) {
-          this.logger.warn('Failed to create status message', error);
-        }
-      } else {
-        try {
-          await this.slackApi.updateMessage(msgInfo.channel, msgInfo.ts, statusText);
-          this.logger.debug('Updated status message', { callId, elapsed });
-        } catch (error) {
-          this.logger.warn('Failed to update status message', error);
-        }
-      }
-    };
-
-    if (config.initialDelay === 0) {
-      // 즉시 상태 메시지 생성
-      await createOrUpdateStatusMessage(true);
-
-      // 30초마다 업데이트
-      const interval = setInterval(async () => {
-        const elapsed = this.mcpCallTracker.getElapsedTime(callId);
-        if (elapsed === null) {
-          await this.stopStatusUpdate(callId);
-          return;
-        }
-        await createOrUpdateStatusMessage(false);
-      }, 30000);
-
-      this.statusIntervals.set(callId, interval);
-    } else {
-      // 지연 후 상태 표시
-      const initialTimeout = setTimeout(async () => {
-        const elapsed = this.mcpCallTracker.getElapsedTime(callId);
-        if (elapsed === null) return;
-
-        await createOrUpdateStatusMessage(true);
-
-        // 30초마다 업데이트
-        const interval = setInterval(async () => {
-          const currentElapsed = this.mcpCallTracker.getElapsedTime(callId);
-          if (currentElapsed === null) {
-            await this.stopStatusUpdate(callId);
-            return;
-          }
-          await createOrUpdateStatusMessage(false);
-        }, 30000);
-
-        this.statusIntervals.set(callId, interval);
-      }, config.initialDelay);
-
-      this.statusIntervals.set(callId, initialTimeout as unknown as NodeJS.Timeout);
+    // Start session tick if needed
+    if (!this.sessionTicks.has(sessionKey)) {
+      const tick: SessionTick = {
+        sessionKey,
+        channel,
+        threadTs,
+        messageTs: null,
+        interval: null,
+        currentIntervalMs: 10_000,
+      };
+      this.sessionTicks.set(sessionKey, tick);
+      this.startTick(tick);
     }
   }
 
   /**
-   * 호출의 상태 업데이트 중지 및 완료 메시지 표시
+   * Mark a call as completed. Rendered on next tick.
    */
-  async stopStatusUpdate(callId: string, duration?: number | null): Promise<void> {
-    this.logger.debug('Stopping status update', { callId, duration });
+  completeCall(callId: string, duration: number | null): void {
+    const entry = this.activeCalls.get(callId);
+    if (!entry) return;
 
-    // 타이머 정리
-    const timer = this.statusIntervals.get(callId);
-    if (timer) {
-      clearInterval(timer);
-      clearTimeout(timer);
-      this.statusIntervals.delete(callId);
-      this.logger.debug('Cleared timer', { callId });
+    this.activeCalls.set(callId, {
+      ...entry,
+      status: 'completed',
+      duration: duration ?? undefined,
+    });
+  }
+
+  /**
+   * Cleanup all calls and tick for a session.
+   */
+  cleanupSession(sessionKey: string): void {
+    // Remove all calls for this session
+    for (const [callId, entry] of this.activeCalls) {
+      if (entry.sessionKey === sessionKey) {
+        this.activeCalls.delete(callId);
+      }
     }
 
-    // 상태 메시지를 완료 상태로 업데이트
-    const msgInfo = this.statusMessages.get(callId);
-    if (msgInfo) {
+    // Stop and remove tick
+    const tick = this.sessionTicks.get(sessionKey);
+    if (tick) {
+      this.stopTick(tick);
+      this.sessionTicks.delete(sessionKey);
+    }
+  }
+
+  /**
+   * Number of active (running) calls across all sessions.
+   */
+  getActiveCount(): number {
+    let count = 0;
+    for (const entry of this.activeCalls.values()) {
+      if (entry.status === 'running') count++;
+    }
+    return count;
+  }
+
+  // --- Private tick management ---
+
+  private startTick(tick: SessionTick): void {
+    tick.interval = setInterval(() => {
+      this.tick(tick);
+    }, tick.currentIntervalMs);
+  }
+
+  private stopTick(tick: SessionTick): void {
+    if (tick.interval) {
+      clearInterval(tick.interval);
+      tick.interval = null;
+    }
+  }
+
+  private async tick(tick: SessionTick): Promise<void> {
+    const calls = this.getSessionCalls(tick.sessionKey);
+    if (calls.length === 0) {
+      this.stopTick(tick);
+      this.sessionTicks.delete(tick.sessionKey);
+      return;
+    }
+
+    // Check timeouts
+    for (const call of calls) {
+      if (call.status !== 'running') continue;
+      const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
+      const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+      if (elapsedMs >= MCP_TIMEOUT_MS) {
+        this.activeCalls.set(call.callId, { ...call, status: 'timed_out' });
+        this.logger.warn('MCP call timed out', { callId: call.callId, elapsed: elapsedMs });
+      }
+    }
+
+    // Re-fetch after timeout mutations
+    const updatedCalls = this.getSessionCalls(tick.sessionKey);
+    const allDone = updatedCalls.every(c => c.status !== 'running');
+
+    // Compute adaptive interval from running calls
+    if (!allDone) {
+      const minInterval = this.computeMinInterval(updatedCalls);
+      if (minInterval !== tick.currentIntervalMs) {
+        this.stopTick(tick);
+        tick.currentIntervalMs = minInterval;
+        tick.interval = setInterval(() => {
+          this.tick(tick);
+        }, tick.currentIntervalMs);
+      }
+    }
+
+    // Render consolidated message
+    const statusText = this.buildConsolidatedText(updatedCalls);
+
+    if (!tick.messageTs) {
       try {
-        let completedText = `🟢 *${msgInfo.displayType} 완료: ${msgInfo.displayLabel}*`;
-        if (msgInfo.paramsSummary) {
-          completedText += ` ${msgInfo.paramsSummary}`;
+        const result = await this.slackApi.postMessage(tick.channel, statusText, { threadTs: tick.threadTs });
+        if (result.ts) {
+          tick.messageTs = result.ts;
         }
-        if (duration !== null && duration !== undefined) {
-          completedText += ` (${McpCallTracker.formatDuration(duration)})`;
-        }
-
-        await this.slackApi.updateMessage(msgInfo.channel, msgInfo.ts, completedText);
-        this.logger.debug('Updated status message to completed', { callId, duration });
       } catch (error) {
-        this.logger.warn('Failed to update status message to completed', error);
+        this.logger.warn('Failed to create session status message', error);
       }
-      this.statusMessages.delete(callId);
+    } else {
+      try {
+        await this.slackApi.updateMessage(tick.channel, tick.messageTs, statusText);
+      } catch (error) {
+        this.logger.warn('Failed to update session status message', error);
+      }
+    }
+
+    // All done → final render complete, stop tick and remove entries
+    if (allDone) {
+      this.stopTick(tick);
+      this.sessionTicks.delete(tick.sessionKey);
+      for (const call of updatedCalls) {
+        this.activeCalls.delete(call.callId);
+      }
     }
   }
 
-  /**
-   * adaptive prediction 조정 표시 텍스트 생성
-   */
-  private static formatAdaptiveIndicator(original: number, adjusted: number): string {
-    return ` _🐢 ${McpCallTracker.formatDuration(original)} → ${McpCallTracker.formatDuration(adjusted)}_`;
+  private getSessionCalls(sessionKey: string): ActiveCallEntry[] {
+    const calls: ActiveCallEntry[] = [];
+    for (const entry of this.activeCalls.values()) {
+      if (entry.sessionKey === sessionKey) {
+        calls.push(entry);
+      }
+    }
+    return calls;
   }
 
-  /**
-   * 상태 텍스트 생성
-   */
-  private buildStatusText(
-    displayType: string,
-    displayLabel: string,
-    elapsed: number,
-    predicted: number | null,
-    paramsSummary?: string
-  ): string {
-    let statusText = `⏳ *${displayType} 실행 중: ${displayLabel}*`;
-    if (paramsSummary) {
-      statusText += ` ${paramsSummary}`;
+  private computeMinInterval(calls: ActiveCallEntry[]): number {
+    let minInterval = 300_000;
+    for (const call of calls) {
+      if (call.status !== 'running') continue;
+      const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
+      const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+      const interval = getAdaptiveInterval(elapsedMs);
+      if (interval < minInterval) {
+        minInterval = interval;
+      }
     }
-    statusText += `\n경과 시간: ${McpCallTracker.formatDuration(elapsed)}`;
+    return minInterval;
+  }
 
-    if (predicted !== null && predicted > 0) {
-      const adaptive = McpCallTracker.computeAdaptivePrediction(elapsed, predicted);
-      const remaining = Math.max(0, adaptive.predicted - elapsed);
-      const progress = Math.min(100, (elapsed / adaptive.predicted) * 100);
+  // --- Rendering ---
+
+  private buildConsolidatedText(calls: ActiveCallEntry[]): string {
+    const total = calls.length;
+    const completed = calls.filter(c => c.status === 'completed').length;
+    const timedOut = calls.filter(c => c.status === 'timed_out').length;
+    const allDone = completed + timedOut === total;
+
+    let header: string;
+    if (allDone && timedOut === 0) {
+      header = total === 1
+        ? `🟢 작업 완료`
+        : `🟢 ${total}개 작업 완료`;
+    } else if (allDone) {
+      header = `📊 ${total}개 작업 종료 (${completed} 완료, ${timedOut} 타임아웃)`;
+    } else {
+      header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
+    }
+
+    // For single call, skip header redundancy
+    if (total === 1) {
+      const call = calls[0];
+      return this.renderSingleCallText(call);
+    }
+
+    const lines = calls.map(call => this.renderCallLine(call));
+
+    return `${header}\n\n${lines.join('\n')}`;
+  }
+
+  private renderSingleCallText(call: ActiveCallEntry): string {
+    const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
+
+    if (call.status === 'completed') {
+      let text = `🟢 *${call.config.displayType} 완료: ${call.config.displayLabel}*${params}`;
+      if (call.duration !== undefined) {
+        text += ` (${McpCallTracker.formatDuration(call.duration)})`;
+      }
+      return text;
+    }
+
+    if (call.status === 'timed_out') {
+      return `⏱️ *${call.config.displayType} 타임아웃: ${call.config.displayLabel}*${params} (2시간+)`;
+    }
+
+    // Running
+    const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
+    const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+    return this.buildRunningText(call, elapsedMs);
+  }
+
+  private renderCallLine(call: ActiveCallEntry): string {
+    const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
+
+    if (call.status === 'completed') {
+      let line = `🟢 ${call.config.displayLabel}${params}`;
+      if (call.duration !== undefined) {
+        line += ` (${McpCallTracker.formatDuration(call.duration)})`;
+      }
+      return line;
+    }
+
+    if (call.status === 'timed_out') {
+      return `⏱️ ${call.config.displayLabel}${params} (타임아웃)`;
+    }
+
+    // Running
+    const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
+    const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+    let line = `⏳ ${call.config.displayLabel}${params} — ${McpCallTracker.formatDuration(elapsedMs)}`;
+
+    if (call.predicted !== null && call.predicted > 0) {
+      const adaptive = McpCallTracker.computeAdaptivePrediction(elapsedMs, call.predicted);
+      const progress = Math.min(100, (elapsedMs / adaptive.predicted) * 100);
+      if (adaptive.wasAdjusted) {
+        line += McpStatusDisplay.formatAdaptiveIndicator(adaptive.originalPredicted, adaptive.predicted);
+      }
+      const barLen = 20;
+      const filled = Math.round((progress / 100) * barLen);
+      const empty = barLen - filled;
+      line += ` \`${'█'.repeat(filled)}${'░'.repeat(empty)}\``;
+    }
+
+    return line;
+  }
+
+  private buildRunningText(call: ActiveCallEntry, elapsedMs: number): string {
+    const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
+    let statusText = `⏳ *${call.config.displayType} 실행 중: ${call.config.displayLabel}*${params}`;
+    statusText += `\n경과 시간: ${McpCallTracker.formatDuration(elapsedMs)}`;
+
+    if (call.predicted !== null && call.predicted > 0) {
+      const adaptive = McpCallTracker.computeAdaptivePrediction(elapsedMs, call.predicted);
+      const remaining = Math.max(0, adaptive.predicted - elapsedMs);
+      const progress = Math.min(100, (elapsedMs / adaptive.predicted) * 100);
 
       statusText += `\n예상 시간: ${McpCallTracker.formatDuration(adaptive.predicted)}`;
       if (adaptive.wasAdjusted) {
@@ -214,7 +350,6 @@ export class McpStatusDisplay {
       }
       statusText += `\n진행률: ${progress.toFixed(0)}%`;
 
-      // 프로그레스 바
       const progressBarLength = 20;
       const filledLength = Math.round((progress / 100) * progressBarLength);
       const emptyLength = progressBarLength - filledLength;
@@ -225,223 +360,7 @@ export class McpStatusDisplay {
     return statusText;
   }
 
-  /**
-   * 특정 callId에 대한 상태 메시지 정보 조회
-   */
-  getStatusMessageInfo(callId: string): StatusMessage | undefined {
-    return this.statusMessages.get(callId);
-  }
-
-  /**
-   * 활성 상태 업데이트 개수 조회
-   */
-  getActiveCount(): number {
-    return this.statusIntervals.size;
-  }
-
-  // --- Consolidated Group Methods ---
-
-  /**
-   * 그룹에 상태 업데이트 시작 (병렬 배치용)
-   */
-  async startGroupStatusUpdate(
-    groupId: string,
-    callId: string,
-    config: StatusUpdateConfig,
-    channel: string,
-    threadTs: string
-  ): Promise<void> {
-    const predicted = this.mcpCallTracker.getPredictedDuration(
-      config.predictKey.serverName,
-      config.predictKey.toolName
-    );
-
-    this.callIdToGroupId.set(callId, groupId);
-
-    let group = this.groups.get(groupId);
-    if (!group) {
-      group = {
-        groupId,
-        channel,
-        threadTs,
-        messageTs: null,
-        entries: new Map(),
-        debounceTimer: null,
-        updateInterval: null,
-      };
-      this.groups.set(groupId, group);
-    }
-
-    group.entries.set(callId, {
-      callId,
-      displayType: config.displayType,
-      displayLabel: config.displayLabel,
-      paramsSummary: config.paramsSummary,
-      status: 'running',
-      startTime: Date.now(),
-      predicted,
-    });
-
-    // 그룹 내에서는 initialDelay 무시, 즉시 렌더
-    this.scheduleGroupRender(groupId, 300);
-
-    // 첫 엔트리일 때만 주기적 업데이트 시작 (10초)
-    if (!group.updateInterval) {
-      group.updateInterval = setInterval(() => {
-        this.renderGroup(groupId);
-      }, 10000);
-    }
-  }
-
-  /**
-   * 그룹 내 개별 작업 완료 처리
-   */
-  async stopGroupStatusUpdate(callId: string, duration?: number | null): Promise<void> {
-    const groupId = this.callIdToGroupId.get(callId);
-    if (!groupId) return;
-
-    const group = this.groups.get(groupId);
-    if (!group) return;
-
-    const entry = group.entries.get(callId);
-    if (entry) {
-      group.entries.set(callId, {
-        ...entry,
-        status: 'completed',
-        duration: duration ?? undefined,
-      });
-    }
-
-    // 전체 완료 확인
-    const allCompleted = Array.from(group.entries.values()).every(e => e.status === 'completed');
-
-    if (allCompleted) {
-      // 최종 렌더 후 정리
-      await this.renderGroup(groupId);
-      this.cleanupGroup(groupId);
-    } else {
-      // 디바운스 렌더
-      this.scheduleGroupRender(groupId, 300);
-    }
-  }
-
-  /**
-   * callId가 그룹에 속하는지 확인
-   */
-  isInGroup(callId: string): boolean {
-    return this.callIdToGroupId.has(callId);
-  }
-
-  /**
-   * 디바운스된 그룹 렌더 예약
-   */
-  private scheduleGroupRender(groupId: string, delayMs: number = 300): void {
-    const group = this.groups.get(groupId);
-    if (!group) return;
-
-    if (group.debounceTimer) {
-      clearTimeout(group.debounceTimer);
-    }
-
-    group.debounceTimer = setTimeout(() => {
-      group.debounceTimer = null;
-      this.renderGroup(groupId);
-    }, delayMs);
-  }
-
-  /**
-   * 최신 상태로 그룹 메시지 생성/업데이트
-   */
-  private async renderGroup(groupId: string): Promise<void> {
-    const group = this.groups.get(groupId);
-    if (!group) return;
-
-    const statusText = this.buildGroupStatusText(group);
-
-    if (!group.messageTs) {
-      try {
-        const result = await this.slackApi.postMessage(group.channel, statusText, { threadTs: group.threadTs });
-        if (result.ts) {
-          group.messageTs = result.ts;
-        }
-      } catch (error) {
-        this.logger.warn('Failed to create group status message', error);
-      }
-    } else {
-      try {
-        await this.slackApi.updateMessage(group.channel, group.messageTs, statusText);
-      } catch (error) {
-        this.logger.warn('Failed to update group status message', error);
-      }
-    }
-  }
-
-  /**
-   * 통합 메시지 텍스트 빌드
-   */
-  private buildGroupStatusText(group: ConsolidatedGroup): string {
-    const entries = Array.from(group.entries.values());
-    const total = entries.length;
-    const completed = entries.filter(e => e.status === 'completed').length;
-    const allDone = completed === total;
-
-    let header: string;
-    if (allDone) {
-      header = `🟢 ${total}개 작업 완료`;
-    } else {
-      header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
-    }
-
-    const lines = entries.map(entry => {
-      const params = entry.paramsSummary ? ` ${entry.paramsSummary}` : '';
-      if (entry.status === 'completed') {
-        let line = `🟢 ${entry.displayLabel}${params}`;
-        if (entry.duration !== undefined) {
-          line += ` (${McpCallTracker.formatDuration(entry.duration)})`;
-        }
-        return line;
-      } else {
-        const elapsed = this.mcpCallTracker.getElapsedTime(entry.callId);
-        const elapsedMs = elapsed ?? (Date.now() - entry.startTime);
-        let line = `⏳ ${entry.displayLabel}${params} — ${McpCallTracker.formatDuration(elapsedMs)}`;
-
-        if (entry.predicted !== null && entry.predicted > 0) {
-          const adaptive = McpCallTracker.computeAdaptivePrediction(elapsedMs, entry.predicted);
-          const progress = Math.min(100, (elapsedMs / adaptive.predicted) * 100);
-          if (adaptive.wasAdjusted) {
-            line += McpStatusDisplay.formatAdaptiveIndicator(adaptive.originalPredicted, adaptive.predicted);
-          }
-          const barLen = 20;
-          const filled = Math.round((progress / 100) * barLen);
-          const empty = barLen - filled;
-          line += ` \`${'█'.repeat(filled)}${'░'.repeat(empty)}\``;
-        }
-        return line;
-      }
-    });
-
-    return `${header}\n\n${lines.join('\n')}`;
-  }
-
-  /**
-   * 그룹 리소스 정리
-   */
-  private cleanupGroup(groupId: string): void {
-    const group = this.groups.get(groupId);
-    if (!group) return;
-
-    if (group.debounceTimer) {
-      clearTimeout(group.debounceTimer);
-    }
-    if (group.updateInterval) {
-      clearInterval(group.updateInterval);
-    }
-
-    for (const callId of group.entries.keys()) {
-      this.callIdToGroupId.delete(callId);
-    }
-
-    this.groups.delete(groupId);
-    this.logger.debug('Cleaned up group', { groupId });
+  private static formatAdaptiveIndicator(original: number, adjusted: number): string {
+    return ` _🐢 ${McpCallTracker.formatDuration(original)} → ${McpCallTracker.formatDuration(adjusted)}_`;
   }
 }
