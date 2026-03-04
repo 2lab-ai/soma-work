@@ -25,7 +25,7 @@ const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
 import { userSettingsStore } from './user-settings-store';
 import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
 import { sendCredentialAlert } from './credential-alert';
-import { SessionRegistry, SessionExpiryCallbacks } from './session-registry';
+import { SessionRegistry, SessionExpiryCallbacks, CrashRecoveredSession } from './session-registry';
 import { PromptBuilder, getAvailablePersonas } from './prompt-builder';
 import { McpConfigBuilder, SlackContext } from './mcp-config-builder';
 import { ModelCommandContext } from './model-commands/types';
@@ -238,6 +238,14 @@ export class ClaudeHandler {
     return this.sessionRegistry.loadSessions();
   }
 
+  getCrashRecoveredSessions(): CrashRecoveredSession[] {
+    return this.sessionRegistry.getCrashRecoveredSessions();
+  }
+
+  clearCrashRecoveredSessions(): void {
+    this.sessionRegistry.clearCrashRecoveredSessions();
+  }
+
   // ===== Dispatch One-Shot Query =====
 
   /**
@@ -431,12 +439,31 @@ export class ClaudeHandler {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
     }
 
-    // PreToolUse hook: intercept dangerous Bash commands even in bypass mode
-    // bypassPermissions auto-approves everything; this hook overrides with 'ask' for dangerous commands only
-    if (slackContext && mcpConfig.userBypass) {
-      options.hooks = {
-        ...options.hooks,
-        PreToolUse: [{
+    // PreToolUse hooks
+    if (slackContext) {
+      const preToolUseHooks: Array<{ matcher: string; hooks: Array<(input: HookInput) => Promise<HookJSONOutput>> }> = [];
+
+      // Abort guard: deny all tool calls after session abort to prevent SDK fire-and-forget writes
+      if (abortController) {
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [async (): Promise<HookJSONOutput> => {
+            if (abortController.signal.aborted) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+            return { continue: true };
+          }],
+        });
+      }
+
+      // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
+      if (mcpConfig.userBypass) {
+        preToolUseHooks.push({
           matcher: 'Bash',
           hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
             const { tool_input } = input as { tool_input: unknown };
@@ -458,8 +485,15 @@ export class ClaudeHandler {
 
             return { continue: true };
           }],
-        }],
-      };
+        });
+      }
+
+      if (preToolUseHooks.length > 0) {
+        options.hooks = {
+          ...options.hooks,
+          PreToolUse: preToolUseHooks,
+        };
+      }
     }
 
     // Set model from session or user's default model
