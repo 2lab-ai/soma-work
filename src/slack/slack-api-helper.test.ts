@@ -355,4 +355,41 @@ describe('SlackApiHelper', () => {
       await expect(helper.removeReaction('C123', '123.456', 'thumbsup')).resolves.not.toThrow();
     });
   });
+
+  describe('queue overflow protection', () => {
+    it('should drop oldest item when queue exceeds maxQueueSize', async () => {
+      // Create helper with maxQueueSize=1: queue can hold at most 1 pending item
+      const smallHelper = new SlackApiHelper(mockApp as any, { maxQueueSize: 1 });
+
+      // Make the first call block by never resolving until we say so
+      let resolveFirst: ((v: any) => void) | null = null;
+      mockApp.client.chat.postMessage
+        .mockImplementationOnce(() => new Promise<any>(resolve => { resolveFirst = resolve; }))
+        .mockResolvedValue({ ts: '2', channel: 'C2' });
+
+      // p1 starts processing immediately (pops from queue, blocks on execution)
+      const p1 = smallHelper.postMessage('C1', 'msg1');
+      // p2 queues up (queue length = 1 = maxQueueSize)
+      const p2 = smallHelper.postMessage('C2', 'msg2');
+      // p3 tries to queue — queue length (1) >= maxQueueSize (1) → drops p2
+      const p3 = smallHelper.postMessage('C3', 'msg3');
+
+      // Unblock first call
+      resolveFirst!({ ts: '1', channel: 'C1' });
+      await p1;
+
+      // p2 should have been dropped
+      await expect(p2).rejects.toThrow('Queue overflow');
+
+      // p3 should resolve normally
+      const result3 = await p3;
+      expect(result3).toEqual({ ts: '2', channel: 'C2' });
+    });
+
+    it('should report queue status correctly', () => {
+      const status = helper.getQueueStatus();
+      expect(status).toHaveProperty('queueLength');
+      expect(status).toHaveProperty('tokens');
+    });
+  });
 });
