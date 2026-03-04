@@ -545,6 +545,37 @@ export class SlackHandler {
   }
 
   /**
+   * Notify users whose sessions were interrupted by a crash/restart.
+   * Should be called after loadSavedSessions() and after Slack app starts.
+   */
+  async notifyCrashRecovery(): Promise<number> {
+    const recovered = this.claudeHandler.getCrashRecoveredSessions();
+    if (recovered.length === 0) return 0;
+
+    let notified = 0;
+    for (const session of recovered) {
+      try {
+        await this.app.client.chat.postMessage({
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`,
+        });
+        notified++;
+      } catch (error) {
+        this.logger.warn('Failed to send crash recovery notification', {
+          channel: session.channelId,
+          threadTs: session.threadTs,
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    this.claudeHandler.clearCrashRecoveredSessions();
+    this.logger.info(`Sent crash recovery notifications to ${notified}/${recovered.length} sessions`);
+    return notified;
+  }
+
+  /**
    * Save sessions to file before shutdown
    */
   saveSessions(): void {

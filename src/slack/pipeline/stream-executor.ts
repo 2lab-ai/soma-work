@@ -632,7 +632,7 @@ export class StreamExecutor {
       message.includes('aborted by user') ||
       message.includes('process aborted by user') ||
       message.includes('request was aborted') ||
-      message.includes('operation was aborted')
+      message.includes('operation aborted')  // covers "Operation aborted" and "operation was aborted"
     );
   }
 
