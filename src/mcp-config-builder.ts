@@ -15,7 +15,7 @@ const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
-const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
 
 export interface PermissionServerPathResult {
   resolvedPath: string | null;
@@ -358,6 +358,10 @@ export class McpConfigBuilder {
     if (slackContext) {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
     }
+
+    // Auto-approve plan mode tools (no terminal interaction needed)
+    allowedTools.push('EnterPlanMode');
+    allowedTools.push('ExitPlanMode');
 
     return allowedTools;
   }
