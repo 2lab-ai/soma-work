@@ -161,6 +161,15 @@ async function start() {
     const versionTag = versionInfoForLog ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})` : 'dev';
     logger.info(`⚡️ Claude Code Slack bot is running! [${versionTag}]`);
 
+    // Notify users whose sessions were interrupted by crash (non-blocking)
+    slackHandler.notifyCrashRecovery().then(notified => {
+      if (notified > 0) {
+        timing(`Crash recovery notifications sent (${notified} sessions)`);
+      }
+    }).catch(error => {
+      logger.warn('Crash recovery notifications failed (non-critical)', error);
+    });
+
     // Scan channels the bot is a member of (non-blocking)
     scanChannels(app.client).then(count => {
       timing(`Channel scan complete (${count} channels)`);
@@ -319,24 +328,27 @@ async function start() {
 
     // Crash safety net: save sessions before unclean exit
     // SDK can throw uncaught exceptions (e.g., write to aborted process)
+    // Uses console.error instead of logger — logger may not flush before process.exit
     process.on('uncaughtException', (error) => {
-      logger.error('Uncaught exception — saving sessions before exit', error);
+      console.error('CRASH: uncaught exception — saving sessions before exit', error);
       try {
         slackHandler.saveSessions();
         slackHandler.savePendingForms();
+        console.error('CRASH: sessions saved successfully');
       } catch (saveError) {
-        logger.error('Failed to save sessions during crash', saveError);
+        console.error('CRASH: failed to save sessions', saveError);
       }
       process.exit(1);
     });
 
     process.on('unhandledRejection', (reason) => {
-      logger.error('Unhandled rejection — saving sessions before exit', reason);
+      console.error('CRASH: unhandled rejection — saving sessions before exit', reason);
       try {
         slackHandler.saveSessions();
         slackHandler.savePendingForms();
+        console.error('CRASH: sessions saved successfully');
       } catch (saveError) {
-        logger.error('Failed to save sessions during crash', saveError);
+        console.error('CRASH: failed to save sessions', saveError);
       }
       process.exit(1);
     });

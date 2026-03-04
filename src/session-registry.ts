@@ -109,10 +109,19 @@ export interface SessionExpiryCallbacks {
  * - Session persistence (save/load)
  * - Session expiry and cleanup
  */
+export interface CrashRecoveredSession {
+  channelId: string;
+  threadTs?: string;
+  ownerId: string;
+  ownerName?: string;
+  activityState: string;
+}
+
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
+  private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
    * Set callbacks for session expiry events
@@ -924,6 +933,18 @@ export class SessionRegistry {
   }
 
   /**
+   * Sessions that were actively processing when the process crashed.
+   * Populated during loadSessions(), cleared after notification.
+   */
+  getCrashRecoveredSessions(): CrashRecoveredSession[] {
+    return this._crashRecoveredSessions;
+  }
+
+  clearCrashRecoveredSessions(): void {
+    this._crashRecoveredSessions = [];
+  }
+
+  /**
    * Save all sessions to file for persistence across restarts
    */
   saveSessions(): void {
@@ -991,6 +1012,7 @@ export class SessionRegistry {
       let loaded = 0;
       const now = Date.now();
       const maxAge = DEFAULT_SESSION_TIMEOUT;
+      this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
@@ -1037,6 +1059,17 @@ export class SessionRegistry {
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
         loaded++;
+
+        // Track sessions that were active when process crashed
+        if (serialized.activityState && serialized.activityState !== 'idle') {
+          this._crashRecoveredSessions.push({
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            ownerId: serialized.ownerId || serialized.userId,
+            ownerName: serialized.ownerName,
+            activityState: serialized.activityState,
+          });
+        }
       }
 
       this.logger.info(
