@@ -101,15 +101,9 @@ export class ToolEventProcessor {
    * Handle tool use events from assistant message
    * - Track tool use IDs
    * - Start MCP call tracking for MCP tools
-   * - Detect parallel batches for consolidated progress
+   * - Session tick handles consolidation automatically
    */
   async handleToolUse(toolUses: ToolUseEvent[], context: ToolEventContext): Promise<void> {
-    // Detect parallel batch: multiple trackable tools in a single message
-    const trackableTools = toolUses.filter(t => t.name.startsWith('mcp__') || t.name === 'Task');
-    const groupId = trackableTools.length > 1
-      ? `group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-      : null;
-
     for (const toolUse of toolUses) {
       this.logger.debug('Handling tool_use', ToolFormatter.buildToolUseLogSummary(
         toolUse.id,
@@ -122,12 +116,12 @@ export class ToolEventProcessor {
 
       // Start MCP call tracking for MCP tools
       if (toolUse.name.startsWith('mcp__')) {
-        await this.startMcpTracking(toolUse, context, groupId);
+        await this.startMcpTracking(toolUse, context);
       }
 
       // Start subagent tracking for Task tools
       if (toolUse.name === 'Task') {
-        await this.startSubagentTracking(toolUse, context, groupId);
+        await this.startSubagentTracking(toolUse, context);
       }
     }
   }
@@ -135,7 +129,7 @@ export class ToolEventProcessor {
   /**
    * Start MCP call tracking and status display
    */
-  private async startMcpTracking(toolUse: ToolUseEvent, context: ToolEventContext, groupId: string | null = null): Promise<void> {
+  private async startMcpTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
     const nameParts = toolUse.name.split('__');
     const serverName = nameParts[1] || 'unknown';
     const actualToolName = nameParts.slice(2).join('__') || toolUse.name;
@@ -164,18 +158,14 @@ export class ToolEventProcessor {
     };
 
     if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
-      if (groupId) {
-        await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
-      } else {
-        await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
-      }
+      this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
 
   /**
    * Start subagent tracking and status display for Task tools
    */
-  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext, groupId: string | null = null): Promise<void> {
+  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
     const summary = ToolFormatter.getTaskToolSummary(toolUse.input);
     const subagentName = summary.subagentLabel || 'Task';
 
@@ -195,11 +185,7 @@ export class ToolEventProcessor {
     };
 
     if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
-      if (groupId) {
-        await this.mcpStatusDisplay.startGroupStatusUpdate(groupId, callId, config, context.channel, context.threadTs);
-      } else {
-        await this.mcpStatusDisplay.startStatusUpdate(callId, config, context.channel, context.threadTs);
-      }
+      this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
 
@@ -264,12 +250,8 @@ export class ToolEventProcessor {
       this.subagentCallIds.delete(callId);
     }
 
-    // Route to group or individual status display
-    if (this.mcpStatusDisplay.isInGroup(callId)) {
-      await this.mcpStatusDisplay.stopGroupStatusUpdate(callId, duration);
-    } else {
-      await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
-    }
+    // Mark call as completed in session tick
+    this.mcpStatusDisplay.completeCall(callId, duration);
 
     return duration;
   }
@@ -304,10 +286,19 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Cleanup resources on abort or completion
+   * Cleanup resources on abort or completion.
+   * Completes any active MCP calls and cleans up the session tick.
    */
-  cleanup(): void {
-    // Tool tracker handles its own cleanup via scheduleCleanup
-    // MCP status display handles its own cleanup when calls end
+  cleanup(sessionKey?: string): void {
+    // Complete any outstanding MCP calls
+    const activeMcpCallIds = this.toolTracker.getActiveMcpCallIds();
+    for (const callId of activeMcpCallIds) {
+      this.mcpStatusDisplay.completeCall(callId, null);
+    }
+
+    // Cleanup session tick
+    if (sessionKey) {
+      this.mcpStatusDisplay.cleanupSession(sessionKey);
+    }
   }
 }

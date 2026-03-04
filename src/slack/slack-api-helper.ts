@@ -16,6 +16,7 @@ interface RateLimitConfig {
   bucketSize: number;      // 최대 버스트 크기
   refillRate: number;      // 초당 리필 토큰 수
   minInterval: number;     // 최소 요청 간격 (ms)
+  maxQueueSize: number;    // 최대 큐 크기 (초과 시 oldest drop)
 }
 
 interface UpdateMessageOptions {
@@ -27,6 +28,7 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
   bucketSize: 10,          // 최대 10개 버스트
   refillRate: 3,           // 초당 3개 리필
   minInterval: 100,        // 최소 100ms 간격
+  maxQueueSize: 200,       // 최대 큐 크기 (초과 시 oldest drop)
 };
 
 /**
@@ -68,6 +70,16 @@ export class SlackApiHelper {
    */
   private async enqueue<T>(execute: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // Drop oldest if queue exceeds maxQueueSize
+      if (this.queue.length >= this.rateLimit.maxQueueSize) {
+        const dropped = this.queue.shift()!;
+        dropped.reject(new Error('Queue overflow: dropped oldest request'));
+        this.logger.warn('Queue overflow: dropped oldest request', {
+          queueLength: this.queue.length,
+          maxQueueSize: this.rateLimit.maxQueueSize,
+        });
+      }
+
       this.queue.push({ execute, resolve, reject });
       this.processQueue();
     });
