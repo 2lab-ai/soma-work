@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as path from 'path';
 import {
   McpConfigBuilder,
+  McpConfig,
   resolveInternalMcpServer,
   resolveModelCommandServerPath,
   resolvePermissionServerPath,
@@ -45,6 +46,41 @@ describe('MCP server path resolver', () => {
     expect(result.resolvedPath).toBe(preferred);
     expect(result.fallbackUsed).toBe(false);
     expect(result.triedPaths).toEqual([preferred, fallback]);
+  });
+});
+
+describe('McpConfigBuilder disallowedTools', () => {
+  function createMockMcpManager() {
+    return {
+      getServerConfiguration: vi.fn().mockResolvedValue({}),
+      getDefaultAllowedTools: vi.fn().mockReturnValue([]),
+    } as any;
+  }
+
+  it('McpConfig type includes disallowedTools field', () => {
+    const config: McpConfig = {
+      permissionMode: 'default',
+      userBypass: false,
+      disallowedTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
+    };
+    expect(config.disallowedTools).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+  });
+
+  it('populates disallowedTools when slackContext is provided', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C123', user: 'U123' });
+
+    expect(config.disallowedTools).toBeDefined();
+    expect(config.disallowedTools).toContain('AskUserQuestion');
+    expect(config.disallowedTools).toContain('EnterPlanMode');
+    expect(config.disallowedTools).toContain('ExitPlanMode');
+  });
+
+  it('does not set disallowedTools without slackContext', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig();
+
+    expect(config.disallowedTools).toBeUndefined();
   });
 });
 
