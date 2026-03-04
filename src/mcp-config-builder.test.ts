@@ -61,19 +61,24 @@ describe('McpConfigBuilder disallowedTools', () => {
     const config: McpConfig = {
       permissionMode: 'default',
       userBypass: false,
-      disallowedTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
+      disallowedTools: ['AskUserQuestion'],
     };
-    expect(config.disallowedTools).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+    expect(config.disallowedTools).toEqual(['AskUserQuestion']);
   });
 
-  it('populates disallowedTools when slackContext is provided', async () => {
+  it('populates disallowedTools with AskUserQuestion when slackContext is provided', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C123', user: 'U123' });
 
-    expect(config.disallowedTools).toBeDefined();
-    expect(config.disallowedTools).toContain('AskUserQuestion');
-    expect(config.disallowedTools).toContain('EnterPlanMode');
-    expect(config.disallowedTools).toContain('ExitPlanMode');
+    expect(config.disallowedTools).toEqual(['AskUserQuestion']);
+  });
+
+  it('adds EnterPlanMode and ExitPlanMode to allowedTools', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C123', user: 'U123' });
+
+    expect(config.allowedTools).toContain('EnterPlanMode');
+    expect(config.allowedTools).toContain('ExitPlanMode');
   });
 
   it('does not set disallowedTools without slackContext', async () => {
