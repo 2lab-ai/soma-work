@@ -316,6 +316,43 @@ async function start() {
 
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
+
+    // Crash safety net: save sessions before unclean exit
+    // SDK can throw uncaught exceptions (e.g., write to aborted process)
+    process.on('uncaughtException', (error) => {
+      logger.error('Uncaught exception — saving sessions before exit', error);
+      try {
+        slackHandler.saveSessions();
+        slackHandler.savePendingForms();
+      } catch (saveError) {
+        logger.error('Failed to save sessions during crash', saveError);
+      }
+      process.exit(1);
+    });
+
+    process.on('unhandledRejection', (reason) => {
+      logger.error('Unhandled rejection — saving sessions before exit', reason);
+      try {
+        slackHandler.saveSessions();
+        slackHandler.savePendingForms();
+      } catch (saveError) {
+        logger.error('Failed to save sessions during crash', saveError);
+      }
+      process.exit(1);
+    });
+
+    // Periodic session auto-save (every 5 minutes)
+    // Reduces session loss on crash to at most 5 minutes of data
+    const SESSION_SAVE_INTERVAL = 5 * 60 * 1000;
+    setInterval(() => {
+      try {
+        slackHandler.saveSessions();
+        logger.debug('Periodic session auto-save completed');
+      } catch (error) {
+        logger.error('Periodic session auto-save failed', error);
+      }
+    }, SESSION_SAVE_INTERVAL);
+
     logger.info('Configuration:', {
       usingBedrock: config.claude.useBedrock,
       usingVertex: config.claude.useVertex,
