@@ -36,6 +36,7 @@ export const config = {
     installationId: process.env.GITHUB_INSTALLATION_ID || '',
     token: process.env.GITHUB_TOKEN || '',
   },
+  adminUsers: (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean),
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
     summaryModel: process.env.SUMMARY_MODEL || 'claude-haiku-4-20250414',

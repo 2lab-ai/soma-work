@@ -2,6 +2,8 @@
  * Command parsing utilities for Slack bot commands
  */
 
+export type CctAction = { action: 'status' } | { action: 'set'; target: string };
+
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
@@ -26,6 +28,24 @@ export type PluginsAction =
   | { action: 'remove'; pluginRef: string };
 
 export class CommandParser {
+  /**
+   * Check if text is a cct/set_cct command
+   */
+  static isCctCommand(text: string): boolean {
+    return /^\/?(?:cct|set_cct)(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse cct command: "cct" → status, "set_cct cctN" → set
+   */
+  static parseCctCommand(text: string): CctAction {
+    const match = text.trim().match(/^\/?set_cct\s+(\S+)$/i);
+    if (match) {
+      return { action: 'set', target: match[1] };
+    }
+    return { action: 'status' };
+  }
+
   /**
    * Check if text is an MCP info command
    */
@@ -375,6 +395,8 @@ export class CommandParser {
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
+    // Token management
+    'cct', 'set_cct',
     // Working directory
     'cwd',
     // MCP
@@ -490,6 +512,10 @@ export class CommandParser {
       '• `plugins` or `/plugins` - Show installed plugins',
       '• `plugins add pluginName@marketplaceName` - Install a plugin',
       '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
+      '',
+      '*Token Management (Admin):*',
+      '• `cct` - Show OAuth token pool status',
+      '• `set_cct <name>` - Switch active token (e.g., `set_cct cct2`)',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
