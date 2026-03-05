@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted, soma-work]
     timeout-minutes: 10
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
 
