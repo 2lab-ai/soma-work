@@ -42,6 +42,17 @@ describe('CommandParser CCT', () => {
     expect(result).toEqual({ action: 'set', target: 'cct2' });
   });
 
+  it('should recognize "nextcct" as cct command', async () => {
+    const { CommandParser } = await import('../command-parser');
+    expect(CommandParser.isCctCommand('nextcct')).toBe(true);
+  });
+
+  it('should parse "nextcct" as next action', async () => {
+    const { CommandParser } = await import('../command-parser');
+    const result = CommandParser.parseCctCommand('nextcct');
+    expect(result).toEqual({ action: 'next' });
+  });
+
   it('should not match unrelated text', async () => {
     const { CommandParser } = await import('../command-parser');
     expect(CommandParser.isCctCommand('hello')).toBe(false);

@@ -553,7 +553,10 @@ export class ClaudeHandler {
     }
 
     // Capture Claude process stderr for debugging exit code 1 etc.
+    // Also buffer stderr content so rate limit messages can be extracted on error
+    let stderrBuffer = '';
     options.stderr = (data: string) => {
+      stderrBuffer += data;
       this.logger.warn('Claude stderr', { data: data.trimEnd() });
     };
 
@@ -575,6 +578,11 @@ export class ClaudeHandler {
         yield message;
       }
     } catch (error) {
+      // Attach stderr content to error so downstream handlers can inspect it
+      // (e.g., rate limit messages appear in stderr, not in error.message)
+      if (stderrBuffer) {
+        (error as any).stderrContent = stderrBuffer;
+      }
       this.logger.error('Error in Claude query', error);
       throw error;
     }
