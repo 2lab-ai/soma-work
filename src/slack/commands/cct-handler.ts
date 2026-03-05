@@ -7,6 +7,7 @@ import { tokenManager, TokenManager } from '../../token-manager';
  * Handles CCT token management commands (admin only):
  * - `cct` — show token status
  * - `set_cct cctN` — switch active token
+ * - `nextcct` — rotate to next available token
  */
 export class CctHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -53,6 +54,20 @@ export class CctHandler implements CommandHandler {
         text: `🔑 *CCT Token Status*\n\n${lines.join('\n')}`,
         thread_ts: threadTs,
       });
+    } else if (action.action === 'next') {
+      const result = tokenManager.rotateToNext();
+      if (result) {
+        const active = tokenManager.getActiveToken();
+        await say({
+          text: `🔄 Rotated to next token: *${active.name}* (\`${TokenManager.maskToken(active.value)}\`)`,
+          thread_ts: threadTs,
+        });
+      } else {
+        await say({
+          text: '⚠️ Only one token available, cannot rotate.',
+          thread_ts: threadTs,
+        });
+      }
     } else if (action.action === 'set') {
       const success = tokenManager.setActiveToken(action.target);
       if (success) {
