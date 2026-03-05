@@ -1,13 +1,12 @@
-name: Deploy
+name: Deploy (oudwood-512)
 
 on:
   push:
     branches:
-      - main
       - dev
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
+  group: deploy-oudwood-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -15,24 +14,15 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, soma-work]
+    runs-on: [self-hosted, oudwood-512]
     timeout-minutes: 10
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    environment: development
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      - name: Determine environment
-        id: env
-        run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "env=main" >> "$GITHUB_OUTPUT"
-          else
-            echo "env=dev" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Install dependencies
         run: npm ci
@@ -41,36 +31,38 @@ jobs:
         run: npm run build
 
       - name: Version bump & release notes
-        run: ./scripts/version-bump.sh ${{ steps.env.outputs.env }}
+        run: ./scripts/version-bump.sh dev
 
       - name: Deploy
         env:
-          ENV: ${{ steps.env.outputs.env }}
-          TARGET: /opt/soma-work/${{ steps.env.outputs.env }}
+          TARGET: /opt/soma-work/dev
         run: |
           echo "Deploying to $TARGET..."
 
           # Stop service
-          ./service.sh $ENV stop || true
+          ./service.sh dev stop || true
 
           # Sync built artifacts to deployment target (preserve local configs and data)
           rsync -a --delete \
             --exclude='.env' \
             --exclude='.system.prompt' \
             --exclude='mcp-servers.json' \
+            --exclude='config.json' \
             --exclude='data/' \
             --exclude='logs/' \
+            --exclude='.claude/' \
             dist/ "$TARGET/dist/"
 
           rsync -a --delete node_modules/ "$TARGET/node_modules/"
           rsync -a \
             package.json \
+            service.sh \
             "$TARGET/"
 
           # Reinstall service (regenerate plist + start)
-          ./service.sh $ENV install
+          ./service.sh dev install
 
       - name: Verify
         run: |
           sleep 3
-          ./service.sh ${{ steps.env.outputs.env }} status
+          ./service.sh dev status
