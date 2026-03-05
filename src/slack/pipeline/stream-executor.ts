@@ -35,6 +35,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { tokenManager, parseCooldownTime } from '../../token-manager';
 
 /**
  * Result of stream execution
@@ -580,6 +581,11 @@ export class StreamExecutor {
           sessionKey,
           errorMessage: error.message,
         });
+
+        // Auto-rotate token on rate limit
+        if (this.isRateLimitError(error)) {
+          this.tryRotateToken(error);
+        }
       }
 
       if (statusMessageTs) {
@@ -687,6 +693,41 @@ export class StreamExecutor {
     return recoverablePatterns.some(pattern => message.includes(pattern));
   }
 
+  private isRateLimitError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+      message.includes("you've hit your limit") ||
+      message.includes('rate limit') ||
+      message.includes('too many requests') ||
+      message.includes('429')
+    );
+  }
+
+  /**
+   * Attempt to rotate to the next available token on rate limit.
+   * Uses CAS pattern for idempotent handling across concurrent sessions.
+   */
+  private tryRotateToken(error: any): void {
+    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (!failedToken) return;
+
+    const cooldownUntil = parseCooldownTime(String(error?.message || ''))
+      ?? new Date(Date.now() + 3600000); // default 1 hour
+
+    const result = tokenManager.rotateOnRateLimit(failedToken, cooldownUntil);
+
+    if (result.rotated) {
+      if (result.allOnCooldown) {
+        this.logger.warn('All CCT tokens on cooldown', {
+          newToken: result.newToken,
+          earliestRecovery: result.earliestRecovery?.toISOString(),
+        });
+      } else {
+        this.logger.info('CCT token auto-rotated', { newToken: result.newToken });
+      }
+    }
+  }
+
   private isInvalidResumeSessionError(error: any): boolean {
     const message = String(error?.message || '').toLowerCase();
 
@@ -774,6 +815,14 @@ export class StreamExecutor {
       lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+    }
+
+    // Append token rotation info if rate limit triggered rotation
+    if (this.isRateLimitError(error) && tokenManager.getAllTokens().length > 1) {
+      const active = tokenManager.getActiveToken();
+      if (active) {
+        lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
+      }
     }
 
     return lines.join('\n');

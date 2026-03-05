@@ -13,6 +13,7 @@ import { initializeDispatchService } from './dispatch-service';
 import { initRecorder, startWebServer, stopWebServer } from './conversation';
 import { notifyRelease, getVersionInfo, formatTimestamp } from './release-notifier';
 import { scanChannels } from './channel-registry';
+import { tokenManager } from './token-manager';
 
 const logger = new Logger('Main');
 
@@ -27,6 +28,10 @@ async function start() {
     // Validate configuration
     validateConfig();
     timing('Config validated');
+
+    // Initialize token manager (before preflight — tokens may be needed for API calls)
+    tokenManager.initialize();
+    timing('TokenManager initialized');
 
     // Run preflight checks
     const preflight = await runPreflightChecks();
