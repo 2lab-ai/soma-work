@@ -248,14 +248,51 @@ describe('TokenManager', () => {
   // === Token Masking ===
 
   describe('maskToken', () => {
-    it('should mask token with first 4 and last 3 chars', async () => {
+    it('should mask token with first 10 and last 10 chars', async () => {
       const { TokenManager } = await import('./token-manager');
-      expect(TokenManager.maskToken('sk-ant-api12345xyz')).toBe('sk-a...xyz');
+      expect(TokenManager.maskToken('sk-ant-oat01-eEUA4SSw6DknUGozq_TlsXccM9')).toBe('sk-ant-oat...q_TlsXccM9');
     });
 
-    it('should handle short tokens', async () => {
+    it('should handle short tokens without masking', async () => {
       const { TokenManager } = await import('./token-manager');
-      expect(TokenManager.maskToken('abc')).toBe('abc');
+      expect(TokenManager.maskToken('short-token-value')).toBe('short-token-value');
+    });
+
+    it('should show full token if length <= 23', async () => {
+      const { TokenManager } = await import('./token-manager');
+      expect(TokenManager.maskToken('12345678901234567890123')).toBe('12345678901234567890123');
+    });
+  });
+
+  describe('rotateToNext', () => {
+    it('should rotate to next available token', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB,tokenC';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      const result = tokenManager.rotateToNext();
+      expect(result).toEqual({ name: 'cct2' });
+      expect(tokenManager.getActiveToken().name).toBe('cct2');
+    });
+
+    it('should skip tokens on cooldown', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB,tokenC';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      // Put cct2 on cooldown via rotation
+      tokenManager.rotateOnRateLimit('tokenA', new Date(Date.now() + 3600000));
+      // Now active is cct2, rotate to next — should skip cct1 (on cooldown) → cct3
+      const result = tokenManager.rotateToNext();
+      expect(result).toEqual({ name: 'cct3' });
+    });
+
+    it('should return null for single token', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      expect(tokenManager.rotateToNext()).toBeNull();
     });
   });
 

@@ -115,6 +115,35 @@ export class TokenManager {
   }
 
   /**
+   * Switch to the next token in round-robin order (manual nextcct).
+   * Skips tokens on cooldown if possible.
+   */
+  rotateToNext(): { name: string } | null {
+    if (this.tokens.length <= 1) return null;
+
+    const now = new Date();
+    for (let i = 1; i < this.tokens.length; i++) {
+      const nextIndex = (this.activeIndex + i) % this.tokens.length;
+      const next = this.tokens[nextIndex];
+      if (next.cooldownUntil === null || next.cooldownUntil <= now) {
+        const previousName = this.tokens[this.activeIndex].name;
+        this.activeIndex = nextIndex;
+        this.applyToken();
+        logger.info(`Manual next rotation: ${previousName} → ${next.name}`);
+        return { name: next.name };
+      }
+    }
+
+    // All others on cooldown — just move to next anyway
+    const nextIndex = (this.activeIndex + 1) % this.tokens.length;
+    const previousName = this.tokens[this.activeIndex].name;
+    this.activeIndex = nextIndex;
+    this.applyToken();
+    logger.info(`Manual next rotation (all cooldown): ${previousName} → ${this.tokens[nextIndex].name}`);
+    return { name: this.tokens[nextIndex].name };
+  }
+
+  /**
    * Idempotent token rotation on rate limit (CAS pattern).
    * Only rotates if the caller's failed token matches the current active token.
    */
@@ -185,10 +214,10 @@ export class TokenManager {
     }
   }
 
-  /** Mask a token value for safe display: "sk-a...xyz" */
+  /** Mask a token value for safe display: first 10 + last 10 chars */
   static maskToken(value: string): string {
-    if (value.length <= 7) return value;
-    return `${value.slice(0, 4)}...${value.slice(-3)}`;
+    if (value.length <= 23) return value;
+    return `${value.slice(0, 10)}...${value.slice(-10)}`;
   }
 }
 

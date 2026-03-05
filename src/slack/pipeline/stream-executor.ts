@@ -694,12 +694,16 @@ export class StreamExecutor {
   }
 
   private isRateLimitError(error: any): boolean {
+    // Check both error.message AND stderr content (rate limit text often
+    // appears in stderr while error.message is just "process exited with code 1")
     const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
     return (
-      message.includes("you've hit your limit") ||
-      message.includes('rate limit') ||
-      message.includes('too many requests') ||
-      message.includes('429')
+      combined.includes("you've hit your limit") ||
+      combined.includes('rate limit') ||
+      combined.includes('too many requests') ||
+      combined.includes('429')
     );
   }
 
@@ -711,7 +715,9 @@ export class StreamExecutor {
     const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     if (!failedToken) return;
 
-    const cooldownUntil = parseCooldownTime(String(error?.message || ''))
+    // Parse cooldown from both error message and stderr content
+    const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
+    const cooldownUntil = parseCooldownTime(errorText)
       ?? new Date(Date.now() + 3600000); // default 1 hour
 
     const result = tokenManager.rotateOnRateLimit(failedToken, cooldownUntil);
