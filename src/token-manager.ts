@@ -214,10 +214,10 @@ export class TokenManager {
     }
   }
 
-  /** Mask a token value for safe display: first 10 + last 10 chars */
+  /** Mask a token value for safe display: first 20 + last 10 chars */
   static maskToken(value: string): string {
-    if (value.length <= 23) return value;
-    return `${value.slice(0, 10)}...${value.slice(-10)}`;
+    if (value.length <= 33) return value;
+    return `${value.slice(0, 20)}...${value.slice(-10)}`;
   }
 }
 

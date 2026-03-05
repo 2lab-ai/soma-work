@@ -250,7 +250,7 @@ describe('TokenManager', () => {
   describe('maskToken', () => {
     it('should mask token with first 10 and last 10 chars', async () => {
       const { TokenManager } = await import('./token-manager');
-      expect(TokenManager.maskToken('sk-ant-oat01-eEUA4SSw6DknUGozq_TlsXccM9')).toBe('sk-ant-oat...q_TlsXccM9');
+      expect(TokenManager.maskToken('sk-ant-oat01-eEUA4SSw6DknUGozq_TlsXccM9')).toBe('sk-ant-oat01-eEUA4SS...q_TlsXccM9');
     });
 
     it('should handle short tokens without masking', async () => {
@@ -258,9 +258,9 @@ describe('TokenManager', () => {
       expect(TokenManager.maskToken('short-token-value')).toBe('short-token-value');
     });
 
-    it('should show full token if length <= 23', async () => {
+    it('should show full token if length <= 33', async () => {
       const { TokenManager } = await import('./token-manager');
-      expect(TokenManager.maskToken('12345678901234567890123')).toBe('12345678901234567890123');
+      expect(TokenManager.maskToken('123456789012345678901234567890123')).toBe('123456789012345678901234567890123');
     });
   });
 
