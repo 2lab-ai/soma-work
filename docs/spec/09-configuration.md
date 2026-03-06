@@ -3,7 +3,7 @@
 ## Version
 - Document Version: 1.0
 - Source File: `src/config.ts`
-- Last Updated: 2025-12-13
+- Last Updated: 2026-03-06
 
 ## 1. Overview
 
@@ -362,9 +362,9 @@ logs/
 
 ## 8. Service Configuration
 
-### 8.1 launchd Plist (`com.dd.claude-slack-bot.plist`)
+### 8.1 launchd Plist (`ai.2lab.soma-work.{main,dev}.plist`)
 
-macOS 서비스 설정:
+macOS 서비스 설정 (현행: `/Library/LaunchDaemons/ai.2lab.soma-work.{main,dev}.plist`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -372,23 +372,23 @@ macOS 서비스 설정:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.dd.claude-slack-bot</string>
+    <string>ai.2lab.soma-work.dev</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/node</string>
-        <string>/Users/dd/claude-code-slack-bot/dist/index.js</string>
+        <string>/opt/soma-work/dev/dist/index.js</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/dd/claude-code-slack-bot</string>
+    <string>/opt/soma-work/dev</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/dd/claude-code-slack-bot/logs/stdout.log</string>
+    <string>/opt/soma-work/dev/logs/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/dd/claude-code-slack-bot/logs/stderr.log</string>
+    <string>/opt/soma-work/dev/logs/stderr.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -473,7 +473,7 @@ logger.info('Configuration:', {
 ## 11. Directory Structure Summary
 
 ```
-claude-code-slack-bot/
+soma-work/
 ├── .env                           # 환경 변수 (gitignore)
 ├── .env.example                   # 환경 변수 템플릿
 ├── mcp-servers.json               # MCP 서버 설정
