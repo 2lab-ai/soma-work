@@ -4,8 +4,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
     getUserSettings: vi.fn(),
+    createPendingUser: vi.fn(),
     ensureUserExists: vi.fn().mockReturnValue({
       userId: 'U123',
+      accepted: true,
       defaultDirectory: '',
       bypassPermission: false,
       persona: 'default',
@@ -31,6 +33,11 @@ vi.mock('../../user-settings-store', () => ({
   },
   AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
   DEFAULT_MODEL: 'claude-opus-4-6',
+}));
+
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: vi.fn().mockReturnValue(false),
+  getAdminUsers: vi.fn().mockReturnValue(new Set(['U_ADMIN1'])),
 }));
 
 vi.mock('../../conversation', () => ({
@@ -149,10 +156,10 @@ describe('SessionInitializer - Onboarding Detection', () => {
     });
   });
 
-  describe('first-time user detection', () => {
-    it('should trigger onboarding for new user without settings', async () => {
-      // Setup: No existing session, no user settings
-      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(null as any);
+  describe('acceptance gate blocks unaccepted users', () => {
+    it('should block new user without settings (acceptance gate)', async () => {
+      // With acceptance gate: null settings → pending user → halted
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(undefined as any);
       mockClaudeHandler.getSession.mockReturnValue(null);
 
       const event = {
@@ -163,21 +170,19 @@ describe('SessionInitializer - Onboarding Detection', () => {
         text: 'Hello!',
       };
 
-      await sessionInitializer.initialize(event as any, '/test/dir');
+      const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
-      // Verify: transitionToMain was called with 'onboarding'
-      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
-        'C123',
-        'thread123',
-        'onboarding',
-        'Welcome!'
-      );
+      expect(result.halted).toBe(true);
+      expect(mockClaudeHandler.transitionToMain).not.toHaveBeenCalled();
     });
+  });
 
+  describe('first-time user detection', () => {
     it('should NOT trigger onboarding for user with existing settings', async () => {
-      // Setup: User has settings
+      // Setup: User has settings (accepted, with directory)
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U_EXISTING_USER',
+        accepted: true,
         defaultDirectory: '/some/dir',
         bypassPermission: false,
         persona: 'default',
@@ -204,7 +209,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
     });
 
     it('should NOT trigger onboarding for existing session', async () => {
-      // Setup: Existing session exists
+      // Setup: Existing session exists (acceptance gate only runs for new sessions)
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(null as any);
       mockClaudeHandler.getSession.mockReturnValue({
         sessionId: 'existing-session',
@@ -231,9 +236,10 @@ describe('SessionInitializer - Onboarding Detection', () => {
     });
 
     it('should skip onboarding for user with Jira mapping (settings created by InputProcessor)', async () => {
-      // Setup: User has settings with Jira info
+      // Setup: User has settings with Jira info (accepted via migration)
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U_JIRA_USER',
+        accepted: true,
         defaultDirectory: '',
         bypassPermission: false,
         persona: 'default',
@@ -263,36 +269,31 @@ describe('SessionInitializer - Onboarding Detection', () => {
   });
 
   describe('onboarding session state', () => {
-    it('should set isOnboarding flag on session when onboarding is triggered', async () => {
-      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(null as any);
+    it('should not onboard when user is accepted (grandfathered user)', async () => {
+      // Accepted user with no directory → should proceed normally, not onboard
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U_ACCEPTED',
+        accepted: true,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+        lastUpdated: '',
+      });
       mockClaudeHandler.getSession.mockReturnValue(null);
 
-      // Capture the session object
-      let capturedSession: any = null;
-      mockClaudeHandler.createSession.mockImplementation(() => {
-        capturedSession = {
-          sessionId: 'session-123',
-          owner: 'U_NEW',
-          ownerName: 'New User',
-          channel: 'C123',
-          threadTs: 'thread123',
-          isOnboarding: false,
-        };
-        return capturedSession;
-      });
-
       const event = {
-        user: 'U_NEW',
+        user: 'U_ACCEPTED',
         channel: 'C123',
         thread_ts: undefined,
         ts: 'thread123',
         text: 'Hello!',
       };
 
-      await sessionInitializer.initialize(event as any, '/test/dir');
+      const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
-      // Verify session.isOnboarding was set to true
-      expect(capturedSession.isOnboarding).toBe(true);
+      // Accepted user passes through (not halted)
+      expect(result.halted).toBeUndefined();
     });
   });
 
@@ -300,12 +301,13 @@ describe('SessionInitializer - Onboarding Detection', () => {
     it('forces onboarding workflow when command requests it', async () => {
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U_EXISTING_USER',
+        accepted: true,
         defaultDirectory: '/some/dir',
         bypassPermission: false,
         persona: 'default',
         defaultModel: 'claude-sonnet-4-5-20250929',
         lastUpdated: '2024-01-01',
-      } as any);
+      });
       mockClaudeHandler.getSession.mockReturnValue(null);
       mockClaudeHandler.needsDispatch.mockReturnValue(true);
 
@@ -351,12 +353,13 @@ describe('SessionInitializer - Onboarding Detection', () => {
     it('creates a new bot thread header for non-routable initiate message', async () => {
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U_EXISTING_USER',
+        accepted: true,
         defaultDirectory: '/some/dir',
         bypassPermission: false,
         persona: 'default',
         defaultModel: 'claude-sonnet-4-5-20250929',
         lastUpdated: '2024-01-01',
-      } as any);
+      });
       mockClaudeHandler.getSession.mockReturnValue(null);
       mockClaudeHandler.needsDispatch.mockReturnValue(true);
 
