@@ -341,11 +341,7 @@ export class StreamExecutor {
           );
         },
         onUpdateMessage: async (ch, ts, text) => {
-          try {
-            await this.deps.slackApi.getClient().chat.update({ channel: ch, ts, text });
-          } catch (error) {
-            this.logger.debug('Failed to update tool call message', { ts, error: (error as Error).message });
-          }
+          await this.updateToolCallMessage(ch, ts, text);
         },
         onSessionLinksDetected: async (links) => {
           this.deps.claudeHandler.setSessionLinks(channel, threadTs, links);
@@ -623,6 +619,17 @@ export class StreamExecutor {
     // Clean up temporary files
     if (processedFiles.length > 0) {
       await this.deps.fileHandler.cleanupTempFiles(processedFiles);
+    }
+  }
+
+  private async updateToolCallMessage(channel: string, ts: string, text: string): Promise<void> {
+    try {
+      await this.deps.slackApi.updateMessage(channel, ts, text);
+    } catch (error) {
+      this.logger.debug('Failed to update tool call message', {
+        ts,
+        error: (error as Error).message,
+      });
     }
   }
 
