@@ -1,8 +1,8 @@
 # Commands Reference
 
 ## Version
-- Document Version: 1.0
-- Last Updated: 2025-12-13
+- Document Version: 2.0
+- Last Updated: 2026-03-06
 
 ## 1. Overview
 
@@ -382,19 +382,27 @@ https://yoursite.atlassian.net/wiki/spaces/SPACE/pages/123456789
 
 | Command | Description | Slash Support |
 |---------|-------------|---------------|
-| `cwd` | Get working directory | ✅ |
-| `cwd <path>` | Set working directory | ✅ |
-| `bypass` | Check bypass status | ✅ |
-| `bypass on` | Enable bypass | ✅ |
-| `bypass off` | Disable bypass | ✅ |
-| `mcp` | List MCP servers | ✅ |
-| `mcp reload` | Reload MCP config | ✅ |
-| `persona` | List personas | ✅ |
-| `persona <name>` | Set persona | ✅ |
-| `sessions` | List my sessions | ✅ |
-| `all_sessions` | List all sessions | ✅ |
-| `help` | Show help | ✅ |
-| `취소/stop/cancel` | Cancel request | ❌ |
+| `cwd` / `cwd <path>` | 현재/설정 작업 디렉토리 | ✅ |
+| `bypass` / `bypass on/off` | 권한 우회 상태/설정 | ✅ |
+| `mcp` / `mcp reload` | MCP 서버 목록/리로드 | ✅ |
+| `persona` / `persona <name>` | 페르소나 목록/변경 | ✅ |
+| `model` / `model <name>` | 모델 목록/변경 (sonnet/opus/haiku) | ✅ |
+| `verbosity` / `verbosity <level>` | 출력 상세도 설정 | ✅ |
+| `sessions` / `all_sessions` | 내 세션/전체 세션 목록 | ✅ |
+| `new` | 세션 초기화 (새 세션 시작) | ✅ |
+| `renew` | 세션 갱신 (설정 유지, 대화 리셋) | ✅ |
+| `close` | 현재 스레드 세션 종료 | ✅ |
+| `context` | 컨텍스트 윈도우 상태 확인 | ✅ |
+| `restore` | 세션 복원 | ✅ |
+| `link [url]` | 세션에 이슈/PR/문서 링크 첨부 | ✅ |
+| `onboarding` | 온보딩 워크플로우 실행 | ✅ |
+| `help` | 도움말 표시 | ✅ |
+| `admin` | 관리자 명령 (accept/deny/users/config) | ✅ |
+| `cct` / `set_cct` | CCT 토큰 상태/수동 전환 | ✅ |
+| `marketplace` | 플러그인 마켓플레이스 | ✅ |
+| `plugins` | 설치된 플러그인 관리 | ✅ |
+| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) | ✅ |
+| `취소/stop/cancel` | 진행 중 요청 취소 | ❌ |
 
 ## 11. Usage Contexts
 

@@ -3,7 +3,7 @@
 ## Version
 - Document Version: 1.0
 - Source File: `src/user-settings-store.ts`
-- Last Updated: 2025-12-13
+- Last Updated: 2026-03-06
 
 ## 1. Overview
 
@@ -19,12 +19,19 @@ export interface UserSettings {
   defaultDirectory: string;    // 기본 작업 디렉토리
   bypassPermission: boolean;   // 권한 우회 설정
   persona: string;             // 페르소나 파일명 (.md 확장자 제외)
+  defaultModel: ModelId;       // 기본 모델 (sonnet/opus/haiku)
+  defaultLogVerbosity?: LogVerbosity; // 기본 로그 상세도
   lastUpdated: string;         // ISO 날짜 문자열
 
   // Jira 통합
   jiraAccountId?: string;      // Jira Account ID
   jiraName?: string;           // Jira 표시 이름
   slackName?: string;          // Slack 표시 이름
+
+  // User acceptance (admin approval)
+  accepted: boolean;           // 관리자 승인 여부
+  acceptedBy?: string;         // 승인한 관리자 ID
+  acceptedAt?: string;         // 승인 시각 (ISO)
 }
 ```
 
