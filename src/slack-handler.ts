@@ -129,8 +129,12 @@ export class SlackHandler {
 
     // Message validation, status reporting, and todo display
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
-    this.statusReporter = new StatusReporter(app.client);
-    this.todoDisplayManager = new TodoDisplayManager(app.client, this.todoManager, this.reactionManager);
+    this.statusReporter = new StatusReporter(this.slackApi);
+    this.todoDisplayManager = new TodoDisplayManager(
+      this.slackApi,
+      this.todoManager,
+      this.reactionManager
+    );
 
     // Native Slack AI spinner
     this.assistantStatusManager = new AssistantStatusManager(this.slackApi);

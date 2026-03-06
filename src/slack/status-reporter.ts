@@ -1,4 +1,4 @@
-import { WebClient } from '@slack/web-api';
+import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
 
 export type StatusType = 'thinking' | 'working' | 'waiting' | 'completed' | 'error' | 'cancelled';
@@ -30,7 +30,7 @@ export class StatusReporter {
   private logger = new Logger('StatusReporter');
   private statusMessages: Map<string, StatusMessage> = new Map();
 
-  constructor(private client: WebClient) {}
+  constructor(private slackApi: SlackApiHelper) {}
 
   /**
    * Create initial status message and return its timestamp
@@ -45,10 +45,8 @@ export class StatusReporter {
   ): Promise<string | undefined> {
     try {
       const config = STATUS_CONFIG[initialStatus];
-      const result = await this.client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: tag + config.text,
+      const result = await this.slackApi.postMessage(channel, tag + config.text, {
+        threadTs,
       });
 
       if (result.ts) {
@@ -78,11 +76,11 @@ export class StatusReporter {
 
     try {
       const config = STATUS_CONFIG[status];
-      await this.client.chat.update({
-        channel: statusMessage.channel,
-        ts: statusMessage.ts,
-        text: config.text,
-      });
+      await this.slackApi.updateMessage(
+        statusMessage.channel,
+        statusMessage.ts,
+        config.text
+      );
       this.logger.debug('Updated status message', { sessionKey, status });
     } catch (error) {
       this.logger.error('Failed to update status message', { sessionKey, status, error });
@@ -101,11 +99,7 @@ export class StatusReporter {
   ): Promise<void> {
     try {
       const config = STATUS_CONFIG[status];
-      await this.client.chat.update({
-        channel,
-        ts,
-        text: tag + config.text,
-      });
+      await this.slackApi.updateMessage(channel, ts, tag + config.text);
       this.logger.debug('Updated status message directly', { channel, ts, status });
     } catch (error) {
       this.logger.error('Failed to update status message directly', { channel, ts, status, error });
