@@ -27,7 +27,61 @@ export type PluginsAction =
   | { action: 'add'; pluginRef: string }
   | { action: 'remove'; pluginRef: string };
 
+export type AdminAction =
+  | { action: 'accept'; targetUser: string }
+  | { action: 'deny'; targetUser: string }
+  | { action: 'users' }
+  | { action: 'config'; sub: 'show' }
+  | { action: 'config'; sub: 'set'; key: string; value: string };
+
 export class CommandParser {
+  /**
+   * Check if text is an admin command (accept/deny/users/config)
+   */
+  static isAdminCommand(text: string): boolean {
+    const trimmed = text.trim();
+    return /^\/?(?:accept|deny)\s+<@\w+(?:\|[^>]*)?>$/i.test(trimmed)
+      || /^\/?users$/i.test(trimmed)
+      || /^\/?config\s+\S+/i.test(trimmed);
+  }
+
+  /**
+   * Parse admin command
+   */
+  static parseAdminCommand(text: string): AdminAction | null {
+    const trimmed = text.trim();
+
+    // accept <@U123> or accept <@U123|name>
+    const acceptMatch = trimmed.match(/^\/?accept\s+<@(\w+)(?:\|[^>]*)?>$/i);
+    if (acceptMatch) {
+      return { action: 'accept', targetUser: acceptMatch[1] };
+    }
+
+    // deny <@U123> or deny <@U123|name>
+    const denyMatch = trimmed.match(/^\/?deny\s+<@(\w+)(?:\|[^>]*)?>$/i);
+    if (denyMatch) {
+      return { action: 'deny', targetUser: denyMatch[1] };
+    }
+
+    // users
+    if (/^\/?users$/i.test(trimmed)) {
+      return { action: 'users' };
+    }
+
+    // config show
+    if (/^\/?config\s+show$/i.test(trimmed)) {
+      return { action: 'config', sub: 'show' };
+    }
+
+    // config KEY=VALUE
+    const configSetMatch = trimmed.match(/^\/?config\s+(\w+)=(.*)$/i);
+    if (configSetMatch) {
+      return { action: 'config', sub: 'set', key: configSetMatch[1], value: configSetMatch[2] };
+    }
+
+    return null;
+  }
+
   /**
    * Check if text is a cct/set_cct command
    */
@@ -399,6 +453,8 @@ export class CommandParser {
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
+    // Admin commands
+    'accept', 'deny', 'users', 'config',
     // Token management
     'cct', 'set_cct', 'nextcct',
     // Working directory
