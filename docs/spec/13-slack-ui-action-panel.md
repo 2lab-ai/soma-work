@@ -12,9 +12,8 @@
   - `src/slack/actions/choice-action-handler.ts`
   - `src/slack/actions/form-action-handler.ts`
   - `src/slack/slack-api-helper.ts`
-  - New: `src/slack/thread-header-builder.ts`
-  - New: `src/slack/action-panel-builder.ts`
-  - New: `src/slack/action-panel-manager.ts`
+  - `src/slack/thread-header-builder.ts`
+  - `src/slack/action-panel-builder.ts`
 
 ## 1. Goals
 - **Two-message session UI**:

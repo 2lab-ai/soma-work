@@ -14,7 +14,7 @@ Claude Code Slack Bot의 아키텍처 문서입니다.
           ▼                         ▼                         ▼
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │   SlackHandler   │    │  ClaudeHandler   │    │   McpManager     │
-│   (567 LOC)      │    │   (498 LOC)      │    │   (76 LOC)       │
+│   (~600 LOC)     │    │   (~610 LOC)     │    │   (~96 LOC)      │
 └──────────────────┘    └──────────────────┘    └──────────────────┘
           │                       │                       │
           ▼                       ▼                       ▼
@@ -37,22 +37,22 @@ Claude Code Slack Bot의 아키텍처 문서입니다.
 ### 1. Entry Point (`src/index.ts`)
 앱 초기화 및 Slack Bolt 앱 설정
 
-### 2. SlackHandler (Facade, 567 LOC)
+### 2. SlackHandler (Facade, ~600 LOC)
 Slack 이벤트 처리의 진입점. 다음 컴포넌트에 위임:
 
 | Component | 책임 |
 |-----------|------|
 | `EventRouter` (293) | 이벤트 라우팅 (DM, mention, thread) |
-| `CommandRouter` (105) | 명령어 감지 및 핸들러 디스패치 (16개 핸들러) |
+| `CommandRouter` (105) | 명령어 감지 및 핸들러 디스패치 (20개 핸들러) |
 | `StreamProcessor` (837) | Claude SDK 스트림 처리 |
 | `ToolEventProcessor` | tool_use/tool_result 처리 |
 | `RequestCoordinator` | 세션별 동시성 제어 |
 | `ToolTracker` | 도구 사용 추적 |
-| `Actions/*` | 인터랙티브 액션 핸들러 (8개) |
+| `Actions/*` | 인터랙티브 액션 핸들러 (9개) |
 | `Pipeline/*` | 스트림 처리 파이프라인 (input → session → stream) |
 | `Directives/*` | 채널/세션 링크 디렉티브 |
 
-### 3. ClaudeHandler (Facade, 498 LOC)
+### 3. ClaudeHandler (Facade, ~610 LOC)
 Claude SDK 통합. 다음 컴포넌트에 위임:
 
 | Component | 책임 |
@@ -77,9 +77,9 @@ MCP 서버 설정 관리. 다음 컴포넌트에 위임:
 src/                              # ~27,000 LOC (excl. test/local)
 ├── index.ts                      # Entry point
 ├── config.ts                     # Environment configuration
-├── slack-handler.ts              # Slack event facade (567)
-├── claude-handler.ts             # Claude SDK facade (498)
-├── mcp-manager.ts                # MCP configuration facade (76)
+├── slack-handler.ts              # Slack event facade (~600)
+├── claude-handler.ts             # Claude SDK facade (~610)
+├── mcp-manager.ts                # MCP configuration facade (~96)
 ├── dispatch-service.ts           # Workflow dispatch (509)
 ├── session-registry.ts           # Session management (1,048)
 ├── prompt-builder.ts             # Prompt construction (299)
@@ -92,12 +92,28 @@ src/                              # ~27,000 LOC (excl. test/local)
 ├── llm-mcp-server.ts             # LLM as MCP server
 ├── model-command-mcp-server.ts   # Model switching MCP
 ├── release-notifier.ts           # Release notifications
+├── token-manager.ts              # CCT token pool management
 ├── todo-manager.ts               # Task tracking
+├── admin-utils.ts                # Admin command utilities
+├── credentials-manager.ts        # Credential management
+├── dangerous-command-filter.ts   # Bypass danger filter
+├── env-paths.ts                  # Environment path resolution
+├── file-handler.ts               # File handling
+├── git-cli-auth.ts               # Git CLI auth helper
+├── github-auth.ts                # GitHub auth facade
+├── image-handler.ts              # Image handling
+├── mcp-call-tracker.ts           # MCP call statistics
+├── mcp-client.ts                 # MCP client
+├── permission-mcp-server.ts      # Permission MCP server (245)
+├── stderr-logger.ts              # Stderr logging
+├── unified-config-loader.ts      # Unified config loader
+├── user-settings-store.ts        # User settings persistence
+├── working-directory-manager.ts  # Working directory management
 │
 ├── slack/                        # Slack-specific modules
 │   ├── event-router.ts           # Event routing (293)
 │   ├── stream-processor.ts       # SDK stream handling (837)
-│   ├── commands/                 # 16 command handlers
+│   ├── commands/                 # 20 command handlers
 │   │   ├── command-router.ts     # Command dispatching (105)
 │   │   ├── cwd-handler.ts
 │   │   ├── mcp-handler.ts
@@ -114,8 +130,12 @@ src/                              # ~27,000 LOC (excl. test/local)
 │   │   ├── renew-handler.ts      # Session renew
 │   │   ├── onboarding-handler.ts # Onboarding workflow
 │   │   ├── verbosity-handler.ts  # Verbosity settings
-│   │   └── session-command-handler.ts  # $ prefix commands
-│   ├── actions/                  # 8 interactive action handlers
+│   │   ├── session-command-handler.ts  # $ prefix commands
+│   │   ├── admin-handler.ts      # Admin commands (accept/deny/users/config)
+│   │   ├── cct-handler.ts        # CCT token management
+│   │   ├── marketplace-handler.ts # Plugin marketplace
+│   │   └── plugins-handler.ts    # Plugin management
+│   ├── actions/                  # 9 interactive action handlers
 │   │   ├── action-panel-action-handler.ts  # Thread action panel
 │   │   ├── channel-route-action-handler.ts # Channel routing
 │   │   ├── choice-action-handler.ts        # User choices
@@ -123,7 +143,8 @@ src/                              # ~27,000 LOC (excl. test/local)
 │   │   ├── jira-action-handler.ts          # Jira actions
 │   │   ├── permission-action-handler.ts    # Permission approve/deny
 │   │   ├── pr-action-handler.ts            # PR actions
-│   │   └── session-action-handler.ts       # Session actions
+│   │   ├── session-action-handler.ts       # Session actions
+│   │   └── user-acceptance-action-handler.ts # User acceptance gate
 │   ├── pipeline/                 # Stream processing pipeline
 │   │   ├── input-processor.ts    # Input preprocessing (79)
 │   │   ├── session-initializer.ts # Session init (771)
@@ -132,7 +153,8 @@ src/                              # ~27,000 LOC (excl. test/local)
 │   │   ├── channel-message-directive.ts
 │   │   └── session-link-directive.ts
 │   └── formatters/               # Output formatters
-│       └── directory-formatter.ts
+│       ├── directory-formatter.ts
+│       └── markdown-to-blocks.ts # Markdown → Block Kit converter
 │
 ├── conversation/                 # Conversation recording & replay
 │   ├── recorder.ts               # Recording engine
@@ -159,6 +181,13 @@ src/                              # ~27,000 LOC (excl. test/local)
 ├── permission/                   # Permission system
 │   ├── service.ts                # Permission service
 │   └── slack-messenger.ts        # Slack permission UI
+│
+├── plugin/                       # Plugin system
+│   ├── config-parser.ts          # Plugin config parsing
+│   ├── marketplace-fetcher.ts    # Marketplace data fetching
+│   ├── plugin-cache.ts           # Plugin cache management
+│   ├── plugin-manager.ts         # Plugin lifecycle management
+│   └── types.ts                  # Plugin type definitions
 │
 ├── prompt/                       # Prompt templates
 │   └── workflows/                # 9 workflow prompts
