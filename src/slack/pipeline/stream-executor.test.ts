@@ -214,6 +214,40 @@ Continue with that context. If unsure what to do next, call 'oracle' agent for g
   });
 });
 
+describe('updateToolCallMessage', () => {
+  it('uses slackApi.updateMessage', async () => {
+    const slackApi = {
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor({ slackApi } as any);
+
+    await (executor as any).updateToolCallMessage('C123', '111.222', 'tool update');
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      '111.222',
+      'tool update'
+    );
+  });
+
+  it('swallows helper failures after debug logging', async () => {
+    const slackApi = {
+      updateMessage: vi.fn().mockRejectedValue(new Error('ratelimited')),
+    };
+    const executor = new StreamExecutor({ slackApi } as any);
+    const debugSpy = vi.spyOn((executor as any).logger, 'debug');
+
+    await expect(
+      (executor as any).updateToolCallMessage('C123', '111.222', 'tool update')
+    ).resolves.toBeUndefined();
+
+    expect(debugSpy).toHaveBeenCalledWith('Failed to update tool call message', {
+      ts: '111.222',
+      error: 'ratelimited',
+    });
+  });
+});
+
 describe('Abort handling', () => {
   function createExecutorDeps() {
     return {
