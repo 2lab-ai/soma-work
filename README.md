@@ -1,9 +1,9 @@
-# Claude Code Slack Bot
+# soma-work
 ![CI](https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg)
 
 > *"In the beginning was the Word, and the Word was Code."*
 
-A TypeScript bot that summons AI coding intelligence into your Slack workspace.
+A TypeScript bot that brings AI coding intelligence into your Slack workspace.
 Powered by the Claude Code SDK, it provides a conversational coding assistant with 12 genius personas, automatic workflow dispatch, an extensible MCP tool ecosystem, and real-time task tracking.
 
 [한국어 README](./README.ko.md)
@@ -36,7 +36,7 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
                        │
                 ┌──────▼──────┐
                 │ SlackHandler │ ← Facade
-                │   (567 LOC)  │
+                │  (~600 LOC)  │
                 └──────┬──────┘
                        │
           ┌────────────┼────────────────┐
@@ -48,7 +48,7 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
    └──────┬──────┘ └──┬───────┘ └─────┬──────┘
           │            │                │
           │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 16 Command  │  │  Pipeline  │
+          │     │ 20 Command  │  │  Pipeline  │
           │     │  Handlers   │  │ input →    │
           │     └─────────────┘  │ session →  │
           │                      │ stream     │
@@ -56,7 +56,7 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
           │                            │
    ┌──────▼────────────────────────────▼──────┐
    │              ClaudeHandler               │
-   │                (498 LOC)                 │
+   │               (~610 LOC)                 │
    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
    │  │ Session  │ │ Prompt   │ │ Dispatch │ │
    │  │ Registry │ │ Builder  │ │ Service  │ │
@@ -116,20 +116,23 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 
 | Command | Description |
 |---------|-------------|
-| `cwd` | Show current working directory |
+| `cwd` | Show/set current working directory |
 | `mcp` / `mcp reload` | List MCP servers / reload config |
 | `bypass [on/off]` | Toggle permission prompt bypass |
 | `persona [name]` | Switch persona |
 | `model [name]` | Switch model (sonnet, opus, haiku) |
+| `verbosity [level]` | Set output verbosity level |
 | `sessions` | List active sessions |
-| `new [prompt]` | Reset current session with empty memory |
-| `renew [prompt]` | Renew session (optionally retain prompt) |
-| `restore [session]` | Restore a session |
+| `new` / `renew` | Reset / renew session |
 | `close` | Close current thread's session |
+| `restore` | Restore a session |
 | `context` | Show context window status |
 | `link [url]` | Attach issue/PR/doc links to session |
 | `onboarding` | Run onboarding workflow |
-| `verbosity [level]` | Set output verbosity level |
+| `admin` | Admin commands (accept/deny/users/config) |
+| `cct` / `set_cct` | CCT token status / manual switch |
+| `marketplace` | Plugin marketplace |
+| `plugins` | Manage installed plugins |
 | `$` / `$model` / `$verbosity` | Session-only settings (non-persistent) |
 | `help` | Show help |
 
@@ -251,9 +254,9 @@ When GitHub App is configured, it takes priority. Otherwise falls back to PAT.
 ```
 src/                            # ~27,000 lines of TypeScript
 ├── slack/                      # Slack module (SRP separation)
-│   ├── actions/                # Interactive action handlers (8 handlers)
+│   ├── actions/                # Interactive action handlers (9 handlers)
 │   ├── pipeline/               # Stream processing pipeline (5 files)
-│   ├── commands/               # Command handlers (16 handlers)
+│   ├── commands/               # Command handlers (20 handlers)
 │   ├── directives/             # Channel/session link directives
 │   └── formatters/             # Output formatters
 ├── conversation/               # Conversation recording & replay
@@ -261,6 +264,7 @@ src/                            # ~27,000 lines of TypeScript
 ├── mcp/                        # MCP server management
 ├── github/                     # GitHub App auth + Git CLI
 ├── permission/                 # Permission service + Slack UI
+├── plugin/                     # Plugin system (marketplace, cache, manager)
 ├── prompt/                     # System prompts
 │   └── workflows/              # Workflow prompts (9 workflows)
 ├── persona/                    # Bot personas (12 personas)
