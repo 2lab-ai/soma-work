@@ -41,6 +41,10 @@ export interface UserSettings {
   jiraAccountId?: string;
   jiraName?: string;
   slackName?: string;
+  // User acceptance (admin approval)
+  accepted: boolean;
+  acceptedBy?: string;
+  acceptedAt?: string;
 }
 
 interface SlackJiraMapping {
@@ -99,6 +103,11 @@ export class UserSettingsStore {
             userSettings.defaultModel === 'claude-opus-4-5-20251101'
           ) {
             userSettings.defaultModel = DEFAULT_MODEL;
+            didUpdate = true;
+          }
+          // Migration: grandfathering — existing users without accepted field get accepted=true
+          if ((userSettings as any).accepted === undefined) {
+            userSettings.accepted = true;
             didUpdate = true;
           }
         }
@@ -189,6 +198,7 @@ export class UserSettingsStore {
         bypassPermission: existing?.bypassPermission ?? false,
         persona: existing?.persona ?? 'default',
         defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
+        accepted: existing?.accepted ?? true,
         lastUpdated: new Date().toISOString(),
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
@@ -255,6 +265,7 @@ export class UserSettingsStore {
         bypassPermission: false,
         persona: 'default',
         defaultModel: DEFAULT_MODEL,
+        accepted: true,
         lastUpdated: new Date().toISOString(),
         ...patch,
       };
@@ -402,7 +413,7 @@ export class UserSettingsStore {
       return existing;
     }
 
-    // Create new settings with defaults
+    // Create new settings with defaults (accepted=true for ensureUserExists — called after onboarding)
     const newSettings: UserSettings = {
       userId,
       defaultDirectory: '',
@@ -411,6 +422,7 @@ export class UserSettingsStore {
       defaultModel: DEFAULT_MODEL,
       lastUpdated: new Date().toISOString(),
       slackName,
+      accepted: true,
     };
 
     this.settings[userId] = newSettings;
@@ -418,6 +430,58 @@ export class UserSettingsStore {
     logger.info('Created user settings via ensureUserExists', { userId, slackName });
 
     return newSettings;
+  }
+
+  /**
+   * Create a pending user record (accepted=false).
+   * Used when a new user messages the bot before admin approval.
+   */
+  createPendingUser(userId: string, slackName?: string): UserSettings {
+    const existing = this.settings[userId];
+    if (existing) return existing;
+
+    const newSettings: UserSettings = {
+      userId,
+      defaultDirectory: '',
+      bypassPermission: false,
+      persona: 'default',
+      defaultModel: DEFAULT_MODEL,
+      lastUpdated: new Date().toISOString(),
+      slackName,
+      accepted: false,
+    };
+
+    this.settings[userId] = newSettings;
+    this.saveSettings();
+    logger.info('Created pending user', { userId, slackName });
+    return newSettings;
+  }
+
+  /**
+   * Accept a user (set accepted=true with admin info).
+   * Creates the user record if it doesn't exist.
+   */
+  acceptUser(userId: string, adminUserId: string): void {
+    this.patchUserSettings(userId, {
+      accepted: true,
+      acceptedBy: adminUserId,
+      acceptedAt: new Date().toISOString(),
+    });
+    logger.info('User accepted', { userId, acceptedBy: adminUserId });
+  }
+
+  /**
+   * Check if a user is accepted.
+   */
+  isUserAccepted(userId: string): boolean {
+    return this.settings[userId]?.accepted === true;
+  }
+
+  /**
+   * Get all user settings as an array.
+   */
+  getAllUsers(): UserSettings[] {
+    return Object.values(this.settings);
   }
 
   /**

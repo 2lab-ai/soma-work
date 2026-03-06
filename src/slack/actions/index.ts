@@ -7,6 +7,7 @@ import { JiraActionHandler } from './jira-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
+import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { SlackApiHelper } from '../slack-api-helper';
@@ -31,6 +32,7 @@ export class ActionHandlers {
   private prHandler: PRActionHandler;
   private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
+  private userAcceptanceHandler: UserAcceptanceActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -89,6 +91,10 @@ export class ActionHandlers {
       slackApi: ctx.slackApi,
       claudeHandler: ctx.claudeHandler,
       messageHandler: ctx.messageHandler,
+    });
+
+    this.userAcceptanceHandler = new UserAcceptanceActionHandler({
+      slackApi: ctx.slackApi,
     });
   }
 
@@ -200,6 +206,17 @@ export class ActionHandlers {
     app.action(/^panel_/, async ({ ack, body, respond }) => {
       await ack();
       await this.actionPanelHandler.handleAction(body, respond);
+    });
+
+    // User acceptance actions (admin Accept/Deny buttons)
+    app.action('accept_user', async ({ ack, body, respond }) => {
+      await ack();
+      await this.userAcceptanceHandler.handleAccept(body, respond);
+    });
+
+    app.action('deny_user', async ({ ack, body, respond }) => {
+      await ack();
+      await this.userAcceptanceHandler.handleDeny(body, respond);
     });
 
     // Channel routing actions (move to correct channel / stop)

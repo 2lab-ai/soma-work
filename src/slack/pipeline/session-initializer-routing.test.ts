@@ -4,15 +4,22 @@ vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
     getUserSettings: vi.fn().mockReturnValue({
       userId: 'U123',
+      accepted: true,
       defaultDirectory: '',
       bypassPermission: false,
       persona: 'default',
       defaultModel: 'claude-opus-4-6',
       lastUpdated: new Date().toISOString(),
     }),
+    createPendingUser: vi.fn(),
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
   },
   DEFAULT_MODEL: 'claude-opus-4-6',
+}));
+
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: vi.fn().mockReturnValue(false),
+  getAdminUsers: vi.fn().mockReturnValue(new Set(['U_ADMIN1'])),
 }));
 
 vi.mock('../../conversation', () => ({

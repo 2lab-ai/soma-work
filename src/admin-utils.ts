@@ -19,6 +19,11 @@ export function isAdminUser(userId: string): boolean {
   return loadAdminUsers().has(userId);
 }
 
+/** Get all admin user IDs */
+export function getAdminUsers(): ReadonlySet<string> {
+  return loadAdminUsers();
+}
+
 /** Reset cached admin users (for testing) */
 export function resetAdminUsersCache(): void {
   adminUsers = null;

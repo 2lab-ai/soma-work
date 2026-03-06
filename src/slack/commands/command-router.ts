@@ -19,6 +19,7 @@ import { SessionCommandHandler } from './session-command-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { PluginsHandler } from './plugins-handler';
 import { CctHandler } from './cct-handler';
+import { AdminHandler } from './admin-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -32,6 +33,7 @@ export class CommandRouter {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
     this.handlers = [
+      new AdminHandler(),
       new CctHandler(),
       new CwdHandler(deps),
       new McpHandler(deps),

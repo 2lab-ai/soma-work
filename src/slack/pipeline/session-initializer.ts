@@ -14,6 +14,7 @@ import { AssistantStatusManager } from '../assistant-status-manager';
 import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { userSettingsStore } from '../../user-settings-store';
+import { getAdminUsers } from '../../admin-utils';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { ThreadPanel } from '../thread-panel';
 import { shouldOutput, OutputFlag, LOG_DETAIL } from '../output-flags';
@@ -144,18 +145,30 @@ export class SessionInitializer {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
 
-      // First-time user detection: trigger onboarding workflow
-      // Note: Users in Jira mapping already have settings (via updateUserJiraInfo in InputProcessor)
+      // User acceptance gate + first-time detection
       const userSettings = userSettingsStore.getUserSettings(user);
       if (!userSettings) {
-        this.logger.info('First-time user detected, triggering onboarding', {
-          sessionKey,
-          user,
-          userName,
-        });
-        session.isOnboarding = true;
-        this.deps.claudeHandler.transitionToMain(channel, threadTs, 'onboarding', 'Welcome!');
-        // Skip normal dispatch - onboarding workflow will handle the user
+        // New user: create pending record + notify admins
+        this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
+        userSettingsStore.createPendingUser(user, userName);
+        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', { threadTs });
+        await this.notifyAdminsNewUser(user, userName);
+        // Terminate the just-created session so next message also triggers gate
+        this.deps.claudeHandler.terminateSession(sessionKey);
+        return {
+          session, sessionKey, isNewSession, userName, workingDirectory,
+          abortController: new AbortController(), halted: true,
+        };
+      }
+      if (!userSettings.accepted) {
+        // Existing pending user re-messaging
+        this.logger.debug('Pending user re-message blocked', { sessionKey, user });
+        await this.deps.slackApi.postMessage(channel, '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.', { threadTs });
+        this.deps.claudeHandler.terminateSession(sessionKey);
+        return {
+          session, sessionKey, isNewSession, userName, workingDirectory,
+          abortController: new AbortController(), halted: true,
+        };
       }
     }
 
@@ -767,5 +780,54 @@ export class SessionInitializer {
     this.deps.claudeHandler.updateInitiator(channel, threadTs, user, userName);
 
     return abortController;
+  }
+
+  /**
+   * Send admin DM notifications with Accept/Deny buttons for a new user.
+   */
+  private async notifyAdminsNewUser(userId: string, userName: string): Promise<void> {
+    const adminUsers = getAdminUsers();
+    if (adminUsers.size === 0) {
+      this.logger.warn('No admin users configured, cannot notify about new user', { userId });
+      return;
+    }
+
+    const blocks = [
+      {
+        type: 'section' as const,
+        text: {
+          type: 'mrkdwn' as const,
+          text: `🆕 *New User Request*\n<@${userId}>${userName ? ` (${userName})` : ''} wants to use the bot`,
+        },
+      },
+      {
+        type: 'actions' as const,
+        block_id: 'user_acceptance',
+        elements: [
+          {
+            type: 'button' as const,
+            text: { type: 'plain_text' as const, text: 'Accept' },
+            action_id: 'accept_user',
+            value: userId,
+            style: 'primary' as const,
+          },
+          {
+            type: 'button' as const,
+            text: { type: 'plain_text' as const, text: 'Deny' },
+            action_id: 'deny_user',
+            value: userId,
+            style: 'danger' as const,
+          },
+        ],
+      },
+    ];
+
+    for (const adminId of adminUsers) {
+      try {
+        await this.deps.slackApi.postMessage(adminId, `New user access request from <@${userId}>`, { blocks });
+      } catch (error) {
+        this.logger.error('Failed to send admin notification', { adminId, userId, error });
+      }
+    }
   }
 }
