@@ -8,6 +8,10 @@ export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
+export type LlmChatAction =
+  | { action: 'show' }
+  | { action: 'set'; provider: string; key: string; value: string }
+  | { action: 'reset' };
 
 export class CommandParser {
   /**
@@ -207,6 +211,69 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a set llm_chat command
+   */
+  static isSetLlmChatCommand(text: string): boolean {
+    return /^\/?set\s+llm_chat\b/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a show llm_chat command
+   */
+  static isShowLlmChatCommand(text: string): boolean {
+    return /^\/?show\s+llm_chat\s*$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a reset llm_chat command
+   */
+  static isResetLlmChatCommand(text: string): boolean {
+    return /^\/?reset\s+llm_chat\s*$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is any llm_chat command (set/show/reset)
+   */
+  static isLlmChatCommand(text: string): boolean {
+    return (
+      this.isSetLlmChatCommand(text) ||
+      this.isShowLlmChatCommand(text) ||
+      this.isResetLlmChatCommand(text)
+    );
+  }
+
+  /**
+   * Parse llm_chat command
+   */
+  static parseLlmChatCommand(text: string): LlmChatAction {
+    const trimmed = text.trim();
+
+    if (this.isShowLlmChatCommand(trimmed)) {
+      return { action: 'show' };
+    }
+
+    if (this.isResetLlmChatCommand(trimmed)) {
+      return { action: 'reset' };
+    }
+
+    // Parse: set llm_chat <provider> <key> <value>
+    const setMatch = trimmed.match(
+      /^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i
+    );
+    if (setMatch) {
+      return {
+        action: 'set',
+        provider: setMatch[1].toLowerCase(),
+        key: setMatch[2],
+        value: setMatch[3].trim(),
+      };
+    }
+
+    // If "set llm_chat" but missing args, still treat as show
+    return { action: 'show' };
+  }
+
+  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
@@ -222,6 +289,8 @@ export class CommandParser {
     'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew', 'close', 'link',
     // Credentials
     'restore', 'credentials',
+    // LLM Chat config
+    'set', 'show', 'reset',
     // Help
     'help', 'commands',
     // Future: save/load (oh-my-claude skills)
@@ -294,6 +363,12 @@ export class CommandParser {
       '• `model` or `/model` - Show current default model',
       '• `model list` or `/model list` - List available models',
       '• `model <name>` or `/model <name>` - Set default model (e.g., `model opus-4.5`)',
+      '',
+      '*LLM Chat Config:*',
+      '• `show llm_chat` - Show current llm_chat model configuration',
+      '• `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
+      '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
+      '• `reset llm_chat` - Reset llm_chat config to defaults',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
