@@ -20,7 +20,7 @@ import {
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
-import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import { recordUserTurn, recordAssistantTurn, getConversationUrl } from '../../conversation';
 
 /**
  * Result of stream execution
@@ -61,6 +61,8 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+  /** Unified header message ts from session-initializer (reused for status updates) */
+  headerMessageTs?: string;
 }
 
 /**
@@ -114,9 +116,13 @@ export class StreamExecutor {
       threadTs,
       user,
       say,
+      headerMessageTs,
     } = params;
 
     let statusMessageTs: string | undefined;
+
+    // Build base info text for unified header (workflow + history link)
+    const headerBaseText = this.buildHeaderBaseText(session);
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -138,13 +144,23 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message
-      statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-        channel,
-        threadTs,
-        sessionKey,
-        'thinking'
-      );
+      // Reuse unified header message or create new status message
+      if (headerMessageTs) {
+        statusMessageTs = headerMessageTs;
+        // Update existing header message to show thinking status
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText('thinking', headerBaseText)
+        );
+      } else {
+        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
+          channel,
+          threadTs,
+          sessionKey,
+          'thinking'
+        );
+      }
 
       // Add thinking reaction + native spinner
       await this.deps.reactionManager.updateReaction(
@@ -176,7 +192,13 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (statusMessageTs) {
+          if (statusMessageTs && headerMessageTs) {
+            await this.deps.slackApi.updateMessage(
+              channel,
+              statusMessageTs,
+              this.buildUnifiedStatusText('working', headerBaseText)
+            );
+          } else if (statusMessageTs) {
             await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
           }
           await this.deps.reactionManager.updateReaction(
@@ -238,12 +260,7 @@ export class StreamExecutor {
         },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
-
-          // Update context window emoji
-          if (session.usage) {
-            const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
-            await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
-          }
+          // Context window emoji removed (#23) - values were inaccurate
         },
       };
 
@@ -263,7 +280,13 @@ export class StreamExecutor {
 
       // Update status and reaction based on whether user choice is pending
       const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
-      if (statusMessageTs) {
+      if (statusMessageTs && headerMessageTs) {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText(finalStatus, headerBaseText)
+        );
+      } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
       }
       await this.deps.reactionManager.updateReaction(
@@ -317,7 +340,8 @@ export class StreamExecutor {
         threadTs,
         statusMessageTs,
         processedFiles,
-        say
+        say,
+        headerMessageTs ? headerBaseText : undefined
       );
       return { success: false, messageCount: 0 };
     } finally {
@@ -333,20 +357,21 @@ export class StreamExecutor {
     threadTs: string,
     statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
-    say: SayFn
+    say: SayFn,
+    headerBaseText?: string
   ): Promise<void> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Check for context overflow error
+    // Context overflow detection (no longer updates emoji, just logs)
     const errorMessage = error.message?.toLowerCase() || '';
     if (
       errorMessage.includes('prompt is too long') ||
       errorMessage.includes('context length exceeded') ||
       errorMessage.includes('maximum context length')
     ) {
-      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
+      this.logger.warn('Context overflow detected', { sessionKey });
     }
 
     if (error.name !== 'AbortError') {
@@ -370,7 +395,13 @@ export class StreamExecutor {
         });
       }
 
-      if (statusMessageTs) {
+      if (statusMessageTs && headerBaseText) {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText('error', headerBaseText)
+        );
+      } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
       }
       await this.deps.reactionManager.updateReaction(
@@ -388,7 +419,13 @@ export class StreamExecutor {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
-      if (statusMessageTs) {
+      if (statusMessageTs && headerBaseText) {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText('cancelled', headerBaseText)
+        );
+      } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
       }
       await this.deps.reactionManager.updateReaction(
@@ -624,6 +661,49 @@ ${userInstruction}`;
       resetSession: true,
       dispatchText: userMessage || undefined,
     };
+  }
+
+  /**
+   * Build base text for unified header message (workflow + history link)
+   */
+  private buildHeaderBaseText(session: ConversationSession): string {
+    const parts: string[] = [];
+
+    if (session.workflow) {
+      parts.push(`\`${session.workflow}\``);
+    }
+
+    if (session.conversationId) {
+      try {
+        const url = getConversationUrl(session.conversationId);
+        parts.push(`📝 <${url}|History>`);
+      } catch {
+        // Non-critical
+      }
+    }
+
+    return parts.join(' | ');
+  }
+
+  /**
+   * Build unified status text combining status + header base info
+   */
+  private buildUnifiedStatusText(status: string, headerBaseText: string): string {
+    const statusTexts: Record<string, string> = {
+      thinking: '🤔 *Thinking...*',
+      working: '⚙️ *Working...*',
+      waiting: '✋ *Waiting for input...*',
+      completed: '✅ *Done*',
+      error: '❌ *Error*',
+      cancelled: '⏹️ *Cancelled*',
+    };
+
+    const statusText = statusTexts[status] || status;
+
+    if (headerBaseText) {
+      return `${statusText} | ${headerBaseText}`;
+    }
+    return statusText;
   }
 
   /**

@@ -263,6 +263,8 @@ export class SlackHandler {
         threadTs,
         user: event.user,
         say: wrappedSay,
+        // Only pass header message on first iteration (subsequent iterations create fresh status)
+        headerMessageTs: currentText === effectiveText ? sessionResult.headerMessageTs : undefined,
       });
 
       // No continuation - exit loop

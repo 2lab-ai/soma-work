@@ -80,9 +80,9 @@ export class SessionInitializer {
     // Session key is based on channel + thread only
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
-    // Store original message info for status reactions and context window tracking
+    // Store original message info for status reactions
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
-    await this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
+    // Context window emoji tracking removed (#23) - values were inaccurate
 
     // Clear lifecycle emojis on any new message (removes stale idle/expired emojis)
     await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);
@@ -113,20 +113,17 @@ export class SessionInitializer {
       ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs)
       : existingSession;
 
+    // Track unified header message ts (for merging dispatch + status into one message)
+    let headerMessageTs: string | undefined;
+
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
-      // Create conversation record and assign ID to session
+      // Create conversation record and assign ID to session (no separate message)
       try {
         const conversationId = createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
-
-        // Send conversation URL to the thread
-        const conversationUrl = getConversationUrl(conversationId);
-        await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
-          threadTs,
-        });
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
@@ -155,7 +152,7 @@ export class SessionInitializer {
           if (waitTimeoutId) clearTimeout(waitTimeoutId);
         }
       } else if (dispatchText) {
-        await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+        headerMessageTs = await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey, session);
       } else {
         // No text available - use default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
@@ -187,6 +184,7 @@ export class SessionInitializer {
       userName,
       workingDirectory,
       abortController,
+      headerMessageTs,
     };
   }
 
@@ -199,8 +197,9 @@ export class SessionInitializer {
    */
   async runDispatch(channel: string, threadTs: string, text: string): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
-    if (this.deps.claudeHandler.needsDispatch(channel, threadTs) && text) {
-      await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
+    const session = this.deps.claudeHandler.getSession(channel, threadTs);
+    if (this.deps.claudeHandler.needsDispatch(channel, threadTs) && text && session) {
+      await this.dispatchWorkflow(channel, threadTs, text, sessionKey, session);
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       // No text provided - use default workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Session Reset');
@@ -208,16 +207,17 @@ export class SessionInitializer {
   }
 
   /**
-   * Dispatch to determine workflow based on user message
-   * Uses AbortController for proper timeout cancellation
-   * Tracks in-flight dispatch to prevent race conditions
+   * Dispatch to determine workflow based on user message.
+   * Posts a single unified header message that combines dispatch result + conversation history link.
+   * Returns the message ts so it can be reused for status updates.
    */
   private async dispatchWorkflow(
     channel: string,
     threadTs: string,
     text: string,
-    sessionKey: string
-  ): Promise<void> {
+    sessionKey: string,
+    session: ConversationSession
+  ): Promise<string | undefined> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
     let resolveTracking: () => void;
@@ -238,8 +238,13 @@ export class SessionInitializer {
       abortController.abort();
     }, DISPATCH_TIMEOUT_MS);
 
-    // Track dispatch status message for updating
-    let dispatchMessageTs: string | undefined;
+    // Track unified header message ts
+    let headerMessageTs: string | undefined;
+
+    // Build history link suffix (if conversation record exists)
+    const historyLink = session.conversationId
+      ? ` | 📝 <${getConversationUrl(session.conversationId)}|History>`
+      : '';
 
     try {
       const dispatchService = getDispatchService();
@@ -248,12 +253,12 @@ export class SessionInitializer {
       // Native spinner during dispatch
       await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
 
-      // Add dispatching reaction and post status message
+      // Add dispatching reaction and post unified header message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
       const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
         threadTs,
       });
-      dispatchMessageTs = msgResult?.ts;
+      headerMessageTs = msgResult?.ts;
 
       this.logger.info('🎯 Starting dispatch classification', {
         channel,
@@ -276,12 +281,12 @@ export class SessionInitializer {
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
 
-      // Update dispatch message with workflow result
-      if (dispatchMessageTs) {
+      // Update unified header: workflow result + history link
+      if (headerMessageTs) {
         await this.deps.slackApi.updateMessage(
           channel,
-          dispatchMessageTs,
-          `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`
+          headerMessageTs,
+          `✅ \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_${historyLink}`
         );
       }
 
@@ -306,12 +311,12 @@ export class SessionInitializer {
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
 
-      // Update dispatch message with error
-      if (dispatchMessageTs) {
+      // Update unified header with error + history link
+      if (headerMessageTs) {
         await this.deps.slackApi.updateMessage(
           channel,
-          dispatchMessageTs,
-          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`
+          headerMessageTs,
+          `⚠️ \`default\` _(dispatch failed after ${elapsed}ms)_${historyLink}`
         );
       }
 
@@ -324,6 +329,8 @@ export class SessionInitializer {
       dispatchInFlight.delete(sessionKey);
       resolveTracking!();
     }
+
+    return headerMessageTs;
   }
 
   private handleConcurrency(
