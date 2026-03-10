@@ -187,6 +187,7 @@ export class LlmChatConfigStore {
   }
 }
 
-// Singleton instance — intentionally process-wide (global config, admin-only access)
-// Config is shared across all users; access control is enforced at the command handler layer.
+// Singleton instance — process-wide by design.
+// Config is shared across all users; mutation access (set/reset) is restricted
+// to ADMIN_USER_ID at the command handler layer (LlmChatHandler.isAdmin).
 export const llmChatConfigStore = new LlmChatConfigStore();
