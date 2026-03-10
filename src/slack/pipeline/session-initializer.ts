@@ -2,7 +2,6 @@ import { ClaudeHandler } from '../../claude-handler';
 import { SlackApiHelper } from '../slack-api-helper';
 import { MessageValidator } from '../message-validator';
 import { ReactionManager } from '../reaction-manager';
-import { ContextWindowManager } from '../context-window-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
@@ -24,7 +23,6 @@ interface SessionInitializerDeps {
   slackApi: SlackApiHelper;
   messageValidator: MessageValidator;
   reactionManager: ReactionManager;
-  contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
 }
@@ -82,7 +80,6 @@ export class SessionInitializer {
 
     // Store original message info for status reactions
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
-    // Context window emoji tracking removed (#23) - values were inaccurate
 
     // Clear lifecycle emojis on any new message (removes stale idle/expired emojis)
     await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);

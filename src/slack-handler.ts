@@ -146,7 +146,6 @@ export class SlackHandler {
       messageValidator: this.messageValidator,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
-      contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
     });
 

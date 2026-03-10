@@ -10,6 +10,7 @@ import {
   UsageData,
   ToolEventProcessor,
   StatusReporter,
+  StatusType,
   ReactionManager,
   ContextWindowManager,
   ToolTracker,
@@ -192,15 +193,7 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (statusMessageTs && headerMessageTs) {
-            await this.deps.slackApi.updateMessage(
-              channel,
-              statusMessageTs,
-              this.buildUnifiedStatusText('working', headerBaseText)
-            );
-          } else if (statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
-          }
+          await this.updateStatusMessage(channel, statusMessageTs, 'working', headerMessageTs ? headerBaseText : undefined);
           await this.deps.reactionManager.updateReaction(
             sessionKey,
             this.deps.statusReporter.getStatusEmoji('working')
@@ -260,7 +253,6 @@ export class StreamExecutor {
         },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
-          // Context window emoji removed (#23) - values were inaccurate
         },
       };
 
@@ -280,15 +272,7 @@ export class StreamExecutor {
 
       // Update status and reaction based on whether user choice is pending
       const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
-      if (statusMessageTs && headerMessageTs) {
-        await this.deps.slackApi.updateMessage(
-          channel,
-          statusMessageTs,
-          this.buildUnifiedStatusText(finalStatus, headerBaseText)
-        );
-      } else if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, finalStatus, headerMessageTs ? headerBaseText : undefined);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji(finalStatus)
@@ -364,7 +348,6 @@ export class StreamExecutor {
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Context overflow detection (no longer updates emoji, just logs)
     const errorMessage = error.message?.toLowerCase() || '';
     if (
       errorMessage.includes('prompt is too long') ||
@@ -395,19 +378,7 @@ export class StreamExecutor {
         });
       }
 
-      if (statusMessageTs && headerBaseText) {
-        try {
-          await this.deps.slackApi.updateMessage(
-            channel,
-            statusMessageTs,
-            this.buildUnifiedStatusText('error', headerBaseText)
-          );
-        } catch (updateErr) {
-          this.logger.warn('Failed to update header message with error status (best-effort)', { updateErr });
-        }
-      } else if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, 'error', headerBaseText, true);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('error')
@@ -423,19 +394,7 @@ export class StreamExecutor {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
-      if (statusMessageTs && headerBaseText) {
-        try {
-          await this.deps.slackApi.updateMessage(
-            channel,
-            statusMessageTs,
-            this.buildUnifiedStatusText('cancelled', headerBaseText)
-          );
-        } catch (updateErr) {
-          this.logger.warn('Failed to update header message with cancelled status (best-effort)', { updateErr });
-        }
-      } else if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, 'cancelled', headerBaseText, true);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('cancelled')
@@ -669,6 +628,39 @@ ${userInstruction}`;
       resetSession: true,
       dispatchText: userMessage || undefined,
     };
+  }
+
+  /**
+   * Update status message (unified header or legacy status reporter).
+   * In error handlers, uses best-effort mode to avoid re-throwing from catch blocks.
+   */
+  private async updateStatusMessage(
+    channel: string,
+    statusMessageTs: string | undefined,
+    status: StatusType,
+    headerBaseText?: string,
+    bestEffort = false
+  ): Promise<void> {
+    if (!statusMessageTs) return;
+
+    if (headerBaseText) {
+      const doUpdate = () => this.deps.slackApi.updateMessage(
+        channel,
+        statusMessageTs,
+        this.buildUnifiedStatusText(status, headerBaseText)
+      );
+      if (bestEffort) {
+        try {
+          await doUpdate();
+        } catch (err) {
+          this.logger.warn(`Failed to update header message with ${status} status (best-effort)`, { err });
+        }
+      } else {
+        await doUpdate();
+      }
+    } else {
+      await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, status);
+    }
   }
 
   /**
