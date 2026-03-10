@@ -30,8 +30,6 @@ export class PromptBuilder {
   private logger = new Logger('PromptBuilder');
   private defaultSystemPrompt: string | undefined;
   private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
-  private workflowPromptCache: Map<WorkflowType, string> = new Map();
-
   constructor() {
     this.loadDefaultPrompt();
   }
@@ -202,19 +200,10 @@ export class PromptBuilder {
     // Append .system.prompt to ALL workflows
     if (content) {
       content = this.appendLocalSystemPrompt(content);
-      this.workflowPromptCache.set(workflow, content);
       this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`);
     }
 
     return content;
-  }
-
-  /**
-   * Clear workflow prompt cache (useful for development/hot-reload)
-   */
-  clearCache(): void {
-    this.workflowPromptCache.clear();
-    this.logger.debug('Cleared workflow prompt cache');
   }
 
   /**

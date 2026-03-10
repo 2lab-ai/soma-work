@@ -48,9 +48,9 @@ const DEFAULT_CONFIG: LlmChatConfig = {
 };
 
 /**
- * Valid backends
+ * Valid backends (derived from DEFAULT_CONFIG keys)
  */
-const VALID_BACKENDS: ReadonlySet<string> = new Set(['codex', 'gemini']);
+const VALID_BACKENDS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG));
 
 export class LlmChatConfigStore {
   private logger = new Logger('LlmChatConfigStore');
@@ -128,7 +128,7 @@ export class LlmChatConfigStore {
   formatForDisplay(): string {
     const lines: string[] = [];
 
-    for (const backend of ['codex', 'gemini'] as LlmBackend[]) {
+    for (const backend of Object.keys(this.config) as LlmBackend[]) {
       const cfg = this.config[backend];
       lines.push(`*${backend}* {`);
       lines.push(`  backend: '${cfg.backend}',`);
@@ -158,26 +158,22 @@ export class LlmChatConfigStore {
       return `    - ${cfg.backend}: <parameters>model: "${cfg.model}"${configStr}</parameters>`;
     };
 
-    return [formatBackend(this.config.codex), formatBackend(this.config.gemini)].join('\n');
+    return (Object.keys(this.config) as LlmBackend[])
+      .map((key) => formatBackend(this.config[key]))
+      .join('\n');
   }
 
   private cloneConfig(source: LlmChatConfig): LlmChatConfig {
-    return {
-      codex: {
-        backend: source.codex.backend,
-        model: source.codex.model,
-        configOverride: source.codex.configOverride
-          ? { ...source.codex.configOverride }
-          : undefined,
-      },
-      gemini: {
-        backend: source.gemini.backend,
-        model: source.gemini.model,
-        configOverride: source.gemini.configOverride
-          ? { ...source.gemini.configOverride }
-          : undefined,
-      },
-    };
+    const result = {} as LlmChatConfig;
+    for (const key of Object.keys(source) as LlmBackend[]) {
+      const cfg = source[key];
+      result[key] = {
+        backend: cfg.backend,
+        model: cfg.model,
+        configOverride: cfg.configOverride ? { ...cfg.configOverride } : undefined,
+      };
+    }
+    return result;
   }
 }
 

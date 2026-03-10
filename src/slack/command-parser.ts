@@ -211,35 +211,10 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a set llm_chat command
-   */
-  static isSetLlmChatCommand(text: string): boolean {
-    return /^\/?set\s+llm_chat\b/i.test(text.trim());
-  }
-
-  /**
-   * Check if text is a show llm_chat command
-   */
-  static isShowLlmChatCommand(text: string): boolean {
-    return /^\/?show\s+llm_chat\s*$/i.test(text.trim());
-  }
-
-  /**
-   * Check if text is a reset llm_chat command
-   */
-  static isResetLlmChatCommand(text: string): boolean {
-    return /^\/?reset\s+llm_chat\s*$/i.test(text.trim());
-  }
-
-  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
-    return (
-      this.isSetLlmChatCommand(text) ||
-      this.isShowLlmChatCommand(text) ||
-      this.isResetLlmChatCommand(text)
-    );
+    return /^\/?(?:set|show|reset)\s+llm_chat\b/i.test(text.trim());
   }
 
   /**
@@ -248,11 +223,11 @@ export class CommandParser {
   static parseLlmChatCommand(text: string): LlmChatAction {
     const trimmed = text.trim();
 
-    if (this.isShowLlmChatCommand(trimmed)) {
+    if (/^\/?show\s+llm_chat\s*$/i.test(trimmed)) {
       return { action: 'show' };
     }
 
-    if (this.isResetLlmChatCommand(trimmed)) {
+    if (/^\/?reset\s+llm_chat\s*$/i.test(trimmed)) {
       return { action: 'reset' };
     }
 
