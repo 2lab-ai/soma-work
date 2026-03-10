@@ -30,6 +30,7 @@ export class PromptBuilder {
   private logger = new Logger('PromptBuilder');
   private defaultSystemPrompt: string | undefined;
   private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
+  private workflowPromptCache: Map<WorkflowType, string> = new Map();
 
   constructor() {
     this.loadDefaultPrompt();
@@ -170,7 +171,11 @@ export class PromptBuilder {
    * All workflows get .system.prompt appended (if it exists)
    */
   loadWorkflowPrompt(workflow: WorkflowType): string | undefined {
-    // No caching - runtime variables (like llm_chat_config) can change between calls
+    // Cache file I/O + include processing; runtime variables (like llm_chat_config)
+    // are applied separately in buildSystemPrompt() so caching pre-variable content is safe
+    if (this.workflowPromptCache.has(workflow)) {
+      return this.workflowPromptCache.get(workflow);
+    }
 
     let content: string | undefined;
 
@@ -200,10 +205,19 @@ export class PromptBuilder {
     // Append .system.prompt to ALL workflows
     if (content) {
       content = this.appendLocalSystemPrompt(content);
+      this.workflowPromptCache.set(workflow, content);
       this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`);
     }
 
     return content;
+  }
+
+  /**
+   * Clear workflow prompt cache (useful for development/hot-reload)
+   */
+  clearCache(): void {
+    this.workflowPromptCache.clear();
+    this.logger.debug('Cleared workflow prompt cache');
   }
 
   /**

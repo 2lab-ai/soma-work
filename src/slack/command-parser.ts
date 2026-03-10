@@ -254,7 +254,7 @@ export class CommandParser {
     }
 
     // Fallback for any other unrecognized pattern
-    return { action: 'show' };
+    return { action: 'error', message: 'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`' };
   }
 
   /**

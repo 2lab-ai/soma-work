@@ -62,8 +62,8 @@ export class LlmChatConfigStore {
     if (!SETTABLE_KEYS.has(key)) {
       return `Unknown key: \`${key}\`. Valid keys: ${[...SETTABLE_KEYS].join(', ')}`;
     }
-    if (/["<>]/.test(value)) {
-      return `Invalid value: must not contain \`, <, or > characters`;
+    if (!/^[\w.:-]+$/.test(value)) {
+      return 'Invalid value: must contain only alphanumeric characters, dots, hyphens, and colons';
     }
 
     const backend = provider as LlmBackend;
