@@ -141,5 +141,5 @@ export class LlmChatConfigStore {
 
 // Singleton instance — process-wide by design.
 // Config is shared across all users; mutation access (set/reset) is restricted
-// to ADMIN_USER_ID at the command handler layer (LlmChatHandler.isAdmin).
+// to ADMIN_USERS via isAdminUser() at the command handler layer (LlmChatHandler.requireAdmin).
 export const llmChatConfigStore = new LlmChatConfigStore();
