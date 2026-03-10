@@ -5,6 +5,7 @@ import {
   SessionResourceUpdateRequest,
 } from '../types';
 import {
+  ContinueSessionParams,
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
@@ -147,6 +148,41 @@ const SAVE_CONTEXT_RESULT_SCHEMA = {
   required: ['result'],
 };
 
+const CONTINUE_SESSION_SCHEMA = {
+  type: 'object',
+  properties: {
+    prompt: {
+      type: 'string',
+      description: 'Prompt to send into the next execution turn',
+    },
+    resetSession: {
+      type: 'boolean',
+      description: 'Reset session context before continuing',
+    },
+    dispatchText: {
+      type: 'string',
+      description: 'Optional dispatch text used for workflow routing',
+    },
+    forceWorkflow: {
+      type: 'string',
+      enum: [
+        'onboarding',
+        'jira-executive-summary',
+        'jira-brainstorming',
+        'jira-planning',
+        'jira-create-pr',
+        'pr-review',
+        'pr-fix-and-update',
+        'pr-docs-confluence',
+        'deploy',
+        'default',
+      ],
+      description: 'Optional explicit workflow to enter after reset',
+    },
+  },
+  required: ['prompt'],
+};
+
 export function getDefaultSessionSnapshot(): SessionResourceSnapshot {
   return {
     issues: [],
@@ -199,6 +235,11 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       id: 'ASK_USER_QUESTION',
       description: 'Render user-choice UI in Slack thread',
       paramsSchema: ASK_USER_QUESTION_SCHEMA,
+    },
+    {
+      id: 'CONTINUE_SESSION',
+      description: 'Return a typed continuation so the host can continue or re-dispatch the workflow',
+      paramsSchema: CONTINUE_SESSION_SCHEMA,
     },
   ];
 
@@ -370,6 +411,17 @@ export function runModelCommand(
     };
   }
 
+  if (request.commandId === 'CONTINUE_SESSION') {
+    return {
+      type: 'model_command_result',
+      commandId: 'CONTINUE_SESSION',
+      ok: true,
+      payload: {
+        continuation: normalizeContinuation(request.params),
+      },
+    };
+  }
+
   if (request.commandId === 'SAVE_CONTEXT_RESULT') {
     return {
       type: 'model_command_result',
@@ -390,5 +442,14 @@ function normalizeLink(link: SessionLink, resourceType: SessionResourceType): Se
     ...link,
     type: resourceType,
     provider: link.provider || 'unknown',
+  };
+}
+
+function normalizeContinuation(params: ContinueSessionParams) {
+  return {
+    prompt: params.prompt,
+    resetSession: params.resetSession,
+    dispatchText: params.dispatchText,
+    forceWorkflow: params.forceWorkflow,
   };
 }

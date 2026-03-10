@@ -69,6 +69,32 @@ describe('ActionPanelBuilder', () => {
     expect(reviewCount).toBe(1);
   });
 
+  it('hides merge button for pr-review workflow even when PR is mergeable', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-2d',
+      workflow: 'pr-review',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+
+    expect(actionIds).not.toContain('panel_pr_merge');
+  });
+
+  it('hides merge button for pr-fix-and-update workflow even when PR is mergeable', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-2e',
+      workflow: 'pr-fix-and-update',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
+    });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+
+    expect(actionIds).not.toContain('panel_pr_merge');
+  });
+
   it('renders structural layout with hero section + fields section + context blocks', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
@@ -230,7 +256,7 @@ describe('ActionPanelBuilder', () => {
     expect(controlIds).toEqual(['panel_close']);
   });
 
-  it('enforces max 1 primary when merge and approve coexist', () => {
+  it('keeps max 1 primary button when review workflow is mergeable', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-10',
       workflow: 'pr-review',
@@ -242,9 +268,8 @@ describe('ActionPanelBuilder', () => {
     const primaryButtons = allButtons.filter((b: any) => b.style === 'primary');
 
     expect(primaryButtons.length).toBeLessThanOrEqual(1);
-    // Merge button should be the primary (last primary wins)
     if (primaryButtons.length === 1) {
-      expect(primaryButtons[0].action_id).toBe('panel_pr_merge');
+      expect(primaryButtons[0].action_id).toBe('panel_pr_approve');
     }
   });
 

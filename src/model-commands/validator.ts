@@ -1,4 +1,5 @@
 import {
+  WorkflowType,
   SaveContextResultPayload,
   SessionLink,
   SessionResourceOperation,
@@ -11,6 +12,7 @@ import {
 } from '../types';
 import {
   AskUserQuestionParams,
+  ContinueSessionParams,
   ModelCommandError,
   ModelCommandRunRequest,
   SaveContextResultParams,
@@ -21,6 +23,18 @@ type ValidationResult =
   | { ok: false; error: ModelCommandError };
 
 const RESOURCE_TYPES: SessionResourceType[] = ['issue', 'pr', 'doc'];
+const WORKFLOW_TYPES: WorkflowType[] = [
+  'onboarding',
+  'jira-executive-summary',
+  'jira-brainstorming',
+  'jira-planning',
+  'jira-create-pr',
+  'pr-review',
+  'pr-fix-and-update',
+  'pr-docs-confluence',
+  'deploy',
+  'default',
+];
 
 const ASK_USER_QUESTION_ALLOWED_TYPES = ['user_choice', 'user_choice_group'] as const;
 
@@ -75,6 +89,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'GET_SESSION'
     && commandId !== 'UPDATE_SESSION'
     && commandId !== 'ASK_USER_QUESTION'
+    && commandId !== 'CONTINUE_SESSION'
     && commandId !== 'SAVE_CONTEXT_RESULT'
   ) {
     return {
@@ -121,6 +136,20 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       ok: true,
       request: {
         commandId: 'ASK_USER_QUESTION',
+        params: parsed.value,
+      },
+    };
+  }
+
+  if (commandId === 'CONTINUE_SESSION') {
+    const parsed = parseContinueSessionParams(params);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    return {
+      ok: true,
+      request: {
+        commandId: 'CONTINUE_SESSION',
         params: parsed.value,
       },
     };
@@ -304,6 +333,52 @@ function parseSaveContextResultParams(
     ok: true,
     value: {
       result,
+    },
+  };
+}
+
+function parseContinueSessionParams(
+  raw: unknown
+): { ok: true; value: ContinueSessionParams } | { ok: false; error: ModelCommandError } {
+  if (!isRecord(raw)) {
+    return invalidArgs('CONTINUE_SESSION params must be an object');
+  }
+
+  const prompt = toOptionalString(raw.prompt);
+  if (!prompt) {
+    return invalidArgs('CONTINUE_SESSION prompt must be a non-empty string');
+  }
+
+  const resetSession = raw.resetSession;
+  if (resetSession !== undefined && typeof resetSession !== 'boolean') {
+    return invalidArgs('CONTINUE_SESSION resetSession must be a boolean');
+  }
+
+  const dispatchText = raw.dispatchText;
+  if (dispatchText !== undefined && typeof dispatchText !== 'string') {
+    return invalidArgs('CONTINUE_SESSION dispatchText must be a string');
+  }
+
+  const forceWorkflow = raw.forceWorkflow;
+  if (forceWorkflow !== undefined) {
+    if (typeof forceWorkflow !== 'string' || !WORKFLOW_TYPES.includes(forceWorkflow as WorkflowType)) {
+      return invalidArgs('CONTINUE_SESSION forceWorkflow must be a valid workflow type', {
+        allowedWorkflowTypes: WORKFLOW_TYPES,
+      });
+    }
+
+    if (resetSession !== true) {
+      return invalidArgs('CONTINUE_SESSION forceWorkflow requires resetSession=true');
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      prompt,
+      resetSession: resetSession === undefined ? false : resetSession,
+      dispatchText: toOptionalString(dispatchText),
+      forceWorkflow: forceWorkflow as WorkflowType | undefined,
     },
   };
 }

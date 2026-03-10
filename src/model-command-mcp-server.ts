@@ -150,7 +150,13 @@ class ModelCommandMcpServer {
               properties: {
                 commandId: {
                   type: 'string',
-                  enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'SAVE_CONTEXT_RESULT'],
+                  enum: [
+                    'GET_SESSION',
+                    'UPDATE_SESSION',
+                    'ASK_USER_QUESTION',
+                    'CONTINUE_SESSION',
+                    'SAVE_CONTEXT_RESULT',
+                  ],
                 },
                 params: {
                   type: 'object',
