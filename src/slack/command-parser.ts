@@ -8,11 +8,6 @@ export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
-export type LlmChatAction =
-  | { action: 'show' }
-  | { action: 'set'; provider: string; key: string; value: string }
-  | { action: 'reset' }
-  | { action: 'error'; message: string };
 
 export class CommandParser {
   /**
@@ -212,52 +207,6 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is any llm_chat command (set/show/reset)
-   */
-  static isLlmChatCommand(text: string): boolean {
-    return /^\/?(?:set|show|reset)\s+llm_chat\b/i.test(text.trim());
-  }
-
-  /**
-   * Parse llm_chat command
-   */
-  static parseLlmChatCommand(text: string): LlmChatAction {
-    const trimmed = text.trim();
-
-    if (/^\/?show\s+llm_chat\s*$/i.test(trimmed)) {
-      return { action: 'show' };
-    }
-
-    if (/^\/?reset\s+llm_chat\s*$/i.test(trimmed)) {
-      return { action: 'reset' };
-    }
-
-    // Parse: set llm_chat <provider> <key> <value>
-    const setMatch = trimmed.match(
-      /^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i
-    );
-    if (setMatch) {
-      return {
-        action: 'set',
-        provider: setMatch[1].toLowerCase(),
-        key: setMatch[2].toLowerCase(),
-        value: setMatch[3].trim(),
-      };
-    }
-
-    // If "set llm_chat" but missing args, return error with usage guidance
-    if (/^\/?set\s+llm_chat/i.test(trimmed)) {
-      return {
-        action: 'error',
-        message: 'Usage: `set llm_chat <provider> <key> <value>`\nExample: `set llm_chat codex model gpt-5.4`',
-      };
-    }
-
-    // Fallback for any other unrecognized pattern
-    return { action: 'error', message: 'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`' };
-  }
-
-  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
@@ -345,12 +294,6 @@ export class CommandParser {
       '• `model` or `/model` - Show current default model',
       '• `model list` or `/model list` - List available models',
       '• `model <name>` or `/model <name>` - Set default model (e.g., `model opus-4.5`)',
-      '',
-      '*LLM Chat Config:*',
-      '• `show llm_chat` - Show current llm_chat model configuration',
-      '• `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
-      '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
-      '• `reset llm_chat` - Reset llm_chat config to defaults',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',

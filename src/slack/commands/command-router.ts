@@ -13,7 +13,6 @@ import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
 import { LinkHandler } from './link-handler';
 import { CloseHandler } from './close-handler';
-import { LlmChatHandler } from './llm-chat-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -27,7 +26,6 @@ export class CommandRouter {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
     this.handlers = [
-      new LlmChatHandler(),
       new CwdHandler(deps),
       new McpHandler(deps),
       new BypassHandler(),
