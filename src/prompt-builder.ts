@@ -6,6 +6,7 @@
 
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
+import { llmChatConfigStore } from './llm-chat-config-store';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { WorkflowType } from './types';
 import * as path from 'path';
@@ -20,6 +21,8 @@ const PERSONA_DIR = path.join(__dirname, 'persona');
 
 // Include directive pattern: {{include:filename.prompt}}
 const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
+// Runtime variable pattern: {{variable_name}}
+const VARIABLE_PATTERN = /\{\{(\w+)\}\}/g;
 
 /**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
@@ -40,7 +43,10 @@ export class PromptBuilder {
   private loadDefaultPrompt(): void {
     try {
       if (fs.existsSync(DEFAULT_PROMPT_PATH)) {
-        this.defaultSystemPrompt = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
+        let content = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
+        // Process include directives (e.g., {{include:./common.prompt}})
+        content = this.processIncludes(content);
+        this.defaultSystemPrompt = content;
       }
 
       // Load local system prompt if exists (not committed to source)
@@ -144,6 +150,20 @@ export class PromptBuilder {
           fs.closeSync(fd);
         }
       }
+    });
+  }
+
+  /**
+   * Process runtime variable placeholders in prompt content
+   * Replaces {{variable_name}} with runtime values
+   */
+  private processVariables(content: string): string {
+    return content.replace(VARIABLE_PATTERN, (match, varName) => {
+      if (varName === 'llm_chat_config') {
+        return llmChatConfigStore.toPromptSnippet();
+      }
+      // Unknown variables are left as-is
+      return match;
     });
   }
 
@@ -262,6 +282,12 @@ export class PromptBuilder {
 
         this.logger.debug('Applied persona', { user: userId, persona: personaName, workflow });
       }
+    }
+
+    // Process runtime variables (e.g., {{llm_chat_config}})
+    // Done last so dynamic config values are always current
+    if (systemPrompt) {
+      systemPrompt = this.processVariables(systemPrompt);
     }
 
     return systemPrompt || undefined;
