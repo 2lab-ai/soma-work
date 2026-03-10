@@ -154,6 +154,7 @@ export class StreamExecutor {
 
     let statusMessageTs: string | undefined;
     let toolChoicePending = false;
+    let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
@@ -306,13 +307,16 @@ export class StreamExecutor {
             say: ctx.say,
             logVerbosity: getVerbosity(),
           });
-          const hasToolChoice = await this.handleModelCommandToolResults(
+          const commandResult = await this.handleModelCommandToolResults(
             toolResults,
             session,
             ctx
           );
-          if (hasToolChoice) {
+          if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
+          }
+          if (commandResult.continuation) {
+            toolContinuation = commandResult.continuation;
           }
         },
         onTodoUpdate: async (input, ctx) => {
@@ -511,6 +515,14 @@ export class StreamExecutor {
         if (continuation) {
           return { success: true, messageCount: streamResult.messageCount, continuation };
         }
+      }
+
+      if (toolContinuation) {
+        return {
+          success: true,
+          messageCount: streamResult.messageCount,
+          continuation: toolContinuation,
+        };
       }
 
       return { success: true, messageCount: streamResult.messageCount };
@@ -1099,8 +1111,9 @@ export class StreamExecutor {
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
     context: StreamContext
-  ): Promise<boolean> {
+  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation }> {
     let hasPendingChoice = false;
+    let continuation: Continuation | undefined;
 
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {
@@ -1155,6 +1168,17 @@ export class StreamExecutor {
         continue;
       }
 
+      if (parsed.commandId === 'CONTINUE_SESSION') {
+        continuation = parsed.payload.continuation;
+        this.logger.info('Captured CONTINUE_SESSION from model-command', {
+          sessionKey: context.sessionKey,
+          resetSession: continuation.resetSession === true,
+          forceWorkflow: continuation.forceWorkflow,
+          dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
+        });
+        continue;
+      }
+
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
         const updateResult = this.deps.claudeHandler.updateSessionResources(
@@ -1186,7 +1210,7 @@ export class StreamExecutor {
       }
     }
 
-    return hasPendingChoice;
+    return { hasPendingChoice, continuation };
   }
 
   private async renderAskUserQuestionFromCommand(

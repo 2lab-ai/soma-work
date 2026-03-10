@@ -365,7 +365,12 @@ export class SlackHandler {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
         // Re-run dispatch with the appropriate text
         const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
-        await this.sessionInitializer.runDispatch(activeChannel, activeThreadTs, dispatchText);
+        await this.sessionInitializer.runDispatch(
+          activeChannel,
+          activeThreadTs,
+          dispatchText,
+          result.continuation.forceWorkflow
+        );
       }
 
       // Prepare for next iteration

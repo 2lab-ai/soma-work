@@ -155,6 +155,14 @@ export class ActionPanelActionHandler {
 
       // Merge action: direct GitHub API call (no model invocation)
       if (value.action === 'pr_merge') {
+        if (session.workflow === 'pr-review' || session.workflow === 'pr-fix-and-update') {
+          await respond({
+            response_type: 'ephemeral',
+            text: '❌ 이 워크플로우에서는 direct merge를 지원하지 않습니다. merge gate 질문에서만 머지할 수 있습니다.',
+            replace_original: false,
+          });
+          return;
+        }
         await this.handleMerge(value as PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string }, session, respond);
         return;
       }

@@ -132,7 +132,7 @@ export class ActionPanelBuilder {
         workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
       }
 
-      if (params.prStatus?.mergeable && params.prUrl) {
+      if (this.shouldRenderMergeButton(workflow, params)) {
         workflowButtons.push(this.buildMergeButton(params));
       }
 
@@ -444,6 +444,21 @@ export class ActionPanelBuilder {
     };
   }
 
+  private static shouldRenderMergeButton(
+    workflow: WorkflowType,
+    params: ActionPanelBuildParams
+  ): boolean {
+    if (!params.prStatus?.mergeable || !params.prUrl) {
+      return false;
+    }
+
+    if (workflow === 'pr-review' || workflow === 'pr-fix-and-update') {
+      return false;
+    }
+
+    return true;
+  }
+
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
     if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
       return [{
@@ -541,7 +556,7 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Ensure at most 1 primary button. Last primary wins (merge > approve).
+   * Ensure at most 1 primary button.
    */
   private static enforceMaxOnePrimary(buttons: any[]): void {
     const primaryIndices = buttons.reduce<number[]>((acc, b, i) => {
