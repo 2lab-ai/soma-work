@@ -53,6 +53,23 @@ describe('PromptBuilder', () => {
 
       expect(prompt).toBeDefined();
       expect(typeof prompt).toBe('string');
+      expect(prompt).toContain('CI 체크');
+      expect(prompt).toContain('1분');
+      expect(prompt).toContain('머지 체크');
+      expect(prompt).toContain('AS-IS');
+      expect(prompt).toContain('TO-BE');
+      expect(prompt).toContain('CONTINUE_SESSION');
+    });
+
+    it('should load pr-fix-and-update prompt with automatic re-review handoff', () => {
+      const prompt = builder.loadWorkflowPrompt('pr-fix-and-update');
+
+      expect(prompt).toBeDefined();
+      expect(typeof prompt).toBe('string');
+      expect(prompt).toContain('pr-review');
+      expect(prompt).toContain('CONTINUE_SESSION');
+      expect(prompt).toContain('new fix');
+      expect(prompt).toContain('push');
     });
 
     it('should load deploy workflow prompt', () => {

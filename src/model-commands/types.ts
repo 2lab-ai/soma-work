@@ -1,4 +1,5 @@
 import {
+  Continuation,
   SaveContextResultPayload,
   SessionResourceSnapshot,
   SessionResourceUpdateRequest,
@@ -12,6 +13,7 @@ export type ModelCommandId =
   | 'GET_SESSION'
   | 'UPDATE_SESSION'
   | 'ASK_USER_QUESTION'
+  | 'CONTINUE_SESSION'
   | 'SAVE_CONTEXT_RESULT';
 
 export interface ModelCommandContext {
@@ -42,10 +44,13 @@ export interface SaveContextResultParams {
   result: SaveContextResultPayload;
 }
 
+export interface ContinueSessionParams extends Continuation {}
+
 export interface ModelCommandParamsMap {
   GET_SESSION: undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
   ASK_USER_QUESTION: AskUserQuestionParams;
+  CONTINUE_SESSION: ContinueSessionParams;
   SAVE_CONTEXT_RESULT: SaveContextResultParams;
 }
 
@@ -60,6 +65,9 @@ export interface ModelCommandPayloadMap {
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;
+  };
+  CONTINUE_SESSION: {
+    continuation: Continuation;
   };
   SAVE_CONTEXT_RESULT: {
     saveResult: SaveContextResultPayload;

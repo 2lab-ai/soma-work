@@ -212,6 +212,16 @@ Continue with that context. If unsure what to do next, call 'oracle' agent for g
     // This is the key property - resetSession must be true for renew flow
     expect(continuation.resetSession).toBe(true);
   });
+
+  it('should allow forceWorkflow to be defined on continuation', () => {
+    const continuation: Continuation = {
+      prompt: 'new https://github.com/acme/repo/pull/1',
+      resetSession: true,
+      forceWorkflow: 'pr-review',
+    };
+
+    expect(continuation.forceWorkflow).toBe('pr-review');
+  });
 });
 
 describe('updateToolCallMessage', () => {
@@ -474,7 +484,7 @@ describe('model-command integration', () => {
     const session = createSession();
     const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
 
-    const hasChoice = await (executor as any).handleModelCommandToolResults(
+    const commandResult = await (executor as any).handleModelCommandToolResults(
       [
         {
           toolUseId: 'tool_1',
@@ -512,7 +522,7 @@ describe('model-command integration', () => {
       }
     );
 
-    expect(hasChoice).toBe(false);
+    expect(commandResult).toEqual({ hasPendingChoice: false, continuation: undefined });
     expect(deps.claudeHandler.updateSessionResources).toHaveBeenCalledWith(
       'C1',
       '171.100',
@@ -528,7 +538,7 @@ describe('model-command integration', () => {
     const session = createSession();
     const say = vi.fn().mockResolvedValue({ ts: 'choice_ts' });
 
-    const hasChoice = await (executor as any).handleModelCommandToolResults(
+    const commandResult = await (executor as any).handleModelCommandToolResults(
       [
         {
           toolUseId: 'tool_2',
@@ -559,7 +569,8 @@ describe('model-command integration', () => {
       }
     );
 
-    expect(hasChoice).toBe(true);
+    expect(commandResult.hasPendingChoice).toBe(true);
+    expect(commandResult.continuation).toBeUndefined();
     expect(say).toHaveBeenCalledWith(expect.objectContaining({
       text: '진행할 방법을 선택해주세요',
       thread_ts: '171.100',
@@ -685,6 +696,50 @@ describe('model-command integration', () => {
     expect(session.renewSaveResult?.id).toBe('save_old');
   });
 
+  it('captures CONTINUE_SESSION command results as continuation payload', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const commandResult = await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_continue',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'CONTINUE_SESSION',
+            ok: true,
+            payload: {
+              continuation: {
+                prompt: 'new https://github.com/acme/repo/pull/1',
+                resetSession: true,
+                dispatchText: 'https://github.com/acme/repo/pull/1',
+                forceWorkflow: 'pr-review',
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(commandResult.hasPendingChoice).toBe(false);
+    expect(commandResult.continuation).toEqual({
+      prompt: 'new https://github.com/acme/repo/pull/1',
+      resetSession: true,
+      dispatchText: 'https://github.com/acme/repo/pull/1',
+      forceWorkflow: 'pr-review',
+    });
+  });
+
   it('falls back to plain text when command-driven single choice blocks fail', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
@@ -722,7 +777,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toBe(true);
+    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
@@ -771,7 +826,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toBe(true);
+    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');

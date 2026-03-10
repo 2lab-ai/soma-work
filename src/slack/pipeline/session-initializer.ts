@@ -416,8 +416,27 @@ export class SessionInitializer {
    * @param threadTs - Thread timestamp
    * @param text - Text to use for classification
    */
-  async runDispatch(channel: string, threadTs: string, text: string): Promise<void> {
+  async runDispatch(
+    channel: string,
+    threadTs: string,
+    text: string,
+    forceWorkflow?: WorkflowType
+  ): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+    if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      this.logger.info('Forcing workflow during re-dispatch', {
+        sessionKey,
+        workflow: forceWorkflow,
+      });
+      this.deps.claudeHandler.transitionToMain(
+        channel,
+        threadTs,
+        forceWorkflow,
+        forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset'
+      );
+      return;
+    }
+
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs) && text) {
       await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {

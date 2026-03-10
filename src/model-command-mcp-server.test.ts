@@ -39,6 +39,7 @@ describe('model-command MCP server helpers', () => {
 
     expect(withoutRenew.commands.map((command) => command.id)).not.toContain('SAVE_CONTEXT_RESULT');
     expect(withRenew.commands.map((command) => command.id)).toContain('SAVE_CONTEXT_RESULT');
+    expect(withoutRenew.commands.map((command) => command.id)).toContain('CONTINUE_SESSION');
   });
 
   it('runs GET_SESSION and returns current snapshot', () => {
@@ -142,6 +143,48 @@ describe('model-command MCP server helpers', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('INVALID_ARGS');
+  });
+
+  it('runs CONTINUE_SESSION and returns typed continuation payload', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'CONTINUE_SESSION',
+        params: {
+          prompt: 'new https://github.com/acme/repo/pull/1',
+          resetSession: true,
+          dispatchText: 'https://github.com/acme/repo/pull/1',
+          forceWorkflow: 'pr-review',
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('CONTINUE_SESSION');
+    if (result.commandId !== 'CONTINUE_SESSION') return;
+    expect(result.payload.continuation.prompt).toContain('github.com/acme/repo/pull/1');
+    expect(result.payload.continuation.resetSession).toBe(true);
+    expect(result.payload.continuation.forceWorkflow).toBe('pr-review');
+  });
+
+  it('rejects CONTINUE_SESSION forceWorkflow when resetSession is false', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'CONTINUE_SESSION',
+        params: {
+          prompt: 'new https://github.com/acme/repo/pull/1',
+          resetSession: false,
+          forceWorkflow: 'pr-review',
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('forceWorkflow');
   });
 
   it('returns detailed ASK_USER_QUESTION schema guidance on invalid payload', () => {
@@ -396,5 +439,21 @@ describe('validateModelCommandRunArgs', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('INVALID_COMMAND');
+  });
+
+  it('accepts CONTINUE_SESSION with resetSession and forceWorkflow', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'CONTINUE_SESSION',
+      params: {
+        prompt: 'new fix https://github.com/acme/repo/pull/2',
+        resetSession: true,
+        dispatchText: 'fix https://github.com/acme/repo/pull/2',
+        forceWorkflow: 'pr-fix-and-update',
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.request.commandId).toBe('CONTINUE_SESSION');
   });
 });

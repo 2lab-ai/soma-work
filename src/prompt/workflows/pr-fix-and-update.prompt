@@ -18,6 +18,7 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 
 - 모든 PR 대화에 대해 수정 내용 또는 followup 계획을 커멘트로 남기고 conversation resolve
 - P0/P1 이슈가 모두 해결되면 PR Approve 처리
+- 수정 후 검증과 push가 성공하면 현재 스레드에서 자동으로 `pr-review` 워크플로우를 다시 시작해야 함
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
@@ -118,6 +119,25 @@ git push
 ```
 Jira 이슈가 연관되어 있으면 `"jira": "URL"`도 포함한다.
 
+push와 검증이 성공하면 수동 안내로 끝내지 말고, 즉시 `mcp__model-command__run` 으로 `CONTINUE_SESSION`을 호출해 `pr-review`로 되돌아간다.
+
+```json
+{
+  "commandId": "CONTINUE_SESSION",
+  "params": {
+    "prompt": "new <PR_URL>",
+    "resetSession": true,
+    "dispatchText": "<PR_URL>",
+    "forceWorkflow": "pr-review"
+  }
+}
+```
+
+중요:
+- `test`, `build`, 필요한 검증이 하나라도 실패하면 자동 재리뷰 전환을 하지 않는다.
+- `git push`가 실패하면 자동 재리뷰 전환을 하지 않는다.
+- 재리뷰는 같은 스레드에서 이어진다고 가정한다.
+
 ### 8. 코드 정리 (rebase + code-simplify)
 
 1. `origin/develop` 최신 기준으로 rebase:
@@ -167,14 +187,27 @@ All review feedback addressed.
 자율 처리: N건, 유저 결정: M건, Defer: K건
 ```
 
-## 수정 완료 후
+## 수정 완료 후 재귀 규칙
 
-추가로 followup해야할 내용을 유저에게 UIAskUserQuestion로 질의하고 유저의 다음 followup 행동을 유도한다.
-- 해당 PR 작업 내용으로 문서 작성
+fix를 끝내고 `pr-review`로 돌아간 뒤, 리뷰 과정에서 새 fix가 필요하다고 판단되면 다시 아래 payload로 `CONTINUE_SESSION`을 호출해 `pr-fix-and-update`로 재진입한다.
+
+```json
+{
+  "commandId": "CONTINUE_SESSION",
+  "params": {
+    "prompt": "new fix <PR_URL>",
+    "resetSession": true,
+    "dispatchText": "<PR_URL>",
+    "forceWorkflow": "pr-fix-and-update"
+  }
+}
+```
+
+즉, 흐름은 `pr-review -> pr-fix-and-update -> pr-review` 가 반복될 수 있다.
 
 ## 🔄 다음 단계 안내
 
 수정 완료 후:
 - **문서 작성**: "API 변경이 포함된 경우, Confluence 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
-- **재리뷰**: "재리뷰를 받으려면 새 세션에서 PR 링크를 입력하세요."
+- **재리뷰**: 새 세션을 열라고 안내하지 말고, 성공 조건이 충족되면 `CONTINUE_SESSION`으로 자동 재리뷰를 시작한다.
 - 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."
