@@ -6,7 +6,6 @@
 
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
-import { llmChatConfigStore } from './llm-chat-config-store';
 import { WorkflowType } from './types';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -20,8 +19,6 @@ const PERSONA_DIR = path.join(__dirname, 'persona');
 
 // Include directive pattern: {{include:filename.prompt}}
 const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
-// Runtime variable pattern: {{variable_name}}
-const VARIABLE_PATTERN = /\{\{(\w+)\}\}/g;
 
 /**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
@@ -42,10 +39,7 @@ export class PromptBuilder {
   private loadDefaultPrompt(): void {
     try {
       if (fs.existsSync(DEFAULT_PROMPT_PATH)) {
-        let content = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
-        // Process include directives (e.g., {{include:./common.prompt}})
-        content = this.processIncludes(content);
-        this.defaultSystemPrompt = content;
+        this.defaultSystemPrompt = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
       }
 
       // Load local system prompt if exists (not committed to source)
@@ -153,26 +147,11 @@ export class PromptBuilder {
   }
 
   /**
-   * Process runtime variable placeholders in prompt content
-   * Replaces {{variable_name}} with runtime values
-   */
-  private processVariables(content: string): string {
-    return content.replace(VARIABLE_PATTERN, (match, varName) => {
-      if (varName === 'llm_chat_config') {
-        return llmChatConfigStore.toPromptSnippet();
-      }
-      // Unknown variables are left as-is
-      return match;
-    });
-  }
-
-  /**
    * Load workflow-specific prompt
    * All workflows get .system.prompt appended (if it exists)
    */
   loadWorkflowPrompt(workflow: WorkflowType): string | undefined {
-    // Cache file I/O + include processing; runtime variables (like llm_chat_config)
-    // are applied separately in buildSystemPrompt() so caching pre-variable content is safe
+    // Check cache first
     if (this.workflowPromptCache.has(workflow)) {
       return this.workflowPromptCache.get(workflow);
     }
@@ -282,12 +261,6 @@ export class PromptBuilder {
 
         this.logger.debug('Applied persona', { user: userId, persona: personaName, workflow });
       }
-    }
-
-    // Process runtime variables (e.g., {{llm_chat_config}})
-    // Done last so dynamic config values are always current
-    if (systemPrompt) {
-      systemPrompt = this.processVariables(systemPrompt);
     }
 
     return systemPrompt || undefined;
