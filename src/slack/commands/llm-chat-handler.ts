@@ -1,8 +1,7 @@
 import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { llmChatConfigStore } from '../../llm-chat-config-store';
-
-const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
+import { isAdminUser } from '../../admin-utils';
 
 /**
  * Handles llm_chat configuration commands (set/show/reset)
@@ -19,7 +18,7 @@ export class LlmChatHandler implements CommandHandler {
 
   /** Returns true if admin, otherwise sends permission denied and returns false. */
   private async requireAdmin(userId: string, reply: (msg: string) => Promise<unknown>): Promise<boolean> {
-    if (ADMIN_USER_ID && userId === ADMIN_USER_ID) return true;
+    if (isAdminUser(userId)) return true;
     await reply(`🔒 *Permission Denied*\n\nOnly admins can modify LLM chat configuration.`);
     return false;
   }
