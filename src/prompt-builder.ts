@@ -169,8 +169,7 @@ export class PromptBuilder {
    * All workflows get .system.prompt appended (if it exists)
    */
   loadWorkflowPrompt(workflow: WorkflowType): string | undefined {
-    // Don't cache - runtime variables (like llm_chat_config) can change between calls
-    // Check cache is disabled for dynamic config support
+    // No caching - runtime variables (like llm_chat_config) can change between calls
 
     let content: string | undefined;
 

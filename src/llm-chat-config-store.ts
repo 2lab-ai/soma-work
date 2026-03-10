@@ -111,7 +111,7 @@ export class LlmChatConfigStore {
       this.logger.info('Config override updated', { backend, key, oldValue, newValue: value });
     }
 
-    return undefined; // success
+    return undefined;
   }
 
   /**
