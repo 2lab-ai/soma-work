@@ -30,6 +30,7 @@ export class PromptBuilder {
   private logger = new Logger('PromptBuilder');
   private defaultSystemPrompt: string | undefined;
   private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
+
   constructor() {
     this.loadDefaultPrompt();
   }

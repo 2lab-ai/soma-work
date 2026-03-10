@@ -17,66 +17,44 @@ export class LlmChatHandler implements CommandHandler {
     return CommandParser.isLlmChatCommand(text);
   }
 
-  private isAdmin(userId: string): boolean {
-    return !!ADMIN_USER_ID && userId === ADMIN_USER_ID;
+  /** Returns true if admin, otherwise sends permission denied and returns false. */
+  private async requireAdmin(userId: string, reply: (msg: string) => Promise<unknown>): Promise<boolean> {
+    if (ADMIN_USER_ID && userId === ADMIN_USER_ID) return true;
+    await reply(`🔒 *Permission Denied*\n\nOnly admins can modify LLM chat configuration.`);
+    return false;
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { text, user, threadTs, say } = ctx;
     const action = CommandParser.parseLlmChatCommand(text);
 
+    const reply = (message: string) => say({ text: message, thread_ts: threadTs });
+
     switch (action.action) {
       case 'show': {
         const display = llmChatConfigStore.formatForDisplay();
-        await say({
-          text: `⚙️ *LLM Chat Configuration*\n\n\`\`\`\n${display}\n\`\`\`\n\n_Use \`set llm_chat <provider> <key> <value>\` to change settings (admin only)._`,
-          thread_ts: threadTs,
-        });
+        await reply(`⚙️ *LLM Chat Configuration*\n\n\`\`\`\n${display}\n\`\`\`\n\n_Use \`set llm_chat <provider> <key> <value>\` to change settings (admin only)._`);
         break;
       }
       case 'reset': {
-        if (!this.isAdmin(user)) {
-          await say({
-            text: `🔒 *Permission Denied*\n\nOnly admins can reset LLM chat configuration.`,
-            thread_ts: threadTs,
-          });
-          break;
-        }
+        if (!await this.requireAdmin(user, reply)) break;
         llmChatConfigStore.reset();
         const display = llmChatConfigStore.formatForDisplay();
-        await say({
-          text: `🔄 *LLM Chat Config Reset*\n\nConfiguration reset to defaults:\n\`\`\`\n${display}\n\`\`\``,
-          thread_ts: threadTs,
-        });
+        await reply(`🔄 *LLM Chat Config Reset*\n\nConfiguration reset to defaults:\n\`\`\`\n${display}\n\`\`\``);
         break;
       }
       case 'set': {
-        if (!this.isAdmin(user)) {
-          await say({
-            text: `🔒 *Permission Denied*\n\nOnly admins can modify LLM chat configuration.`,
-            thread_ts: threadTs,
-          });
-          break;
-        }
+        if (!await this.requireAdmin(user, reply)) break;
         const error = llmChatConfigStore.set(action.provider, action.key, action.value);
         if (error) {
-          await say({
-            text: `❌ *Configuration Error*\n\n${error}`,
-            thread_ts: threadTs,
-          });
+          await reply(`❌ *Configuration Error*\n\n${error}`);
         } else {
-          await say({
-            text: `✅ *LLM Chat Config Updated*\n\n\`${action.provider}.${action.key}\` → \`${action.value}\`\n\n_This change applies to new llm_chat calls in this session._`,
-            thread_ts: threadTs,
-          });
+          await reply(`✅ *LLM Chat Config Updated*\n\n\`${action.provider}.${action.key}\` → \`${action.value}\`\n\n_This change applies to new llm_chat calls in this session._`);
         }
         break;
       }
       case 'error': {
-        await say({
-          text: `❌ *Invalid Command*\n\n${action.message}`,
-          thread_ts: threadTs,
-        });
+        await reply(`❌ *Invalid Command*\n\n${action.message}`);
         break;
       }
     }

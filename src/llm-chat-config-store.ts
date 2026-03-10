@@ -8,33 +8,18 @@
 
 import { Logger } from './logger';
 
-/**
- * Backend types supported by llm_chat
- */
 export type LlmBackend = 'codex' | 'gemini';
 
-/**
- * Configuration for a single LLM backend
- */
 export interface LlmBackendConfig {
   backend: LlmBackend;
   model: string;
   configOverride?: Record<string, string>;
 }
 
-/**
- * All LLM chat configurations
- */
 export type LlmChatConfig = Record<LlmBackend, LlmBackendConfig>;
 
-/**
- * Settable keys for llm_chat configuration
- */
 const SETTABLE_KEYS = new Set(['model', 'model_reasoning_effort']);
 
-/**
- * Default configuration - matches issue spec
- */
 const DEFAULT_CONFIG: LlmChatConfig = {
   codex: {
     backend: 'codex',
@@ -47,9 +32,6 @@ const DEFAULT_CONFIG: LlmChatConfig = {
   },
 };
 
-/**
- * Valid backends (derived from DEFAULT_CONFIG keys)
- */
 const VALID_BACKENDS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG));
 
 export class LlmChatConfigStore {
@@ -57,7 +39,6 @@ export class LlmChatConfigStore {
   private config: LlmChatConfig;
 
   constructor() {
-    // Deep clone default config
     this.config = this.cloneConfig(DEFAULT_CONFIG);
     this.logger.info('Initialized with default config', {
       codexModel: this.config.codex.model,
@@ -65,76 +46,47 @@ export class LlmChatConfigStore {
     });
   }
 
-  /**
-   * Get the full configuration
-   */
   getConfig(): Readonly<LlmChatConfig> {
     return this.cloneConfig(this.config);
   }
 
-  /**
-   * Get configuration for a specific backend
-   */
   getBackendConfig(backend: LlmBackend): Readonly<LlmBackendConfig> {
-    const cfg = this.config[backend];
-    return {
-      backend: cfg.backend,
-      model: cfg.model,
-      configOverride: cfg.configOverride ? { ...cfg.configOverride } : undefined,
-    };
+    return this.cloneBackendConfig(this.config[backend]);
   }
 
-  /**
-   * Set a configuration value
-   * @returns Error message if invalid, undefined on success
-   */
+  /** @returns Error message if invalid, undefined on success */
   set(provider: string, key: string, value: string): string | undefined {
-    // Validate provider
     if (!VALID_BACKENDS.has(provider)) {
       return `Unknown provider: \`${provider}\`. Valid providers: ${[...VALID_BACKENDS].join(', ')}`;
     }
-
-    const backend = provider as LlmBackend;
-
-    // Validate key
     if (!SETTABLE_KEYS.has(key)) {
       return `Unknown key: \`${key}\`. Valid keys: ${[...SETTABLE_KEYS].join(', ')}`;
     }
-
-    // Validate value - reject characters that would break prompt template rendering
     if (/["<>]/.test(value)) {
       return `Invalid value: must not contain \`, <, or > characters`;
     }
 
-    // Apply the setting
+    const backend = provider as LlmBackend;
+
     if (key === 'model') {
       const oldModel = this.config[backend].model;
       this.config[backend].model = value;
       this.logger.info('Model updated', { backend, oldModel, newModel: value });
     } else {
-      // Config override keys (e.g., model_reasoning_effort)
-      if (!this.config[backend].configOverride) {
-        this.config[backend].configOverride = {};
-      }
-      const oldValue = this.config[backend].configOverride![key];
-      this.config[backend].configOverride![key] = value;
+      const overrides = this.config[backend].configOverride ??= {};
+      const oldValue = overrides[key];
+      overrides[key] = value;
       this.logger.info('Config override updated', { backend, key, oldValue, newValue: value });
     }
 
     return undefined;
   }
 
-  /**
-   * Reset to default configuration
-   */
   reset(): void {
     this.config = this.cloneConfig(DEFAULT_CONFIG);
     this.logger.info('Config reset to defaults');
   }
 
-  /**
-   * Format configuration for display
-   */
   formatForDisplay(): string {
     const lines: string[] = [];
 
@@ -156,10 +108,7 @@ export class LlmChatConfigStore {
     return lines.join('\n').trimEnd();
   }
 
-  /**
-   * Generate prompt snippet for system prompt injection
-   * This replaces the hardcoded model names in common.prompt
-   */
+  /** Generate prompt snippet for system prompt injection (replaces hardcoded models in common.prompt) */
   toPromptSnippet(): string {
     const formatBackend = (cfg: LlmBackendConfig): string => {
       const configStr = cfg.configOverride && Object.keys(cfg.configOverride).length > 0
@@ -173,15 +122,18 @@ export class LlmChatConfigStore {
       .join('\n');
   }
 
+  private cloneBackendConfig(cfg: LlmBackendConfig): LlmBackendConfig {
+    return {
+      backend: cfg.backend,
+      model: cfg.model,
+      configOverride: cfg.configOverride ? { ...cfg.configOverride } : undefined,
+    };
+  }
+
   private cloneConfig(source: LlmChatConfig): LlmChatConfig {
     const result = {} as LlmChatConfig;
     for (const key of Object.keys(source) as LlmBackend[]) {
-      const cfg = source[key];
-      result[key] = {
-        backend: cfg.backend,
-        model: cfg.model,
-        configOverride: cfg.configOverride ? { ...cfg.configOverride } : undefined,
-      };
+      result[key] = this.cloneBackendConfig(source[key]);
     }
     return result;
   }
