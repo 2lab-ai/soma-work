@@ -39,6 +39,7 @@ const CONFIG_FILE = process.env.SOMA_CONFIG_FILE || '';
 
 let cachedConfig: LlmChatFileConfig = HARDCODED_DEFAULTS;
 let cachedMtimeMs = 0;
+let cachedSize = 0;
 
 /**
  * Read llmChat section from config.json with mtime-based caching.
@@ -49,7 +50,7 @@ function loadConfig(): LlmChatFileConfig {
 
   try {
     const stat = fs.statSync(CONFIG_FILE);
-    if (stat.mtimeMs === cachedMtimeMs) {
+    if (stat.mtimeMs === cachedMtimeMs && stat.size === cachedSize) {
       return cachedConfig; // File unchanged — use cache
     }
 
@@ -59,6 +60,7 @@ function loadConfig(): LlmChatFileConfig {
     if (llmChat && llmChat.codex?.backend === 'codex' && llmChat.gemini?.backend === 'gemini') {
       cachedConfig = llmChat as LlmChatFileConfig;
       cachedMtimeMs = stat.mtimeMs;
+      cachedSize = stat.size;
       logger.info('Reloaded llmChat config from config.json', {
         codexModel: cachedConfig.codex.model,
         geminiModel: cachedConfig.gemini.model,

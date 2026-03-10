@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
 
-// Mock env-paths so tests always use a non-existent config file (→ defaults)
+const TEST_CONFIG_DIR = '/tmp/llm-chat-config-test';
+const TEST_CONFIG_FILE = `${TEST_CONFIG_DIR}/config.json`;
+
+// Mock env-paths to use a writable temp directory so persist works
 vi.mock('./env-paths', () => ({
-  CONFIG_FILE: '/tmp/llm-chat-config-test-nonexistent/config.json',
-  DATA_DIR: '/tmp/llm-chat-config-test-nonexistent',
+  CONFIG_FILE: '/tmp/llm-chat-config-test/config.json',
+  DATA_DIR: '/tmp/llm-chat-config-test',
 }));
 
 import { LlmChatConfigStore } from './llm-chat-config-store';
@@ -12,7 +16,14 @@ describe('LlmChatConfigStore', () => {
   let store: LlmChatConfigStore;
 
   beforeEach(() => {
+    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+    // Remove config file to start fresh with defaults
+    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore if not exists */ }
     store = new LlmChatConfigStore();
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore */ }
   });
 
   describe('constructor / defaults', () => {

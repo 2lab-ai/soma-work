@@ -104,10 +104,12 @@ export class LlmChatConfigStore {
 
     const backend = provider as LlmBackend;
 
+    // Save old state for rollback on persist failure
+    const oldBackendConfig = this.cloneBackendConfig(this.config[backend]);
+
     if (key === 'model') {
-      const oldModel = this.config[backend].model;
       this.config[backend].model = value;
-      this.logger.info('Model updated', { backend, oldModel, newModel: value });
+      this.logger.info('Model updated', { backend, oldModel: oldBackendConfig.model, newModel: value });
     } else {
       const overrides = this.config[backend].configOverride ??= {};
       const oldValue = overrides[key];
@@ -115,14 +117,25 @@ export class LlmChatConfigStore {
       this.logger.info('Config override updated', { backend, key, oldValue, newValue: value });
     }
 
-    this.persistToConfigJson();
+    const persistError = this.persistToConfigJson();
+    if (persistError) {
+      // Roll back in-memory change so state stays consistent with disk
+      this.config[backend] = oldBackendConfig;
+      return persistError;
+    }
     return undefined;
   }
 
-  reset(): void {
+  reset(): string | undefined {
+    const oldConfig = this.cloneConfig(this.config);
     this.config = this.cloneConfig(DEFAULT_CONFIG);
     this.logger.info('Config reset to defaults');
-    this.persistToConfigJson();
+    const persistError = this.persistToConfigJson();
+    if (persistError) {
+      this.config = oldConfig;
+      return persistError;
+    }
+    return undefined;
   }
 
   formatForDisplay(): string {
@@ -163,8 +176,9 @@ export class LlmChatConfigStore {
   /**
    * Merge llmChat into existing config.json (preserving mcpServers, plugin, etc.)
    * Uses atomic write (tmp + rename) to prevent corruption.
+   * @returns Error message on failure, undefined on success.
    */
-  private persistToConfigJson(): void {
+  private persistToConfigJson(): string | undefined {
     try {
       let existing: Record<string, unknown> = {};
       if (fs.existsSync(CONFIG_FILE)) {
@@ -179,8 +193,11 @@ export class LlmChatConfigStore {
       fs.writeFileSync(tmpFile, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
       fs.renameSync(tmpFile, CONFIG_FILE);
       this.logger.info('Config persisted to config.json', { path: CONFIG_FILE });
+      return undefined;
     } catch (error) {
       this.logger.error('Failed to persist config to config.json', { error });
+      const message = error instanceof Error ? error.message : String(error);
+      return `Failed to persist config: ${message}`;
     }
   }
 
