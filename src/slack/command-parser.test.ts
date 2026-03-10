@@ -701,4 +701,84 @@ describe('CommandParser', () => {
       expect(CommandParser.isRenewCommand('hello renew world')).toBe(false);
     });
   });
+
+  describe('isLlmChatCommand', () => {
+    it('should match "show llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('show llm_chat')).toBe(true);
+    });
+
+    it('should match "/show llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('/show llm_chat')).toBe(true);
+    });
+
+    it('should match "set llm_chat codex model gpt-5"', () => {
+      expect(CommandParser.isLlmChatCommand('set llm_chat codex model gpt-5')).toBe(true);
+    });
+
+    it('should match "reset llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('reset llm_chat')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isLlmChatCommand('SHOW LLM_CHAT')).toBe(true);
+    });
+
+    it('should not match "show something_else"', () => {
+      expect(CommandParser.isLlmChatCommand('show something_else')).toBe(false);
+    });
+
+    it('should not match "set other_config"', () => {
+      expect(CommandParser.isLlmChatCommand('set other_config')).toBe(false);
+    });
+  });
+
+  describe('parseLlmChatCommand', () => {
+    it('should parse "show llm_chat" as show action', () => {
+      expect(CommandParser.parseLlmChatCommand('show llm_chat')).toEqual({ action: 'show' });
+    });
+
+    it('should parse "reset llm_chat" as reset action', () => {
+      expect(CommandParser.parseLlmChatCommand('reset llm_chat')).toEqual({ action: 'reset' });
+    });
+
+    it('should parse "set llm_chat codex model gpt-5.4" correctly', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat codex model gpt-5.4');
+      expect(result).toEqual({
+        action: 'set',
+        provider: 'codex',
+        key: 'model',
+        value: 'gpt-5.4',
+      });
+    });
+
+    it('should lowercase provider and key', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat CODEX Model gpt-5.4');
+      expect(result).toEqual({
+        action: 'set',
+        provider: 'codex',
+        key: 'model',
+        value: 'gpt-5.4',
+      });
+    });
+
+    it('should return error for "set llm_chat" without args', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for "set llm_chat codex" (missing key/value)', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat codex');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for malformed commands like "reset llm_chat now"', () => {
+      const result = CommandParser.parseLlmChatCommand('reset llm_chat now');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for "show llm_chat extra"', () => {
+      const result = CommandParser.parseLlmChatCommand('show llm_chat extra');
+      expect(result.action).toBe('error');
+    });
+  });
 });
