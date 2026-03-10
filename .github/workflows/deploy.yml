@@ -2,9 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches:
-      - main
-      - dev
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
@@ -15,10 +13,11 @@ permissions:
   contents: write
 
 jobs:
-  deploy:
-    runs-on: [self-hosted, soma-work]
-    timeout-minutes: 10
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+  prepare:
+    runs-on: [self-hosted, oudwood-512]
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
 
     steps:
       - uses: actions/checkout@v4
@@ -29,11 +28,58 @@ jobs:
       - name: Determine environment
         id: env
         run: |
+          case "${{ github.ref_name }}" in
+            main)
+              echo "env=main" >> "$GITHUB_OUTPUT"
+              ;;
+            dev)
+              echo "env=dev" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported branch: ${{ github.ref_name }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Build target matrix
+        id: targets
+        run: |
+          echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
+
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "env=main" >> "$GITHUB_OUTPUT"
+            cat >> "$GITHUB_OUTPUT" <<'EOF'
+          {"include":[
+            {
+              "name":"mac-mini-main",
+              "runner_label":"soma-work",
+              "github_env":"production",
+              "deploy_env":"main",
+              "target_dir":"/opt/soma-work/main"
+            }
+          ]}
+          EOF
           else
-            echo "env=dev" >> "$GITHUB_OUTPUT"
+            cat >> "$GITHUB_OUTPUT" <<'EOF'
+          {"include":[
+            {
+              "name":"mac-mini-dev",
+              "runner_label":"soma-work",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
+            },
+            {
+              "name":"oudwood-dev",
+              "runner_label":"oudwood-512",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
+            }
+          ]}
+          EOF
           fi
+
+          echo 'EOF' >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -44,34 +90,71 @@ jobs:
       - name: Version bump & release notes
         run: ./scripts/version-bump.sh ${{ steps.env.outputs.env }}
 
+      - name: Pack deploy bundle
+        run: |
+          tar -czf deploy-bundle.tar.gz \
+            dist \
+            node_modules \
+            package.json \
+            service.sh
+
+      - name: Upload deploy bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-bundle
+          path: deploy-bundle.tar.gz
+
+  deploy:
+    name: Deploy ${{ matrix.name }}
+    needs: prepare
+    runs-on: [self-hosted, "${{ matrix.runner_label }}"]
+    timeout-minutes: 10
+    environment: ${{ matrix.github_env }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Download deploy bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-bundle
+          path: bundle
+
+      - name: Extract deploy bundle
+        run: |
+          tar -xzf bundle/deploy-bundle.tar.gz
+
       - name: Deploy
         env:
-          ENV: ${{ steps.env.outputs.env }}
-          TARGET: /opt/soma-work/${{ steps.env.outputs.env }}
+          ENV: ${{ matrix.deploy_env }}
+          TARGET: ${{ matrix.target_dir }}
         run: |
-          echo "Deploying to $TARGET..."
+          echo "Deploying ${{ matrix.name }} to $TARGET..."
 
-          # Stop service
-          ./service.sh $ENV stop || true
+          bash service.sh "$ENV" stop || true
 
-          # Sync built artifacts to deployment target (preserve local configs and data)
           rsync -a --delete \
             --exclude='.env' \
             --exclude='.system.prompt' \
             --exclude='mcp-servers.json' \
+            --exclude='config.json' \
             --exclude='data/' \
             --exclude='logs/' \
+            --exclude='.claude/' \
             dist/ "$TARGET/dist/"
 
           rsync -a --delete node_modules/ "$TARGET/node_modules/"
           rsync -a \
             package.json \
+            service.sh \
             "$TARGET/"
 
-          # Reinstall service (regenerate plist + start)
-          ./service.sh $ENV install
+          bash service.sh "$ENV" install
 
       - name: Verify
+        env:
+          ENV: ${{ matrix.deploy_env }}
         run: |
           sleep 3
-          ./service.sh ${{ steps.env.outputs.env }} status
+          bash service.sh "$ENV" status
