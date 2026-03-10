@@ -396,11 +396,15 @@ export class StreamExecutor {
       }
 
       if (statusMessageTs && headerBaseText) {
-        await this.deps.slackApi.updateMessage(
-          channel,
-          statusMessageTs,
-          this.buildUnifiedStatusText('error', headerBaseText)
-        );
+        try {
+          await this.deps.slackApi.updateMessage(
+            channel,
+            statusMessageTs,
+            this.buildUnifiedStatusText('error', headerBaseText)
+          );
+        } catch (updateErr) {
+          this.logger.warn('Failed to update header message with error status (best-effort)', { updateErr });
+        }
       } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
       }
@@ -420,11 +424,15 @@ export class StreamExecutor {
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
       if (statusMessageTs && headerBaseText) {
-        await this.deps.slackApi.updateMessage(
-          channel,
-          statusMessageTs,
-          this.buildUnifiedStatusText('cancelled', headerBaseText)
-        );
+        try {
+          await this.deps.slackApi.updateMessage(
+            channel,
+            statusMessageTs,
+            this.buildUnifiedStatusText('cancelled', headerBaseText)
+          );
+        } catch (updateErr) {
+          this.logger.warn('Failed to update header message with cancelled status (best-effort)', { updateErr });
+        }
       } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
       }

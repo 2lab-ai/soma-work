@@ -156,6 +156,21 @@ export class SessionInitializer {
       } else {
         // No text available - use default workflow
         this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+
+        // Post unified header with history link for file-only starts (#24 review feedback)
+        if (isNewSession && session.conversationId) {
+          try {
+            const conversationUrl = getConversationUrl(session.conversationId);
+            const msgResult = await this.deps.slackApi.postMessage(
+              channel,
+              `✅ \`default\` | 📝 <${conversationUrl}|History>`,
+              { threadTs }
+            );
+            headerMessageTs = msgResult?.ts;
+          } catch (err) {
+            this.logger.warn('Failed to post header for file-only session', { err });
+          }
+        }
       }
     } else if (!isNewSession) {
       this.logger.debug('Using existing session', {
