@@ -69,14 +69,19 @@ export class LlmChatConfigStore {
    * Get the full configuration
    */
   getConfig(): Readonly<LlmChatConfig> {
-    return this.config;
+    return this.cloneConfig(this.config);
   }
 
   /**
    * Get configuration for a specific backend
    */
   getBackendConfig(backend: LlmBackend): Readonly<LlmBackendConfig> {
-    return this.config[backend];
+    const cfg = this.config[backend];
+    return {
+      backend: cfg.backend,
+      model: cfg.model,
+      configOverride: cfg.configOverride ? { ...cfg.configOverride } : undefined,
+    };
   }
 
   /**
@@ -94,6 +99,11 @@ export class LlmChatConfigStore {
     // Validate key
     if (!SETTABLE_KEYS.has(key)) {
       return `Unknown key: \`${key}\`. Valid keys: ${[...SETTABLE_KEYS].join(', ')}`;
+    }
+
+    // Validate value - reject characters that would break prompt template rendering
+    if (/["<>]/.test(value)) {
+      return `Invalid value: must not contain \`, <, or > characters`;
     }
 
     // Apply the setting
@@ -177,5 +187,6 @@ export class LlmChatConfigStore {
   }
 }
 
-// Singleton instance
+// Singleton instance — intentionally process-wide (global config, admin-only access)
+// Config is shared across all users; access control is enforced at the command handler layer.
 export const llmChatConfigStore = new LlmChatConfigStore();

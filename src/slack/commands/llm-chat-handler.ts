@@ -52,6 +52,13 @@ export class LlmChatHandler implements CommandHandler {
         }
         break;
       }
+      case 'error': {
+        await say({
+          text: `❌ *Invalid Command*\n\n${action.message}`,
+          thread_ts: threadTs,
+        });
+        break;
+      }
     }
 
     return { handled: true };

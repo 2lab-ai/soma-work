@@ -11,7 +11,8 @@ export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string 
 export type LlmChatAction =
   | { action: 'show' }
   | { action: 'set'; provider: string; key: string; value: string }
-  | { action: 'reset' };
+  | { action: 'reset' }
+  | { action: 'error'; message: string };
 
 export class CommandParser {
   /**
@@ -239,12 +240,20 @@ export class CommandParser {
       return {
         action: 'set',
         provider: setMatch[1].toLowerCase(),
-        key: setMatch[2],
+        key: setMatch[2].toLowerCase(),
         value: setMatch[3].trim(),
       };
     }
 
-    // If "set llm_chat" but missing args, still treat as show
+    // If "set llm_chat" but missing args, return error with usage guidance
+    if (/^\/?set\s+llm_chat/i.test(trimmed)) {
+      return {
+        action: 'error',
+        message: 'Usage: `set llm_chat <provider> <key> <value>`\nExample: `set llm_chat codex model gpt-5.4`',
+      };
+    }
+
+    // Fallback for any other unrecognized pattern
     return { action: 'show' };
   }
 
