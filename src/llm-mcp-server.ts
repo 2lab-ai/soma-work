@@ -78,24 +78,13 @@ loadConfig();
 
 // ── Model Routing ──────────────────────────────────────────
 
-interface RouteResult {
-  backend: Backend;
-  model: string;
-  configOverride?: Record<string, unknown>;
-}
-
-function routeModel(model: string): RouteResult {
+function routeModel(model: string): BackendConfig {
   // Reload config if file changed
   const config = loadConfig();
 
   // Check alias against current config backends
   if (model === 'codex' || model === 'gemini') {
-    const backendConfig = config[model as Backend];
-    return {
-      backend: backendConfig.backend,
-      model: backendConfig.model,
-      configOverride: backendConfig.configOverride,
-    };
+    return config[model];
   }
 
   // Prefix-based routing
