@@ -1,12 +1,15 @@
 /**
- * LlmChatConfigStore - In-memory runtime configuration for llm_chat MCP tools
+ * LlmChatConfigStore - Runtime configuration for llm_chat MCP tools
  *
  * Manages model/config settings for codex and gemini backends.
- * Settings persist per-process (session); reset on restart.
- * Designed for future extension to file-based persistence.
+ * Persists to config.json (CONFIG_FILE) under the `llmChat` key so the
+ * llm-mcp-server (separate child process) can read the same settings
+ * via file-based IPC with mtime-based change detection.
  */
 
 import { Logger } from './logger';
+import { CONFIG_FILE } from './env-paths';
+import * as fs from 'fs';
 
 export type LlmBackend = 'codex' | 'gemini';
 
@@ -32,18 +35,51 @@ const DEFAULT_CONFIG: LlmChatConfig = {
   },
 };
 
+export { DEFAULT_CONFIG };
+
 const VALID_BACKENDS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG));
+
+/**
+ * Read llmChat section from config.json.
+ * Used by both main process (LlmChatConfigStore) and llm-mcp-server.
+ * Returns DEFAULT_CONFIG if file doesn't exist, has no llmChat key, or is invalid.
+ */
+export function readLlmChatConfigFromFile(configFile: string = CONFIG_FILE): LlmChatConfig {
+  try {
+    if (fs.existsSync(configFile)) {
+      const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      const llmChat = raw?.llmChat;
+      if (llmChat && llmChat.codex?.backend === 'codex' && llmChat.gemini?.backend === 'gemini') {
+        return llmChat as LlmChatConfig;
+      }
+    }
+  } catch {
+    // Fall through to default
+  }
+  return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+}
 
 export class LlmChatConfigStore {
   private logger = new Logger('LlmChatConfigStore');
   private config: LlmChatConfig;
 
   constructor() {
-    this.config = this.cloneConfig(DEFAULT_CONFIG);
-    this.logger.info('Initialized with default config', {
+    this.config = readLlmChatConfigFromFile();
+    this.logger.info('Initialized config', {
       codexModel: this.config.codex.model,
       geminiModel: this.config.gemini.model,
+      source: this.hasPersistedConfig() ? 'config.json' : 'defaults',
     });
+  }
+
+  private hasPersistedConfig(): boolean {
+    try {
+      if (fs.existsSync(CONFIG_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        return !!raw?.llmChat;
+      }
+    } catch { /* ignore */ }
+    return false;
   }
 
   getConfig(): Readonly<LlmChatConfig> {
@@ -79,12 +115,14 @@ export class LlmChatConfigStore {
       this.logger.info('Config override updated', { backend, key, oldValue, newValue: value });
     }
 
+    this.persistToConfigJson();
     return undefined;
   }
 
   reset(): void {
     this.config = this.cloneConfig(DEFAULT_CONFIG);
     this.logger.info('Config reset to defaults');
+    this.persistToConfigJson();
   }
 
   formatForDisplay(): string {
@@ -120,6 +158,30 @@ export class LlmChatConfigStore {
     return (Object.keys(this.config) as LlmBackend[])
       .map((key) => formatBackend(this.config[key]))
       .join('\n');
+  }
+
+  /**
+   * Merge llmChat into existing config.json (preserving mcpServers, plugin, etc.)
+   * Uses atomic write (tmp + rename) to prevent corruption.
+   */
+  private persistToConfigJson(): void {
+    try {
+      let existing: Record<string, unknown> = {};
+      if (fs.existsSync(CONFIG_FILE)) {
+        try {
+          existing = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        } catch { /* start fresh if corrupt */ }
+      }
+
+      existing.llmChat = this.config;
+
+      const tmpFile = CONFIG_FILE + '.tmp';
+      fs.writeFileSync(tmpFile, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+      fs.renameSync(tmpFile, CONFIG_FILE);
+      this.logger.info('Config persisted to config.json', { path: CONFIG_FILE });
+    } catch (error) {
+      this.logger.error('Failed to persist config to config.json', { error });
+    }
   }
 
   private cloneBackendConfig(cfg: LlmBackendConfig): LlmBackendConfig {

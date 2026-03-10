@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock env-paths so tests always use a non-existent config file (→ defaults)
+vi.mock('./env-paths', () => ({
+  CONFIG_FILE: '/tmp/llm-chat-config-test-nonexistent/config.json',
+  DATA_DIR: '/tmp/llm-chat-config-test-nonexistent',
+}));
+
 import { LlmChatConfigStore } from './llm-chat-config-store';
 
 describe('LlmChatConfigStore', () => {
