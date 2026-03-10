@@ -289,8 +289,6 @@ export class CommandParser {
     'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew', 'close', 'link',
     // Credentials
     'restore', 'credentials',
-    // LLM Chat config
-    'set', 'show', 'reset',
     // Help
     'help', 'commands',
     // Future: save/load (oh-my-claude skills)

@@ -151,17 +151,14 @@ export class LlmChatConfigStore {
    * This replaces the hardcoded model names in common.prompt
    */
   toPromptSnippet(): string {
-    const codex = this.config.codex;
-    const gemini = this.config.gemini;
+    const formatBackend = (cfg: LlmBackendConfig): string => {
+      const configStr = cfg.configOverride && Object.keys(cfg.configOverride).length > 0
+        ? `, config: { ${Object.entries(cfg.configOverride).map(([k, v]) => `"${k}":"${v}"`).join(', ')} }`
+        : '';
+      return `    - ${cfg.backend}: <parameters>model: "${cfg.model}"${configStr}</parameters>`;
+    };
 
-    const codexConfigStr = codex.configOverride && Object.keys(codex.configOverride).length > 0
-      ? `, config: { ${Object.entries(codex.configOverride).map(([k, v]) => `"${k}":"${v}"`).join(', ')} }`
-      : '';
-
-    return [
-      `    - codex: <parameters>model: "${codex.model}"${codexConfigStr}</parameters>`,
-      `    - gemini: <parameters>model: "${gemini.model}"</parameters>`,
-    ].join('\n');
+    return [formatBackend(this.config.codex), formatBackend(this.config.gemini)].join('\n');
   }
 
   private cloneConfig(source: LlmChatConfig): LlmChatConfig {
