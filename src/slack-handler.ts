@@ -58,7 +58,6 @@ export class SlackHandler {
   // Modular helpers
   private slackApi: SlackApiHelper;
   private reactionManager: ReactionManager;
-  // ContextWindowManager removed (issue #34) — context emoji feature was inaccurate
   private mcpStatusDisplay: McpStatusDisplay;
   private mcpHealthMonitor: McpHealthMonitor;
   private sessionUiManager: SessionUiManager;
@@ -102,7 +101,6 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator();
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
-    // ContextWindowManager instantiation removed (issue #34)
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
@@ -361,7 +359,7 @@ export class SlackHandler {
       // Reset session if requested (e.g., renew flow)
       if (result.continuation.resetSession) {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
-        // Re-run dispatch with the appropriate text — capture headerMessageTs for unified header (P2 fix)
+        // Re-run dispatch and capture headerMessageTs for unified header reuse
         const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
         currentHeaderMessageTs = await this.sessionInitializer.runDispatch(
           activeChannel,

@@ -126,8 +126,6 @@ export class SessionInitializer {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
       // Create conversation record and assign ID to session
-      // NOTE: conversation URL is no longer posted as a separate message.
-      // It is integrated into the unified header message during dispatchWorkflow().
       try {
         const conversationId = createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
@@ -168,11 +166,7 @@ export class SessionInitializer {
     let headerMessageTs: string | undefined;
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
-        if (forceWorkflow === 'onboarding') {
-          session.isOnboarding = true;
-        } else {
-          session.isOnboarding = false;
-        }
+        session.isOnboarding = forceWorkflow === 'onboarding';
 
         this.logger.info('Forcing session workflow from command', {
           sessionKey,
@@ -440,11 +434,6 @@ export class SessionInitializer {
   }
 
   /**
-   * Dispatch to determine workflow based on user message
-   * Uses AbortController for proper timeout cancellation
-   * Tracks in-flight dispatch to prevent race conditions
-   */
-  /**
    * Build the history link portion for the unified header message.
    * Returns empty string if conversation URL is unavailable.
    */
@@ -461,6 +450,10 @@ export class SessionInitializer {
     return '';
   }
 
+  /**
+   * Dispatch to determine workflow based on user message.
+   * Returns the unified header message timestamp (if posted) for status reuse.
+   */
   private async dispatchWorkflow(
     channel: string,
     threadTs: string,
@@ -515,7 +508,7 @@ export class SessionInitializer {
       await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
-      // Add dispatching reaction and post UNIFIED header message (Phase 1)
+      // Add dispatching reaction and post unified header message
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
       const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
         threadTs,
@@ -543,7 +536,7 @@ export class SessionInitializer {
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
 
-      // Update unified header with workflow result + history link (Phase 2)
+      // Update unified header with workflow result + history link
       const historyLink = this.buildHistoryLink(channel, threadTs);
       if (headerMessageTs) {
         await this.deps.slackApi.updateMessage(

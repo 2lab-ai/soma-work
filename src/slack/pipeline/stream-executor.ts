@@ -199,13 +199,10 @@ export class StreamExecutor {
       });
 
       // Send initial status message (gated by verbosity)
-      // If headerMessageTs exists (from dispatch), reuse it as the unified header
       if (headerMessageTs) {
         statusMessageTs = headerMessageTs;
-        // Gate intermediate status updates by verbosity (P2 fix: honor STATUS_MESSAGE flag)
         if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
           const unifiedText = this.buildUnifiedStatusText('thinking', session);
-          await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'thinking');
           await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
         }
       } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
@@ -261,7 +258,6 @@ export class StreamExecutor {
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
           if (headerMessageTs && statusMessageTs && isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
-            // Unified header mode: gate intermediate updates by verbosity (P2 fix)
             const unifiedText = this.buildUnifiedStatusText('working', session);
             await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
           } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
@@ -390,8 +386,6 @@ export class StreamExecutor {
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 
-          // Context window emoji removed (issue #34) — emoji values were inaccurate
-
           // Keep action panel context percentage in sync with latest usage.
           try {
             await this.deps.threadPanel?.updatePanel(session, sessionKey);
@@ -457,8 +451,7 @@ export class StreamExecutor {
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
       if (headerMessageTs && statusMessageTs) {
-        // Unified header: ALWAYS update terminal status (completed/waiting/error)
-        // to prevent stale "Dispatching..." text — even if STATUS_MESSAGE is disabled
+        // Always update terminal status to prevent stale "Dispatching..." text
         const unifiedText = this.buildUnifiedStatusText(finalStatus, session);
         await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
       } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
@@ -553,7 +546,8 @@ export class StreamExecutor {
         statusMessageTs,
         processedFiles,
         say,
-        requestAborted
+        requestAborted,
+        headerMessageTs
       );
       return { success: false, messageCount: 0 };
     } finally {
@@ -570,13 +564,13 @@ export class StreamExecutor {
     statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
     say: SayFn,
-    requestAborted: boolean = false
+    requestAborted: boolean = false,
+    headerMessageTs?: string
   ): Promise<void> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Context overflow is logged but emoji is no longer updated (issue #34)
     if (this.isContextOverflowError(error)) {
       this.logger.warn('Context overflow detected', { sessionKey });
     }
@@ -612,7 +606,10 @@ export class StreamExecutor {
         }
       }
 
-      if (statusMessageTs) {
+      if (headerMessageTs && statusMessageTs) {
+        const unifiedText = this.buildUnifiedStatusText('error', session);
+        await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+      } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
       }
       await this.deps.reactionManager.updateReaction(
@@ -635,7 +632,10 @@ export class StreamExecutor {
         waitingForChoice: false,
       });
 
-      if (statusMessageTs) {
+      if (headerMessageTs && statusMessageTs) {
+        const unifiedText = this.buildUnifiedStatusText('cancelled', session);
+        await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+      } else if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
       }
       await this.deps.reactionManager.updateReaction(
