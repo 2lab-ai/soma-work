@@ -22,6 +22,14 @@ export interface CodexHttpApiOptions {
   host?: string;
 }
 
+function invalidRequestError(requestId: string, message: string): AgentExecuteResponse {
+  return {
+    requestId,
+    ok: false,
+    error: { code: 'INVALID_REQUEST', message, retriable: false },
+  };
+}
+
 export class CodexHttpApi {
   private logger = new Logger('CodexHttpApi');
   private server: FastifyInstance;
@@ -31,7 +39,7 @@ export class CodexHttpApi {
 
   constructor(service: CodexService, options?: CodexHttpApiOptions) {
     this.service = service;
-    this.port = options?.port ?? parseInt(process.env.CODEX_AGENT_PORT || String(DEFAULT_PORT), 10);
+    this.port = options?.port ?? (Number(process.env.CODEX_AGENT_PORT) || DEFAULT_PORT);
     this.host = options?.host ?? process.env.CODEX_AGENT_HOST ?? DEFAULT_HOST;
 
     this.server = Fastify({
@@ -42,38 +50,20 @@ export class CodexHttpApi {
   }
 
   private setupRoutes(): void {
-    // Health check
     this.server.get('/health', async (): Promise<AgentHealthResponse> => {
       return this.service.getHealth();
     });
 
-    // Execute task
     this.server.post<{ Body: AgentExecuteRequest }>('/execute', async (request): Promise<AgentExecuteResponse> => {
       const body = request.body;
       if (!body || typeof body !== 'object') {
-        return {
-          requestId: 'unknown',
-          ok: false,
-          error: {
-            code: 'INVALID_REQUEST',
-            message: 'Request body must be a JSON object',
-            retriable: false,
-          },
-        };
+        return invalidRequestError('unknown', 'Request body must be a JSON object');
       }
 
       const { requestId, task, source } = body;
 
       if (!requestId || !task?.type) {
-        return {
-          requestId: requestId || 'unknown',
-          ok: false,
-          error: {
-            code: 'INVALID_REQUEST',
-            message: 'Missing requestId or task.type',
-            retriable: false,
-          },
-        };
+        return invalidRequestError(requestId || 'unknown', 'Missing requestId or task.type');
       }
 
       this.logger.info('Task received', {
@@ -93,7 +83,6 @@ export class CodexHttpApi {
       return result;
     });
 
-    // Info endpoint
     this.server.get('/', async () => ({
       agent: 'codex',
       version: '1.0.0',

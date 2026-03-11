@@ -11,13 +11,15 @@
 import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { AgentRegistry } from '../../agent/registry';
-import { isAdminUser } from '../../admin-utils';
 import { WorkingDirectoryManager } from '../../working-directory-manager';
-import { Logger } from '../../logger';
 import { randomUUID } from 'crypto';
 
+const STATUS_EMOJI: Record<string, string> = {
+  healthy: '🟢',
+  degraded: '🟡',
+};
+
 export class AgentHandler implements CommandHandler {
-  private logger = new Logger('AgentHandler');
   private registry: AgentRegistry;
   private workingDirManager?: WorkingDirectoryManager;
 
@@ -31,7 +33,7 @@ export class AgentHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { text, user, threadTs, say } = ctx;
+    const { text, threadTs, say } = ctx;
     const action = CommandParser.parseAgentCommand(text);
     const reply = (message: string) => say({ text: message, thread_ts: threadTs });
 
@@ -53,7 +55,7 @@ export class AgentHandler implements CommandHandler {
         }
 
         const lines = results.map(r => {
-          const emoji = r.status === 'healthy' ? '🟢' : r.status === 'degraded' ? '🟡' : '🔴';
+          const emoji = STATUS_EMOJI[r.status] ?? '🔴';
           const latency = r.latencyMs ? `${r.latencyMs}ms` : 'n/a';
           const error = r.error ? ` — ${r.error}` : '';
           return `${emoji} *${r.agentId}*: ${r.status} (${latency})${error}`;
@@ -82,11 +84,8 @@ export class AgentHandler implements CommandHandler {
 
         const requestId = randomUUID();
         const cwd = this.workingDirManager?.getWorkingDirectory(ctx.channel, ctx.threadTs, ctx.user);
-        const result = await client.execute(requestId, {
-          type: 'llm_chat',
-          prompt,
-          ...(cwd ? { cwd } : {}),
-        }, {
+        const task = { type: 'llm_chat' as const, prompt, ...(cwd && { cwd }) };
+        const result = await client.execute(requestId, task, {
           channel: ctx.channel,
           threadTs: ctx.threadTs,
           userId: ctx.user,

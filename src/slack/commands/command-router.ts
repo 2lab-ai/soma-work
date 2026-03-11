@@ -23,7 +23,6 @@ import { AdminHandler } from './admin-handler';
 import { LlmChatHandler } from './llm-chat-handler';
 import { AgentHandler } from './agent-handler';
 import { CommandParser } from '../command-parser';
-import { AgentRegistry } from '../../agent/registry';
 
 /**
  * Routes commands to appropriate handlers
