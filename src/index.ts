@@ -11,7 +11,8 @@ import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
 import { initRecorder, startWebServer, stopWebServer } from './conversation';
-import { notifyRelease, getVersionInfo, formatTimestamp } from './release-notifier';
+import { notifyRelease, getVersionInfo } from './release-notifier';
+import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
 import { tokenManager } from './token-manager';
 
@@ -190,100 +191,15 @@ async function start() {
       logger.warn('Failed to send release notification (non-critical)', error);
     }
 
-    // Send startup notification to channel
-    const STARTUP_CHANNEL_ID = 'C0A25HMBC49';
     try {
-      const versionInfo = getVersionInfo();
-      const mcpNames = mcpConfig ? Object.keys(mcpConfig.mcpServers) : [];
-      const blocks: any[] = [];
-
-      if (versionInfo) {
-        const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
-          versionInfo.version !== versionInfo.previousVersion;
-        const isRollback = versionInfo.isRollback === true;
-        const headerText = isRollback
-          ? `⏪ v${versionInfo.version} Rollback (${versionInfo.previousVersion} → ${versionInfo.rollbackTargetVersion || 'previous'})`
-          : isUpgrade
-            ? `🚀 v${versionInfo.version} Started (${versionInfo.previousVersion} → ${versionInfo.version})`
-            : `🚀 v${versionInfo.version} Started`;
-        blocks.push(
-          {
-            type: 'header',
-            text: {
-              type: 'plain_text',
-              text: headerText,
-              emoji: true,
-            },
-          },
-          {
-            type: 'section',
-            fields: [
-              { type: 'mrkdwn', text: `*Version*\n\`${versionInfo.tag}\`` },
-              { type: 'mrkdwn', text: `*Branch*\n\`${versionInfo.branch}\`` },
-              { type: 'mrkdwn', text: `*Commit*\n\`${versionInfo.commitHashShort}\`` },
-              { type: 'mrkdwn', text: `*Started*\n${formatTimestamp(new Date().toISOString())}` },
-            ],
-          },
-        );
-      } else {
-        blocks.push({
-          type: 'header',
-          text: { type: 'plain_text', text: '🚀 soma-work Started (dev)', emoji: true },
-        });
-      }
-
-      // Operational status
-      blocks.push({
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*MCP*\n${mcpNames.length > 0 ? mcpNames.map(n => `\`${n}\``).join(', ') : '_none_'}` },
-          { type: 'mrkdwn', text: `*Sessions*\n${loadedSessions} restored` },
-        ],
+      const startupNotified = await notifyStartup(app.client, {
+        loadedSessions,
+        mcpNames: mcpConfig ? Object.keys(mcpConfig.mcpServers) : [],
+        versionInfo: getVersionInfo(),
       });
-
-      // Changelog
-      if (versionInfo?.releaseNotes) {
-        const isVersionChange = versionInfo.previousVersion !== '0.0.0' &&
-          versionInfo.version !== versionInfo.previousVersion;
-        const rollback = versionInfo.isRollback === true;
-        const changelogLabel = rollback ? '*⏪ 롤백*' : '*📋 변경 사항*';
-        const tagTransition = rollback
-          ? ` _(${versionInfo.previousTag} → ${versionInfo.rollbackTargetTag || 'previous'})_`
-          : isVersionChange
-            ? ` _(${versionInfo.previousTag} → ${versionInfo.tag})_`
-            : '';
-        blocks.push(
-          { type: 'divider' },
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: `${changelogLabel}${tagTransition}\n\n${versionInfo.releaseNotes}`,
-            },
-          },
-        );
+      if (startupNotified) {
+        timing('Startup notification sent');
       }
-
-      // Footer
-      const footerParts: string[] = [];
-      if (versionInfo) {
-        footerParts.push(`commit: \`${versionInfo.commitHash.substring(0, 12)}\``);
-        footerParts.push(`built: ${formatTimestamp(versionInfo.buildTime)}`);
-      }
-      footerParts.push('_Reply to test events_');
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: footerParts.join(' | ') }],
-      });
-
-      await app.client.chat.postMessage({
-        channel: STARTUP_CHANNEL_ID,
-        text: versionInfo ? `Bot Started - v${versionInfo.version} (${versionInfo.branch})` : 'Bot Started',
-        blocks,
-        unfurl_links: false,
-        unfurl_media: false,
-      });
-      logger.info('Startup notification sent', { channel: STARTUP_CHANNEL_ID });
     } catch (err) {
       logger.error('Failed to send startup notification', err);
     }

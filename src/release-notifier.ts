@@ -42,7 +42,7 @@ function loadVersionInfo(): VersionInfo | null {
   }
 }
 
-function resolveChannel(client: WebClient, channelName: string): Promise<string | null> {
+export function resolveChannel(client: WebClient, channelName: string): Promise<string | null> {
   // If it's already an ID (starts with C), return as-is
   if (channelName.startsWith('C')) return Promise.resolve(channelName);
 
