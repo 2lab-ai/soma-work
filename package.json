@@ -11,6 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "start:agent:codex": "tsx src/sub-agents/codex/index.ts",
+    "dev:agent:codex": "tsx watch src/sub-agents/codex/index.ts",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
     "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"

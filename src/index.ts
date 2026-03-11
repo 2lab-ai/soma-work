@@ -15,6 +15,8 @@ import { notifyRelease, getVersionInfo } from './release-notifier';
 import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
 import { tokenManager } from './token-manager';
+import { AgentRegistry } from './agent/registry';
+import { AgentConfig } from './agent/types';
 
 const logger = new Logger('Main');
 
@@ -127,7 +129,17 @@ async function start() {
     initializeDispatchService(claudeHandler);
     timing('DispatchService initialized with ClaudeHandler');
 
-    const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
+    // Initialize Agent Registry for multi-agent architecture
+    const agentConfig = (unifiedConfig as any).agents as AgentConfig | undefined;
+    const agentRegistry = new AgentRegistry(agentConfig);
+    if (agentConfig?.agents?.length) {
+      agentRegistry.startHealthChecks();
+      timing(`AgentRegistry initialized (${agentConfig.agents.length} agents)`);
+    } else {
+      timing('AgentRegistry initialized (no agents configured)');
+    }
+
+    const slackHandler = new SlackHandler(app, claudeHandler, mcpManager, agentRegistry);
     timing('SlackHandler initialized');
 
     // Setup event handlers
@@ -226,6 +238,9 @@ async function start() {
       } catch (error) {
         logger.error('Error during shutdown:', error);
       }
+
+      // Stop agent health checks
+      agentRegistry.stopHealthChecks();
 
       const githubAuth = getGitHubAppAuth();
       if (githubAuth) {

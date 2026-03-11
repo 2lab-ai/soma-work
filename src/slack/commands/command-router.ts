@@ -21,7 +21,9 @@ import { PluginsHandler } from './plugins-handler';
 import { CctHandler } from './cct-handler';
 import { AdminHandler } from './admin-handler';
 import { LlmChatHandler } from './llm-chat-handler';
+import { AgentHandler } from './agent-handler';
 import { CommandParser } from '../command-parser';
+import { AgentRegistry } from '../../agent/registry';
 
 /**
  * Routes commands to appropriate handlers
@@ -35,6 +37,7 @@ export class CommandRouter {
     // Order matters - more specific handlers should come first
     this.handlers = [
       new LlmChatHandler(),
+      ...(deps.agentRegistry ? [new AgentHandler(deps.agentRegistry)] : []),
       new AdminHandler(),
       new CctHandler(),
       new CwdHandler(deps),

@@ -35,6 +35,7 @@ import {
   StreamExecutor,
   MessageEvent,
 } from './slack/pipeline';
+import { AgentRegistry } from './agent/registry';
 
 interface SlackPermalinkTarget {
   channelId: string;
@@ -90,7 +91,7 @@ export class SlackHandler {
   private sessionInitializer: SessionInitializer;
   private streamExecutor: StreamExecutor;
 
-  constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
+  constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager, agentRegistry?: AgentRegistry) {
     this.app = app;
     this.claudeHandler = claudeHandler;
     this.mcpManager = mcpManager;
@@ -124,6 +125,7 @@ export class SlackHandler {
       slackApi: this.slackApi,
       reactionManager: this.reactionManager,
       contextWindowManager: this.contextWindowManager,
+      agentRegistry,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 

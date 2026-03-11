@@ -7,6 +7,7 @@ import { SlackApiHelper } from '../slack-api-helper';
 import { ReactionManager } from '../reaction-manager';
 import { ContextWindowManager } from '../context-window-manager';
 import { WorkflowType } from '../../types';
+import { AgentRegistry } from '../../agent/registry';
 
 /**
  * Context passed to command handlers
@@ -31,6 +32,7 @@ export interface CommandDependencies {
   slackApi: SlackApiHelper;
   reactionManager: ReactionManager;
   contextWindowManager: ContextWindowManager;
+  agentRegistry?: AgentRegistry;
 }
 
 /**

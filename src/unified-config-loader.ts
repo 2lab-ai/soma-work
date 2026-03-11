@@ -13,6 +13,7 @@ import { Logger } from './logger';
 import { PluginConfig } from './plugin/types';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { McpServerConfig } from './mcp/config-loader';
+import type { AgentConfig } from './agent/types';
 
 const logger = new Logger('UnifiedConfigLoader');
 
@@ -26,6 +27,7 @@ export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
   llmChat?: Record<string, LlmBackendConfigJson>;
+  agents?: AgentConfig;
 }
 
 /**
@@ -54,11 +56,16 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.llmChat = raw.llmChat;
       }
 
+      if (raw.agents && typeof raw.agents === 'object') {
+        result.agents = raw.agents as AgentConfig;
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
         hasLlmChat: !!result.llmChat,
+        agents: result.agents?.agents?.length ?? 0,
       });
 
       return result;

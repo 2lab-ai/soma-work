@@ -32,6 +32,13 @@ export type PluginsAction =
   | { action: 'add'; pluginRef: string }
   | { action: 'remove'; pluginRef: string };
 
+export type AgentAction =
+  | { action: 'list' }
+  | { action: 'status' }
+  | { action: 'health' }
+  | { action: 'ask'; agentId: string; prompt: string }
+  | { action: 'error'; message: string };
+
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
   | { action: 'deny'; targetUser: string }
@@ -501,6 +508,55 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an agent command
+   */
+  static isAgentCommand(text: string): boolean {
+    return /^\/?agent(?:\s+.*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse agent command
+   */
+  static parseAgentCommand(text: string): AgentAction {
+    const trimmed = text.trim();
+
+    // agent list
+    if (/^\/?agent\s+list$/i.test(trimmed)) {
+      return { action: 'list' };
+    }
+
+    // agent health
+    if (/^\/?agent\s+health$/i.test(trimmed)) {
+      return { action: 'health' };
+    }
+
+    // agent ask <agentId> <prompt>
+    const askMatch = trimmed.match(/^\/?agent\s+ask\s+(\S+)\s+(.+)$/is);
+    if (askMatch) {
+      return { action: 'ask', agentId: askMatch[1], prompt: askMatch[2].trim() };
+    }
+
+    // agent ask without args
+    if (/^\/?agent\s+ask\s*$/i.test(trimmed)) {
+      return {
+        action: 'error',
+        message: 'Usage: `agent ask <agentId> <prompt>`\nExample: `agent ask codex Explain this function`',
+      };
+    }
+
+    // agent (no args) = status
+    if (/^\/?agent\s*$/i.test(trimmed)) {
+      return { action: 'status' };
+    }
+
+    // Unknown subcommand
+    return {
+      action: 'error',
+      message: 'Unknown agent command.\nUsage: `agent` | `agent list` | `agent health` | `agent ask <id> <prompt>`',
+    };
+  }
+
+  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
@@ -524,6 +580,8 @@ export class CommandParser {
     'help', 'commands',
     // Marketplace & Plugins
     'marketplace', 'plugins',
+    // Agent management
+    'agent',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
   ]);
@@ -637,6 +695,12 @@ export class CommandParser {
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
+      '',
+      '*Agent Management:*',
+      '• `agent` or `/agent` - Show agent registry status',
+      '• `agent list` - List all registered agents',
+      '• `agent health` - Run health checks on all agents',
+      '• `agent ask <id> <prompt>` - Send a task to a specific agent',
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',

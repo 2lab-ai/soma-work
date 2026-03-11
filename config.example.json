@@ -17,5 +17,22 @@
       "omc@soma-work"
     ],
     "localOverrides": []
+  },
+  "agents": {
+    "agents": [
+      {
+        "id": "codex",
+        "name": "Codex Agent",
+        "role": "sub",
+        "capabilities": ["llm_chat", "code_review"],
+        "transport": {
+          "type": "http",
+          "baseUrl": "http://127.0.0.1:9100",
+          "timeoutMs": 600000
+        },
+        "defaultModel": "gpt-5.3-codex"
+      }
+    ],
+    "healthCheckIntervalMs": 30000
   }
 }
