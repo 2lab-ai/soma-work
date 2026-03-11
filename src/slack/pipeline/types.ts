@@ -35,8 +35,6 @@ export interface SessionInitResult {
   userName: string;
   workingDirectory: string;
   abortController: AbortController;
-  /** Unified thread header message ts (created during dispatch for new sessions) */
-  headerMessageTs?: string;
 }
 
 export interface StreamExecuteResult {
