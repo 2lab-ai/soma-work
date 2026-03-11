@@ -16,7 +16,6 @@ import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
 import { tokenManager } from './token-manager';
 import { AgentRegistry } from './agent/registry';
-import { AgentConfig } from './agent/types';
 
 const logger = new Logger('Main');
 

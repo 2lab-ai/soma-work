@@ -158,11 +158,7 @@ export class CodexService {
       };
 
       if (task.cwd) args.cwd = task.cwd;
-      if (task.config) {
-        args.config = { model_reasoning_effort: 'xhigh', ...task.config };
-      } else {
-        args.config = { model_reasoning_effort: 'xhigh' };
-      }
+      args.config = { model_reasoning_effort: 'xhigh', ...task.config };
 
       this.logger.info('Executing chat', { requestId, model, promptLength: task.prompt.length });
 
@@ -174,19 +170,7 @@ export class CodexService {
       const result = await client.callTool('codex', args, 600_000);
       const durationMs = Date.now() - start;
 
-      // Parse response
-      const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-      let parsed: any = {};
-      try {
-        parsed = JSON.parse(text);
-      } catch (parseErr) {
-        this.logger.debug('Failed to parse chat response as JSON, using raw text', { requestId, error: String(parseErr) });
-        parsed = { content: text };
-      }
-
-      // Extract session ID
-      const threadId = (result as any).structuredContent?.threadId || parsed.threadId || '';
-      const content = (result as any).structuredContent?.content || parsed.content || text;
+      const { threadId, content } = this.parseToolResult(result, requestId);
 
       // Store session
       if (threadId) {
@@ -203,7 +187,7 @@ export class CodexService {
       return {
         requestId,
         ok: true,
-        content: typeof content === 'string' ? content : JSON.stringify(content),
+        content,
         sessionId: threadId,
         model,
         backend: 'codex',
@@ -265,18 +249,7 @@ export class CodexService {
       const result = await client.callTool('codex-reply', args, 600_000);
       const durationMs = Date.now() - start;
 
-      // Parse response
-      const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-      let parsed: any = {};
-      try {
-        parsed = JSON.parse(text);
-      } catch (parseErr) {
-        this.logger.debug('Failed to parse chat reply response as JSON, using raw text', { requestId, error: String(parseErr) });
-        parsed = { content: text };
-      }
-
-      const newThreadId = (result as any).structuredContent?.threadId || parsed.threadId || task.sessionId;
-      const content = (result as any).structuredContent?.content || parsed.content || text;
+      const { threadId: newThreadId, content } = this.parseToolResult(result, requestId, task.sessionId);
 
       // Update session
       const session = this.sessions.get(task.sessionId);
@@ -293,7 +266,7 @@ export class CodexService {
       return {
         requestId,
         ok: true,
-        content: typeof content === 'string' ? content : JSON.stringify(content),
+        content,
         sessionId: newThreadId,
         backend: 'codex',
         durationMs,
@@ -334,6 +307,32 @@ export class CodexService {
    */
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Parse MCP tool result into threadId + content.
+   * Centralizes the untyped access to MCP response shape.
+   */
+  private parseToolResult(
+    result: unknown,
+    requestId: string,
+    fallbackThreadId?: string,
+  ): { threadId: string; content: string } {
+    const r = result as any;
+    const text = r.content?.find((c: any) => c.type === 'text')?.text || '';
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(text);
+    } catch (parseErr) {
+      this.logger.debug('Failed to parse MCP response as JSON, using raw text', { requestId, error: String(parseErr) });
+      parsed = { content: text };
+    }
+    const threadId = r.structuredContent?.threadId || parsed.threadId || fallbackThreadId || '';
+    const content = r.structuredContent?.content || parsed.content || text;
+    return {
+      threadId,
+      content: typeof content === 'string' ? content : JSON.stringify(content),
+    };
   }
 
   /**
