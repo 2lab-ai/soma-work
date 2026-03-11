@@ -7,6 +7,7 @@ import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
 import { ModelCommandContext } from './model-commands/types';
+import { CONFIG_FILE } from './env-paths';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -305,6 +306,9 @@ export class McpConfigBuilder {
     return {
       command: 'npx',
       args: ['tsx', llmServerPath],
+      env: {
+        SOMA_CONFIG_FILE: CONFIG_FILE,
+      },
     };
   }
 

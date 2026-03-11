@@ -1,11 +1,29 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+
+const TEST_CONFIG_DIR = '/tmp/llm-chat-config-test';
+const TEST_CONFIG_FILE = `${TEST_CONFIG_DIR}/config.json`;
+
+// Mock env-paths to use a writable temp directory so persist works
+vi.mock('./env-paths', () => ({
+  CONFIG_FILE: '/tmp/llm-chat-config-test/config.json',
+  DATA_DIR: '/tmp/llm-chat-config-test',
+}));
+
 import { LlmChatConfigStore } from './llm-chat-config-store';
 
 describe('LlmChatConfigStore', () => {
   let store: LlmChatConfigStore;
 
   beforeEach(() => {
+    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+    // Remove config file to start fresh with defaults
+    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore if not exists */ }
     store = new LlmChatConfigStore();
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore */ }
   });
 
   describe('constructor / defaults', () => {
@@ -132,6 +150,50 @@ describe('LlmChatConfigStore', () => {
       expect(display).toContain('*codex*');
       expect(display).toContain('*gemini*');
       expect(display).toContain('gpt-5.3-codex');
+    });
+  });
+
+  describe('persistence', () => {
+    it('should persist config to file on set()', () => {
+      store.set('codex', 'model', 'gpt-5.4');
+      expect(fs.existsSync(TEST_CONFIG_FILE)).toBe(true);
+      const raw = JSON.parse(fs.readFileSync(TEST_CONFIG_FILE, 'utf-8'));
+      expect(raw.llmChat.codex.model).toBe('gpt-5.4');
+    });
+
+    it('should load persisted config on new instance', () => {
+      store.set('codex', 'model', 'gpt-5.4');
+      const store2 = new LlmChatConfigStore();
+      expect(store2.getBackendConfig('codex').model).toBe('gpt-5.4');
+    });
+
+    it('should preserve other config sections when persisting', () => {
+      // Pre-populate config.json with non-llmChat data
+      fs.writeFileSync(TEST_CONFIG_FILE, JSON.stringify({ mcpServers: { test: {} } }, null, 2), 'utf-8');
+      const freshStore = new LlmChatConfigStore();
+      freshStore.set('codex', 'model', 'gpt-5.4');
+      const raw = JSON.parse(fs.readFileSync(TEST_CONFIG_FILE, 'utf-8'));
+      expect(raw.mcpServers).toEqual({ test: {} });
+      expect(raw.llmChat.codex.model).toBe('gpt-5.4');
+    });
+
+    it('should abort persist and return error when config.json is corrupt', () => {
+      // Write corrupt JSON
+      fs.writeFileSync(TEST_CONFIG_FILE, '{invalid json!!!', 'utf-8');
+      const freshStore = new LlmChatConfigStore();
+      const err = freshStore.set('codex', 'model', 'gpt-5.4');
+      expect(err).toContain('corrupt');
+      // Model should NOT be updated (rollback)
+      expect(freshStore.getBackendConfig('codex').model).toBe('gpt-5.3-codex');
+    });
+
+    it('should return undefined on successful reset', () => {
+      store.set('codex', 'model', 'gpt-5.4');
+      expect(store.reset()).toBeUndefined();
+      expect(store.getBackendConfig('codex').model).toBe('gpt-5.3-codex');
+      // Verify persisted defaults
+      const raw = JSON.parse(fs.readFileSync(TEST_CONFIG_FILE, 'utf-8'));
+      expect(raw.llmChat.codex.model).toBe('gpt-5.3-codex');
     });
   });
 });
