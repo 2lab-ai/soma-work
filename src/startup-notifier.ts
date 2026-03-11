@@ -1,6 +1,6 @@
 import { WebClient } from '@slack/web-api';
 import { Logger } from './logger';
-import { formatTimestamp, resolveChannel, VersionInfo } from './release-notifier';
+import { formatTimestamp, getConfiguredUpdateChannel, resolveChannel, VersionInfo } from './release-notifier';
 
 const logger = new Logger('StartupNotifier');
 
@@ -13,7 +13,7 @@ export interface StartupNotificationOptions {
 }
 
 function getStartupChannelConfig(): string {
-  const configured = process.env.DEFAULT_UPDATE_CHANNEL?.trim();
+  const configured = getConfiguredUpdateChannel();
   return configured || LEGACY_STARTUP_CHANNEL_ID;
 }
 

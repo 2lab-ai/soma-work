@@ -6,6 +6,7 @@
 import { WebClient } from '@slack/web-api';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
+import { ENV_FILE } from './env-paths';
 import { Logger } from './logger';
 
 const logger = new Logger('ReleaseNotifier');
@@ -42,6 +43,52 @@ function loadVersionInfo(): VersionInfo | null {
   }
 }
 
+function stripWrappingQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith('\'') && value.endsWith('\'')))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function readRawEnvValue(key: string): string | undefined {
+  if (!existsSync(ENV_FILE)) return undefined;
+
+  try {
+    const content = readFileSync(ENV_FILE, 'utf-8');
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line.startsWith(`${key}=`)) continue;
+
+      const value = stripWrappingQuotes(line.slice(key.length + 1).trim());
+      return value || undefined;
+    }
+  } catch (error) {
+    logger.warn('Failed to read env file for notification channel fallback', {
+      error: (error as Error).message,
+      envFile: ENV_FILE,
+      key,
+    });
+  }
+
+  return undefined;
+}
+
+export function getConfiguredUpdateChannel(): string | undefined {
+  const configured = process.env.DEFAULT_UPDATE_CHANNEL?.trim();
+  if (configured) return configured;
+
+  const recovered = readRawEnvValue('DEFAULT_UPDATE_CHANNEL')?.trim();
+  if (recovered) {
+    logger.info('Recovered DEFAULT_UPDATE_CHANNEL from raw env file', { envFile: ENV_FILE });
+  }
+
+  return recovered || undefined;
+}
+
 export function resolveChannel(client: WebClient, channelName: string): Promise<string | null> {
   // If it's already an ID (starts with C), return as-is
   if (channelName.startsWith('C')) return Promise.resolve(channelName);
@@ -75,7 +122,7 @@ export function formatTimestamp(isoTime: string): string {
  * Call after app.start() succeeds.
  */
 export async function notifyRelease(client: WebClient): Promise<void> {
-  const channelConfig = process.env.DEFAULT_UPDATE_CHANNEL;
+  const channelConfig = getConfiguredUpdateChannel();
   if (!channelConfig) {
     logger.debug('DEFAULT_UPDATE_CHANNEL not set, skipping release notification');
     return;
