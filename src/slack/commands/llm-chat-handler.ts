@@ -37,9 +37,13 @@ export class LlmChatHandler implements CommandHandler {
       }
       case 'reset': {
         if (!await this.requireAdmin(user, reply)) break;
-        llmChatConfigStore.reset();
-        const display = llmChatConfigStore.formatForDisplay();
-        await reply(`🔄 *LLM Chat Config Reset*\n\nConfiguration reset to defaults:\n\`\`\`\n${display}\n\`\`\``);
+        const resetError = llmChatConfigStore.reset();
+        if (resetError) {
+          await reply(`❌ *Configuration Error*\n\n${resetError}`);
+        } else {
+          const display = llmChatConfigStore.formatForDisplay();
+          await reply(`🔄 *LLM Chat Config Reset*\n\nConfiguration reset to defaults:\n\`\`\`\n${display}\n\`\`\``);
+        }
         break;
       }
       case 'set': {

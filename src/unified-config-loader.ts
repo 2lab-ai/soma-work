@@ -16,9 +16,16 @@ import type { McpServerConfig } from './mcp/config-loader';
 
 const logger = new Logger('UnifiedConfigLoader');
 
+export interface LlmBackendConfigJson {
+  backend: string;
+  model: string;
+  configOverride?: Record<string, string>;
+}
+
 export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
+  llmChat?: Record<string, LlmBackendConfigJson>;
 }
 
 /**
@@ -43,10 +50,15 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.plugin = validatePluginConfig(raw.plugin);
       }
 
+      if (raw.llmChat && typeof raw.llmChat === 'object') {
+        result.llmChat = raw.llmChat;
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
+        hasLlmChat: !!result.llmChat,
       });
 
       return result;
