@@ -37,7 +37,7 @@ export class CommandRouter {
     // Order matters - more specific handlers should come first
     this.handlers = [
       new LlmChatHandler(),
-      ...(deps.agentRegistry ? [new AgentHandler(deps.agentRegistry)] : []),
+      ...(deps.agentRegistry ? [new AgentHandler(deps.agentRegistry, deps.workingDirManager)] : []),
       new AdminHandler(),
       new CctHandler(),
       new CwdHandler(deps),

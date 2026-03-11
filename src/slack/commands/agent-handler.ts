@@ -12,15 +12,18 @@ import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { AgentRegistry } from '../../agent/registry';
 import { isAdminUser } from '../../admin-utils';
+import { WorkingDirectoryManager } from '../../working-directory-manager';
 import { Logger } from '../../logger';
 import { randomUUID } from 'crypto';
 
 export class AgentHandler implements CommandHandler {
   private logger = new Logger('AgentHandler');
   private registry: AgentRegistry;
+  private workingDirManager?: WorkingDirectoryManager;
 
-  constructor(registry: AgentRegistry) {
+  constructor(registry: AgentRegistry, workingDirManager?: WorkingDirectoryManager) {
     this.registry = registry;
+    this.workingDirManager = workingDirManager;
   }
 
   canHandle(text: string): boolean {
@@ -78,9 +81,11 @@ export class AgentHandler implements CommandHandler {
         await reply(`⏳ Sending task to \`${agentId}\`...`);
 
         const requestId = randomUUID();
+        const cwd = this.workingDirManager?.getWorkingDirectory(ctx.channel, ctx.threadTs, ctx.user);
         const result = await client.execute(requestId, {
           type: 'llm_chat',
           prompt,
+          ...(cwd ? { cwd } : {}),
         }, {
           channel: ctx.channel,
           threadTs: ctx.threadTs,

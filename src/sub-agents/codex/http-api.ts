@@ -49,7 +49,20 @@ export class CodexHttpApi {
 
     // Execute task
     this.server.post<{ Body: AgentExecuteRequest }>('/execute', async (request): Promise<AgentExecuteResponse> => {
-      const { requestId, task, source } = request.body;
+      const body = request.body;
+      if (!body || typeof body !== 'object') {
+        return {
+          requestId: 'unknown',
+          ok: false,
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Request body must be a JSON object',
+            retriable: false,
+          },
+        };
+      }
+
+      const { requestId, task, source } = body;
 
       if (!requestId || !task?.type) {
         return {
