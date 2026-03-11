@@ -76,11 +76,32 @@ export class AgentClient {
       const durationMs = Date.now() - start;
       const message = error instanceof Error ? error.message : String(error);
 
+      // Classify error code based on root cause
+      let code: string;
+      let retriable: boolean;
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        code = 'AGENT_TIMEOUT';
+        retriable = true;
+      } else if (error instanceof TypeError || message.includes('fetch')) {
+        code = 'AGENT_UNREACHABLE';
+        retriable = true;
+      } else if (message.startsWith('HTTP 4')) {
+        code = 'AGENT_CLIENT_ERROR';
+        retriable = false;
+      } else if (message.startsWith('HTTP 5')) {
+        code = 'AGENT_SERVER_ERROR';
+        retriable = true;
+      } else {
+        code = 'AGENT_ERROR';
+        retriable = false;
+      }
+
       this.logger.error('Task execution failed', {
         requestId,
         taskType: task.type,
         durationMs,
         error: message,
+        errorCode: code,
       });
 
       return {
@@ -89,9 +110,9 @@ export class AgentClient {
         ok: false,
         durationMs,
         error: {
-          code: 'AGENT_UNREACHABLE',
+          code,
           message,
-          retriable: true,
+          retriable,
         },
       };
     }
@@ -124,13 +145,15 @@ export class AgentClient {
         signal: controller.signal,
       };
 
+      let serializedBody: string | undefined;
       if (body && method !== 'GET') {
-        options.body = JSON.stringify(body);
+        serializedBody = JSON.stringify(body);
+        options.body = serializedBody;
       }
 
       this.logger.debug(`${method} ${path}`, {
         timeout: effectiveTimeout,
-        bodySize: body ? JSON.stringify(body).length : 0,
+        bodySize: serializedBody?.length ?? 0,
       });
 
       const response = await fetch(url, options);
@@ -140,7 +163,16 @@ export class AgentClient {
         throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
       }
 
-      return await response.json() as T;
+      // Use text() + JSON.parse() for better error context on non-JSON responses
+      const responseText = await response.text();
+      try {
+        return JSON.parse(responseText) as T;
+      } catch (parseError) {
+        throw new Error(
+          `Invalid JSON from ${url}: ${parseError instanceof Error ? parseError.message : String(parseError)} ` +
+          `(body preview: ${responseText.slice(0, 200)})`,
+        );
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(`Request to ${url} timed out after ${effectiveTimeout}ms`);

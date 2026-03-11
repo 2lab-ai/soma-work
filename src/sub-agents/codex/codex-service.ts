@@ -26,6 +26,7 @@ interface CodexSession {
 export class CodexService {
   private logger = new Logger('CodexService');
   private client: McpClient | null = null;
+  private startPromise: Promise<void> | null = null;
   private sessions = new Map<string, CodexSession>();
   private startedAt = Date.now();
   private defaultModel: string;
@@ -35,7 +36,8 @@ export class CodexService {
   }
 
   /**
-   * Start the codex MCP backend
+   * Start the codex MCP backend.
+   * Guarded against concurrent calls — subsequent callers await the same promise.
    */
   async start(): Promise<void> {
     if (this.client?.isReady()) {
@@ -43,6 +45,20 @@ export class CodexService {
       return;
     }
 
+    // Guard concurrent start() calls: second caller awaits the first
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.startPromise = this.doStart();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  private async doStart(): Promise<void> {
     this.logger.info('Starting codex MCP backend', { defaultModel: this.defaultModel });
 
     try {
@@ -63,7 +79,9 @@ export class CodexService {
     if (this.client) {
       try {
         await this.client.stop();
-      } catch { /* ignore */ }
+      } catch (error) {
+        this.logger.warn('Error during codex client shutdown', { error: String(error) });
+      }
       this.client = null;
     }
     this.sessions.clear();
@@ -148,13 +166,23 @@ export class CodexService {
 
       this.logger.info('Executing chat', { requestId, model, promptLength: task.prompt.length });
 
-      const result = await this.client!.callTool('codex', args, 600_000);
+      const client = this.client;
+      if (!client) {
+        throw new Error('Codex client became unavailable after start()');
+      }
+
+      const result = await client.callTool('codex', args, 600_000);
       const durationMs = Date.now() - start;
 
       // Parse response
       const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
       let parsed: any = {};
-      try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseErr) {
+        this.logger.debug('Failed to parse chat response as JSON, using raw text', { requestId, error: String(parseErr) });
+        parsed = { content: text };
+      }
 
       // Extract session ID
       const threadId = (result as any).structuredContent?.threadId || parsed.threadId || '';
@@ -229,13 +257,23 @@ export class CodexService {
 
       this.logger.info('Executing chat reply', { requestId, sessionId: task.sessionId });
 
-      const result = await this.client!.callTool('codex-reply', args, 600_000);
+      const client = this.client;
+      if (!client) {
+        throw new Error('Codex client became unavailable after start()');
+      }
+
+      const result = await client.callTool('codex-reply', args, 600_000);
       const durationMs = Date.now() - start;
 
       // Parse response
       const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
       let parsed: any = {};
-      try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseErr) {
+        this.logger.debug('Failed to parse chat reply response as JSON, using raw text', { requestId, error: String(parseErr) });
+        parsed = { content: text };
+      }
 
       const newThreadId = (result as any).structuredContent?.threadId || parsed.threadId || task.sessionId;
       const content = (result as any).structuredContent?.content || parsed.content || text;

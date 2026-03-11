@@ -44,6 +44,7 @@ export class CodexHttpApi {
 
     this.server = Fastify({
       logger: false, // We use our own logger
+      bodyLimit: 1_048_576, // 1 MB — prevents oversized payloads
     });
 
     this.setupRoutes();
@@ -54,16 +55,16 @@ export class CodexHttpApi {
       return this.service.getHealth();
     });
 
-    this.server.post<{ Body: AgentExecuteRequest }>('/execute', async (request): Promise<AgentExecuteResponse> => {
+    this.server.post<{ Body: AgentExecuteRequest }>('/execute', async (request, reply): Promise<AgentExecuteResponse> => {
       const body = request.body;
       if (!body || typeof body !== 'object') {
-        return invalidRequestError('unknown', 'Request body must be a JSON object');
+        return reply.code(400).send(invalidRequestError('unknown', 'Request body must be a JSON object'));
       }
 
       const { requestId, task, source } = body;
 
       if (!requestId || !task?.type) {
-        return invalidRequestError(requestId || 'unknown', 'Missing requestId or task.type');
+        return reply.code(400).send(invalidRequestError(requestId || 'unknown', 'Missing requestId or task.type'));
       }
 
       this.logger.info('Task received', {

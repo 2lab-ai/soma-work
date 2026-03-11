@@ -28,8 +28,21 @@ export class AgentRegistry {
     this.healthCheckIntervalMs = config?.healthCheckIntervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL;
 
     if (config?.agents) {
-      for (const agent of config.agents) {
-        this.register(agent);
+      if (!Array.isArray(config.agents)) {
+        this.logger.error('config.agents is not an array, skipping agent registration', {
+          type: typeof config.agents,
+        });
+      } else {
+        for (const agent of config.agents) {
+          try {
+            this.register(agent);
+          } catch (error) {
+            this.logger.error('Failed to register agent, skipping', {
+              agentId: agent?.id ?? 'unknown',
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
     }
   }

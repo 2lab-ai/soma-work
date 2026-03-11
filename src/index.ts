@@ -130,7 +130,7 @@ async function start() {
     timing('DispatchService initialized with ClaudeHandler');
 
     // Initialize Agent Registry for multi-agent architecture
-    const agentConfig = (unifiedConfig as any).agents as AgentConfig | undefined;
+    const agentConfig = unifiedConfig.agents;
     const agentRegistry = new AgentRegistry(agentConfig);
     if (agentConfig?.agents?.length) {
       agentRegistry.startHealthChecks();

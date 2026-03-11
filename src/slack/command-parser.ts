@@ -511,7 +511,9 @@ export class CommandParser {
    * Check if text is an agent command
    */
   static isAgentCommand(text: string): boolean {
-    return /^\/?agent(?:\s+.*)?$/i.test(text.trim());
+    // Word-boundary after "agent" prevents matching "agents", "agentsmith", etc.
+    // [\s\S]* allows multiline prompts in "agent ask <id> <prompt>"
+    return /^\/?agent(?:\s[\s\S]*)?$/i.test(text.trim());
   }
 
   /**
