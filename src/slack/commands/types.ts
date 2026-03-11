@@ -5,7 +5,6 @@ import { SessionUiManager } from '../session-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { SlackApiHelper } from '../slack-api-helper';
 import { ReactionManager } from '../reaction-manager';
-import { ContextWindowManager } from '../context-window-manager';
 import { WorkflowType } from '../../types';
 
 /**
@@ -30,7 +29,6 @@ export interface CommandDependencies {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   reactionManager: ReactionManager;
-  contextWindowManager: ContextWindowManager;
 }
 
 /**

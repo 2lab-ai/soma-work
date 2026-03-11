@@ -68,7 +68,6 @@ describe('SessionInitializer - Onboarding Detection', () => {
   let mockSlackApi: any;
   let mockMessageValidator: any;
   let mockReactionManager: any;
-  let mockContextWindowManager: any;
   let mockRequestCoordinator: any;
   let mockAssistantStatusManager: any;
 
@@ -127,11 +126,6 @@ describe('SessionInitializer - Onboarding Detection', () => {
       cleanup: vi.fn(),
     };
 
-    // Create mock ContextWindowManager
-    mockContextWindowManager = {
-      setOriginalMessage: vi.fn().mockResolvedValue(undefined),
-    };
-
     // Create mock RequestCoordinator
     mockRequestCoordinator = {
       isRequestActive: vi.fn().mockReturnValue(false),
@@ -150,7 +144,6 @@ describe('SessionInitializer - Onboarding Detection', () => {
       slackApi: mockSlackApi,
       messageValidator: mockMessageValidator,
       reactionManager: mockReactionManager,
-      contextWindowManager: mockContextWindowManager,
       requestCoordinator: mockRequestCoordinator,
       assistantStatusManager: mockAssistantStatusManager,
     });

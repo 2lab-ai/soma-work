@@ -84,14 +84,10 @@ export class NewHandler implements CommandHandler {
 
   /**
    * Cleanup emojis before resetting session to prevent duplicate emojis
-   * Uses stored channel/ts from contextWindowManager/reactionManager to ensure correct location
+   * Uses stored channel/ts from reactionManager to ensure correct location
    */
   private async cleanupEmojisBeforeReset(sessionKey: string): Promise<void> {
     try {
-      // Remove context window emoji using stored channel/ts (correct location!)
-      // This is important because threadTs from command might differ from original message ts
-      await this.deps.contextWindowManager.cleanupWithReaction(sessionKey);
-
       // Remove status emoji using stored original message info
       const originalMsg = this.deps.reactionManager.getOriginalMessage(sessionKey);
       const statusEmoji = this.deps.reactionManager.getCurrentReaction(sessionKey);

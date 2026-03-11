@@ -19,7 +19,6 @@ import {
   ToolEventProcessor,
   StatusReporter,
   ReactionManager,
-  ContextWindowManager,
   ToolTracker,
   TodoDisplayManager,
   SlackApiHelper,
@@ -33,7 +32,7 @@ import { ThreadPanel } from '../thread-panel';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { SayFn, MessageEvent } from './types';
-import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import { recordUserTurn, recordAssistantTurn, getConversationUrl } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 
@@ -55,7 +54,6 @@ interface StreamExecutorDeps {
   toolEventProcessor: ToolEventProcessor;
   statusReporter: StatusReporter;
   reactionManager: ReactionManager;
-  contextWindowManager: ContextWindowManager;
   toolTracker: ToolTracker;
   todoDisplayManager: TodoDisplayManager;
   actionHandlers: ActionHandlers;
@@ -77,6 +75,9 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+  /** Timestamp of unified header message from dispatch.
+   *  When provided, status updates reuse this message instead of creating a new one. */
+  headerMessageTs?: string;
 }
 
 interface FinalFooterData {
@@ -150,6 +151,7 @@ export class StreamExecutor {
       threadTs,
       user,
       say,
+      headerMessageTs,
     } = params;
 
     let statusMessageTs: string | undefined;
@@ -197,7 +199,14 @@ export class StreamExecutor {
       });
 
       // Send initial status message (gated by verbosity)
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
+      // If headerMessageTs exists (from dispatch), reuse it as the unified header
+      if (headerMessageTs) {
+        statusMessageTs = headerMessageTs;
+        // Update the existing dispatch header to thinking phase
+        const unifiedText = this.buildUnifiedStatusText('thinking', session);
+        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'thinking');
+        await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+      } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
         statusMessageTs = await this.deps.statusReporter.createStatusMessage(
           channel,
           threadTs,
@@ -249,7 +258,11 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
+          if (headerMessageTs && statusMessageTs) {
+            // Unified header mode: update with unified status text
+            const unifiedText = this.buildUnifiedStatusText('working', session);
+            await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+          } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
             await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working', vtag(OutputFlag.STATUS_MESSAGE));
           }
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
@@ -375,11 +388,7 @@ export class StreamExecutor {
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 
-          // Update context window emoji
-          if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
-            const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
-            await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
-          }
+          // Context window emoji removed (issue #34) — emoji values were inaccurate
 
           // Keep action panel context percentage in sync with latest usage.
           try {
@@ -445,7 +454,11 @@ export class StreamExecutor {
       // Update status and reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
+      if (headerMessageTs && statusMessageTs) {
+        // Unified header mode: update with unified status text
+        const unifiedText = this.buildUnifiedStatusText(finalStatus, session);
+        await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+      } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus, vtag(OutputFlag.STATUS_MESSAGE));
       }
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
@@ -560,9 +573,9 @@ export class StreamExecutor {
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Check for context overflow error
+    // Context overflow is logged but emoji is no longer updated (issue #34)
     if (this.isContextOverflowError(error)) {
-      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
+      this.logger.warn('Context overflow detected', { sessionKey });
     }
 
     const isAbort = requestAborted || this.isAbortLikeError(error);
@@ -677,6 +690,43 @@ export class StreamExecutor {
     return this.isInvalidResumeSessionError(error);
   }
 
+  /**
+   * Build unified status text for the header message.
+   * Format: `{status_icon} *{status}* | \`{workflow}\` | 📝 History`
+   */
+  private buildUnifiedStatusText(
+    status: 'thinking' | 'working' | 'completed' | 'waiting' | 'error' | 'cancelled',
+    session: ConversationSession
+  ): string {
+    const statusMap: Record<string, string> = {
+      thinking: '🤔 *Thinking...*',
+      working: '⚙️ *Working...*',
+      completed: '✅ *Done*',
+      waiting: '✋ *Waiting for input...*',
+      error: '❌ *Error*',
+      cancelled: '⏹️ *Cancelled*',
+    };
+
+    const parts: string[] = [statusMap[status] || statusMap.thinking];
+
+    // Add workflow info
+    if (session.workflow) {
+      parts.push(`\`${session.workflow}\``);
+    }
+
+    // Add history link
+    try {
+      if (session.conversationId) {
+        const conversationUrl = getConversationUrl(session.conversationId);
+        parts.push(`📝 <${conversationUrl}|History>`);
+      }
+    } catch (error) {
+      this.logger.debug('Failed to build history link for unified status', { error: (error as Error).message });
+    }
+
+    return parts.join(' | ');
+  }
+
   private isContextOverflowError(error: any): boolean {
     const message = String(error?.message || '').toLowerCase();
 
@@ -788,7 +838,6 @@ export class StreamExecutor {
         this.deps.todoDisplayManager.cleanupSession(session.sessionId!);
         this.deps.todoDisplayManager.cleanup(sessionKey);
         this.deps.reactionManager.cleanup(sessionKey);
-        this.deps.contextWindowManager.cleanup(sessionKey);
         this.deps.statusReporter.cleanup(sessionKey);
       });
     }

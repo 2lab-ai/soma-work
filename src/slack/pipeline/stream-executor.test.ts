@@ -276,9 +276,6 @@ describe('Abort handling', () => {
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
       },
-      contextWindowManager: {
-        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
-      },
       toolTracker: {},
       todoDisplayManager: {},
       actionHandlers: {},

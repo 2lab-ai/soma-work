@@ -63,8 +63,6 @@ export class OnboardingHandler implements CommandHandler {
    */
   private async cleanupEmojisBeforeReset(sessionKey: string): Promise<void> {
     try {
-      await this.deps.contextWindowManager.cleanupWithReaction(sessionKey);
-
       const originalMsg = this.deps.reactionManager.getOriginalMessage(sessionKey);
       const statusEmoji = this.deps.reactionManager.getCurrentReaction(sessionKey);
       if (statusEmoji && originalMsg) {

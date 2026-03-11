@@ -9,7 +9,6 @@ import { mcpCallTracker } from './mcp-call-tracker';
 import {
   SlackApiHelper,
   ReactionManager,
-  ContextWindowManager,
   McpStatusDisplay,
   McpHealthMonitor,
   SessionUiManager,
@@ -59,7 +58,7 @@ export class SlackHandler {
   // Modular helpers
   private slackApi: SlackApiHelper;
   private reactionManager: ReactionManager;
-  private contextWindowManager: ContextWindowManager;
+  // ContextWindowManager removed (issue #34) — context emoji feature was inaccurate
   private mcpStatusDisplay: McpStatusDisplay;
   private mcpHealthMonitor: McpHealthMonitor;
   private sessionUiManager: SessionUiManager;
@@ -103,7 +102,7 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator();
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
-    this.contextWindowManager = new ContextWindowManager(this.slackApi);
+    // ContextWindowManager instantiation removed (issue #34)
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
@@ -123,7 +122,6 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       slackApi: this.slackApi,
       reactionManager: this.reactionManager,
-      contextWindowManager: this.contextWindowManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
@@ -174,7 +172,6 @@ export class SlackHandler {
       messageValidator: this.messageValidator,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
-      contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
     });
@@ -185,7 +182,6 @@ export class SlackHandler {
       toolEventProcessor: this.toolEventProcessor,
       statusReporter: this.statusReporter,
       reactionManager: this.reactionManager,
-      contextWindowManager: this.contextWindowManager,
       toolTracker: this.toolTracker,
       todoDisplayManager: this.todoDisplayManager,
       actionHandlers: this.actionHandlers,
@@ -340,6 +336,7 @@ export class SlackHandler {
     let currentText = effectiveText;
     let currentSession = sessionResult.session;
     let currentAbortController = sessionResult.abortController;
+    let currentHeaderMessageTs = sessionResult.headerMessageTs;
 
     // Continuation loop - handles chained executions (e.g., renew: save -> reset -> load)
     while (true) {
@@ -355,6 +352,7 @@ export class SlackHandler {
         threadTs: activeThreadTs,
         user: event.user,
         say: wrappedSay,
+        headerMessageTs: currentHeaderMessageTs,
       });
 
       // No continuation - exit loop
@@ -363,9 +361,9 @@ export class SlackHandler {
       // Reset session if requested (e.g., renew flow)
       if (result.continuation.resetSession) {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
-        // Re-run dispatch with the appropriate text
+        // Re-run dispatch with the appropriate text — capture headerMessageTs for unified header (P2 fix)
         const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
-        await this.sessionInitializer.runDispatch(
+        currentHeaderMessageTs = await this.sessionInitializer.runDispatch(
           activeChannel,
           activeThreadTs,
           dispatchText,

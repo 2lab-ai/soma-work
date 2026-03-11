@@ -2,7 +2,6 @@ import { ClaudeHandler } from '../../claude-handler';
 import { SlackApiHelper } from '../slack-api-helper';
 import { MessageValidator } from '../message-validator';
 import { ReactionManager } from '../reaction-manager';
-import { ContextWindowManager } from '../context-window-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { Logger } from '../../logger';
@@ -31,7 +30,6 @@ interface SessionInitializerDeps {
   slackApi: SlackApiHelper;
   messageValidator: MessageValidator;
   reactionManager: ReactionManager;
-  contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
   assistantStatusManager?: AssistantStatusManager;
   threadPanel?: ThreadPanel;
@@ -92,9 +90,8 @@ export class SessionInitializer {
     // Session key is based on channel + thread only
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
-    // Store original message info for status reactions and context window tracking
+    // Store original message info for status reactions
     this.deps.reactionManager.setOriginalMessage(sessionKey, channel, threadTs);
-    await this.deps.contextWindowManager.setOriginalMessage(sessionKey, channel, threadTs);
 
     // Clear lifecycle emojis on any new message (removes stale idle/expired emojis)
     await this.deps.reactionManager.clearSessionLifecycleEmojis(channel, threadTs);
@@ -129,18 +126,12 @@ export class SessionInitializer {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
       // Create conversation record and assign ID to session
+      // NOTE: conversation URL is no longer posted as a separate message.
+      // It is integrated into the unified header message during dispatchWorkflow().
       try {
         const conversationId = createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
-
-        // Send conversation URL to the thread (gated by SYSTEM verbosity)
-        const conversationUrl = getConversationUrl(conversationId);
-        if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
-          await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
-            threadTs,
-          });
-        }
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
@@ -174,6 +165,7 @@ export class SessionInitializer {
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
+    let headerMessageTs: string | undefined;
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
@@ -214,7 +206,7 @@ export class SessionInitializer {
             if (waitTimeoutId) clearTimeout(waitTimeoutId);
           }
         } else if (dispatchText) {
-          await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
+          headerMessageTs = await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
         } else {
           // No text available - use default workflow
           this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
@@ -406,6 +398,7 @@ export class SessionInitializer {
       userName,
       workingDirectory,
       abortController,
+      headerMessageTs,
     };
   }
 
@@ -421,7 +414,7 @@ export class SessionInitializer {
     threadTs: string,
     text: string,
     forceWorkflow?: WorkflowType
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('Forcing workflow during re-dispatch', {
@@ -434,15 +427,16 @@ export class SessionInitializer {
         forceWorkflow,
         forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset'
       );
-      return;
+      return undefined;
     }
 
     if (this.deps.claudeHandler.needsDispatch(channel, threadTs) && text) {
-      await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
+      return await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       // No text provided - use default workflow
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Session Reset');
     }
+    return undefined;
   }
 
   /**
@@ -450,12 +444,29 @@ export class SessionInitializer {
    * Uses AbortController for proper timeout cancellation
    * Tracks in-flight dispatch to prevent race conditions
    */
+  /**
+   * Build the history link portion for the unified header message.
+   * Returns empty string if conversation URL is unavailable.
+   */
+  private buildHistoryLink(channel: string, threadTs: string): string {
+    try {
+      const session = this.deps.claudeHandler.getSession(channel, threadTs);
+      if (session?.conversationId) {
+        const conversationUrl = getConversationUrl(session.conversationId);
+        return ` | 📝 <${conversationUrl}|History>`;
+      }
+    } catch (error) {
+      this.logger.warn('Failed to build history link (non-critical)', { channel, threadTs, error: (error as Error).message });
+    }
+    return '';
+  }
+
   private async dispatchWorkflow(
     channel: string,
     threadTs: string,
     text: string,
     sessionKey: string
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
     let resolveTracking: () => void;
@@ -476,8 +487,8 @@ export class SessionInitializer {
       abortController.abort();
     }, DISPATCH_TIMEOUT_MS);
 
-    // Track dispatch status message for updating
-    let dispatchMessageTs: string | undefined;
+    // Track unified header message for updating and returning
+    let headerMessageTs: string | undefined;
     const updateDispatchPanel = async (phase: string, state: 'working' | 'idle'): Promise<void> => {
       const dispatchSession = this.deps.claudeHandler.getSession(channel, threadTs);
       if (!dispatchSession) {
@@ -504,12 +515,12 @@ export class SessionInitializer {
       await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
-      // Add dispatching reaction and post status message
+      // Add dispatching reaction and post UNIFIED header message (Phase 1)
       await this.deps.slackApi.addReaction(channel, threadTs, 'mag'); // 🔍
       const msgResult = await this.deps.slackApi.postMessage(channel, `🔍 _Dispatching... (${model})_`, {
         threadTs,
       });
-      dispatchMessageTs = msgResult?.ts;
+      headerMessageTs = msgResult?.ts;
 
       this.logger.info('🎯 Starting dispatch classification', {
         channel,
@@ -532,12 +543,13 @@ export class SessionInitializer {
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
 
-      // Update dispatch message with workflow result
-      if (dispatchMessageTs) {
+      // Update unified header with workflow result + history link (Phase 2)
+      const historyLink = this.buildHistoryLink(channel, threadTs);
+      if (headerMessageTs) {
         await this.deps.slackApi.updateMessage(
           channel,
-          dispatchMessageTs,
-          `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`
+          headerMessageTs,
+          `✅ \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_${historyLink}`
         );
       }
 
@@ -570,12 +582,13 @@ export class SessionInitializer {
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
 
-      // Update dispatch message with error
-      if (dispatchMessageTs) {
+      // Update unified header with error + history link
+      const historyLink = this.buildHistoryLink(channel, threadTs);
+      if (headerMessageTs) {
         await this.deps.slackApi.updateMessage(
           channel,
-          dispatchMessageTs,
-          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`
+          headerMessageTs,
+          `⚠️ \`default\` _(dispatch failed after ${elapsed}ms)_${historyLink}`
         );
       }
 
@@ -589,6 +602,8 @@ export class SessionInitializer {
       dispatchInFlight.delete(sessionKey);
       resolveTracking!();
     }
+
+    return headerMessageTs;
   }
 
   private resolveDefaultRouteChannel(currentChannel: string): { id: string; name: string } | undefined {
@@ -677,7 +692,6 @@ export class SessionInitializer {
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);
     this.deps.reactionManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
-    await this.deps.contextWindowManager.setOriginalMessage(newSessionKey, channel, rootResult.ts);
 
     this.logger.info('🧵 Bot-initiated thread created, session migrated', {
       channel,

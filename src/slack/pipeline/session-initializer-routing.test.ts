@@ -65,7 +65,6 @@ describe('SessionInitializer - channel routing advisory', () => {
   let mockSlackApi: any;
   let mockMessageValidator: any;
   let mockReactionManager: any;
-  let mockContextWindowManager: any;
   let mockRequestCoordinator: any;
   let mockAssistantStatusManager: any;
   let sessionRef: any;
@@ -142,10 +141,6 @@ describe('SessionInitializer - channel routing advisory', () => {
       cleanup: vi.fn(),
     };
 
-    mockContextWindowManager = {
-      setOriginalMessage: vi.fn().mockResolvedValue(undefined),
-    };
-
     mockRequestCoordinator = {
       isRequestActive: vi.fn().mockReturnValue(false),
       setController: vi.fn(),
@@ -162,7 +157,6 @@ describe('SessionInitializer - channel routing advisory', () => {
       slackApi: mockSlackApi,
       messageValidator: mockMessageValidator,
       reactionManager: mockReactionManager,
-      contextWindowManager: mockContextWindowManager,
       requestCoordinator: mockRequestCoordinator,
       assistantStatusManager: mockAssistantStatusManager,
     });

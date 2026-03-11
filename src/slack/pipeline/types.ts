@@ -42,6 +42,10 @@ export interface SessionInitResult {
   abortController: AbortController;
   /** Set to true when channel routing advisory was shown. Caller should halt. */
   halted?: boolean;
+  /** Timestamp of the unified header message posted during dispatch.
+   *  StreamExecutor reuses this message for status updates (thinking → working → done)
+   *  instead of creating a separate status message. */
+  headerMessageTs?: string;
 }
 
 export interface StreamExecuteResult {
