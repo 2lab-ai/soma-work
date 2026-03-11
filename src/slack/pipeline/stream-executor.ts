@@ -1,7 +1,7 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession, SessionUsage, Continuation } from '../../types';
+import { ConversationSession, Continuation } from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
@@ -34,6 +34,16 @@ export interface ExecuteResult {
 
 // Default context window size (200k for Claude models)
 const DEFAULT_CONTEXT_WINDOW = 200000;
+
+/** Status labels for the unified header message */
+const UNIFIED_STATUS_LABELS: Record<string, string> = {
+  thinking: '🤔 *Thinking...*',
+  working: '⚙️ *Working...*',
+  waiting: '✋ *Waiting for input...*',
+  completed: '✅ *Done*',
+  error: '❌ *Error*',
+  cancelled: '⏹️ *Cancelled*',
+};
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -124,6 +134,8 @@ export class StreamExecutor {
 
     // Build base info text for unified header (workflow + history link)
     const headerBaseText = this.buildHeaderBaseText(session);
+    // Determine effective header text once (null when not using unified header mode)
+    const effectiveHeaderText = headerMessageTs ? headerBaseText : undefined;
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -148,12 +160,16 @@ export class StreamExecutor {
       // Reuse unified header message or create new status message
       if (headerMessageTs) {
         statusMessageTs = headerMessageTs;
-        // Update existing header message to show thinking status
-        await this.deps.slackApi.updateMessage(
-          channel,
-          statusMessageTs,
-          this.buildUnifiedStatusText('thinking', headerBaseText)
-        );
+        // Update existing header message to show thinking status (best-effort: UI update must not abort streaming)
+        try {
+          await this.deps.slackApi.updateMessage(
+            channel,
+            statusMessageTs,
+            this.buildUnifiedStatusText('thinking', headerBaseText)
+          );
+        } catch (err) {
+          this.logger.warn('Failed to update header message with thinking status (best-effort)', { err });
+        }
       } else {
         statusMessageTs = await this.deps.statusReporter.createStatusMessage(
           channel,
@@ -193,7 +209,7 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          await this.updateStatusMessage(channel, statusMessageTs, 'working', headerMessageTs ? headerBaseText : undefined);
+          await this.updateStatusMessage(channel, statusMessageTs, 'working', effectiveHeaderText);
           await this.deps.reactionManager.updateReaction(
             sessionKey,
             this.deps.statusReporter.getStatusEmoji('working')
@@ -272,7 +288,7 @@ export class StreamExecutor {
 
       // Update status and reaction based on whether user choice is pending
       const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
-      await this.updateStatusMessage(channel, statusMessageTs, finalStatus, headerMessageTs ? headerBaseText : undefined);
+      await this.updateStatusMessage(channel, statusMessageTs, finalStatus, effectiveHeaderText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji(finalStatus)
@@ -325,7 +341,7 @@ export class StreamExecutor {
         statusMessageTs,
         processedFiles,
         say,
-        headerMessageTs ? headerBaseText : undefined
+        effectiveHeaderText
       );
       return { success: false, messageCount: 0 };
     } finally {
@@ -378,7 +394,7 @@ export class StreamExecutor {
         });
       }
 
-      await this.updateStatusMessage(channel, statusMessageTs, 'error', headerBaseText, true);
+      await this.updateStatusMessage(channel, statusMessageTs, 'error', headerBaseText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('error')
@@ -394,7 +410,7 @@ export class StreamExecutor {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
-      await this.updateStatusMessage(channel, statusMessageTs, 'cancelled', headerBaseText, true);
+      await this.updateStatusMessage(channel, statusMessageTs, 'cancelled', headerBaseText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('cancelled')
@@ -632,31 +648,25 @@ ${userInstruction}`;
 
   /**
    * Update status message (unified header or legacy status reporter).
-   * In error handlers, uses best-effort mode to avoid re-throwing from catch blocks.
+   * Unified header path is always best-effort — UI status updates must never abort core streaming.
    */
   private async updateStatusMessage(
     channel: string,
     statusMessageTs: string | undefined,
     status: StatusType,
-    headerBaseText?: string,
-    bestEffort = false
+    headerBaseText?: string
   ): Promise<void> {
     if (!statusMessageTs) return;
 
     if (headerBaseText) {
-      const doUpdate = () => this.deps.slackApi.updateMessage(
-        channel,
-        statusMessageTs,
-        this.buildUnifiedStatusText(status, headerBaseText)
-      );
-      if (bestEffort) {
-        try {
-          await doUpdate();
-        } catch (err) {
-          this.logger.warn(`Failed to update header message with ${status} status (best-effort)`, { err });
-        }
-      } else {
-        await doUpdate();
+      try {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText(status, headerBaseText)
+        );
+      } catch (err) {
+        this.logger.warn(`Failed to update header message with ${status} status (best-effort)`, { err });
       }
     } else {
       await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, status);
@@ -689,21 +699,8 @@ ${userInstruction}`;
    * Build unified status text combining status + header base info
    */
   private buildUnifiedStatusText(status: string, headerBaseText: string): string {
-    const statusTexts: Record<string, string> = {
-      thinking: '🤔 *Thinking...*',
-      working: '⚙️ *Working...*',
-      waiting: '✋ *Waiting for input...*',
-      completed: '✅ *Done*',
-      error: '❌ *Error*',
-      cancelled: '⏹️ *Cancelled*',
-    };
-
-    const statusText = statusTexts[status] || status;
-
-    if (headerBaseText) {
-      return `${statusText} | ${headerBaseText}`;
-    }
-    return statusText;
+    const statusText = UNIFIED_STATUS_LABELS[status] || status;
+    return headerBaseText ? `${statusText} | ${headerBaseText}` : statusText;
   }
 
   /**
