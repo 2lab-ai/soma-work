@@ -39,3 +39,24 @@ describe('getConfiguredUpdateChannel', () => {
     expect((module as any).getConfiguredUpdateChannel()).toBe('#soma-work-dev');
   });
 });
+
+describe('resolveChannel', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to the provided channel name when conversations.list is missing read scope', async () => {
+    const module = await import('./release-notifier');
+    const client = {
+      conversations: {
+        list: vi.fn().mockRejectedValue(new Error('An API error occurred: missing_scope')),
+      },
+    };
+
+    await expect(module.resolveChannel(client as any, '#soma-work-dev')).resolves.toBe('#soma-work-dev');
+  });
+});
