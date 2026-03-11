@@ -146,7 +146,6 @@ export class SlackHandler {
       messageValidator: this.messageValidator,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
-      contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
     });
 
@@ -263,6 +262,8 @@ export class SlackHandler {
         threadTs,
         user: event.user,
         say: wrappedSay,
+        // Only pass header message on first iteration (subsequent iterations create fresh status)
+        headerMessageTs: currentText === effectiveText ? sessionResult.headerMessageTs : undefined,
       });
 
       // No continuation - exit loop
