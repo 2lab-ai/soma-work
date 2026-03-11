@@ -202,10 +202,12 @@ export class StreamExecutor {
       // If headerMessageTs exists (from dispatch), reuse it as the unified header
       if (headerMessageTs) {
         statusMessageTs = headerMessageTs;
-        // Update the existing dispatch header to thinking phase
-        const unifiedText = this.buildUnifiedStatusText('thinking', session);
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'thinking');
-        await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+        // Gate intermediate status updates by verbosity (P2 fix: honor STATUS_MESSAGE flag)
+        if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
+          const unifiedText = this.buildUnifiedStatusText('thinking', session);
+          await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'thinking');
+          await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
+        }
       } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
         statusMessageTs = await this.deps.statusReporter.createStatusMessage(
           channel,
@@ -258,8 +260,8 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (headerMessageTs && statusMessageTs) {
-            // Unified header mode: update with unified status text
+          if (headerMessageTs && statusMessageTs && isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
+            // Unified header mode: gate intermediate updates by verbosity (P2 fix)
             const unifiedText = this.buildUnifiedStatusText('working', session);
             await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
           } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
@@ -455,7 +457,8 @@ export class StreamExecutor {
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
       if (headerMessageTs && statusMessageTs) {
-        // Unified header mode: update with unified status text
+        // Unified header: ALWAYS update terminal status (completed/waiting/error)
+        // to prevent stale "Dispatching..." text — even if STATUS_MESSAGE is disabled
         const unifiedText = this.buildUnifiedStatusText(finalStatus, session);
         await this.deps.slackApi.updateMessage(channel, statusMessageTs, unifiedText);
       } else if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
