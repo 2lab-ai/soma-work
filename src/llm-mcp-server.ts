@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
+import * as fs from 'fs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -9,17 +10,19 @@ import { StderrLogger } from './stderr-logger.js';
 
 const logger = new StderrLogger('LlmMCP');
 
-// ── Model Routing ──────────────────────────────────────────
+// ── Config File Reading (mtime-based reload) ─────────────
 
 type Backend = 'codex' | 'gemini';
 
-interface RouteResult {
+interface BackendConfig {
   backend: Backend;
   model: string;
-  configOverride?: Record<string, unknown>;
+  configOverride?: Record<string, string>;
 }
 
-const MODEL_ALIASES: Record<string, RouteResult> = {
+type LlmChatFileConfig = Record<Backend, BackendConfig>;
+
+const HARDCODED_DEFAULTS: LlmChatFileConfig = {
   codex: {
     backend: 'codex',
     model: 'gpt-5.3-codex',
@@ -31,10 +34,64 @@ const MODEL_ALIASES: Record<string, RouteResult> = {
   },
 };
 
-function routeModel(model: string): RouteResult {
-  // Check exact alias first
-  const alias = MODEL_ALIASES[model];
-  if (alias) return alias;
+/** Path to config.json — passed from parent via SOMA_CONFIG_FILE env */
+const CONFIG_FILE = process.env.SOMA_CONFIG_FILE || '';
+
+let cachedConfig: LlmChatFileConfig = HARDCODED_DEFAULTS;
+let cachedMtimeMs = 0;
+let cachedSize = 0;
+
+/**
+ * Read llmChat section from config.json with mtime-based caching.
+ * Only re-reads the file when its mtime has changed.
+ */
+function loadConfig(): LlmChatFileConfig {
+  if (!CONFIG_FILE) return cachedConfig;
+
+  try {
+    const stat = fs.statSync(CONFIG_FILE);
+    if (stat.mtimeMs === cachedMtimeMs && stat.size === cachedSize) {
+      return cachedConfig; // File unchanged — use cache
+    }
+
+    const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    const llmChat = raw?.llmChat;
+
+    if (
+      llmChat &&
+      llmChat.codex?.backend === 'codex' && typeof llmChat.codex?.model === 'string' &&
+      llmChat.gemini?.backend === 'gemini' && typeof llmChat.gemini?.model === 'string'
+    ) {
+      cachedConfig = llmChat as LlmChatFileConfig;
+      logger.info('Reloaded llmChat config from config.json', {
+        codexModel: cachedConfig.codex.model,
+        geminiModel: cachedConfig.gemini.model,
+      });
+    }
+
+    // Always update cache metadata so we don't re-read an unchanged file
+    cachedMtimeMs = stat.mtimeMs;
+    cachedSize = stat.size;
+  } catch {
+    // File doesn't exist or is invalid — keep current cache
+  }
+
+  return cachedConfig;
+}
+
+// Initial load
+loadConfig();
+
+// ── Model Routing ──────────────────────────────────────────
+
+function routeModel(model: string): BackendConfig {
+  // Reload config if file changed
+  const config = loadConfig();
+
+  // Check alias against current config backends
+  if (model === 'codex' || model === 'gemini') {
+    return config[model];
+  }
 
   // Prefix-based routing
   if (model.startsWith('gpt-') || model.startsWith('o')) {
@@ -347,7 +404,11 @@ class LlmMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info('LLM MCP Server started');
+    logger.info('LLM MCP Server started', {
+      configFile: CONFIG_FILE || '(not set)',
+      codexModel: cachedConfig.codex.model,
+      geminiModel: cachedConfig.gemini.model,
+    });
 
     // Cleanup on exit
     process.on('SIGINT', () => this.cleanup());

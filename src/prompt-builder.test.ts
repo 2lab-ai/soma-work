@@ -7,9 +7,10 @@ vi.mock('./user-settings-store', () => ({
   },
 }));
 
-// Mock env-paths
+// Mock env-paths (CONFIG_FILE needed by llm-chat-config-store transitive import)
 vi.mock('./env-paths', () => ({
   SYSTEM_PROMPT_FILE: '/tmp/test.system.prompt',
+  CONFIG_FILE: '/tmp/prompt-builder-test-nonexistent/config.json',
 }));
 
 import { PromptBuilder } from './prompt-builder';
