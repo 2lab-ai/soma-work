@@ -17,7 +17,7 @@ type Backend = 'codex' | 'gemini';
 interface BackendConfig {
   backend: Backend;
   model: string;
-  configOverride?: Record<string, unknown>;
+  configOverride?: Record<string, string>;
 }
 
 type LlmChatFileConfig = Record<Backend, BackendConfig>;
@@ -57,15 +57,21 @@ function loadConfig(): LlmChatFileConfig {
     const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     const llmChat = raw?.llmChat;
 
-    if (llmChat && llmChat.codex?.backend === 'codex' && llmChat.gemini?.backend === 'gemini') {
+    if (
+      llmChat &&
+      llmChat.codex?.backend === 'codex' && typeof llmChat.codex?.model === 'string' &&
+      llmChat.gemini?.backend === 'gemini' && typeof llmChat.gemini?.model === 'string'
+    ) {
       cachedConfig = llmChat as LlmChatFileConfig;
-      cachedMtimeMs = stat.mtimeMs;
-      cachedSize = stat.size;
       logger.info('Reloaded llmChat config from config.json', {
         codexModel: cachedConfig.codex.model,
         geminiModel: cachedConfig.gemini.model,
       });
     }
+
+    // Always update cache metadata so we don't re-read an unchanged file
+    cachedMtimeMs = stat.mtimeMs;
+    cachedSize = stat.size;
   } catch {
     // File doesn't exist or is invalid — keep current cache
   }

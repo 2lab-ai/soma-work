@@ -184,7 +184,12 @@ export class LlmChatConfigStore {
       if (fs.existsSync(CONFIG_FILE)) {
         try {
           existing = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-        } catch { /* start fresh if corrupt */ }
+        } catch {
+          // Config file exists but is corrupt — abort to prevent data loss
+          // (other sections like mcpServers, plugin would be destroyed)
+          this.logger.error('Config file exists but is corrupt, aborting persist', { path: CONFIG_FILE });
+          return 'Failed to persist config: config.json exists but is corrupt/unparseable';
+        }
       }
 
       existing.llmChat = this.config;
