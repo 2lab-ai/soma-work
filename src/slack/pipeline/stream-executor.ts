@@ -1,7 +1,7 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession, SessionUsage, Continuation } from '../../types';
+import { ConversationSession, Continuation } from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
@@ -10,6 +10,7 @@ import {
   UsageData,
   ToolEventProcessor,
   StatusReporter,
+  StatusType,
   ReactionManager,
   ContextWindowManager,
   ToolTracker,
@@ -20,7 +21,7 @@ import {
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn, MessageEvent } from './types';
-import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import { recordUserTurn, recordAssistantTurn, getConversationUrl } from '../../conversation';
 
 /**
  * Result of stream execution
@@ -33,6 +34,16 @@ export interface ExecuteResult {
 
 // Default context window size (200k for Claude models)
 const DEFAULT_CONTEXT_WINDOW = 200000;
+
+/** Status labels for the unified header message */
+const UNIFIED_STATUS_LABELS: Record<string, string> = {
+  thinking: '🤔 *Thinking...*',
+  working: '⚙️ *Working...*',
+  waiting: '✋ *Waiting for input...*',
+  completed: '✅ *Done*',
+  error: '❌ *Error*',
+  cancelled: '⏹️ *Cancelled*',
+};
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -61,6 +72,8 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+  /** Unified header message ts from session-initializer (reused for status updates) */
+  headerMessageTs?: string;
 }
 
 /**
@@ -114,9 +127,15 @@ export class StreamExecutor {
       threadTs,
       user,
       say,
+      headerMessageTs,
     } = params;
 
     let statusMessageTs: string | undefined;
+
+    // Build base info text for unified header (workflow + history link)
+    const headerBaseText = this.buildHeaderBaseText(session);
+    // Determine effective header text once (null when not using unified header mode)
+    const effectiveHeaderText = headerMessageTs ? headerBaseText : undefined;
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
@@ -138,13 +157,27 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message
-      statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-        channel,
-        threadTs,
-        sessionKey,
-        'thinking'
-      );
+      // Reuse unified header message or create new status message
+      if (headerMessageTs) {
+        statusMessageTs = headerMessageTs;
+        // Update existing header message to show thinking status (best-effort: UI update must not abort streaming)
+        try {
+          await this.deps.slackApi.updateMessage(
+            channel,
+            statusMessageTs,
+            this.buildUnifiedStatusText('thinking', headerBaseText)
+          );
+        } catch (err) {
+          this.logger.warn('Failed to update header message with thinking status (best-effort)', { err });
+        }
+      } else {
+        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
+          channel,
+          threadTs,
+          sessionKey,
+          'thinking'
+        );
+      }
 
       // Add thinking reaction + native spinner
       await this.deps.reactionManager.updateReaction(
@@ -176,9 +209,7 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
-          }
+          await this.updateStatusMessage(channel, statusMessageTs, 'working', effectiveHeaderText);
           await this.deps.reactionManager.updateReaction(
             sessionKey,
             this.deps.statusReporter.getStatusEmoji('working')
@@ -238,12 +269,6 @@ export class StreamExecutor {
         },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
-
-          // Update context window emoji
-          if (session.usage) {
-            const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
-            await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
-          }
         },
       };
 
@@ -263,9 +288,7 @@ export class StreamExecutor {
 
       // Update status and reaction based on whether user choice is pending
       const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, finalStatus, effectiveHeaderText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji(finalStatus)
@@ -317,7 +340,8 @@ export class StreamExecutor {
         threadTs,
         statusMessageTs,
         processedFiles,
-        say
+        say,
+        effectiveHeaderText
       );
       return { success: false, messageCount: 0 };
     } finally {
@@ -333,20 +357,20 @@ export class StreamExecutor {
     threadTs: string,
     statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
-    say: SayFn
+    say: SayFn,
+    headerBaseText?: string
   ): Promise<void> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Check for context overflow error
     const errorMessage = error.message?.toLowerCase() || '';
     if (
       errorMessage.includes('prompt is too long') ||
       errorMessage.includes('context length exceeded') ||
       errorMessage.includes('maximum context length')
     ) {
-      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
+      this.logger.warn('Context overflow detected', { sessionKey });
     }
 
     if (error.name !== 'AbortError') {
@@ -370,9 +394,7 @@ export class StreamExecutor {
         });
       }
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, 'error', headerBaseText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('error')
@@ -388,9 +410,7 @@ export class StreamExecutor {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
-      }
+      await this.updateStatusMessage(channel, statusMessageTs, 'cancelled', headerBaseText);
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('cancelled')
@@ -624,6 +644,63 @@ ${userInstruction}`;
       resetSession: true,
       dispatchText: userMessage || undefined,
     };
+  }
+
+  /**
+   * Update status message (unified header or legacy status reporter).
+   * Unified header path is always best-effort — UI status updates must never abort core streaming.
+   */
+  private async updateStatusMessage(
+    channel: string,
+    statusMessageTs: string | undefined,
+    status: StatusType,
+    headerBaseText?: string
+  ): Promise<void> {
+    if (!statusMessageTs) return;
+
+    if (headerBaseText) {
+      try {
+        await this.deps.slackApi.updateMessage(
+          channel,
+          statusMessageTs,
+          this.buildUnifiedStatusText(status, headerBaseText)
+        );
+      } catch (err) {
+        this.logger.warn(`Failed to update header message with ${status} status (best-effort)`, { err });
+      }
+    } else {
+      await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, status);
+    }
+  }
+
+  /**
+   * Build base text for unified header message (workflow + history link)
+   */
+  private buildHeaderBaseText(session: ConversationSession): string {
+    const parts: string[] = [];
+
+    if (session.workflow) {
+      parts.push(`\`${session.workflow}\``);
+    }
+
+    if (session.conversationId) {
+      try {
+        const url = getConversationUrl(session.conversationId);
+        parts.push(`📝 <${url}|History>`);
+      } catch {
+        // Non-critical
+      }
+    }
+
+    return parts.join(' | ');
+  }
+
+  /**
+   * Build unified status text combining status + header base info
+   */
+  private buildUnifiedStatusText(status: string, headerBaseText: string): string {
+    const statusText = UNIFIED_STATUS_LABELS[status] || status;
+    return headerBaseText ? `${statusText} | ${headerBaseText}` : statusText;
   }
 
   /**
