@@ -103,7 +103,12 @@ export function resolveChannel(client: WebClient, channelName: string): Promise<
     const channel = result.channels?.find(ch => ch.name === name);
     return channel?.id || null;
   }).catch(error => {
-    logger.warn('Failed to resolve channel name', { channelName, error: (error as Error).message });
+    const message = (error as Error).message;
+    logger.warn('Failed to resolve channel name', { channelName, error: message });
+    if (message.includes('missing_scope')) {
+      logger.info('Falling back to direct channel name for notification delivery', { channelName });
+      return channelName;
+    }
     return null;
   });
 }
