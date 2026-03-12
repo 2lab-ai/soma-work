@@ -59,6 +59,20 @@ set_state() {
 is_done() { [ "$(get_state "$1")" = "done" ]; }
 mark_done() { set_state "$1" "done"; }
 
+# --- GitHub App JWT 생성 ---
+generate_github_jwt() {
+    local app_id="$1" key_file="$2"
+    local header payload signature now iat exp
+
+    header=$(printf '{"alg":"RS256","typ":"JWT"}' | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    now=$(date +%s)
+    iat=$((now - 60))
+    exp=$((now + 600))
+    payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$iat" "$exp" "$app_id" | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    signature=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key_file" | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    printf '%s.%s.%s' "$header" "$payload" "$signature"
+}
+
 # ============================================================================
 # PHASE 1: Prerequisites (idempotent, no user input)
 # ============================================================================
@@ -287,7 +301,133 @@ phase2_user_input() {
     fi
     echo ""
 
-    # ── 2.6 선택: GitHub, Anthropic 설정 ──
+    # ── 2.6 GitHub App 설정 ──
+    echo -e "${BOLD}── GitHub App ──${NC}"
+
+    if [ -n "${GITHUB_APP_ID:-}" ] && [ -n "${GITHUB_PRIVATE_KEY:-}" ] && [ -n "${GITHUB_INSTALLATION_ID:-}" ]; then
+        success "GitHub App 자격 증명이 환경변수로 제공됨 (App ID: ${GITHUB_APP_ID})"
+        GITHUB_APP_MODE="provided"
+    else
+        echo "  GitHub App을 설정하면 봇이 레포에 접근할 수 있습니다."
+        echo ""
+        echo "  1) 기존 GitHub App 자격 증명 입력"
+        echo "  2) 새 GitHub App 생성"
+        echo "  3) 건너뛰기 (나중에 설정)"
+        echo -en "  선택 ${DIM}[3]${NC}: "
+        read -r gh_app_choice
+        gh_app_choice="${gh_app_choice:-3}"
+
+        case "$gh_app_choice" in
+            1)
+                echo -en "  GITHUB_APP_ID: "
+                read -r GITHUB_APP_ID
+                echo -en "  Private Key 파일 경로 (.pem): "
+                read -r gh_key_path
+                gh_key_path="$(eval echo "$gh_key_path")"
+                if [ -f "$gh_key_path" ]; then
+                    GITHUB_PRIVATE_KEY="$(cat "$gh_key_path")"
+                    success "  Private Key 읽기 완료: ${gh_key_path}"
+                else
+                    fail "  파일을 찾을 수 없습니다: ${gh_key_path}"
+                    exit 1
+                fi
+                echo -en "  GITHUB_INSTALLATION_ID ${DIM}[자동 탐지하려면 Enter]${NC}: "
+                read -r GITHUB_INSTALLATION_ID
+                GITHUB_APP_MODE="existing"
+                ;;
+            2)
+                echo ""
+                info "새 GitHub App을 생성합니다."
+                echo ""
+                echo -e "  ${BOLD}브라우저에서 다음 설정으로 App을 생성하세요:${NC}"
+                echo ""
+                echo "  Homepage URL:  https://github.com/${REPO}"
+                echo "  Webhook:       비활성화 (Active 체크 해제)"
+                echo ""
+                echo -e "  ${BOLD}Repository permissions:${NC}"
+                echo "    Contents:       Read & Write"
+                echo "    Pull requests:  Read & Write"
+                echo "    Issues:         Read & Write"
+                echo "    Actions:        Read-only"
+                echo "    Metadata:       Read-only (기본값)"
+                echo ""
+                echo -e "  ${BOLD}설치 대상:${NC}"
+                echo "    Where: Only on this account"
+                echo ""
+
+                # 브라우저 열기 (org이면 org settings, 아님 user settings)
+                local org_name
+                org_name="$(echo "${REPO}" | cut -d/ -f1)"
+                local create_url="https://github.com/organizations/${org_name}/settings/apps/new"
+                open "$create_url" 2>/dev/null || echo "  열기: ${create_url}"
+                echo ""
+                echo -en "  App 생성 완료 후 Enter... "
+                read -r
+
+                echo -en "  GITHUB_APP_ID (App settings 페이지 상단): "
+                read -r GITHUB_APP_ID
+
+                echo ""
+                info "Private Key를 생성하세요."
+                echo "  App settings → Private keys → Generate a private key"
+                echo "  (.pem 파일이 다운로드됩니다)"
+                echo -en "  다운로드된 .pem 파일 경로: "
+                read -r gh_key_path
+                gh_key_path="$(eval echo "$gh_key_path")"
+                if [ -f "$gh_key_path" ]; then
+                    GITHUB_PRIVATE_KEY="$(cat "$gh_key_path")"
+                    success "  Private Key 읽기 완료"
+                else
+                    fail "  파일을 찾을 수 없습니다: ${gh_key_path}"
+                    exit 1
+                fi
+
+                echo ""
+                info "App을 조직에 설치하세요."
+                local install_url="https://github.com/organizations/${org_name}/settings/installations"
+                open "$install_url" 2>/dev/null || echo "  열기: ${install_url}"
+                echo "  Install App → ${org_name} 선택 → All repositories (또는 필요한 레포 선택)"
+                echo -en "  설치 완료 후 Enter... "
+                read -r
+
+                GITHUB_INSTALLATION_ID=""
+                GITHUB_APP_MODE="new"
+                ;;
+            *)
+                GITHUB_APP_MODE="skip"
+                info "GitHub App 설정을 건너뜁니다."
+                ;;
+        esac
+    fi
+
+    # Installation ID 자동 탐지
+    if [ -n "${GITHUB_APP_ID:-}" ] && [ -n "${GITHUB_PRIVATE_KEY:-}" ] && [ -z "${GITHUB_INSTALLATION_ID:-}" ]; then
+        info "Installation ID 자동 탐지 중..."
+        # Private Key를 임시 파일로 저장 (JWT 생성용)
+        local tmp_key
+        tmp_key="$(mktemp)"
+        echo "$GITHUB_PRIVATE_KEY" > "$tmp_key"
+        chmod 600 "$tmp_key"
+
+        local jwt
+        jwt="$(generate_github_jwt "$GITHUB_APP_ID" "$tmp_key")"
+        GITHUB_INSTALLATION_ID="$(curl -s \
+            -H "Authorization: Bearer ${jwt}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations" | jq -r '.[0].id // empty')"
+        rm -f "$tmp_key"
+
+        if [ -n "$GITHUB_INSTALLATION_ID" ]; then
+            success "Installation ID 자동 탐지: ${GITHUB_INSTALLATION_ID}"
+        else
+            warn "Installation ID를 찾을 수 없습니다."
+            echo -en "  GITHUB_INSTALLATION_ID (수동 입력): "
+            read -r GITHUB_INSTALLATION_ID
+        fi
+    fi
+    echo ""
+
+    # ── 2.7 추가 설정 (선택) ──
     echo -e "${BOLD}── 추가 설정 (선택) ──${NC}"
 
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
@@ -297,7 +437,7 @@ phase2_user_input() {
     [ -n "${ANTHROPIC_API_KEY}" ] && info "ANTHROPIC_API_KEY 설정됨" || info "ANTHROPIC_API_KEY 없음 (Claude 구독 사용)"
 
     if [ -z "${GITHUB_TOKEN:-}" ]; then
-        echo -en "  GITHUB_TOKEN ${DIM}[Enter로 건너뛰기]${NC}: "
+        echo -en "  GITHUB_TOKEN (PAT 폴백) ${DIM}[Enter로 건너뛰기]${NC}: "
         read -r input; GITHUB_TOKEN="${input:-}"
     fi
     [ -n "${GITHUB_TOKEN}" ] && info "GITHUB_TOKEN 설정됨" || info "GITHUB_TOKEN 없음"
@@ -314,6 +454,16 @@ phase2_user_input() {
     set_state "bot_display_name" "$BOT_DISPLAY_NAME"
     set_state "bot_icon_path" "$BOT_ICON_PATH"
     set_state "slack_tokens_provided" "$SLACK_TOKENS_PROVIDED"
+    set_state "github_app_mode" "${GITHUB_APP_MODE:-skip}"
+    [ -n "${GITHUB_APP_ID:-}" ] && set_state "github_app_id" "$GITHUB_APP_ID"
+    [ -n "${GITHUB_INSTALLATION_ID:-}" ] && set_state "github_installation_id" "$GITHUB_INSTALLATION_ID"
+    # Private key는 multiline이라 state file에 저장 불가 → 별도 파일
+    if [ -n "${GITHUB_PRIVATE_KEY:-}" ]; then
+        local key_file="${REPO_DIR}/.github-private-key.pem"
+        echo "$GITHUB_PRIVATE_KEY" > "$key_file"
+        chmod 600 "$key_file"
+        set_state "github_private_key_file" "$key_file"
+    fi
 
     mark_done "phase2"
     success "Phase 2 완료: 모든 설정 수집됨"
@@ -342,6 +492,14 @@ phase3_unattended() {
     BOT_DISPLAY_NAME="$(get_state bot_display_name "${BOT_DISPLAY_NAME:-Claude Code}")"
     BOT_ICON_PATH="$(get_state bot_icon_path "${BOT_ICON_PATH:-~/bot.png}")"
     SLACK_TOKENS_PROVIDED="$(get_state slack_tokens_provided "${SLACK_TOKENS_PROVIDED:-false}")"
+    GITHUB_APP_MODE="$(get_state github_app_mode "${GITHUB_APP_MODE:-skip}")"
+    GITHUB_APP_ID="$(get_state github_app_id "${GITHUB_APP_ID:-}")"
+    GITHUB_INSTALLATION_ID="$(get_state github_installation_id "${GITHUB_INSTALLATION_ID:-}")"
+    local gh_key_file
+    gh_key_file="$(get_state github_private_key_file "")"
+    if [ -n "$gh_key_file" ] && [ -f "$gh_key_file" ]; then
+        GITHUB_PRIVATE_KEY="$(cat "$gh_key_file")"
+    fi
 
     local total=9
     local step=0
@@ -377,13 +535,23 @@ phase3_unattended() {
 
     cd "${DEPLOY_DIR}"
 
-    # @slack/cli-hooks 설치
-    if ! grep -q "@slack/cli-hooks" "${DEPLOY_DIR}/package.json" 2>/dev/null; then
-        npm install --save-dev @slack/cli-hooks --silent 2>/dev/null
+    # @slack/cli-hooks 설치 (바이너리 존재 확인)
+    if [ ! -x "${DEPLOY_DIR}/node_modules/.bin/slack-cli-get-hooks" ]; then
+        info "  @slack/cli-hooks 설치 중..."
+        npm install --save-dev @slack/cli-hooks 2>/dev/null
         success "  @slack/cli-hooks 설치됨"
     else
         success "  @slack/cli-hooks 이미 존재"
     fi
+
+    # npx 절대 경로 탐색 (Slack CLI가 PATH를 못 찾는 문제 해결)
+    local npx_path
+    npx_path="$(command -v npx)"
+    if [ -z "$npx_path" ]; then
+        fail "  npx를 찾을 수 없습니다"
+        exit 1
+    fi
+    success "  npx 경로: ${npx_path}"
 
     # manifest.json 생성
     cat > "${DEPLOY_DIR}/manifest.json" << MANIFEST_EOF
@@ -438,13 +606,67 @@ phase3_unattended() {
 MANIFEST_EOF
     success "  manifest.json 생성됨 (앱: ${SLACK_APP_NAME}, 봇: ${BOT_DISPLAY_NAME})"
 
-    # slack init (idempotent — .slack/ 이미 있으면 건너뜀)
+    # .slack/ 디렉토리 수동 생성 (slack init은 interactive prompt가 있어서 사용 안 함)
     if [ ! -d "${DEPLOY_DIR}/.slack" ]; then
-        info "  slack init 실행..."
-        slack init --force 2>/dev/null || warn "  slack init에 문제 발생 (수동 확인 필요)"
+        mkdir -p "${DEPLOY_DIR}/.slack"
+
+        # .slack/.gitignore
+        cat > "${DEPLOY_DIR}/.slack/.gitignore" << 'SLACKGIT_EOF'
+apps.json
+apps.dev.json
+SLACKGIT_EOF
+
+        # .slack/config.json — manifest source를 local로 설정
+        cat > "${DEPLOY_DIR}/.slack/config.json" << 'SLACKCFG_EOF'
+{
+  "manifest-source": "local"
+}
+SLACKCFG_EOF
+
         success "  .slack/ 디렉토리 생성됨"
     else
         success "  .slack/ 이미 존재"
+    fi
+
+    # .slack/hooks.json — 절대 경로로 npx 지정 (Slack CLI PATH 문제 해결)
+    cat > "${DEPLOY_DIR}/.slack/hooks.json" << HOOKS_EOF
+{
+  "hooks": {
+    "get-hooks": "${npx_path} -q --no-install -p @slack/cli-hooks slack-cli-get-hooks",
+    "get-manifest": "${npx_path} -q --no-install -p @slack/cli-hooks slack-cli-get-manifest",
+    "start": "${npx_path} -q --no-install -p @slack/cli-hooks slack-cli-start",
+    "check-update": "${npx_path} -q --no-install -p @slack/cli-hooks slack-cli-check-update",
+    "doctor": "${npx_path} -q --no-install -p @slack/cli-hooks slack-cli-doctor"
+  },
+  "config": {
+    "watch": {
+      "manifest": { "paths": ["manifest.json"] },
+      "app": { "paths": ["."], "filter-regex": "\\\\.(js|ts)$" }
+    },
+    "protocol-version": ["message-boundaries"],
+    "sdk-managed-connection-enabled": true
+  }
+}
+HOOKS_EOF
+    success "  hooks.json 생성됨 (npx: ${npx_path})"
+
+    # Slack 앱 생성 (slack run으로 앱 생성 → start 실패해도 앱은 생성됨)
+    if [ ! -f "${DEPLOY_DIR}/.slack/apps.dev.json" ]; then
+        echo ""
+        info "  Slack 앱을 생성합니다."
+        info "  'slack run'이 앱 생성 후 시작을 시도합니다."
+        info "  앱이 생성되면 Ctrl+C로 중단하세요."
+        echo ""
+        slack run || true
+        echo ""
+        if [ -f "${DEPLOY_DIR}/.slack/apps.dev.json" ]; then
+            success "  Slack 앱 생성됨: $(cat "${DEPLOY_DIR}/.slack/apps.dev.json")"
+        else
+            warn "  Slack 앱이 생성되지 않았습니다."
+            info "  수동으로 'cd ${DEPLOY_DIR} && slack run' 실행하세요."
+        fi
+    else
+        success "  Slack 앱 이미 존재: $(cat "${DEPLOY_DIR}/.slack/apps.dev.json")"
     fi
 
     # ── 3.3 설정 파일 생성 ──
@@ -453,6 +675,30 @@ MANIFEST_EOF
 
     # .env
     if [ ! -f "${DEPLOY_DIR}/.env" ]; then
+        # GitHub App 섹션 동적 생성
+        local github_app_section=""
+        if [ "${GITHUB_APP_MODE}" != "skip" ] && [ -n "${GITHUB_APP_ID:-}" ]; then
+            github_app_section="# === GitHub App ===
+GITHUB_APP_ID=${GITHUB_APP_ID}
+GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID:-}"
+            if [ -n "${GITHUB_PRIVATE_KEY:-}" ]; then
+                github_app_section="${github_app_section}
+GITHUB_PRIVATE_KEY=\"${GITHUB_PRIVATE_KEY}\""
+            else
+                github_app_section="${github_app_section}
+# GITHUB_PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----
+# ...
+# -----END RSA PRIVATE KEY-----\""
+            fi
+        else
+            github_app_section="# === GitHub App (선택) ===
+# GITHUB_APP_ID=
+# GITHUB_PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----
+# ...
+# -----END RSA PRIVATE KEY-----\"
+# GITHUB_INSTALLATION_ID="
+        fi
+
         cat > "${DEPLOY_DIR}/.env" << ENV_EOF
 # === Slack (필수) ===
 SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-xoxb-PASTE-HERE}
@@ -466,6 +712,8 @@ BASE_DIRECTORY=${BASE_DIRECTORY}
 ${ANTHROPIC_API_KEY:+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}}
 ${ANTHROPIC_API_KEY:-# ANTHROPIC_API_KEY=sk-ant-...}
 
+${github_app_section}
+
 # === GitHub Token (선택) ===
 ${GITHUB_TOKEN:+GITHUB_TOKEN=${GITHUB_TOKEN}}
 ${GITHUB_TOKEN:-# GITHUB_TOKEN=ghp_...}
@@ -476,6 +724,10 @@ ${GITHUB_TOKEN:-# GITHUB_TOKEN=ghp_...}
 # DEFAULT_UPDATE_CHANNEL=#ai
 ENV_EOF
         chmod 600 "${DEPLOY_DIR}/.env"
+        # 임시 private key 파일 정리
+        local gh_key_tmp
+        gh_key_tmp="$(get_state github_private_key_file "")"
+        [ -n "$gh_key_tmp" ] && [ -f "$gh_key_tmp" ] && rm -f "$gh_key_tmp"
         success "  .env 생성됨"
     else
         success "  .env 이미 존재 (보존)"
@@ -554,17 +806,19 @@ CONFIG_EOF
         reg_token=$(gh api -X POST "repos/${REPO}/actions/runners/registration-token" --jq '.token')
 
         cd "$runner_dir"
+        local runner_name
+        runner_name="$(hostname -s)"
         ./config.sh \
             --url "https://github.com/${REPO}" \
             --token "$reg_token" \
-            --name "$(hostname -s)-${DEPLOY_ENV}" \
-            --labels "self-hosted,macOS,$(uname -m),soma-work,${DEPLOY_ENV}-node" \
+            --name "${runner_name}" \
+            --labels "self-hosted,macOS,$(uname -m),${runner_name}" \
             --unattended \
             --replace
 
         ./svc.sh install 2>/dev/null || true
         ./svc.sh start 2>/dev/null || true
-        success "  Runner 등록 완료: $(hostname -s)-${DEPLOY_ENV}"
+        success "  Runner 등록 완료: ${runner_name} (labels: self-hosted,macOS,$(uname -m),${runner_name})"
     fi
     cd "${DEPLOY_DIR}"
 
