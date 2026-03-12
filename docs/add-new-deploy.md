@@ -54,6 +54,8 @@
 - 같은 Slack 토큰으로 2개 인스턴스 절대 금지 (메시지 중복/충돌)
 - 설정 파일(.env 등)은 배포 시 보존됨 (rsync exclude)
 
+> **macmini main bootstrap**: 첫 `main` 배포는 self-hosted runner가 `/opt/soma-work/dev`의 설정 구조를 seed로 복사하고, legacy 운영 경로 `/Users/dd/app.claude-code-slack-bot/.env` 및 `/Users/dd/app.claude-code-slack-bot/data`를 `/opt/soma-work/main`으로 가져온 뒤 `.main-bootstrap.json` marker를 남긴다. marker가 생긴 뒤에는 이후 `main` 배포가 코드만 갱신한다.
+
 ---
 
 ## 2. 사전 준비 (수동)
@@ -726,7 +728,7 @@ cat > "${DEPLOY_DIR}/.system.prompt" << 'PROMPT_EOF'
 ## Repository
 - https://github.com/2lab-ai/soma/
 - https://github.com/2lab-ai/soma-work/
-  - PR target: develop
+  - PR target: dev
 PROMPT_EOF
 ```
 
@@ -1227,5 +1229,5 @@ jobs:
       - ${{ github.ref_name == 'main' && 'prod-node' || 'dev-node' }}
 ```
 
-이렇게 하면 main 브랜치는 `prod-node` 레이블이 있는 Runner에서만,
-dev 브랜치는 `dev-node` 레이블이 있는 Runner에서만 실행된다.
+현재 워크플로우에서는 main 브랜치가 macmini의 `soma-work` runner에서 `/opt/soma-work/main`으로 배포되고,
+dev 브랜치는 `soma-work`와 `oudwood-512` runner에서 `/opt/soma-work/dev`로 배포된다.

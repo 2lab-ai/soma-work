@@ -62,8 +62,8 @@ JSON
 JSON
 
     gh api -X POST "repos/$owner_repo/environments/development/deployment-branch-policies" \
-        --field name="develop" --field type="branch" 2>/dev/null || true
-    success "  Branch policy: develop → development"
+        --field name="dev" --field type="branch" 2>/dev/null || true
+    success "  Branch policy: dev → development"
 
     echo ""
     success "GitHub Environments configured"

@@ -50,7 +50,7 @@ run_step() {
 
     # Collect PR target branch
     local pr_target
-    pr_target=$(ask_value "Default PR target branch" "pr_target" "develop")
+    pr_target=$(ask_value "Default PR target branch" "pr_target" "dev")
 
     # Generate .system.prompt
     local prompt_file="$REPO_DIR/.system.prompt"
