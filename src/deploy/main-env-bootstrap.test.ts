@@ -116,6 +116,35 @@ describe('main-env-bootstrap', () => {
     ).rejects.toThrow(/non-empty target/i);
   });
 
+  it('fails with an actionable message when target parent is not writable', async () => {
+    const devSourceDir = makeTempDir('bootstrap-dev-');
+    const legacyRootDir = makeTempDir('bootstrap-legacy-');
+    const rootDir = makeTempDir('bootstrap-root-');
+    const blockedParent = path.join(rootDir, 'blocked');
+    const targetDir = path.join(blockedParent, 'main');
+
+    fs.mkdirSync(blockedParent, { recursive: true });
+    fs.chmodSync(blockedParent, 0o555);
+
+    fs.writeFileSync(path.join(devSourceDir, '.system.prompt'), 'prompt', 'utf8');
+    writeJson(path.join(devSourceDir, 'config.json'), { plugin: { enabled: true } });
+    writeJson(path.join(devSourceDir, 'mcp-servers.json'), { mcpServers: { github: { type: 'stdio' } } });
+    fs.writeFileSync(path.join(legacyRootDir, '.env'), 'SLACK_BOT_TOKEN=legacy\n', 'utf8');
+    fs.mkdirSync(path.join(legacyRootDir, 'data'), { recursive: true });
+
+    try {
+      await expect(
+        bootstrapMainEnvironment({
+          devSourceDir,
+          legacyRootDir,
+          targetDir,
+        })
+      ).rejects.toThrow(/pre-create .* and chown it to the runner user/i);
+    } finally {
+      fs.chmodSync(blockedParent, 0o755);
+    }
+  });
+
   it('normalizes legacy user settings and sessions after copy', async () => {
     const targetDir = makeTempDir('bootstrap-target-');
 
