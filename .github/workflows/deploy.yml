@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, deploy/prod]
   workflow_dispatch:
 
 concurrency:
@@ -25,15 +25,15 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Determine environment
-        id: env
+      - name: Determine deployment target
+        id: target
         run: |
           case "${{ github.ref_name }}" in
             main)
-              echo "env=main" >> "$GITHUB_OUTPUT"
+              echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
               ;;
-            dev)
-              echo "env=dev" >> "$GITHUB_OUTPUT"
+            deploy/prod)
+              echo "deploy_env=main" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Unsupported branch: ${{ github.ref_name }}"
@@ -47,18 +47,6 @@ jobs:
           echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
 
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            cat >> "$GITHUB_OUTPUT" <<'EOF'
-          {"include":[
-            {
-              "name":"mac-mini-main",
-              "runner_label":"soma-work",
-              "github_env":"production",
-              "deploy_env":"main",
-              "target_dir":"/opt/soma-work/main"
-            }
-          ]}
-          EOF
-          else
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
@@ -77,6 +65,18 @@ jobs:
             }
           ]}
           EOF
+          else
+            cat >> "$GITHUB_OUTPUT" <<'EOF'
+          {"include":[
+            {
+              "name":"mac-mini-main",
+              "runner_label":"soma-work",
+              "github_env":"production",
+              "deploy_env":"main",
+              "target_dir":"/opt/soma-work/main"
+            }
+          ]}
+          EOF
           fi
 
           echo 'EOF' >> "$GITHUB_OUTPUT"
@@ -88,7 +88,7 @@ jobs:
         run: npm run build
 
       - name: Version bump & release notes
-        run: ./scripts/version-bump.sh ${{ steps.env.outputs.env }}
+        run: ./scripts/version-bump.sh "${{ github.ref_name }}"
 
       - name: Pack deploy bundle
         run: |

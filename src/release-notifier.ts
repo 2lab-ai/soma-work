@@ -20,6 +20,7 @@ export interface VersionInfo {
   commitHashShort: string;
   commitTime: string;
   branch: string;
+  releaseTrack?: string;
   buildTime: string;
   releaseNotes: string;
   isRollback?: boolean;

@@ -10,8 +10,8 @@ run_step() {
     fi
 
     echo -e "Deployment directories hold separate instances for production and development."
-    echo -e "  Production:  ${CYAN}/opt/soma-work/main${NC}  (branch: main)"
-    echo -e "  Development: ${CYAN}/opt/soma-work/dev${NC}   (branch: dev)"
+    echo -e "  Production:  ${CYAN}/opt/soma-work/main${NC}  (branch: deploy/prod)"
+    echo -e "  Development: ${CYAN}/opt/soma-work/dev${NC}   (branch: main)"
     echo ""
 
     local envs_to_setup=()
@@ -44,8 +44,8 @@ run_step() {
             # Still do npm ci + build for updates
             if ask_confirm "  Update dependencies and rebuild?" "Y"; then
                 cd "$dir" || continue
-                local branch="main"
-                [[ "$env" == "dev" ]] && branch="dev"
+                local branch="deploy/prod"
+                [[ "$env" == "dev" ]] && branch="main"
                 git fetch origin "$branch" 2>/dev/null || true
                 git reset --hard "origin/$branch" 2>/dev/null || true
                 npm ci
@@ -79,8 +79,8 @@ run_step() {
             git clone "$clean_url" "$dir"
 
             cd "$dir" || continue
-            local branch="main"
-            [[ "$env" == "dev" ]] && branch="dev"
+            local branch="deploy/prod"
+            [[ "$env" == "dev" ]] && branch="main"
             git checkout "$branch" 2>/dev/null || git checkout -b "$branch"
 
             info "Installing dependencies..."

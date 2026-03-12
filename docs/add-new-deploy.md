@@ -38,7 +38,7 @@
                         ┌──────────────────┼──────────────────┐
                         ▼                  ▼                  ▼
                /opt/soma-work/main  /opt/soma-work/dev   /opt/soma-work/<custom>
-               (main 브랜치)         (dev 브랜치)          (추가 브랜치)
+               (deploy/prod 브랜치) (main 브랜치)         (추가 브랜치)
                         │                  │                  │
                         ▼                  ▼                  ▼
                LaunchAgent           LaunchAgent          LaunchAgent
@@ -50,11 +50,11 @@
 ```
 
 **핵심 원칙**:
-- 브랜치 1개 = 배포 환경 1개 = Slack 앱 1개 = 전용 채널 1개
+- 배포 소스 브랜치 1개 = 배포 환경 1개 = Slack 앱 1개 = 전용 채널 1개
 - 같은 Slack 토큰으로 2개 인스턴스 절대 금지 (메시지 중복/충돌)
 - 설정 파일(.env 등)은 배포 시 보존됨 (rsync exclude)
 
-> **macmini main bootstrap**: 첫 `main` 배포는 self-hosted runner가 `/opt/soma-work/dev`의 설정 구조를 seed로 복사하고, legacy 운영 경로 `/Users/dd/app.claude-code-slack-bot/.env` 및 `/Users/dd/app.claude-code-slack-bot/data`를 `/opt/soma-work/main`으로 가져온 뒤 `.main-bootstrap.json` marker를 남긴다. marker가 생긴 뒤에는 이후 `main` 배포가 코드만 갱신한다.
+> **macmini main bootstrap**: 첫 `deploy/prod` 배포는 self-hosted runner가 `/opt/soma-work/dev`의 설정 구조를 seed로 복사하고, legacy 운영 경로 `/Users/dd/app.claude-code-slack-bot/.env` 및 `/Users/dd/app.claude-code-slack-bot/data`를 `/opt/soma-work/main`으로 가져온 뒤 `.main-bootstrap.json` marker를 남긴다. marker가 생긴 뒤에는 이후 `deploy/prod` 배포가 코드만 갱신한다.
 
 ---
 
@@ -283,7 +283,7 @@ mkdir -p "${DEPLOY_DIR}"/{logs,data}
 CI가 첫 배포를 하기 전에 수동으로 초기 설정:
 
 ```bash
-DEPLOY_BRANCH="${DEPLOY_BRANCH:-dev}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 
 # 클론 (또는 service.sh setup 사용)
 git clone "https://github.com/${REPO}.git" "${DEPLOY_DIR}"
@@ -728,7 +728,7 @@ cat > "${DEPLOY_DIR}/.system.prompt" << 'PROMPT_EOF'
 ## Repository
 - https://github.com/2lab-ai/soma/
 - https://github.com/2lab-ai/soma-work/
-  - PR target: dev
+  - PR target: main
 PROMPT_EOF
 ```
 
@@ -789,21 +789,21 @@ on:
   push:
     branches:
       - main
-      - dev
+      - deploy/prod
       - staging    # ← 새 브랜치 추가
 ```
 
 ### 9.2 deploy.yml 환경 매핑 수정
 
-현재 `deploy.yml`은 main/dev만 분기한다. 추가 환경을 지원하려면:
+현재 `deploy.yml`은 `main -> /opt/soma-work/dev`, `deploy/prod -> /opt/soma-work/main` 으로 분기한다. 추가 환경을 지원하려면:
 
 ```yaml
       - name: Determine environment
         id: env
         run: |
           case "${{ github.ref_name }}" in
-            main)    echo "env=main" >> "$GITHUB_OUTPUT" ;;
-            dev)     echo "env=dev" >> "$GITHUB_OUTPUT" ;;
+            main)    echo "env=dev" >> "$GITHUB_OUTPUT" ;;
+            deploy/prod) echo "env=main" >> "$GITHUB_OUTPUT" ;;
             staging) echo "env=staging" >> "$GITHUB_OUTPUT" ;;
             *)       echo "env=dev" >> "$GITHUB_OUTPUT" ;;
           esac
@@ -1109,7 +1109,7 @@ bot_config:
 
 optional:
   DEPLOY_ENV: "dev"                    # 기본값
-  DEPLOY_BRANCH: "dev"                # 기본값
+  DEPLOY_BRANCH: "main"               # 기본값 (dev 환경 기준)
   REPO: "2lab-ai/soma-work"           # 기본값
   BASE_DIRECTORY: "/tmp"              # 기본값
   ANTHROPIC_API_KEY: ""
@@ -1210,10 +1210,10 @@ rm -rf /opt/soma-work/${DEPLOY_ENV}
 ### Runner 레이블 전략
 
 ```bash
-# 서버 A (main 전용)
+# 서버 A (deploy/prod 전용)
 ./config.sh ... --labels "self-hosted,macOS,ARM64,soma-work,prod-node"
 
-# 서버 B (dev 전용)
+# 서버 B (main 전용 dev 배포)
 ./config.sh ... --labels "self-hosted,macOS,ARM64,soma-work,dev-node"
 ```
 
@@ -1226,8 +1226,8 @@ jobs:
     runs-on:
       - self-hosted
       - soma-work
-      - ${{ github.ref_name == 'main' && 'prod-node' || 'dev-node' }}
+      - ${{ github.ref_name == 'deploy/prod' && 'prod-node' || 'dev-node' }}
 ```
 
-현재 워크플로우에서는 main 브랜치가 macmini의 `soma-work` runner에서 `/opt/soma-work/main`으로 배포되고,
-dev 브랜치는 `soma-work`와 `oudwood-512` runner에서 `/opt/soma-work/dev`로 배포된다.
+현재 워크플로우에서는 main 브랜치가 macmini와 oudwood-512의 `/opt/soma-work/dev`로 배포되고,
+deploy/prod 브랜치는 macmini의 `/opt/soma-work/main`으로 배포된다.
