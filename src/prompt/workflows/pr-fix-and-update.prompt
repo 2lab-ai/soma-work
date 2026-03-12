@@ -140,10 +140,10 @@ push와 검증이 성공하면 수동 안내로 끝내지 말고, 즉시 `mcp__m
 
 ### 8. 코드 정리 (rebase + code-simplify)
 
-1. `origin/develop` 최신 기준으로 rebase:
+1. `origin/main` 최신 기준으로 rebase:
 ```bash
 git fetch origin
-git rebase origin/develop
+git rebase origin/main
 ```
 2. rebase conflict가 나면 아래 순서로 처리:
 ```bash
@@ -153,7 +153,7 @@ git add <충돌_해결한_파일>
 git rebase --continue
 ```
 - 해결이 불가능하거나 의도가 불명확하면 `git rebase --abort` 후 유저에게 즉시 확인한다.
-3. code-simplify agent를 `origin/develop...HEAD` diff 기준으로 실행한다.
+3. code-simplify agent를 `origin/main...HEAD` diff 기준으로 실행한다.
 4. code-simplify 결과가 비어 있으면 "변경 없음"으로 기록하고 추가 커밋 없이 다음 단계로 진행한다.
 5. code-simplify 결과가 있으면 반영 후 테스트를 다시 실행하고 커밋/푸시한다.
 

@@ -59,6 +59,16 @@ set_state() {
 is_done() { [ "$(get_state "$1")" = "done" ]; }
 mark_done() { set_state "$1" "done"; }
 
+default_branch_for_env() {
+    local deploy_env="$1"
+
+    case "$deploy_env" in
+        main) echo "deploy/prod" ;;
+        dev) echo "main" ;;
+        *) echo "$deploy_env" ;;
+    esac
+}
+
 # --- GitHub App JWT 생성 ---
 generate_github_jwt() {
     local app_id="$1" key_file="$2"
@@ -183,8 +193,10 @@ phase2_user_input() {
     info "DEPLOY_ENV=${DEPLOY_ENV}"
 
     if [ -z "${DEPLOY_BRANCH:-}" ]; then
-        echo -en "  배포 브랜치 ${DIM}[${DEPLOY_ENV}]${NC}: "
-        read -r input; DEPLOY_BRANCH="${input:-${DEPLOY_ENV}}"
+        local default_branch
+        default_branch="$(default_branch_for_env "$DEPLOY_ENV")"
+        echo -en "  배포 브랜치 ${DIM}[${default_branch}]${NC}: "
+        read -r input; DEPLOY_BRANCH="${input:-${default_branch}}"
     fi
     info "DEPLOY_BRANCH=${DEPLOY_BRANCH}"
 
@@ -484,7 +496,7 @@ phase3_unattended() {
 
     # Restore state
     DEPLOY_ENV="$(get_state deploy_env "${DEPLOY_ENV:-dev}")"
-    DEPLOY_BRANCH="$(get_state deploy_branch "${DEPLOY_BRANCH:-dev}")"
+    DEPLOY_BRANCH="$(get_state deploy_branch "${DEPLOY_BRANCH:-$(default_branch_for_env "$DEPLOY_ENV")}")"
     DEPLOY_DIR="$(get_state deploy_dir "/opt/soma-work/${DEPLOY_ENV}")"
     REPO="$(get_state repo "${REPO:-2lab-ai/soma-work}")"
     BASE_DIRECTORY="$(get_state base_directory "${BASE_DIRECTORY:-/tmp}")"
@@ -740,7 +752,7 @@ ENV_EOF
 ## Repository
 - https://github.com/2lab-ai/soma/
 - https://github.com/2lab-ai/soma-work/
-  - PR target: dev
+  - PR target: main
 PROMPT_EOF
         success "  .system.prompt 생성됨"
     else

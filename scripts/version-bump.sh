@@ -1,21 +1,39 @@
 #!/bin/bash
 # version-bump.sh — Find last version tag, bump patch, generate AI release notes, write version.json
 #
-# Usage: ./scripts/version-bump.sh [branch]
-#   branch: 'main' or 'dev' (default: current git branch)
+# Usage: ./scripts/version-bump.sh [git-ref]
+#   git-ref: 'main' or 'deploy/prod' (default: current git branch)
 #
 # Version scheme:
 #   Base tags:   v0.2, v0.3 (manual milestones)
-#   Main deploy: v0.2.1, v0.2.2, ... (auto patch bump from latest non-dev tag)
-#   Dev deploy:  v0.2.1-dev, v0.2.2-dev, ... (auto patch bump, -dev suffix)
+#   deploy/prod: v0.2.1, v0.2.2, ... (auto patch bump from latest non-dev tag)
+#   main:        v0.2.1-dev, v0.2.2-dev, ... (auto patch bump, -dev suffix)
 #
 # Outputs: dist/version.json with version metadata and release notes
 # Side effect: creates and pushes a new git tag (vX.Y.Z or vX.Y.Z-dev)
 
 set -euo pipefail
 
-BRANCH="${1:-$(git branch --show-current)}"
+GIT_REF="${1:-$(git branch --show-current)}"
 DIST_DIR="dist"
+
+resolve_release_track() {
+  local git_ref="$1"
+
+  case "$git_ref" in
+    main|dev)
+      echo "dev"
+      ;;
+    deploy/prod)
+      echo "main"
+      ;;
+    *)
+      echo "main"
+      ;;
+  esac
+}
+
+RELEASE_TRACK="$(resolve_release_track "$GIT_REF")"
 
 # --- Ensure tags are synced (critical for self-hosted runners) ---
 
@@ -51,59 +69,59 @@ bump_patch() {
 # --- Find latest version tag (branch-aware) ---
 #
 # Strategy:
-#   1. Find branch-specific tags first (dev → *-dev, main → non-dev)
+#   1. Find release-track-specific tags first (dev → *-dev, main → non-dev)
 #   2. Also find the latest base/release tag as fallback
 #   3. Pick whichever is newer (higher version)
 
 find_latest_tag() {
-  local branch="$1"
-  local branch_tag=""
+  local release_track="$1"
+  local track_tag=""
   local base_tag=""
 
-  if [[ "$branch" == "dev" ]]; then
+  if [[ "$release_track" == "dev" ]]; then
     # Dev: look for -dev tags first
-    branch_tag=$(git tag -l 'v*-dev' --sort=-version:refname | head -1)
+    track_tag=$(git tag -l 'v*-dev' --sort=-version:refname | head -1)
   else
     # Main: look for non-dev tags (exclude -dev suffix)
-    branch_tag=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' | head -1)
+    track_tag=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' | head -1)
   fi
 
   # Also find the latest base release tag (no -dev, used as milestone)
   base_tag=$(git tag -l 'v*' --sort=-version:refname | grep -v '\-dev$' | head -1)
 
   # Compare and pick the higher version
-  if [[ -z "$branch_tag" && -z "$base_tag" ]]; then
+  if [[ -z "$track_tag" && -z "$base_tag" ]]; then
     echo ""
     return
   fi
 
-  if [[ -z "$branch_tag" ]]; then
+  if [[ -z "$track_tag" ]]; then
     echo "$base_tag"
     return
   fi
 
   if [[ -z "$base_tag" ]]; then
-    echo "$branch_tag"
+    echo "$track_tag"
     return
   fi
 
   # Normalize both and compare
-  local branch_ver base_ver
-  branch_ver=$(normalize_version "$branch_tag")
+  local track_ver base_ver
+  track_ver=$(normalize_version "$track_tag")
   base_ver=$(normalize_version "$base_tag")
 
   # Use sort -V to find the higher version
   local higher
-  higher=$(printf '%s\n%s\n' "$branch_ver" "$base_ver" | sort -V | tail -1)
+  higher=$(printf '%s\n%s\n' "$track_ver" "$base_ver" | sort -V | tail -1)
 
-  if [[ "$higher" == "$branch_ver" ]]; then
-    echo "$branch_tag"
+  if [[ "$higher" == "$track_ver" ]]; then
+    echo "$track_tag"
   else
     echo "$base_tag"
   fi
 }
 
-LATEST_TAG=$(find_latest_tag "$BRANCH")
+LATEST_TAG=$(find_latest_tag "$RELEASE_TRACK")
 
 if [[ -z "$LATEST_TAG" ]]; then
   echo "[version-bump] No existing tags found, starting at v0.1.0"
@@ -118,7 +136,7 @@ else
 fi
 
 # Dev deploys get -dev suffix to avoid tag collision with main
-if [[ "$BRANCH" == "dev" ]]; then
+if [[ "$RELEASE_TRACK" == "dev" ]]; then
   NEW_TAG="v${NEW_VERSION}-dev"
 else
   NEW_TAG="v${NEW_VERSION}"
@@ -142,7 +160,7 @@ if [[ -n "$PREV_TAG" ]]; then
       echo "[version-bump] Rollback detected: HEAD is behind $PREV_TAG"
 
       # Find which tag HEAD matches (branch-aware)
-      if [[ "$BRANCH" == "dev" ]]; then
+      if [[ "$RELEASE_TRACK" == "dev" ]]; then
         ROLLBACK_TARGET=$(git tag --points-at HEAD | grep '\-dev$' | head -1)
       else
         ROLLBACK_TARGET=$(git tag --points-at HEAD | grep -v '\-dev$' | head -1)
@@ -236,16 +254,17 @@ const data = {
   commitHashShort: process.argv[6],
   commitTime: process.argv[7],
   branch: process.argv[8],
-  buildTime: process.argv[9],
-  releaseNotes: process.argv[10],
-  isRollback: process.argv[11] === 'true',
-  rollbackTargetTag: process.argv[12] || null,
-  rollbackTargetVersion: process.argv[13] || null,
+  releaseTrack: process.argv[9],
+  buildTime: process.argv[10],
+  releaseNotes: process.argv[11],
+  isRollback: process.argv[12] === 'true',
+  rollbackTargetTag: process.argv[13] || null,
+  rollbackTargetVersion: process.argv[14] || null,
 };
 process.stdout.write(JSON.stringify(data, null, 2) + '\n');
 " "$NEW_VERSION" "$PREV_VERSION" "$NEW_TAG" "${PREV_TAG:-none}" \
-  "$COMMIT_HASH" "$COMMIT_HASH_SHORT" "$COMMIT_TIME" "$BRANCH" \
-  "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" > "$DIST_DIR/version.json"
+  "$COMMIT_HASH" "$COMMIT_HASH_SHORT" "$COMMIT_TIME" "$GIT_REF" \
+  "$RELEASE_TRACK" "$BUILD_TIME" "$RELEASE_NOTES" "$IS_ROLLBACK" "$ROLLBACK_TARGET" "$ROLLBACK_TARGET_VERSION" > "$DIST_DIR/version.json"
 
 echo "[version-bump] Wrote $DIST_DIR/version.json"
 cat "$DIST_DIR/version.json"
