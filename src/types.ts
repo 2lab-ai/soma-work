@@ -15,6 +15,7 @@ export type ActivityState = 'working' | 'waiting' | 'idle';
  * Workflow types for session routing
  */
 export type WorkflowType =
+  | 'onboarding'
   | 'jira-executive-summary'
   | 'jira-brainstorming'
   | 'jira-planning'
@@ -22,6 +23,7 @@ export type WorkflowType =
   | 'pr-review'
   | 'pr-fix-and-update'
   | 'pr-docs-confluence'
+  | 'deploy'
   | 'default';
 
 /**
@@ -56,6 +58,7 @@ export interface Continuation {
   prompt: string;
   resetSession?: boolean;  // Reset session before executing (triggers re-dispatch)
   dispatchText?: string;   // Text to use for dispatch classification (if different from prompt)
+  forceWorkflow?: WorkflowType;
 }
 
 /**
@@ -78,6 +81,117 @@ export interface SessionLinks {
   issue?: SessionLink;
   pr?: SessionLink;
   doc?: SessionLink;
+}
+
+/**
+ * History of resources linked to a session.
+ * Keeps chronological references while SessionLinks stores active pointers.
+ */
+export interface SessionLinkHistory {
+  issues: SessionLink[];
+  prs: SessionLink[];
+  docs: SessionLink[];
+}
+
+export type SessionResourceType = 'issue' | 'pr' | 'doc';
+
+export interface SessionResourceSnapshot {
+  issues: SessionLink[];
+  prs: SessionLink[];
+  docs: SessionLink[];
+  active: SessionLinks;
+  sequence: number;
+}
+
+export interface SessionResourceAddOperation {
+  action: 'add';
+  resourceType: SessionResourceType;
+  link: SessionLink;
+}
+
+export interface SessionResourceRemoveOperation {
+  action: 'remove';
+  resourceType: SessionResourceType;
+  url: string;
+}
+
+export interface SessionResourceSetActiveOperation {
+  action: 'set_active';
+  resourceType: SessionResourceType;
+  url?: string;
+}
+
+export type SessionResourceOperation =
+  | SessionResourceAddOperation
+  | SessionResourceRemoveOperation
+  | SessionResourceSetActiveOperation;
+
+export interface SessionResourceUpdateRequest {
+  expectedSequence?: number;
+  operations: SessionResourceOperation[];
+}
+
+export interface SessionResourceUpdateResult {
+  ok: boolean;
+  reason?: 'SESSION_NOT_FOUND' | 'INVALID_OPERATION' | 'SEQUENCE_MISMATCH';
+  error?: string;
+  snapshot: SessionResourceSnapshot;
+  sequenceMismatch?: {
+    expected: number;
+    actual: number;
+  };
+}
+
+export interface SaveContextResultFile {
+  name: string;
+  content: string;
+}
+
+export interface SaveContextResultPayload {
+  success?: boolean;
+  status?: string;
+  id?: string;
+  save_id?: string;
+  dir?: string;
+  path?: string;
+  summary?: string;
+  title?: string;
+  files?: SaveContextResultFile[];
+  error?: string;
+}
+
+export interface ActionPanelPRStatus {
+  state: string;      // 'open' | 'closed' | 'merged'
+  mergeable: boolean;
+  draft: boolean;
+  merged: boolean;
+  approved?: boolean; // true if PR has been approved
+  head?: string;      // source branch
+  base?: string;      // target branch
+}
+
+export interface ActionPanelState {
+  channelId?: string;
+  userId?: string;
+  threadTs?: string;
+  threadLink?: string;
+  title?: string;
+  styleVariant?: number;
+  agentPhase?: string;
+  activeTool?: string;
+  statusUpdatedAt?: number;
+  messageTs?: string;
+  choiceMessageTs?: string;
+  choiceMessageLink?: string;
+  latestResponseTs?: string;
+  latestResponseLink?: string;
+  turnSummary?: string;
+  disabled?: boolean;
+  waitingForChoice?: boolean;
+  choiceBlocks?: any[];
+  renderKey?: string;
+  lastRenderedAt?: number;
+  prStatus?: ActionPanelPRStatus;
 }
 
 export interface ConversationSession {
@@ -111,6 +225,12 @@ export interface ConversationSession {
   renewUserMessage?: string;
   // Links attached to this session (issue, PR, doc)
   links?: SessionLinks;
+  // History of linked resources
+  linkHistory?: SessionLinkHistory;
+  // Monotonic sequence for optimistic concurrency on session link updates
+  linkSequence?: number;
+  // Tool-driven save result used by renew command (preferred over text parsing)
+  renewSaveResult?: SaveContextResultPayload;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
@@ -118,6 +238,17 @@ export interface ConversationSession {
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
+  actionPanel?: ActionPanelState;
+  // Log verbosity bitmask (controls which output types are shown in Slack)
+  logVerbosity?: number;
+  // Effort level for Claude thinking (low/medium/high/max)
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
+  threadModel?: 'user-initiated' | 'bot-initiated';
+  // For bot-initiated threads: the root message ts (used for chat.update)
+  threadRootTs?: string;
+  // Onboarding flag: true when session is an onboarding flow for first-time user
+  isOnboarding?: boolean;
 }
 
 export interface WorkingDirectoryConfig {

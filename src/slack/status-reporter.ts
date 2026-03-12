@@ -1,4 +1,4 @@
-import { WebClient } from '@slack/web-api';
+import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
 
 export type StatusType = 'thinking' | 'working' | 'waiting' | 'completed' | 'error' | 'cancelled';
@@ -14,7 +14,7 @@ const STATUS_CONFIG: Record<StatusType, StatusConfig> = {
   waiting: { text: '✋ *Waiting for input...*', emoji: 'raised_hand' },
   completed: { text: '✅ *Task completed*', emoji: 'white_check_mark' },
   error: { text: '❌ *Error occurred*', emoji: 'x' },
-  cancelled: { text: '⏹️ *Cancelled*', emoji: 'stop_sign' },
+  cancelled: { text: '⏹️ *Cancelled*', emoji: 'octagonal_sign' },
 };
 
 export interface StatusMessage {
@@ -30,23 +30,23 @@ export class StatusReporter {
   private logger = new Logger('StatusReporter');
   private statusMessages: Map<string, StatusMessage> = new Map();
 
-  constructor(private client: WebClient) {}
+  constructor(private slackApi: SlackApiHelper) {}
 
   /**
    * Create initial status message and return its timestamp
+   * @param tag Optional verbose tag prefix (e.g. "[STATUS_MESSAGE @compact]")
    */
   async createStatusMessage(
     channel: string,
     threadTs: string,
     sessionKey: string,
-    initialStatus: StatusType = 'thinking'
+    initialStatus: StatusType = 'thinking',
+    tag: string = ''
   ): Promise<string | undefined> {
     try {
       const config = STATUS_CONFIG[initialStatus];
-      const result = await this.client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: config.text,
+      const result = await this.slackApi.postMessage(channel, tag + config.text, {
+        threadTs,
       });
 
       if (result.ts) {
@@ -76,11 +76,11 @@ export class StatusReporter {
 
     try {
       const config = STATUS_CONFIG[status];
-      await this.client.chat.update({
-        channel: statusMessage.channel,
-        ts: statusMessage.ts,
-        text: config.text,
-      });
+      await this.slackApi.updateMessage(
+        statusMessage.channel,
+        statusMessage.ts,
+        config.text
+      );
       this.logger.debug('Updated status message', { sessionKey, status });
     } catch (error) {
       this.logger.error('Failed to update status message', { sessionKey, status, error });
@@ -89,19 +89,17 @@ export class StatusReporter {
 
   /**
    * Update status message using explicit channel and ts (for callback contexts)
+   * @param tag Optional verbose tag prefix
    */
   async updateStatusDirect(
     channel: string,
     ts: string,
-    status: StatusType
+    status: StatusType,
+    tag: string = ''
   ): Promise<void> {
     try {
       const config = STATUS_CONFIG[status];
-      await this.client.chat.update({
-        channel,
-        ts,
-        text: config.text,
-      });
+      await this.slackApi.updateMessage(channel, ts, tag + config.text);
       this.logger.debug('Updated status message directly', { channel, ts, status });
     } catch (error) {
       this.logger.error('Failed to update status message directly', { channel, ts, status, error });

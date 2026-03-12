@@ -5,10 +5,8 @@ allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/scripts/start-ralph-loop.sh)
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat-reply
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini-reply
-  - mcp__plugin_ohmyclaude_gpt-as-mcp__codex
-  - mcp__plugin_ohmyclaude_gpt-as-mcp__codex-reply
+  - mcp__llm__chat
+  - mcp__llm__chat-reply
   - Task
   - TaskOutput
   - TodoWrite

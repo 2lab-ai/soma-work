@@ -29,12 +29,21 @@ export class SlackPermissionMessenger {
     approvalId: string,
     user?: string
   ): any[] {
+    const userMention = user ? `<@${user}>` : 'Unknown';
+
     return [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `🔐 Permission Request — ${toolName}`,
+        },
+      },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `🔐 *Permission Request*\n\nClaude wants to use the tool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          text: `${userMention} Claude wants to use the tool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
         },
       },
       {
@@ -60,42 +69,14 @@ export class SlackPermissionMessenger {
             action_id: 'deny_tool',
             value: approvalId,
           },
-        ],
-      },
-      {
-        type: 'context',
-        elements: [
           {
-            type: 'mrkdwn',
-            text: `Requested by: <@${user}> | Tool: ${toolName}`,
-          },
-        ],
-      },
-    ];
-  }
-
-  /**
-   * Build result blocks for completed permission request
-   */
-  buildResultBlocks(
-    toolName: string,
-    input: any,
-    approved: boolean
-  ): any[] {
-    return [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `🔐 *Permission Request* - ${approved ? '✅ Approved' : '❌ Denied'}\n\nTool: \`${toolName}\`\n\n*Tool Parameters:*\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
-        },
-      },
-      {
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `${approved ? 'Approved' : 'Denied'} by user | Tool: ${toolName}`,
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '💡 Explain',
+            },
+            action_id: 'explain_tool',
+            value: approvalId,
           },
         ],
       },
@@ -128,26 +109,4 @@ export class SlackPermissionMessenger {
     }
   }
 
-  /**
-   * Update permission message with result
-   */
-  async updateWithResult(
-    channel: string,
-    ts: string,
-    blocks: any[],
-    toolName: string,
-    approved: boolean
-  ): Promise<void> {
-    try {
-      await this.slack.chat.update({
-        channel,
-        ts,
-        blocks,
-        text: `Permission ${approved ? 'approved' : 'denied'} for ${toolName}`,
-      });
-    } catch (error) {
-      logger.error('Failed to update permission message:', error);
-      throw error;
-    }
-  }
 }

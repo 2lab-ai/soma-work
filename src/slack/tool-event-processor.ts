@@ -10,6 +10,8 @@ import { McpStatusDisplay } from './mcp-status-tracker';
 import { ToolFormatter, ToolResult } from './tool-formatter';
 import { ReactionManager } from './reaction-manager';
 import { AssistantStatusManager } from './assistant-status-manager';
+import { McpHealthMonitor } from './mcp-health-monitor';
+import { getToolResultRenderMode, shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for tool event processing
@@ -19,6 +21,8 @@ export interface ToolEventContext {
   threadTs: string;
   sessionKey: string;
   say: SayFunction;
+  /** Verbosity bitmask — controls result display behavior */
+  logVerbosity?: number;
 }
 
 /**
@@ -58,17 +62,23 @@ export class ToolEventProcessor {
   private mcpCallTracker: McpCallTracker;
   private reactionManager: ReactionManager | null = null;
   private assistantStatusManager: AssistantStatusManager | null;
+  private mcpHealthMonitor: McpHealthMonitor | null = null;
+  private subagentCallIds: Set<string> = new Set();
+  /** Callback for updating compact tool call messages with duration */
+  private onCompactDurationUpdate?: (toolUseId: string, duration: number | null, channel: string) => Promise<void>;
 
   constructor(
     toolTracker: ToolTracker,
     mcpStatusDisplay: McpStatusDisplay,
     mcpCallTrackerInstance: McpCallTracker = mcpCallTracker,
-    assistantStatusManager?: AssistantStatusManager
+    assistantStatusManager?: AssistantStatusManager,
+    mcpHealthMonitor?: McpHealthMonitor
   ) {
     this.toolTracker = toolTracker;
     this.mcpStatusDisplay = mcpStatusDisplay;
     this.mcpCallTracker = mcpCallTrackerInstance;
     this.assistantStatusManager = assistantStatusManager || null;
+    this.mcpHealthMonitor = mcpHealthMonitor || null;
   }
 
   /**
@@ -79,18 +89,39 @@ export class ToolEventProcessor {
   }
 
   /**
+   * Set callback for compact mode duration updates (in-place tool call message update)
+   */
+  setCompactDurationCallback(
+    cb: (toolUseId: string, duration: number | null, channel: string) => Promise<void>
+  ): void {
+    this.onCompactDurationUpdate = cb;
+  }
+
+  /**
    * Handle tool use events from assistant message
    * - Track tool use IDs
    * - Start MCP call tracking for MCP tools
+   * - Session tick handles consolidation automatically
    */
   async handleToolUse(toolUses: ToolUseEvent[], context: ToolEventContext): Promise<void> {
     for (const toolUse of toolUses) {
+      this.logger.debug('Handling tool_use', ToolFormatter.buildToolUseLogSummary(
+        toolUse.id,
+        toolUse.name,
+        toolUse.input
+      ));
+
       // Track tool use ID to name mapping
       this.toolTracker.trackToolUse(toolUse.id, toolUse.name);
 
       // Start MCP call tracking for MCP tools
       if (toolUse.name.startsWith('mcp__')) {
         await this.startMcpTracking(toolUse, context);
+      }
+
+      // Start subagent tracking for Task tools
+      if (toolUse.name === 'Task') {
+        await this.startSubagentTracking(toolUse, context);
       }
     }
   }
@@ -118,14 +149,44 @@ export class ToolEventProcessor {
       await this.assistantStatusManager.setStatus(context.channel, context.threadTs, statusText);
     }
 
-    // Start periodic status update display
-    this.mcpStatusDisplay.startStatusUpdate(
-      callId,
-      serverName,
-      actualToolName,
-      context.channel,
-      context.threadTs
-    );
+    const config = {
+      displayType: 'MCP',
+      displayLabel: `${serverName} → ${actualToolName}`,
+      initialDelay: serverName === 'codex' ? 0 : 10000,
+      predictKey: { serverName, toolName: actualToolName },
+      paramsSummary: ToolFormatter.formatCompactParams(toolUse.input),
+    };
+
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+      this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
+    }
+  }
+
+  /**
+   * Start subagent tracking and status display for Task tools
+   */
+  private async startSubagentTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
+    const summary = ToolFormatter.getTaskToolSummary(toolUse.input);
+    const subagentName = summary.subagentLabel || 'Task';
+
+    // Start call tracking with virtual server name
+    const callId = this.mcpCallTracker.startCall('_subagent', subagentName);
+    this.toolTracker.trackMcpCall(toolUse.id, callId);
+    this.subagentCallIds.add(callId);
+
+    const config = {
+      displayType: 'Subagent',
+      displayLabel: subagentName,
+      initialDelay: 0,
+      predictKey: { serverName: '_subagent', toolName: subagentName },
+      paramsSummary: summary.promptPreview
+        ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})`
+        : '',
+    };
+
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+      this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
+    }
   }
 
   /**
@@ -143,6 +204,20 @@ export class ToolEventProcessor {
       // End MCP call tracking and get duration
       const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
 
+      // Update compact tool call message with duration (in-place)
+      if (duration !== null && this.onCompactDurationUpdate) {
+        await this.onCompactDurationUpdate(toolResult.toolUseId, duration, context.channel);
+      }
+
+      if (this.mcpHealthMonitor && toolResult.toolName?.startsWith('mcp__')) {
+        await this.mcpHealthMonitor.recordResult({
+          toolName: toolResult.toolName,
+          isError: toolResult.isError,
+          channel: context.channel,
+          threadTs: context.threadTs,
+        });
+      }
+
       this.logger.debug('Processing tool result', {
         toolName: toolResult.toolName,
         toolUseId: toolResult.toolUseId,
@@ -157,7 +232,7 @@ export class ToolEventProcessor {
   }
 
   /**
-   * End MCP tracking for a tool and return duration
+   * End MCP or subagent tracking for a tool and return duration
    */
   private async endMcpTracking(toolUseId: string, sessionKey?: string): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
@@ -166,25 +241,33 @@ export class ToolEventProcessor {
     const duration = this.mcpCallTracker.endCall(callId);
     this.toolTracker.removeMcpCallId(toolUseId);
 
-    // Clear hourglass reaction for MCP pending
-    if (this.reactionManager && sessionKey) {
-      await this.reactionManager.clearMcpPending(sessionKey, callId);
+    // MCP-specific cleanup (reactions)
+    if (!this.subagentCallIds.has(callId)) {
+      if (this.reactionManager && sessionKey) {
+        await this.reactionManager.clearMcpPending(sessionKey, callId);
+      }
+    } else {
+      this.subagentCallIds.delete(callId);
     }
 
-    // Stop status update display
-    await this.mcpStatusDisplay.stopStatusUpdate(callId, duration);
+    // Mark call as completed in session tick
+    this.mcpStatusDisplay.completeCall(callId, duration);
 
     return duration;
   }
 
   /**
-   * Format and send tool result message
+   * Format and send tool result message (skipped in compact mode)
    */
   private async sendToolResult(
     toolResult: ToolResultEvent,
     duration: number | null,
     context: ToolEventContext
   ): Promise<void> {
+    // In compact mode, results are handled via in-place updates — skip separate messages
+    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (resultMode === 'compact' || resultMode === 'hidden') return;
+
     const result: ToolResult = {
       toolName: toolResult.toolName,
       toolUseId: toolResult.toolUseId,
@@ -203,10 +286,19 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Cleanup resources on abort or completion
+   * Cleanup resources on abort or completion.
+   * Completes any active MCP calls and cleans up the session tick.
    */
-  cleanup(): void {
-    // Tool tracker handles its own cleanup via scheduleCleanup
-    // MCP status display handles its own cleanup when calls end
+  cleanup(sessionKey?: string): void {
+    // Complete any outstanding MCP calls
+    const activeMcpCallIds = this.toolTracker.getActiveMcpCallIds();
+    for (const callId of activeMcpCallIds) {
+      this.mcpStatusDisplay.completeCall(callId, null);
+    }
+
+    // Cleanup session tick
+    if (sessionKey) {
+      this.mcpStatusDisplay.cleanupSession(sessionKey);
+    }
   }
 }

@@ -1,11 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import { Logger } from './logger.js';
+import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
+import { type LogVerbosity, DEFAULT_LOG_VERBOSITY, getVerbosityFlags, VERBOSITY_NAMES } from './slack/output-flags';
 
 const logger = new Logger('UserSettingsStore');
 
 // Available models
 export const AVAILABLE_MODELS = [
+  'claude-opus-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
@@ -17,13 +20,14 @@ export type ModelId = typeof AVAILABLE_MODELS[number];
 export const MODEL_ALIASES: Record<string, ModelId> = {
   'sonnet': 'claude-sonnet-4-5-20250929',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-  'opus': 'claude-opus-4-5-20251101',
+  'opus': 'claude-opus-4-6',
+  'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
   'haiku': 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
 };
 
-export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-5-20250929';
+export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
 export interface UserSettings {
   userId: string;
@@ -31,11 +35,16 @@ export interface UserSettings {
   bypassPermission: boolean;
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
+  defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
   jiraName?: string;
   slackName?: string;
+  // User acceptance (admin approval)
+  accepted: boolean;
+  acceptedBy?: string;
+  acceptedAt?: string;
 }
 
 interface SlackJiraMapping {
@@ -63,7 +72,7 @@ export class UserSettingsStore {
 
   constructor(dataDir?: string) {
     // Use data directory or default to project root
-    const dir = dataDir || path.join(process.cwd(), 'data');
+    const dir = dataDir || ENV_DATA_DIR;
 
     // Ensure data directory exists
     if (!fs.existsSync(dir)) {
@@ -85,6 +94,29 @@ export class UserSettingsStore {
       if (fs.existsSync(this.settingsFile)) {
         const data = fs.readFileSync(this.settingsFile, 'utf8');
         this.settings = JSON.parse(data);
+        let didUpdate = false;
+        const validModels = new Set(AVAILABLE_MODELS as readonly string[]);
+        for (const userSettings of Object.values(this.settings)) {
+          if (
+            !userSettings.defaultModel ||
+            !validModels.has(userSettings.defaultModel) ||
+            userSettings.defaultModel === 'claude-opus-4-5-20251101'
+          ) {
+            userSettings.defaultModel = DEFAULT_MODEL;
+            didUpdate = true;
+          }
+          // Migration: grandfathering — existing users without accepted field get accepted=true
+          if ((userSettings as any).accepted === undefined) {
+            userSettings.accepted = true;
+            didUpdate = true;
+          }
+        }
+        if (didUpdate) {
+          this.saveSettings();
+          logger.info('Updated user settings model defaults', {
+            userCount: Object.keys(this.settings).length,
+          });
+        }
         logger.info('Loaded user settings', {
           userCount: Object.keys(this.settings).length
         });
@@ -166,6 +198,7 @@ export class UserSettingsStore {
         bypassPermission: existing?.bypassPermission ?? false,
         persona: existing?.persona ?? 'default',
         defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
+        accepted: existing?.accepted ?? true,
         lastUpdated: new Date().toISOString(),
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
@@ -218,31 +251,40 @@ export class UserSettingsStore {
   }
 
   /**
+   * Patch one or more fields on a user's settings record.
+   * Creates a new record with defaults if the user does not yet exist.
+   * Saves to disk after applying the patch.
+   */
+  private patchUserSettings(userId: string, patch: Partial<UserSettings>): void {
+    if (this.settings[userId]) {
+      Object.assign(this.settings[userId], patch, { lastUpdated: new Date().toISOString() });
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: DEFAULT_MODEL,
+        accepted: true,
+        lastUpdated: new Date().toISOString(),
+        ...patch,
+      };
+    }
+    this.saveSettings();
+  }
+
+  /**
    * Get user's bypass permission setting
    */
   getUserBypassPermission(userId: string): boolean {
-    const userSettings = this.settings[userId];
-    return userSettings?.bypassPermission ?? false;
+    return this.settings[userId]?.bypassPermission ?? false;
   }
 
   /**
    * Set user's bypass permission setting
    */
   setUserBypassPermission(userId: string, bypass: boolean): void {
-    if (this.settings[userId]) {
-      this.settings[userId].bypassPermission = bypass;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: bypass,
-        persona: 'default',
-        defaultModel: DEFAULT_MODEL,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { bypassPermission: bypass });
     logger.info('Set user bypass permission', { userId, bypass });
   }
 
@@ -250,28 +292,14 @@ export class UserSettingsStore {
    * Get user's persona setting
    */
   getUserPersona(userId: string): string {
-    const userSettings = this.settings[userId];
-    return userSettings?.persona ?? 'default';
+    return this.settings[userId]?.persona ?? 'default';
   }
 
   /**
    * Set user's persona setting
    */
   setUserPersona(userId: string, persona: string): void {
-    if (this.settings[userId]) {
-      this.settings[userId].persona = persona;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona,
-        defaultModel: DEFAULT_MODEL,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { persona });
     logger.info('Set user persona', { userId, persona });
   }
 
@@ -279,29 +307,45 @@ export class UserSettingsStore {
    * Get user's default model
    */
   getUserDefaultModel(userId: string): ModelId {
-    const userSettings = this.settings[userId];
-    return userSettings?.defaultModel ?? DEFAULT_MODEL;
+    return this.settings[userId]?.defaultModel ?? DEFAULT_MODEL;
   }
 
   /**
    * Set user's default model
    */
   setUserDefaultModel(userId: string, model: ModelId): void {
-    if (this.settings[userId]) {
-      this.settings[userId].defaultModel = model;
-      this.settings[userId].lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona: 'default',
-        defaultModel: model,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    this.saveSettings();
+    this.patchUserSettings(userId, { defaultModel: model });
     logger.info('Set user default model', { userId, model });
+  }
+
+  /**
+   * Get user's default log verbosity
+   */
+  getUserDefaultLogVerbosity(userId: string): LogVerbosity {
+    return this.settings[userId]?.defaultLogVerbosity ?? DEFAULT_LOG_VERBOSITY;
+  }
+
+  /**
+   * Get user's default log verbosity as bitmask
+   */
+  getUserLogVerbosityFlags(userId: string): number {
+    return getVerbosityFlags(this.getUserDefaultLogVerbosity(userId));
+  }
+
+  /**
+   * Set user's default log verbosity
+   */
+  setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
+    this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
+    logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Resolve verbosity input string to LogVerbosity
+   */
+  resolveVerbosityInput(input: string): LogVerbosity | null {
+    const normalized = input.toLowerCase().trim();
+    return VERBOSITY_NAMES.includes(normalized as LogVerbosity) ? (normalized as LogVerbosity) : null;
   }
 
   /**
@@ -330,6 +374,8 @@ export class UserSettingsStore {
     switch (model) {
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
+      case 'claude-opus-4-6':
+        return 'Opus 4.6';
       case 'claude-opus-4-5-20251101':
         return 'Opus 4.5';
       case 'claude-haiku-4-5-20251001':
@@ -344,6 +390,98 @@ export class UserSettingsStore {
    */
   getUserSettings(userId: string): UserSettings | undefined {
     return this.settings[userId];
+  }
+
+  /**
+   * Ensure a user settings record exists.
+   * Creates default settings if the user doesn't have any.
+   * Used during onboarding completion/skip to mark 'already onboarded' state.
+   * @param userId - Slack user ID
+   * @param slackName - Optional Slack display name to store
+   * @returns The user settings (created or existing)
+   */
+  ensureUserExists(userId: string, slackName?: string): UserSettings {
+    const existing = this.settings[userId];
+    if (existing) {
+      // Update slackName if provided and different
+      if (slackName && existing.slackName !== slackName) {
+        existing.slackName = slackName;
+        existing.lastUpdated = new Date().toISOString();
+        this.saveSettings();
+        logger.debug('Updated slackName for existing user', { userId, slackName });
+      }
+      return existing;
+    }
+
+    // Create new settings with defaults (accepted=true for ensureUserExists — called after onboarding)
+    const newSettings: UserSettings = {
+      userId,
+      defaultDirectory: '',
+      bypassPermission: false,
+      persona: 'default',
+      defaultModel: DEFAULT_MODEL,
+      lastUpdated: new Date().toISOString(),
+      slackName,
+      accepted: true,
+    };
+
+    this.settings[userId] = newSettings;
+    this.saveSettings();
+    logger.info('Created user settings via ensureUserExists', { userId, slackName });
+
+    return newSettings;
+  }
+
+  /**
+   * Create a pending user record (accepted=false).
+   * Used when a new user messages the bot before admin approval.
+   */
+  createPendingUser(userId: string, slackName?: string): UserSettings {
+    const existing = this.settings[userId];
+    if (existing) return existing;
+
+    const newSettings: UserSettings = {
+      userId,
+      defaultDirectory: '',
+      bypassPermission: false,
+      persona: 'default',
+      defaultModel: DEFAULT_MODEL,
+      lastUpdated: new Date().toISOString(),
+      slackName,
+      accepted: false,
+    };
+
+    this.settings[userId] = newSettings;
+    this.saveSettings();
+    logger.info('Created pending user', { userId, slackName });
+    return newSettings;
+  }
+
+  /**
+   * Accept a user (set accepted=true with admin info).
+   * Creates the user record if it doesn't exist.
+   */
+  acceptUser(userId: string, adminUserId: string): void {
+    this.patchUserSettings(userId, {
+      accepted: true,
+      acceptedBy: adminUserId,
+      acceptedAt: new Date().toISOString(),
+    });
+    logger.info('User accepted', { userId, acceptedBy: adminUserId });
+  }
+
+  /**
+   * Check if a user is accepted.
+   */
+  isUserAccepted(userId: string): boolean {
+    return this.settings[userId]?.accepted === true;
+  }
+
+  /**
+   * Get all user settings as an array.
+   */
+  getAllUsers(): UserSettings[] {
+    return Object.values(this.settings);
   }
 
   /**

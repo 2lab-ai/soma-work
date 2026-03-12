@@ -85,6 +85,54 @@ describe('StreamProcessor', () => {
       );
     });
 
+    it('should render Task tool details in tool use message', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool_task_1',
+                name: 'Task',
+                input: {
+                  subagent_type: 'oh-my-claude:explore',
+                  run_in_background: true,
+                  prompt: 'Find code related to task logging',
+                },
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('Using Subagent'),
+          thread_ts: 'thread_ts',
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('Explorer'),
+          thread_ts: 'thread_ts',
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('model: *opus*'),
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
     it('should call onTodoUpdate for TodoWrite tool', async () => {
       const onTodoUpdate = vi.fn();
       const messages = [
@@ -160,6 +208,48 @@ describe('StreamProcessor', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: 'Final response',
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
+    it('should append final response footer when callback is provided', async () => {
+      const buildFinalResponseFooter = vi.fn().mockResolvedValue('```Ctx ▓▓▓░░ 42.0% +0.5```');
+      const messages = [
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'Final response',
+          duration_ms: 1200,
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 300,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ buildFinalResponseFooter });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(buildFinalResponseFooter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: mockContext,
+          durationMs: 1200,
+          usage: expect.objectContaining({
+            inputTokens: 1200,
+            outputTokens: 300,
+          }),
+        })
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'Final response\n\n```Ctx ▓▓▓░░ 42.0% +0.5```',
           thread_ts: 'thread_ts',
         })
       );
@@ -258,6 +348,73 @@ describe('StreamProcessor', () => {
           questions: choices.questions,
         })
       );
+    });
+
+    it('should detect channel_message directive and forward callback', async () => {
+      const onChannelMessageDetected = vi.fn();
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `Deploy complete.
+\`\`\`json
+{"type":"channel_message","text":"## Release Notes\\n- Deployed"}
+\`\`\``,
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ onChannelMessageDetected });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledWith(
+        '## Release Notes\n- Deployed',
+        mockContext
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'Deploy complete.',
+          thread_ts: 'thread_ts',
+        })
+      );
+    });
+
+    it('should not send empty thread message for directive-only channel_message output', async () => {
+      const onChannelMessageDetected = vi.fn();
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `\`\`\`json
+{"type":"channel_message","text":"Root post only"}
+\`\`\``,
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor({ onChannelMessageDetected });
+      await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledWith('Root post only', mockContext);
+      expect(mockSay).not.toHaveBeenCalled();
     });
 
     it('should not duplicate final result if already in currentMessages', async () => {

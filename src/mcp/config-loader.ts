@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../logger';
+import { MCP_CONFIG_FILE } from '../env-paths';
 
 export type McpStdioServerConfig = {
   type?: 'stdio'; // Optional for backwards compatibility
@@ -34,8 +35,9 @@ export class McpConfigLoader {
   private logger = new Logger('McpConfigLoader');
   private config: McpConfiguration | null = null;
   private configPath: string;
+  private inMemory = false;
 
-  constructor(configPath: string = './mcp-servers.json') {
+  constructor(configPath: string = MCP_CONFIG_FILE) {
     this.configPath = path.resolve(configPath);
   }
 
@@ -113,7 +115,37 @@ export class McpConfigLoader {
     return true;
   }
 
+  /**
+   * Create a McpConfigLoader from a pre-parsed mcpServers record.
+   * Used by unified-config-loader when config.json provides the MCP section.
+   * Note: reloadConfiguration() on such instances re-returns the parsed config
+   * (no file to reload from).
+   */
+  static fromParsedConfig(servers: Record<string, McpServerConfig>): McpConfigLoader {
+    const loader = new McpConfigLoader('');
+    const validationLogger = new Logger('McpConfigLoader');
+
+    // Validate each server
+    const validated: Record<string, McpServerConfig> = {};
+    for (const [name, config] of Object.entries(servers)) {
+      if (loader.validateServerConfig(name, config)) {
+        validated[name] = config;
+      } else {
+        validationLogger.warn('Invalid server configuration from unified config, skipping', { serverName: name });
+      }
+    }
+
+    loader.config = { mcpServers: validated };
+    loader.inMemory = true;
+    return loader;
+  }
+
   reloadConfiguration(): McpConfiguration | null {
+    if (this.inMemory) {
+      // In-memory config: return existing config (no file to reload from)
+      this.logger.debug('In-memory config — reload is a no-op');
+      return this.config;
+    }
     this.config = null;
     return this.loadConfiguration();
   }

@@ -251,6 +251,14 @@ npm run build
 ```
 ```
 
+**Task Tool (subagent delegation)**:
+```
+🔧 Using Subagent: *Explorer*
+model: *opus*
+prompt: Find code related to routing panel changes
+prompt_length: 41
+```
+
 **MCP Tool**:
 ```
 🔌 *MCP: serverName → toolName*

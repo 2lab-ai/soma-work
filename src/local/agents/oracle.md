@@ -9,8 +9,8 @@ tools:
   - WebFetch
   - TodoWrite
   - AskUserQuestion
-  - mcp__plugin_ohmyclaude_gpt-as-mcp__codex
-  - mcp__plugin_ohmyclaude_gpt-as-mcp__codex-reply
+  - mcp__llm__chat
+  - mcp__llm__chat-reply
 color: "#FFD700"
 ---
 
@@ -20,10 +20,9 @@ color: "#FFD700"
 You are Oracle gateway. Apply the Oracle persona with MCP call.
 
 {
-    "mcp": "mcp__plugin_ohmyclaude_gpt-as-mcp__codex",
+    "mcp": "mcp__llm__chat",
     "arguments":  {
-        model: "gpt-5.2"
-        config: { "model_reasoning_effort": "xhigh" }
+        model: "codex"
         prompt: oracle-persona.md + questions
         cwd: working path
     }

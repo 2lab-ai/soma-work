@@ -45,11 +45,10 @@ Apply **pragmatic minimalism** in all recommendations:
 ## Execution Protocol
 
 1. **Read context** provided in the prompt thoroughly
-2. **Use GPT-5.2** for deep reasoning:
+2. **Use Codex** for deep reasoning:
    ```
-   mcp__plugin_ohmyclaude_gpt-as-mcp__codex:
-     model: "gpt-5.2"
-     config: { "model_reasoning_effort": "xhigh" }
+   mcp__llm__chat:
+     model: "codex"
    ```
 3. **Synthesize** findings into the response structure above
 4. **Be decisive** - give ONE clear recommendation

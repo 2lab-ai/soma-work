@@ -1,166 +1,107 @@
 #!/bin/bash
 
-# Claude Code Slack Bot - Service Management Script
-# Usage: ./service.sh [status|start|stop|restart|install|uninstall|logs]
+# soma-work - Service Management Script
+# Usage: ./service.sh [env] <command>
 #
-# This script manages the bot as a SYSTEM DAEMON (/Library/LaunchDaemons)
-# which runs at boot time WITHOUT requiring user login.
-# All commands require sudo (password will be prompted).
+# Environments:
+#   main    /opt/soma-work/main (production)
+#   dev     /opt/soma-work/dev (development)
+#   (none)  Current directory (local dev)
+#
+# Uses LaunchAgents (user-level) for service management.
+# No sudo required. Service starts when user logs in.
 
-SERVICE_NAME="com.dd.claude-slack-bot"
-# Use system-level LaunchDaemons for boot-time execution (no login required)
-PLIST_PATH="/Library/LaunchDaemons/$SERVICE_NAME.plist"
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOGS_DIR="$PROJECT_DIR/logs"
-NODE_PATH="$HOME/.nvm/versions/node/v25.2.1/bin"
-USER_HOME="$HOME"
+# --- Environment resolution ---
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
-# Colors for output
+resolve_env() {
+    local env="$1"
+    case "$env" in
+        main)
+            SERVICE_NAME="ai.2lab.soma-work.main"
+            PROJECT_DIR="/opt/soma-work/main"
+            ;;
+        dev)
+            SERVICE_NAME="ai.2lab.soma-work.dev"
+            PROJECT_DIR="/opt/soma-work/dev"
+            ;;
+        *)
+            SERVICE_NAME="ai.2lab.soma-work"
+            PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+            ;;
+    esac
+
+    PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
+    LOGS_DIR="$PROJECT_DIR/logs"
+    NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
+    USER_HOME="$HOME"
+
+    resolve_tool_paths
+}
+
+# Discover paths for essential CLI tools (git, gh, aws, dotnet)
+# Sets TOOL_PATHS as colon-separated directory list
+resolve_tool_paths() {
+    TOOL_PATHS=""
+    local tools="git gh aws dotnet"
+    local search_dirs="/opt/homebrew/bin /usr/local/bin /usr/local/share/dotnet $HOME/.dotnet"
+
+    for tool in $tools; do
+        local tool_bin
+        tool_bin="$(command -v "$tool" 2>/dev/null)"
+        if [[ -z "$tool_bin" ]]; then
+            for dir in $search_dirs; do
+                if [[ -x "$dir/$tool" ]]; then
+                    tool_bin="$dir/$tool"
+                    break
+                fi
+            done
+        fi
+        if [[ -n "$tool_bin" ]]; then
+            local tool_dir
+            tool_dir="$(dirname "$tool_bin")"
+            if [[ ":$TOOL_PATHS:" != *":$tool_dir:"* ]]; then
+                TOOL_PATHS="${TOOL_PATHS:+$TOOL_PATHS:}$tool_dir"
+            fi
+        fi
+    done
+}
+
+# Parse arguments: [env] <command> [args...]
+ENV_ARG=""
+COMMAND=""
+if [[ "$1" == "main" || "$1" == "dev" ]]; then
+    ENV_ARG="$1"
+    shift
+fi
+COMMAND="${1:-}"
+shift 2>/dev/null || true
+
+resolve_env "$ENV_ARG"
+
+# --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-print_status() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+print_status()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-# Check if service is running (system-level daemon)
+# --- Service helpers ---
 is_running() {
-    sudo launchctl list | grep -q "$SERVICE_NAME"
-    return $?
+    launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
 }
 
-# Get service PID
 get_pid() {
-    sudo launchctl list | grep "$SERVICE_NAME" | awk '{print $1}'
+    launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
 }
 
-# Status command
-cmd_status() {
-    echo "=================================="
-    echo "Claude Code Slack Bot - Status"
-    echo "=================================="
-
-    if is_running; then
-        local pid=$(get_pid)
-        print_success "Service is RUNNING (PID: $pid)"
-
-        # Show uptime if possible
-        if [[ "$pid" != "-" && "$pid" != "" ]]; then
-            local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
-            if [[ -n "$start_time" ]]; then
-                echo "  Started: $start_time"
-            fi
-        fi
-    else
-        print_warning "Service is STOPPED"
-    fi
-
-    echo ""
-    echo "Service: $SERVICE_NAME"
-    echo "Plist: $PLIST_PATH"
-    echo "Logs: $LOGS_DIR"
-
-    # Check if plist exists
-    if [[ -f "$PLIST_PATH" ]]; then
-        echo ""
-        echo "Plist file: EXISTS"
-    else
-        echo ""
-        print_warning "Plist file: NOT FOUND"
-    fi
-
-    # Show recent log activity
-    echo ""
-    echo "Recent stderr (last 5 lines):"
-    echo "---"
-    tail -5 "$LOGS_DIR/stderr.log" 2>/dev/null || echo "  (no logs)"
-}
-
-# Start command
-cmd_start() {
-    print_status "Starting service..."
-
-    if is_running; then
-        print_warning "Service is already running"
-        return 0
-    fi
-
-    if [[ ! -f "$PLIST_PATH" ]]; then
-        print_error "Plist not found. Run './service.sh install' first."
-        return 1
-    fi
-
-    sudo launchctl load "$PLIST_PATH"
-    sleep 2
-
-    if is_running; then
-        print_success "Service started successfully"
-        local pid=$(get_pid)
-        echo "  PID: $pid"
-    else
-        print_error "Failed to start service. Check logs:"
-        echo "  tail -f $LOGS_DIR/stderr.log"
-        return 1
-    fi
-}
-
-# Stop command
-cmd_stop() {
-    print_status "Stopping service..."
-
-    if ! is_running; then
-        print_warning "Service is not running"
-        return 0
-    fi
-
-    sudo launchctl unload "$PLIST_PATH"
-    sleep 2
-
-    if ! is_running; then
-        print_success "Service stopped successfully"
-    else
-        print_error "Failed to stop service"
-        return 1
-    fi
-}
-
-# Restart command
-cmd_restart() {
-    print_status "Restarting service..."
-    cmd_stop
-    sleep 1
-    cmd_start
-}
-
-# Install command
-cmd_install() {
-    print_status "Installing service as system daemon (runs at boot, no login required)..."
-
-    # Create logs directory
-    mkdir -p "$LOGS_DIR"
-
-    # Get current user info for running the service
-    local CURRENT_USER=$(whoami)
-    local CURRENT_UID=$(id -u)
-    local CURRENT_GID=$(id -g)
-
-    # Create plist file (requires sudo for /Library/LaunchDaemons)
-    sudo tee "$PLIST_PATH" > /dev/null << EOF
+generate_plist() {
+    cat << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -168,17 +109,11 @@ cmd_install() {
     <key>Label</key>
     <string>$SERVICE_NAME</string>
 
-    <key>UserName</key>
-    <string>$CURRENT_USER</string>
-
-    <key>GroupName</key>
-    <string>staff</string>
-
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; npx tsx src/index.ts</string>
+        <string>export PATH=$NODE_PATH:$TOOL_PATHS:\$PATH; cd $PROJECT_DIR; node dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -187,9 +122,11 @@ cmd_install() {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
+        <string>$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$USER_HOME</string>
+        <key>SOMA_CONFIG_DIR</key>
+        <string>$PROJECT_DIR</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -209,85 +146,193 @@ cmd_install() {
 </dict>
 </plist>
 EOF
+}
 
-    print_success "Plist created at: $PLIST_PATH"
+# --- Commands ---
+cmd_status() {
+    local env_label="${ENV_ARG:-local}"
+    echo "=================================="
+    echo "soma-work [$env_label] - Status"
+    echo "=================================="
 
-    # Load the service
-    sudo launchctl load "$PLIST_PATH"
+    if is_running; then
+        local pid=$(get_pid)
+        print_success "Service is RUNNING (PID: $pid)"
+
+        if [[ "$pid" != "-" && "$pid" != "" ]]; then
+            local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
+            if [[ -n "$start_time" ]]; then
+                echo "  Started: $start_time"
+            fi
+        fi
+    else
+        print_warning "Service is STOPPED"
+    fi
+
+    echo ""
+    echo "Service: $SERVICE_NAME"
+    echo "Project: $PROJECT_DIR"
+    echo "Plist:   $PLIST_PATH"
+    echo "Logs:    $LOGS_DIR"
+
+    if [[ -f "$PLIST_PATH" ]]; then
+        echo "Plist file: EXISTS"
+    else
+        print_warning "Plist file: NOT FOUND"
+    fi
+
+    echo ""
+    echo "Recent stderr (last 5 lines):"
+    echo "---"
+    tail -5 "$LOGS_DIR/stderr.log" 2>/dev/null || echo "  (no logs)"
+}
+
+cmd_start() {
+    print_status "Starting $SERVICE_NAME..."
+
+    if is_running; then
+        print_warning "Service is already running"
+        return 0
+    fi
+
+    if [[ ! -f "$PLIST_PATH" ]]; then
+        print_error "Plist not found. Run './service.sh ${ENV_ARG:+$ENV_ARG }install' first."
+        return 1
+    fi
+
+    launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
-        print_success "Service installed and started"
-        local pid=$(get_pid)
-        echo "  PID: $pid"
+        print_success "Service started (PID: $(get_pid))"
+    else
+        print_error "Failed to start. Check: tail -f $LOGS_DIR/stderr.log"
+        return 1
+    fi
+}
+
+cmd_stop() {
+    print_status "Stopping $SERVICE_NAME..."
+
+    if ! is_running; then
+        print_warning "Service is not running"
+        return 0
+    fi
+
+    launchctl unload "$PLIST_PATH"
+    sleep 2
+
+    if ! is_running; then
+        print_success "Service stopped"
+    else
+        print_error "Failed to stop service"
+        return 1
+    fi
+}
+
+cmd_restart() {
+    print_status "Restarting $SERVICE_NAME..."
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+warn_missing_tools() {
+    local missing=()
+    for tool in git gh aws dotnet; do
+        if ! command -v "$tool" &>/dev/null; then
+            missing+=("$tool")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        print_warning "Tools not in PATH: ${missing[*]} (run './service.sh check-env' to fix)"
+    fi
+}
+
+cmd_install() {
+    print_status "Installing $SERVICE_NAME as LaunchAgent..."
+    warn_missing_tools
+
+    if [[ ! -d "$PROJECT_DIR" ]]; then
+        print_error "Project directory not found: $PROJECT_DIR"
+        print_status "Run './service.sh ${ENV_ARG:+$ENV_ARG }setup' first."
+        return 1
+    fi
+
+    mkdir -p "$LOGS_DIR"
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+
+    generate_plist > "$PLIST_PATH"
+    print_success "Plist created: $PLIST_PATH"
+
+    launchctl load "$PLIST_PATH"
+    sleep 2
+
+    if is_running; then
+        print_success "Service installed and started (PID: $(get_pid))"
     else
         print_warning "Service installed but not running. Check logs."
     fi
 }
 
-# Uninstall command
 cmd_uninstall() {
-    print_status "Uninstalling service..."
+    print_status "Uninstalling $SERVICE_NAME..."
 
     if is_running; then
-        print_status "Stopping service first..."
-        sudo launchctl unload "$PLIST_PATH"
+        launchctl unload "$PLIST_PATH"
         sleep 2
     fi
 
     if [[ -f "$PLIST_PATH" ]]; then
-        sudo rm "$PLIST_PATH"
+        rm "$PLIST_PATH"
         print_success "Plist removed"
     else
         print_warning "Plist not found"
     fi
 
     print_success "Service uninstalled"
-    echo ""
     print_status "Logs preserved at: $LOGS_DIR"
-    echo "  To remove logs: rm -rf $LOGS_DIR"
 }
 
-# Logs command
 cmd_logs() {
     local log_type="${1:-stderr}"
     local lines="${2:-50}"
 
     case "$log_type" in
         stdout|out)
-            echo "=== stdout.log (last $lines lines) ==="
+            echo "=== $SERVICE_NAME stdout.log (last $lines lines) ==="
             tail -n "$lines" "$LOGS_DIR/stdout.log"
             ;;
         stderr|err)
-            echo "=== stderr.log (last $lines lines) ==="
+            echo "=== $SERVICE_NAME stderr.log (last $lines lines) ==="
             tail -n "$lines" "$LOGS_DIR/stderr.log"
             ;;
         follow|f)
-            echo "=== Following stderr.log (Ctrl+C to stop) ==="
+            echo "=== Following $SERVICE_NAME stderr.log (Ctrl+C to stop) ==="
             tail -f "$LOGS_DIR/stderr.log"
             ;;
         all)
-            echo "=== stdout.log (last $lines lines) ==="
+            echo "=== $SERVICE_NAME stdout.log (last $lines lines) ==="
             tail -n "$lines" "$LOGS_DIR/stdout.log"
             echo ""
-            echo "=== stderr.log (last $lines lines) ==="
+            echo "=== $SERVICE_NAME stderr.log (last $lines lines) ==="
             tail -n "$lines" "$LOGS_DIR/stderr.log"
             ;;
         *)
-            echo "Usage: ./service.sh logs [stdout|stderr|follow|all] [lines]"
+            echo "Usage: ./service.sh [env] logs [stdout|stderr|follow|all] [lines]"
             ;;
     esac
 }
 
-# Reinstall command (stop -> build -> install -> start)
 cmd_reinstall() {
-    print_status "Reinstalling service with latest code..."
+    print_status "Reinstalling $SERVICE_NAME..."
+    warn_missing_tools
     echo ""
 
-    # Step 1: Stop service
+    # Step 1: Stop
     print_status "[1/4] Stopping service..."
     if is_running; then
-        sudo launchctl unload "$PLIST_PATH"
+        launchctl unload "$PLIST_PATH"
         sleep 2
         if ! is_running; then
             print_success "Service stopped"
@@ -301,7 +346,7 @@ cmd_reinstall() {
 
     # Step 2: Build
     print_status "[2/4] Building project..."
-    cd "$PROJECT_DIR" || exit 1
+    cd "$PROJECT_DIR" || return 1
     if npm run build; then
         print_success "Build completed"
     else
@@ -309,84 +354,179 @@ cmd_reinstall() {
         return 1
     fi
 
-    # Step 3: Reinstall plist (in case config changed)
+    # Step 3: Update plist
     print_status "[3/4] Updating service configuration..."
-    local CURRENT_USER=$(whoami)
-
-    sudo tee "$PLIST_PATH" > /dev/null << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$SERVICE_NAME</string>
-
-    <key>UserName</key>
-    <string>$CURRENT_USER</string>
-
-    <key>GroupName</key>
-    <string>staff</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>export PATH=$NODE_PATH:\$PATH; cd $PROJECT_DIR; npx tsx src/index.ts</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>$PROJECT_DIR</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>$NODE_PATH:/usr/local/bin:/usr/bin:/bin</string>
-        <key>HOME</key>
-        <string>$USER_HOME</string>
-    </dict>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>$LOGS_DIR/stdout.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>$LOGS_DIR/stderr.log</string>
-
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>
-EOF
+    mkdir -p "$LOGS_DIR"
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    generate_plist > "$PLIST_PATH"
     print_success "Service configuration updated"
 
-    # Step 4: Start service
+    # Step 4: Start
     print_status "[4/4] Starting service..."
-    sudo launchctl load "$PLIST_PATH"
+    launchctl load "$PLIST_PATH"
     sleep 2
 
     if is_running; then
-        local pid=$(get_pid)
         echo ""
-        print_success "Reinstall completed successfully!"
-        echo "  PID: $pid"
-        echo ""
-        echo "Check logs: ./service.sh logs follow"
+        print_success "Reinstall completed! (PID: $(get_pid))"
+        echo "  Check logs: ./service.sh ${ENV_ARG:+$ENV_ARG }logs follow"
     else
-        print_error "Service failed to start. Check logs:"
-        echo "  tail -f $LOGS_DIR/stderr.log"
+        print_error "Service failed to start. Check: tail -f $LOGS_DIR/stderr.log"
         return 1
     fi
 }
 
-# Main
-case "${1:-}" in
+# Setup deployment directory (config + data only, no source code)
+cmd_setup() {
+    if [[ -z "$ENV_ARG" ]]; then
+        print_error "Setup requires an environment: ./service.sh main setup  or  ./service.sh dev setup"
+        return 1
+    fi
+
+    print_status "Setting up $ENV_ARG environment at $PROJECT_DIR..."
+
+    # Create directory (needs sudo for /opt)
+    if [[ ! -d "$PROJECT_DIR" ]]; then
+        sudo mkdir -p "$PROJECT_DIR"
+        sudo chown "$(whoami):staff" "$PROJECT_DIR"
+    fi
+
+    # Create required directories
+    mkdir -p "$PROJECT_DIR/logs"
+    mkdir -p "$PROJECT_DIR/data"
+
+    # Check for required config files
+    echo ""
+    if [[ ! -f "$PROJECT_DIR/.env" ]]; then
+        print_warning ".env file missing! Copy from template:"
+        echo "  cp /path/to/.env.example $PROJECT_DIR/.env"
+    else
+        print_success ".env file found"
+    fi
+
+    if [[ ! -f "$PROJECT_DIR/.system.prompt" ]]; then
+        print_warning ".system.prompt missing! Copy from template:"
+        echo "  cp .system.prompt.example $PROJECT_DIR/.system.prompt"
+    else
+        print_success ".system.prompt found"
+    fi
+
+    if [[ ! -f "$PROJECT_DIR/mcp-servers.json" ]]; then
+        print_warning "mcp-servers.json missing! Copy from template:"
+        echo "  cp mcp-servers.example.json $PROJECT_DIR/mcp-servers.json"
+    else
+        print_success "mcp-servers.json found"
+    fi
+
+    echo ""
+    echo "Directory structure:"
+    echo "  $PROJECT_DIR/"
+    echo "    .env               # config (manual)"
+    echo "    .system.prompt     # config (manual)"
+    echo "    mcp-servers.json   # config (manual)"
+    echo "    data/              # runtime data (auto)"
+    echo "    logs/              # logs (auto)"
+    echo "    dist/              # deployed by CI (auto)"
+    echo "    node_modules/      # deployed by CI (auto)"
+    echo "    package.json       # deployed by CI (auto)"
+
+    echo ""
+    print_success "Setup complete for $ENV_ARG at $PROJECT_DIR"
+    print_status "Next: Copy config files, then push to trigger CI deploy"
+}
+
+# Status all environments
+cmd_status_all() {
+    for env in main dev; do
+        resolve_env "$env"
+        echo ""
+        cmd_status
+        echo ""
+    done
+}
+
+cmd_check_env() {
+    echo "=================================="
+    echo "soma-work - Environment Check"
+    echo "=================================="
+    echo ""
+
+    local missing=""
+
+    for tool in git gh aws dotnet; do
+        local tool_bin
+        tool_bin="$(command -v "$tool" 2>/dev/null)"
+        if [[ -n "$tool_bin" ]]; then
+            local version
+            version="$("$tool" --version 2>/dev/null | head -1)"
+            print_success "$tool: $tool_bin ($version)"
+        else
+            print_error "$tool: NOT FOUND"
+            missing="$missing $tool"
+        fi
+    done
+
+    # Node (always required)
+    echo ""
+    local node_bin
+    node_bin="$(command -v node 2>/dev/null)"
+    if [[ -n "$node_bin" ]]; then
+        print_success "node: $node_bin ($(node --version 2>/dev/null))"
+    else
+        print_error "node: NOT FOUND (required)"
+    fi
+
+    # Resolved TOOL_PATHS
+    echo ""
+    print_status "Resolved TOOL_PATHS: ${TOOL_PATHS:-<empty>}"
+    print_status "NODE_PATH: $NODE_PATH"
+
+    # Offer to install missing tools
+    if [[ -n "$missing" ]]; then
+        echo ""
+        print_warning "Missing tools:$missing"
+        echo ""
+        for tool in $missing; do
+            case "$tool" in
+                git)    echo "  $tool: xcode-select --install" ;;
+                gh)     echo "  $tool: brew install gh" ;;
+                aws)    echo "  $tool: brew install awscli" ;;
+                dotnet) echo "  $tool: brew install dotnet" ;;
+            esac
+        done
+        echo ""
+        read -r -p "Install missing tools via Homebrew? [y/N] " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            for tool in $missing; do
+                local install_cmd
+                case "$tool" in
+                    git)    install_cmd="xcode-select --install" ;;
+                    gh)     install_cmd="brew install gh" ;;
+                    aws)    install_cmd="brew install awscli" ;;
+                    dotnet) install_cmd="brew install dotnet" ;;
+                esac
+                print_status "Running: $install_cmd"
+                eval "$install_cmd"
+            done
+            echo ""
+            print_status "Re-checking after install..."
+            resolve_tool_paths
+            echo ""
+            print_status "Updated TOOL_PATHS: ${TOOL_PATHS:-<empty>}"
+        fi
+    else
+        echo ""
+        print_success "All tools available"
+    fi
+}
+
+# --- Main ---
+case "$COMMAND" in
     status)
         cmd_status
+        ;;
+    status-all)
+        cmd_status_all
         ;;
     start)
         cmd_start
@@ -406,28 +546,45 @@ case "${1:-}" in
     reinstall)
         cmd_reinstall
         ;;
+    setup)
+        cmd_setup
+        ;;
     logs)
-        cmd_logs "$2" "$3"
+        cmd_logs "$1" "$2"
+        ;;
+    check-env)
+        cmd_check_env
         ;;
     *)
-        echo "Claude Code Slack Bot - Service Manager"
+        echo "soma-work - Service Manager"
         echo ""
-        echo "Usage: ./service.sh <command>"
+        echo "Usage: ./service.sh [env] <command> [args]"
+        echo ""
+        echo "Environments:"
+        echo "  main       Production  (/opt/soma-work/main)"
+        echo "  dev        Development (/opt/soma-work/dev)"
+        echo "  (none)     Current directory (local dev)"
         echo ""
         echo "Commands:"
-        echo "  status     Show service status"
-        echo "  start      Start the service"
-        echo "  stop       Stop the service"
-        echo "  restart    Restart the service (quick, no rebuild)"
-        echo "  reinstall  Stop, rebuild, and start (use after code changes)"
-        echo "  install    Install as launchd service"
-        echo "  uninstall  Remove launchd service"
-        echo "  logs       View logs (stdout|stderr|follow|all) [lines]"
+        echo "  status       Show service status"
+        echo "  status-all   Show all environments"
+        echo "  start        Start the service"
+        echo "  stop         Stop the service"
+        echo "  restart      Restart (no rebuild)"
+        echo "  reinstall    Stop, rebuild, start (after code changes)"
+        echo "  install      Install as LaunchAgent"
+        echo "  uninstall    Remove LaunchAgent"
+        echo "  setup        Initialize deployment directory (config only)"
+        echo "  check-env    Verify CLI tools and offer to install missing ones"
+        echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
         echo ""
         echo "Examples:"
-        echo "  ./service.sh status"
-        echo "  ./service.sh reinstall    # Apply code changes"
-        echo "  ./service.sh logs stderr 100"
-        echo "  ./service.sh logs follow"
+        echo "  ./service.sh status              # Local status"
+        echo "  ./service.sh main status          # Production status"
+        echo "  ./service.sh dev setup            # Initialize dev config dir"
+        echo "  ./service.sh main logs follow     # Stream production logs"
+        echo "  ./service.sh status-all           # All environments"
+        echo ""
+        echo "Deployment: Push to dev/main branch triggers CI auto-deploy"
         ;;
 esac

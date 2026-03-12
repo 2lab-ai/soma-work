@@ -9,10 +9,18 @@ import { HelpHandler } from './help-handler';
 import { SessionHandler } from './session-handler';
 import { RestoreHandler } from './restore-handler';
 import { NewHandler } from './new-handler';
+import { OnboardingHandler } from './onboarding-handler';
 import { ContextHandler } from './context-handler';
 import { RenewHandler } from './renew-handler';
 import { LinkHandler } from './link-handler';
 import { CloseHandler } from './close-handler';
+import { VerbosityHandler } from './verbosity-handler';
+import { SessionCommandHandler } from './session-command-handler';
+import { MarketplaceHandler } from './marketplace-handler';
+import { PluginsHandler } from './plugins-handler';
+import { CctHandler } from './cct-handler';
+import { AdminHandler } from './admin-handler';
+import { LlmChatHandler } from './llm-chat-handler';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -26,13 +34,21 @@ export class CommandRouter {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
     this.handlers = [
+      new LlmChatHandler(),
+      new AdminHandler(),
+      new CctHandler(),
       new CwdHandler(deps),
       new McpHandler(deps),
+      new MarketplaceHandler(deps),
+      new PluginsHandler(deps),
+      new SessionCommandHandler(deps),  // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new PersonaHandler(),
-      new ModelHandler(),
+      new ModelHandler(deps),
+      new VerbosityHandler(deps),
       new RestoreHandler(),
       new NewHandler(deps),
+      new OnboardingHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
       new LinkHandler(deps),
