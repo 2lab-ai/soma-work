@@ -69,6 +69,24 @@ function validateSeedFiles(devSourceDir: string): void {
   assertFileExists(path.join(devSourceDir, 'mcp-servers.json'), 'seed mcp-servers.json');
 }
 
+function assertTargetParentWritable(targetDir: string): void {
+  if (fs.existsSync(targetDir)) {
+    return;
+  }
+
+  const parentDir = path.dirname(targetDir);
+  assertDirectoryExists(parentDir, 'target parent');
+
+  try {
+    fs.accessSync(parentDir, fs.constants.W_OK);
+  } catch {
+    throw new Error(
+      `Target parent directory is not writable: ${parentDir}. ` +
+      `Pre-create ${targetDir} and chown it to the runner user.`
+    );
+  }
+}
+
 function writeMarker(markerFile: string, now: Date, devSourceDir: string, legacyRootDir: string): void {
   const payload = {
     completedAt: now.toISOString(),
@@ -143,6 +161,7 @@ export async function bootstrapMainEnvironment(options: BootstrapOptions): Promi
     throw new Error(`Refusing to bootstrap non-empty target without marker: ${targetDir}`);
   }
 
+  assertTargetParentWritable(targetDir);
   fs.mkdirSync(targetDir, { recursive: true });
   fs.mkdirSync(path.join(targetDir, 'logs'), { recursive: true });
 
