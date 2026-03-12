@@ -1,8 +1,5 @@
-import dotenv from 'dotenv';
 import { WebClient } from '@slack/web-api';
 import { Logger } from './logger';
-
-dotenv.config();
 
 // Logger for preflight checks and config validation
 const logger = new Logger('Config');
@@ -39,12 +36,14 @@ export const config = {
     installationId: process.env.GITHUB_INSTALLATION_ID || '',
     token: process.env.GITHUB_TOKEN || '',
   },
+  adminUsers: (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean),
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
     summaryModel: process.env.SUMMARY_MODEL || 'claude-haiku-4-20250414',
     viewerHost: process.env.CONVERSATION_VIEWER_HOST || '127.0.0.1',
-    viewerPort: parseInt(process.env.CONVERSATION_VIEWER_PORT || '3000', 10),
+    viewerPort: process.env.CONVERSATION_VIEWER_PORT ? parseInt(process.env.CONVERSATION_VIEWER_PORT, 10) : 0,
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',
+    viewerToken: process.env.CONVERSATION_VIEWER_TOKEN || '',
   },
 };
 

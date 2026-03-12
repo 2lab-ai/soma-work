@@ -2,6 +2,7 @@
  * Tool formatting utilities for Slack bot
  */
 import { McpCallTracker } from '../mcp-call-tracker';
+import { type RenderMode } from './output-flags';
 
 export interface ToolResult {
   toolName?: string;
@@ -10,7 +11,44 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+export interface TaskToolSummary {
+  subagentType?: string;
+  subagentLabel?: string;
+  model?: string;
+  runInBackground?: boolean;
+  promptLength?: number;
+  promptPreview?: string;
+}
+
+export interface ToolUseLogSummary {
+  toolUseId: string;
+  toolName: string;
+  inputKeys: string[];
+  inputKeyCount: number;
+  task?: TaskToolSummary;
+}
+
 export class ToolFormatter {
+  private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
+  private static readonly SUBAGENT_DISPLAY_MAP: Record<string, { label: string; model?: string }> = {
+    'oh-my-claude:explore': { label: 'Explorer', model: 'opus' },
+    'oh-my-claude:librarian': { label: 'Librarian', model: 'opus' },
+    'oh-my-claude:oracle': { label: 'Oracle', model: 'opus' },
+    'oh-my-claude:reviewer': { label: 'Reviewer', model: 'opus' },
+  };
+
+  private static sanitizeInlineValue(value: string): string {
+    return value.replace(/`/g, "'");
+  }
+
+  private static titleCaseSubagent(raw: string): string {
+    return raw
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
   /**
    * Truncate a string to max length, adding ellipsis if truncated
    */
@@ -126,19 +164,131 @@ export class ToolFormatter {
   }
 
   /**
+   * Build Task tool summary from tool input
+   */
+  static getTaskToolSummary(input: unknown): TaskToolSummary {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return {};
+    }
+
+    const taskInput = input as {
+      subagent_type?: unknown;
+      model?: unknown;
+      run_in_background?: unknown;
+      prompt?: unknown;
+    };
+
+    const summary: TaskToolSummary = {};
+
+    if (typeof taskInput.subagent_type === 'string' && taskInput.subagent_type.trim()) {
+      summary.subagentType = taskInput.subagent_type.trim();
+      const mapped = this.SUBAGENT_DISPLAY_MAP[summary.subagentType];
+      if (mapped) {
+        summary.subagentLabel = mapped.label;
+        if (!summary.model && mapped.model) {
+          summary.model = mapped.model;
+        }
+      } else {
+        const rawLabel = summary.subagentType.includes(':')
+          ? summary.subagentType.split(':').pop() || summary.subagentType
+          : summary.subagentType;
+        summary.subagentLabel = this.titleCaseSubagent(rawLabel);
+      }
+    }
+
+    if (typeof taskInput.model === 'string' && taskInput.model.trim()) {
+      summary.model = taskInput.model.trim();
+    }
+
+    if (typeof taskInput.run_in_background === 'boolean') {
+      summary.runInBackground = taskInput.run_in_background;
+    }
+
+    if (typeof taskInput.prompt === 'string') {
+      const normalizedPrompt = taskInput.prompt.replace(/\s+/g, ' ').trim();
+      summary.promptLength = taskInput.prompt.length;
+      if (normalizedPrompt) {
+        summary.promptPreview = this.truncateString(
+          normalizedPrompt,
+          this.TASK_PROMPT_PREVIEW_LENGTH
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Format Task tool usage with key inputs for visibility
+   */
+  static formatTaskTool(input: unknown): string {
+    const summary = this.getTaskToolSummary(input);
+    const subagentName = summary.subagentLabel || 'Task';
+    const lines = [`🤖 Using Subagent: *${this.sanitizeInlineValue(subagentName)}*`];
+
+    if (summary.model) {
+      lines.push(`model: *${this.sanitizeInlineValue(summary.model)}*`);
+    }
+
+    if (summary.promptPreview) {
+      lines.push(`prompt: ${this.sanitizeInlineValue(summary.promptPreview)}`);
+    }
+
+    if (summary.promptLength !== undefined) {
+      lines.push(`prompt_length: ${summary.promptLength}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build concise tool_use input summary for debug logging
+   */
+  static buildToolUseLogSummary(
+    toolUseId: string,
+    toolName: string,
+    input: unknown
+  ): ToolUseLogSummary {
+    const inputKeys = input && typeof input === 'object' && !Array.isArray(input)
+      ? Object.keys(input as Record<string, unknown>).sort()
+      : [];
+
+    const summary: ToolUseLogSummary = {
+      toolUseId,
+      toolName,
+      inputKeys,
+      inputKeyCount: inputKeys.length,
+    };
+
+    if (toolName === 'Task') {
+      summary.task = this.getTaskToolSummary(input);
+    }
+
+    return summary;
+  }
+
+  /**
    * Format generic tool usage
    */
   static formatGenericTool(toolName: string, input: any): string {
     if (toolName.startsWith('mcp__')) {
       return this.formatMcpTool(toolName, input);
     }
+    if (toolName === 'Task') {
+      return this.formatTaskTool(input);
+    }
     return `🔧 *Using ${toolName}*`;
   }
 
   /**
-   * Format tool_use content from assistant message
+   * Format tool_use content from assistant message (default = detail mode)
    */
-  static formatToolUse(content: any[]): string {
+  static formatToolUse(content: any[], mode: RenderMode = 'detail'): string {
+    if (mode === 'hidden') return '';
+    if (mode === 'compact') return this.formatToolUseCompact(content);
+    if (mode === 'verbose') return this.formatToolUseVerbose(content);
+
+    // detail mode — current behavior
     const parts: string[] = [];
 
     for (const part of content) {
@@ -163,10 +313,8 @@ export class ToolFormatter {
             parts.push(this.formatBashTool(input));
             break;
           case 'TodoWrite':
-            // TodoWrite is handled separately
             return '';
           case 'mcp__permission-prompt__permission_prompt':
-            // Permission prompt is handled internally
             return '';
           default:
             parts.push(this.formatGenericTool(toolName, input));
@@ -175,6 +323,227 @@ export class ToolFormatter {
     }
 
     return parts.join('\n\n');
+  }
+
+  // ── Compact mode: single-line per tool ─────────────────────────────
+
+  static formatToolUseCompact(content: any[]): string {
+    const parts: string[] = [];
+
+    for (const part of content) {
+      if (part.type !== 'tool_use') continue;
+      const { name, input } = part;
+
+      if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
+
+      // Async tools (MCP, Task/Subagent) get ⏳; sync tools get ⚪
+      const isAsync = name.startsWith('mcp__') || name === 'Task';
+      const icon = isAsync ? '⏳' : '⚪';
+      parts.push(`${icon} ${this.formatOneLineToolUse(name, input)}`);
+    }
+
+    return parts.join('\n');
+  }
+
+  /** Format a single tool use as one line: `emoji ToolName — context` */
+  static formatOneLineToolUse(toolName: string, input: any): string {
+    const emoji = this.getToolEmoji(toolName);
+
+    switch (toolName) {
+      case 'Edit':
+      case 'MultiEdit':
+        return `${emoji} Edit \`${this.compactPath(input.file_path)}\``;
+      case 'Write':
+        return `${emoji} Write \`${this.compactPath(input.file_path)}\``;
+      case 'Read':
+        return `${emoji} Read \`${this.compactPath(input.file_path)}\``;
+      case 'Bash':
+        return `${emoji} Bash \`${this.truncateString(String(input.command || ''), 40)}\``;
+      case 'Glob':
+        return `${emoji} Glob \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+      case 'Grep':
+        return `${emoji} Grep \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+      case 'Task': {
+        const summary = this.getTaskToolSummary(input);
+        return `${emoji} Task: *${summary.subagentLabel || 'Agent'}*${summary.promptPreview ? ' — ' + this.truncateString(summary.promptPreview, 30) : ''}`;
+      }
+      case 'Skill': {
+        const skillName = input?.skill || input?.name || '';
+        return skillName
+          ? `${emoji} Skill: *${skillName}*`
+          : `${emoji} Skill`;
+      }
+      case 'TaskOutput': {
+        const meta = input?._taskMeta;
+        if (meta?.subagentLabel || meta?.name) {
+          const label = meta.subagentLabel || meta.name;
+          return meta.promptPreview
+            ? `${emoji} TaskOutput: *${label}* — ${this.truncateString(meta.promptPreview, 30)}`
+            : `${emoji} TaskOutput: *${label}*`;
+        }
+        const taskId = input?.task_id || '';
+        return taskId
+          ? `${emoji} TaskOutput: \`${this.truncateString(taskId, 20)}\``
+          : `${emoji} TaskOutput`;
+      }
+      default:
+        if (toolName.startsWith('mcp__')) {
+          const parts = toolName.split('__');
+          const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
+          const params = this.formatCompactParams(input);
+          return params ? `${base} ${params}` : base;
+        }
+        {
+          const params = this.formatCompactParams(input);
+          return params ? `${emoji} ${toolName} ${params}` : `${emoji} ${toolName}`;
+        }
+    }
+  }
+
+  /** Format a completed tool line with status icon and optional duration */
+  static formatOneLineToolComplete(
+    toolName: string,
+    input: any,
+    isError: boolean,
+    duration?: number | null
+  ): string {
+    const icon = isError ? '🔴' : '🟢';
+    const line = this.formatOneLineToolUse(toolName, input);
+    if (duration !== null && duration !== undefined) {
+      return `${icon} ${line} — ${McpCallTracker.formatDuration(duration)}`;
+    }
+    return `${icon} ${line}`;
+  }
+
+  private static getToolEmoji(toolName: string): string {
+    if (toolName === 'Edit' || toolName === 'MultiEdit') return '📝';
+    if (toolName === 'Write') return '📄';
+    if (toolName === 'Read') return '👁️';
+    if (toolName === 'Bash') return '🖥️';
+    if (toolName === 'Glob' || toolName === 'Grep') return '🔍';
+    if (toolName === 'Task') return '🤖';
+    if (toolName.startsWith('mcp__')) return '🔌';
+    return '🔧';
+  }
+
+  private static compactPath(filePath: string): string {
+    if (!filePath) return '?';
+    const parts = filePath.split('/');
+    return parts.length > 2
+      ? `.../${parts.slice(-2).join('/')}`
+      : filePath;
+  }
+
+  /**
+   * Format up to 2 compact parameters from tool input for one-line display.
+   * Returns `(key: val, key2: val2)` or empty string if no suitable params.
+   * Budget controls the total max length of the parenthesized string.
+   */
+  static formatCompactParams(input: unknown, budget = 60): string {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+
+    const entries = Object.entries(input as Record<string, unknown>);
+    if (entries.length === 0) return '';
+
+    // Filter to short, displayable values (string/number/boolean, skip internal keys)
+    const candidates = entries
+      .filter(([key, val]) => {
+        if (key.startsWith('_')) return false;
+        if (val === null || val === undefined) return false;
+        if (typeof val === 'object') return false;
+        return true;
+      })
+      .map(([key, val]) => {
+        const strVal = String(val);
+        return { key, val: strVal, len: key.length + strVal.length + 2 }; // +2 for ": "
+      })
+      // Prioritize shorter values first for better fit
+      .sort((a, b) => a.len - b.len);
+
+    if (candidates.length === 0) return '';
+
+    // Budget includes parentheses `()` = 2 chars
+    const innerBudget = budget - 2;
+    const parts: string[] = [];
+    let used = 0;
+
+    for (const c of candidates) {
+      if (parts.length >= 2) break;
+
+      // Separator ", " = 2 chars between params
+      const separator = parts.length > 0 ? 2 : 0;
+      const available = innerBudget - used - separator;
+      if (available < 8) break; // minimum "k: v..." = ~8 chars
+
+      let display: string;
+      const maxValLen = available - c.key.length - 2; // -2 for ": "
+      if (maxValLen <= 0) break;
+
+      const truncVal = c.val.length > maxValLen
+        ? c.val.substring(0, maxValLen - 1) + '…'
+        : c.val;
+      display = `${c.key}: ${truncVal}`;
+
+      parts.push(display);
+      used += display.length + separator;
+    }
+
+    return parts.length > 0 ? `(${parts.join(', ')})` : '';
+  }
+
+  // ── Verbose mode: extended output ──────────────────────────────────
+
+  private static readonly VERBOSE_TEXT_LIMIT = 2000;
+
+  static formatToolUseVerbose(content: any[]): string {
+    const parts: string[] = [];
+
+    for (const part of content) {
+      if (part.type === 'text') {
+        parts.push(part.text);
+      } else if (part.type === 'tool_use') {
+        const { name, input } = part;
+        if (name === 'TodoWrite' || name === 'mcp__permission-prompt__permission_prompt') continue;
+
+        switch (name) {
+          case 'Edit':
+          case 'MultiEdit': {
+            const edits = name === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
+            let result = `📝 *Editing \`${input.file_path}\`*\n`;
+            for (const edit of edits) {
+              result += '\n```diff\n';
+              result += `- ${this.truncateString(edit.old_string, this.VERBOSE_TEXT_LIMIT)}\n`;
+              result += `+ ${this.truncateString(edit.new_string, this.VERBOSE_TEXT_LIMIT)}\n`;
+              result += '```';
+            }
+            parts.push(result);
+            break;
+          }
+          case 'Write':
+            parts.push(`📄 *Creating \`${input.file_path}\`*\n\`\`\`\n${this.truncateString(input.content, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            break;
+          case 'Bash':
+            parts.push(`🖥️ *Running command:*\n\`\`\`bash\n${this.truncateString(input.command, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            break;
+          default:
+            if (name.startsWith('mcp__')) {
+              parts.push(this.formatMcpTool(name, input));
+            } else if (name === 'Task') {
+              parts.push(this.formatTaskTool(input));
+            } else {
+              parts.push(`🔧 *Using ${name}*\n\`\`\`json\n${this.truncateString(JSON.stringify(input, null, 2), this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            }
+        }
+      }
+    }
+
+    return parts.join('\n\n');
+  }
+
+  /** Format a compact completion line for in-place tool message update */
+  static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
+    const icon = isError ? '🔴' : '🟢';
+    return `${icon} ${this.formatOneLineToolUse(toolName, input)}`;
   }
 
   /**
@@ -217,7 +586,7 @@ export class ToolFormatter {
       return null;
     }
 
-    const statusIcon = isError ? '❌' : '✅';
+    const statusIcon = isError ? '🔴' : '🟢';
     let formatted = `${statusIcon} *${toolName} 결과*\n`;
 
     if (result) {
@@ -279,7 +648,7 @@ export class ToolFormatter {
       actualToolName = parts.slice(2).join('__') || toolName;
     }
 
-    const statusIcon = isError ? '❌' : '✅';
+    const statusIcon = isError ? '🔴' : '🟢';
     let formatted = `${statusIcon} *MCP Result: ${serverName} → ${actualToolName}*`;
 
     if (duration !== null && duration !== undefined) {

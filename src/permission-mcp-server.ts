@@ -133,20 +133,17 @@ class PermissionMCPServer {
       // Wait for user response
       const response = await this.waitForApproval(approvalId);
 
-      // Update the message to show the result
+      // Delete the permission request message after user responds (avoid clutter)
       if (result.ts && result.channel) {
-        const resultBlocks = this.messenger.buildResultBlocks(
-          tool_name,
-          input,
-          response.behavior === 'allow'
-        );
-        await this.messenger.updateWithResult(
-          result.channel,
-          result.ts,
-          resultBlocks,
-          tool_name,
-          response.behavior === 'allow'
-        );
+        try {
+          await this.slack.chat.delete({
+            channel: result.channel,
+            ts: result.ts,
+          });
+        } catch (deleteError) {
+          // Non-critical — message may already be deleted or bot lacks permission
+          logger.warn('Failed to delete permission message:', deleteError);
+        }
       }
 
       return {

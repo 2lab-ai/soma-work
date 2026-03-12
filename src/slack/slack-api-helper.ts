@@ -5,6 +5,8 @@ export interface MessageOptions {
   threadTs?: string;
   blocks?: any[];
   attachments?: any[];
+  unfurlLinks?: boolean;
+  unfurlMedia?: boolean;
 }
 
 /**
@@ -14,12 +16,19 @@ interface RateLimitConfig {
   bucketSize: number;      // 최대 버스트 크기
   refillRate: number;      // 초당 리필 토큰 수
   minInterval: number;     // 최소 요청 간격 (ms)
+  maxQueueSize: number;    // 최대 큐 크기 (초과 시 oldest drop)
+}
+
+interface UpdateMessageOptions {
+  unfurlLinks?: boolean;
+  unfurlMedia?: boolean;
 }
 
 const DEFAULT_RATE_LIMIT: RateLimitConfig = {
   bucketSize: 10,          // 최대 10개 버스트
   refillRate: 3,           // 초당 3개 리필
   minInterval: 100,        // 최소 100ms 간격
+  maxQueueSize: 200,       // 최대 큐 크기 (초과 시 oldest drop)
 };
 
 /**
@@ -50,10 +59,27 @@ export class SlackApiHelper {
   }
 
   /**
+   * Get the underlying Slack WebClient for direct API access
+   */
+  getClient() {
+    return this.app.client;
+  }
+
+  /**
    * Rate limit 큐에 API 호출 추가
    */
   private async enqueue<T>(execute: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // Drop oldest if queue exceeds maxQueueSize
+      if (this.queue.length >= this.rateLimit.maxQueueSize) {
+        const dropped = this.queue.shift()!;
+        dropped.reject(new Error('Queue overflow: dropped oldest request'));
+        this.logger.warn('Queue overflow: dropped oldest request', {
+          queueLength: this.queue.length,
+          maxQueueSize: this.rateLimit.maxQueueSize,
+        });
+      }
+
       this.queue.push({ execute, resolve, reject });
       this.processQueue();
     });
@@ -197,6 +223,29 @@ export class SlackApiHelper {
   }
 
   /**
+   * Fetch a single message by channel and timestamp.
+   */
+  async getMessage(channel: string, ts: string): Promise<any | null> {
+    try {
+      const response = await this.enqueue(() =>
+        this.app.client.conversations.history({
+          channel,
+          latest: ts,
+          oldest: ts,
+          inclusive: true,
+          limit: 1,
+        })
+      );
+      const messages = (response.messages as any[]) || [];
+      const exact = messages.find((message) => message?.ts === ts);
+      return exact || messages[0] || null;
+    } catch (error) {
+      this.logger.warn('Failed to fetch message', { channel, ts, error });
+      return null;
+    }
+  }
+
+  /**
    * 봇 사용자 ID 조회 (캐싱됨)
    */
   async getBotUserId(): Promise<string> {
@@ -239,15 +288,22 @@ export class SlackApiHelper {
     options?: MessageOptions
   ): Promise<{ ts?: string; channel?: string }> {
     try {
-      const result = await this.enqueue(() =>
-        this.app.client.chat.postMessage({
-          channel,
-          text,
-          thread_ts: options?.threadTs,
-          blocks: options?.blocks,
-          attachments: options?.attachments,
-        })
-      );
+      const payload: any = {
+        channel,
+        text,
+        thread_ts: options?.threadTs,
+        blocks: options?.blocks,
+        attachments: options?.attachments,
+      };
+
+      if (typeof options?.unfurlLinks === 'boolean') {
+        payload.unfurl_links = options.unfurlLinks;
+      }
+      if (typeof options?.unfurlMedia === 'boolean') {
+        payload.unfurl_media = options.unfurlMedia;
+      }
+
+      const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
       return { ts: result.ts, channel: result.channel };
     } catch (error) {
       this.logger.error('Failed to post message', { channel, error });
@@ -263,21 +319,90 @@ export class SlackApiHelper {
     ts: string,
     text: string,
     blocks?: any[],
-    attachments?: any[]
+    attachments?: any[],
+    options?: UpdateMessageOptions
   ): Promise<void> {
     try {
-      await this.enqueue(() =>
-        this.app.client.chat.update({
-          channel,
-          ts,
-          text,
-          blocks,
-          attachments,
-        })
-      );
+      const payload: any = {
+        channel,
+        ts,
+        text,
+        blocks,
+        attachments,
+      };
+
+      if (typeof options?.unfurlLinks === 'boolean') {
+        payload.unfurl_links = options.unfurlLinks;
+      }
+      if (typeof options?.unfurlMedia === 'boolean') {
+        payload.unfurl_media = options.unfurlMedia;
+      }
+
+      await this.enqueue(() => this.app.client.chat.update(payload));
     } catch (error) {
       this.logger.warn('Failed to update message', { channel, ts, error });
       throw error;
+    }
+  }
+
+  /**
+   * 메시지 삭제 (봇이 보낸 메시지만 삭제 가능)
+   */
+  async deleteMessage(channel: string, ts: string): Promise<void> {
+    try {
+      await this.enqueue(() =>
+        this.app.client.chat.delete({ channel, ts })
+      );
+    } catch (error) {
+      this.logger.warn('Failed to delete message', { channel, ts, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete bot-authored messages within a thread (keeps the root message)
+   */
+  async deleteThreadBotMessages(
+    channel: string,
+    threadTs: string,
+    options?: { excludeTs?: string[] }
+  ): Promise<void> {
+    const excludeTs = new Set(options?.excludeTs || []);
+    const botUserId = await this.getBotUserId();
+    let cursor: string | undefined;
+
+    try {
+      do {
+        const response = await this.enqueue(() =>
+          this.app.client.conversations.replies({
+            channel,
+            ts: threadTs,
+            limit: 200,
+            cursor,
+          })
+        );
+
+        const messages = (response.messages as any[]) || [];
+        for (const message of messages) {
+          const messageTs = message?.ts as string | undefined;
+          if (!messageTs || messageTs === threadTs || excludeTs.has(messageTs)) {
+            continue;
+          }
+          if (message?.user !== botUserId) {
+            continue;
+          }
+          try {
+            await this.deleteMessage(channel, messageTs);
+          } catch (error) {
+            this.logger.debug('Failed to delete thread message', { channel, messageTs, error });
+          }
+        }
+
+        const nextCursor = response.response_metadata?.next_cursor;
+        cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+      } while (cursor);
+    } catch (error) {
+      this.logger.warn('Failed to delete bot messages in thread', { channel, threadTs, error });
     }
   }
 
@@ -290,9 +415,9 @@ export class SlackApiHelper {
     text: string,
     threadTs?: string,
     blocks?: any[]
-  ): Promise<void> {
+  ): Promise<{ ts?: string }> {
     try {
-      await this.enqueue(() =>
+      const result = await this.enqueue(() =>
         this.app.client.chat.postEphemeral({
           channel,
           user,
@@ -301,6 +426,7 @@ export class SlackApiHelper {
           blocks,
         })
       );
+      return { ts: (result as any).message_ts || (result as any).ts };
     } catch (error) {
       this.logger.warn('Failed to post ephemeral message', { channel, user, error });
       throw error;

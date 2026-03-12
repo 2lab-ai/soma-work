@@ -5,11 +5,13 @@ import { UserChoices } from '../../types';
 import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
+import { ThreadPanel } from '../thread-panel';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
+  threadPanel?: ThreadPanel;
 }
 
 /**
@@ -31,16 +33,19 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
+      const fallbackThreadTs = body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
+      const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
       // 선택 메시지 업데이트
-      if (messageTs && channel) {
+      if (completionMessageTs && channel) {
         try {
           await this.ctx.slackApi.updateMessage(
             channel,
-            messageTs,
+            completionMessageTs,
             `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
             [
               {
@@ -58,8 +63,8 @@ export class ChoiceActionHandler {
       }
 
       // 세션 확인 및 메시지 처리
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       if (session) {
+        await this.ctx.threadPanel?.clearChoice(sessionKey);
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
@@ -158,7 +163,6 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
 
       this.logger.info('Form submit requested', { formId, userId });
 
@@ -185,6 +189,10 @@ export class ChoiceActionHandler {
         );
         return;
       }
+
+      const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
 
       // 제출 처리
       await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
@@ -254,18 +262,37 @@ export class ChoiceActionHandler {
       pendingForm.selections
     );
 
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
-    } catch (error) {
-      this.logger.warn('Failed to update form UI', error);
+    const targetMessageTs = this.resolveChoiceSyncMessageTs(
+      pendingForm.sessionKey,
+      messageTs,
+      pendingForm.messageTs
+    );
+    for (const targetTs of targetMessageTs) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '📋 선택이 필요합니다',
+          undefined,
+          updatedPayload.attachments
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update form UI', { targetTs, error });
+      }
     }
+
+    await this.ctx.threadPanel?.attachChoice(
+      pendingForm.sessionKey,
+      updatedPayload,
+      pendingForm.messageTs
+    );
   }
 
   async completeMultiChoiceForm(
     pendingForm: PendingChoiceFormData,
     userId: string,
     channel: string,
-    threadTs: string,
+    threadTs: string | undefined,
     messageTs: string
   ): Promise<void> {
     this.logger.info('All multi-choice selections complete', { formId: pendingForm.formId, selections: pendingForm.selections });
@@ -281,6 +308,8 @@ export class ChoiceActionHandler {
 
     this.formStore.delete(pendingForm.formId);
 
+    const completionMessageTs = pendingForm.messageTs || messageTs;
+
     // 완료 UI 업데이트
     try {
       const completedBlocks = [
@@ -293,19 +322,23 @@ export class ChoiceActionHandler {
         },
       ];
 
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '✅ 모든 선택 완료', completedBlocks);
+      if (completionMessageTs) {
+        await this.ctx.slackApi.updateMessage(channel, completionMessageTs, '✅ 모든 선택 완료', completedBlocks);
+      }
     } catch (error) {
       this.logger.warn('Failed to update completed form', error);
     }
 
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
+    const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
+      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: combinedMessage },
+        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
         say
       );
     } else {
@@ -327,5 +360,34 @@ export class ChoiceActionHandler {
         attachments: msgArgs.attachments,
       });
     };
+  }
+
+  private resolveSessionThreadTs(session: any, fallbackThreadTs: string | undefined): string | undefined {
+    return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
+  }
+
+  private resolveChoiceMessageTs(session: any, fallbackMessageTs: string | undefined): string | undefined {
+    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
+  }
+
+  private resolveChoiceSyncMessageTs(
+    sessionKey: string,
+    sourceMessageTs: string | undefined,
+    threadMessageTs: string | undefined
+  ): string[] {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    const targets = new Set<string>();
+
+    if (sourceMessageTs) {
+      targets.add(sourceMessageTs);
+    }
+    if (threadMessageTs) {
+      targets.add(threadMessageTs);
+    }
+    if (session?.actionPanel?.choiceMessageTs) {
+      targets.add(session.actionPanel.choiceMessageTs);
+    }
+
+    return [...targets];
   }
 }

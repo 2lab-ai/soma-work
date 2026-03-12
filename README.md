@@ -1,8 +1,9 @@
-# Claude Code Slack Bot
+# soma-work
+![CI](https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg)
 
 > *"In the beginning was the Word, and the Word was Code."*
 
-A TypeScript bot that summons AI coding intelligence into your Slack workspace.
+A TypeScript bot that brings AI coding intelligence into your Slack workspace.
 Powered by the Claude Code SDK, it provides a conversational coding assistant with 12 genius personas, automatic workflow dispatch, an extensible MCP tool ecosystem, and real-time task tracking.
 
 [한국어 README](./README.ko.md)
@@ -35,19 +36,19 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
                        │
                 ┌──────▼──────┐
                 │ SlackHandler │ ← Facade
-                │   (314 LOC)  │
+                │  (~600 LOC)  │
                 └──────┬──────┘
                        │
           ┌────────────┼────────────────┐
           │            │                │
    ┌──────▼──────┐ ┌──▼───────┐ ┌─────▼──────┐
    │ EventRouter │ │ Command  │ │  Stream    │
-   │   (272)     │ │ Router   │ │ Processor  │
-   │             │ │  (95)    │ │  (512)     │
+   │   (293)     │ │ Router   │ │ Processor  │
+   │             │ │  (105)   │ │  (837)     │
    └──────┬──────┘ └──┬───────┘ └─────┬──────┘
           │            │                │
           │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 14 Command  │  │  Pipeline  │
+          │     │ 20 Command  │  │  Pipeline  │
           │     │  Handlers   │  │ input →    │
           │     └─────────────┘  │ session →  │
           │                      │ stream     │
@@ -55,11 +56,11 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
           │                            │
    ┌──────▼────────────────────────────▼──────┐
    │              ClaudeHandler               │
-   │                (381 LOC)                 │
+   │               (~610 LOC)                 │
    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
    │  │ Session  │ │ Prompt   │ │ Dispatch │ │
    │  │ Registry │ │ Builder  │ │ Service  │ │
-   │  │  (522)   │ │  (298)   │ │  (368)   │ │
+   │  │ (1,048)  │ │  (299)   │ │  (509)   │ │
    │  └──────────┘ └──────────┘ └──────────┘ │
    └──────────────────┬───────────────────────┘
                       │
@@ -86,6 +87,9 @@ Analyzes user input and automatically selects the optimal workflow.
 | Jira Planning | Jira issue + planning | Task decomposition + planning |
 | Jira Summary | Jira issue + summary | Executive report generation |
 | Jira Brainstorming | Jira + brainstorm | Idea divergence + synthesis |
+| Jira Create PR | Jira issue + "PR" | Auto-create pull request |
+| Deploy | Deploy-related request | Deployment workflow |
+| Onboarding | New user / `onboarding` | Interactive onboarding guide |
 | Default | All other input | General-purpose coding assistant |
 
 ### 12 Personas
@@ -112,16 +116,24 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 
 | Command | Description |
 |---------|-------------|
-| `cwd` | Show current working directory |
+| `cwd` | Show/set current working directory |
 | `mcp` / `mcp reload` | List MCP servers / reload config |
+| `bypass [on/off]` | Toggle permission prompt bypass |
 | `persona [name]` | Switch persona |
 | `model [name]` | Switch model (sonnet, opus, haiku) |
+| `verbosity [level]` | Set output verbosity level |
 | `sessions` | List active sessions |
-| `new [prompt]` | Reset current session and continue with empty memory |
-| `renew [prompt]` | Renew session (optionally retain prompt) |
-| `restore [session]` | Restore a session |
-| `terminate [session]` | Terminate a session |
+| `new` / `renew` | Reset / renew session |
+| `close` | Close current thread's session |
+| `restore` | Restore a session |
 | `context` | Show context window status |
+| `link [url]` | Attach issue/PR/doc links to session |
+| `onboarding` | Run onboarding workflow |
+| `admin` | Admin commands (accept/deny/users/config) |
+| `cct` / `set_cct` | CCT token status / manual switch |
+| `marketplace` | Plugin marketplace |
+| `plugins` | Manage installed plugins |
+| `$` / `$model` / `$verbosity` | Session-only settings (non-persistent) |
 | `help` | Show help |
 
 ## Quick Start
@@ -130,7 +142,7 @@ GitHub App authentication (recommended) or PAT fallback. Automatic token renewal
 
 ```bash
 git clone <repo-url>
-cd claude-code-slack-bot
+cd soma-work
 npm install
 ```
 
@@ -215,7 +227,7 @@ docker-compose logs -f
 ./service.sh logs follow # Stream logs
 ```
 
-Service name: `com.dd.claude-slack-bot`. Auto-restarts on crash.
+Service name: `ai.2lab.soma-work`. Auto-restarts on crash.
 
 > **Warning**: Do not use `service.sh` during development. Running multiple instances with the same Slack token causes message conflicts.
 
@@ -240,40 +252,51 @@ When GitHub App is configured, it takes priority. Otherwise falls back to PAT.
 ## Project Structure
 
 ```
-src/                            # ~13,800 lines of TypeScript
+src/                            # ~27,000 lines of TypeScript
 ├── slack/                      # Slack module (SRP separation)
-│   ├── actions/                # Interactive action handlers (7 files)
+│   ├── actions/                # Interactive action handlers (9 handlers)
 │   ├── pipeline/               # Stream processing pipeline (5 files)
-│   ├── commands/               # Command handlers (14 files)
+│   ├── commands/               # Command handlers (20 handlers)
+│   ├── directives/             # Channel/session link directives
 │   └── formatters/             # Output formatters
+├── conversation/               # Conversation recording & replay
+├── model-commands/             # Model command catalog & validation
 ├── mcp/                        # MCP server management
 ├── github/                     # GitHub App auth + Git CLI
 ├── permission/                 # Permission service + Slack UI
+├── plugin/                     # Plugin system (marketplace, cache, manager)
 ├── prompt/                     # System prompts
-│   └── workflows/              # Workflow prompts (7 workflows)
-└── persona/                    # Bot personas (12 personas)
+│   └── workflows/              # Workflow prompts (9 workflows)
+├── persona/                    # Bot personas (12 personas)
+└── local/                      # Claude Code SDK local plugins
+    ├── agents/                 # Agent definitions
+    ├── skills/                 # Skill implementations
+    ├── hooks/                  # Git/build hooks
+    ├── commands/               # Local slash commands
+    └── prompts/                # Local prompts
 
 data/                           # Runtime data (auto-generated)
-docs/                           # Architecture + spec docs (12 specs)
+docs/                           # Architecture + spec docs (14 specs)
 scripts/                        # Utility scripts
 ```
 
 | Category | Count |
 |----------|-------|
-| Source (excl. test/local) | 85 files, ~13,800 LOC |
-| Tests | 20 files, ~5,600 LOC |
+| Source (excl. test/local) | 122 files, ~27,000 LOC |
+| Tests | 43 files, ~11,100 LOC |
 | Personas | 12 files, ~4,700 LOC |
-| Prompts | 12 files, ~1,900 LOC |
+| Prompts/Workflows | ~2,150 LOC |
 
 ## Design Decisions
 
 1. **Facade Pattern** — Simplifies complex subsystems behind 3 facades
-2. **Single Responsibility** — One responsibility per file (85 modules)
+2. **Single Responsibility** — One responsibility per file (122 modules)
 3. **Pipeline Architecture** — Input preprocessing → session init → stream execution
-4. **Workflow Dispatch** — Input classification → specialized workflow prompts
+4. **Workflow Dispatch** — Input classification → specialized workflow prompts (9 workflows)
 5. **Append-Only Messages** — New messages instead of message edits
 6. **Session-Based Context** — Per-thread session persistence
 7. **Dependency Injection** — Testability through injected dependencies
+8. **Hierarchical CWD** — Thread > Channel > User working directory priority
 
 ## Testing
 
@@ -283,7 +306,7 @@ npx vitest run      # Single run
 npx vitest --watch  # Watch mode
 ```
 
-20 test files cover critical paths: event routing, stream processing, command parsing, permission validation, tool formatting, session management, and more.
+43 test files (~11,100 LOC) cover critical paths: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, and more.
 
 ## Troubleshooting
 

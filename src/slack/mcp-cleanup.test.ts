@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  * These tests verify that MCP tracking state is properly cleaned up:
  * 1. toolUseIdToName map is cleared on abort/completion
  * 2. toolUseIdToCallId map is cleared on abort/completion
- * 3. McpStatusDisplay intervals are stopped on abort
+ * 3. McpStatusDisplay session ticks are stopped on abort
  * 4. Status messages are updated to show cancellation/completion
  */
 
@@ -35,6 +35,10 @@ class MockToolTracker {
     this.toolUseIdToCallId.delete(toolUseId);
   }
 
+  getActiveMcpCallIds(): string[] {
+    return Array.from(this.toolUseIdToCallId.values());
+  }
+
   cleanup(): void {
     this.toolUseIdToName.clear();
     this.toolUseIdToCallId.clear();
@@ -57,85 +61,56 @@ class MockToolTracker {
   }
 }
 
-// Mock MCP Status Display
+// Mock MCP Status Display (session-tick API)
 class MockMcpStatusDisplay {
-  private statusIntervals: Map<string, NodeJS.Timeout> = new Map();
-  private statusMessages: Map<string, { channel: string; ts: string; serverName: string; toolName: string }> = new Map();
-  private updateCount: Map<string, number> = new Map();
+  private activeCalls: Map<string, { sessionKey: string; status: string }> = new Map();
 
-  startStatusUpdate(
+  registerCall(
+    sessionKey: string,
     callId: string,
-    serverName: string,
-    toolName: string,
-    channel: string,
-    threadTs: string
+    _config: any,
+    _channel: string,
+    _threadTs: string
   ): void {
-    // Store status message info
-    this.statusMessages.set(callId, {
-      channel,
-      ts: threadTs,
-      serverName,
-      toolName,
-    });
-
-    // Start interval (simulated with 100ms for testing)
-    const interval = setInterval(() => {
-      const count = this.updateCount.get(callId) || 0;
-      this.updateCount.set(callId, count + 1);
-    }, 100);
-
-    this.statusIntervals.set(callId, interval);
+    this.activeCalls.set(callId, { sessionKey, status: 'running' });
   }
 
-  async stopStatusUpdate(callId: string, duration?: number | null): Promise<void> {
-    // Stop interval
-    const timer = this.statusIntervals.get(callId);
-    if (timer) {
-      clearInterval(timer);
-      clearTimeout(timer);
-      this.statusIntervals.delete(callId);
+  completeCall(callId: string, _duration: number | null): void {
+    const entry = this.activeCalls.get(callId);
+    if (entry) {
+      this.activeCalls.set(callId, { ...entry, status: 'completed' });
     }
+  }
 
-    // Remove status message info
-    this.statusMessages.delete(callId);
-    this.updateCount.delete(callId);
+  cleanupSession(sessionKey: string): void {
+    for (const [callId, entry] of this.activeCalls) {
+      if (entry.sessionKey === sessionKey) {
+        this.activeCalls.delete(callId);
+      }
+    }
   }
 
   isTracking(callId: string): boolean {
-    return this.statusIntervals.has(callId);
+    const entry = this.activeCalls.get(callId);
+    return entry?.status === 'running';
   }
 
   getActiveCount(): number {
-    return this.statusIntervals.size;
-  }
-
-  getUpdateCount(callId: string): number {
-    return this.updateCount.get(callId) || 0;
-  }
-
-  hasStatusMessage(callId: string): boolean {
-    return this.statusMessages.has(callId);
-  }
-
-  // Stop all tracking (for cleanup)
-  stopAll(): void {
-    for (const [callId, timer] of this.statusIntervals) {
-      clearInterval(timer);
-      clearTimeout(timer);
+    let count = 0;
+    for (const entry of this.activeCalls.values()) {
+      if (entry.status === 'running') count++;
     }
-    this.statusIntervals.clear();
-    this.statusMessages.clear();
-    this.updateCount.clear();
+    return count;
   }
 }
 
 // Mock MCP Call Tracker
 class MockMcpCallTracker {
-  private activeCalls: Map<string, { startTime: number; serverName: string; toolName: string }> = new Map();
+  private calls: Map<string, { startTime: number; serverName: string; toolName: string }> = new Map();
 
   startCall(serverName: string, toolName: string): string {
     const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    this.activeCalls.set(callId, {
+    this.calls.set(callId, {
       startTime: Date.now(),
       serverName,
       toolName,
@@ -144,20 +119,20 @@ class MockMcpCallTracker {
   }
 
   endCall(callId: string): number | null {
-    const call = this.activeCalls.get(callId);
+    const call = this.calls.get(callId);
     if (!call) return null;
 
     const duration = Date.now() - call.startTime;
-    this.activeCalls.delete(callId);
+    this.calls.delete(callId);
     return duration;
   }
 
   isCallActive(callId: string): boolean {
-    return this.activeCalls.has(callId);
+    return this.calls.has(callId);
   }
 
   getActiveCallCount(): number {
-    return this.activeCalls.size;
+    return this.calls.size;
   }
 }
 
@@ -170,10 +145,6 @@ describe('MCP Status Cleanup', () => {
     toolTracker = new MockToolTracker();
     mcpStatusDisplay = new MockMcpStatusDisplay();
     mcpCallTracker = new MockMcpCallTracker();
-  });
-
-  afterEach(() => {
-    mcpStatusDisplay.stopAll();
   });
 
   describe('Tool Tracking Cleanup', () => {
@@ -251,65 +222,55 @@ describe('MCP Status Cleanup', () => {
     });
   });
 
-  describe('MCP Status Display Cleanup', () => {
-    it('should start status update with tracking', () => {
+  describe('MCP Status Display Cleanup (Session Tick API)', () => {
+    it('should register call with tracking', () => {
       const callId = 'call_123';
+      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
 
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
 
       expect(mcpStatusDisplay.isTracking(callId)).toBe(true);
-      expect(mcpStatusDisplay.hasStatusMessage(callId)).toBe(true);
       expect(mcpStatusDisplay.getActiveCount()).toBe(1);
     });
 
-    it('should stop status update and clear tracking', async () => {
+    it('should complete call and clear active tracking', () => {
       const callId = 'call_123';
+      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
 
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
-
+      mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
       expect(mcpStatusDisplay.isTracking(callId)).toBe(true);
 
-      await mcpStatusDisplay.stopStatusUpdate(callId, 1000);
-
+      mcpStatusDisplay.completeCall(callId, 1000);
       expect(mcpStatusDisplay.isTracking(callId)).toBe(false);
-      expect(mcpStatusDisplay.hasStatusMessage(callId)).toBe(false);
     });
 
-    it('should handle multiple concurrent MCP calls', async () => {
-      const callId1 = 'call_1';
-      const callId2 = 'call_2';
-      const callId3 = 'call_3';
+    it('should handle multiple concurrent MCP calls', () => {
+      const config = (label: string) => ({ displayType: 'MCP', displayLabel: label, initialDelay: 10000, predictKey: { serverName: 'test', toolName: 'test' } });
 
-      mcpStatusDisplay.startStatusUpdate(callId1, 'github', 'create_issue', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId2, 'codex', 'search', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId3, 'filesystem', 'read', 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', 'call_1', config('github → create_issue'), 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', 'call_2', config('codex → search'), 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', 'call_3', config('filesystem → read'), 'C123', '111.222');
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(3);
 
-      // Stop one
-      await mcpStatusDisplay.stopStatusUpdate(callId2, 500);
+      // Complete one
+      mcpStatusDisplay.completeCall('call_2', 500);
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(2);
-      expect(mcpStatusDisplay.isTracking(callId1)).toBe(true);
-      expect(mcpStatusDisplay.isTracking(callId2)).toBe(false);
-      expect(mcpStatusDisplay.isTracking(callId3)).toBe(true);
+      expect(mcpStatusDisplay.isTracking('call_1')).toBe(true);
+      expect(mcpStatusDisplay.isTracking('call_2')).toBe(false);
+      expect(mcpStatusDisplay.isTracking('call_3')).toBe(true);
     });
 
-    it('should stop all tracking on abort', async () => {
-      mcpStatusDisplay.startStatusUpdate('call_1', 'github', 'create_issue', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate('call_2', 'codex', 'search', 'C123', '111.222');
+    it('should cleanup session and remove all tracking', () => {
+      const config = { displayType: 'MCP', displayLabel: 'test', initialDelay: 0, predictKey: { serverName: 'test', toolName: 'test' } };
+
+      mcpStatusDisplay.registerCall('session1', 'call_1', config, 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', 'call_2', config, 'C123', '111.222');
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(2);
 
-      // Abort - stop all
-      mcpStatusDisplay.stopAll();
-
-      expect(mcpStatusDisplay.getActiveCount()).toBe(0);
-    });
-
-    it('should handle stop for non-existent call gracefully', async () => {
-      // Should not throw
-      await mcpStatusDisplay.stopStatusUpdate('nonexistent', 0);
+      mcpStatusDisplay.cleanupSession('session1');
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(0);
     });
@@ -336,7 +297,7 @@ describe('MCP Status Cleanup', () => {
   });
 
   describe('Full Cleanup Flow', () => {
-    it('should cleanup all resources on request completion', async () => {
+    it('should cleanup all resources on request completion', () => {
       // Simulate full tool use -> result flow
       const toolUseId = 'tu_123';
       const toolName = 'mcp__github__create_issue';
@@ -348,8 +309,9 @@ describe('MCP Status Cleanup', () => {
       const callId = mcpCallTracker.startCall('github', 'create_issue');
       toolTracker.trackMcpCall(toolUseId, callId);
 
-      // 3. Start status display
-      mcpStatusDisplay.startStatusUpdate(callId, 'github', 'create_issue', 'C123', '111.222');
+      // 3. Register call in status display
+      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
+      mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
 
       // Verify all tracking is active
       expect(toolTracker.getToolUseCount()).toBe(1);
@@ -359,7 +321,7 @@ describe('MCP Status Cleanup', () => {
 
       // 4. Tool result arrives - cleanup
       const duration = mcpCallTracker.endCall(callId);
-      await mcpStatusDisplay.stopStatusUpdate(callId, duration);
+      mcpStatusDisplay.completeCall(callId, duration);
       toolTracker.removeMcpCallId(toolUseId);
 
       // Verify partial cleanup
@@ -369,29 +331,30 @@ describe('MCP Status Cleanup', () => {
       // Tool use ID still tracked for reference
       expect(toolTracker.getToolName(toolUseId)).toBe(toolName);
 
-      // 5. Session ends - full cleanup (after delay in real impl)
+      // 5. Session ends - full cleanup
       toolTracker.cleanup();
       expect(toolTracker.getToolUseCount()).toBe(0);
     });
 
-    it('should cleanup all resources on abort', async () => {
+    it('should cleanup all resources on abort', () => {
       // Simulate abort during tool execution
       const toolUseId = 'tu_123';
       const toolName = 'mcp__codex__search';
+      const config = { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } };
 
       // Setup tracking
       toolTracker.trackToolUse(toolUseId, toolName);
       const callId = mcpCallTracker.startCall('codex', 'search');
       toolTracker.trackMcpCall(toolUseId, callId);
-      mcpStatusDisplay.startStatusUpdate(callId, 'codex', 'search', 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
 
       // Verify all active
       expect(mcpStatusDisplay.getActiveCount()).toBe(1);
       expect(mcpCallTracker.getActiveCallCount()).toBe(1);
 
-      // Abort happens
-      mcpStatusDisplay.stopAll();
-      // In real impl, active calls would also be ended
+      // Abort happens — complete calls + cleanup session
+      mcpStatusDisplay.completeCall(callId, null);
+      mcpStatusDisplay.cleanupSession('session1');
       mcpCallTracker.endCall(callId);
       toolTracker.cleanup();
 
@@ -402,10 +365,11 @@ describe('MCP Status Cleanup', () => {
       expect(toolTracker.getMcpCallCount()).toBe(0);
     });
 
-    it('should handle multiple tools with partial completion', async () => {
+    it('should handle multiple tools with partial completion', () => {
       // Tool 1 completes, Tool 2 is aborted
       const toolUse1 = 'tu_1';
       const toolUse2 = 'tu_2';
+      const config = (label: string) => ({ displayType: 'MCP', displayLabel: label, initialDelay: 0, predictKey: { serverName: 'test', toolName: 'test' } });
 
       // Start both tools
       toolTracker.trackToolUse(toolUse1, 'mcp__github__list_issues');
@@ -417,19 +381,20 @@ describe('MCP Status Cleanup', () => {
       toolTracker.trackMcpCall(toolUse1, callId1);
       toolTracker.trackMcpCall(toolUse2, callId2);
 
-      mcpStatusDisplay.startStatusUpdate(callId1, 'github', 'list_issues', 'C123', '111.222');
-      mcpStatusDisplay.startStatusUpdate(callId2, 'codex', 'search', 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', callId1, config('github → list_issues'), 'C123', '111.222');
+      mcpStatusDisplay.registerCall('session1', callId2, config('codex → search'), 'C123', '111.222');
 
       // Tool 1 completes normally
       const duration1 = mcpCallTracker.endCall(callId1);
-      await mcpStatusDisplay.stopStatusUpdate(callId1, duration1);
+      mcpStatusDisplay.completeCall(callId1, duration1);
       toolTracker.removeMcpCallId(toolUse1);
 
       expect(mcpStatusDisplay.getActiveCount()).toBe(1);
       expect(mcpCallTracker.getActiveCallCount()).toBe(1);
 
       // Abort happens - Tool 2 is interrupted
-      mcpStatusDisplay.stopAll();
+      mcpStatusDisplay.completeCall(callId2, null);
+      mcpStatusDisplay.cleanupSession('session1');
       mcpCallTracker.endCall(callId2);
       toolTracker.cleanup();
 

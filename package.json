@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-slack",
+  "name": "soma-work",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
     "prod": "node dist/index.js",
+    "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
@@ -20,19 +21,20 @@
   "devDependencies": {
     "@types/node": "=24.0.4",
     "tsx": "=4.20.3",
-    "typescript": "5.8.3",
+    "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.55",
     "@anthropic-ai/sdk": "^0.71.2",
-    "@modelcontextprotocol/sdk": "=1.18.1",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "@slack/bolt": "=4.4.0",
     "@types/jsonwebtoken": "=9.0.10",
     "@types/node-fetch": "=2.6.12",
     "dotenv": "=16.6.0",
     "fastify": "^5.7.2",
     "jsonwebtoken": "=9.0.2",
+    "markdown-to-slack-blocks": "^1.4.1",
     "node-fetch": "=3.3.2"
   }
 }

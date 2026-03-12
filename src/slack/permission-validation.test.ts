@@ -324,7 +324,7 @@ describe('SharedStore File Operations', () => {
   // These tests use the actual SharedStore implementation to test file-based storage
   // They are skipped if running in CI or if temp directory is not writable
 
-  const testStoreDir = path.join(os.tmpdir(), 'claude-code-slack-bot-store-test');
+  const testStoreDir = path.join(os.tmpdir(), 'soma-work-store-test');
 
   beforeEach(() => {
     // Clean up test directory

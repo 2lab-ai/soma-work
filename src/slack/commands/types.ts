@@ -6,6 +6,7 @@ import { RequestCoordinator } from '../request-coordinator';
 import { SlackApiHelper } from '../slack-api-helper';
 import { ReactionManager } from '../reaction-manager';
 import { ContextWindowManager } from '../context-window-manager';
+import { WorkflowType } from '../../types';
 
 /**
  * Context passed to command handlers
@@ -40,6 +41,8 @@ export interface CommandResult {
   error?: string;
   /** If set, continue processing with this prompt after command completes (e.g., /new <prompt>) */
   continueWithPrompt?: string;
+  /** If set, skip dispatch and force this workflow for the next stream execution */
+  forceWorkflow?: WorkflowType;
 }
 
 /**

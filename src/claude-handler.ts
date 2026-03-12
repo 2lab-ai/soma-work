@@ -3,20 +3,32 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
-import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import { isDangerousCommand } from './dangerous-command-filter';
 import * as path from 'path';
-import { ConversationSession, SessionLinks, SessionLink, WorkflowType, ActivityState } from './types';
+import type { SdkPluginPath } from './plugin/types';
+import {
+  ConversationSession,
+  SessionLinks,
+  SessionLink,
+  SessionResourceSnapshot,
+  SessionResourceUpdateRequest,
+  SessionResourceUpdateResult,
+  WorkflowType,
+  ActivityState,
+} from './types';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 
-// Local plugins directory (contains skills, etc.)
+// Fallback local plugins directory (used when no PluginManager is configured)
 const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
 import { userSettingsStore } from './user-settings-store';
 import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
 import { sendCredentialAlert } from './credential-alert';
-import { SessionRegistry, SessionExpiryCallbacks } from './session-registry';
+import { SessionRegistry, SessionExpiryCallbacks, CrashRecoveredSession } from './session-registry';
 import { PromptBuilder, getAvailablePersonas } from './prompt-builder';
 import { McpConfigBuilder, SlackContext } from './mcp-config-builder';
+import { ModelCommandContext } from './model-commands/types';
 
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
@@ -30,11 +42,31 @@ export class ClaudeHandler {
   private promptBuilder: PromptBuilder;
   private mcpConfigBuilder: McpConfigBuilder;
 
+  /** Plugin paths injected by PluginManager (overrides LOCAL_PLUGINS_DIR fallback) */
+  private pluginPaths: SdkPluginPath[] | null = null;
+
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
     this.promptBuilder = new PromptBuilder();
     this.mcpConfigBuilder = new McpConfigBuilder(mcpManager);
+  }
+
+  /**
+   * Set plugin paths from PluginManager. When set, these replace the
+   * default LOCAL_PLUGINS_DIR fallback. Empty arrays are ignored to
+   * preserve the fallback.
+   */
+  setPluginPaths(paths: SdkPluginPath[]): void {
+    if (paths.length === 0) {
+      this.logger.debug('Empty plugin paths provided, keeping LOCAL_PLUGINS_DIR fallback');
+      return;
+    }
+    this.pluginPaths = paths;
+    this.logger.info('Plugin paths configured', {
+      count: paths.length,
+      paths: paths.map(p => p.path),
+    });
   }
 
   // ===== Session Registry Delegation =====
@@ -85,6 +117,17 @@ export class ClaudeHandler {
     this.sessionRegistry.setSessionTitle(channelId, threadTs, title);
   }
 
+  /**
+   * Mark a session as bot-initiated with its root message ts
+   */
+  setBotThread(channelId: string, threadTs: string | undefined, rootTs: string): void {
+    const session = this.sessionRegistry.getSession(channelId, threadTs);
+    if (session) {
+      session.threadModel = 'bot-initiated';
+      session.threadRootTs = rootTs;
+    }
+  }
+
   updateInitiator(
     channelId: string,
     threadTs: string | undefined,
@@ -122,6 +165,18 @@ export class ClaudeHandler {
 
   getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
     return this.sessionRegistry.getSessionLinks(channelId, threadTs);
+  }
+
+  getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
+    return this.sessionRegistry.getSessionResourceSnapshot(channelId, threadTs);
+  }
+
+  updateSessionResources(
+    channelId: string,
+    threadTs: string | undefined,
+    request: SessionResourceUpdateRequest
+  ): SessionResourceUpdateResult {
+    return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
 
   refreshSessionActivityByKey(sessionKey: string): boolean {
@@ -183,6 +238,14 @@ export class ClaudeHandler {
     return this.sessionRegistry.loadSessions();
   }
 
+  getCrashRecoveredSessions(): CrashRecoveredSession[] {
+    return this.sessionRegistry.getCrashRecoveredSessions();
+  }
+
+  clearCrashRecoveredSessions(): void {
+    this.sessionRegistry.clearCrashRecoveredSessions();
+  }
+
   // ===== Dispatch One-Shot Query =====
 
   /**
@@ -217,14 +280,15 @@ export class ClaudeHandler {
     }
 
     // Build query options for one-shot dispatch
-    const options: any = {
-      outputFormat: 'stream-json',
+    const options: Options = {
       settingSources: [],
       plugins: [],
       systemPrompt: dispatchPrompt,
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
-      // Note: persistSession is not a query option - SDK doesn't persist by default when no session ID is provided
+      stderr: (data: string) => {
+        this.logger.warn('DISPATCH stderr', { data: data.trimEnd() });
+      },
     };
 
     if (model) {
@@ -253,14 +317,14 @@ export class ClaudeHandler {
         // Log all message types for debugging
         this.logger.debug(`📨 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
           type: message.type,
-          subtype: (message as any).subtype,
+          subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
         // Handle system init message
-        if (message.type === 'system' && (message as any).subtype === 'init') {
+        if (message.type === 'system' && message.subtype === 'init') {
           this.logger.info(`✅ DISPATCH: SDK initialized (${elapsed}ms)`, {
-            model: (message as any).model,
-            sessionId: (message as any).session_id,
+            model: message.model,
+            sessionId: message.session_id,
           });
         }
 
@@ -282,16 +346,30 @@ export class ClaudeHandler {
           this.logger.info(`🏁 DISPATCH: Query completed (${elapsed}ms)`, {
             totalMessages: messageCount,
             responseLength: assistantText.length,
+            stopReason: message.subtype === 'success' ? message.stop_reason : undefined,
           });
         }
       }
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
-        error: (error as Error).message,
-        messagesReceived: messageCount,
-      });
-      throw error;
+
+      // If we already collected assistant text, the response is likely complete
+      // even though the process didn't exit cleanly (e.g., SIGTERM / exit code 143)
+      if (assistantText.trim()) {
+        this.logger.warn(`⚠️ DISPATCH: Process error after ${elapsed}ms but response available, using it`, {
+          error: (error as Error).message,
+          messagesReceived: messageCount,
+          responseLength: assistantText.length,
+          preview: assistantText.substring(0, 100),
+        });
+        // Fall through to return the collected text
+      } else {
+        this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
+          error: (error as Error).message,
+          messagesReceived: messageCount,
+        });
+        throw error;
+      }
     }
 
     const totalTime = Date.now() - startTime;
@@ -333,17 +411,20 @@ export class ClaudeHandler {
     }
 
     // Build query options
-    const options: any = {
-      outputFormat: 'stream-json',
+    const options: Options = {
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
       settingSources: ['project'],
-      // Load local plugins (skills, etc.) from src/local directory
-      plugins: [{ type: 'local', path: LOCAL_PLUGINS_DIR }],
+      // Load plugins from PluginManager or fallback to local directory
+      plugins: this.pluginPaths ?? [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }],
     };
 
     // Get MCP configuration
-    const mcpConfig = await this.mcpConfigBuilder.buildConfig(slackContext);
+    const modelCommandContext = this.buildModelCommandContext(session, slackContext);
+    const mcpConfig = await this.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext);
     options.permissionMode = mcpConfig.permissionMode;
+    if (mcpConfig.allowDangerouslySkipPermissions) {
+      options.allowDangerouslySkipPermissions = true;
+    }
 
     if (mcpConfig.mcpServers) {
       options.mcpServers = mcpConfig.mcpServers;
@@ -351,8 +432,68 @@ export class ClaudeHandler {
     if (mcpConfig.allowedTools && mcpConfig.allowedTools.length > 0) {
       options.allowedTools = mcpConfig.allowedTools;
     }
+    if (mcpConfig.disallowedTools && mcpConfig.disallowedTools.length > 0) {
+      options.disallowedTools = mcpConfig.disallowedTools;
+    }
     if (mcpConfig.permissionPromptToolName) {
       options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
+    }
+
+    // PreToolUse hooks
+    if (slackContext) {
+      const preToolUseHooks: Array<{ matcher: string; hooks: Array<(input: HookInput) => Promise<HookJSONOutput>> }> = [];
+
+      // Abort guard: deny all tool calls after session abort to prevent SDK fire-and-forget writes
+      if (abortController) {
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [async (): Promise<HookJSONOutput> => {
+            if (abortController.signal.aborted) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+            return { continue: true };
+          }],
+        });
+      }
+
+      // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
+      if (mcpConfig.userBypass) {
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+            if (isDangerousCommand(command)) {
+              this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'ask',
+                },
+              };
+            }
+
+            return { continue: true };
+          }],
+        });
+      }
+
+      if (preToolUseHooks.length > 0) {
+        options.hooks = {
+          ...options.hooks,
+          PreToolUse: preToolUseHooks,
+        };
+      }
     }
 
     // Set model from session or user's default model
@@ -365,9 +506,21 @@ export class ClaudeHandler {
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
 
+    // Set effort level only when explicitly configured (max is Opus 4.6 only)
+    if (session?.effort) {
+      options.effort = session.effort;
+      this.logger.debug('Using session effort', { effort: session.effort });
+    }
+
     // Build system prompt with persona and workflow
     const workflow = session?.workflow || 'default';
-    const builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+
+    // Inject channel description as additional context
+    if (builtSystemPrompt && slackContext?.channelDescription) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+    }
+
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
       this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
@@ -375,6 +528,7 @@ export class ClaudeHandler {
         sessionId: session?.sessionId,
         model: options.model,
         promptLength: builtSystemPrompt.length,
+        hasChannelDescription: !!slackContext?.channelDescription,
       });
     } else {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
@@ -398,6 +552,14 @@ export class ClaudeHandler {
       options.abortController = abortController;
     }
 
+    // Capture Claude process stderr for debugging exit code 1 etc.
+    // Also buffer stderr content so rate limit messages can be extracted on error
+    let stderrBuffer = '';
+    options.stderr = (data: string) => {
+      stderrBuffer += data;
+      this.logger.warn('Claude stderr', { data: data.trimEnd() });
+    };
+
     this.logger.debug('Claude query options', options);
 
     try {
@@ -408,16 +570,42 @@ export class ClaudeHandler {
             session.sessionId = message.session_id;
             this.logger.info('Session initialized', {
               sessionId: message.session_id,
-              model: (message as any).model,
-              tools: (message as any).tools?.length || 0,
+              model: message.model,
+              tools: message.tools?.length || 0,
             });
           }
         }
         yield message;
       }
     } catch (error) {
+      // Attach stderr content to error so downstream handlers can inspect it
+      // (e.g., rate limit messages appear in stderr, not in error.message)
+      if (stderrBuffer) {
+        (error as any).stderrContent = stderrBuffer;
+      }
       this.logger.error('Error in Claude query', error);
       throw error;
     }
+  }
+
+  private buildModelCommandContext(
+    session: ConversationSession | undefined,
+    slackContext: SlackContext | undefined
+  ): ModelCommandContext | undefined {
+    if (!slackContext) {
+      return undefined;
+    }
+
+    return {
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs,
+      user: slackContext.user,
+      workflow: session?.workflow,
+      renewState: session?.renewState ?? null,
+      session: this.sessionRegistry.getSessionResourceSnapshot(
+        slackContext.channel,
+        slackContext.threadTs
+      ),
+    };
   }
 }

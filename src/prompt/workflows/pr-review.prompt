@@ -4,14 +4,21 @@
 
 # PR Review Workflow
 
-PR 리뷰를 수행하고, 리뷰 내용을 분류하여 GitHub PR에 라인 리뷰 커멘트로 남긴다. 각 이슈의 해결 방안을 UIAskUserQuestion으로 유저에게 질문하여 followup 지시를 받는다.
+PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류하여:
+- **tiny/small 이슈**: 자율 수정 방향 결정 (3명 다수결) → 유저에게 묻지 않음
+- **medium+ 이슈**: UIAskUserQuestion으로 유저에게 구체적으로 질문
+
+목표: **유저가 한번만 결정하면 바로 fix 워크플로우로 넘어갈 수 있게.**
 
 ## 성공 조건
 
-- 모든 리뷰 내용이 분류되고, 각각 PR에 **코드 라인이 포함된 리뷰 커멘트**로 남아야 함
-- 모든 개별 이슈에 대해 해결 방안을 UIAskUserQuestion으로 유저에게 질문하고 컨펌을 기다림
+- 모든 리뷰 내용이 **switching cost tier로 분류**되고, 각각 PR에 **코드 라인이 포함된 리뷰 커멘트**로 남아야 함
+- tiny/small 이슈: 자율 결정 완료 (Auto-Decision 로그 포함)
+- medium+ 이슈: UIAskUserQuestion으로 유저에게 질문 — **각 이슈별 [tier ~N줄] 표기 + 리뷰 합의 포함**
 - **중요**: 각 이슈를 개별적으로 질문해야 함. "P0 이슈들을 어떻게 처리할까요?" 같은 모호한 질문은 불가
 - P0/P1 이슈가 없으면 PR을 Approve 처리
+- 리뷰가 정리된 뒤에는 **CI 체크 루프**를 반드시 수행해야 함
+- 머지는 **merge gate 질문**을 통해서만 가능하며, direct merge shortcut은 사용하지 않음
 
 ## 자동 수행 사항
 1. PR 링크에서 owner, repo, pull_number 추출
@@ -20,25 +27,56 @@ PR 리뷰를 수행하고, 리뷰 내용을 분류하여 GitHub PR에 라인 리
    - 불필요한 필드 제거되어 컨텍스트 절약
 
 3. 소스 clone
-먼저 현재 타임스탬프를 이용하여 작업 폴더를 생성한다. 디폴트 작업 디렉토리가 설정되어 있으므로 해당 폴더 밑에 생성한다. 해당 작업 폴더에 소스를 받는다.
-너는 리뷰어가 아니라 리뷰어 에이전트 코디네이터고 리뷰어들이 바로 리뷰할 수 있도록 소스와 diff를 준비한다.
-
-```bash
-# 1. Clone and checkout
-git clone <repo_url> .
-git checkout <pr_branch>
-
-# 2. Analyze diff
-git diff <base_branch>...<pr_branch> --stat --no-renames | head -50
-git log --oneline -10
-```
+현재 타임스탬프를 이용하여 항상 유니크한 작업 폴더를 생성한다. (예: '$WORKING_DIR/20260101_1532_Gucci_pr_123')
+해당 작업 폴더에 소스를 받는다.
+너는 리뷰어가 아니라 리뷰어 에이전트 코디네이터고 리뷰어들이 바로 리뷰할 수 있도록 소스와 diff만 준비한다. 지금 리뷰하지 않는다.
 
 ## 리뷰 프로세스
 
-"review-pr" skill로 소스가 있는 작업폴더와 유저가 지시한 내용이 있으면 해당 내용을 전달하여 해당 스킬의 결과를 기다린다.
-모든 결과를 받으면 3로 넘어간다.
+### 1. review-pr skill 실행
+소스가 있는 작업폴더 기준으로 `review-pr` skill을 실행
 
-### 3. 이슈 분류
+입력 예시:
+```json
+{
+  "workspace_path": "/path/to/repo",
+  "pr_url": "https://github.com/org/repo/pull/123",
+  "focus": ["correctness", "tests", "security"]
+}
+```
+
+### 2. review-pr 결과(JSON) 수신
+`review-pr` 결과는 아래 형태를 기준으로 파싱한다:
+```json
+{
+  "summary": {
+    "overall": "APPROVE | REQUEST_CHANGES",
+    "counts": {"P0": 0, "P1": 1, "P2": 2, "P3": 1}
+  },
+  "findings": [
+    {
+      "title": "Null check missing",
+      "priority": "P1",
+      "file": "src/foo.ts",
+      "line": 42,
+      "body": "Potential runtime crash when input is undefined.",
+      "suggestion": "if (!input) return;"
+    }
+  ]
+}
+```
+
+### 3. 결과 파싱 및 정규화
+- priority가 없거나 알 수 없으면 `P2`로 보정한다.
+- `file` 또는 `line`이 없는 finding은 "general finding"으로 분류하고, PR 본문 요약에는 포함하되 라인 코멘트는 생략한다.
+- `(file, line, title)`이 동일한 finding은 중복 제거한다.
+- 파싱 실패 시 `review-pr`를 1회 재시도하고, 재시도도 실패하면 원문을 보존해 수동 분류한다.
+
+### 4. 이슈 분류 — Priority + Switching Cost Tier
+
+각 finding에 대해 두 가지를 분류한다:
+
+**Priority (심각도)**:
 | Priority | 설명 | 조건 |
 |----------|------|------|
 | P0 | Drop everything | 릴리즈/운영 블로킹. 입력과 무관하게 발생 |
@@ -46,35 +84,162 @@ git log --oneline -10
 | P2 | Normal | 언젠가 수정 |
 | P3 | Low | Nice to have |
 
-### 4. 최종 판정
+**Switching Cost Tier (수정 범위)** — `decision-gate` Skill 참조:
+| Tier   | Lines  | 예시 |
+|--------|--------|------|
+| tiny   | ~5     | 오타, 상수, 한줄 수정 |
+| small  | ~20    | 한 함수, 한 파일 수정 |
+| medium | ~50    | 여러 파일, 인터페이스 변경 |
+| large  | ~100   | 횡단 관심사, 스키마 변경 |
+| xlarge | ~500   | 아키텍처 전환 |
+
+### 5. Decision Gate — 자율 처리 vs 유저 질문 분류
+
+```
+for each finding:
+  if switching_cost < small (~20줄):
+    → [자율 결정] 3명 다수결로 수정 방향 결정
+    → oracle-reviewer + oracle-gemini-reviewer 병렬 호출
+    → 2/3 이상 동의하는 방향으로 확정
+    → Auto-Decision 로그 기록
+    → 유저에게 묻지 않음
+
+  elif switching_cost >= medium (~50줄):
+    → [유저 질문] UIAskUserQuestion으로 질문
+    → 3명 리뷰 결과 + 추천안 포함
+    → [tier ~N줄] 표기 필수
+```
+
+**자율 결정 로그 포맷** (리뷰 결과에 포함):
+```markdown
+### Auto-Decision: [P2] 변수명 미스매치 [tiny ~5줄]
+- **결정**: 즉시 수정
+- **투표**: Codex ✅ / oracle-reviewer ✅ / oracle-gemini ✅ (3/3)
+- **근거**: 단순 rename, 리스크 없음
+```
+
+### 6. 최종 판정
 - P0 또는 P1 이슈 있음 → **REQUEST_CHANGES**
 - P0, P1 없음 → **APPROVE**
+- `general finding`만 있고 P0/P1이 없으면 **APPROVE** 가능 (요약 코멘트로 안내)
 
-### 5. GitHub에 리뷰 제출
+### 7. GitHub에 리뷰 제출
 `mcp__github__create_pull_request_review` 사용:
 - 반드시 **실제 코드 라인**을 참조하여 각 이슈별 커멘트
-- 부하 MCP에게 받은 리뷰에 라인이 없으면 직접 해당 라인 찾아서 커멘트
-- 라인 참조 없는 커멘트는 무의미
+- skill 결과에 라인이 없으면 직접 diff에서 라인을 찾아 보정 후 커멘트
+- 라인 참조가 끝내 불가능한 항목은 리뷰 본문의 "General Findings" 섹션에 별도 기재
+
+## CI 체크
+
+리뷰 결과가 정리된 뒤에는 아래 루프를 **반드시** 수행한다.
+
+1. 현재 PR의 CI / check / workflow 상태를 조회한다.
+2. 상태가 `queued`, `pending`, `in_progress` 이면 유저에게 현재 상태를 짧게 알리고 **정확히 1분 대기 후 다시 조회**한다.
+3. 상태가 `failure`, `cancelled`, `timed_out` 등 실패 계열이면:
+   - 실패한 check 이름, 실패 이유, 현재 머지 불가 이유를 먼저 요약한다.
+   - 이 실패를 고치기 위한 변경 범위를 다시 switching cost로 분류한다.
+   - tiny/small이면 자율 수정 가능 여부를 판단한다.
+   - medium+이면 반드시 decision gate를 거쳐 `local:UIAskUserQuestion`으로 유저에게 선택을 받는다.
+4. 유저 또는 자율 결정으로 **이 PR에서 바로 고친다**가 확정되면 `mcp__model-command__run` 으로 `CONTINUE_SESSION`을 호출해 현재 스레드에서 fix 워크플로우로 전환한다.
+
+`CONTINUE_SESSION` 규칙:
+```json
+{
+  "commandId": "CONTINUE_SESSION",
+  "params": {
+    "prompt": "new fix <PR_URL>",
+    "resetSession": true,
+    "dispatchText": "<PR_URL>",
+    "forceWorkflow": "pr-fix-and-update"
+  }
+}
+```
+
+중요 규칙:
+- CI 상태를 모르면 머지 체크로 넘어가지 않는다.
+- 실패 요약 없이 "CI가 깨졌으니 고칠까요?"처럼 모호하게 묻지 않는다.
+- fix 후에는 다시 현재 PR 기준으로 **동일한 PR review workflow를 반복**한다.
+
+## 머지 체크
+
+아래 조건이 모두 만족될 때만 merge gate 질문을 보여준다.
+- unresolved review finding 없음
+- 필요한 approve 가 확보됨
+- CI 상태가 성공임
+- PR이 실제로 mergeable 함
+
+merge gate 질문 전에 유저에게 아래 문맥을 **풀문장으로** 전달한다.
+1. 이 PR의 **AS-IS**
+2. 이 PR의 **TO-BE**
+3. 이 PR이 필요한 이유
+4. 누가 Approve 했는지, 왜 지금 머지 가능한지
+5. 현재 CI 상태와 머지 가능 여부
+
+그 다음 `local:UIAskUserQuestion`으로 정확히 아래 3개 선택지만 보여준다.
+- `merge_now`: 지금 머지한다
+- `rerun_review`: 다시 PR 리뷰 워크플로우를 실행한다
+- `wait_for_other_review`: 다른 유저 리뷰를 더 기다린다
+
+선택 후 처리 규칙:
+- `merge_now`: 현재 워크플로우 안에서 머지를 진행한다
+- `rerun_review`: 아래 payload로 `CONTINUE_SESSION`을 호출해 현재 PR의 `pr-review`를 다시 시작한다
+- `wait_for_other_review`: 머지하지 않고 종료한다
+
+`rerun_review`용 `CONTINUE_SESSION`:
+```json
+{
+  "commandId": "CONTINUE_SESSION",
+  "params": {
+    "prompt": "new <PR_URL>",
+    "resetSession": true,
+    "dispatchText": "<PR_URL>",
+    "forceWorkflow": "pr-review"
+  }
+}
+```
+
+중요:
+- 머지는 유저가 merge gate에서 명시적으로 선택한 뒤에만 수행한다.
+- direct merge 버튼이나 shortcut을 우회 경로로 사용하지 않는다.
+- approver 정보나 CI 정보가 비어 있으면 merge gate를 열지 않는다.
 
 ## 출력 형식
 
 ### 📊 리뷰 요약
-| Priority | Count | 대표 이슈 |
-|----------|-------|----------|
-| P0 | N | ... |
-| P1 | N | ... |
-| P2 | N | ... |
-| P3 | N | ... |
+| Priority | Count | 자율 처리 | 유저 결정 필요 |
+|----------|-------|----------|--------------|
+| P0 | N | X건 | Y건 |
+| P1 | N | X건 | Y건 |
+| P2 | N | X건 | Y건 |
+| P3 | N | X건 | Y건 |
 
-### 🔍 상세 분석
+### ✅ 자율 처리 완료 (tiny/small — 유저 확인 불필요)
 
-#### [P1] 이슈 제목
+| # | 이슈 | Tier | 결정 | 투표 |
+|---|------|------|------|------|
+| 1 | [P2] 변수명 오타 | tiny ~5줄 | 즉시 수정 | 3/3 |
+| 2 | [P3] 누락된 null check | small ~15줄 | 즉시 수정 | 2/3 |
+
+### 🔍 유저 결정 필요 (medium+)
+
+각 이슈를 `decision-gate` 포맷으로 상세 기술:
+
+#### [P1] [medium ~50줄] 이슈 제목
 - **파일**: `path/to/file.ts:42`
-- **문제**: 설명
+- **현재 코드**:
+```lang
+// 문제 코드
+```
+- **문제**: 설명 + 실제 영향
 - **수정 제안**:
 ```suggestion
 // 수정된 코드
 ```
+- **변경 범위**: N파일, ~M줄
+- **🤖 리뷰 합의 (X/3)**:
+  - Codex: Fix — [이유]
+  - oracle-reviewer: Fix — [이유]
+  - oracle-gemini: Defer — [이유]
 
 ### ✅ Overall Correctness
 **APPROVE** / **REQUEST_CHANGES**
@@ -85,15 +250,17 @@ git log --oneline -10
 
 ## 워크플로우 전환 (Handoff)
 
-리뷰 완료 후 P0/P1 이슈가 있으면, UIAskUserQuestion으로 다음 단계를 유저에게 확인한다:
-- **이슈 수정 진행**: pr-fix-and-update 워크플로우로 전환
-- **나중에 수정**: 리뷰만 완료하고 종료
-- **다른 사람에게 위임**: 리뷰 결과만 남기고 종료
+리뷰 중 fix 전환이 필요한 경우:
+
+1. **자율 처리 건 (tiny/small)**은 바로 fix 범위에 포함할 수 있다.
+2. **유저 결정 건 (medium+)**은 `local:UIAskUserQuestion`으로 질문한다.
+3. 유저가 "이 PR에서 수정 진행"을 선택하면 `CONTINUE_SESSION`으로 `pr-fix-and-update`로 즉시 전환한다.
+4. fix 워크플로우가 끝나면 다시 `pr-review`로 자동 복귀한다고 가정하고 이어서 사고한다.
 
 ## 🔄 다음 단계 안내
 
 리뷰 완료 후:
-- **수정 필요 시**: "리뷰 피드백을 반영하려면 새 세션에서 `fix` + PR 링크를 입력하세요."
+- **수정 필요 시**: 새 세션을 열라고 안내하지 말고, 가능하면 현재 스레드에서 `CONTINUE_SESSION`으로 fix workflow를 연결한다.
 - **문서 필요 시**: "API 변경 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
 - 세션에 PR이 연결되지 않았다면: "`link pr <url>` 명령으로 PR을 세션에 연결할 수 있습니다."
 - 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."

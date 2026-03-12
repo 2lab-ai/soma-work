@@ -8,14 +8,6 @@ import { ToolTracker } from './tool-tracker';
 import { McpStatusDisplay } from './mcp-status-tracker';
 import { McpCallTracker } from '../mcp-call-tracker';
 
-// Mock dependencies
-vi.mock('./mcp-status-tracker', () => ({
-  McpStatusDisplay: vi.fn().mockImplementation(() => ({
-    startStatusUpdate: vi.fn(),
-    stopStatusUpdate: vi.fn().mockResolvedValue(undefined),
-  })),
-}));
-
 describe('ToolEventProcessor', () => {
   let toolTracker: ToolTracker;
   let mcpStatusDisplay: any;
@@ -27,8 +19,9 @@ describe('ToolEventProcessor', () => {
   beforeEach(() => {
     toolTracker = new ToolTracker();
     mcpStatusDisplay = {
-      startStatusUpdate: vi.fn(),
-      stopStatusUpdate: vi.fn().mockResolvedValue(undefined),
+      registerCall: vi.fn(),
+      completeCall: vi.fn(),
+      cleanupSession: vi.fn(),
     };
     mcpCallTracker = {
       startCall: vi.fn().mockReturnValue('call_123'),
@@ -59,7 +52,7 @@ describe('ToolEventProcessor', () => {
       expect(toolTracker.getToolName('tool_2')).toBe('Bash');
     });
 
-    it('should start MCP tracking for MCP tools', async () => {
+    it('should call registerCall for MCP tools', async () => {
       const toolUses: ToolUseEvent[] = [
         { id: 'tool_1', name: 'mcp__jira__search_issues', input: { query: 'test' } },
       ];
@@ -68,10 +61,16 @@ describe('ToolEventProcessor', () => {
 
       expect(mcpCallTracker.startCall).toHaveBeenCalledWith('jira', 'search_issues');
       expect(toolTracker.getMcpCallId('tool_1')).toBe('call_123');
-      expect(mcpStatusDisplay.startStatusUpdate).toHaveBeenCalledWith(
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
         'call_123',
-        'jira',
-        'search_issues',
+        {
+          displayType: 'MCP',
+          displayLabel: 'jira → search_issues',
+          initialDelay: 10000,
+          predictKey: { serverName: 'jira', toolName: 'search_issues' },
+          paramsSummary: '(query: test)',
+        },
         'C123',
         'thread_ts'
       );
@@ -85,7 +84,7 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolUse(toolUses, mockContext);
 
       expect(mcpCallTracker.startCall).not.toHaveBeenCalled();
-      expect(mcpStatusDisplay.startStatusUpdate).not.toHaveBeenCalled();
+      expect(mcpStatusDisplay.registerCall).not.toHaveBeenCalled();
     });
 
     it('should handle complex MCP tool names', async () => {
@@ -96,6 +95,37 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolUse(toolUses, mockContext);
 
       expect(mcpCallTracker.startCall).toHaveBeenCalledWith('github', 'repos__list_branches');
+    });
+
+    it('should call registerCall for Task tools (subagent)', async () => {
+      const toolUses: ToolUseEvent[] = [
+        { id: 'tool_1', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
+      ];
+
+      await processor.handleToolUse(toolUses, mockContext);
+
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
+        'call_123',
+        expect.objectContaining({
+          displayType: 'Subagent',
+        }),
+        'C123',
+        'thread_ts'
+      );
+    });
+
+    it('should use registerCall for multiple trackable tools (no groupId needed)', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_1').mockReturnValueOnce('call_2');
+      const toolUses: ToolUseEvent[] = [
+        { id: 'tool_1', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
+        { id: 'tool_2', name: 'Task', input: { description: 'hunt', prompt: 'test', subagent_type: 'silent-failure-hunter' } },
+      ];
+
+      await processor.handleToolUse(toolUses, mockContext);
+
+      // Both should use registerCall (session tick handles consolidation)
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -114,7 +144,7 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalled();
     });
 
-    it('should end MCP tracking and show duration', async () => {
+    it('should end MCP tracking and call completeCall', async () => {
       // Pre-track MCP call
       toolTracker.trackToolUse('tool_1', 'mcp__jira__search_issues');
       toolTracker.trackMcpCall('tool_1', 'call_123');
@@ -126,7 +156,7 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolResult(toolResults, mockContext);
 
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
-      expect(mcpStatusDisplay.stopStatusUpdate).toHaveBeenCalledWith('call_123', 1000);
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000);
       expect(toolTracker.getMcpCallId('tool_1')).toBeUndefined();
     });
 
@@ -174,7 +204,7 @@ describe('ToolEventProcessor', () => {
 
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining('❌'),
+          text: expect.stringContaining('🔴'),
         })
       );
     });
@@ -194,7 +224,29 @@ describe('ToolEventProcessor', () => {
   });
 
   describe('cleanup', () => {
-    it('should call cleanup without error', () => {
+    it('should call cleanupSession on mcpStatusDisplay', () => {
+      processor.cleanup('C123:thread_ts');
+
+      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+    });
+
+    it('should complete active MCP calls before cleanup', () => {
+      // Track active MCP calls
+      toolTracker.trackToolUse('tool_1', 'mcp__codex__search');
+      toolTracker.trackMcpCall('tool_1', 'call_1');
+      toolTracker.trackToolUse('tool_2', 'mcp__jira__search');
+      toolTracker.trackMcpCall('tool_2', 'call_2');
+
+      processor.cleanup('C123:thread_ts');
+
+      // Should complete active calls
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_1', null);
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_2', null);
+      // Then cleanup session
+      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+    });
+
+    it('should not throw without sessionKey', () => {
       expect(() => processor.cleanup()).not.toThrow();
     });
   });
