@@ -44,10 +44,10 @@ run_step() {
 }
 JSON
 
-    # Add branch policy for main
+    # Add branch policy for deploy/prod
     gh api -X POST "repos/$owner_repo/environments/production/deployment-branch-policies" \
-        --field name="main" --field type="branch" 2>/dev/null || true
-    success "  Branch policy: main → production"
+        --field name="deploy/prod" --field type="branch" 2>/dev/null || true
+    success "  Branch policy: deploy/prod → production"
 
     # Create development environment
     info "Creating 'development' environment..."
@@ -62,8 +62,8 @@ JSON
 JSON
 
     gh api -X POST "repos/$owner_repo/environments/development/deployment-branch-policies" \
-        --field name="dev" --field type="branch" 2>/dev/null || true
-    success "  Branch policy: dev → development"
+        --field name="main" --field type="branch" 2>/dev/null || true
+    success "  Branch policy: main → development"
 
     echo ""
     success "GitHub Environments configured"
