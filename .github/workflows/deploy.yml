@@ -132,6 +132,13 @@ jobs:
         run: |
           echo "Deploying ${{ matrix.name }} to $TARGET..."
 
+          if [[ "$ENV" == "main" ]]; then
+            DEV_SOURCE="/opt/soma-work/dev" \
+            LEGACY_ROOT="/Users/dd/app.claude-code-slack-bot" \
+            TARGET="$TARGET" \
+            node dist/deploy/main-env-bootstrap.js
+          fi
+
           bash service.sh "$ENV" stop || true
 
           rsync -a --delete \
