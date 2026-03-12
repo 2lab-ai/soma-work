@@ -3,7 +3,7 @@
 ## Version
 - Document Version: 1.0
 - Source Files: `src/permission-mcp-server.ts`, `src/shared-store.ts`
-- Last Updated: 2025-12-13
+- Last Updated: 2026-03-06
 
 ## 1. Overview
 
@@ -245,13 +245,13 @@ ${JSON.stringify(input, null, 2)}
 ### 5.1 Directory Structure
 
 ```typescript
-const storeDir = path.join(os.tmpdir(), 'claude-code-slack-bot-store');
+const storeDir = path.join(os.tmpdir(), 'soma-work-store');
 const pendingDir = path.join(storeDir, 'pending');
 const responseDir = path.join(storeDir, 'responses');
 
 // 예시 경로
-// /tmp/claude-code-slack-bot-store/pending/approval_1702456789123_xyz123.json
-// /tmp/claude-code-slack-bot-store/responses/approval_1702456789123_xyz123.json
+// /tmp/soma-work-store/pending/approval_1702456789123_xyz123.json
+// /tmp/soma-work-store/responses/approval_1702456789123_xyz123.json
 ```
 
 ### 5.2 Data Structures

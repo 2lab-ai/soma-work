@@ -11,7 +11,10 @@ import {
   UserChoiceHandler,
   MessageFormatter,
 } from './index';
-import { SessionLinkDirectiveHandler } from './directives';
+import { SlackMessagePayload } from './choice-message-builder';
+import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
+import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
+import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
 
 /**
  * Context for stream processing
@@ -22,6 +25,8 @@ export interface StreamContext {
   sessionKey: string;
   sessionId?: string;
   say: SayFunction;
+  /** Verbosity bitmask — controls which output types are shown */
+  logVerbosity?: number;
 }
 
 /**
@@ -98,6 +103,16 @@ export interface PendingForm {
 }
 
 /**
+ * Compact mode tool call entry for batch-aware in-place updates
+ */
+export interface CompactToolCallEntry {
+  toolName: string;
+  input: any;
+  status: 'pending' | 'done' | 'error';
+  duration?: number | null;
+}
+
+/**
  * Usage data extracted from result message
  */
 export interface UsageData {
@@ -108,12 +123,20 @@ export interface UsageData {
   totalCostUsd: number;
 }
 
+export interface FinalResponseFooterParams {
+  context: StreamContext;
+  usage?: UsageData;
+  durationMs?: number;
+}
+
 /**
  * Stream processor callbacks
  */
 export interface StreamCallbacks {
   onToolUse?: (toolUses: ToolUseEvent[], context: StreamContext) => Promise<void>;
   onToolResult?: (toolResults: ToolResultEvent[], context: StreamContext) => Promise<void>;
+  /** Update an existing message in-place (for compact tool call completion) */
+  onUpdateMessage?: (channel: string, ts: string, text: string) => Promise<void>;
   onTodoUpdate?: TodoUpdateHandler;
   onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled') => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
@@ -124,6 +147,18 @@ export interface StreamCallbacks {
   onUsageUpdate?: (usage: UsageData) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
+  /** Called when model outputs channel_message JSON directive */
+  onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called when a user choice UI is rendered */
+  onChoiceCreated?: (
+    payload: SlackMessagePayload,
+    context: StreamContext,
+    sourceMessageTs?: string
+  ) => Promise<void>;
+  /** Called before sending the final assistant message to append footer text */
+  buildFinalResponseFooter?: (
+    params: FinalResponseFooterParams
+  ) => Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -148,9 +183,27 @@ export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
+  /** Maps message ts → Map<toolUseId, entry> for compact in-place updates (batch-aware) */
+  private compactMessageEntries = new Map<string, Map<string, CompactToolCallEntry>>();
+  /** Reverse lookup: toolUseId → message ts */
+  private toolUseToMessageTs = new Map<string, string>();
+  /** Maps Task tool_use_id → input (for correlating TaskOutput with original Task) */
+  private pendingTaskInputs = new Map<string, any>();
+  /** Maps background task_id → original Task input metadata (for TaskOutput display) */
+  private backgroundTaskMeta = new Map<string, { name?: string; subagentLabel?: string; promptPreview?: string }>();
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
+  }
+
+  /** Check whether a given output flag is enabled for the stream's verbosity */
+  private shouldOutput(flag: number, context: StreamContext): boolean {
+    return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
+  }
+
+  /** Returns verbose category tag prefix (empty string when not verbose) */
+  private vtag(flag: number, context: StreamContext): string {
+    return verboseTag(flag, context.logVerbosity ?? LOG_DETAIL);
   }
 
   /**
@@ -173,7 +226,7 @@ export class StreamProcessor {
 
         this.logger.debug('Received message from Claude SDK', {
           type: message.type,
-          subtype: (message as any).subtype,
+          subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
         if (message.type === 'assistant') {
@@ -219,10 +272,56 @@ export class StreamProcessor {
     const content = message.message.content;
     const hasToolUse = content?.some((part: any) => part.type === 'tool_use');
 
+    // Extract and output thinking blocks (compact+)
+    await this.handleThinkingContent(content, context);
+
     if (hasToolUse) {
       await this.handleToolUseMessage(content, context);
     } else {
       await this.handleTextMessage(content, context, currentMessages);
+    }
+  }
+
+  /**
+   * Extract and output thinking/reasoning content from assistant message
+   */
+  private async handleThinkingContent(content: any[], context: StreamContext): Promise<void> {
+    const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (thinkingMode === 'hidden') return;
+
+    const thinkingParts = content
+      .filter((part: any) => part.type === 'thinking' && part.thinking)
+      .map((part: any) => part.thinking as string);
+
+    if (thinkingParts.length === 0) return;
+
+    const thinkingText = thinkingParts.join('\n\n');
+    if (!thinkingText.trim()) return;
+
+    const truncated = this.truncateThinking(thinkingText, thinkingMode);
+    if (!truncated) return;
+
+    const tag = this.vtag(OutputFlag.THINKING, context);
+    const fallbackText = `${tag}💭 _${truncated}_`;
+    await context.say({
+      text: fallbackText,
+      blocks: [thinkingToQuoteBlock(truncated)],
+      thread_ts: context.threadTs,
+    });
+  }
+
+  /** Truncate thinking output based on render mode */
+  private truncateThinking(text: string, mode: 'compact' | 'detail' | 'verbose'): string | null {
+    const lines = text.split('\n').filter((l) => l.trim());
+    if (lines.length === 0) return null;
+
+    switch (mode) {
+      case 'compact':
+        return ToolFormatter.truncateString(lines[0], 200);
+      case 'detail':
+        return ToolFormatter.truncateString(lines.slice(0, 10).join('\n'), 2000);
+      case 'verbose':
+        return ToolFormatter.truncateString(text, 3000);
     }
   }
 
@@ -243,13 +342,50 @@ export class StreamProcessor {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
 
-    // Format and send tool use messages
-    const toolContent = ToolFormatter.formatToolUse(content);
-    if (toolContent) {
-      await context.say({
-        text: toolContent,
-        thread_ts: context.threadTs,
-      });
+    // Track Task tool inputs for TaskOutput correlation
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.name === 'Task' && part.id) {
+        this.pendingTaskInputs.set(part.id, part.input);
+      }
+    }
+
+    // Enrich TaskOutput inputs with original Task metadata before formatting
+    const enrichedContent = content.map((part: any) => {
+      if (part.type === 'tool_use' && part.name === 'TaskOutput') {
+        return { ...part, input: this.enrichTaskOutputInput(part.input) };
+      }
+      return part;
+    });
+
+    // Format and send tool use messages (render mode dispatch)
+    const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (toolCallMode !== 'hidden') {
+      const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
+      if (toolContent) {
+        const tag = this.vtag(OutputFlag.TOOL_CALL, context);
+        const result = await context.say({
+          text: tag + toolContent,
+          thread_ts: context.threadTs,
+        });
+        // Track message ts + tool info for compact mode in-place updates (batch-aware)
+        if (toolCallMode === 'compact' && result?.ts) {
+          const ts = result.ts;
+          if (!this.compactMessageEntries.has(ts)) {
+            this.compactMessageEntries.set(ts, new Map());
+          }
+          const entries = this.compactMessageEntries.get(ts)!;
+          for (const part of enrichedContent) {
+            if (part.type === 'tool_use' && part.id) {
+              entries.set(part.id, {
+                toolName: part.name,
+                input: part.input,
+                status: 'pending',
+              });
+              this.toolUseToMessageTs.set(part.id, ts);
+            }
+          }
+        }
+      }
     }
 
     // Collect and notify about tool use events
@@ -260,6 +396,14 @@ export class StreamProcessor {
         name: part.name,
         input: part.input,
       }));
+
+    for (const toolUse of toolUses) {
+      this.logger.debug('Received tool_use', ToolFormatter.buildToolUseLogSummary(
+        toolUse.id,
+        toolUse.name,
+        toolUse.input
+      ));
+    }
 
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
       await this.callbacks.onToolUse(toolUses, context);
@@ -286,6 +430,18 @@ export class StreamProcessor {
       }
     }
 
+    const channelMessageResult = ChannelMessageDirectiveHandler.extract(textContent);
+    if (channelMessageResult.messageText) {
+      textContent = channelMessageResult.cleanedText;
+      if (this.callbacks.onChannelMessageDetected) {
+        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    if (!textContent.trim()) {
+      return;
+    }
+
     currentMessages.push(textContent);
 
     // Check for user choice JSON
@@ -298,12 +454,8 @@ export class StreamProcessor {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      // Regular message
-      const formatted = MessageFormatter.formatMessage(textContent, false);
-      await context.say({
-        text: formatted,
-        thread_ts: context.threadTs,
-      });
+      // Regular message — convert to Block Kit
+      await this.sayWithBlockKit(textContent, context);
     }
   }
 
@@ -415,6 +567,10 @@ export class StreamProcessor {
         thread_ts: context.threadTs,
       });
 
+      if (this.callbacks.onChoiceCreated) {
+        await this.callbacks.onChoiceCreated(multiPayload, context, formResult?.ts);
+      }
+
       // Update form with message timestamp
       if (this.callbacks.getPendingForm && formResult?.ts) {
         const pendingForm = this.callbacks.getPendingForm(formId);
@@ -465,11 +621,15 @@ export class StreamProcessor {
     this.logger.debug('Built single choice blocks', { blockCount });
 
     try {
-      await context.say({
+      const choiceResult = await context.say({
         text: choice.question,
         ...singlePayload,
         thread_ts: context.threadTs,
       });
+
+      if (this.callbacks.onChoiceCreated) {
+        await this.callbacks.onChoiceCreated(singlePayload, context, choiceResult?.ts);
+      }
     } catch (error: any) {
       this.logger.error('Failed to send single choice to Slack', {
         error: error.message,
@@ -549,9 +709,96 @@ export class StreamProcessor {
 
     const toolResults = ToolFormatter.extractToolResults(content);
 
+    // Correlate Task results with background task IDs for TaskOutput display
+    this.correlateTaskResults(toolResults);
+
+    // Compact mode: update tool call messages in-place (batch-aware)
+    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
+      // Collect which message ts's need rebuilding
+      const affectedTs = new Set<string>();
+      for (const tr of toolResults) {
+        const ts = this.toolUseToMessageTs.get(tr.toolUseId);
+        if (!ts) continue;
+        const entries = this.compactMessageEntries.get(ts);
+        if (!entries) continue;
+        const entry = entries.get(tr.toolUseId);
+        if (!entry) continue;
+
+        // Enrich TaskOutput with original Task metadata
+        if (entry.toolName === 'TaskOutput') {
+          entry.input = this.enrichTaskOutputInput(entry.input);
+        }
+
+        entry.status = tr.isError ? 'error' : 'done';
+        affectedTs.add(ts);
+      }
+
+      // Rebuild and update all affected messages
+      for (const ts of affectedTs) {
+        await this.rebuildCompactMessage(ts, context.channel);
+      }
+    }
+
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
+  }
+
+  /**
+   * Rebuild a compact message from all tracked tool entries for the given ts.
+   * Each line shows the correct status icon (⏳/⚪/🟢/🔴) and optional duration.
+   */
+  private async rebuildCompactMessage(ts: string, channel: string): Promise<void> {
+    const entries = this.compactMessageEntries.get(ts);
+    if (!entries || !this.callbacks.onUpdateMessage) return;
+
+    const lines: string[] = [];
+    for (const [, entry] of entries) {
+      if (entry.status === 'done' || entry.status === 'error') {
+        lines.push(ToolFormatter.formatOneLineToolComplete(
+          entry.toolName, entry.input, entry.status === 'error', entry.duration
+        ));
+      } else {
+        const isAsync = entry.toolName.startsWith('mcp__') || entry.toolName === 'Task';
+        const icon = isAsync ? '⏳' : '⚪';
+        lines.push(`${icon} ${ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input)}`);
+      }
+    }
+
+    const text = lines.join('\n');
+    await this.callbacks.onUpdateMessage(channel, ts, text);
+
+    // Cleanup only when all entries are finalized:
+    // - all statuses resolved (done/error)
+    // - async tools (MCP/Task) have duration set (or won't get one)
+    const allDone = Array.from(entries.values()).every(e => e.status !== 'pending');
+    const allDurationsResolved = Array.from(entries.values()).every(e => {
+      const isAsync = e.toolName.startsWith('mcp__') || e.toolName === 'Task';
+      return !isAsync || e.duration !== undefined;
+    });
+    if (allDone && allDurationsResolved) {
+      for (const toolUseId of entries.keys()) {
+        this.toolUseToMessageTs.delete(toolUseId);
+      }
+      this.compactMessageEntries.delete(ts);
+    }
+  }
+
+  /**
+   * Update a tool call entry with duration (called by tool-event-processor after MCP completes).
+   * Triggers a rebuild of the compact message containing this tool.
+   */
+  async updateToolCallDuration(toolUseId: string, duration: number | null, channel: string): Promise<void> {
+    const ts = this.toolUseToMessageTs.get(toolUseId);
+    if (!ts) return;
+    const entries = this.compactMessageEntries.get(ts);
+    if (!entries) return;
+    const entry = entries.get(toolUseId);
+    if (!entry) return;
+
+    entry.duration = duration;
+    await this.rebuildCompactMessage(ts, channel);
   }
 
   /**
@@ -570,15 +817,17 @@ export class StreamProcessor {
       duration: message.duration_ms,
     });
 
+    const usage = this.extractUsageData(message);
+
     if (message.subtype === 'success' && message.result) {
       const finalResult = message.result;
       if (finalResult && !currentMessages.includes(finalResult)) {
         currentMessages.push(finalResult);
-        await this.handleFinalResult(finalResult, context);
+        await this.handleFinalResult(finalResult, context, usage, message.duration_ms);
       }
     }
 
-    return this.extractUsageData(message);
+    return usage;
   }
 
   /**
@@ -649,7 +898,12 @@ export class StreamProcessor {
   /**
    * Handle final result text
    */
-  private async handleFinalResult(result: string, context: StreamContext): Promise<void> {
+  private async handleFinalResult(
+    result: string,
+    context: StreamContext,
+    usage?: UsageData,
+    durationMs?: number
+  ): Promise<void> {
     // Extract response directives before user choice
     let processedResult = result;
     const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
@@ -660,7 +914,29 @@ export class StreamProcessor {
       }
     }
 
-    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(processedResult);
+    const channelMessageResult = ChannelMessageDirectiveHandler.extract(processedResult);
+    if (channelMessageResult.messageText) {
+      processedResult = channelMessageResult.cleanedText;
+      if (this.callbacks.onChannelMessageDetected) {
+        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    if (!processedResult.trim()) {
+      return;
+    }
+
+    let footer: string | undefined;
+    if (this.callbacks.buildFinalResponseFooter) {
+      footer = await this.callbacks.buildFinalResponseFooter({
+        context,
+        usage,
+        durationMs,
+      });
+    }
+
+    const combinedResult = footer ? `${processedResult}\n\n${footer}` : processedResult;
+    const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(combinedResult);
 
     if (choices) {
       this._hasUserChoice = true;
@@ -669,11 +945,64 @@ export class StreamProcessor {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
     } else {
-      const formatted = MessageFormatter.formatMessage(processedResult, true);
-      await context.say({
-        text: formatted,
-        thread_ts: context.threadTs,
-      });
+      // Final result — convert to Block Kit
+      await this.sayWithBlockKit(combinedResult, context);
+    }
+  }
+
+  /**
+   * Send message with Block Kit blocks, with fallback to plain text.
+   * Handles overflow messages (content exceeding 45-block limit).
+   */
+  private async sayWithBlockKit(text: string, context: StreamContext): Promise<void> {
+    const tag = this.vtag(OutputFlag.FINAL_RESULT, context);
+    const { blocks, fallbackText, overflow } = markdownToBlocks(text);
+
+    try {
+      if (blocks.length > 0) {
+        await context.say({
+          text: tag + fallbackText,
+          blocks,
+          thread_ts: context.threadTs,
+        });
+
+        // Send overflow messages
+        for (const overflowBlocks of overflow) {
+          await context.say({
+            text: '_(continued)_',
+            blocks: overflowBlocks,
+            thread_ts: context.threadTs,
+          });
+        }
+      } else {
+        // No blocks produced — use plain text fallback
+        await context.say({
+          text: tag + fallbackText,
+          thread_ts: context.threadTs,
+        });
+      }
+    } catch (error: any) {
+      // Fallback: if Block Kit fails, send as plain text
+      const slackError = error?.data?.error;
+      const isBlockKitError = slackError === 'invalid_blocks'
+        || slackError === 'invalid_attachments'
+        || slackError === 'too_many_blocks'
+        || slackError === 'invalid_blocks_format';
+
+      if (isBlockKitError) {
+        this.logger.warn('Block Kit rendering failed, falling back to plain text', {
+          slackError,
+          error: error.message,
+          blockCount: blocks.length,
+        });
+        const formatted = MessageFormatter.formatMessage(text, true);
+        await context.say({
+          text: tag + formatted,
+          thread_ts: context.threadTs,
+        });
+      } else {
+        throw error;
+      }
     }
   }
 
@@ -688,5 +1017,71 @@ export class StreamProcessor {
       .map((part: any) => part.text);
 
     return textParts.length > 0 ? textParts.join('') : null;
+  }
+
+  /**
+   * Correlate Task tool results with background task IDs.
+   * When a background Task result returns, it contains the task_id.
+   * We store the original Task input metadata keyed by task_id for later TaskOutput use.
+   */
+  private correlateTaskResults(toolResults: ToolResultEvent[]): void {
+    for (const tr of toolResults) {
+      const taskInput = this.pendingTaskInputs.get(tr.toolUseId);
+      if (!taskInput) continue;
+
+      // Extract task_id from the result text (SDK returns it in the result)
+      const taskId = this.extractTaskIdFromResult(tr.result);
+      if (taskId) {
+        const summary = ToolFormatter.getTaskToolSummary(taskInput);
+        this.backgroundTaskMeta.set(taskId, {
+          name: summary.subagentLabel || summary.subagentType,
+          subagentLabel: summary.subagentLabel,
+          promptPreview: summary.promptPreview,
+        });
+      }
+      this.pendingTaskInputs.delete(tr.toolUseId);
+    }
+  }
+
+  /**
+   * Extract task_id from a Task tool result.
+   * The SDK returns text like "Task started in background. output_file: /path task_id: abc123"
+   * or the result may contain structured data.
+   */
+  private extractTaskIdFromResult(result: any): string | undefined {
+    if (!result) return undefined;
+
+    // If result is a string, search for task_id pattern
+    if (typeof result === 'string') {
+      const match = result.match(/task_id[:\s]+(\S+)/i);
+      return match?.[1];
+    }
+
+    // If result is an array (common SDK format), search text parts
+    if (Array.isArray(result)) {
+      for (const part of result) {
+        const text = typeof part === 'string' ? part : part?.text;
+        if (typeof text === 'string') {
+          const match = text.match(/task_id[:\s]+(\S+)/i);
+          if (match) return match[1];
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Enrich TaskOutput input with original Task metadata for display.
+   * Adds _taskMeta to the input so the formatter can show meaningful info.
+   */
+  private enrichTaskOutputInput(input: any): any {
+    const taskId = input?.task_id;
+    if (!taskId) return input;
+
+    const meta = this.backgroundTaskMeta.get(taskId);
+    if (!meta) return input;
+
+    return { ...input, _taskMeta: meta };
   }
 }

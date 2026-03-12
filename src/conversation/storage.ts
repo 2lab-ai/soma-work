@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../logger';
+import { DATA_DIR } from '../env-paths';
 import { ConversationRecord, ConversationMeta } from './types';
 
 const logger = new Logger('ConversationStorage');
@@ -13,7 +14,7 @@ export class ConversationStorage {
   private dataDir: string;
 
   constructor(baseDir?: string) {
-    this.dataDir = baseDir || path.join(process.cwd(), 'data', 'conversations');
+    this.dataDir = baseDir || path.join(DATA_DIR, 'conversations');
     this.ensureDir();
   }
 

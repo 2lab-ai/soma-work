@@ -1,7 +1,15 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
-import { ConversationSession, SessionUsage, Continuation } from '../../types';
+import {
+  ConversationSession,
+  SessionResourceUpdateRequest,
+  SessionUsage,
+  Continuation,
+  SaveContextResultPayload,
+  UserChoices,
+  UserChoice,
+} from '../../types';
 import { Logger } from '../../logger';
 import {
   StreamProcessor,
@@ -16,11 +24,18 @@ import {
   TodoDisplayManager,
   SlackApiHelper,
   AssistantStatusManager,
+  UserChoiceHandler,
 } from '../index';
+import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
+import { ThreadPanel } from '../thread-panel';
+import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
+import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import { getChannelDescription } from '../../channel-description-cache';
+import { tokenManager, parseCooldownTime } from '../../token-manager';
 
 /**
  * Result of stream execution
@@ -47,6 +62,7 @@ interface StreamExecutorDeps {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
+  threadPanel?: ThreadPanel;
 }
 
 interface StreamExecuteParams {
@@ -61,6 +77,26 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+}
+
+interface FinalFooterData {
+  startedAt: Date;
+  durationMs?: number;
+  contextUsagePercentBefore?: number;
+  contextUsagePercentAfter?: number;
+  usageBefore?: ClaudeUsageSnapshot | null;
+  usageAfter?: ClaudeUsageSnapshot | null;
+  toolStats?: RequestToolStats;
+}
+
+/** Per-request tool call statistics */
+interface ToolStatEntry {
+  count: number;
+  totalDurationMs: number;
+}
+
+interface RequestToolStats {
+  [toolName: string]: ToolStatEntry;
 }
 
 /**
@@ -117,9 +153,31 @@ export class StreamExecutor {
     } = params;
 
     let statusMessageTs: string | undefined;
+    let toolChoicePending = false;
+    let toolContinuation: Continuation | undefined;
+    const requestStartedAt = new Date();
+    const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
+    const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
+
+    // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
+    const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
+    const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
+    const vtag = (flag: number) => verboseTag(flag, getVerbosity());
+
+    // Per-request tool statistics
+    const toolStats: RequestToolStats = {};
+    const toolStartTimes = new Map<string, number>();
+
+    // Track latest response message ts for shortcut link
+    let latestResponseTs: string | undefined;
 
     // Transition to working state
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+    await this.updateRuntimeStatus(session, sessionKey, {
+      agentPhase: '생각 중',
+      activeTool: undefined,
+      waitingForChoice: false,
+    });
 
     try {
       const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
@@ -138,30 +196,42 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message
-      statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-        channel,
-        threadTs,
-        sessionKey,
-        'thinking'
+      // Send initial status message (gated by verbosity)
+      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
+        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
+          channel,
+          threadTs,
+          sessionKey,
+          'thinking',
+          vtag(OutputFlag.STATUS_MESSAGE)
+        );
+      }
+
+      // Add thinking reaction + native spinner (gated by verbosity)
+      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji('thinking')
+        );
+      }
+      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
+      }
+
+      // Create Slack context for permission prompts + channel description for system prompt
+      const channelDescription = await getChannelDescription(
+        this.deps.slackApi.getClient(),
+        channel
       );
+      const slackContext = { channel, threadTs, user, channelDescription };
 
-      // Add thinking reaction + native spinner
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('thinking')
-      );
-      await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
-
-      // Create Slack context for permission prompts
-      const slackContext = { channel, threadTs, user };
-
-      // Create stream context
+      // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
       const streamContext: StreamContext = {
         channel,
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
+        get logVerbosity() { return session.logVerbosity ?? LOG_DETAIL; },
         say: async (msg) => {
           const result = await say({
             text: msg.text,
@@ -169,6 +239,9 @@ export class StreamExecutor {
             blocks: msg.blocks,
             attachments: msg.attachments,
           });
+          if (result?.ts) {
+            latestResponseTs = result.ts;
+          }
           return { ts: result?.ts };
         },
       };
@@ -176,42 +249,86 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working');
+          if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
+            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working', vtag(OutputFlag.STATUS_MESSAGE));
           }
-          await this.deps.reactionManager.updateReaction(
-            sessionKey,
-            this.deps.statusReporter.getStatusEmoji('working')
-          );
+          if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+            await this.deps.reactionManager.updateReaction(
+              sessionKey,
+              this.deps.statusReporter.getStatusEmoji('working')
+            );
+          }
           // Native spinner with tool-specific text
+          if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+            const toolName = toolUses[0]?.name;
+            if (toolName) {
+              const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+              await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+            }
+          }
           const toolName = toolUses[0]?.name;
-          if (toolName) {
-            const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: toolName ? '도구 실행 중' : '작업 중',
+            activeTool: toolName,
+          });
+          // Track tool start times for per-request stats
+          for (const tu of toolUses) {
+            toolStartTimes.set(tu.id, Date.now());
           }
           await this.deps.toolEventProcessor.handleToolUse(toolUses, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
+            logVerbosity: getVerbosity(),
           });
         },
         onToolResult: async (toolResults, ctx) => {
+          // Accumulate per-request tool stats
+          for (const tr of toolResults) {
+            const name = tr.toolName || 'unknown';
+            const startTime = toolStartTimes.get(tr.toolUseId);
+            const duration = startTime ? Date.now() - startTime : 0;
+            toolStartTimes.delete(tr.toolUseId);
+            if (!toolStats[name]) {
+              toolStats[name] = { count: 0, totalDurationMs: 0 };
+            }
+            toolStats[name].count++;
+            toolStats[name].totalDurationMs += duration;
+          }
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: '결과 반영 중',
+            activeTool: undefined,
+          });
           await this.deps.toolEventProcessor.handleToolResult(toolResults, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
             sessionKey: ctx.sessionKey,
             say: ctx.say,
+            logVerbosity: getVerbosity(),
           });
+          const commandResult = await this.handleModelCommandToolResults(
+            toolResults,
+            session,
+            ctx
+          );
+          if (commandResult.hasPendingChoice) {
+            toolChoicePending = true;
+          }
+          if (commandResult.continuation) {
+            toolContinuation = commandResult.continuation;
+          }
         },
         onTodoUpdate: async (input, ctx) => {
+          if (!isOutputEnabled(OutputFlag.TODO_UPDATE)) return;
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
             ctx.sessionId,
             ctx.channel,
             ctx.threadTs,
-            ctx.say
+            ctx.say,
+            getVerbosity()
           );
         },
         onPendingFormCreate: (formId, form) => {
@@ -227,6 +344,9 @@ export class StreamExecutor {
             this.deps.slackApi
           );
         },
+        onUpdateMessage: async (ch, ts, text) => {
+          await this.updateToolCallMessage(ch, ts, text);
+        },
         onSessionLinksDetected: async (links) => {
           this.deps.claudeHandler.setSessionLinks(channel, threadTs, links);
           this.logger.info('Session links updated from model directive', {
@@ -236,19 +356,80 @@ export class StreamExecutor {
             hasDoc: !!links.doc,
           });
         },
+        onChannelMessageDetected: async (messageText) => {
+          try {
+            await this.deps.slackApi.postMessage(channel, messageText, {});
+            this.logger.info('Channel root message posted from model directive', {
+              sessionKey,
+              channel,
+              textLength: messageText.length,
+            });
+          } catch (error) {
+            this.logger.error('Failed to post channel root message from model directive', {
+              sessionKey,
+              channel,
+              error: (error as Error).message,
+            });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 
           // Update context window emoji
-          if (session.usage) {
+          if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
             const percent = this.deps.contextWindowManager.calculateRemainingPercent(session.usage);
             await this.deps.contextWindowManager.updateContextEmoji(sessionKey, percent);
           }
+
+          // Keep action panel context percentage in sync with latest usage.
+          try {
+            await this.deps.threadPanel?.updatePanel(session, sessionKey);
+          } catch (error) {
+            this.logger.debug('Failed to update action panel from usage callback', {
+              sessionKey,
+              error: (error as Error).message,
+            });
+          }
+        },
+        onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
+          await this.updateRuntimeStatus(session, ctx.sessionKey, {
+            agentPhase: '입력 대기',
+            activeTool: undefined,
+            waitingForChoice: true,
+          });
+          await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
+        },
+        buildFinalResponseFooter: async ({ usage, durationMs }) => {
+          if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
+
+          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const usageBefore = await usageBeforePromise;
+
+          const footer = this.buildFinalResponseFooter({
+            startedAt: requestStartedAt,
+            durationMs,
+            contextUsagePercentBefore,
+            contextUsagePercentAfter: this.getContextUsagePercentFromResult(
+              usage,
+              session.usage?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+            ),
+            usageBefore,
+            usageAfter,
+            toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
+          });
+          const tag = vtag(OutputFlag.SESSION_FOOTER);
+          return tag ? `${tag}${footer}` : footer;
         },
       };
 
       // Create and run stream processor
       const processor = new StreamProcessor(streamCallbacks);
+
+      // Wire compact duration callback: tool-event-processor → stream-processor
+      this.deps.toolEventProcessor.setCompactDurationCallback(
+        (toolUseId, duration, ch) => processor.updateToolCallDuration(toolUseId, duration, ch)
+      );
+
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
         streamContext,
@@ -262,22 +443,35 @@ export class StreamExecutor {
       }
 
       // Update status and reaction based on whether user choice is pending
-      const finalStatus = streamResult.hasUserChoice ? 'waiting' : 'completed';
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus);
+      const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
+      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
+        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus, vtag(OutputFlag.STATUS_MESSAGE));
       }
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji(finalStatus)
-      );
-      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+        await this.deps.reactionManager.updateReaction(
+          sessionKey,
+          this.deps.statusReporter.getStatusEmoji(finalStatus)
+        );
+      }
+      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+        await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      }
 
       // Transition activity state
       this.deps.claudeHandler.setActivityState(
         channel,
         threadTs,
-        streamResult.hasUserChoice ? 'waiting' : 'idle'
+        hasPendingChoice ? 'waiting' : 'idle'
       );
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
+        activeTool: undefined,
+        waitingForChoice: hasPendingChoice,
+      });
+
+      // Update action panel with turn summary and latest response permalink
+      await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
 
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
@@ -289,6 +483,7 @@ export class StreamExecutor {
         messageCount: streamResult.messageCount,
       });
 
+      // Update bot-initiated thread root with status
       // Clean up temporary files
       if (processedFiles.length > 0) {
         await this.deps.fileHandler.cleanupTempFiles(processedFiles);
@@ -307,8 +502,32 @@ export class StreamExecutor {
         }
       }
 
+      // Handle onboarding completion/skip - transition to real workflow
+      if (session.isOnboarding && streamResult.collectedText) {
+        const continuation = this.buildOnboardingContinuation(
+          session,
+          streamResult.collectedText,
+          user,
+          userName,
+          threadTs,
+          say
+        );
+        if (continuation) {
+          return { success: true, messageCount: streamResult.messageCount, continuation };
+        }
+      }
+
+      if (toolContinuation) {
+        return {
+          success: true,
+          messageCount: streamResult.messageCount,
+          continuation: toolContinuation,
+        };
+      }
+
       return { success: true, messageCount: streamResult.messageCount };
     } catch (error: any) {
+      const requestAborted = abortController.signal.aborted;
       await this.handleError(
         error,
         session,
@@ -317,11 +536,12 @@ export class StreamExecutor {
         threadTs,
         statusMessageTs,
         processedFiles,
-        say
+        say,
+        requestAborted
       );
       return { success: false, messageCount: 0 };
     } finally {
-      this.cleanup(session, sessionKey);
+      await this.cleanup(session, sessionKey);
     }
   }
 
@@ -333,41 +553,47 @@ export class StreamExecutor {
     threadTs: string,
     statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
-    say: SayFn
+    say: SayFn,
+    requestAborted: boolean = false
   ): Promise<void> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error
-    const errorMessage = error.message?.toLowerCase() || '';
-    if (
-      errorMessage.includes('prompt is too long') ||
-      errorMessage.includes('context length exceeded') ||
-      errorMessage.includes('maximum context length')
-    ) {
+    if (this.isContextOverflowError(error)) {
       await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
     }
 
-    if (error.name !== 'AbortError') {
+    const isAbort = requestAborted || this.isAbortLikeError(error);
+    if (!isAbort) {
       this.logger.error('Error handling message', error);
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '오류 발생',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
 
-      // Only clear session for Claude SDK errors (context overflow, auth, etc.)
-      // Preserve session for Slack API errors (invalid_attachments, rate_limited, etc.)
-      const isSlackApiError = this.isSlackApiError(error);
-      const sessionCleared = !isSlackApiError;
+      // Clear session only when current conversation context is no longer reusable.
+      // Transient errors (Slack API, rate-limit, process exit) should preserve session.
+      const sessionCleared = this.shouldClearSessionOnError(error);
 
       if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
-        this.logger.info('Session cleared due to non-Slack error', {
+        this.logger.info('Session cleared due to non-recoverable error', {
           sessionKey,
           errorType: error.name || 'unknown',
         });
       } else {
-        this.logger.warn('Slack API error - session preserved', {
+        this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
           errorMessage: error.message,
         });
+
+        // Auto-rotate token on rate limit
+        if (this.isRateLimitError(error)) {
+          this.tryRotateToken(error);
+        }
       }
 
       if (statusMessageTs) {
@@ -387,6 +613,11 @@ export class StreamExecutor {
     } else {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '요청 취소됨',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
 
       if (statusMessageTs) {
         await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
@@ -403,8 +634,153 @@ export class StreamExecutor {
     }
   }
 
-  private cleanup(session: ConversationSession, sessionKey: string): void {
+  private async updateToolCallMessage(channel: string, ts: string, text: string): Promise<void> {
+    try {
+      await this.deps.slackApi.updateMessage(channel, ts, text);
+    } catch (error) {
+      this.logger.debug('Failed to update tool call message', {
+        ts,
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  private isAbortLikeError(error: any): boolean {
+    const name = String(error?.name || '').toLowerCase();
+    const message = String(error?.message || '').toLowerCase();
+
+    if (name === 'aborterror') {
+      return true;
+    }
+
+    return (
+      message.includes('aborted by user') ||
+      message.includes('process aborted by user') ||
+      message.includes('request was aborted') ||
+      message.includes('operation aborted')  // covers "Operation aborted" and "operation was aborted"
+    );
+  }
+
+  private shouldClearSessionOnError(error: any): boolean {
+    if (this.isSlackApiError(error)) {
+      return false;
+    }
+
+    if (this.isRecoverableClaudeSdkError(error)) {
+      return false;
+    }
+
+    if (this.isContextOverflowError(error)) {
+      return true;
+    }
+
+    return this.isInvalidResumeSessionError(error);
+  }
+
+  private isContextOverflowError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    return (
+      message.includes('prompt is too long') ||
+      message.includes('context length exceeded') ||
+      message.includes('maximum context length')
+    );
+  }
+
+  private isRecoverableClaudeSdkError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    const recoverablePatterns = [
+      "you've hit your limit",
+      'rate limit',
+      'too many requests',
+      '429',
+      'process exited with code',
+      'temporarily unavailable',
+      'service unavailable',
+      'overloaded',
+      'timed out',
+      'timeout',
+      'network error',
+      'connection reset',
+      'ecconnreset',
+      'econnreset',
+      'etimedout',
+      'eai_again',
+    ];
+
+    return recoverablePatterns.some(pattern => message.includes(pattern));
+  }
+
+  private isRateLimitError(error: any): boolean {
+    // Check both error.message AND stderr content (rate limit text often
+    // appears in stderr while error.message is just "process exited with code 1")
+    const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
+    return (
+      combined.includes("you've hit your limit") ||
+      combined.includes('rate limit') ||
+      combined.includes('too many requests') ||
+      combined.includes('429')
+    );
+  }
+
+  /**
+   * Attempt to rotate to the next available token on rate limit.
+   * Uses CAS pattern for idempotent handling across concurrent sessions.
+   */
+  private tryRotateToken(error: any): void {
+    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (!failedToken) return;
+
+    // Parse cooldown from both error message and stderr content
+    const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
+    const cooldownUntil = parseCooldownTime(errorText)
+      ?? new Date(Date.now() + 3600000); // default 1 hour
+
+    const result = tokenManager.rotateOnRateLimit(failedToken, cooldownUntil);
+
+    if (result.rotated) {
+      if (result.allOnCooldown) {
+        this.logger.warn('All CCT tokens on cooldown', {
+          newToken: result.newToken,
+          earliestRecovery: result.earliestRecovery?.toISOString(),
+        });
+      } else {
+        this.logger.info('CCT token auto-rotated', { newToken: result.newToken });
+      }
+    }
+  }
+
+  private isInvalidResumeSessionError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    const invalidSessionPatterns = [
+      'conversation not found',
+      'session not found',
+      'cannot resume',
+      'invalid resume',
+      'resume session',
+    ];
+
+    return invalidSessionPatterns.some(pattern => message.includes(pattern));
+  }
+
+  private async cleanup(session: ConversationSession, sessionKey: string): Promise<void> {
     this.deps.requestCoordinator.removeController(sessionKey);
+
+    // Cleanup active MCP status tracking to prevent stuck timers
+    this.deps.toolEventProcessor.cleanup(sessionKey);
+
+    try {
+      await this.deps.threadPanel?.updatePanel(session, sessionKey);
+    } catch (error) {
+      this.logger.debug('Failed to update action panel during cleanup', {
+        sessionKey,
+        error: (error as Error).message,
+      });
+    }
 
     // Schedule cleanup for todo tracking
     if (session?.sessionId) {
@@ -466,7 +842,56 @@ export class StreamExecutor {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
     }
 
+    // Append token rotation info if rate limit triggered rotation
+    if (this.isRateLimitError(error) && tokenManager.getAllTokens().length > 1) {
+      const active = tokenManager.getActiveToken();
+      if (active) {
+        lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
+      }
+    }
+
     return lines.join('\n');
+  }
+
+  private async updateRuntimeStatus(
+    session: ConversationSession,
+    sessionKey: string,
+    patch: {
+      agentPhase?: string;
+      activeTool?: string;
+      waitingForChoice?: boolean;
+    }
+  ): Promise<void> {
+    await this.deps.threadPanel?.setStatus(session, sessionKey, patch);
+  }
+
+  /**
+   * Write turn duration, tool-call count, and latest response permalink into
+   * session.actionPanel so the panel builder can surface them.
+   */
+  private async updateActionPanelTurnMeta(
+    session: ConversationSession,
+    channel: string,
+    requestStartedAt: Date,
+    toolStats: RequestToolStats,
+    latestResponseTs: string | undefined
+  ): Promise<void> {
+    if (!session.actionPanel) return;
+
+    const elapsedMs = Date.now() - requestStartedAt.getTime();
+    const totalToolCalls = Object.values(toolStats).reduce((sum, s) => sum + s.count, 0);
+    const elapsedText = this.formatElapsed(elapsedMs);
+    session.actionPanel.turnSummary = totalToolCalls > 0
+      ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}`
+      : `⏱ ${elapsedText}`;
+
+    if (latestResponseTs) {
+      session.actionPanel.latestResponseTs = latestResponseTs;
+      const permalink = await this.deps.slackApi.getPermalink(channel, latestResponseTs).catch(() => null);
+      if (permalink) {
+        session.actionPanel.latestResponseLink = permalink;
+      }
+    }
   }
 
   /**
@@ -477,6 +902,9 @@ export class StreamExecutor {
     const slackName = settings?.slackName;
     const jiraName = userSettingsStore.getUserJiraName(userId);
     const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
+    const persona = userSettingsStore.getUserPersona(userId);
+    const defaultModel = userSettingsStore.getUserDefaultModel(userId);
+    const bypassPermission = userSettingsStore.getUserBypassPermission(userId);
 
     const contextItems: string[] = [];
 
@@ -484,12 +912,158 @@ export class StreamExecutor {
     if (slackName) contextItems.push(`  <slack-name>${slackName}</slack-name>`);
     if (jiraName) contextItems.push(`  <jira-name>${jiraName}</jira-name>`);
     if (jiraAccountId) contextItems.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
+    contextItems.push(`  <user-persona>${persona}</user-persona>`);
+    contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
+    contextItems.push(`  <user-bypass-permission>${bypassPermission ? 'on' : 'off'}</user-bypass-permission>`);
 
     // Environment context - always include cwd and timestamp
     contextItems.push(`  <cwd>${workingDirectory}</cwd>`);
     contextItems.push(`  <timestamp>${new Date().toISOString()}</timestamp>`);
 
     return ['<context>', ...contextItems, '</context>'].join('\n');
+  }
+
+  private getCurrentContextUsagePercent(usage?: SessionUsage): number | undefined {
+    if (!usage || usage.contextWindow <= 0) {
+      return undefined;
+    }
+
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const percent = (usedTokens / usage.contextWindow) * 100;
+    return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
+  }
+
+  private getContextUsagePercentFromResult(
+    usage: UsageData | undefined,
+    contextWindow: number
+  ): number | undefined {
+    if (!usage || contextWindow <= 0) {
+      return undefined;
+    }
+
+    const usedTokens = usage.inputTokens + usage.outputTokens;
+    const percent = (usedTokens / contextWindow) * 100;
+    return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
+  }
+
+  private buildFinalResponseFooter(data: FinalFooterData): string | undefined {
+    const lines: string[] = [];
+    const endedAt = typeof data.durationMs === 'number'
+      ? new Date(data.startedAt.getTime() + data.durationMs)
+      : new Date();
+
+    lines.push(
+      `⏰ ${this.formatClock(data.startedAt)} → ${this.formatClock(endedAt)} (${this.formatElapsed(endedAt.getTime() - data.startedAt.getTime())})`
+    );
+
+    if (typeof data.contextUsagePercentAfter === 'number') {
+      const contextAfter = data.contextUsagePercentAfter;
+      const contextDelta = typeof data.contextUsagePercentBefore === 'number'
+        ? contextAfter - data.contextUsagePercentBefore
+        : undefined;
+      const contextDeltaText = this.formatSignedDelta(contextDelta, 1);
+      const contextDeltaSuffix = contextDeltaText ? ` ${contextDeltaText}` : '';
+      lines.push(
+        `Ctx ${this.renderBar(contextAfter)} ${contextAfter.toFixed(1)}%${contextDeltaSuffix}`
+      );
+    }
+
+    const fiveHour = data.usageAfter?.fiveHour;
+    const sevenDay = data.usageAfter?.sevenDay;
+    const fiveHourDelta = typeof fiveHour === 'number' && typeof data.usageBefore?.fiveHour === 'number'
+      ? Math.round(fiveHour - data.usageBefore.fiveHour)
+      : undefined;
+    const sevenDayDelta = typeof sevenDay === 'number' && typeof data.usageBefore?.sevenDay === 'number'
+      ? Math.round(sevenDay - data.usageBefore.sevenDay)
+      : undefined;
+
+    const fiveHourPercent = this.formatPercent(fiveHour);
+    const sevenDayPercent = this.formatPercent(sevenDay);
+    const fiveHourDeltaText = this.formatSignedDelta(fiveHourDelta, 0) ?? '--';
+    const sevenDayDeltaText = this.formatSignedDelta(sevenDayDelta, 0) ?? '--';
+
+    lines.push(
+      `5h  ${this.renderBar(fiveHour ?? 0)} ${fiveHourPercent} ${fiveHourDeltaText}  `
+      + `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`
+    );
+
+    // Per-request tool statistics
+    if (data.toolStats) {
+      const toolLine = this.formatToolStats(data.toolStats);
+      if (toolLine) {
+        lines.push(toolLine);
+      }
+    }
+
+    if (lines.length === 0) {
+      return undefined;
+    }
+
+    return ['```', ...lines, '```'].join('\n');
+  }
+
+  private formatClock(date: Date): string {
+    return date.toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  }
+
+  private formatElapsed(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  private renderBar(percent: number, width: number = 14): string {
+    const clamped = Math.max(0, Math.min(100, percent));
+    const filled = Math.round((clamped / 100) * width);
+    return '▓'.repeat(filled) + '░'.repeat(width - filled);
+  }
+
+  private formatPercent(percent?: number): string {
+    if (typeof percent !== 'number' || !Number.isFinite(percent)) {
+      return '--%';
+    }
+
+    return `${String(Math.round(percent)).padStart(3)}%`;
+  }
+
+  /** Format per-request tool stats as compact line: "🛠 Edit×3 Bash×2 Read×5" */
+  private formatToolStats(stats: RequestToolStats): string | undefined {
+    const entries = Object.entries(stats)
+      .sort((a, b) => b[1].count - a[1].count);
+    if (entries.length === 0) return undefined;
+
+    const totalCalls = entries.reduce((sum, [, s]) => sum + s.count, 0);
+    const parts = entries
+      .slice(0, 6)
+      .map(([name, s]) => {
+        const shortName = name.startsWith('mcp__')
+          ? name.split('__').slice(1, 3).join(':')
+          : name;
+        return `${shortName}×${s.count}`;
+      });
+    if (entries.length > 6) {
+      parts.push(`+${entries.length - 6}`);
+    }
+
+    return `🛠 ${totalCalls} calls: ${parts.join(' ')}`;
+  }
+
+  private formatSignedDelta(
+    delta: number | undefined,
+    decimals: number
+  ): string | undefined {
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) {
+      return undefined;
+    }
+
+    const sign = delta >= 0 ? '+' : '';
+    return decimals > 0 ? `${sign}${delta.toFixed(decimals)}` : `${sign}${Math.round(delta)}`;
   }
 
   /**
@@ -533,6 +1107,280 @@ export class StreamExecutor {
     });
   }
 
+  private async handleModelCommandToolResults(
+    toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
+    session: ConversationSession,
+    context: StreamContext
+  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation }> {
+    let hasPendingChoice = false;
+    let continuation: Continuation | undefined;
+
+    for (const toolResult of toolResults) {
+      if (toolResult.toolName !== 'mcp__model-command__run') {
+        continue;
+      }
+
+      const parsed = parseModelCommandRunResponse(toolResult.result);
+      if (!parsed) {
+        this.logger.warn('Failed to parse model-command tool result', {
+          sessionKey: context.sessionKey,
+          toolUseId: toolResult.toolUseId,
+        });
+        continue;
+      }
+
+      if (!parsed.ok) {
+        this.logger.warn('model-command run returned error', {
+          sessionKey: context.sessionKey,
+          commandId: parsed.commandId,
+          error: parsed.error,
+        });
+        continue;
+      }
+
+      if (parsed.commandId === 'ASK_USER_QUESTION') {
+        await this.renderAskUserQuestionFromCommand(
+          parsed.payload.question,
+          session,
+          context
+        );
+        hasPendingChoice = true;
+        continue;
+      }
+
+      if (parsed.commandId === 'SAVE_CONTEXT_RESULT') {
+        if (session.renewState !== 'pending_save') {
+          this.logger.warn('Ignoring SAVE_CONTEXT_RESULT outside pending_save renew state', {
+            sessionKey: context.sessionKey,
+            renewState: session.renewState ?? null,
+            id: parsed.payload.saveResult.id || parsed.payload.saveResult.save_id,
+          });
+          continue;
+        }
+
+        session.renewSaveResult = parsed.payload.saveResult;
+        this.logger.info('Captured SAVE_CONTEXT_RESULT from model-command', {
+          sessionKey: context.sessionKey,
+          success: parsed.payload.saveResult.success,
+          status: parsed.payload.saveResult.status,
+          id: parsed.payload.saveResult.id || parsed.payload.saveResult.save_id,
+        });
+        continue;
+      }
+
+      if (parsed.commandId === 'CONTINUE_SESSION') {
+        continuation = parsed.payload.continuation;
+        this.logger.info('Captured CONTINUE_SESSION from model-command', {
+          sessionKey: context.sessionKey,
+          resetSession: continuation.resetSession === true,
+          forceWorkflow: continuation.forceWorkflow,
+          dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
+        });
+        continue;
+      }
+
+      if (parsed.commandId === 'UPDATE_SESSION') {
+        const request = parsed.payload.request as SessionResourceUpdateRequest;
+        const updateResult = this.deps.claudeHandler.updateSessionResources(
+          context.channel,
+          context.threadTs,
+          request
+        );
+
+        if (!updateResult.ok) {
+          this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+            sessionKey: context.sessionKey,
+            reason: updateResult.reason,
+            error: updateResult.error,
+            mismatch: updateResult.sequenceMismatch,
+          });
+          await context.say({
+            text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
+            thread_ts: context.threadTs,
+          });
+        } else {
+          this.logger.info('Applied UPDATE_SESSION on host', {
+            sessionKey: context.sessionKey,
+            sequence: updateResult.snapshot.sequence,
+            issueCount: updateResult.snapshot.issues.length,
+            prCount: updateResult.snapshot.prs.length,
+            docCount: updateResult.snapshot.docs.length,
+          });
+        }
+      }
+    }
+
+    return { hasPendingChoice, continuation };
+  }
+
+  private async renderAskUserQuestionFromCommand(
+    question: UserChoice | UserChoices,
+    session: ConversationSession,
+    context: StreamContext
+  ): Promise<void> {
+    if (question.type === 'user_choices') {
+      await this.renderMultiChoiceFromCommand(question, context);
+    } else {
+      await this.renderSingleChoiceFromCommand(question, context);
+    }
+
+    this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
+    await this.updateRuntimeStatus(session, context.sessionKey, {
+      agentPhase: '입력 대기',
+      activeTool: undefined,
+      waitingForChoice: true,
+    });
+  }
+
+  private async renderSingleChoiceFromCommand(
+    question: UserChoice,
+    context: StreamContext
+  ): Promise<void> {
+    const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey);
+    try {
+      const result = await context.say({
+        text: question.question,
+        ...payload,
+        thread_ts: context.threadTs,
+      });
+
+      await this.deps.threadPanel?.attachChoice(
+        context.sessionKey,
+        payload,
+        result?.ts
+      );
+    } catch (error) {
+      this.logger.warn('Failed to render command-driven single choice blocks', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
+      await this.sendCommandChoiceFallback(question, context);
+    }
+  }
+
+  private async renderMultiChoiceFromCommand(
+    question: UserChoices,
+    context: StreamContext
+  ): Promise<void> {
+    const maxQuestionsPerForm = 6;
+    const chunks: UserChoices[] = [];
+    for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
+      const chunkQuestions = question.questions.slice(index, index + maxQuestionsPerForm);
+      const chunkLabel = question.questions.length > maxQuestionsPerForm
+        ? ` (${Math.floor(index / maxQuestionsPerForm) + 1}/${Math.ceil(question.questions.length / maxQuestionsPerForm)})`
+        : '';
+
+      chunks.push({
+        ...question,
+        title: `${question.title || '선택이 필요합니다'}${chunkLabel}`,
+        questions: chunkQuestions,
+      });
+    }
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+
+      this.deps.actionHandlers.setPendingForm(formId, {
+        formId,
+        sessionKey: context.sessionKey,
+        channel: context.channel,
+        threadTs: context.threadTs,
+        messageTs: '',
+        questions: chunk.questions,
+        selections: {},
+        createdAt: Date.now(),
+      });
+
+      if (index === 0) {
+        await this.deps.actionHandlers.invalidateOldForms(
+          context.sessionKey,
+          formId,
+          this.deps.slackApi
+        );
+      }
+
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(
+        chunk,
+        formId,
+        context.sessionKey
+      );
+      try {
+        const result = await context.say({
+          text: chunk.title || '📋 선택이 필요합니다',
+          ...payload,
+          thread_ts: context.threadTs,
+        });
+
+        if (result?.ts) {
+          const pending = this.deps.actionHandlers.getPendingForm(formId);
+          if (pending) {
+            pending.messageTs = result.ts;
+          }
+        }
+
+        await this.deps.threadPanel?.attachChoice(
+          context.sessionKey,
+          payload,
+          result?.ts
+        );
+      } catch (error) {
+        this.logger.warn('Failed to render command-driven multi choice blocks', {
+          sessionKey: context.sessionKey,
+          error: (error as Error).message,
+        });
+        this.deps.actionHandlers.deletePendingForm(formId);
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
+    }
+  }
+
+  private async sendCommandChoiceFallback(
+    question: UserChoice | UserChoices,
+    context: StreamContext
+  ): Promise<void> {
+    let fallbackText = '';
+
+    if (question.type === 'user_choices') {
+      const lines = [
+        `📋 *${question.title || '선택이 필요합니다'}*`,
+        question.description ? `_${question.description}_` : '',
+        '',
+        ...question.questions.map((entry, index) => {
+          const options = (entry.choices || [])
+            .map((option, optionIndex) => {
+              return `  ${optionIndex + 1}. ${option.label}${option.description ? ` - ${option.description}` : ''}`;
+            })
+            .join('\n');
+          return `*Q${index + 1}. ${entry.question}*\n${options}`;
+        }),
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ];
+      fallbackText = lines.filter((line) => line !== '').join('\n');
+    } else {
+      const options = (question.choices || [])
+        .map((option, index) => {
+          return `${index + 1}. ${option.label}${option.description ? ` - ${option.description}` : ''}`;
+        })
+        .join('\n');
+      fallbackText = [
+        `❓ *${question.question}*`,
+        question.context ? `_${question.context}_` : '',
+        '',
+        options,
+        '',
+        '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
+      ].filter((line) => line !== '').join('\n');
+    }
+
+    await context.say({
+      text: fallbackText,
+      thread_ts: context.threadTs,
+    });
+  }
+
   /**
    * Build continuation for renew flow after save completes
    * Returns Continuation object instead of recursively calling execute()
@@ -543,8 +1391,10 @@ export class StreamExecutor {
     threadTs: string,
     say: SayFn
   ): Promise<Continuation | undefined> {
-    // Parse JSON result from save output
-    const saveResult = this.parseSaveResult(collectedText);
+    // Prefer tool-driven save result, then fall back to text parsing.
+    const saveResult = this.normalizeSaveResultPayload(session.renewSaveResult)
+      || this.parseSaveResult(collectedText);
+    session.renewSaveResult = undefined;
 
     if (!saveResult) {
       this.logger.warn('Renew save did not find save_result JSON', {
@@ -568,24 +1418,63 @@ export class StreamExecutor {
       return undefined;
     }
 
-    const { id, files } = saveResult;
+    const { id, files, path, dir, summary } = saveResult;
 
-    if (!files || files.length === 0) {
-      this.logger.warn('Save succeeded but no files returned');
+    // Try to get save content from files array or fallback to reading from path
+    let saveContent: string;
+
+    if (files && files.length > 0) {
+      // Preferred: use files array directly
+      this.logger.info('Renew save completed, using files array', { id, fileCount: files.length });
+      saveContent = files.map((file: { name: string; content: string }) => {
+        return `--- ${file.name} ---\n${file.content}`;
+      }).join('\n\n');
+    } else if (path || dir) {
+      // Fallback: try to read from path/dir
+      const savePath = path || dir;
+      this.logger.info('Renew save completed, attempting file read fallback', { id, savePath });
+
+      try {
+        const fs = await import('fs');
+        const pathModule = await import('path');
+
+        // Try to read context.md from the save directory
+        const contextPath = savePath!.endsWith('.md')
+          ? savePath!
+          : pathModule.join(savePath!, 'context.md');
+
+        if (fs.existsSync(contextPath)) {
+          const content = fs.readFileSync(contextPath, 'utf-8');
+          saveContent = `--- context.md ---\n${content}`;
+          this.logger.info('Successfully read save file via fallback', { contextPath });
+        } else {
+          this.logger.warn('Save path does not exist', { contextPath });
+          await say({
+            text: `⚠️ Save reported success but file not found at: ${contextPath}`,
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+      } catch (readError) {
+        this.logger.warn('Failed to read save file via fallback', { savePath, error: readError });
+        await say({
+          text: `⚠️ Save reported success but could not read file: ${savePath}`,
+          thread_ts: threadTs,
+        });
+        session.renewState = null;
+        return undefined;
+      }
+    } else {
+      // No files and no path - can't proceed
+      this.logger.warn('Save succeeded but no files or path returned', { saveResult });
       await say({
-        text: '⚠️ Save succeeded but no file content was returned.',
+        text: '⚠️ Save succeeded but no file content or path was returned.',
         thread_ts: threadTs,
       });
       session.renewState = null;
       return undefined;
     }
-
-    this.logger.info('Renew save completed, building continuation', { id, fileCount: files.length });
-
-    // Build save content from files array
-    const saveContent = files.map((file: { name: string; content: string }) => {
-      return `--- ${file.name} ---\n${file.content}`;
-    }).join('\n\n');
 
     // Get user message if provided with /renew command
     const userMessage = session.renewUserMessage;
@@ -627,12 +1516,17 @@ ${userInstruction}`;
   }
 
   /**
-   * Parse save_result JSON from collected text
+   * Parse save_result JSON from collected text (lenient parsing)
+   * Handles AI output variations:
+   * - success: true | status: "saved" | status: "success"
+   * - id | save_id
+   * - files array or path/dir for fallback
    */
   private parseSaveResult(text: string): {
     success: boolean;
     id?: string;
     dir?: string;
+    path?: string;
     summary?: string;
     files?: Array<{ name: string; content: string }>;
     error?: string;
@@ -646,9 +1540,107 @@ ${userInstruction}`;
     try {
       const fullJson = `{"save_result":${jsonMatch[1]}}`;
       const parsed = JSON.parse(fullJson);
-      return parsed.save_result;
+      return this.normalizeSaveResultPayload(parsed.save_result);
     } catch (error) {
       this.logger.warn('Failed to parse save_result JSON', { error });
+      return null;
+    }
+  }
+
+  private normalizeSaveResultPayload(raw: SaveContextResultPayload | undefined): {
+    success: boolean;
+    id?: string;
+    dir?: string;
+    path?: string;
+    summary?: string;
+    files?: Array<{ name: string; content: string }>;
+    error?: string;
+  } | null {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const success = raw.success === true
+      || raw.status === 'saved'
+      || raw.status === 'success';
+
+    return {
+      success,
+      id: raw.id || raw.save_id,
+      dir: raw.dir,
+      path: raw.path,
+      summary: raw.summary || raw.title,
+      files: raw.files,
+      error: raw.error,
+    };
+  }
+
+  /**
+   * Build continuation for onboarding completion/skip
+   * When Claude outputs {"onboarding_complete": {...}}, transition to real workflow
+   */
+  private buildOnboardingContinuation(
+    session: ConversationSession,
+    collectedText: string,
+    userId: string,
+    userName: string,
+    threadTs: string,
+    say: SayFn
+  ): Continuation | undefined {
+    // Parse onboarding_complete JSON from output
+    const result = this.parseOnboardingComplete(collectedText);
+    if (!result) {
+      return undefined;
+    }
+
+    this.logger.info('Onboarding complete detected, building continuation', {
+      skipped: result.skipped,
+      userMessage: result.user_message?.substring(0, 50),
+    });
+
+    // Create user settings record (marks user as onboarded)
+    userSettingsStore.ensureUserExists(userId, userName);
+
+    // Clear onboarding flag
+    session.isOnboarding = false;
+
+    // If user provided a real task/message, re-dispatch with it
+    if (result.user_message) {
+      this.logger.info('Onboarding: transitioning to user request', {
+        userMessage: result.user_message.substring(0, 100),
+      });
+
+      return {
+        prompt: result.user_message,
+        resetSession: true,
+        dispatchText: result.user_message,
+      };
+    }
+
+    // Onboarding completed without follow-up task - no continuation needed
+    return undefined;
+  }
+
+  /**
+   * Parse onboarding_complete JSON from collected text
+   * Expected format: {"onboarding_complete": {"skipped": true/false, "user_message": "..."}}
+   */
+  private parseOnboardingComplete(text: string): {
+    skipped: boolean;
+    user_message?: string;
+  } | null {
+    // Look for {"onboarding_complete": ...} pattern
+    const jsonMatch = text.match(/\{"onboarding_complete"\s*:\s*(\{[^}]*\})\}/s);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    try {
+      const fullJson = `{"onboarding_complete":${jsonMatch[1]}}`;
+      const parsed = JSON.parse(fullJson);
+      return parsed.onboarding_complete;
+    } catch (error) {
+      this.logger.warn('Failed to parse onboarding_complete JSON', { error });
       return null;
     }
   }

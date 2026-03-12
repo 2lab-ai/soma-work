@@ -1,6 +1,8 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
 import { ReactionManager } from '../reaction-manager';
+import { ThreadPanel } from '../thread-panel';
+import { RequestCoordinator } from '../request-coordinator';
 import { ClaudeHandler } from '../../claude-handler';
 import { UserChoiceQuestion } from '../../types';
 
@@ -33,4 +35,6 @@ export interface ActionHandlerContext {
   sessionManager: SessionUiManager;
   messageHandler: MessageHandler;
   reactionManager?: ReactionManager;
+  threadPanel?: ThreadPanel;
+  requestCoordinator?: RequestCoordinator;
 }

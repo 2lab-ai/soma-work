@@ -1,7 +1,11 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
 import { ReactionManager } from '../reaction-manager';
+import { RequestCoordinator } from '../request-coordinator';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { ActionPanelBuilder } from '../action-panel-builder';
 import { ClaudeHandler } from '../../claude-handler';
+import { ConversationSession } from '../../types';
 import { Logger } from '../../logger';
 import { RespondFn } from './types';
 
@@ -10,6 +14,7 @@ interface SessionActionContext {
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
   reactionManager?: ReactionManager;
+  requestCoordinator?: RequestCoordinator;
 }
 
 /**
@@ -51,6 +56,12 @@ export class SessionActionHandler {
       if (session.threadTs) {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
+
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -119,6 +130,12 @@ export class SessionActionHandler {
       if (session.threadTs) {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
+
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -240,6 +257,12 @@ export class SessionActionHandler {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
+
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
 
@@ -283,5 +306,56 @@ export class SessionActionHandler {
         replace_original: false,
       });
     }
+  }
+
+  /**
+   * Update thread header and action panel to show closed state.
+   * Errors are logged but do not block session termination.
+   */
+  private async updateSessionUiAsClosed(session: ConversationSession): Promise<void> {
+    const channelId = session.channelId;
+
+    // Update thread header (bot-initiated threads only)
+    if (session.threadRootTs) {
+      try {
+        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true });
+        await this.ctx.slackApi.updateMessage(
+          channelId,
+          session.threadRootTs,
+          headerPayload.text,
+          headerPayload.blocks
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update thread header as closed', { error });
+      }
+    }
+
+    // Update action panel
+    if (session.actionPanel?.messageTs) {
+      try {
+        const panelPayload = ActionPanelBuilder.build({
+          sessionKey: '',
+          workflow: session.workflow,
+          closed: true,
+          contextRemainingPercent: this.getContextRemainingPercent(session),
+        });
+        await this.ctx.slackApi.updateMessage(
+          channelId,
+          session.actionPanel.messageTs,
+          panelPayload.text,
+          panelPayload.blocks
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update action panel as closed', { error });
+      }
+    }
+  }
+
+  private getContextRemainingPercent(session: ConversationSession): number | undefined {
+    const usage = session.usage;
+    if (!usage || usage.contextWindow <= 0) return undefined;
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const remainingPercent = ((usage.contextWindow - usedTokens) / usage.contextWindow) * 100;
+    return Math.max(0, Math.min(100, Number(remainingPercent.toFixed(1))));
   }
 }

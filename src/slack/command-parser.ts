@@ -2,14 +2,113 @@
  * Command parsing utilities for Slack bot commands
  */
 
+export type CctAction = { action: 'status' } | { action: 'set'; target: string } | { action: 'next' };
+
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
+export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
+export type LlmChatAction =
+  | { action: 'show' }
+  | { action: 'set'; provider: string; key: string; value: string }
+  | { action: 'reset' }
+  | { action: 'error'; message: string };
+export type SessionCommandAction =
+  | { type: 'info' }
+  | { type: 'model'; action: 'status' | 'set'; model?: string }
+  | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
+  | { type: 'effort'; action: 'status' | 'set'; level?: string };
+
+export type MarketplaceAction =
+  | { action: 'list' }
+  | { action: 'add'; repo: string; name?: string; ref?: string }
+  | { action: 'remove'; name: string };
+
+export type PluginsAction =
+  | { action: 'list' }
+  | { action: 'add'; pluginRef: string }
+  | { action: 'remove'; pluginRef: string };
+
+export type AdminAction =
+  | { action: 'accept'; targetUser: string }
+  | { action: 'deny'; targetUser: string }
+  | { action: 'users' }
+  | { action: 'config'; sub: 'show' }
+  | { action: 'config'; sub: 'set'; key: string; value: string };
 
 export class CommandParser {
+  /**
+   * Check if text is an admin command (accept/deny/users/config)
+   */
+  static isAdminCommand(text: string): boolean {
+    const trimmed = text.trim();
+    return /^\/?(?:accept|deny)\s+<@\w+(?:\|[^>]*)?>$/i.test(trimmed)
+      || /^\/?users$/i.test(trimmed)
+      || /^\/?config\s+\S+/i.test(trimmed);
+  }
+
+  /**
+   * Parse admin command
+   */
+  static parseAdminCommand(text: string): AdminAction | null {
+    const trimmed = text.trim();
+
+    // accept <@U123> or accept <@U123|name>
+    const acceptMatch = trimmed.match(/^\/?accept\s+<@(\w+)(?:\|[^>]*)?>$/i);
+    if (acceptMatch) {
+      return { action: 'accept', targetUser: acceptMatch[1] };
+    }
+
+    // deny <@U123> or deny <@U123|name>
+    const denyMatch = trimmed.match(/^\/?deny\s+<@(\w+)(?:\|[^>]*)?>$/i);
+    if (denyMatch) {
+      return { action: 'deny', targetUser: denyMatch[1] };
+    }
+
+    // users
+    if (/^\/?users$/i.test(trimmed)) {
+      return { action: 'users' };
+    }
+
+    // config show
+    if (/^\/?config\s+show$/i.test(trimmed)) {
+      return { action: 'config', sub: 'show' };
+    }
+
+    // config KEY=VALUE
+    const configSetMatch = trimmed.match(/^\/?config\s+(\w+)=(.*)$/i);
+    if (configSetMatch) {
+      return { action: 'config', sub: 'set', key: configSetMatch[1], value: configSetMatch[2] };
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if text is a cct/set_cct command
+   */
+  static isCctCommand(text: string): boolean {
+    return /^\/?(?:cct|set_cct|nextcct)(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse cct command: "cct" → status, "set_cct cctN" → set, "nextcct" → next
+   */
+  static parseCctCommand(text: string): CctAction {
+    const trimmed = text.trim();
+    if (/^\/?nextcct$/i.test(trimmed)) {
+      return { action: 'next' };
+    }
+    const match = trimmed.match(/^\/?set_cct\s+(\S+)$/i);
+    if (match) {
+      return { action: 'set', target: match[1] };
+    }
+    return { action: 'status' };
+  }
+
   /**
    * Check if text is an MCP info command
    */
@@ -101,6 +200,25 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a verbosity command
+   */
+  static isVerbosityCommand(text: string): boolean {
+    return /^\/?verbosity(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse verbosity command
+   */
+  static parseVerbosityCommand(text: string): { action: 'status' | 'set'; level?: string } {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?verbosity\s+(\S+)$/i);
+    if (match && match[1] !== 'status') {
+      return { action: 'set', level: match[1] };
+    }
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is a restore credentials command
    */
   static isRestoreCommand(text: string): boolean {
@@ -137,6 +255,13 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an onboarding command
+   */
+  static isOnboardingCommand(text: string): boolean {
+    return /^\/?onboarding(?:\s+[\s\S]*)?$/i.test(text.trim());
+  }
+
+  /**
    * Parse /new command to extract optional prompt
    */
   static parseNewCommand(text: string): NewCommandResult {
@@ -145,6 +270,19 @@ export class CommandParser {
       return {};
     }
     // match[1] is the optional prompt (everything after /new)
+    const prompt = match[1]?.trim();
+    return { prompt: prompt || undefined };
+  }
+
+  /**
+   * Parse /onboarding command to extract optional prompt
+   */
+  static parseOnboardingCommand(text: string): OnboardingCommandResult {
+    const match = text.trim().match(/^\/?onboarding(?:\s+(.+))?$/is);
+    if (!match) {
+      return {};
+    }
+
     const prompt = match[1]?.trim();
     return { prompt: prompt || undefined };
   }
@@ -207,23 +345,185 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is any llm_chat command (set/show/reset)
+   */
+  static isLlmChatCommand(text: string): boolean {
+    return /^\/?(?:set|show|reset)\s+llm_chat\b/i.test(text.trim());
+  }
+
+  /**
+   * Parse llm_chat command
+   */
+  static parseLlmChatCommand(text: string): LlmChatAction {
+    const trimmed = text.trim();
+
+    if (/^\/?show\s+llm_chat\s*$/i.test(trimmed)) {
+      return { action: 'show' };
+    }
+
+    if (/^\/?reset\s+llm_chat\s*$/i.test(trimmed)) {
+      return { action: 'reset' };
+    }
+
+    // Parse: set llm_chat <provider> <key> <value>
+    const setMatch = trimmed.match(
+      /^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i
+    );
+    if (setMatch) {
+      return {
+        action: 'set',
+        provider: setMatch[1].toLowerCase(),
+        key: setMatch[2].toLowerCase(),
+        value: setMatch[3].trim(),
+      };
+    }
+
+    // If "set llm_chat" but missing args, return error with usage guidance
+    if (/^\/?set\s+llm_chat/i.test(trimmed)) {
+      return {
+        action: 'error',
+        message: 'Usage: `set llm_chat <provider> <key> <value>`\nExample: `set llm_chat codex model gpt-5.4`',
+      };
+    }
+
+    // Fallback for any other unrecognized pattern
+    return { action: 'error', message: 'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`' };
+  }
+
+  /**
+   * Check if text is a marketplace command
+   */
+  static isMarketplaceCommand(text: string): boolean {
+    return /^\/?marketplace(?:\s+(?:add|remove)\s+\S+(?:\s+--\S+\s+\S+)*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse marketplace command
+   */
+  static parseMarketplaceCommand(text: string): MarketplaceAction {
+    const trimmed = text.trim();
+
+    // Match: marketplace add owner/repo [--name x] [--ref y]
+    const addMatch = trimmed.match(/^\/?marketplace\s+add\s+(\S+)(.*)?$/i);
+    if (addMatch) {
+      const repo = addMatch[1];
+      const rest = addMatch[2] || '';
+      const nameMatch = rest.match(/--name\s+(\S+)/i);
+      const refMatch = rest.match(/--ref\s+(\S+)/i);
+      const result: MarketplaceAction = { action: 'add', repo };
+      const name = nameMatch?.[1];
+      const ref = refMatch?.[1];
+      if (name && ref) {
+        return { action: 'add', repo, name, ref };
+      }
+      if (name) {
+        return { action: 'add', repo, name };
+      }
+      if (ref) {
+        return { action: 'add', repo, ref };
+      }
+      return result;
+    }
+
+    // Match: marketplace remove <name>
+    const removeMatch = trimmed.match(/^\/?marketplace\s+remove\s+(\S+)$/i);
+    if (removeMatch) {
+      return { action: 'remove', name: removeMatch[1] };
+    }
+
+    return { action: 'list' };
+  }
+
+  /**
+   * Check if text is a plugins command
+   */
+  static isPluginsCommand(text: string): boolean {
+    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse plugins command
+   */
+  static parsePluginsCommand(text: string): PluginsAction {
+    const trimmed = text.trim();
+
+    // Match: plugins add <pluginRef>
+    const addMatch = trimmed.match(/^\/?plugins\s+add\s+(\S+)$/i);
+    if (addMatch) {
+      return { action: 'add', pluginRef: addMatch[1] };
+    }
+
+    // Match: plugins remove <pluginRef>
+    const removeMatch = trimmed.match(/^\/?plugins\s+remove\s+(\S+)$/i);
+    if (removeMatch) {
+      return { action: 'remove', pluginRef: removeMatch[1] };
+    }
+
+    return { action: 'list' };
+  }
+
+  /**
+   * Check if text is a session command ($ prefix)
+   * Matches: $, $model, $model opus, $verbosity, $verbosity compact
+   */
+  static isSessionCommand(text: string): boolean {
+    return /^\$(?:model|verbosity|effort)?(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse session command ($, $model [value], $verbosity [value])
+   */
+  static parseSessionCommand(text: string): SessionCommandAction {
+    const trimmed = text.trim();
+
+    const modelMatch = trimmed.match(/^\$model(?:\s+(\S+))?$/i);
+    if (modelMatch) {
+      return modelMatch[1]
+        ? { type: 'model', action: 'set', model: modelMatch[1] }
+        : { type: 'model', action: 'status' };
+    }
+
+    const verbosityMatch = trimmed.match(/^\$verbosity(?:\s+(\S+))?$/i);
+    if (verbosityMatch) {
+      return verbosityMatch[1]
+        ? { type: 'verbosity', action: 'set', level: verbosityMatch[1] }
+        : { type: 'verbosity', action: 'status' };
+    }
+
+    const effortMatch = trimmed.match(/^\$effort(?:\s+(\S+))?$/i);
+    if (effortMatch) {
+      return effortMatch[1]
+        ? { type: 'effort', action: 'set', level: effortMatch[1] }
+        : { type: 'effort', action: 'status' };
+    }
+
+    return { type: 'info' };
+  }
+
+  /**
    * Known command keywords (including future commands)
    */
   private static readonly COMMAND_KEYWORDS = new Set([
+    // Admin commands
+    'accept', 'deny', 'users', 'config',
+    // Token management
+    'cct', 'set_cct', 'nextcct',
     // Working directory
     'cwd',
     // MCP
     'mcp', 'servers',
     // Permissions
     'bypass',
-    // Persona & Model
-    'persona', 'model',
+    // Persona & Model & Verbosity
+    'persona', 'model', 'verbosity',
     // Sessions
-    'sessions', 'terminate', 'kill', 'end', 'new', 'context', 'renew', 'close', 'link',
+    'sessions', 'terminate', 'kill', 'end', 'new', 'onboarding', 'context', 'renew', 'close', 'link',
     // Credentials
     'restore', 'credentials',
     // Help
     'help', 'commands',
+    // Marketplace & Plugins
+    'marketplace', 'plugins',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
   ]);
@@ -235,6 +535,11 @@ export class CommandParser {
   static isPotentialCommand(text: string): { isPotential: boolean; keyword?: string } {
     const trimmed = text.trim().toLowerCase();
     const firstWord = trimmed.split(/\s+/)[0];
+
+    // Starts with $ - session command
+    if (trimmed.startsWith('$')) {
+      return { isPotential: true, keyword: firstWord };
+    }
 
     // Starts with slash - likely a command attempt
     if (trimmed.startsWith('/')) {
@@ -268,6 +573,7 @@ export class CommandParser {
       '• `close` or `/close` - Close current thread\'s session',
       '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
       '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
+      '• `onboarding` or `/onboarding` - Run onboarding workflow anytime',
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '',
@@ -290,10 +596,44 @@ export class CommandParser {
       '• `persona list` or `/persona list` - List available personas',
       '• `persona set <name>` or `/persona set <name>` - Set persona',
       '',
-      '*Model:*',
-      '• `model` or `/model` - Show current default model',
-      '• `model list` or `/model list` - List available models',
-      '• `model <name>` or `/model <name>` - Set default model (e.g., `model opus-4.5`)',
+      '*Model & Verbosity:*',
+      '• `model` - Show/set default model (persists across sessions)',
+      '• `model <name>` - Set default model (e.g., `model opus`)',
+      '• `model list` - List available models',
+      '• `verbosity` - Show current log verbosity',
+      '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
+      '',
+      '*LLM Chat Config:*',
+      '• `show llm_chat` - Show current llm_chat model configuration',
+      '• `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
+      '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
+      '• `reset llm_chat` - Reset llm_chat config to defaults',
+      '',
+      '*Session Settings ($ prefix):*',
+      '• `$` - Show current session info (model, effort, verbosity, context, etc.)',
+      '• `$model` - Show session model',
+      '• `$model <name>` - Change model for this session only',
+      '• `$effort` - Show session effort level',
+      '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
+      '• `$verbosity` - Show session verbosity',
+      '• `$verbosity <level>` - Change verbosity for this session only',
+      '',
+      '*Marketplace:*',
+      '• `marketplace` or `/marketplace` - Show registered marketplaces',
+      '• `marketplace add owner/repo` - Add a marketplace from GitHub repo',
+      '• `marketplace add owner/repo --name custom` - Add with custom name',
+      '• `marketplace add owner/repo --ref branch` - Add with specific git ref',
+      '• `marketplace remove name` - Remove a marketplace by name',
+      '',
+      '*Plugins:*',
+      '• `plugins` or `/plugins` - Show installed plugins',
+      '• `plugins add pluginName@marketplaceName` - Install a plugin',
+      '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
+      '',
+      '*Token Management (Admin):*',
+      '• `cct` - Show OAuth token pool status',
+      '• `set_cct <name>` - Switch active token (e.g., `set_cct cct2`)',
+      '• `nextcct` - Rotate to next available token',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',

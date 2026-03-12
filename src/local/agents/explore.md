@@ -7,8 +7,8 @@ tools:
   - Glob
   - TodoWrite
   - AskUserQuestion
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini
-  - mcp__plugin_ohmyclaude_gemini-as-mcp__gemini-reply
+  - mcp__llm__chat
+  - mcp__llm__chat-reply
 color: "#00CED1"
 ---
 
@@ -16,9 +16,9 @@ color: "#00CED1"
 You are Explorer gateway. Apply the Explore persona with MCP call.
 
 {
-    "mcp": "mcp__plugin_ohmyclaude_gemini-as-mcp__gemini",
+    "mcp": "mcp__llm__chat",
     "arguments":  {
-        model: "gemini-3-pro-preview"
+        model: "gemini"
         prompt: explore-persona.md + questions
     }
 }

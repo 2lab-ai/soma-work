@@ -9,6 +9,7 @@
 2. `mcp__jira__getJiraIssue`로 이슈 상세 조회
 3. 관련 repo 추측 및 소스 코드 분석
 4. 구현 방향 브레인스토밍
+5. 세션 링크(`issue`, `pr`)를 확인하고 결과에 자동 반영
 
 ## 작업 프로세스
 
@@ -26,6 +27,12 @@
 - 가능한 구현 접근 방식 2-3개 제시
 - 각 접근 방식의 장단점 분석
 - 코드 레벨에서 어떻게 변경되는지 구체적으로 설명
+
+### 4. 다음 단계 선택 준비
+- 분석이 끝나면 "새 세션에서 ..." 문장만 남기지 말고 `UIAskUserQuestion`으로 즉시 다음 행동을 선택받는다.
+- 질문에는 현재 세션 링크 정보를 포함한다.
+  - issue 링크가 있으면 반드시 포함
+  - 이미 연결된 PR 링크가 있으면 함께 포함
 
 ## 출력 형식
 
@@ -66,7 +73,36 @@
 
 ## 🔄 다음 단계 안내
 
-브레인스토밍 완료 후, 유저에게 다음 단계를 안내:
-- **계획 수립**: "이 이슈의 Implementation Spec을 작성하려면 새 세션에서 `plan` + 이슈 링크를 입력하세요."
-- **바로 구현**: "바로 PR을 만들려면 새 세션에서 `fix` + 이슈 링크를 입력하세요."
-- 이슈 링크가 세션에 연결되지 않았다면: "`link issue <url>` 명령으로 이슈를 세션에 연결할 수 있습니다."
+브레인스토밍 완료 후, 먼저 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+```json
+{
+  "type": "session_links",
+  "issue": "Jira 이슈 URL",
+  "pr": "연결된 PR URL (있을 때만)"
+}
+```
+
+그 다음 `UIAskUserQuestion`으로 다음 단계를 선택받는다:
+```json
+{
+  "type": "UIAskUserQuestion",
+  "question": "다음 단계로 무엇을 진행할까요? (연결된 링크: issue=<Jira URL>, pr=<PR URL 또는 없음>)",
+  "options": [
+    {
+      "label": "Implementation Spec 작성 (권장)",
+      "value": "plan",
+      "description": "jira-planning 워크플로우로 구현 계획을 먼저 확정"
+    },
+    {
+      "label": "바로 구현 시작",
+      "value": "fix",
+      "description": "jira-create-pr 워크플로우로 PR 생성/구현 진행"
+    },
+    {
+      "label": "여기서 종료",
+      "value": "close",
+      "description": "브레인스토밍 결과만 남기고 세션 종료"
+    }
+  ]
+}
+```

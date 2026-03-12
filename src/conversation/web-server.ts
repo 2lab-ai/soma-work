@@ -1,26 +1,85 @@
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, {
+  FastifyInstance,
+  FastifyRequest,
+  FastifyReply,
+  InjectOptions,
+  LightMyRequestResponse,
+} from 'fastify';
 import { Logger } from '../logger';
 import { config } from '../config';
+import { IS_DEV } from '../env-paths';
 import { getConversation, listConversations, getTurnRawContent } from './recorder';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { ConversationTurn } from './types';
 
 const logger = new Logger('ConversationWebServer');
 
-let server: FastifyInstance | null = null;
+/**
+ * Validate Bearer token from Authorization header
+ */
+function validateAuthToken(request: FastifyRequest): boolean {
+  const token = config.conversation.viewerToken;
+
+  // If no token is configured, auth is disabled (allow all)
+  if (!token) {
+    return true;
+  }
+
+  const authHeader = request.headers.authorization;
+  if (!authHeader) {
+    return false;
+  }
+
+  // Support both "Bearer <token>" and raw token
+  const providedToken = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : authHeader;
+
+  return providedToken === token;
+}
 
 /**
- * Get the viewer port from config (default: 3000)
+ * Auth middleware - applied to routes that require authentication
+ */
+async function authMiddleware(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  if (!validateAuthToken(request)) {
+    reply.status(401).send({
+      error: 'Unauthorized',
+      message: 'Valid Authorization header required',
+    });
+    return;
+  }
+}
+
+let server: FastifyInstance | null = null;
+let activePort: number | null = null;
+
+const DEFAULT_PORT_MAIN = 3000;
+const DEFAULT_PORT_DEV = 33000;
+const MAX_PORT_RETRIES = 10;
+
+type InjectRequest = InjectOptions | string;
+type InjectResponse = LightMyRequestResponse;
+
+interface StartWebServerOptions {
+  listen?: boolean;
+}
+
+/**
+ * Get the viewer port from config (default: 3000 for main, 33000 for dev)
  */
 function getPort(): number {
-  return config.conversation.viewerPort || 3000;
+  return config.conversation.viewerPort || (IS_DEV ? DEFAULT_PORT_DEV : DEFAULT_PORT_MAIN);
 }
 
 /**
  * Get the public base URL for conversation viewer
  */
 export function getViewerBaseUrl(): string {
-  return config.conversation.viewerUrl || `http://localhost:${getPort()}`;
+  return config.conversation.viewerUrl || `http://localhost:${activePort || getPort()}`;
 }
 
 /**
@@ -33,7 +92,7 @@ export function getConversationUrl(conversationId: string): string {
 /**
  * Start the conversation viewer web server
  */
-export async function startWebServer(): Promise<void> {
+export async function startWebServer(options: StartWebServerOptions = {}): Promise<void> {
   if (server) {
     logger.warn('Web server already running');
     return;
@@ -41,10 +100,10 @@ export async function startWebServer(): Promise<void> {
 
   server = Fastify({ logger: false });
 
-  // ---- HTML Routes ----
+  // ---- HTML Routes (require auth when token is configured) ----
 
   // Conversation list page
-  server.get('/conversations', async (_request, reply) => {
+  server.get('/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
     try {
       const conversations = await listConversations();
       const html = renderConversationListPage(conversations);
@@ -56,7 +115,7 @@ export async function startWebServer(): Promise<void> {
   });
 
   // Conversation detail page
-  server.get<{ Params: { id: string } }>('/conversations/:id', async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const record = await getConversation(request.params.id);
       if (!record) {
@@ -71,10 +130,10 @@ export async function startWebServer(): Promise<void> {
     }
   });
 
-  // ---- JSON API Routes ----
+  // ---- JSON API Routes (require auth when token is configured) ----
 
   // List conversations (JSON)
-  server.get('/api/conversations', async (_request, reply) => {
+  server.get('/api/conversations', { preHandler: [authMiddleware] }, async (_request, reply) => {
     try {
       const conversations = await listConversations();
       reply.send({ conversations });
@@ -85,7 +144,7 @@ export async function startWebServer(): Promise<void> {
   });
 
   // Get conversation detail (JSON)
-  server.get<{ Params: { id: string } }>('/api/conversations/:id', async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/api/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const record = await getConversation(request.params.id);
       if (!record) {
@@ -119,6 +178,7 @@ export async function startWebServer(): Promise<void> {
   // Get raw content for a specific turn (lazy load)
   server.get<{ Params: { id: string; turnId: string } }>(
     '/api/conversations/:id/turns/:turnId/raw',
+    { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
         const raw = await getTurnRawContent(request.params.id, request.params.turnId);
@@ -137,6 +197,7 @@ export async function startWebServer(): Promise<void> {
   // Export selected turns as markdown
   server.post<{ Params: { id: string }; Body: { turnIds: string[] } }>(
     '/api/conversations/:id/export',
+    { preHandler: [authMiddleware] },
     async (request, reply) => {
       try {
         const record = await getConversation(request.params.id);
@@ -169,16 +230,37 @@ export async function startWebServer(): Promise<void> {
     reply.redirect('/conversations');
   });
 
+  if (options.listen === false) {
+    await server.ready();
+    logger.info('Conversation viewer initialized without network listener');
+    return;
+  }
+
   // Start listening — bind to localhost by default for security
-  const port = getPort();
+  // Retry with port+1 on EADDRINUSE
+  const basePort = getPort();
   const host = config.conversation.viewerHost;
-  try {
-    await server.listen({ port, host });
-    logger.info(`Conversation viewer started on ${host}:${port}`);
-    logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
-  } catch (error) {
-    logger.error('Failed to start conversation web server', error);
-    throw error;
+  for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
+    const port = basePort + attempt;
+    try {
+      await server.listen({ port, host });
+      activePort = port;
+      logger.info(`Conversation viewer started on ${host}:${port}`);
+      logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
+      if (config.conversation.viewerToken) {
+        logger.info('Authentication enabled (CONVERSATION_VIEWER_TOKEN set)');
+      } else {
+        logger.warn('Authentication disabled (CONVERSATION_VIEWER_TOKEN not set)');
+      }
+      return;
+    } catch (error: any) {
+      if (error.code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
+        logger.warn(`Port ${port} in use, trying ${port + 1}...`);
+        continue;
+      }
+      logger.error('Failed to start conversation web server', error);
+      throw error;
+    }
   }
 }
 
@@ -189,8 +271,20 @@ export async function stopWebServer(): Promise<void> {
   if (server) {
     await server.close();
     server = null;
+    activePort = null;
     logger.info('Conversation web server stopped');
   }
+}
+
+/**
+ * Inject an in-process HTTP request (for tests and internal callers)
+ */
+export async function injectWebServer(request: InjectRequest): Promise<InjectResponse> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+
+  return server.inject(request);
 }
 
 /**

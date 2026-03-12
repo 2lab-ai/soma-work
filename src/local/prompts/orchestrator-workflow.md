@@ -102,11 +102,11 @@ Task({
 
 ## MCP = Tools (NOT Agents!)
 
-MCP tools (`mcp__plugin_oh-my-claude_*`) are **raw tool calls** to external models.
+MCP tools (`mcp__llm__*`) are **raw tool calls** to external models.
 
 ```typescript
 // ❌ WRONG - Do NOT call MCP directly for normal work
-mcp__plugin_oh-my-claude_gpt-as-mcp__codex({ prompt: "..." })
+mcp__llm__chat({ prompt: "..." })
 
 // ✅ CORRECT - Use subagent instead
 Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
@@ -118,8 +118,8 @@ Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
 
 ```typescript
 // Phase 3 ONLY - parallel model review
-mcp__plugin_oh-my-claude_gpt-as-mcp__codex({ model: "gpt-5.2", ... })
-mcp__plugin_oh-my-claude_gemini-as-mcp__gemini({ model: "gemini-3-pro", ... })
+mcp__llm__chat({ model: "codex", ... })
+mcp__llm__chat({ model: "gemini", ... })
 Task({ subagent_type: "oh-my-claude:reviewer", ... })
 ```
 
@@ -338,8 +338,8 @@ TodoWrite({
 
 ```typescript
 // ❌ WRONG (anywhere except Review Phase)
-mcp__plugin_oh-my-claude_gpt-as-mcp__codex({ prompt: "..." })
-mcp__plugin_oh-my-claude_gemini-as-mcp__gemini({ prompt: "..." })
+mcp__llm__chat({ model: "codex", prompt: "..." })
+mcp__llm__chat({ model: "gemini", prompt: "..." })
 
 // ✅ CORRECT (always)
 Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })

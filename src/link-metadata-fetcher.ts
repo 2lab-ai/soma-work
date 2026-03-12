@@ -5,6 +5,7 @@
 
 import { SessionLink } from './types';
 import { config } from './config';
+import { getGitHubAppAuth } from './github-auth';
 import { Logger } from './logger';
 
 const logger = new Logger('LinkMetadataFetcher');
@@ -32,6 +33,25 @@ const STATUS_EMOJI: Record<string, string> = {
   // GitHub issue statuses
   'issue:open': '🟢', 'issue:closed': '✅',
 };
+
+/**
+ * Resolve a GitHub token: PAT from env, then GitHub App installation token as fallback.
+ */
+async function getGitHubToken(): Promise<string | null> {
+  if (config.github.token) return config.github.token;
+
+  const appAuth = getGitHubAppAuth();
+  if (appAuth) {
+    try {
+      return await appAuth.getInstallationToken();
+    } catch (error) {
+      logger.warn('Failed to get GitHub App installation token', { error: (error as Error).message });
+      return null;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Get status emoji for a normalized status string
@@ -70,7 +90,7 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
 
     return { title: truncatedTitle || link.title, status: metadata.status || link.status };
   } catch (error) {
-    logger.debug('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
+    logger.warn('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
     // Return existing data on failure (graceful degradation)
     return { title: link.title, status: link.status };
   }
@@ -89,7 +109,7 @@ export async function fetchLinkTitle(link: SessionLink): Promise<string | undefi
  * Fetch GitHub PR or issue metadata (title + status) from API.
  */
 async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string; status?: string }> {
-  const token = config.github.token;
+  const token = await getGitHubToken();
   if (!token) return {};
 
   const match = link.url.match(/github\.com\/([^/]+)\/([^/]+)\/(pull|issues)\/(\d+)/);
@@ -220,7 +240,7 @@ export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransi
       },
     }));
   } catch (error) {
-    logger.debug('Failed to fetch Jira transitions', { issueKey, error: (error as Error).message });
+    logger.warn('Failed to fetch Jira transitions', { issueKey, error: (error as Error).message });
     return [];
   }
 }
@@ -243,7 +263,7 @@ export interface GitHubPRDetails {
  * Returns undefined on failure.
  */
 export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRDetails | undefined> {
-  const token = config.github.token;
+  const token = await getGitHubToken();
   if (!token) return undefined;
 
   const prInfo = extractGitHubPRInfo(link.url);
@@ -283,7 +303,7 @@ export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRD
       base: data.base?.ref || 'unknown',
     };
   } catch (error) {
-    logger.debug('Failed to fetch GitHub PR details', { url: link.url, error: (error as Error).message });
+    logger.warn('Failed to fetch GitHub PR details', { url: link.url, error: (error as Error).message });
     return undefined;
   }
 }
@@ -299,6 +319,131 @@ export function isPRMergeable(details: GitHubPRDetails): boolean {
     details.mergeable === true &&
     details.mergeableState === 'clean'
   );
+}
+
+/**
+ * Merge a GitHub PR via the API.
+ * After successful merge, deletes the source branch.
+ */
+export async function mergeGitHubPR(
+  prUrl: string,
+  mergeMethod: 'squash' | 'merge' | 'rebase' = 'squash'
+): Promise<{ success: boolean; message: string }> {
+  const token = await getGitHubToken();
+  if (!token) return { success: false, message: 'GitHub 인증 토큰을 찾을 수 없습니다.' };
+
+  const prInfo = extractGitHubPRInfo(prUrl);
+  if (!prInfo) return { success: false, message: 'PR URL을 파싱할 수 없습니다.' };
+
+  const headers = {
+    Authorization: `token ${token}`,
+    Accept: 'application/vnd.github.v3+json',
+    'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    // Fetch PR to get source branch
+    const prResponse = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`,
+      { headers }
+    );
+    if (!prResponse.ok) {
+      return { success: false, message: `PR 조회 실패: ${prResponse.status}` };
+    }
+    const prData = await prResponse.json() as { head?: { ref?: string }; title?: string };
+    const sourceBranch = prData.head?.ref;
+
+    // Merge
+    const mergeResponse = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/merge`,
+      {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ merge_method: mergeMethod }),
+      }
+    );
+
+    if (!mergeResponse.ok) {
+      const errorData = await mergeResponse.json().catch(() => ({})) as { message?: string };
+      return { success: false, message: `머지 실패: ${(errorData as any).message || mergeResponse.status}` };
+    }
+
+    // Delete source branch
+    if (sourceBranch) {
+      try {
+        await fetch(
+          `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/git/refs/heads/${sourceBranch}`,
+          { method: 'DELETE', headers }
+        );
+      } catch (error) {
+        logger.warn('Failed to delete source branch after merge', { sourceBranch, error: (error as Error).message });
+      }
+    }
+
+    // Invalidate cache for this PR
+    metadataCache.delete(prUrl);
+
+    return { success: true, message: `PR #${prInfo.number} 머지 완료 (${mergeMethod})` };
+  } catch (error) {
+    logger.error('Error merging GitHub PR', { prUrl, error: (error as Error).message });
+    return { success: false, message: `머지 중 오류: ${(error as Error).message}` };
+  }
+}
+
+/**
+ * Fetch GitHub PR review status (approved / changes_requested / pending).
+ * Evaluates the latest review per user to determine the aggregate state.
+ */
+export async function fetchGitHubPRReviewStatus(
+  link: SessionLink
+): Promise<'approved' | 'changes_requested' | 'pending' | undefined> {
+  const token = await getGitHubToken();
+  if (!token) return undefined;
+
+  const prInfo = extractGitHubPRInfo(link.url);
+  if (!prInfo) return undefined;
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/reviews`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+      }
+    );
+
+    if (!response.ok) return undefined;
+
+    const reviews = await response.json() as Array<{
+      user?: { login?: string };
+      state?: string;
+      submitted_at?: string;
+    }>;
+
+    if (!reviews || reviews.length === 0) return 'pending';
+
+    // Get the latest review per user
+    const latestByUser = new Map<string, string>();
+    for (const review of reviews) {
+      const login = review.user?.login;
+      const state = review.state;
+      if (!login || !state) continue;
+      // reviews are returned chronologically, so later entries overwrite
+      latestByUser.set(login, state);
+    }
+
+    const states = [...latestByUser.values()];
+    if (states.some(s => s === 'CHANGES_REQUESTED')) return 'changes_requested';
+    if (states.some(s => s === 'APPROVED')) return 'approved';
+    return 'pending';
+  } catch (error) {
+    logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
+    return undefined;
+  }
 }
 
 function truncateTitle(title: string, maxLen: number): string {
