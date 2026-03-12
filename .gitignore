@@ -19,6 +19,8 @@ config.dev.json
 .system.prompt.dev
 .setup-state
 .setup-secrets.tmp
+.new-deploy-state
+.github-private-key.pem
 
 # Build output
 dist/
