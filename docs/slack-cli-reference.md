@@ -373,11 +373,16 @@ SLACK_SIGNING_SECRET=abc123...
 
 ### 새 환경 배포 흐름
 
+현재 브랜치 정책:
+
+- 개발 배포: `main` 브랜치 → `/opt/soma-work/dev`
+- 프로덕션 배포: `deploy/prod` 브랜치 → `/opt/soma-work/main`
+
 ```bash
 # 1. 서버에서 Slack CLI 로그인
 slack login
 
-# 2. 배포 디렉토리에서 초기화
+# 2. 개발 배포 디렉토리에서 초기화
 cd /opt/soma-work/dev
 npm install --save-dev @slack/cli-hooks
 slack init
@@ -393,14 +398,22 @@ slack run
 slack app settings
 # → 웹에서 토큰 3개 복사 → .env에 기록
 
-# 6. 프로덕션 서비스 시작
+# 6. 개발 서비스 시작
 ./service.sh dev install
 ```
+
+프로덕션 환경을 초기화할 때는 `/opt/soma-work/main`에서 같은 절차를 실행하고,
+코드 배포 소스 브랜치는 `deploy/prod`를 사용한다.
 
 ### 기존 앱 연결 (이미 웹에서 만든 경우)
 
 ```bash
+# 개발 환경
 cd /opt/soma-work/dev
+slack app link --team T086X6RS41W --app A0123456789 --environment deployed
+
+# 프로덕션 환경
+cd /opt/soma-work/main
 slack app link --team T086X6RS41W --app A0123456789 --environment deployed
 ```
 
