@@ -303,19 +303,12 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
       [],
       say
     );
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).not.toHaveBeenCalled();
-    expect(deps.statusReporter.updateStatusDirect).toHaveBeenCalledWith(
-      'C123',
-      'status123',
-      'cancelled'
-    );
-    expect(deps.statusReporter.getStatusEmoji).toHaveBeenCalledWith('cancelled');
   });
 
   it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
@@ -330,7 +323,6 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
       [],
       say
     );
@@ -353,7 +345,6 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
       [],
       say
     );
@@ -376,7 +367,6 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
       [],
       say
     );
@@ -399,7 +389,6 @@ describe('Abort handling', () => {
       'C123:thread123',
       'C123',
       'thread123',
-      'status123',
       [],
       say
     );
