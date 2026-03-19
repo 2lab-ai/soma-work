@@ -35,6 +35,18 @@ const RENDER_DEBOUNCE_MS = 500;
 const PR_CACHE_TTL_MS = 60_000;
 
 // ---------------------------------------------------------------------------
+// Per-session render state (debounce, coalescing, PR cache)
+// ---------------------------------------------------------------------------
+
+interface SessionRenderState {
+  pendingTimer: ReturnType<typeof setTimeout> | null;
+  inflightPromise: Promise<void> | null;
+  pendingSession: ConversationSession | null;
+  pendingForce: boolean;
+  prCache: PRCacheEntry | null;
+}
+
+// ---------------------------------------------------------------------------
 // ThreadSurface
 // ---------------------------------------------------------------------------
 
@@ -43,6 +55,9 @@ const PR_CACHE_TTL_MS = 60_000;
  *
  * Owns exactly one Slack message per session and is the *only* code path
  * that calls `chat.update` on that message.
+ *
+ * Debounce/coalescing state is tracked **per sessionKey** so that concurrent
+ * sessions never interfere with each other's render pipeline.
  *
  * Layout (blocks):
  *   Header section  — owner, title, workflow, links
@@ -54,16 +69,25 @@ const PR_CACHE_TTL_MS = 60_000;
 export class ThreadSurface {
   private logger = new Logger('ThreadSurface');
 
-  // Debounce / coalescing state
-  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
-  private inflightPromise: Promise<void> | null = null;
-  private pendingSession: ConversationSession | null = null;
-  private pendingForce = false;
-
-  // PR status cache (per-surface instance ≈ per-session)
-  private prCache: PRCacheEntry | null = null;
+  // Per-session render state keyed by sessionKey
+  private sessions = new Map<string, SessionRenderState>();
 
   constructor(private deps: ThreadSurfaceDeps) {}
+
+  private getState(sessionKey: string): SessionRenderState {
+    let state = this.sessions.get(sessionKey);
+    if (!state) {
+      state = {
+        pendingTimer: null,
+        inflightPromise: null,
+        pendingSession: null,
+        pendingForce: false,
+        prCache: null,
+      };
+      this.sessions.set(sessionKey, state);
+    }
+    return state;
+  }
 
   // =========================================================================
   // Public API
@@ -91,6 +115,13 @@ export class ThreadSurface {
 
     // Render initial state (force to ensure message is created)
     await this.doRender(session, sessionKey, true);
+
+    // Populate PR cache after initial render (non-blocking)
+    if (session.links?.pr) {
+      this.refreshPRStatus(session, sessionKey)
+        .then(() => this.requestRender(session, sessionKey))
+        .catch(() => {});
+    }
   }
 
   /**
@@ -196,6 +227,13 @@ export class ThreadSurface {
       await this.initialize(session, sessionKey);
       return;
     }
+    // Refresh PR cache if stale (non-blocking for render)
+    if (session.links?.pr) {
+      const state = this.getState(sessionKey);
+      if (!state.prCache || Date.now() - state.prCache.fetchedAt >= PR_CACHE_TTL_MS) {
+        this.refreshPRStatus(session, sessionKey).catch(() => {});
+      }
+    }
     await this.requestRender(session, sessionKey);
   }
 
@@ -211,10 +249,11 @@ export class ThreadSurface {
   /**
    * Refresh the PR status cache (call from outside render path).
    */
-  async refreshPRStatus(session: ConversationSession): Promise<void> {
-    const entry = await this.fetchPRStatusEntry(session);
+  async refreshPRStatus(session: ConversationSession, sessionKey: string): Promise<void> {
+    const state = this.getState(sessionKey);
+    const entry = await this.fetchPRStatusEntry(session, state);
     if (entry) {
-      this.prCache = entry;
+      state.prCache = entry;
     }
   }
 
@@ -227,53 +266,56 @@ export class ThreadSurface {
     sessionKey: string,
     force: boolean,
   ): void {
-    // Always keep latest state
-    this.pendingSession = session;
-    this.pendingForce = this.pendingForce || force;
+    const rs = this.getState(sessionKey);
+
+    // Always keep latest state for this session
+    rs.pendingSession = session;
+    rs.pendingForce = rs.pendingForce || force;
 
     if (force) {
       // Force: cancel pending timer and execute immediately
-      if (this.pendingTimer) {
-        clearTimeout(this.pendingTimer);
-        this.pendingTimer = null;
+      if (rs.pendingTimer) {
+        clearTimeout(rs.pendingTimer);
+        rs.pendingTimer = null;
       }
       this.flushRender(sessionKey);
       return;
     }
 
     // Debounced: reset timer
-    if (this.pendingTimer) {
-      clearTimeout(this.pendingTimer);
+    if (rs.pendingTimer) {
+      clearTimeout(rs.pendingTimer);
     }
-    this.pendingTimer = setTimeout(() => {
-      this.pendingTimer = null;
+    rs.pendingTimer = setTimeout(() => {
+      rs.pendingTimer = null;
       this.flushRender(sessionKey);
     }, RENDER_DEBOUNCE_MS);
   }
 
   private flushRender(sessionKey: string): void {
-    const session = this.pendingSession;
-    const force = this.pendingForce;
-    this.pendingSession = null;
-    this.pendingForce = false;
+    const rs = this.getState(sessionKey);
+    const session = rs.pendingSession;
+    const force = rs.pendingForce;
+    rs.pendingSession = null;
+    rs.pendingForce = false;
 
     if (!session) return;
 
-    if (this.inflightPromise) {
-      // Another render in flight — re-queue so latest state wins
-      this.pendingSession = session;
-      this.pendingForce = force;
+    if (rs.inflightPromise) {
+      // Another render in flight for this session — re-queue so latest state wins
+      rs.pendingSession = session;
+      rs.pendingForce = force;
       return;
     }
 
-    this.inflightPromise = this.doRender(session, sessionKey, force)
+    rs.inflightPromise = this.doRender(session, sessionKey, force)
       .catch((err) =>
         this.logger.debug('Surface render error', { sessionKey, error: (err as Error).message }),
       )
       .finally(() => {
-        this.inflightPromise = null;
+        rs.inflightPromise = null;
         // If state accumulated while we were rendering, flush again
-        if (this.pendingSession) {
+        if (rs.pendingSession) {
           this.flushRender(sessionKey);
         }
       });
@@ -375,11 +417,11 @@ export class ThreadSurface {
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
 
-    // Read PR status from cache (never fetch in render path)
-    const prStatusInfo = this.prCache;
+    // Read PR status from per-session cache (never fetch in render path)
+    const prStatusInfo = this.getState(sessionKey).prCache;
 
     if (isClosed) {
-      return this.buildClosedBlocks(session, sessionKey, prStatusInfo);
+      return this.buildClosedBlocks(session, sessionKey);
     }
 
     const blocks: any[] = [];
@@ -428,8 +470,8 @@ export class ThreadSurface {
   private buildClosedBlocks(
     session: ConversationSession,
     sessionKey: string,
-    prStatusInfo: PRCacheEntry | null,
   ): any[] {
+    const prStatusInfo = this.getState(sessionKey).prCache;
     const blocks: any[] = [];
 
     // Header with closed flag
@@ -494,13 +536,14 @@ export class ThreadSurface {
 
   private async fetchPRStatusEntry(
     session: ConversationSession,
+    state: SessionRenderState,
   ): Promise<PRCacheEntry | null> {
     const prLink = session.links?.pr;
     if (!prLink || prLink.provider !== 'github') return null;
 
     // Use cache if fresh
-    if (this.prCache && Date.now() - this.prCache.fetchedAt < PR_CACHE_TTL_MS) {
-      return this.prCache;
+    if (state.prCache && Date.now() - state.prCache.fetchedAt < PR_CACHE_TTL_MS) {
+      return state.prCache;
     }
 
     try {
@@ -545,7 +588,7 @@ export class ThreadSurface {
    * Call this after link changes or on action button click.
    */
   async refreshAndRender(session: ConversationSession, sessionKey: string): Promise<void> {
-    await this.refreshPRStatus(session);
+    await this.refreshPRStatus(session, sessionKey);
     await this.requestRender(session, sessionKey, true);
   }
 }
