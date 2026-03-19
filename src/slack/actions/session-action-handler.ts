@@ -331,20 +331,27 @@ export class SessionActionHandler {
     }
 
     // Fallback: direct update (legacy path)
+    // In combined surface mode, the message contains header + panel blocks,
+    // so we must include both to avoid losing the header section.
     const channelId = session.channelId;
     if (session.actionPanel?.messageTs) {
       try {
+        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true });
         const panelPayload = ActionPanelBuilder.build({
           sessionKey,
           workflow: session.workflow,
           closed: true,
           contextRemainingPercent: this.getContextRemainingPercent(session),
         });
+        const combinedBlocks = [
+          ...(headerPayload.blocks || []),
+          ...panelPayload.blocks,
+        ];
         await this.ctx.slackApi.updateMessage(
           channelId,
           session.actionPanel.messageTs,
           panelPayload.text,
-          panelPayload.blocks
+          combinedBlocks
         );
       } catch (error) {
         this.logger.warn('Failed to update action panel as closed', { error });

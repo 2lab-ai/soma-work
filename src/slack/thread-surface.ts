@@ -43,6 +43,7 @@ interface SessionRenderState {
   inflightPromise: Promise<void> | null;
   pendingSession: ConversationSession | null;
   pendingForce: boolean;
+  pendingOverrides: { closed?: boolean } | null;
   prCache: PRCacheEntry | null;
 }
 
@@ -82,6 +83,7 @@ export class ThreadSurface {
         inflightPromise: null,
         pendingSession: null,
         pendingForce: false,
+        pendingOverrides: null,
         prCache: null,
       };
       this.sessions.set(sessionKey, state);
@@ -114,7 +116,7 @@ export class ThreadSurface {
     }
 
     // Render initial state (force to ensure message is created)
-    await this.doRender(session, sessionKey, true);
+    await this.renderViaFlush(session, sessionKey, true);
 
     // Populate PR cache after initial render (non-blocking)
     if (session.links?.pr) {
@@ -127,12 +129,13 @@ export class ThreadSurface {
   /**
    * Request a (debounced) re-render of the surface.
    * Multiple rapid calls coalesce into a single chat.update.
+   * Fire-and-forget — does not wait for the render to complete.
    */
-  async requestRender(
+  requestRender(
     session: ConversationSession,
     sessionKey: string,
     force = false,
-  ): Promise<void> {
+  ): void {
     this.scheduleRender(session, sessionKey, force);
   }
 
@@ -164,7 +167,7 @@ export class ThreadSurface {
     session.actionPanel.statusUpdatedAt = Date.now();
 
     try {
-      await this.requestRender(session, sessionKey);
+      await this.renderViaFlush(session, sessionKey, false);
     } catch (error) {
       this.logger.debug('Failed to update surface status', {
         sessionKey,
@@ -201,7 +204,12 @@ export class ThreadSurface {
       session.actionPanel.choiceMessageTs = sourceMessageTs;
     }
 
-    await this.doRender(session, sessionKey, true);
+    // Resolve permalink for the choice message (non-blocking for render)
+    if (sourceMessageTs) {
+      this.resolveChoicePermalink(session, sourceMessageTs).catch(() => {});
+    }
+
+    await this.renderViaFlush(session, sessionKey, true);
   }
 
   /**
@@ -216,7 +224,7 @@ export class ThreadSurface {
     session.actionPanel.choiceMessageTs = undefined;
     session.actionPanel.choiceMessageLink = undefined;
 
-    await this.doRender(session, sessionKey, true);
+    await this.renderViaFlush(session, sessionKey, true);
   }
 
   /**
@@ -234,16 +242,19 @@ export class ThreadSurface {
         this.refreshPRStatus(session, sessionKey).catch(() => {});
       }
     }
-    await this.requestRender(session, sessionKey);
+    await this.renderViaFlush(session, sessionKey, false);
   }
 
   /**
    * Render the final "closed" state.
+   * Routes through flushRender to respect single-in-flight guarantee.
    */
   async close(session: ConversationSession, sessionKey: string): Promise<void> {
     if (session.actionPanel) {
-      await this.doRender(session, sessionKey, true, { closed: true });
+      await this.renderViaFlush(session, sessionKey, true, { closed: true });
     }
+    // Clean up per-session state to prevent memory leak
+    this.cleanup(sessionKey);
   }
 
   /**
@@ -296,8 +307,10 @@ export class ThreadSurface {
     const rs = this.getState(sessionKey);
     const session = rs.pendingSession;
     const force = rs.pendingForce;
+    const overrides = rs.pendingOverrides;
     rs.pendingSession = null;
     rs.pendingForce = false;
+    rs.pendingOverrides = null;
 
     if (!session) return;
 
@@ -305,10 +318,11 @@ export class ThreadSurface {
       // Another render in flight for this session — re-queue so latest state wins
       rs.pendingSession = session;
       rs.pendingForce = force;
+      rs.pendingOverrides = overrides;
       return;
     }
 
-    rs.inflightPromise = this.doRender(session, sessionKey, force)
+    rs.inflightPromise = this.doRender(session, sessionKey, force, overrides ?? undefined)
       .catch((err) =>
         this.logger.debug('Surface render error', { sessionKey, error: (err as Error).message }),
       )
@@ -319,6 +333,61 @@ export class ThreadSurface {
           this.flushRender(sessionKey);
         }
       });
+  }
+
+  /**
+   * Route a render through flushRender and wait for completion.
+   * All public methods that need immediate, guaranteed rendering use this.
+   * This ensures the single-in-flight guarantee is always respected.
+   */
+  private async renderViaFlush(
+    session: ConversationSession,
+    sessionKey: string,
+    force: boolean,
+    overrides?: { closed?: boolean },
+  ): Promise<void> {
+    const rs = this.getState(sessionKey);
+
+    // Wait for any in-flight render to complete first
+    if (rs.inflightPromise) {
+      await rs.inflightPromise;
+    }
+
+    // Set pending state and overrides
+    rs.pendingSession = session;
+    rs.pendingForce = force;
+    if (overrides) {
+      rs.pendingOverrides = overrides;
+    }
+
+    // Cancel any pending debounce timer
+    if (rs.pendingTimer) {
+      clearTimeout(rs.pendingTimer);
+      rs.pendingTimer = null;
+    }
+
+    // Flush synchronously (starts the promise)
+    this.flushRender(sessionKey);
+
+    // Wait for the render we just started
+    if (rs.inflightPromise) {
+      await rs.inflightPromise;
+    }
+  }
+
+  /**
+   * Clean up per-session render state to prevent memory leak.
+   */
+  private cleanup(sessionKey: string): void {
+    const rs = this.sessions.get(sessionKey);
+    if (rs) {
+      if (rs.pendingTimer) {
+        clearTimeout(rs.pendingTimer);
+      }
+      rs.pendingSession = null;
+      rs.prCache = null;
+    }
+    this.sessions.delete(sessionKey);
   }
 
   // =========================================================================
@@ -337,6 +406,11 @@ export class ThreadSurface {
     if (!channelId) {
       this.logger.debug('Skipping surface render (no channel)', { sessionKey });
       return;
+    }
+
+    // Ensure choice permalink is resolved before building blocks
+    if (panelState.waitingForChoice && !panelState.choiceMessageLink && panelState.choiceMessageTs) {
+      await this.ensureChoiceMessageLink(panelState as NonNullable<ConversationSession['actionPanel']>, channelId);
     }
 
     // Build combined blocks
@@ -530,6 +604,47 @@ export class ThreadSurface {
     return [];
   }
 
+  /**
+   * Resolve a Slack permalink for the choice message and cache it.
+   * Called after attachChoice — non-blocking for the render path.
+   */
+  private async resolveChoicePermalink(
+    session: ConversationSession,
+    choiceMessageTs: string,
+  ): Promise<void> {
+    const channelId = session.actionPanel?.channelId || session.channelId;
+    if (!channelId || !choiceMessageTs) return;
+
+    try {
+      const permalink = await this.deps.slackApi.getPermalink(channelId, choiceMessageTs);
+      if (permalink && session.actionPanel) {
+        session.actionPanel.choiceMessageLink = permalink;
+      }
+    } catch (error) {
+      this.logger.debug('Failed to resolve choice permalink', { error });
+    }
+  }
+
+  /**
+   * Ensure choice message link is populated before render.
+   * Lazy resolution: only fetches if not already cached.
+   */
+  private async ensureChoiceMessageLink(
+    panelState: NonNullable<ConversationSession['actionPanel']>,
+    channelId: string,
+  ): Promise<string | undefined> {
+    if (!panelState.waitingForChoice) return undefined;
+    if (panelState.choiceMessageLink) return panelState.choiceMessageLink;
+    if (!panelState.choiceMessageTs) return undefined;
+
+    const permalink = await this.deps.slackApi.getPermalink(channelId, panelState.choiceMessageTs);
+    if (permalink) {
+      panelState.choiceMessageLink = permalink;
+      return permalink;
+    }
+    return undefined;
+  }
+
   // =========================================================================
   // PR Status (out-of-render-path)
   // =========================================================================
@@ -589,6 +704,6 @@ export class ThreadSurface {
    */
   async refreshAndRender(session: ConversationSession, sessionKey: string): Promise<void> {
     await this.refreshPRStatus(session, sessionKey);
-    await this.requestRender(session, sessionKey, true);
+    this.requestRender(session, sessionKey, true);
   }
 }
