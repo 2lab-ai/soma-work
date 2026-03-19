@@ -12,6 +12,7 @@ export { MessageFormatter } from './message-formatter';
 export { SlackApiHelper, MessageOptions } from './slack-api-helper';
 export { ActionPanelBuilder } from './action-panel-builder';
 export { ThreadPanel } from './thread-panel';
+export { ThreadSurface } from './thread-surface';
 export { ThreadHeaderBuilder } from './thread-header-builder';
 export { ReactionManager } from './reaction-manager';
 export { ContextWindowManager } from './context-window-manager';

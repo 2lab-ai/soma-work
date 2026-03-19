@@ -28,12 +28,21 @@ export class ThreadHeaderBuilder {
   }
 
   static build(data: ThreadHeaderData): ThreadHeaderPayload {
-    const title = data.title || data.links?.pr?.label || data.links?.issue?.label || 'Session';
+    // Prefer actual PR/issue title over short label (e.g. "Fix auth flow" over "PR #456")
+    const title = data.title
+      || data.links?.pr?.title || data.links?.issue?.title
+      || data.links?.pr?.label || data.links?.issue?.label
+      || 'Session';
     const workflow = data.workflow || 'default';
     const owner = data.ownerName || data.ownerId;
 
     // Header: "OwnerName — Title" (owner first, prominently visible)
-    const headerText = owner ? `${owner} — ${title}` : title;
+    // Slack header blocks cap plain_text at 150 characters
+    const MAX_HEADER_LEN = 150;
+    const rawHeaderText = owner ? `${owner} — ${title}` : title;
+    const headerText = rawHeaderText.length > MAX_HEADER_LEN
+      ? rawHeaderText.slice(0, MAX_HEADER_LEN - 1) + '…'
+      : rawHeaderText;
     const blocks: any[] = [
       {
         type: 'header',
