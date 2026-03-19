@@ -17,6 +17,7 @@ const createMockSlackApi = () => ({
 
 const createMockClaudeHandler = () => ({
   getSessionByKey: vi.fn().mockReturnValue(null),
+  getSessionKey: vi.fn().mockImplementation((ch: string, ts?: string) => `${ch}:${ts ?? ''}`),
   terminateSession: vi.fn().mockReturnValue(true),
 });
 

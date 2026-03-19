@@ -331,9 +331,9 @@ describe('ThreadPanel', () => {
     expect(session.actionPanel?.choiceMessageTs).toBe('thread-choice-ts');
   });
 
-  it('setStatus updates panel and thread header for bot-initiated threads', async () => {
+  it('setStatus updates combined surface for bot-initiated threads', async () => {
     const slackApi = {
-      postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }),
+      postMessage: vi.fn().mockResolvedValue({ ts: '100.200' }),
       updateMessage: vi.fn().mockResolvedValue(undefined),
       getPermalink: vi.fn().mockResolvedValue(null),
     };
@@ -350,6 +350,7 @@ describe('ThreadPanel', () => {
       requestCoordinator: requestCoordinator as any,
     });
 
+    // In combined surface mode, bot-initiated threads use threadRootTs as the single surface message
     const session: ConversationSession = {
       ownerId: 'U123',
       userId: 'U123',
@@ -363,7 +364,7 @@ describe('ThreadPanel', () => {
       actionPanel: {
         channelId: 'C123',
         userId: 'U123',
-        messageTs: '123.456',
+        messageTs: '100.200',
       },
     };
 
@@ -372,11 +373,8 @@ describe('ThreadPanel', () => {
       activeTool: 'Edit',
     });
 
-    // Should have called updateMessage twice: once for panel, once for header
-    expect(slackApi.updateMessage).toHaveBeenCalledTimes(2);
-    // Panel update
-    expect(slackApi.updateMessage.mock.calls[0][1]).toBe('123.456');
-    // Header update
-    expect(slackApi.updateMessage.mock.calls[1][1]).toBe('100.200');
+    // Combined surface: single updateMessage call containing header + panel blocks
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage.mock.calls[0][1]).toBe('100.200');
   });
 });
