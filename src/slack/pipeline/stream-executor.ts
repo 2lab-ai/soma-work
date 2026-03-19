@@ -152,7 +152,6 @@ export class StreamExecutor {
       say,
     } = params;
 
-    let statusMessageTs: string | undefined;
     let toolChoicePending = false;
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
@@ -196,18 +195,8 @@ export class StreamExecutor {
         isOwner: session.ownerId === user,
       });
 
-      // Send initial status message (gated by verbosity)
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE)) {
-        statusMessageTs = await this.deps.statusReporter.createStatusMessage(
-          channel,
-          threadTs,
-          sessionKey,
-          'thinking',
-          vtag(OutputFlag.STATUS_MESSAGE)
-        );
-      }
-
       // Add thinking reaction + native spinner (gated by verbosity)
+      // (Status message removed — progress is now shown in ThreadSurface)
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
           sessionKey,
@@ -249,9 +238,6 @@ export class StreamExecutor {
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
         onToolUse: async (toolUses, ctx) => {
-          if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-            await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'working', vtag(OutputFlag.STATUS_MESSAGE));
-          }
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
               sessionKey,
@@ -442,12 +428,9 @@ export class StreamExecutor {
         throw abortError;
       }
 
-      // Update status and reaction based on whether user choice is pending
+      // Update reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
-      if (isOutputEnabled(OutputFlag.STATUS_MESSAGE) && statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, finalStatus, vtag(OutputFlag.STATUS_MESSAGE));
-      }
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
           sessionKey,
@@ -534,7 +517,6 @@ export class StreamExecutor {
         sessionKey,
         channel,
         threadTs,
-        statusMessageTs,
         processedFiles,
         say,
         requestAborted
@@ -551,7 +533,6 @@ export class StreamExecutor {
     sessionKey: string,
     channel: string,
     threadTs: string,
-    statusMessageTs: string | undefined,
     processedFiles: ProcessedFile[],
     say: SayFn,
     requestAborted: boolean = false
@@ -596,9 +577,6 @@ export class StreamExecutor {
         }
       }
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'error');
-      }
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('error')
@@ -619,9 +597,6 @@ export class StreamExecutor {
         waitingForChoice: false,
       });
 
-      if (statusMessageTs) {
-        await this.deps.statusReporter.updateStatusDirect(channel, statusMessageTs, 'cancelled');
-      }
       await this.deps.reactionManager.updateReaction(
         sessionKey,
         this.deps.statusReporter.getStatusEmoji('cancelled')

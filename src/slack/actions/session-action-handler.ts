@@ -4,6 +4,7 @@ import { ReactionManager } from '../reaction-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { ActionPanelBuilder } from '../action-panel-builder';
+import { ThreadPanel } from '../thread-panel';
 import { ClaudeHandler } from '../../claude-handler';
 import { ConversationSession } from '../../types';
 import { Logger } from '../../logger';
@@ -15,6 +16,7 @@ interface SessionActionContext {
   sessionManager: SessionUiManager;
   reactionManager?: ReactionManager;
   requestCoordinator?: RequestCoordinator;
+  threadPanel?: ThreadPanel;
 }
 
 /**
@@ -309,32 +311,31 @@ export class SessionActionHandler {
   }
 
   /**
-   * Update thread header and action panel to show closed state.
-   * Errors are logged but do not block session termination.
+   * Update thread surface to show closed state.
+   * Delegates to ThreadPanel (→ ThreadSurface) for single-writer rendering.
+   * Falls back to direct update if threadPanel is unavailable.
    */
   private async updateSessionUiAsClosed(session: ConversationSession): Promise<void> {
-    const channelId = session.channelId;
+    const threadTs = session.threadRootTs || session.threadTs;
+    const sessionKey = threadTs
+      ? this.ctx.claudeHandler.getSessionKey(session.channelId, threadTs)
+      : '';
 
-    // Update thread header (bot-initiated threads only)
-    if (session.threadRootTs) {
+    if (this.ctx.threadPanel && sessionKey) {
       try {
-        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true });
-        await this.ctx.slackApi.updateMessage(
-          channelId,
-          session.threadRootTs,
-          headerPayload.text,
-          headerPayload.blocks
-        );
+        await this.ctx.threadPanel.close(session, sessionKey);
+        return;
       } catch (error) {
-        this.logger.warn('Failed to update thread header as closed', { error });
+        this.logger.warn('ThreadPanel.close() failed, falling back to direct update', { error });
       }
     }
 
-    // Update action panel
+    // Fallback: direct update (legacy path)
+    const channelId = session.channelId;
     if (session.actionPanel?.messageTs) {
       try {
         const panelPayload = ActionPanelBuilder.build({
-          sessionKey: '',
+          sessionKey,
           workflow: session.workflow,
           closed: true,
           contextRemainingPercent: this.getContextRemainingPercent(session),
