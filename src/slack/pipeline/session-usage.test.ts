@@ -17,34 +17,38 @@
  * What we track:
  * 1. currentInputTokens / currentOutputTokens - OVERWRITTEN each request (for context display)
  * 2. totalInputTokens / totalOutputTokens - ACCUMULATED (for cost tracking)
+ * 3. contextWindow - DYNAMICALLY SET from SDK's ModelUsage.contextWindow (not hardcoded)
  */
 
 import { describe, it, expect } from 'vitest';
 import type { SessionUsage } from '../../types';
+
+// Matches the renamed constant in stream-executor.ts
+const FALLBACK_CONTEXT_WINDOW = 200_000;
 
 /**
  * Simulates the updateSessionUsage logic from stream-executor.ts
  * This is extracted for testing purposes.
  */
 function updateSessionUsage(
-  session: { usage?: SessionUsage },
+  session: { usage?: SessionUsage; model?: string },
   usageData: {
     inputTokens: number;
     outputTokens: number;
     cacheReadInputTokens: number;
     cacheCreationInputTokens: number;
     totalCostUsd: number;
+    contextWindow?: number;
+    modelName?: string;
   }
 ): void {
-  const DEFAULT_CONTEXT_WINDOW = 200000;
-
   if (!session.usage) {
     session.usage = {
       currentInputTokens: 0,
       currentOutputTokens: 0,
       currentCacheReadTokens: 0,
       currentCacheCreateTokens: 0,
-      contextWindow: DEFAULT_CONTEXT_WINDOW,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostUsd: 0,
@@ -52,8 +56,17 @@ function updateSessionUsage(
     };
   }
 
+  // Dynamically update context window from SDK if available
+  if (usageData.contextWindow && usageData.contextWindow > 0) {
+    session.usage.contextWindow = usageData.contextWindow;
+  }
+
+  // Update model name on session
+  if (usageData.modelName && !session.model) {
+    session.model = usageData.modelName;
+  }
+
   // CURRENT values are OVERWRITTEN (not accumulated)
-  // This is correct because input_tokens already includes conversation history
   session.usage.currentInputTokens = usageData.inputTokens;
   session.usage.currentOutputTokens = usageData.outputTokens;
   session.usage.currentCacheReadTokens = usageData.cacheReadInputTokens;
@@ -69,62 +82,8 @@ function updateSessionUsage(
 describe('Session Usage Tracking', () => {
   /**
    * PROOF: Multi-turn conversation context tracking
-   *
-   * Turn 1:
-   *   User: "Hello" (50 tokens)
-   *   → API request input: 50 tokens (just this message + system prompt)
-   *   → API response output: 200 tokens
-   *   → Context after turn 1: 250 tokens
-   *
-   * Turn 2:
-   *   User: "How are you?" (30 tokens)
-   *   → API request input: 280 tokens (turn1: 50+200) + (turn2: 30) = 280
-   *   → API response output: 150 tokens
-   *   → Context after turn 2: 280 + 150 = 430 tokens
-   *
-   * OLD BUG: Would show 50+280 + 200+150 = 680 tokens (WRONG - double counting)
-   * FIX: Shows 280 + 150 = 430 tokens (CORRECT)
    */
   it('should OVERWRITE current context, not accumulate', () => {
-    const session: { usage?: SessionUsage } = {};
-
-    // Turn 1: User sends message, AI responds
-    updateSessionUsage(session, {
-      inputTokens: 50,      // Just the user message + system
-      outputTokens: 200,    // AI response
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      totalCostUsd: 0.001,
-    });
-
-    // After turn 1: current context = 50 + 200 = 250
-    expect(session.usage!.currentInputTokens).toBe(50);
-    expect(session.usage!.currentOutputTokens).toBe(200);
-    expect(session.usage!.currentInputTokens + session.usage!.currentOutputTokens).toBe(250);
-
-    // Turn 2: User sends another message
-    // Input now includes ALL previous history (50 + 200 = 250) + new message (30) = 280
-    updateSessionUsage(session, {
-      inputTokens: 280,     // Previous history + new message
-      outputTokens: 150,    // AI response
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      totalCostUsd: 0.002,
-    });
-
-    // PROOF: currentInputTokens is OVERWRITTEN to 280, not accumulated to 330
-    expect(session.usage!.currentInputTokens).toBe(280);
-    expect(session.usage!.currentOutputTokens).toBe(150);
-
-    // Current context window = 280 + 150 = 430 (CORRECT)
-    const currentContext = session.usage!.currentInputTokens + session.usage!.currentOutputTokens;
-    expect(currentContext).toBe(430);
-
-    // NOT 50+280 + 200+150 = 680 (WRONG - what old code would show)
-    expect(currentContext).not.toBe(680);
-  });
-
-  it('should ACCUMULATE totals for cost tracking', () => {
     const session: { usage?: SessionUsage } = {};
 
     // Turn 1
@@ -136,7 +95,11 @@ describe('Session Usage Tracking', () => {
       totalCostUsd: 0.001,
     });
 
-    // Turn 2
+    expect(session.usage!.currentInputTokens).toBe(50);
+    expect(session.usage!.currentOutputTokens).toBe(200);
+    expect(session.usage!.currentInputTokens + session.usage!.currentOutputTokens).toBe(250);
+
+    // Turn 2: Input includes ALL previous history (50+200=250) + new msg (30) = 280
     updateSessionUsage(session, {
       inputTokens: 280,
       outputTokens: 150,
@@ -145,32 +108,50 @@ describe('Session Usage Tracking', () => {
       totalCostUsd: 0.002,
     });
 
-    // Totals ARE accumulated (for billing purposes)
-    // 50 + 280 = 330 total input tokens billed
+    // PROOF: currentInputTokens is OVERWRITTEN to 280, not accumulated to 330
+    expect(session.usage!.currentInputTokens).toBe(280);
+    expect(session.usage!.currentOutputTokens).toBe(150);
+
+    // Current context = 280 + 150 = 430 (CORRECT)
+    const currentContext = session.usage!.currentInputTokens + session.usage!.currentOutputTokens;
+    expect(currentContext).toBe(430);
+    // NOT 680 (old bug: accumulating)
+    expect(currentContext).not.toBe(680);
+  });
+
+  it('should ACCUMULATE totals for cost tracking', () => {
+    const session: { usage?: SessionUsage } = {};
+
+    updateSessionUsage(session, {
+      inputTokens: 50,
+      outputTokens: 200,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.001,
+    });
+
+    updateSessionUsage(session, {
+      inputTokens: 280,
+      outputTokens: 150,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.002,
+    });
+
     expect(session.usage!.totalInputTokens).toBe(330);
-    // 200 + 150 = 350 total output tokens billed
     expect(session.usage!.totalOutputTokens).toBe(350);
-    // Cost accumulated
     expect(session.usage!.totalCostUsd).toBeCloseTo(0.003);
   });
 
-  /**
-   * PROOF: Longer conversation to show the pattern clearly
-   *
-   * The key insight: input_tokens grows with each turn because it includes
-   * ALL previous messages. So on turn N, input_tokens ≈ all tokens from turns 1 to N.
-   */
   it('should correctly track a 5-turn conversation', () => {
     const session: { usage?: SessionUsage } = {};
 
-    // Simulated conversation where each turn adds ~100 tokens
-    // API returns increasing input_tokens because history grows
     const turns = [
-      { inputTokens: 100, outputTokens: 100 },   // Turn 1: just msg + response
-      { inputTokens: 300, outputTokens: 150 },   // Turn 2: history(200) + msg(100)
-      { inputTokens: 550, outputTokens: 200 },   // Turn 3: history(450) + msg(100)
-      { inputTokens: 850, outputTokens: 180 },   // Turn 4: history(750) + msg(100)
-      { inputTokens: 1130, outputTokens: 220 },  // Turn 5: history(1030) + msg(100)
+      { inputTokens: 100, outputTokens: 100 },
+      { inputTokens: 300, outputTokens: 150 },
+      { inputTokens: 550, outputTokens: 200 },
+      { inputTokens: 850, outputTokens: 180 },
+      { inputTokens: 1130, outputTokens: 220 },
     ];
 
     for (const turn of turns) {
@@ -183,14 +164,8 @@ describe('Session Usage Tracking', () => {
       });
     }
 
-    // After turn 5, current context should be:
-    // 1130 (input includes all history) + 220 (latest output) = 1350
     const currentContext = session.usage!.currentInputTokens + session.usage!.currentOutputTokens;
     expect(currentContext).toBe(1350);
-
-    // Old bug would show: sum of all input + sum of all output
-    // = (100+300+550+850+1130) + (100+150+200+180+220)
-    // = 2930 + 850 = 3780 (WRONG - massive overcount)
     expect(currentContext).not.toBe(3780);
   });
 
@@ -200,8 +175,8 @@ describe('Session Usage Tracking', () => {
     updateSessionUsage(session, {
       inputTokens: 1000,
       outputTokens: 500,
-      cacheReadInputTokens: 800,  // 800 of the 1000 input came from cache
-      cacheCreationInputTokens: 200,  // 200 tokens cached for future
+      cacheReadInputTokens: 800,
+      cacheCreationInputTokens: 200,
       totalCostUsd: 0.01,
     });
 
@@ -209,7 +184,7 @@ describe('Session Usage Tracking', () => {
     expect(session.usage!.currentCacheCreateTokens).toBe(200);
   });
 
-  it('should use correct default context window', () => {
+  it('should use fallback context window when SDK does not report it', () => {
     const session: { usage?: SessionUsage } = {};
 
     updateSessionUsage(session, {
@@ -220,7 +195,92 @@ describe('Session Usage Tracking', () => {
       totalCostUsd: 0.001,
     });
 
-    expect(session.usage!.contextWindow).toBe(200000);
+    // Without SDK contextWindow, falls back to 200k
+    expect(session.usage!.contextWindow).toBe(FALLBACK_CONTEXT_WINDOW);
+  });
+});
+
+describe('Dynamic Context Window from SDK', () => {
+  it('should update contextWindow from SDK ModelUsage.contextWindow', () => {
+    const session: { usage?: SessionUsage; model?: string } = {};
+
+    // Opus 4.6 = 1M context window
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      contextWindow: 1_000_000,
+      modelName: 'claude-opus-4-6-20250414',
+    });
+
+    expect(session.usage!.contextWindow).toBe(1_000_000);
+    expect(session.model).toBe('claude-opus-4-6-20250414');
+  });
+
+  it('should calculate correct remaining percent with 1M context', () => {
+    const session: { usage?: SessionUsage; model?: string } = {};
+
+    updateSessionUsage(session, {
+      inputTokens: 100_000,
+      outputTokens: 50_000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.50,
+      contextWindow: 1_000_000,
+    });
+
+    // Used 150k of 1M = 15% used, 85% remaining
+    const used = session.usage!.currentInputTokens + session.usage!.currentOutputTokens;
+    const remaining = ((session.usage!.contextWindow - used) / session.usage!.contextWindow) * 100;
+    expect(used).toBe(150_000);
+    expect(remaining).toBe(85);
+
+    // With old hardcoded 200k: (200k-150k)/200k = 25% remaining (WRONG)
+  });
+
+  it('should preserve SDK contextWindow across turns', () => {
+    const session: { usage?: SessionUsage; model?: string } = {};
+
+    // Turn 1: SDK reports 1M
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      contextWindow: 1_000_000,
+    });
+
+    expect(session.usage!.contextWindow).toBe(1_000_000);
+
+    // Turn 2: SDK does NOT report contextWindow
+    updateSessionUsage(session, {
+      inputTokens: 10000,
+      outputTokens: 3000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.08,
+    });
+
+    // Should keep 1M, not reset to 200k
+    expect(session.usage!.contextWindow).toBe(1_000_000);
+  });
+
+  it('should not overwrite existing model name', () => {
+    const session: { usage?: SessionUsage; model?: string } = { model: 'claude-sonnet-4-5-20250414' };
+
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      modelName: 'claude-opus-4-6-20250414',
+    });
+
+    expect(session.model).toBe('claude-sonnet-4-5-20250414');
   });
 });
 
@@ -240,12 +300,12 @@ describe('Session Usage Tracking', () => {
  * - H_n = H_{n-1} + M_n + R_n = input_n + output_n
  *
  * So context window usage after turn n = input_n + output_n
- * This is EXACTLY what we display.
  *
- * OLD CODE BUG:
- * - Accumulated all input_tokens: Σ(input_i) = H_0+M_1 + H_1+M_2 + ... = double counting!
- * - This overcounts because H_i already includes all of H_{i-1}
+ * OLD CODE BUGS:
+ * 1. Accumulated all input_tokens across agent loop API calls (billing total ≠ context state)
+ * 2. Hardcoded contextWindow to 200k (wrong for Opus 4.6 = 1M, Sonnet 4.6 = 1M)
  *
  * FIX:
- * - Just use the LATEST input_tokens + output_tokens = H_n = actual context
+ * 1. Use LATEST input_tokens + output_tokens = actual context
+ * 2. Use SDK's ModelUsage.contextWindow for accurate max (dynamic per model)
  */

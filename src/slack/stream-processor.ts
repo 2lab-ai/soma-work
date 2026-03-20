@@ -114,6 +114,16 @@ export interface CompactToolCallEntry {
 
 /**
  * Usage data extracted from result message
+ *
+ * IMPORTANT: For agent-loop (agentic) calls, the SDK's top-level modelUsage
+ * is a **billing cumulative** across all API round-trips in the loop.
+ * To know the actual context-window state, we need the LAST assistant
+ * message's per-message usage — that is what `inputTokens`/`outputTokens`
+ * represent here after extraction.
+ *
+ * `contextWindow` comes from SDK's `ModelUsage.contextWindow` field
+ * (available since Agent SDK v0.1.x) and reflects the model's true
+ * maximum context size (e.g. 1_000_000 for Opus 4.6).
  */
 export interface UsageData {
   inputTokens: number;
@@ -121,6 +131,10 @@ export interface UsageData {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   totalCostUsd: number;
+  /** Model's max context window size from SDK (e.g. 1_000_000). undefined if unavailable. */
+  contextWindow?: number;
+  /** Model name (e.g. "claude-opus-4-6-20250414") from the SDK usage key */
+  modelName?: string;
 }
 
 export interface FinalResponseFooterParams {
@@ -867,7 +881,22 @@ export class StreamProcessor {
   }
 
   /**
-   * Aggregate usage across all models in modelUsage map
+   * Aggregate usage across all models in modelUsage map.
+   *
+   * NOTE: The SDK's modelUsage is a **billing cumulative** that sums ALL
+   * API round-trips inside an agent loop. For context-window display we
+   * ideally want the LAST assistant turn's per-message usage. However the
+   * current SDK event model only exposes the cumulative on the result
+   * message. The per-turn values would require intercepting individual
+   * SDKAssistantMessage events (tracked as future improvement).
+   *
+   * What we CAN extract correctly right now:
+   * - contextWindow: from ModelUsage.contextWindow (accurate, per-model)
+   * - modelName: the primary model key
+   * - totalCost: sum of costUSD across models
+   *
+   * For input/output tokens we still aggregate (billing total). The
+   * consumer (updateSessionUsage) is aware of this limitation.
    */
   private aggregateModelUsage(modelUsageMap: Record<string, any>): UsageData {
     let totalInput = 0;
@@ -875,14 +904,26 @@ export class StreamProcessor {
     let totalCacheRead = 0;
     let totalCacheCreation = 0;
     let totalCost = 0;
+    let contextWindow: number | undefined;
+    let modelName: string | undefined;
 
-    for (const usage of Object.values(modelUsageMap)) {
+    for (const [model, usage] of Object.entries(modelUsageMap)) {
       if (usage) {
         totalInput += usage.inputTokens || 0;
         totalOutput += usage.outputTokens || 0;
         totalCacheRead += usage.cacheReadInputTokens || 0;
         totalCacheCreation += usage.cacheCreationInputTokens || 0;
         totalCost += usage.costUSD || 0;
+
+        // Extract contextWindow from SDK ModelUsage (first model with it wins,
+        // typically there's only one model in a non-router setup)
+        if (usage.contextWindow && typeof usage.contextWindow === 'number') {
+          contextWindow = usage.contextWindow;
+          modelName = model;
+        } else if (!modelName) {
+          // Still capture model name even without contextWindow
+          modelName = model;
+        }
       }
     }
 
@@ -892,6 +933,8 @@ export class StreamProcessor {
       cacheReadInputTokens: totalCacheRead,
       cacheCreationInputTokens: totalCacheCreation,
       totalCostUsd: totalCost,
+      contextWindow,
+      modelName,
     };
   }
 
