@@ -118,20 +118,22 @@ export class ThreadHeaderBuilder {
 
   /**
    * Format context window usage as a compact bar.
-   * Returns "▓▓▓▓░ 156k/1M" or undefined if no usage data.
+   * Returns "▓░░░░ 156k/1M (85%)" or undefined if no usage data.
    */
   static formatContextBar(usage?: SessionUsage): string | undefined {
     if (!usage || usage.contextWindow <= 0) return undefined;
 
     const used = ContextWindowManager.computeUsedTokens(usage);
     const total = usage.contextWindow;
-    const usedPercent = Math.min(100, (used / total) * 100);
+    const remainingPercent = Math.max(0, Math.min(100, ((total - used) / total) * 100));
+    const usedPercent = 100 - remainingPercent;
 
     // 5-segment bar
     const filledSegments = Math.round(usedPercent / 20);
     const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
 
-    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)}`;
+    const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
+    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)} (${pct}%)`;
   }
 
   /**
