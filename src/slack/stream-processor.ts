@@ -126,6 +126,7 @@ export interface CompactToolCallEntry {
  * maximum context size (e.g. 1_000_000 for Opus 4.6).
  */
 export interface UsageData {
+  // --- Billing aggregates (cumulative across all API calls in agent loop) ---
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
@@ -135,6 +136,14 @@ export interface UsageData {
   contextWindow?: number;
   /** Model name (e.g. "claude-opus-4-6-20250414") from the SDK usage key */
   modelName?: string;
+
+  // --- Per-turn usage from last assistant message (context window state) ---
+  // These reflect the LAST API call's actual token counts, NOT cumulative.
+  // Use these for context window calculation (how full is the window right now).
+  lastTurnInputTokens?: number;
+  lastTurnOutputTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  lastTurnCacheCreateTokens?: number;
 }
 
 export interface FinalResponseFooterParams {
@@ -205,6 +214,13 @@ export class StreamProcessor {
   private pendingTaskInputs = new Map<string, any>();
   /** Maps background task_id → original Task input metadata (for TaskOutput display) */
   private backgroundTaskMeta = new Map<string, { name?: string; subagentLabel?: string; promptPreview?: string }>();
+  /** Per-turn usage from the last SDKAssistantMessage (BetaMessage.usage) */
+  private _lastAssistantTurnUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+  } | null = null;
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -252,6 +268,16 @@ export class StreamProcessor {
         }
       }
 
+      // Merge per-turn usage from the last assistant message into the
+      // aggregate UsageData so consumers can distinguish billing totals
+      // from actual context window state.
+      if (lastUsage && this._lastAssistantTurnUsage) {
+        lastUsage.lastTurnInputTokens = this._lastAssistantTurnUsage.inputTokens;
+        lastUsage.lastTurnOutputTokens = this._lastAssistantTurnUsage.outputTokens;
+        lastUsage.lastTurnCacheReadTokens = this._lastAssistantTurnUsage.cacheReadTokens;
+        lastUsage.lastTurnCacheCreateTokens = this._lastAssistantTurnUsage.cacheCreateTokens;
+      }
+
       // Call usage update callback if we have usage data
       if (lastUsage && this.callbacks.onUsageUpdate) {
         this.callbacks.onUsageUpdate(lastUsage);
@@ -282,6 +308,18 @@ export class StreamProcessor {
     currentMessages: string[]
   ): Promise<void> {
     if (message.type !== 'assistant') return;
+
+    // Capture per-turn usage from BetaMessage.usage (NOT cumulative).
+    // Each assistant message carries usage for that single API call.
+    const msgUsage = (message.message as any).usage;
+    if (msgUsage) {
+      this._lastAssistantTurnUsage = {
+        inputTokens: msgUsage.input_tokens || 0,
+        outputTokens: msgUsage.output_tokens || 0,
+        cacheReadTokens: msgUsage.cache_read_input_tokens || 0,
+        cacheCreateTokens: msgUsage.cache_creation_input_tokens || 0,
+      };
+    }
 
     const content = message.message.content;
     const hasToolUse = content?.some((part: any) => part.type === 'tool_use');
