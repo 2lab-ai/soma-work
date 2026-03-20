@@ -1,4 +1,4 @@
-import { SessionLinks, WorkflowType, ConversationSession } from '../types';
+import { SessionLinks, SessionUsage, WorkflowType, ConversationSession } from '../types';
 
 export interface ThreadHeaderData {
   title?: string;
@@ -7,6 +7,10 @@ export interface ThreadHeaderData {
   ownerId?: string;
   links?: SessionLinks;
   closed?: boolean;
+  /** Model name for display (e.g. "claude-opus-4-6-20250414") */
+  model?: string;
+  /** Current session usage for context bar */
+  usage?: SessionUsage;
 }
 
 export interface ThreadHeaderPayload {
@@ -23,6 +27,8 @@ export class ThreadHeaderBuilder {
       ownerName: session.ownerName,
       ownerId: session.ownerId,
       links: session.links,
+      model: session.model,
+      usage: session.usage,
       ...overrides,
     });
   }
@@ -50,12 +56,23 @@ export class ThreadHeaderBuilder {
       },
     ];
 
-    // Context line: @mention + workflow + links + closed
+    // Context line: @mention + workflow + model + context bar + links + closed
     const contextElements: any[] = [];
     if (data.ownerId) {
       contextElements.push({ type: 'mrkdwn', text: `<@${data.ownerId}>` });
     }
     contextElements.push({ type: 'mrkdwn', text: `\`${workflow}\`` });
+
+    // Model chip: short display name
+    if (data.model) {
+      contextElements.push({ type: 'mrkdwn', text: `\`${this.formatModelName(data.model)}\`` });
+    }
+
+    // Context window bar: "⬛⬛⬛⬜⬜ 156k/1M"
+    const contextBar = this.formatContextBar(data.usage);
+    if (contextBar) {
+      contextElements.push({ type: 'mrkdwn', text: contextBar });
+    }
 
     const linkParts = this.formatLinks(data.links);
     for (const linkText of linkParts) {
@@ -81,6 +98,55 @@ export class ThreadHeaderBuilder {
       text: textParts.join('\n'),
       blocks,
     };
+  }
+
+  /**
+   * Format model name for display.
+   * "claude-opus-4-6-20250414" → "opus-4.6"
+   * "claude-sonnet-4-5-20250414" → "sonnet-4.5"
+   */
+  static formatModelName(model: string): string {
+    // Match patterns like "claude-opus-4-6", "claude-sonnet-4-5"
+    const match = model.match(/claude-(\w+)-(\d+)-(\d+)/);
+    if (match) {
+      return `${match[1]}-${match[2]}.${match[3]}`;
+    }
+    // Fallback: strip "claude-" prefix and date suffix
+    return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  }
+
+  /**
+   * Format context window usage as a compact bar.
+   * Returns "▓▓▓▓░ 156k/1M" or undefined if no usage data.
+   */
+  static formatContextBar(usage?: SessionUsage): string | undefined {
+    if (!usage || usage.contextWindow <= 0) return undefined;
+
+    const used = usage.currentInputTokens + usage.currentOutputTokens;
+    const total = usage.contextWindow;
+    const usedPercent = Math.min(100, (used / total) * 100);
+
+    // 5-segment bar
+    const filledSegments = Math.round(usedPercent / 20);
+    const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
+
+    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)}`;
+  }
+
+  /**
+   * Format token count for compact display.
+   * 1_000_000 → "1M", 200_000 → "200k", 156_700 → "156.7k"
+   */
+  static formatTokenCount(n: number): string {
+    if (n >= 1_000_000) {
+      const m = n / 1_000_000;
+      return m === Math.floor(m) ? `${m}M` : `${m.toFixed(1)}M`;
+    }
+    if (n >= 1000) {
+      const k = n / 1000;
+      return k === Math.floor(k) ? `${k}k` : `${k.toFixed(1)}k`;
+    }
+    return n.toString();
   }
 
   private static formatLinks(links?: SessionLinks): string[] {
