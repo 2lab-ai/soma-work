@@ -47,9 +47,34 @@ export interface ExecuteResult {
 }
 
 // Fallback context window size when SDK doesn't report contextWindow.
-// Modern models (Opus 4.6, Sonnet 4.6) have 1M natively, but older models
-// default to 200k. We use 200k as a safe fallback.
 const FALLBACK_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Known model context window sizes.
+ * Key: model family substring matched against the full model name.
+ * When SDK doesn't provide ModelUsage.contextWindow, we look up here.
+ */
+const MODEL_CONTEXT_WINDOWS: [pattern: string, contextWindow: number][] = [
+  // 4.6 models: 1M native (no beta header needed)
+  ['opus-4-6', 1_000_000],
+  ['sonnet-4-6', 1_000_000],
+  // 4.5 models: 200k default (1M with beta header, but we use default)
+  ['opus-4-5', 200_000],
+  ['sonnet-4-5', 200_000],
+  ['haiku-4-5', 200_000],
+  // 4.0 models
+  ['sonnet-4-', 200_000],
+  ['haiku-4-', 200_000],
+];
+
+/** Resolve context window for a model by name pattern matching. */
+function resolveContextWindow(modelName?: string): number {
+  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
+  for (const [pattern, size] of MODEL_CONTEXT_WINDOWS) {
+    if (modelName.includes(pattern)) return size;
+  }
+  return FALLBACK_CONTEXT_WINDOW;
+}
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -1068,34 +1093,46 @@ export class StreamExecutor {
       };
     }
 
-    // Dynamically update context window from SDK if available.
-    // This replaces the hardcoded 200k — the SDK knows the model's actual max.
-    if (usage.contextWindow && usage.contextWindow > 0) {
-      session.usage.contextWindow = usage.contextWindow;
-    }
-
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
       session.model = usage.modelName;
     }
 
-    // Update current context (overwrite - this is the current context window usage)
-    // Context window = input (history + new message) + output (current response)
+    // Dynamically update context window:
+    // 1. SDK's ModelUsage.contextWindow (if available)
+    // 2. Model-name lookup table (opus-4-6 → 1M, etc.)
+    // 3. Keep existing value (don't downgrade to fallback)
+    if (usage.contextWindow && usage.contextWindow > 0) {
+      session.usage.contextWindow = usage.contextWindow;
+    } else if (session.usage.contextWindow === FALLBACK_CONTEXT_WINDOW) {
+      // Only do lookup if still at fallback — don't override a previous SDK value
+      const modelName = usage.modelName || session.model;
+      const resolved = resolveContextWindow(modelName);
+      if (resolved !== FALLBACK_CONTEXT_WINDOW) {
+        session.usage.contextWindow = resolved;
+      }
+    }
+
+    // Update current context (overwrite — this is the current context window usage)
+    // NOTE: inputTokens from SDK modelUsage = non-cached tokens only.
+    // Cache tokens are stored separately and included in context calculations
+    // via ContextWindowManager.computeUsedTokens().
     session.usage.currentInputTokens = usage.inputTokens;
     session.usage.currentOutputTokens = usage.outputTokens;
     session.usage.currentCacheReadTokens = usage.cacheReadInputTokens;
     session.usage.currentCacheCreateTokens = usage.cacheCreationInputTokens;
 
-    // Accumulate totals
+    // Accumulate totals (billing-oriented: each field summed independently)
     session.usage.totalInputTokens += usage.inputTokens;
     session.usage.totalOutputTokens += usage.outputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
+    const totalUsed = usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens + usage.outputTokens;
     this.logger.debug('Updated session usage', {
-      currentContext: session.usage.currentInputTokens + session.usage.currentOutputTokens,
+      currentContext: totalUsed,
       contextWindow: session.usage.contextWindow,
-      contextWindowSource: usage.contextWindow ? 'sdk' : 'fallback',
+      contextWindowSource: usage.contextWindow ? 'sdk' : (session.model ? 'model-lookup' : 'fallback'),
       totalInput: session.usage.totalInputTokens,
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,
