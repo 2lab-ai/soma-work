@@ -547,6 +547,9 @@ export class ClaudeHandler {
       this.logger.debug('Starting new Claude conversation');
     }
 
+    // Enable 1M context window beta (applies to supported models)
+    options.betas = ['context-1m-2025-08-07'];
+
     // Set abort controller
     if (abortController) {
       options.abortController = abortController;

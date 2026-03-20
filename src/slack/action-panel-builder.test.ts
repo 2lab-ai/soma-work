@@ -3,16 +3,28 @@ import { ActionPanelBuilder } from './action-panel-builder';
 import { LOG_DETAIL } from './output-flags';
 
 function getStatusSectionText(payload: { blocks: any[] }): string {
-  const sectionBlock = payload.blocks.find(
-    (block) => block.type === 'section'
-      && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중|종료됨)/.test(String(block?.text?.text || ''))
-  );
-  return String(sectionBlock?.text?.text || '');
+  // Status may be in section.text.text (no PR) or section.fields[0].text (with PR)
+  for (const block of payload.blocks) {
+    if (block.type !== 'section') continue;
+    const textStr = String(block?.text?.text || '');
+    if (/(대기|작업 중|입력 대기|사용 가능|요청 처리 중|종료됨)/.test(textStr)) {
+      return textStr;
+    }
+    // Check fields[0] for 2-column layout
+    const fieldStr = String(block?.fields?.[0]?.text || '');
+    if (/(대기|작업 중|입력 대기|사용 가능|요청 처리 중|종료됨)/.test(fieldStr)) {
+      // Return all fields text combined so callers can check PR chip too
+      return block.fields.map((f: any) => String(f.text || '')).join(' | ');
+    }
+  }
+  return '';
 }
 
 function getFieldsSectionText(payload: { blocks: any[] }): string {
+  // Find the summary fields section (has "소요 시간" or "도구 사용"), not the hero fields
   const fieldsBlock = payload.blocks.find(
     (block) => block.type === 'section' && Array.isArray(block.fields)
+      && block.fields.some((f: any) => /소요 시간|도구 사용/.test(String(f.text || '')))
   );
   if (!fieldsBlock) return '';
   return fieldsBlock.fields.map((f: any) => String(f.text || '')).join(' ');
@@ -95,7 +107,7 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).not.toContain('panel_pr_merge');
   });
 
-  it('renders structural layout with hero section + fields section + context blocks', () => {
+  it('renders structural layout with hero section + context blocks', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
       workflow: 'jira-brainstorming',
@@ -106,13 +118,11 @@ describe('ActionPanelBuilder', () => {
       logVerbosity: LOG_DETAIL,
     });
 
-    // Hero section (badge + italic subtitle)
+    // Hero section (badge + italic subtitle) — single section, no fields (no PR)
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('🟢 *작업 중*');
     expect(statusText).toContain('_파일 읽기_');
     expect(statusText).not.toContain('📦');
-
-    // Fields section exists (context% removed — shown in thread header badge instead)
 
     // Metrics context (verbosity label)
     const ctxBlock = payload.blocks.find(
@@ -165,10 +175,11 @@ describe('ActionPanelBuilder', () => {
       latestResponseLink: 'https://workspace.slack.com/archives/C123/p111',
     });
 
-    // Hero: status + PR inline
+    // Hero: status (left) + PR (right) in 2-column fields
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('⚫ *종료됨*');
     expect(statusText).toContain('Merged');
+    expect(statusText).toContain('*PR*');
 
     // Summary fields grid
     const fieldsText = getFieldsSectionText(payload);
@@ -266,7 +277,7 @@ describe('ActionPanelBuilder', () => {
     expect(stopButton.text.text).toBe('⏸ 중지');
   });
 
-  it('block order: hero section → fields section → metrics context → actions', () => {
+  it('block order: hero section → metrics context → actions', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-8',
       workflow: 'default',
@@ -277,12 +288,27 @@ describe('ActionPanelBuilder', () => {
 
     const types = payload.blocks.map((b) => b.type);
     const heroIdx = types.indexOf('section');
-    const fieldsIdx = types.indexOf('section', heroIdx + 1);
     const contextIdx = types.indexOf('context');
     const actionsIdx = types.indexOf('actions');
 
-    expect(heroIdx).toBeLessThan(fieldsIdx);
-    expect(fieldsIdx).toBeLessThan(contextIdx);
+    expect(heroIdx).toBeLessThan(contextIdx);
     expect(contextIdx).toBeLessThan(actionsIdx);
+  });
+
+  it('renders PR status in 2-column layout beside status badge', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-pr-layout',
+      workflow: 'pr-review',
+      disabled: false,
+      prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
+    });
+
+    // First section should have fields (2-column)
+    const heroSection = payload.blocks.find((b: any) => b.type === 'section' && Array.isArray(b.fields));
+    expect(heroSection).toBeDefined();
+    expect(heroSection.fields).toHaveLength(2);
+    expect(heroSection.fields[0].text).toContain('사용 가능');
+    expect(heroSection.fields[1].text).toContain('*PR*');
+    expect(heroSection.fields[1].text).toContain('Approved');
   });
 });
