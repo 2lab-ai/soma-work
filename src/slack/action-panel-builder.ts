@@ -536,11 +536,14 @@ export class ActionPanelBuilder {
     }
     // Context info is shown in thread header badge — no need to duplicate here.
 
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: '*작업 요약*' },
-      fields,
-    });
+    // Only add summary section when there are actual fields (Slack rejects empty fields[])
+    if (fields.length > 0) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: '*작업 요약*' },
+        fields,
+      });
+    }
 
     // Context footer: timestamp + link
     const footerElements: any[] = [];
