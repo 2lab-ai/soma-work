@@ -50,17 +50,20 @@ export interface ExecuteResult {
 const FALLBACK_CONTEXT_WINDOW = 200_000;
 
 /**
- * Known model context window sizes.
+ * Known model context window sizes (with 1M beta enabled).
  * Key: model family substring matched against the full model name.
- * When SDK doesn't provide ModelUsage.contextWindow, we look up here.
+ *
+ * SDK's ModelUsage.contextWindow often reports the BASE window (200k)
+ * even when the 1M beta header is active. This table provides the
+ * EFFECTIVE window so we can take max(sdk, lookup).
  */
 const MODEL_CONTEXT_WINDOWS: [pattern: string, contextWindow: number][] = [
-  // 4.6 models: 1M native (no beta header needed)
+  // 4.6 models: 1M with context-1m beta
   ['opus-4-6', 1_000_000],
   ['sonnet-4-6', 1_000_000],
-  // 4.5 models: 200k default (1M with beta header, but we use default)
-  ['opus-4-5', 200_000],
-  ['sonnet-4-5', 200_000],
+  // 4.5 models: 1M with context-1m beta
+  ['opus-4-5', 1_000_000],
+  ['sonnet-4-5', 1_000_000],
   ['haiku-4-5', 200_000],
   // 4.0 models
   ['sonnet-4-', 200_000],
@@ -1099,18 +1102,14 @@ export class StreamExecutor {
     }
 
     // Dynamically update context window:
-    // 1. SDK's ModelUsage.contextWindow (if available)
-    // 2. Model-name lookup table (opus-4-6 → 1M, etc.)
-    // 3. Keep existing value (don't downgrade to fallback)
-    if (usage.contextWindow && usage.contextWindow > 0) {
-      session.usage.contextWindow = usage.contextWindow;
-    } else if (session.usage.contextWindow === FALLBACK_CONTEXT_WINDOW) {
-      // Only do lookup if still at fallback — don't override a previous SDK value
-      const modelName = usage.modelName || session.model;
-      const resolved = resolveContextWindow(modelName);
-      if (resolved !== FALLBACK_CONTEXT_WINDOW) {
-        session.usage.contextWindow = resolved;
-      }
+    // Take max(SDK value, model lookup) because SDK often reports the BASE
+    // window (200k) even when the 1M beta is active.
+    const sdkWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : 0;
+    const modelName = usage.modelName || session.model;
+    const lookupWindow = resolveContextWindow(modelName);
+    const resolved = Math.max(sdkWindow, lookupWindow);
+    if (resolved > 0) {
+      session.usage.contextWindow = resolved;
     }
 
     // Update current context window state.

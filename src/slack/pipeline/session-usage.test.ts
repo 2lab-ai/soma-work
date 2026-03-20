@@ -26,6 +26,25 @@ import type { SessionUsage } from '../../types';
 // Matches the renamed constant in stream-executor.ts
 const FALLBACK_CONTEXT_WINDOW = 200_000;
 
+// Mirrors MODEL_CONTEXT_WINDOWS from stream-executor.ts
+const MODEL_CONTEXT_WINDOWS: [string, number][] = [
+  ['opus-4-6', 1_000_000],
+  ['sonnet-4-6', 1_000_000],
+  ['opus-4-5', 1_000_000],
+  ['sonnet-4-5', 1_000_000],
+  ['haiku-4-5', 200_000],
+  ['sonnet-4-', 200_000],
+  ['haiku-4-', 200_000],
+];
+
+function resolveContextWindow(modelName?: string): number {
+  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
+  for (const [pattern, size] of MODEL_CONTEXT_WINDOWS) {
+    if (modelName.includes(pattern)) return size;
+  }
+  return FALLBACK_CONTEXT_WINDOW;
+}
+
 /**
  * Simulates the updateSessionUsage logic from stream-executor.ts
  * This is extracted for testing purposes.
@@ -61,9 +80,12 @@ function updateSessionUsage(
     };
   }
 
-  // Dynamically update context window from SDK if available
-  if (usageData.contextWindow && usageData.contextWindow > 0) {
-    session.usage.contextWindow = usageData.contextWindow;
+  // Dynamically update context window: max(SDK, model lookup)
+  const sdkWindow = (usageData.contextWindow && usageData.contextWindow > 0) ? usageData.contextWindow : 0;
+  const lookupWindow = resolveContextWindow(usageData.modelName || session.model);
+  const resolvedWindow = Math.max(sdkWindow, lookupWindow);
+  if (resolvedWindow > 0) {
+    session.usage.contextWindow = resolvedWindow;
   }
 
   // Update model name on session
@@ -246,10 +268,10 @@ describe('Dynamic Context Window from SDK', () => {
     // With old hardcoded 200k: (200k-150k)/200k = 25% remaining (WRONG)
   });
 
-  it('should preserve SDK contextWindow across turns', () => {
+  it('should preserve 1M contextWindow across turns via model lookup', () => {
     const session: { usage?: SessionUsage; model?: string } = {};
 
-    // Turn 1: SDK reports 1M
+    // Turn 1: SDK reports 1M, model name captured
     updateSessionUsage(session, {
       inputTokens: 5000,
       outputTokens: 2000,
@@ -257,11 +279,13 @@ describe('Dynamic Context Window from SDK', () => {
       cacheCreationInputTokens: 0,
       totalCostUsd: 0.05,
       contextWindow: 1_000_000,
+      modelName: 'claude-opus-4-6-20250414',
     });
 
     expect(session.usage!.contextWindow).toBe(1_000_000);
+    expect(session.model).toBe('claude-opus-4-6-20250414');
 
-    // Turn 2: SDK does NOT report contextWindow
+    // Turn 2: SDK does NOT report contextWindow, but session.model is set
     updateSessionUsage(session, {
       inputTokens: 10000,
       outputTokens: 3000,
@@ -270,7 +294,7 @@ describe('Dynamic Context Window from SDK', () => {
       totalCostUsd: 0.08,
     });
 
-    // Should keep 1M, not reset to 200k
+    // max(0 SDK, 1M lookup via session.model) = 1M
     expect(session.usage!.contextWindow).toBe(1_000_000);
   });
 
@@ -287,6 +311,42 @@ describe('Dynamic Context Window from SDK', () => {
     });
 
     expect(session.model).toBe('claude-sonnet-4-5-20250414');
+  });
+
+  it('should use model lookup (1M) when SDK reports base window (200k)', () => {
+    const session: { usage?: SessionUsage; model?: string } = {};
+
+    // SDK reports 200k but model is opus-4-6 which supports 1M with beta
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      contextWindow: 200_000,
+      modelName: 'claude-opus-4-6-20250414',
+    });
+
+    // max(200k SDK, 1M lookup) = 1M
+    expect(session.usage!.contextWindow).toBe(1_000_000);
+  });
+
+  it('should use SDK value when larger than model lookup', () => {
+    const session: { usage?: SessionUsage; model?: string } = {};
+
+    // Hypothetical: SDK reports 2M for a future model not in our table
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      contextWindow: 2_000_000,
+      modelName: 'claude-future-model-5-0',
+    });
+
+    // max(2M SDK, 200k fallback) = 2M
+    expect(session.usage!.contextWindow).toBe(2_000_000);
   });
 });
 
