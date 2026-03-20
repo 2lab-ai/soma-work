@@ -173,7 +173,9 @@ describe('ThreadPanel', () => {
       block.type === 'section' && Array.isArray(block.fields)
     );
     const fieldsText = fieldsSection?.fields?.map((f: any) => String(f.text || '')).join(' ') || '';
-    expect(fieldsText).toContain('60%');
+    // Context used = input(70k) + cacheRead(5k) + cacheCreate(2k) + output(10k) = 87k
+    // Remaining = (200k - 87k) / 200k = 56.5%
+    expect(fieldsText).toContain('56.5%');
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {

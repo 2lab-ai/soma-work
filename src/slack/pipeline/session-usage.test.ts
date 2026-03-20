@@ -284,6 +284,37 @@ describe('Dynamic Context Window from SDK', () => {
   });
 });
 
+describe('Cache tokens in context calculation', () => {
+  /**
+   * CRITICAL BUG FIX: SDK's modelUsage reports `inputTokens` as
+   * non-cached tokens only. Cache tokens must be included for context size.
+   *
+   * Real data from Opus 4.6 session:
+   *   inputTokens=3, cacheRead=117.5k, cacheCreate=5.8k, output=626
+   *   Wrong: 3 + 626 = 629 (what old code showed)
+   *   Right: 3 + 117,500 + 5,800 + 626 = 123,929
+   */
+  it('should include cache tokens in total context used', () => {
+    const session: { usage?: SessionUsage } = {};
+
+    updateSessionUsage(session, {
+      inputTokens: 3,
+      outputTokens: 626,
+      cacheReadInputTokens: 117_500,
+      cacheCreationInputTokens: 5_800,
+      totalCostUsd: 0.11,
+    });
+
+    const u = session.usage!;
+    // Total context = input + cacheRead + cacheCreate + output
+    const totalUsed = u.currentInputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens + u.currentOutputTokens;
+    expect(totalUsed).toBe(123_929);
+
+    // Old calculation (WRONG): just inputTokens + outputTokens
+    expect(u.currentInputTokens + u.currentOutputTokens).toBe(629);
+  });
+});
+
 /**
  * MATHEMATICAL PROOF:
  *
