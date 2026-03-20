@@ -1113,26 +1113,32 @@ export class StreamExecutor {
       }
     }
 
-    // Update current context (overwrite — this is the current context window usage)
-    // NOTE: inputTokens from SDK modelUsage = non-cached tokens only.
-    // Cache tokens are stored separately and included in context calculations
-    // via ContextWindowManager.computeUsedTokens().
-    session.usage.currentInputTokens = usage.inputTokens;
-    session.usage.currentOutputTokens = usage.outputTokens;
-    session.usage.currentCacheReadTokens = usage.cacheReadInputTokens;
-    session.usage.currentCacheCreateTokens = usage.cacheCreationInputTokens;
+    // Update current context window state.
+    // Prefer per-turn usage from the LAST assistant message (actual context occupancy)
+    // over the billing aggregate (which sums ALL API calls in the agent loop).
+    //
+    // Why: An agent loop with 10 tool calls accumulates ~10× the actual context
+    // in cacheRead alone. The per-turn value from BetaMessage.usage reflects the
+    // real context window state at the end of the loop.
+    const hasPerTurn = usage.lastTurnInputTokens !== undefined;
+    session.usage.currentInputTokens = hasPerTurn ? usage.lastTurnInputTokens! : usage.inputTokens;
+    session.usage.currentOutputTokens = hasPerTurn ? usage.lastTurnOutputTokens! : usage.outputTokens;
+    session.usage.currentCacheReadTokens = hasPerTurn ? usage.lastTurnCacheReadTokens! : usage.cacheReadInputTokens;
+    session.usage.currentCacheCreateTokens = hasPerTurn ? usage.lastTurnCacheCreateTokens! : usage.cacheCreationInputTokens;
 
-    // Accumulate totals (billing-oriented: each field summed independently)
+    // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
     session.usage.totalOutputTokens += usage.outputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
-    const totalUsed = usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens + usage.outputTokens;
+    const contextUsed = session.usage.currentInputTokens + session.usage.currentCacheReadTokens
+      + session.usage.currentCacheCreateTokens + session.usage.currentOutputTokens;
     this.logger.debug('Updated session usage', {
-      currentContext: totalUsed,
+      currentContext: contextUsed,
       contextWindow: session.usage.contextWindow,
       contextWindowSource: usage.contextWindow ? 'sdk' : (session.model ? 'model-lookup' : 'fallback'),
+      usageSource: hasPerTurn ? 'per-turn' : 'aggregate-fallback',
       totalInput: session.usage.totalInputTokens,
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,

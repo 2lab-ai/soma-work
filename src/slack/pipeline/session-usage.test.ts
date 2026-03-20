@@ -40,6 +40,11 @@ function updateSessionUsage(
     totalCostUsd: number;
     contextWindow?: number;
     modelName?: string;
+    // Per-turn usage from last assistant message (context window state)
+    lastTurnInputTokens?: number;
+    lastTurnOutputTokens?: number;
+    lastTurnCacheReadTokens?: number;
+    lastTurnCacheCreateTokens?: number;
   }
 ): void {
   if (!session.usage) {
@@ -66,13 +71,14 @@ function updateSessionUsage(
     session.model = usageData.modelName;
   }
 
-  // CURRENT values are OVERWRITTEN (not accumulated)
-  session.usage.currentInputTokens = usageData.inputTokens;
-  session.usage.currentOutputTokens = usageData.outputTokens;
-  session.usage.currentCacheReadTokens = usageData.cacheReadInputTokens;
-  session.usage.currentCacheCreateTokens = usageData.cacheCreationInputTokens;
+  // CURRENT values: prefer per-turn (actual context state) over aggregate (billing)
+  const hasPerTurn = usageData.lastTurnInputTokens !== undefined;
+  session.usage.currentInputTokens = hasPerTurn ? usageData.lastTurnInputTokens! : usageData.inputTokens;
+  session.usage.currentOutputTokens = hasPerTurn ? usageData.lastTurnOutputTokens! : usageData.outputTokens;
+  session.usage.currentCacheReadTokens = hasPerTurn ? usageData.lastTurnCacheReadTokens! : usageData.cacheReadInputTokens;
+  session.usage.currentCacheCreateTokens = hasPerTurn ? usageData.lastTurnCacheCreateTokens! : usageData.cacheCreationInputTokens;
 
-  // TOTAL values are ACCUMULATED
+  // TOTAL values are ACCUMULATED (billing: use aggregate values)
   session.usage.totalInputTokens += usageData.inputTokens;
   session.usage.totalOutputTokens += usageData.outputTokens;
   session.usage.totalCostUsd += usageData.totalCostUsd;
@@ -312,6 +318,76 @@ describe('Cache tokens in context calculation', () => {
 
     // Old calculation (WRONG): just inputTokens + outputTokens
     expect(u.currentInputTokens + u.currentOutputTokens).toBe(629);
+  });
+});
+
+describe('Per-turn usage vs billing aggregate', () => {
+  /**
+   * CRITICAL FIX: SDK modelUsage is a billing cumulative across ALL API
+   * calls in an agent loop. For context window display we need the LAST
+   * assistant message's per-turn usage.
+   *
+   * Example: Agent makes 10 tool calls, each reading ~200k cached context.
+   * - Billing aggregate cacheRead: 10 × 200k = 2M
+   * - Actual context (last turn): 200k
+   *
+   * OLD BUG: showed 2M/200k (impossibly > 100%)
+   * FIX: show 200k/200k (correct)
+   */
+  it('should use per-turn values for currentXxx instead of billing aggregate', () => {
+    const session: { usage?: SessionUsage } = {};
+
+    updateSessionUsage(session, {
+      // Billing aggregate (cumulative across 10 tool calls)
+      inputTokens: 500,          // sum of non-cached inputs across all calls
+      outputTokens: 8000,        // sum of all outputs
+      cacheReadInputTokens: 2_000_000,  // 10 × 200k
+      cacheCreationInputTokens: 200_000,
+      totalCostUsd: 2.50,
+      // Per-turn: last assistant message's actual usage
+      lastTurnInputTokens: 50,
+      lastTurnOutputTokens: 800,
+      lastTurnCacheReadTokens: 180_000,
+      lastTurnCacheCreateTokens: 5_000,
+    });
+
+    const u = session.usage!;
+    // currentXxx should reflect per-turn (last API call), NOT aggregate
+    expect(u.currentInputTokens).toBe(50);
+    expect(u.currentOutputTokens).toBe(800);
+    expect(u.currentCacheReadTokens).toBe(180_000);
+    expect(u.currentCacheCreateTokens).toBe(5_000);
+
+    // Context used = 50 + 800 + 180k + 5k = 185,850 (reasonable)
+    const contextUsed = u.currentInputTokens + u.currentOutputTokens
+      + u.currentCacheReadTokens + u.currentCacheCreateTokens;
+    expect(contextUsed).toBe(185_850);
+
+    // NOT the old buggy value: 2M + 200k + 500 + 8k ≈ 2.2M
+    expect(contextUsed).not.toBe(2_208_500);
+
+    // Billing totals still use aggregate
+    expect(u.totalInputTokens).toBe(500);
+    expect(u.totalOutputTokens).toBe(8000);
+  });
+
+  it('should fall back to aggregate when per-turn is not available', () => {
+    const session: { usage?: SessionUsage } = {};
+
+    updateSessionUsage(session, {
+      inputTokens: 3,
+      outputTokens: 626,
+      cacheReadInputTokens: 117_500,
+      cacheCreationInputTokens: 5_800,
+      totalCostUsd: 0.11,
+      // No lastTurnXxx → fall back to aggregate
+    });
+
+    const u = session.usage!;
+    expect(u.currentInputTokens).toBe(3);
+    expect(u.currentOutputTokens).toBe(626);
+    expect(u.currentCacheReadTokens).toBe(117_500);
+    expect(u.currentCacheCreateTokens).toBe(5_800);
   });
 });
 
