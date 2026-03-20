@@ -226,7 +226,8 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Status blocks: hero section (badge + italic subtitle) + fields section (PR + context%)
+   * Status blocks: single section with 2-column fields layout.
+   * Left: status badge + agent subtitle    Right: PR label + chip
    */
   private static buildStatusBlocks(params: {
     status: string;
@@ -238,9 +239,6 @@ export class ActionPanelBuilder {
     prStatus?: PRStatusInfo;
     contextRemainingPercent?: number;
   }): any[] {
-    const blocks: any[] = [];
-
-    // Hero section: badge + italic subtitle
     const badge = this.statusBadge(params.status);
     const agentChip = this.buildAgentChip({
       waitingForChoice: params.waitingForChoice,
@@ -250,28 +248,27 @@ export class ActionPanelBuilder {
       activeTool: params.activeTool,
     });
 
-    const heroText = agentChip ? `${badge}\n_${agentChip}_` : badge;
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: heroText },
-    });
+    const statusText = agentChip ? `${badge}\n_${agentChip}_` : badge;
 
-    // Fields section: PR status + context percent (2-column)
-    const fields: any[] = [];
-    if (params.prStatus) {
-      const chip = this.prStatusChip(params.prStatus);
-      if (chip) {
-        fields.push({ type: 'mrkdwn', text: `*PR*\n${chip}` });
-      }
+    // PR chip for right column
+    const prChip = params.prStatus ? this.prStatusChip(params.prStatus) : '';
+
+    if (prChip) {
+      // 2-column fields: status (left) + PR (right)
+      return [{
+        type: 'section',
+        fields: [
+          { type: 'mrkdwn', text: statusText },
+          { type: 'mrkdwn', text: `*PR*\n${prChip}` },
+        ],
+      }];
     }
-    // Context info is shown in thread header badge — no need to duplicate here.
 
-    blocks.push({
+    // No PR — plain section
+    return [{
       type: 'section',
-      fields,
-    });
-
-    return blocks;
+      text: { type: 'mrkdwn', text: statusText },
+    }];
   }
 
   /**
@@ -508,17 +505,23 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Closed panel: hero (status + PR inline) → divider → summary fields grid → context footer
+   * Closed panel: hero (status left + PR right) → divider → summary fields grid → context footer
    */
   private static buildClosedPanel(params: ActionPanelBuildParams): ActionPanelPayload {
     const workflow = params.workflow || 'default';
     const prChip = params.prStatus ? this.prStatusChip(params.prStatus) : '';
-    const heroText = prChip ? `⚫ *종료됨*  ·  ${prChip}` : '⚫ *종료됨*';
 
-    const blocks: any[] = [
-      { type: 'section', text: { type: 'mrkdwn', text: heroText } },
-      { type: 'divider' },
-    ];
+    const heroBlock = prChip
+      ? {
+          type: 'section',
+          fields: [
+            { type: 'mrkdwn', text: '⚫ *종료됨*' },
+            { type: 'mrkdwn', text: `*PR*\n${prChip}` },
+          ],
+        }
+      : { type: 'section', text: { type: 'mrkdwn', text: '⚫ *종료됨*' } };
+
+    const blocks: any[] = [heroBlock, { type: 'divider' }];
 
     // Summary fields grid (2-column layout)
     const fields: any[] = [];
