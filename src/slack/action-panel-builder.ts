@@ -264,7 +264,7 @@ export class ActionPanelBuilder {
         fields.push({ type: 'mrkdwn', text: `*PR*\n${chip}` });
       }
     }
-    fields.push({ type: 'mrkdwn', text: `*컨텍스트*\n${this.contextChip(params.contextRemainingPercent)}` });
+    // Context info is shown in thread header badge — no need to duplicate here.
 
     blocks.push({
       type: 'section',
@@ -531,7 +531,7 @@ export class ActionPanelBuilder {
         fields.push({ type: 'mrkdwn', text: `*도구 사용*\n${toolCount}회` });
       }
     }
-    fields.push({ type: 'mrkdwn', text: `*컨텍스트*\n${this.contextChip(params.contextRemainingPercent)}` });
+    // Context info is shown in thread header badge — no need to duplicate here.
 
     blocks.push({
       type: 'section',

@@ -61,13 +61,14 @@ describe('ThreadPanel', () => {
     );
     expect(statusSection).toBeDefined();
 
-    // Fields section block (context% in fields)
+    // Context % is now shown in thread header badge, not in action panel fields.
+    // Verify the fields section exists but does NOT contain context info.
     const fieldsSection = blocks.find((block: any) =>
       block.type === 'section' && Array.isArray(block.fields)
     );
     expect(fieldsSection).toBeDefined();
     const fieldsText = fieldsSection.fields.map((f: any) => String(f.text || '')).join(' ');
-    expect(fieldsText).toContain('--%');
+    expect(fieldsText).not.toContain('컨텍스트');
 
     const actionsCount = blocks.filter((block: any) => block.type === 'actions').length;
     expect(actionsCount).toBeGreaterThan(0);
@@ -173,9 +174,8 @@ describe('ThreadPanel', () => {
       block.type === 'section' && Array.isArray(block.fields)
     );
     const fieldsText = fieldsSection?.fields?.map((f: any) => String(f.text || '')).join(' ') || '';
-    // Context used = input(70k) + cacheRead(5k) + cacheCreate(2k) + output(10k) = 87k
-    // Remaining = (200k - 87k) / 200k = 56.5%
-    expect(fieldsText).toContain('56.5%');
+    // Context % is now in thread header badge, not in action panel
+    expect(fieldsText).not.toContain('컨텍스트');
   });
 
   it('does not fetch thread permalink while rendering panel', async () => {
