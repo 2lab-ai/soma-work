@@ -112,9 +112,7 @@ describe('ActionPanelBuilder', () => {
     expect(statusText).toContain('_파일 읽기_');
     expect(statusText).not.toContain('📦');
 
-    // Fields section (context% in fields)
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('61%');
+    // Fields section exists (context% removed — shown in thread header badge instead)
 
     // Metrics context (verbosity label)
     const ctxBlock = payload.blocks.find(
@@ -124,27 +122,7 @@ describe('ActionPanelBuilder', () => {
     expect(ctxBlock).toBeDefined();
   });
 
-  it('shows context usage placeholder when usage is unavailable', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-4',
-      workflow: 'default',
-      disabled: true,
-    });
-
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('--%');
-  });
-
-  it('shows one decimal for non-integer remaining context percent', () => {
-    const payload = ActionPanelBuilder.build({
-      sessionKey: 'session-4-1',
-      workflow: 'default',
-      contextRemainingPercent: 63.2,
-    });
-
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('63.2%');
-  });
+  // Context percentage tests removed — context is now displayed in thread header badge only.
 
   it('shows choice blocks in panel when choice is pending', () => {
     const payload = ActionPanelBuilder.build({
@@ -173,9 +151,7 @@ describe('ActionPanelBuilder', () => {
     expect(statusText).toContain('🟡 *입력 대기*');
     expect(statusText).toContain('_질문 응답 필요_');
 
-    // Fields section shows context%
-    const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('73%');
+    // Context% moved to thread header badge
   });
 
   it('renders closed state with hero + divider + summary grid + footer', () => {
@@ -200,7 +176,7 @@ describe('ActionPanelBuilder', () => {
     expect(fieldsText).toContain('3:20');
     expect(fieldsText).toContain('도구 사용');
     expect(fieldsText).toContain('12회');
-    expect(fieldsText).toContain('62%');
+    // Context% moved to thread header badge
 
     // Divider present
     const hasDivider = payload.blocks.some((b) => b.type === 'divider');
@@ -231,8 +207,9 @@ describe('ActionPanelBuilder', () => {
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('⚫ *종료됨*');
 
+    // Context% is now in thread header badge — not in action panel
     const fieldsText = getFieldsSectionText(payload);
-    expect(fieldsText).toContain('45%');
+    expect(fieldsText).not.toContain('컨텍스트');
     expect(fieldsText).not.toContain('소요 시간');
 
     const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
