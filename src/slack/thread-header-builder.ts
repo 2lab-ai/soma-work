@@ -1,4 +1,5 @@
 import { SessionLinks, SessionUsage, WorkflowType, ConversationSession } from '../types';
+import { ContextWindowManager } from './context-window-manager';
 
 export interface ThreadHeaderData {
   title?: string;
@@ -122,7 +123,7 @@ export class ThreadHeaderBuilder {
   static formatContextBar(usage?: SessionUsage): string | undefined {
     if (!usage || usage.contextWindow <= 0) return undefined;
 
-    const used = usage.currentInputTokens + usage.currentOutputTokens;
+    const used = ContextWindowManager.computeUsedTokens(usage);
     const total = usage.contextWindow;
     const usedPercent = Math.min(100, (used / total) * 100);
 
