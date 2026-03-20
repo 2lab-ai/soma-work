@@ -547,8 +547,11 @@ export class ClaudeHandler {
       this.logger.debug('Starting new Claude conversation');
     }
 
-    // Enable 1M context window beta (applies to supported models)
-    options.betas = ['context-1m-2025-08-07'];
+    // Enable 1M context window beta (applies to supported models).
+    // Only set for API key users — subscription users get a noisy warning from the SDK.
+    if (process.env.ANTHROPIC_API_KEY) {
+      options.betas = ['context-1m-2025-08-07'];
+    }
 
     // Set abort controller
     if (abortController) {
