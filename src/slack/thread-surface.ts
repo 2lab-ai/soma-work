@@ -1,6 +1,7 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { ActionPanelBuilder, PRStatusInfo } from './action-panel-builder';
 import { ThreadHeaderBuilder } from './thread-header-builder';
+import { ContextWindowManager } from './context-window-manager';
 import { RequestCoordinator } from './request-coordinator';
 import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
@@ -591,9 +592,7 @@ export class ThreadSurface {
   private getContextRemainingPercent(session: ConversationSession): number | undefined {
     const usage = session.usage;
     if (!usage || usage.contextWindow <= 0) return undefined;
-    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
-    const remainingPercent = ((usage.contextWindow - usedTokens) / usage.contextWindow) * 100;
-    return Math.max(0, Math.min(100, Number(remainingPercent.toFixed(1))));
+    return Number(ContextWindowManager.computeRemainingPercent(usage).toFixed(1));
   }
 
   private extractChoiceBlocks(payload: SlackMessagePayload): any[] {

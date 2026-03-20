@@ -95,11 +95,11 @@ describe('ContextHandler', () => {
       expect(postSystemMessage).toHaveBeenCalledTimes(1);
       const message = postSystemMessage.mock.calls[0][1];
 
-      // PROOF: Context window shows 2.8k (2000 + 800), NOT 4.3k (cumulative)
-      expect(message).toContain('*Context Window:* 2.8k / 200.0k');
+      // PROOF: Context window shows 2.8k/200k (2000 + 800), NOT 4.3k (cumulative)
+      expect(message).toContain('2.8k/200k');
 
       // Session totals show cumulative values correctly
-      expect(message).toContain('• Input: 3.0k');   // cumulative
+      expect(message).toContain('• Input: 3k');   // cumulative
       expect(message).toContain('• Output: 1.3k'); // cumulative
     });
 
@@ -210,7 +210,7 @@ describe('ContextHandler', () => {
 
       const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
       const message = postSystemMessage.mock.calls[0][1];
-      expect(message).toContain('Cache read: 3.0k');
+      expect(message).toContain('Cache read: 3k');
       expect(message).toContain('Cache created: 500');
     });
   });

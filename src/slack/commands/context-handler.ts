@@ -1,5 +1,7 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import { ContextWindowManager } from '../context-window-manager';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
 
 /**
  * Handles /context command - displays current session context window usage
@@ -34,20 +36,13 @@ export class ContextHandler implements CommandHandler {
 
     const usage = session.usage;
 
-    // Format token counts with K notation
-    const formatTokens = (n: number): string => {
-      if (n >= 1000) {
-        return `${(n / 1000).toFixed(1)}k`;
-      }
-      return n.toString();
-    };
-
-    // Calculate context window usage
-    // Context = input (previous history + current message) + output (current response)
-    // This is the approximate context size for the next request
+    // Calculate context window usage using single source of truth
     const currentContext = usage.currentInputTokens + usage.currentOutputTokens;
     const contextWindow = usage.contextWindow;
-    const availablePercent = Math.max(0, ((contextWindow - currentContext) / contextWindow) * 100);
+    const availablePercent = ContextWindowManager.computeRemainingPercent(usage);
+
+    // Context bar visualization
+    const contextBar = ThreadHeaderBuilder.formatContextBar(usage) || '░░░░░';
 
     const lines: string[] = [
       '📊 *Session Context*',
@@ -56,23 +51,24 @@ export class ContextHandler implements CommandHandler {
 
     // Model info
     if (session.model) {
-      lines.push(`*Model:* \`${session.model}\``);
+      lines.push(`*Model:* \`${ThreadHeaderBuilder.formatModelName(session.model)}\``);
     }
 
-    // Current context window usage (what user wants to see!)
-    lines.push(`*Context Window:* ${formatTokens(currentContext)} / ${formatTokens(contextWindow)} (${availablePercent.toFixed(0)}% available)`);
+    // Current context window usage with visual bar
+    lines.push(`*Context Window:* ${contextBar}`);
+    lines.push(`  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${availablePercent.toFixed(0)}% available)`);
 
     // Cache info
     if (usage.currentCacheReadTokens > 0 || usage.currentCacheCreateTokens > 0) {
-      lines.push(`  • Cache read: ${formatTokens(usage.currentCacheReadTokens)}`);
-      lines.push(`  • Cache created: ${formatTokens(usage.currentCacheCreateTokens)}`);
+      lines.push(`  • Cache read: ${ThreadHeaderBuilder.formatTokenCount(usage.currentCacheReadTokens)}`);
+      lines.push(`  • Cache created: ${ThreadHeaderBuilder.formatTokenCount(usage.currentCacheCreateTokens)}`);
     }
 
     // Session totals (cumulative)
     lines.push('');
     lines.push('*Session Totals:*');
-    lines.push(`  • Input: ${formatTokens(usage.totalInputTokens)}`);
-    lines.push(`  • Output: ${formatTokens(usage.totalOutputTokens)}`);
+    lines.push(`  • Input: ${ThreadHeaderBuilder.formatTokenCount(usage.totalInputTokens)}`);
+    lines.push(`  • Output: ${ThreadHeaderBuilder.formatTokenCount(usage.totalOutputTokens)}`);
 
     // Cost
     if (usage.totalCostUsd > 0) {

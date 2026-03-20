@@ -73,9 +73,19 @@ export class ContextWindowManager {
   }
 
   /**
-   * Calculate remaining context window percentage
+   * Calculate remaining context window percentage.
+   * Instance method for backward compatibility.
    */
   calculateRemainingPercent(usage: SessionUsage): number {
+    return ContextWindowManager.computeRemainingPercent(usage);
+  }
+
+  /**
+   * Static utility: compute remaining context window percentage from SessionUsage.
+   * Single source of truth — all callers should use this instead of inline math.
+   */
+  static computeRemainingPercent(usage: SessionUsage): number {
+    if (!usage || usage.contextWindow <= 0) return 0;
     const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
     const contextWindow = usage.contextWindow;
     return Math.max(0, Math.min(100, ((contextWindow - usedTokens) / contextWindow) * 100));

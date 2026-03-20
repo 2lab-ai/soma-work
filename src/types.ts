@@ -27,7 +27,12 @@ export type WorkflowType =
   | 'default';
 
 /**
- * Token usage tracking for a session
+ * Token usage tracking for a session.
+ *
+ * `contextWindow` is now **dynamically updated** from the SDK's
+ * `ModelUsage.contextWindow` field when available, instead of being
+ * hardcoded to 200k. This correctly reflects Opus 4.6 (1M), Sonnet 4.6
+ * (1M), Sonnet 4.5 (200k default / 1M with beta header), etc.
  */
 export interface SessionUsage {
   // Current context window state (from most recent request)
@@ -35,7 +40,7 @@ export interface SessionUsage {
   currentOutputTokens: number;      // Output tokens in most recent response
   currentCacheReadTokens: number;   // Cache read tokens in current request
   currentCacheCreateTokens: number; // Cache create tokens in current request
-  contextWindow: number;            // Max context window (e.g., 200000)
+  contextWindow: number;            // Max context window — dynamically set from SDK (e.g. 1_000_000)
 
   // Cumulative session totals
   totalInputTokens: number;

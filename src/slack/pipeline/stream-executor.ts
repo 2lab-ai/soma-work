@@ -46,8 +46,10 @@ export interface ExecuteResult {
   continuation?: Continuation;  // Next action to perform (if any)
 }
 
-// Default context window size (200k for Claude models)
-const DEFAULT_CONTEXT_WINDOW = 200000;
+// Fallback context window size when SDK doesn't report contextWindow.
+// Modern models (Opus 4.6, Sonnet 4.6) have 1M natively, but older models
+// default to 200k. We use 200k as a safe fallback.
+const FALLBACK_CONTEXT_WINDOW = 200_000;
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -397,7 +399,7 @@ export class StreamExecutor {
             contextUsagePercentBefore,
             contextUsagePercentAfter: this.getContextUsagePercentFromResult(
               usage,
-              session.usage?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+              session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW
             ),
             usageBefore,
             usageAfter,
@@ -1042,7 +1044,12 @@ export class StreamExecutor {
   }
 
   /**
-   * Update session usage data from stream result
+   * Update session usage data from stream result.
+   *
+   * Context window size is dynamically set from the SDK's
+   * `ModelUsage.contextWindow` when available, replacing the old
+   * hardcoded 200k default. This correctly handles Opus 4.6 (1M),
+   * Sonnet 4.6 (1M), and any future model sizes.
    */
   private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
     if (!session.usage) {
@@ -1052,13 +1059,24 @@ export class StreamExecutor {
         currentOutputTokens: 0,
         currentCacheReadTokens: 0,
         currentCacheCreateTokens: 0,
-        contextWindow: DEFAULT_CONTEXT_WINDOW,
+        contextWindow: FALLBACK_CONTEXT_WINDOW,
         // Cumulative totals
         totalInputTokens: 0,
         totalOutputTokens: 0,
         totalCostUsd: 0,
         lastUpdated: Date.now(),
       };
+    }
+
+    // Dynamically update context window from SDK if available.
+    // This replaces the hardcoded 200k — the SDK knows the model's actual max.
+    if (usage.contextWindow && usage.contextWindow > 0) {
+      session.usage.contextWindow = usage.contextWindow;
+    }
+
+    // Update model name on session (useful for display)
+    if (usage.modelName && !session.model) {
+      session.model = usage.modelName;
     }
 
     // Update current context (overwrite - this is the current context window usage)
@@ -1076,6 +1094,8 @@ export class StreamExecutor {
 
     this.logger.debug('Updated session usage', {
       currentContext: session.usage.currentInputTokens + session.usage.currentOutputTokens,
+      contextWindow: session.usage.contextWindow,
+      contextWindowSource: usage.contextWindow ? 'sdk' : 'fallback',
       totalInput: session.usage.totalInputTokens,
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,

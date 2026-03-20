@@ -1,6 +1,7 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { ClaudeHandler } from '../../claude-handler';
 import { RequestCoordinator } from '../request-coordinator';
+import { ContextWindowManager } from '../context-window-manager';
 import { Logger } from '../../logger';
 import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
@@ -376,9 +377,7 @@ export class ActionPanelActionHandler {
   private getContextRemainingPercent(session: ConversationSession): number | undefined {
     const usage = session.usage;
     if (!usage || usage.contextWindow <= 0) return undefined;
-    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
-    const remainingPercent = ((usage.contextWindow - usedTokens) / usage.contextWindow) * 100;
-    return Math.max(0, Math.min(100, Number(remainingPercent.toFixed(1))));
+    return Number(ContextWindowManager.computeRemainingPercent(usage).toFixed(1));
   }
 
   private async handleFocusChoice(session: ConversationSession, respond: RespondFn): Promise<void> {
