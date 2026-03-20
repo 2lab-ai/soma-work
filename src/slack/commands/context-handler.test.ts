@@ -155,7 +155,7 @@ describe('ContextHandler', () => {
     });
 
     it('should show warning when context is nearly full', async () => {
-      // 180k used out of 200k = only 10% available
+      // Total used = 150k + 30k + 5k(cacheRead) + 2k(cacheCreate) = 187k of 200k = 7% remaining
       const usage: SessionUsage = {
         currentInputTokens: 150000,
         currentOutputTokens: 30000,
@@ -180,7 +180,7 @@ describe('ContextHandler', () => {
 
       const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
       const message = postSystemMessage.mock.calls[0][1];
-      expect(message).toContain('10% available');
+      expect(message).toContain('7% available');
       expect(message).toContain('⚠️ Context running low');
       expect(message).toContain('/renew');
     });
@@ -210,6 +210,8 @@ describe('ContextHandler', () => {
 
       const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
       const message = postSystemMessage.mock.calls[0][1];
+      // Context now includes cache tokens: 5000 + 3000 + 500 + 1000 = 9500 = 9.5k
+      expect(message).toContain('9.5k/200k');
       expect(message).toContain('Cache read: 3k');
       expect(message).toContain('Cache created: 500');
     });

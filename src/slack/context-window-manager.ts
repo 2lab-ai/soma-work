@@ -86,9 +86,30 @@ export class ContextWindowManager {
    */
   static computeRemainingPercent(usage: SessionUsage): number {
     if (!usage || usage.contextWindow <= 0) return 0;
-    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const usedTokens = this.computeUsedTokens(usage);
     const contextWindow = usage.contextWindow;
     return Math.max(0, Math.min(100, ((contextWindow - usedTokens) / contextWindow) * 100));
+  }
+
+  /**
+   * Compute total tokens occupying the context window.
+   *
+   * SDK's modelUsage reports `inputTokens` as non-cached tokens only.
+   * Cache-read and cache-creation tokens still occupy context window
+   * space, so we must include them:
+   *
+   *   contextUsed = inputTokens + cacheReadTokens + cacheCreateTokens + outputTokens
+   *
+   * Example: inputTokens=3, cacheRead=117.5k, cacheCreate=5.8k, output=626
+   *   → actual context = 123,929 tokens (not 629)
+   */
+  static computeUsedTokens(usage: SessionUsage): number {
+    return (
+      usage.currentInputTokens +
+      usage.currentCacheReadTokens +
+      usage.currentCacheCreateTokens +
+      usage.currentOutputTokens
+    );
   }
 
   /**

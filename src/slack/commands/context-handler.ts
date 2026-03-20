@@ -37,7 +37,7 @@ export class ContextHandler implements CommandHandler {
     const usage = session.usage;
 
     // Calculate context window usage using single source of truth
-    const currentContext = usage.currentInputTokens + usage.currentOutputTokens;
+    const currentContext = ContextWindowManager.computeUsedTokens(usage);
     const contextWindow = usage.contextWindow;
     const availablePercent = ContextWindowManager.computeRemainingPercent(usage);
 
