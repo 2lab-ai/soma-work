@@ -7,7 +7,11 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { MarketplaceEntry, MarketplaceManifest, CacheMeta } from './types';
+import {
+  MarketplaceEntry, MarketplaceManifest, MarketplacePluginEntry,
+  CacheMeta,
+  OfficialMarketplaceManifest, OfficialPluginEntry, OfficialPluginSource,
+} from './types';
 import { readCacheMeta, writeCacheMeta, hasCachedPlugin } from './plugin-cache';
 import { Logger } from '../logger';
 
@@ -96,20 +100,99 @@ function downloadAndExtract(repo: string, ref: string): string | null {
 }
 
 /**
- * Read marketplace.json from an extracted tarball root.
+ * Read marketplace manifest from an extracted tarball root.
+ *
+ * Search order:
+ * 1. `marketplace.json` (root) — soma-work internal format (Record-based)
+ * 2. `.claude-plugin/marketplace.json` — official format (Array-based)
+ *
+ * If the official format is found, it is normalised to the internal format.
  */
 function readManifest(extractedRoot: string): MarketplaceManifest | null {
-  const manifestPath = path.join(extractedRoot, 'marketplace.json');
-  try {
-    if (!fs.existsSync(manifestPath)) {
-      logger.warn('marketplace.json not found in repo', { path: manifestPath });
-      return null;
+  // Try soma-work internal format first
+  const internalPath = path.join(extractedRoot, 'marketplace.json');
+  if (fs.existsSync(internalPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(internalPath, 'utf-8'));
+      // Distinguish: internal format has plugins as Record, official has plugins as Array
+      if (raw.plugins && !Array.isArray(raw.plugins)) {
+        return raw as MarketplaceManifest;
+      }
+    } catch (error) {
+      logger.error('Failed to parse marketplace.json', { error: (error as Error).message });
     }
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as MarketplaceManifest;
-  } catch (error) {
-    logger.error('Failed to parse marketplace.json', { error: (error as Error).message });
-    return null;
   }
+
+  // Try official format: .claude-plugin/marketplace.json
+  const officialPath = path.join(extractedRoot, '.claude-plugin', 'marketplace.json');
+  if (fs.existsSync(officialPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(officialPath, 'utf-8')) as OfficialMarketplaceManifest;
+      return normaliseOfficialManifest(raw);
+    } catch (error) {
+      logger.error('Failed to parse .claude-plugin/marketplace.json', { error: (error as Error).message });
+    }
+  }
+
+  logger.warn('No marketplace manifest found', { extractedRoot });
+  return null;
+}
+
+/**
+ * Normalise the official marketplace format (array of plugins with source field)
+ * to the internal Record-based format used by fetchPlugin.
+ *
+ * Source mapping:
+ * - string (local path, e.g. "./plugins/stv")     → { path: "plugins/stv" }
+ * - { source: "url", url: "..." }                 → { path: "__external__", externalUrl: url }
+ * - { source: "git-subdir", url, path, ref, sha } → { path: "__external__", externalUrl: url, externalSubdir: subpath }
+ */
+function normaliseOfficialManifest(official: OfficialMarketplaceManifest): MarketplaceManifest {
+  const plugins: Record<string, MarketplacePluginEntry> = {};
+
+  for (const entry of official.plugins) {
+    const normalised = normalisePluginSource(entry.source);
+    if (normalised) {
+      plugins[entry.name] = {
+        ...normalised,
+        description: entry.description,
+      };
+    }
+  }
+
+  return {
+    name: official.name,
+    version: official.metadata?.version,
+    plugins,
+  };
+}
+
+/**
+ * Convert an official plugin source to the internal MarketplacePluginEntry format.
+ */
+function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePluginEntry, 'description'> | null {
+  if (typeof source === 'string') {
+    // Local path: "./plugins/stv" → "plugins/stv"
+    const cleaned = source.replace(/^\.\//, '');
+    return { path: cleaned };
+  }
+
+  if (source.source === 'url') {
+    // External git URL — needs separate clone/fetch
+    return { path: '__external__', externalUrl: source.url };
+  }
+
+  if (source.source === 'git-subdir') {
+    return {
+      path: '__external__',
+      externalUrl: source.url,
+      externalSubdir: source.path,
+      externalRef: source.ref,
+    };
+  }
+
+  logger.warn('Unknown official plugin source type', { source });
+  return null;
 }
 
 /**
@@ -236,7 +319,30 @@ export async function fetchPlugin(
     // Ensure plugins dir exists
     fs.mkdirSync(pluginsDir, { recursive: true });
 
-    // Install plugin
+    // Handle external URL sources (plugin lives in a separate repo)
+    if (pluginEntry.externalUrl) {
+      const externalResult = await fetchExternalPlugin(
+        pluginEntry.externalUrl,
+        pluginName,
+        pluginsDir,
+        pluginEntry.externalSubdir,
+        pluginEntry.externalRef,
+      );
+      if (externalResult) return externalResult;
+
+      // Fall back to stale cache if external fetch fails
+      if (hasCachedPlugin(pluginsDir, pluginName)) {
+        logger.warn('External fetch failed, using stale cache', { pluginName });
+        return {
+          pluginPath: path.join(pluginsDir, pluginName),
+          sha: cached?.sha || 'unknown',
+          cached: true,
+        };
+      }
+      return null;
+    }
+
+    // Install plugin from marketplace tarball
     const installedPath = installPlugin(extractedRoot, pluginEntry.path, pluginsDir, pluginName);
     if (!installedPath) return null;
 
@@ -259,6 +365,110 @@ export async function fetchPlugin(
     return { pluginPath: installedPath, sha, cached: false };
   } finally {
     // Cleanup extracted tarball
+    cleanupTmpDir(path.dirname(extractedRoot));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// External plugin fetch (plugin source is a separate git repo)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a git URL to a GitHub owner/repo string.
+ * Handles: "https://github.com/owner/repo.git", "owner/repo", etc.
+ */
+function gitUrlToRepo(url: string): string | null {
+  // Already owner/repo format
+  if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(url)) {
+    return url;
+  }
+  // GitHub URL
+  const match = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+  if (match) {
+    return `${match[1]}/${match[2]}`;
+  }
+  return null;
+}
+
+/**
+ * Fetch a plugin that lives in its own external git repo (not inside the marketplace repo).
+ * Used when the official marketplace lists a plugin with source.source === "url" or "git-subdir".
+ */
+async function fetchExternalPlugin(
+  externalUrl: string,
+  pluginName: string,
+  pluginsDir: string,
+  subdir?: string,
+  ref?: string,
+): Promise<FetchResult | null> {
+  const repo = gitUrlToRepo(externalUrl);
+  if (!repo) {
+    logger.error('Cannot parse external URL as GitHub repo', { externalUrl, pluginName });
+    return null;
+  }
+
+  const gitRef = ref || 'main';
+  const cached = readCacheMeta(pluginsDir, pluginName);
+
+  // SHA check for caching
+  const remoteSha = resolveRemoteSha(repo, gitRef);
+  if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
+    logger.info('External plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
+    return {
+      pluginPath: path.join(pluginsDir, pluginName),
+      sha: remoteSha,
+      cached: true,
+    };
+  }
+
+  if (!remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
+    logger.warn('Cannot reach external repo, using stale cache', { pluginName, repo });
+    return {
+      pluginPath: path.join(pluginsDir, pluginName),
+      sha: cached?.sha || 'unknown',
+      cached: true,
+    };
+  }
+
+  logger.info('Downloading external plugin', { pluginName, repo, ref: gitRef, subdir });
+
+  const extractedRoot = downloadAndExtract(repo, gitRef);
+  if (!extractedRoot) return null;
+
+  try {
+    // Determine the source directory inside the extracted tarball
+    const sourcePath = subdir
+      ? path.join(extractedRoot, subdir)
+      : extractedRoot;
+
+    if (!fs.existsSync(sourcePath)) {
+      logger.error('External plugin path not found', { pluginName, sourcePath, subdir });
+      return null;
+    }
+
+    fs.mkdirSync(pluginsDir, { recursive: true });
+
+    const targetPath = path.join(pluginsDir, pluginName);
+    const tmpTarget = `${targetPath}.tmp.${Date.now()}`;
+
+    // Copy to temp, then atomic swap
+    fs.cpSync(sourcePath, tmpTarget, { recursive: true });
+    if (fs.existsSync(targetPath)) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    }
+    fs.renameSync(tmpTarget, targetPath);
+
+    const sha = remoteSha || 'unknown';
+    writeCacheMeta(pluginsDir, pluginName, {
+      sha,
+      fetchedAt: new Date().toISOString(),
+      marketplace: `external:${repo}`,
+      ref: gitRef,
+    });
+
+    logger.info('External plugin installed', { pluginName, sha: sha.slice(0, 8), path: targetPath });
+    return { pluginPath: targetPath, sha, cached: false };
+  } finally {
     cleanupTmpDir(path.dirname(extractedRoot));
   }
 }

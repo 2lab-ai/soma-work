@@ -16,6 +16,14 @@ vi.mock('../unified-config-loader', () => ({
   saveUnifiedConfig: vi.fn(),
 }));
 
+// Mock defaults — disable auto-merge of default plugins in tests
+vi.mock('./defaults', () => ({
+  DEFAULT_MARKETPLACES: [],
+  DEFAULT_PLUGINS: [],
+  isDefaultPlugin: () => false,
+  isDefaultMarketplace: () => false,
+}));
+
 import { fetchPlugin } from './marketplace-fetcher';
 const mockFetchPlugin = vi.mocked(fetchPlugin);
 
