@@ -21,7 +21,6 @@ vi.mock('./defaults', () => ({
   DEFAULT_MARKETPLACES: [],
   DEFAULT_PLUGINS: [],
   isDefaultPlugin: () => false,
-  isDefaultMarketplace: () => false,
 }));
 
 import { fetchPlugin } from './marketplace-fetcher';

@@ -225,6 +225,9 @@ export class PluginManager {
 
   /** Remove a plugin ref. Persists to config.json when configFile is set. */
   removePlugin(pluginRef: string): CrudResult {
+    if (isDefaultPlugin(pluginRef)) {
+      return { success: false, error: `Default plugin "${pluginRef}" cannot be removed` };
+    }
     const existing = this.pluginConfig.plugins || [];
     if (!existing.includes(pluginRef)) {
       return { success: false, error: `Plugin "${pluginRef}" not found` };
@@ -289,10 +292,9 @@ export class PluginManager {
     };
   }
 
-  private buildMarketplaceMap(config?: PluginConfig): Map<string, MarketplaceEntry> {
-    const source = config || this.pluginConfig;
+  private buildMarketplaceMap(config: PluginConfig): Map<string, MarketplaceEntry> {
     const map = new Map<string, MarketplaceEntry>();
-    for (const entry of source.marketplace || []) {
+    for (const entry of config.marketplace || []) {
       if (map.has(entry.name)) {
         logger.warn('Duplicate marketplace name — later entry wins', { name: entry.name });
       }
@@ -301,10 +303,9 @@ export class PluginManager {
     return map;
   }
 
-  private parsePluginRefs(config?: PluginConfig): PluginRef[] {
-    const source = config || this.pluginConfig;
+  private parsePluginRefs(config: PluginConfig): PluginRef[] {
     const refs: PluginRef[] = [];
-    for (const raw of source.plugins || []) {
+    for (const raw of config.plugins || []) {
       const ref = parsePluginRef(raw);
       if (ref) refs.push(ref);
     }

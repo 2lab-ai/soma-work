@@ -10,7 +10,7 @@ import * as os from 'os';
 import {
   MarketplaceEntry, MarketplaceManifest, MarketplacePluginEntry,
   CacheMeta,
-  OfficialMarketplaceManifest, OfficialPluginEntry, OfficialPluginSource,
+  OfficialMarketplaceManifest, OfficialPluginSource,
 } from './types';
 import { readCacheMeta, writeCacheMeta, hasCachedPlugin } from './plugin-cache';
 import { Logger } from '../logger';
@@ -24,6 +24,11 @@ export interface FetchResult {
   sha: string;
   /** Whether the result came from cache */
   cached: boolean;
+}
+
+/** Build a cached FetchResult for a given plugin. */
+function cachedResult(pluginsDir: string, pluginName: string, sha: string): FetchResult {
+  return { pluginPath: path.join(pluginsDir, pluginName), sha, cached: true };
 }
 
 /**
@@ -259,11 +264,7 @@ export async function fetchPlugin(
   const remoteSha = resolveRemoteSha(marketplace.repo, ref);
   if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.info('Plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
-    return {
-      pluginPath: path.join(pluginsDir, pluginName),
-      sha: remoteSha,
-      cached: true,
-    };
+    return cachedResult(pluginsDir, pluginName, remoteSha);
   }
 
   // Network failure but we have cache — use stale cache
@@ -272,11 +273,7 @@ export async function fetchPlugin(
       pluginName,
       cachedSha: cached?.sha?.slice(0, 8),
     });
-    return {
-      pluginPath: path.join(pluginsDir, pluginName),
-      sha: cached?.sha || 'unknown',
-      cached: true,
-    };
+    return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
   }
 
   // Need to download
@@ -291,11 +288,7 @@ export async function fetchPlugin(
   if (!extractedRoot) {
     if (hasCachedPlugin(pluginsDir, pluginName)) {
       logger.warn('Download failed, falling back to stale cache', { pluginName });
-      return {
-        pluginPath: path.join(pluginsDir, pluginName),
-        sha: cached?.sha || 'unknown',
-        cached: true,
-      };
+      return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
     }
     return null;
   }
@@ -335,11 +328,7 @@ export async function fetchPlugin(
       // Fall back to stale cache if external fetch fails
       if (hasCachedPlugin(pluginsDir, pluginName)) {
         logger.warn('External fetch failed, using stale cache', { pluginName });
-        return {
-          pluginPath: path.join(pluginsDir, pluginName),
-          sha: cached?.sha || 'unknown',
-          cached: true,
-        };
+        return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
       }
       return null;
     }
@@ -418,20 +407,12 @@ async function fetchExternalPlugin(
   const remoteSha = pinnedSha || resolveRemoteSha(repo, gitRef);
   if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.info('External plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
-    return {
-      pluginPath: path.join(pluginsDir, pluginName),
-      sha: remoteSha,
-      cached: true,
-    };
+    return cachedResult(pluginsDir, pluginName, remoteSha);
   }
 
   if (!remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.warn('Cannot reach external repo, using stale cache', { pluginName, repo });
-    return {
-      pluginPath: path.join(pluginsDir, pluginName),
-      sha: cached?.sha || 'unknown',
-      cached: true,
-    };
+    return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
   }
 
   logger.info('Downloading external plugin', { pluginName, repo, ref: gitRef, subdir });
@@ -440,27 +421,11 @@ async function fetchExternalPlugin(
   if (!extractedRoot) return null;
 
   try {
-    // Determine the source directory inside the extracted tarball
-    const sourcePath = subdir
-      ? path.join(extractedRoot, subdir)
-      : extractedRoot;
-
-    if (!fs.existsSync(sourcePath)) {
-      logger.error('External plugin path not found', { pluginName, sourcePath, subdir });
-      return null;
-    }
-
     fs.mkdirSync(pluginsDir, { recursive: true });
 
-    const targetPath = path.join(pluginsDir, pluginName);
-    const tmpTarget = `${targetPath}.tmp.${Date.now()}`;
-
-    // Copy to temp, then atomic swap
-    fs.cpSync(sourcePath, tmpTarget, { recursive: true });
-    if (fs.existsSync(targetPath)) {
-      fs.rmSync(targetPath, { recursive: true, force: true });
-    }
-    fs.renameSync(tmpTarget, targetPath);
+    // Reuse installPlugin for atomic copy-and-swap (includes tmp cleanup on error)
+    const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
+    if (!installedPath) return null;
 
     const sha = remoteSha || 'unknown';
     writeCacheMeta(pluginsDir, pluginName, {
@@ -470,8 +435,8 @@ async function fetchExternalPlugin(
       ref: gitRef,
     });
 
-    logger.info('External plugin installed', { pluginName, sha: sha.slice(0, 8), path: targetPath });
-    return { pluginPath: targetPath, sha, cached: false };
+    logger.info('External plugin installed', { pluginName, sha: sha.slice(0, 8), path: installedPath });
+    return { pluginPath: installedPath, sha, cached: false };
   } finally {
     cleanupTmpDir(path.dirname(extractedRoot));
   }
