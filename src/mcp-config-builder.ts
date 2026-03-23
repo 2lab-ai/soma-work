@@ -14,6 +14,7 @@ import * as path from 'path';
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
+const SLACK_THREAD_SERVER_BASENAME = 'slack-thread-mcp-server';
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -69,6 +70,7 @@ export function resolveModelCommandServerPath(
 export interface SlackContext {
   channel: string;
   threadTs?: string;
+  mentionTs?: string;
   user: string;
   channelDescription?: string;
 }
@@ -138,6 +140,11 @@ export class McpConfigBuilder {
         slackContext,
         modelCommandContext
       );
+    }
+
+    // Add slack-thread server when session started from a thread mention
+    if (slackContext?.threadTs) {
+      internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext);
     }
 
     // Always add permission prompt server when in Slack context
@@ -301,6 +308,60 @@ export class McpConfigBuilder {
     return resolveModelCommandServerPath(__dirname, runtimeExt).triedPaths;
   }
 
+  /**
+   * Build slack-thread MCP server configuration (thread context exploration)
+   */
+  private buildSlackThreadServer(slackContext: SlackContext): Record<string, any> {
+    const serverPath = this.getSlackThreadServerPath();
+    const threadContext = {
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs!,
+      mentionTs: slackContext.mentionTs || slackContext.threadTs!,
+    };
+
+    return {
+      command: 'npx',
+      args: ['tsx', serverPath],
+      env: {
+        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
+        SLACK_THREAD_CONTEXT: JSON.stringify(threadContext),
+      },
+    };
+  }
+
+  private slackThreadServerPath: string | null = null;
+  private slackThreadServerPathChecked = false;
+
+  private getSlackThreadServerPath(): string {
+    if (!this.slackThreadServerPathChecked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolveInternalMcpServer(__dirname, SLACK_THREAD_SERVER_BASENAME, runtimeExt);
+      this.slackThreadServerPathChecked = true;
+
+      if (!result.resolvedPath) {
+        this.logger.error('Slack-thread MCP server file not found', {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn('Slack-thread MCP server path fallback used', {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+
+      this.slackThreadServerPath = result.resolvedPath;
+    }
+
+    if (!this.slackThreadServerPath) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      throw new Error(`Slack-thread MCP server not found. Tried: ${resolveInternalMcpServer(__dirname, SLACK_THREAD_SERVER_BASENAME, runtimeExt).triedPaths.join(', ')}`);
+    }
+
+    return this.slackThreadServerPath;
+  }
+
   private buildLlmServer(): Record<string, any> {
     const llmServerPath = this.getLlmServerPath();
     return {
@@ -356,6 +417,11 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       allowedTools.push('mcp__model-command');
+    }
+
+    // Allow slack-thread tools when in thread context
+    if (slackContext?.threadTs) {
+      allowedTools.push('mcp__slack-thread');
     }
 
     // Always add permission prompt tool (even for bypass users, needed for dangerous commands)
