@@ -12,7 +12,7 @@ import {
   MessageFormatter,
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
-import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
+import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler, SourceWorkingDirDirectiveHandler } from './directives';
 import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
 
@@ -172,6 +172,8 @@ export interface StreamCallbacks {
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called when model outputs source_working_dir JSON directive */
+  onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
   onChoiceCreated?: (
     payload: SlackMessagePayload,
@@ -487,6 +489,14 @@ export class StreamProcessor {
       textContent = channelMessageResult.cleanedText;
       if (this.callbacks.onChannelMessageDetected) {
         await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(textContent);
+    if (workingDirResult.path) {
+      textContent = workingDirResult.cleanedText;
+      if (this.callbacks.onSourceWorkingDirDetected) {
+        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
       }
     }
 
@@ -1000,6 +1010,14 @@ export class StreamProcessor {
       processedResult = channelMessageResult.cleanedText;
       if (this.callbacks.onChannelMessageDetected) {
         await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(processedResult);
+    if (workingDirResult.path) {
+      processedResult = workingDirResult.cleanedText;
+      if (this.callbacks.onSourceWorkingDirDetected) {
+        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
       }
     }
 

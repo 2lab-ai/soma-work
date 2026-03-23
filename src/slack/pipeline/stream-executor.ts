@@ -424,6 +424,14 @@ export class StreamExecutor {
             });
           }
         },
+        onSourceWorkingDirDetected: async (dirPath) => {
+          const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
+          this.logger.info('Source working dir directive processed', {
+            sessionKey,
+            dirPath,
+            added,
+          });
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 

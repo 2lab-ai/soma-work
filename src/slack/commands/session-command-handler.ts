@@ -119,6 +119,14 @@ export class SessionCommandHandler implements CommandHandler {
       }
     }
 
+    // Source working dirs
+    if (session.sourceWorkingDirs?.length) {
+      lines.push('*Source Working Dirs:*');
+      for (const dir of session.sourceWorkingDirs) {
+        lines.push(`  • \`${dir}\``);
+      }
+    }
+
     // Uptime
     if (session.lastActivity) {
       const elapsed = Date.now() - new Date(session.lastActivity).getTime();

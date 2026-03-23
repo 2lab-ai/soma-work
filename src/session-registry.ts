@@ -88,6 +88,8 @@ interface SerializedSession {
   threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
+  // Source working directories tracked for cleanup
+  sourceWorkingDirs?: string[];
 }
 
 /**
@@ -807,6 +809,57 @@ export class SessionRegistry {
   }
 
   /**
+   * Add a source working directory to the session for lifecycle tracking.
+   * The directory must already exist on disk.
+   */
+  addSourceWorkingDir(channel: string, threadTs: string | undefined, dirPath: string): boolean {
+    const key = this.getSessionKey(channel, threadTs);
+    const session = this.sessions.get(key);
+    if (!session) return false;
+
+    // Security: only allow absolute paths under /tmp/
+    if (!dirPath.startsWith('/tmp/')) {
+      this.logger.warn('Rejected source working dir outside /tmp/', { dirPath });
+      return false;
+    }
+
+    if (!fs.existsSync(dirPath)) {
+      this.logger.warn('Source working dir does not exist, not registering', { dirPath });
+      return false;
+    }
+
+    if (!session.sourceWorkingDirs) {
+      session.sourceWorkingDirs = [];
+    }
+    if (!session.sourceWorkingDirs.includes(dirPath)) {
+      session.sourceWorkingDirs.push(dirPath);
+      this.logger.info('Source working dir added to session', { key, dirPath });
+      this.saveSessions();
+    }
+    return true;
+  }
+
+  /**
+   * Remove and delete all source working directories for a session.
+   * Non-blocking: logs errors but never throws.
+   */
+  private cleanupSourceWorkingDirs(session: ConversationSession): void {
+    if (!session.sourceWorkingDirs?.length) return;
+
+    for (const dir of session.sourceWorkingDirs) {
+      try {
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          this.logger.info('Cleaned up source working dir', { dir });
+        }
+      } catch (error) {
+        this.logger.error('Failed to cleanup source working dir (non-blocking)', { dir, error });
+      }
+    }
+    session.sourceWorkingDirs = [];
+  }
+
+  /**
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {
@@ -815,6 +868,7 @@ export class SessionRegistry {
       return false;
     }
 
+    this.cleanupSourceWorkingDirs(session);
     this.sessions.delete(sessionKey);
     this.logger.info('Session terminated', { sessionKey, ownerId: session.ownerId });
 
@@ -846,6 +900,7 @@ export class SessionRegistry {
               this.logger.error('Failed to send sleep expiry message', error);
             }
           }
+          this.cleanupSourceWorkingDirs(session);
           this.sessions.delete(key);
           cleaned++;
         }
@@ -985,6 +1040,7 @@ export class SessionRegistry {
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
+            sourceWorkingDirs: session.sourceWorkingDirs,
           });
         }
       }
@@ -1055,6 +1111,7 @@ export class SessionRegistry {
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
+          sourceWorkingDirs: serialized.sourceWorkingDirs,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
