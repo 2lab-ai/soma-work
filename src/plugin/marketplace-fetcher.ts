@@ -179,7 +179,7 @@ function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePl
 
   if (source.source === 'url') {
     // External git URL — needs separate clone/fetch
-    return { path: '__external__', externalUrl: source.url };
+    return { path: '__external__', externalUrl: source.url, externalSha: source.sha };
   }
 
   if (source.source === 'git-subdir') {
@@ -188,6 +188,7 @@ function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePl
       externalUrl: source.url,
       externalSubdir: source.path,
       externalRef: source.ref,
+      externalSha: source.sha,
     };
   }
 
@@ -327,6 +328,7 @@ export async function fetchPlugin(
         pluginsDir,
         pluginEntry.externalSubdir,
         pluginEntry.externalRef,
+        pluginEntry.externalSha,
       );
       if (externalResult) return externalResult;
 
@@ -400,6 +402,7 @@ async function fetchExternalPlugin(
   pluginsDir: string,
   subdir?: string,
   ref?: string,
+  pinnedSha?: string,
 ): Promise<FetchResult | null> {
   const repo = gitUrlToRepo(externalUrl);
   if (!repo) {
@@ -407,11 +410,12 @@ async function fetchExternalPlugin(
     return null;
   }
 
-  const gitRef = ref || 'main';
+  // Pinned SHA takes precedence over ref for deterministic installs
+  const gitRef = pinnedSha || ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);
 
-  // SHA check for caching
-  const remoteSha = resolveRemoteSha(repo, gitRef);
+  // SHA check for caching — when pinned, compare directly against pinned SHA
+  const remoteSha = pinnedSha || resolveRemoteSha(repo, gitRef);
   if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.info('External plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
     return {

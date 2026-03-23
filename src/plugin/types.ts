@@ -44,6 +44,8 @@ export interface MarketplacePluginEntry {
   externalSubdir?: string;
   /** Git ref for external repo */
   externalRef?: string;
+  /** Pinned commit SHA for external repo (takes precedence over externalRef for downloads) */
+  externalSha?: string;
 }
 
 /** Schema of `marketplace.json` at the root of a marketplace repo (soma-work internal format). */

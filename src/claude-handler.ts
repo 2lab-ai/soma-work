@@ -62,10 +62,14 @@ export class ClaudeHandler {
       this.logger.debug('Empty plugin paths provided, keeping LOCAL_PLUGINS_DIR fallback');
       return;
     }
-    this.pluginPaths = paths;
+    // Always preserve LOCAL_PLUGINS_DIR so built-in src/local plugin is never lost
+    const hasLocal = paths.some(p => p.path === LOCAL_PLUGINS_DIR);
+    this.pluginPaths = hasLocal
+      ? paths
+      : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
     this.logger.info('Plugin paths configured', {
-      count: paths.length,
-      paths: paths.map(p => p.path),
+      count: this.pluginPaths.length,
+      paths: this.pluginPaths.map(p => p.path),
     });
   }
 
