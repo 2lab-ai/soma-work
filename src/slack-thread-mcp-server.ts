@@ -83,6 +83,7 @@ const ALLOWED_FILE_HOSTS = new Set([
 class SlackThreadMcpServer {
   private server: Server;
   private slack: WebClient;
+  private token: string;
   private context: SlackThreadContext;
 
   constructor() {
@@ -102,7 +103,14 @@ class SlackThreadMcpServer {
     }
 
     this.slack = new WebClient(token);
-    this.context = JSON.parse(contextStr);
+    this.token = token;
+    try {
+      this.context = JSON.parse(contextStr);
+    } catch (err) {
+      throw new Error(
+        `Failed to parse SLACK_THREAD_CONTEXT: ${(err as Error).message}. Raw: ${contextStr.substring(0, 200)}`
+      );
+    }
 
     if (!this.context.channel || !this.context.threadTs) {
       throw new Error('SLACK_THREAD_CONTEXT must contain channel and threadTs');
@@ -189,8 +197,22 @@ class SlackThreadMcpServer {
         }
       } catch (error: any) {
         logger.error(`Tool ${name} failed`, error);
+
+        // Classify error for model retry decisions
+        const slackErrorCode = error?.data?.error as string | undefined;
+        const isRateLimited = error?.status === 429 || slackErrorCode === 'ratelimited';
+        const isAuthError = slackErrorCode === 'invalid_auth' || slackErrorCode === 'not_authed';
+
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: error.message }) }],
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: error.message,
+              ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
+              retryable: isRateLimited,
+              ...(isAuthError ? { hint: 'Bot token may be invalid or expired' } : {}),
+            }),
+          }],
           isError: true,
         };
       }
@@ -217,15 +239,18 @@ class SlackThreadMcpServer {
       : [];
 
     const messages = [...beforeMessages, ...afterMessages];
-    const hasMoreBefore = beforeMessages.length > 0 && beforeMessages[0].ts !== this.context.threadTs;
+    // If we asked for N messages before and got exactly N, there are likely more
+    const hasMoreBefore = before > 0 && beforeMessages.length === before;
     const hasMoreAfter = after > 0 && afterMessages.length === after;
 
     return this.formatMessages(messages, hasMoreBefore, hasMoreAfter);
   }
 
   /**
-   * Fetch up to `count` messages ending at (and including) anchorTs.
-   * Uses Slack API `latest` + pagination — never loads the full thread.
+   * Fetch up to `count` replies ending at (and including) anchorTs.
+   * conversations.replies does not support `latest`, so we paginate
+   * forward from thread start, skip the root message, and collect
+   * until we pass the anchor.
    */
   private async fetchMessagesBefore(anchorTs: string, count: number): Promise<any[]> {
     const collected: any[] = [];
@@ -235,39 +260,62 @@ class SlackThreadMcpServer {
       const response = await this.slack.conversations.replies({
         channel: this.context.channel,
         ts: this.context.threadTs,
-        latest: anchorTs,
-        inclusive: true,
         limit: 200,
         cursor,
       });
 
       const msgs = response.messages || [];
-      collected.push(...msgs);
+      for (const m of msgs) {
+        // Skip thread root — always appears as messages[0] on first page
+        if (m.ts === this.context.threadTs) continue;
+        // Stop collecting once we pass the anchor
+        if (m.ts! > anchorTs) break;
+        collected.push(m);
+      }
 
       const nextCursor = response.response_metadata?.next_cursor;
       cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
 
-      // If we've collected enough, stop paginating
-      if (collected.length >= count + 1) break;
+      // If the last message on this page is past the anchor, stop
+      if (msgs.length > 0 && msgs[msgs.length - 1].ts! > anchorTs) break;
     } while (cursor);
 
-    // Return the last `count + 1` messages (anchor included)
-    return collected.slice(-(count + 1));
+    // Return the last `count` messages (anchor included if it exists)
+    return collected.slice(-count);
   }
 
   /**
-   * Fetch up to `count` messages starting after anchorTs (exclusive).
+   * Fetch up to `count` replies starting after anchorTs (exclusive).
+   * Filters out the thread root which conversations.replies always includes.
    */
   private async fetchMessagesAfter(anchorTs: string, count: number): Promise<any[]> {
-    const response = await this.slack.conversations.replies({
-      channel: this.context.channel,
-      ts: this.context.threadTs,
-      oldest: anchorTs,
-      inclusive: false,
-      limit: count,
-    });
+    const collected: any[] = [];
+    let cursor: string | undefined;
 
-    return response.messages || [];
+    do {
+      const response = await this.slack.conversations.replies({
+        channel: this.context.channel,
+        ts: this.context.threadTs,
+        oldest: anchorTs,
+        inclusive: false,
+        limit: Math.min(count + 1, 200), // +1 to account for possible root inclusion
+        cursor,
+      });
+
+      const msgs = response.messages || [];
+      for (const m of msgs) {
+        if (m.ts === this.context.threadTs) continue; // Skip root
+        collected.push(m);
+        if (collected.length >= count) break;
+      }
+
+      const nextCursor = response.response_metadata?.next_cursor;
+      cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+
+      if (collected.length >= count) break;
+    } while (cursor);
+
+    return collected.slice(0, count);
   }
 
   private formatMessages(
@@ -347,7 +395,7 @@ class SlackThreadMcpServer {
 
     // Download file using bot token
     const response = await fetch(file_url, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      headers: { Authorization: `Bearer ${this.token}` },
     });
 
     if (!response.ok) {

@@ -242,13 +242,14 @@ export class McpConfigBuilder {
   private resolveServerPath(
     label: string,
     basename: string,
-    cache: { path: string | null; checked: boolean }
+    cache: { path: string | null; checked: boolean; triedPaths: string[] }
   ): string {
     if (!cache.checked) {
       const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
       const result = resolveInternalMcpServer(__dirname, basename, runtimeExt);
       cache.checked = true;
       cache.path = result.resolvedPath;
+      cache.triedPaths = result.triedPaths;
 
       if (!result.resolvedPath) {
         this.logger.error(`${label} MCP server file not found`, {
@@ -265,30 +266,28 @@ export class McpConfigBuilder {
     }
 
     if (!cache.path) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const tried = resolveInternalMcpServer(__dirname, basename, runtimeExt).triedPaths;
-      throw new Error(`${label} MCP server file not found. Tried: ${tried.join(', ')}`);
+      throw new Error(`${label} MCP server file not found. Tried: ${cache.triedPaths.join(', ')}`);
     }
 
     return cache.path;
   }
 
-  private permissionServerCache = { path: null as string | null, checked: false };
+  private permissionServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
   private getPermissionServerPath(): string {
     return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, this.permissionServerCache);
   }
 
-  private modelCommandServerCache = { path: null as string | null, checked: false };
+  private modelCommandServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
   private getModelCommandServerPath(): string {
     return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, this.modelCommandServerCache);
   }
 
-  private slackThreadServerCache = { path: null as string | null, checked: false };
+  private slackThreadServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
   private getSlackThreadServerPath(): string {
     return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, this.slackThreadServerCache);
   }
 
-  private llmServerCache = { path: null as string | null, checked: false };
+  private llmServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
   private getLlmServerPath(): string {
     return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, this.llmServerCache);
   }
@@ -298,17 +297,22 @@ export class McpConfigBuilder {
    */
   private buildSlackThreadServer(slackContext: SlackContext): Record<string, any> {
     const serverPath = this.getSlackThreadServerPath();
+    const threadTs = slackContext.threadTs;
+    if (!threadTs) {
+      throw new Error('Cannot build slack-thread server without threadTs');
+    }
+
     const threadContext = {
       channel: slackContext.channel,
-      threadTs: slackContext.threadTs!,
-      mentionTs: slackContext.mentionTs!,
+      threadTs,
+      mentionTs: slackContext.mentionTs ?? '',
     };
 
     return {
       command: 'npx',
       args: ['tsx', serverPath],
       env: {
-        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
+        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_THREAD_CONTEXT: JSON.stringify(threadContext),
       },
     };
