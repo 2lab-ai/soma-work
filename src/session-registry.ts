@@ -88,6 +88,8 @@ interface SerializedSession {
   threadRootTs?: string;
   // Onboarding flag
   isOnboarding?: boolean;
+  // Source working directories tracked for cleanup
+  sourceWorkingDirs?: string[];
 }
 
 /**
@@ -807,6 +809,110 @@ export class SessionRegistry {
   }
 
   /**
+   * Validate that a directory path is a safe /tmp/ path suitable for tracking.
+   * Checks: absolute path under /tmp/ or /private/tmp/, no traversal, minimum depth.
+   */
+  private isValidSourceWorkingDirPath(dirPath: string): boolean {
+    if (typeof dirPath !== 'string') return false;
+    const isTmpPath = dirPath.startsWith('/tmp/') || dirPath.startsWith('/private/tmp/');
+    if (!isTmpPath || dirPath.includes('..')) return false;
+    const segments = dirPath.replace(/\/+$/, '').split('/').filter(Boolean);
+    // /private/tmp/X has 3 segments but is same depth as /tmp/X (2 segments)
+    // Require at least one dir below the tmp root to prevent top-level deletion
+    const minDepth = dirPath.startsWith('/private/tmp/') ? 4 : 3;
+    return segments.length >= minDepth;
+  }
+
+  /**
+   * Safely remove a single directory after re-validating its path.
+   * Non-blocking: logs errors but never throws. Returns true if removed.
+   */
+  private safeRemoveSourceDir(dir: string): boolean {
+    if (!this.isValidSourceWorkingDirPath(dir)) {
+      this.logger.warn('Skipping cleanup of suspicious dir path', { dir });
+      return false;
+    }
+    try {
+      if (!fs.existsSync(dir)) return true; // Already gone — treat as success
+      const stat = fs.lstatSync(dir);
+      if (stat.isSymbolicLink()) {
+        this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
+        return false;
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      this.logger.info('Cleaned up source working dir', { dir });
+      return true;
+    } catch (error) {
+      this.logger.error('Failed to cleanup source working dir (non-blocking)', { dir, error });
+      return false;
+    }
+  }
+
+  /**
+   * Add a source working directory to the session for lifecycle tracking.
+   * The directory must already exist on disk.
+   */
+  addSourceWorkingDir(channel: string, threadTs: string | undefined, dirPath: string): boolean {
+    const key = this.getSessionKey(channel, threadTs);
+    const session = this.sessions.get(key);
+    if (!session) {
+      this.logger.warn('Cannot add source working dir: session not found', { channel, threadTs, key, dirPath });
+      return false;
+    }
+
+    if (!this.isValidSourceWorkingDirPath(dirPath)) {
+      this.logger.warn('Rejected invalid source working dir path', { dirPath });
+      return false;
+    }
+
+    if (!fs.existsSync(dirPath)) {
+      this.logger.warn('Source working dir does not exist, not registering', { dirPath });
+      return false;
+    }
+
+    // Resolve symlinks and re-validate the real path is under /tmp/
+    // Note: macOS resolves /tmp -> /private/tmp, both are acceptable
+    let resolvedPath: string;
+    try {
+      resolvedPath = fs.realpathSync(dirPath);
+    } catch (error) {
+      this.logger.warn('Failed to resolve real path for source working dir', { dirPath, error });
+      return false;
+    }
+    if (!this.isValidSourceWorkingDirPath(resolvedPath)) {
+      this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
+      return false;
+    }
+
+    session.sourceWorkingDirs ??= [];
+    const MAX_SOURCE_WORKING_DIRS = 50;
+    if (session.sourceWorkingDirs.length >= MAX_SOURCE_WORKING_DIRS) {
+      this.logger.warn('sourceWorkingDirs limit reached, rejecting new dir', { key, dirPath: resolvedPath, count: session.sourceWorkingDirs.length });
+      return false;
+    }
+    if (!session.sourceWorkingDirs.includes(resolvedPath)) {
+      session.sourceWorkingDirs.push(resolvedPath);
+      this.logger.info('Source working dir added to session', { key, dirPath: resolvedPath });
+      this.saveSessions();
+    }
+    return true;
+  }
+
+  /**
+   * Remove and delete all source working directories for a session.
+   * Updates the session's sourceWorkingDirs to only contain dirs that failed removal.
+   * Non-blocking: logs errors but never throws.
+   */
+  private cleanupSourceWorkingDirs(session: ConversationSession): void {
+    if (!session.sourceWorkingDirs?.length) return;
+    const failed = session.sourceWorkingDirs.filter((dir) => !this.safeRemoveSourceDir(dir));
+    session.sourceWorkingDirs = failed;
+    if (failed.length > 0) {
+      this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
+    }
+  }
+
+  /**
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {
@@ -815,6 +921,7 @@ export class SessionRegistry {
       return false;
     }
 
+    this.cleanupSourceWorkingDirs(session);
     this.sessions.delete(sessionKey);
     this.logger.info('Session terminated', { sessionKey, ownerId: session.ownerId });
 
@@ -846,6 +953,7 @@ export class SessionRegistry {
               this.logger.error('Failed to send sleep expiry message', error);
             }
           }
+          this.cleanupSourceWorkingDirs(session);
           this.sessions.delete(key);
           cleaned++;
         }
@@ -863,6 +971,7 @@ export class SessionRegistry {
         session.sleepStartedAt = new Date();
         session.warningMessageTs = undefined;
         session.lastWarningSentAt = undefined;
+        this.cleanupSourceWorkingDirs(session);
         slept++;
 
         if (this.expiryCallbacks) {
@@ -985,6 +1094,7 @@ export class SessionRegistry {
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
+            sourceWorkingDirs: session.sourceWorkingDirs,
           });
         }
       }
@@ -1023,11 +1133,19 @@ export class SessionRegistry {
           const sleepAge = sleepStartedAt
             ? now - sleepStartedAt.getTime()
             : MAX_SLEEP_DURATION + 1;
-          if (sleepAge >= MAX_SLEEP_DURATION) continue; // Expired sleep session
+          if (sleepAge >= MAX_SLEEP_DURATION) {
+            // Cleanup sourceWorkingDirs before discarding expired session
+            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
+            continue;
+          }
         } else {
           // For active sessions: check against 24h timeout
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge) continue;
+          if (sessionAge >= maxAge) {
+            // Cleanup sourceWorkingDirs before discarding expired session
+            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
+            continue;
+          }
         }
 
         const session: ConversationSession = {
@@ -1055,6 +1173,17 @@ export class SessionRegistry {
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
+          sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
+            (d: unknown) => {
+              if (typeof d !== 'string') {
+                this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+                return false;
+              }
+              const valid = this.isValidSourceWorkingDirPath(d);
+              if (!valid) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+              return valid;
+            }
+          ),
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
