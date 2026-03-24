@@ -201,6 +201,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionManager: this.sessionUiManager,
       actionHandlers: this.actionHandlers,
+      commandDeps,
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
   }
