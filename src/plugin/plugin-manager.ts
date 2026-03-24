@@ -15,6 +15,7 @@ import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { fetchPlugin } from './marketplace-fetcher';
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { Logger } from '../logger';
+import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin, isDefaultMarketplace } from './defaults';
 
 const logger = new Logger('PluginManager');
 
@@ -47,13 +48,19 @@ export class PluginManager {
   /**
    * Download/verify all plugins from marketplaces.
    * Should be called once during service startup.
+   *
+   * Default plugins (superpowers, stv) are always merged into the config
+   * before resolution — they cannot be disabled via config.json.
    */
   async initialize(): Promise<void> {
     const results: ResolvedPlugin[] = [];
-    const marketplaceMap = this.buildMarketplaceMap();
 
-    // Resolve marketplace plugins
-    const refs = this.parsePluginRefs();
+    // Merge default marketplaces and plugins into the effective config
+    const effectiveConfig = this.mergeDefaults();
+    const marketplaceMap = this.buildMarketplaceMap(effectiveConfig);
+
+    // Resolve marketplace plugins (user + default combined)
+    const refs = this.parsePluginRefs(effectiveConfig);
     for (const ref of refs) {
       const marketplace = marketplaceMap.get(ref.marketplaceName);
       if (!marketplace) {
@@ -68,10 +75,11 @@ export class PluginManager {
       try {
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
         if (result) {
+          const refStr = `${ref.pluginName}@${ref.marketplaceName}`;
           results.push({
-            name: `${ref.pluginName}@${ref.marketplaceName}`,
+            name: refStr,
             localPath: result.pluginPath,
-            source: 'marketplace',
+            source: isDefaultPlugin(refStr) ? 'default' : 'marketplace',
           });
         }
       } catch (error) {
@@ -99,6 +107,7 @@ export class PluginManager {
 
     logger.info('Plugin initialization complete', {
       total: results.length,
+      defaults: results.filter(r => r.source === 'default').length,
       marketplace: results.filter(r => r.source === 'marketplace').length,
       localOverrides: results.filter(r => r.source === 'local-override').length,
     });
@@ -177,6 +186,9 @@ export class PluginManager {
 
   /** Remove a marketplace by name. Persists to config.json when configFile is set. */
   removeMarketplace(name: string): CrudResult {
+    if (isDefaultMarketplace(name)) {
+      return { success: false, error: `Default marketplace "${name}" cannot be removed` };
+    }
     const existing = this.pluginConfig.marketplace || [];
     if (!existing.some(m => m.name === name)) {
       return { success: false, error: `Marketplace "${name}" not found` };
@@ -216,6 +228,9 @@ export class PluginManager {
 
   /** Remove a plugin ref. Persists to config.json when configFile is set. */
   removePlugin(pluginRef: string): CrudResult {
+    if (isDefaultPlugin(pluginRef)) {
+      return { success: false, error: `Default plugin "${pluginRef}" cannot be removed` };
+    }
     const existing = this.pluginConfig.plugins || [];
     if (!existing.includes(pluginRef)) {
       return { success: false, error: `Plugin "${pluginRef}" not found` };
@@ -251,9 +266,38 @@ export class PluginManager {
   // Private helpers
   // =========================================================================
 
-  private buildMarketplaceMap(): Map<string, MarketplaceEntry> {
+  /**
+   * Merge DEFAULT_MARKETPLACES and DEFAULT_PLUGINS into the user config.
+   * User config takes precedence on name collisions.
+   */
+  private mergeDefaults(): PluginConfig {
+    const userMarketplaces = this.pluginConfig.marketplace || [];
+    const userPlugins = this.pluginConfig.plugins || [];
+    const userNames = new Set(userMarketplaces.map(m => m.name));
+
+    // Add default marketplaces that aren't already defined by user
+    const mergedMarketplaces = [
+      ...userMarketplaces,
+      ...DEFAULT_MARKETPLACES.filter(d => !userNames.has(d.name)),
+    ];
+
+    // Add default plugins that aren't already in user list
+    const userPluginSet = new Set(userPlugins);
+    const mergedPlugins = [
+      ...userPlugins,
+      ...DEFAULT_PLUGINS.filter(d => !userPluginSet.has(d)),
+    ];
+
+    return {
+      ...this.pluginConfig,
+      marketplace: mergedMarketplaces,
+      plugins: mergedPlugins,
+    };
+  }
+
+  private buildMarketplaceMap(config: PluginConfig): Map<string, MarketplaceEntry> {
     const map = new Map<string, MarketplaceEntry>();
-    for (const entry of this.pluginConfig.marketplace || []) {
+    for (const entry of config.marketplace || []) {
       if (map.has(entry.name)) {
         logger.warn('Duplicate marketplace name — later entry wins', { name: entry.name });
       }
@@ -262,9 +306,9 @@ export class PluginManager {
     return map;
   }
 
-  private parsePluginRefs(): PluginRef[] {
+  private parsePluginRefs(config: PluginConfig): PluginRef[] {
     const refs: PluginRef[] = [];
-    for (const raw of this.pluginConfig.plugins || []) {
+    for (const raw of config.plugins || []) {
       const ref = parsePluginRef(raw);
       if (ref) refs.push(ref);
     }
