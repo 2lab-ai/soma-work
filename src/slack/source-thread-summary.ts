@@ -31,22 +31,6 @@ export async function postSourceThreadSummary(
   try {
     const { channel, threadTs } = session.sourceThread;
 
-    // Build work thread permalink
-    const sessionChannel = session.channelId;
-    const sessionThreadTs = session.threadRootTs || session.threadTs;
-    let workThreadLink = '';
-    if (sessionChannel && sessionThreadTs) {
-      const permalink = await slackApi.getPermalink(sessionChannel, sessionThreadTs);
-      if (permalink) {
-        workThreadLink = `\n🧵 *작업 스레드*: <${permalink}|열기>`;
-      } else {
-        logger.warn('Failed to get permalink for work thread in summary', {
-          sessionChannel,
-          sessionThreadTs,
-        });
-      }
-    }
-
     // Build summary lines
     const icon = trigger === 'merged' ? '✅' : '🔚';
     const verb = trigger === 'merged' ? '작업 완료 (PR merged)' : '세션 종료';
@@ -66,8 +50,19 @@ export async function postSourceThreadSummary(
       lines.push(`📊 *워크플로우*: \`${session.workflow}\``);
     }
 
-    if (workThreadLink) {
-      lines.push(workThreadLink);
+    // Build work thread permalink
+    const sessionChannel = session.channelId;
+    const sessionThreadTs = session.threadRootTs || session.threadTs;
+    if (sessionChannel && sessionThreadTs) {
+      const permalink = await slackApi.getPermalink(sessionChannel, sessionThreadTs);
+      if (permalink) {
+        lines.push(`🧵 *작업 스레드*: <${permalink}|열기>`);
+      } else {
+        logger.warn('Failed to get permalink for work thread in summary', {
+          sessionChannel,
+          sessionThreadTs,
+        });
+      }
     }
 
     await slackApi.postMessage(channel, lines.join('\n'), { threadTs });
