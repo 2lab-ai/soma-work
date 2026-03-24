@@ -33,18 +33,72 @@ export interface PluginConfig {
 // marketplace.json (lives in each marketplace repo root)
 // ---------------------------------------------------------------------------
 
+/** Sentinel path value indicating the plugin lives in an external git repo. */
+export const EXTERNAL_PLUGIN_PATH = '__external__' as const;
+
 export interface MarketplacePluginEntry {
   /** Relative path inside the repo where the plugin lives */
   path: string;
   /** Human-readable description */
   description?: string;
+  /** External git URL when plugin lives in a separate repo (path will be "__external__") */
+  externalUrl?: string;
+  /** Subdirectory within external repo (for git-subdir sources) */
+  externalSubdir?: string;
+  /** Git ref for external repo */
+  externalRef?: string;
+  /** Pinned commit SHA for external repo (takes precedence over externalRef for downloads) */
+  externalSha?: string;
 }
 
-/** Schema of `marketplace.json` at the root of a marketplace repo. */
+/** Schema of `marketplace.json` at the root of a marketplace repo (soma-work internal format). */
 export interface MarketplaceManifest {
   name: string;
-  version: string;
+  version?: string;
   plugins: Record<string, MarketplacePluginEntry>;
+}
+
+// ---------------------------------------------------------------------------
+// Official marketplace format (.claude-plugin/marketplace.json)
+// Used by anthropics/claude-plugins-official, 2lab-ai/oh-my-claude, etc.
+// ---------------------------------------------------------------------------
+
+/** Source pointing to an external git URL. */
+export interface OfficialSourceUrl {
+  source: 'url';
+  url: string;
+  sha?: string;
+}
+
+/** Source pointing to a subdirectory in another git repo. */
+export interface OfficialSourceGitSubdir {
+  source: 'git-subdir';
+  url: string;
+  path: string;
+  ref?: string;
+  sha?: string;
+}
+
+/** Source can be a string (local path) or an object (url / git-subdir). */
+export type OfficialPluginSource = string | OfficialSourceUrl | OfficialSourceGitSubdir;
+
+/** A single plugin entry in the official marketplace format. */
+export interface OfficialPluginEntry {
+  name: string;
+  description?: string;
+  category?: string;
+  source: OfficialPluginSource;
+  homepage?: string;
+  author?: { name: string; email?: string };
+}
+
+/** Schema of `.claude-plugin/marketplace.json` (official format). */
+export interface OfficialMarketplaceManifest {
+  name: string;
+  description?: string;
+  owner?: { name: string; email?: string };
+  metadata?: { description?: string; version?: string };
+  plugins: OfficialPluginEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +121,7 @@ export interface ResolvedPlugin {
   /** Absolute local path to the plugin directory */
   localPath: string;
   /** How the plugin was resolved */
-  source: 'marketplace' | 'local-override';
+  source: 'marketplace' | 'local-override' | 'default';
 }
 
 // ---------------------------------------------------------------------------
