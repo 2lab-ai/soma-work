@@ -65,7 +65,7 @@ export function resolveModelCommandServerPath(
 }
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
-export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string; [key: string]: any } | null): boolean {
+export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
   return !!ctx?.mentionTs && ctx.mentionTs !== ctx.threadTs;
 }
 
@@ -277,22 +277,24 @@ export class McpConfigBuilder {
     return cache.path;
   }
 
-  private permissionServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
+  private static emptyCache() { return { path: null as string | null, checked: false, triedPaths: [] as string[] }; }
+
+  private permissionServerCache = McpConfigBuilder.emptyCache();
   private getPermissionServerPath(): string {
     return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, this.permissionServerCache);
   }
 
-  private modelCommandServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
+  private modelCommandServerCache = McpConfigBuilder.emptyCache();
   private getModelCommandServerPath(): string {
     return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, this.modelCommandServerCache);
   }
 
-  private slackThreadServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
+  private slackThreadServerCache = McpConfigBuilder.emptyCache();
   private getSlackThreadServerPath(): string {
     return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, this.slackThreadServerCache);
   }
 
-  private llmServerCache = { path: null as string | null, checked: false, triedPaths: [] as string[] };
+  private llmServerCache = McpConfigBuilder.emptyCache();
   private getLlmServerPath(): string {
     return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, this.llmServerCache);
   }

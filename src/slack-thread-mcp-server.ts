@@ -260,6 +260,8 @@ class SlackThreadMcpServer {
    * until we pass the anchor.
    */
   private async fetchMessagesBefore(anchorTs: string, count: number): Promise<any[]> {
+    if (count === 0) return [];
+
     const collected: any[] = [];
     let cursor: string | undefined;
 
@@ -287,7 +289,7 @@ class SlackThreadMcpServer {
     } while (cursor);
 
     // Return the last `count` messages (anchor included if it exists)
-    return count === 0 ? [] : collected.slice(-count);
+    return collected.slice(-count);
   }
 
   /**

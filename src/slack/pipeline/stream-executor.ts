@@ -166,7 +166,7 @@ export class StreamExecutor {
     }
 
     // Thread context hint — only for mid-thread mentions (mentionTs !== threadTs)
-    if (isMidThreadMention({ channel: '', user: '', threadTs, mentionTs })) {
+    if (isMidThreadMention({ threadTs, mentionTs })) {
       finalPrompt = `${finalPrompt}\n\n${this.getThreadContextHint()}`;
     }
 
