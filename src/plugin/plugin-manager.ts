@@ -15,7 +15,7 @@ import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { fetchPlugin } from './marketplace-fetcher';
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { Logger } from '../logger';
-import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin } from './defaults';
+import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin, isDefaultMarketplace } from './defaults';
 
 const logger = new Logger('PluginManager');
 
@@ -186,6 +186,9 @@ export class PluginManager {
 
   /** Remove a marketplace by name. Persists to config.json when configFile is set. */
   removeMarketplace(name: string): CrudResult {
+    if (isDefaultMarketplace(name)) {
+      return { success: false, error: `Default marketplace "${name}" cannot be removed` };
+    }
     const existing = this.pluginConfig.marketplace || [];
     if (!existing.some(m => m.name === name)) {
       return { success: false, error: `Marketplace "${name}" not found` };

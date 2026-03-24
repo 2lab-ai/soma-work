@@ -23,3 +23,8 @@ export const DEFAULT_PLUGINS: string[] = [
 export function isDefaultPlugin(pluginRef: string): boolean {
   return DEFAULT_PLUGINS.includes(pluginRef);
 }
+
+/** Check if a marketplace name is a default (protected from removal). */
+export function isDefaultMarketplace(name: string): boolean {
+  return DEFAULT_MARKETPLACES.some(m => m.name === name);
+}

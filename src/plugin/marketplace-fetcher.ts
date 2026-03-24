@@ -123,6 +123,8 @@ function readManifest(extractedRoot: string): MarketplaceManifest | null {
       if (raw.plugins && !Array.isArray(raw.plugins)) {
         return raw as MarketplaceManifest;
       }
+      // Array-based plugins at root — likely official format misplaced
+      logger.debug('Root marketplace.json has array-based plugins, trying official format', { path: internalPath });
     } catch (error) {
       logger.error('Failed to parse marketplace.json', { error: (error as Error).message });
     }
@@ -132,8 +134,13 @@ function readManifest(extractedRoot: string): MarketplaceManifest | null {
   const officialPath = path.join(extractedRoot, '.claude-plugin', 'marketplace.json');
   if (fs.existsSync(officialPath)) {
     try {
-      const raw = JSON.parse(fs.readFileSync(officialPath, 'utf-8')) as OfficialMarketplaceManifest;
-      return normaliseOfficialManifest(raw);
+      const raw = JSON.parse(fs.readFileSync(officialPath, 'utf-8'));
+      const validated = validateOfficialManifest(raw);
+      if (!validated) {
+        logger.error('Official manifest failed shape validation', { path: officialPath });
+        return null;
+      }
+      return normaliseOfficialManifest(validated);
     } catch (error) {
       logger.error('Failed to parse .claude-plugin/marketplace.json', { error: (error as Error).message });
     }
@@ -141,6 +148,46 @@ function readManifest(extractedRoot: string): MarketplaceManifest | null {
 
   logger.warn('No marketplace manifest found', { extractedRoot });
   return null;
+}
+
+/**
+ * Validate that a parsed JSON object has the expected shape for an official marketplace manifest.
+ * Returns a cleaned manifest with only valid plugin entries, or null if the top-level shape is wrong.
+ */
+function validateOfficialManifest(raw: unknown): OfficialMarketplaceManifest | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj.name !== 'string') {
+    logger.warn('Official manifest missing required "name" field');
+    return null;
+  }
+  if (!Array.isArray(obj.plugins)) {
+    logger.warn('Official manifest missing or invalid "plugins" array', { name: obj.name });
+    return null;
+  }
+
+  const validPlugins = (obj.plugins as unknown[]).filter((p): p is OfficialMarketplaceManifest['plugins'][number] => {
+    if (!p || typeof p !== 'object') return false;
+    const entry = p as Record<string, unknown>;
+    return typeof entry.name === 'string' && entry.source !== undefined;
+  });
+
+  if (validPlugins.length < (obj.plugins as unknown[]).length) {
+    logger.warn('Some official manifest entries skipped (missing name or source)', {
+      marketplace: obj.name,
+      total: (obj.plugins as unknown[]).length,
+      valid: validPlugins.length,
+    });
+  }
+
+  return {
+    name: obj.name as string,
+    description: typeof obj.description === 'string' ? obj.description : undefined,
+    owner: obj.owner as OfficialMarketplaceManifest['owner'],
+    metadata: obj.metadata as OfficialMarketplaceManifest['metadata'],
+    plugins: validPlugins,
+  };
 }
 
 /**
@@ -162,6 +209,11 @@ function normaliseOfficialManifest(official: OfficialMarketplaceManifest): Marke
         ...normalised,
         description: entry.description,
       };
+    } else {
+      logger.warn('Skipping plugin with unsupported source type', {
+        pluginName: entry.name,
+        marketplace: official.name,
+      });
     }
   }
 

@@ -20,7 +20,8 @@ vi.mock('../unified-config-loader', () => ({
 vi.mock('./defaults', () => ({
   DEFAULT_MARKETPLACES: [],
   DEFAULT_PLUGINS: [],
-  isDefaultPlugin: () => false,
+  isDefaultPlugin: vi.fn(() => false),
+  isDefaultMarketplace: vi.fn(() => false),
 }));
 
 import { fetchPlugin } from './marketplace-fetcher';
@@ -29,6 +30,10 @@ const mockFetchPlugin = vi.mocked(fetchPlugin);
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 const mockLoadUnifiedConfig = vi.mocked(loadUnifiedConfig);
 const mockSaveUnifiedConfig = vi.mocked(saveUnifiedConfig);
+
+import { isDefaultPlugin, isDefaultMarketplace } from './defaults';
+const mockIsDefaultPlugin = vi.mocked(isDefaultPlugin);
+const mockIsDefaultMarketplace = vi.mocked(isDefaultMarketplace);
 
 describe('PluginManager', () => {
   let tmpDir: string;
@@ -362,6 +367,26 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
+      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+    });
+
+    it('removePlugin rejects default plugin removal', () => {
+      mockIsDefaultPlugin.mockReturnValueOnce(true);
+      const result = mgr.removePlugin('superpowers@claude-plugins-official');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('cannot be removed');
+      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+    });
+
+    // --- removeMarketplace default guard ---
+
+    it('removeMarketplace rejects default marketplace removal', () => {
+      mockIsDefaultMarketplace.mockReturnValueOnce(true);
+      const result = mgr.removeMarketplace('claude-plugins-official');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('cannot be removed');
       expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
     });
 
