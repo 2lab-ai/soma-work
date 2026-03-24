@@ -1,7 +1,7 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { Logger } from '../../logger';
-import fs from 'fs';
+import { getDirSizeBytes, formatBytes } from '../../utils/dir-size';
 import path from 'path';
 
 /**
@@ -115,52 +115,13 @@ export class CloseHandler implements CommandHandler {
     let totalBytes = 0;
 
     for (const dir of dirs) {
-      const size = this.getDirSize(dir);
+      const size = getDirSizeBytes(dir);
       totalBytes += size;
-      const sizeStr = this.formatBytes(size);
       const dirName = path.basename(dir);
-      lines.push(`  • \`${dirName}\` — ${sizeStr}`);
+      lines.push(`  • \`${dirName}\` — ${formatBytes(size)}`);
     }
 
-    lines.push(`  *합계: ${this.formatBytes(totalBytes)}*\n`);
+    lines.push(`  *합계: ${formatBytes(totalBytes)}*\n`);
     return lines.join('\n');
-  }
-
-  /**
-   * Get the total size of a directory in bytes (non-throwing).
-   */
-  private getDirSize(dirPath: string): number {
-    try {
-      if (!fs.existsSync(dirPath)) return 0;
-      return this.calcDirSize(dirPath);
-    } catch {
-      return 0;
-    }
-  }
-
-  private calcDirSize(dirPath: string): number {
-    let total = 0;
-    try {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-        if (entry.isDirectory() && !entry.isSymbolicLink()) {
-          total += this.calcDirSize(fullPath);
-        } else if (entry.isFile()) {
-          try {
-            total += fs.statSync(fullPath).size;
-          } catch { /* skip inaccessible files */ }
-        }
-      }
-    } catch { /* skip inaccessible dirs */ }
-    return total;
-  }
-
-  private formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-    const value = bytes / Math.pow(1024, i);
-    return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
   }
 }
