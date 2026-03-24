@@ -287,7 +287,7 @@ class SlackThreadMcpServer {
     } while (cursor);
 
     // Return the last `count` messages (anchor included if it exists)
-    return collected.slice(-count);
+    return count === 0 ? [] : collected.slice(-count);
   }
 
   /**
@@ -389,6 +389,11 @@ class SlackThreadMcpServer {
       parsedUrl = new URL(file_url);
     } catch {
       throw new Error(`Invalid file URL: ${file_url}`);
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      throw new Error(
+        `Refused to download over insecure protocol: ${parsedUrl.protocol}`
+      );
     }
     if (!ALLOWED_FILE_HOSTS.has(parsedUrl.hostname)) {
       throw new Error(
