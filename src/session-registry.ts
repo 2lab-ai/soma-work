@@ -817,9 +817,9 @@ export class SessionRegistry {
     const session = this.sessions.get(key);
     if (!session) return false;
 
-    // Security: only allow absolute paths under /tmp/
-    if (!dirPath.startsWith('/tmp/')) {
-      this.logger.warn('Rejected source working dir outside /tmp/', { dirPath });
+    // Security: only allow absolute paths under /tmp/ with no traversal
+    if (!dirPath.startsWith('/tmp/') || dirPath.includes('..')) {
+      this.logger.warn('Rejected source working dir outside /tmp/ or with traversal', { dirPath });
       return false;
     }
 
@@ -828,12 +828,21 @@ export class SessionRegistry {
       return false;
     }
 
+    // Resolve symlinks and re-validate the real path is under /tmp/
+    // Note: macOS resolves /tmp → /private/tmp, both are acceptable
+    const resolvedPath = fs.realpathSync(dirPath);
+    const isTmpPath = resolvedPath.startsWith('/tmp/') || resolvedPath.startsWith('/private/tmp/');
+    if (!isTmpPath || resolvedPath.includes('..')) {
+      this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
+      return false;
+    }
+
     if (!session.sourceWorkingDirs) {
       session.sourceWorkingDirs = [];
     }
-    if (!session.sourceWorkingDirs.includes(dirPath)) {
-      session.sourceWorkingDirs.push(dirPath);
-      this.logger.info('Source working dir added to session', { key, dirPath });
+    if (!session.sourceWorkingDirs.includes(resolvedPath)) {
+      session.sourceWorkingDirs.push(resolvedPath);
+      this.logger.info('Source working dir added to session', { key, dirPath: resolvedPath });
       this.saveSessions();
     }
     return true;
@@ -847,6 +856,12 @@ export class SessionRegistry {
     if (!session.sourceWorkingDirs?.length) return;
 
     for (const dir of session.sourceWorkingDirs) {
+      // Re-validate before deletion to guard against tampered state
+      const isValidTmpPath = dir.startsWith('/tmp/') || dir.startsWith('/private/tmp/');
+      if (!isValidTmpPath || dir.includes('..')) {
+        this.logger.warn('Skipping cleanup of suspicious dir path', { dir });
+        continue;
+      }
       try {
         if (fs.existsSync(dir)) {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -918,6 +933,7 @@ export class SessionRegistry {
         session.sleepStartedAt = new Date();
         session.warningMessageTs = undefined;
         session.lastWarningSentAt = undefined;
+        this.cleanupSourceWorkingDirs(session);
         slept++;
 
         if (this.expiryCallbacks) {
@@ -1111,7 +1127,9 @@ export class SessionRegistry {
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
-          sourceWorkingDirs: serialized.sourceWorkingDirs,
+          sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
+            (d: unknown) => typeof d === 'string' && (d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) && !d.includes('..')
+          ),
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
