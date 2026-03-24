@@ -6,6 +6,7 @@
 import { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../logger';
 import { SessionLinks } from '../types';
+import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import {
   ToolFormatter,
   UserChoiceHandler,
@@ -199,7 +200,11 @@ export interface StreamResult {
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
   hasUserChoice?: boolean;
+  /** EndTurn 정보 — stop_reason 기반 (Issue #42 S3) */
+  endTurnInfo?: EndTurnInfo;
 }
+
+export type { EndTurnInfo };
 
 /**
  * StreamProcessor handles the for-await loop over Claude SDK messages
@@ -223,6 +228,10 @@ export class StreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
+  /** EndTurn info from the result message stop_reason (Issue #42 S3) */
+  private _endTurnInfo: import('../agent-session/agent-session-types.js').EndTurnInfo | undefined;
+  /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
+  private _lastToolName: string | undefined;
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -292,6 +301,7 @@ export class StreamProcessor {
         collectedText: currentMessages.join('\n'),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
+        endTurnInfo: this._endTurnInfo,
       };
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -457,6 +467,11 @@ export class StreamProcessor {
         toolUse.name,
         toolUse.input
       ));
+    }
+
+    // Track last tool name for endTurnInfo (Issue #42 S3)
+    if (toolUses.length > 0) {
+      this._lastToolName = toolUses[toolUses.length - 1].name;
     }
 
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
@@ -904,6 +919,18 @@ export class StreamProcessor {
     });
 
     const usage = this.extractUsageData(message);
+
+    // Parse stop_reason → EndTurnInfo (Issue #42 S3)
+    const rawStopReason = message.stop_reason as string | null;
+    const validReasons = ['end_turn', 'max_tokens', 'tool_use', 'stop_sequence'] as const;
+    const reason = rawStopReason && validReasons.includes(rawStopReason as any)
+      ? (rawStopReason as typeof validReasons[number])
+      : 'end_turn';
+    this._endTurnInfo = {
+      reason,
+      timestamp: Date.now(),
+      ...(reason === 'tool_use' && this._lastToolName ? { lastToolUse: this._lastToolName } : {}),
+    };
 
     if (message.subtype === 'success' && message.result) {
       const finalResult = message.result;
