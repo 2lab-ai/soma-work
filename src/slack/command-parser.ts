@@ -126,6 +126,35 @@ export class CommandParser {
   /**
    * Check if text is a bypass command
    */
+  // --- Notify command ---
+  static isNotifyCommand(text: string): boolean {
+    return /^\/?notify\s/i.test(text.trim()) || /^\/?notify$/i.test(text.trim());
+  }
+
+  static parseNotifyCommand(text: string): { action: string; value?: string } | null {
+    const trimmed = text.trim().replace(/^\//, '');
+    // Handle "notify telegram off" as a special case
+    const telegramOffMatch = trimmed.match(/^notify\s+telegram\s+off$/i);
+    if (telegramOffMatch) {
+      return { action: 'telegram_off' };
+    }
+    const match = trimmed.match(/^notify\s+(on|off|status|telegram)\s*(.*)$/i);
+    if (!match) return null;
+    return { action: match[1].toLowerCase(), value: match[2] || undefined };
+  }
+
+  // --- Webhook command ---
+  static isWebhookCommand(text: string): boolean {
+    return /^\/?webhook\s/i.test(text.trim()) || /^\/?webhook$/i.test(text.trim());
+  }
+
+  static parseWebhookCommand(text: string): { action: string; value?: string } | null {
+    const trimmed = text.trim().replace(/^\//, '');
+    const match = trimmed.match(/^webhook\s+(register|remove|test)\s*(.*)$/i);
+    if (!match) return null;
+    return { action: match[1].toLowerCase(), value: match[2] || undefined };
+  }
+
   static isBypassCommand(text: string): boolean {
     return /^\/?bypass(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
   }
@@ -526,6 +555,8 @@ export class CommandParser {
     'marketplace', 'plugins',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
+    // Notification
+    'notify', 'webhook',
   ]);
 
   /**
