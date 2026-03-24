@@ -33,6 +33,9 @@ export interface PluginConfig {
 // marketplace.json (lives in each marketplace repo root)
 // ---------------------------------------------------------------------------
 
+/** Sentinel path value indicating the plugin lives in an external git repo. */
+export const EXTERNAL_PLUGIN_PATH = '__external__' as const;
+
 export interface MarketplacePluginEntry {
   /** Relative path inside the repo where the plugin lives */
   path: string;

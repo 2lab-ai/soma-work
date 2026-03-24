@@ -423,4 +423,93 @@ describe('PluginManager', () => {
       expect(mockSaveUnifiedConfig.mock.calls[0][0]).toBe(configFile);
     });
   });
+
+  // =========================================================================
+  // mergeDefaults integration
+  // =========================================================================
+  describe('mergeDefaults integration', () => {
+    it('injects default marketplace and plugin into empty config', async () => {
+      // Override defaults mock for this test
+      const defaults = await import('./defaults');
+      vi.mocked(defaults).DEFAULT_MARKETPLACES = [
+        { name: 'test-mkt', repo: 'org/test-mkt', ref: 'main' },
+      ];
+      vi.mocked(defaults).DEFAULT_PLUGINS = ['tool-d@test-mkt'];
+      vi.mocked(defaults.isDefaultPlugin).mockImplementation(ref => ref === 'tool-d@test-mkt');
+
+      const installedPath = path.join(tmpDir, 'tool-d');
+      mockFetchPlugin.mockResolvedValueOnce({
+        pluginPath: installedPath,
+        sha: 'def111',
+        cached: false,
+      });
+
+      const mgr = new PluginManager({}, tmpDir);
+      await mgr.initialize();
+
+      expect(mockFetchPlugin).toHaveBeenCalledWith(
+        { name: 'test-mkt', repo: 'org/test-mkt', ref: 'main' },
+        'tool-d',
+        expect.any(String),
+      );
+      const resolved = mgr.getResolvedPlugins();
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0].source).toBe('default');
+      expect(resolved[0].name).toBe('tool-d@test-mkt');
+    });
+
+    it('user config takes precedence on marketplace name collision', async () => {
+      const defaults = await import('./defaults');
+      vi.mocked(defaults).DEFAULT_MARKETPLACES = [
+        { name: 'official', repo: 'default/repo', ref: 'main' },
+      ];
+      vi.mocked(defaults).DEFAULT_PLUGINS = ['tool-x@official'];
+      vi.mocked(defaults.isDefaultPlugin).mockImplementation(ref => ref === 'tool-x@official');
+
+      const installedPath = path.join(tmpDir, 'tool-x');
+      mockFetchPlugin.mockResolvedValueOnce({
+        pluginPath: installedPath,
+        sha: 'user111',
+        cached: false,
+      });
+
+      // User has same marketplace name with different repo
+      const config: PluginConfig = {
+        marketplace: [{ name: 'official', repo: 'user/custom-repo', ref: 'v2' }],
+      };
+      const mgr = new PluginManager(config, tmpDir);
+      await mgr.initialize();
+
+      // Should use user's repo, not default's
+      expect(mockFetchPlugin).toHaveBeenCalledWith(
+        { name: 'official', repo: 'user/custom-repo', ref: 'v2' },
+        'tool-x',
+        expect.any(String),
+      );
+    });
+
+    it('user plugins are not tagged as default source', async () => {
+      const defaults = await import('./defaults');
+      vi.mocked(defaults).DEFAULT_MARKETPLACES = [];
+      vi.mocked(defaults).DEFAULT_PLUGINS = [];
+      vi.mocked(defaults.isDefaultPlugin).mockReturnValue(false);
+
+      const installedPath = path.join(tmpDir, 'my-tool');
+      mockFetchPlugin.mockResolvedValueOnce({
+        pluginPath: installedPath,
+        sha: 'abc999',
+        cached: false,
+      });
+
+      const config: PluginConfig = {
+        marketplace: [{ name: 'mkt', repo: 'org/mkt' }],
+        plugins: ['my-tool@mkt'],
+      };
+      const mgr = new PluginManager(config, tmpDir);
+      await mgr.initialize();
+
+      const resolved = mgr.getResolvedPlugins();
+      expect(resolved[0].source).toBe('marketplace');
+    });
+  });
 });

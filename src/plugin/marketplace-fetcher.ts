@@ -11,6 +11,7 @@ import {
   MarketplaceEntry, MarketplaceManifest, MarketplacePluginEntry,
   CacheMeta,
   OfficialMarketplaceManifest, OfficialPluginSource,
+  EXTERNAL_PLUGIN_PATH,
 } from './types';
 import { readCacheMeta, writeCacheMeta, hasCachedPlugin } from './plugin-cache';
 import { Logger } from '../logger';
@@ -121,6 +122,11 @@ function readManifest(extractedRoot: string): MarketplaceManifest | null {
       const raw = JSON.parse(fs.readFileSync(internalPath, 'utf-8'));
       // Distinguish: internal format has plugins as Record, official has plugins as Array
       if (raw.plugins && !Array.isArray(raw.plugins)) {
+        // Minimal shape check: name must be a string
+        if (typeof raw.name !== 'string') {
+          logger.warn('Internal marketplace.json missing required "name" field', { path: internalPath });
+          return null;
+        }
         return raw as MarketplaceManifest;
       }
       // Array-based plugins at root — likely official format misplaced
@@ -154,7 +160,7 @@ function readManifest(extractedRoot: string): MarketplaceManifest | null {
  * Validate that a parsed JSON object has the expected shape for an official marketplace manifest.
  * Returns a cleaned manifest with only valid plugin entries, or null if the top-level shape is wrong.
  */
-function validateOfficialManifest(raw: unknown): OfficialMarketplaceManifest | null {
+export function validateOfficialManifest(raw: unknown): OfficialMarketplaceManifest | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
 
@@ -170,7 +176,16 @@ function validateOfficialManifest(raw: unknown): OfficialMarketplaceManifest | n
   const validPlugins = (obj.plugins as unknown[]).filter((p): p is OfficialMarketplaceManifest['plugins'][number] => {
     if (!p || typeof p !== 'object') return false;
     const entry = p as Record<string, unknown>;
-    return typeof entry.name === 'string' && entry.source !== undefined;
+    if (typeof entry.name !== 'string' || entry.source === undefined) return false;
+    // Validate source shape — string is always valid; objects need discriminant checks
+    const src = entry.source;
+    if (typeof src !== 'string') {
+      if (!src || typeof src !== 'object') return false;
+      const srcObj = src as Record<string, unknown>;
+      if (srcObj.source === 'url' && typeof srcObj.url !== 'string') return false;
+      if (srcObj.source === 'git-subdir' && (typeof srcObj.url !== 'string' || typeof srcObj.path !== 'string')) return false;
+    }
+    return true;
   });
 
   if (validPlugins.length < (obj.plugins as unknown[]).length) {
@@ -199,7 +214,7 @@ function validateOfficialManifest(raw: unknown): OfficialMarketplaceManifest | n
  * - { source: "url", url: "..." }                 → { path: "__external__", externalUrl: url }
  * - { source: "git-subdir", url, path, ref, sha } → { path: "__external__", externalUrl: url, externalSubdir: subpath }
  */
-function normaliseOfficialManifest(official: OfficialMarketplaceManifest): MarketplaceManifest {
+export function normaliseOfficialManifest(official: OfficialMarketplaceManifest): MarketplaceManifest {
   const plugins: Record<string, MarketplacePluginEntry> = {};
 
   for (const entry of official.plugins) {
@@ -227,7 +242,7 @@ function normaliseOfficialManifest(official: OfficialMarketplaceManifest): Marke
 /**
  * Convert an official plugin source to the internal MarketplacePluginEntry format.
  */
-function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePluginEntry, 'description'> | null {
+export function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePluginEntry, 'description'> | null {
   if (typeof source === 'string') {
     // Local path: "./plugins/stv" → "plugins/stv"
     const cleaned = source.replace(/^\.\//, '');
@@ -236,12 +251,12 @@ function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePl
 
   if (source.source === 'url') {
     // External git URL — needs separate clone/fetch
-    return { path: '__external__', externalUrl: source.url, externalSha: source.sha };
+    return { path: EXTERNAL_PLUGIN_PATH, externalUrl: source.url, externalSha: source.sha };
   }
 
   if (source.source === 'git-subdir') {
     return {
-      path: '__external__',
+      path: EXTERNAL_PLUGIN_PATH,
       externalUrl: source.url,
       externalSubdir: source.path,
       externalRef: source.ref,
@@ -420,7 +435,7 @@ export async function fetchPlugin(
  * Convert a git URL to a GitHub owner/repo string.
  * Handles: "https://github.com/owner/repo.git", "owner/repo", etc.
  */
-function gitUrlToRepo(url: string): string | null {
+export function gitUrlToRepo(url: string): string | null {
   // Already owner/repo format
   if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(url)) {
     return url;
@@ -470,7 +485,14 @@ async function fetchExternalPlugin(
   logger.info('Downloading external plugin', { pluginName, repo, ref: gitRef, subdir });
 
   const extractedRoot = downloadAndExtract(repo, gitRef);
-  if (!extractedRoot) return null;
+  if (!extractedRoot) {
+    logger.error('Failed to download external plugin', { pluginName, repo, ref: gitRef });
+    if (hasCachedPlugin(pluginsDir, pluginName)) {
+      logger.warn('External download failed, falling back to stale cache', { pluginName });
+      return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+    }
+    return null;
+  }
 
   try {
     fs.mkdirSync(pluginsDir, { recursive: true });
