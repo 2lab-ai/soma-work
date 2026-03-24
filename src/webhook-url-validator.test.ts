@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { validateWebhookUrl, isBlockedIp } from './webhook-url-validator';
+import { describe, expect, it, vi } from 'vitest';
+import { validateWebhookUrl, validateWebhookUrlWithDns, isBlockedIp } from './webhook-url-validator';
 
 describe('validateWebhookUrl', () => {
   it('accepts valid HTTPS URL', () => {
@@ -85,6 +85,27 @@ describe('validateWebhookUrl', () => {
     expect(validateWebhookUrl('https://172.32.0.1/hook')).toEqual({ valid: true });
   });
 
+  // SSRF: CGNAT (RFC 6598)
+  it('rejects 100.64.x.x (CGNAT)', () => {
+    const result = validateWebhookUrl('https://100.64.0.1/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects 100.127.x.x (CGNAT upper bound)', () => {
+    const result = validateWebhookUrl('https://100.127.255.1/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('accepts 100.63.x.x (not CGNAT)', () => {
+    expect(validateWebhookUrl('https://100.63.0.1/hook')).toEqual({ valid: true });
+  });
+
+  // SSRF: benchmarking (198.18/15)
+  it('rejects 198.18.x.x (benchmarking)', () => {
+    const result = validateWebhookUrl('https://198.18.0.1/hook');
+    expect(result.valid).toBe(false);
+  });
+
   // SSRF: IPv6 loopback
   it('rejects [::1] (IPv6 loopback)', () => {
     const result = validateWebhookUrl('https://[::1]/hook');
@@ -124,4 +145,63 @@ describe('isBlockedIp', () => {
   it('blocks ::ffff:10.0.0.1', () => expect(isBlockedIp('::ffff:10.0.0.1')).toBe(true));
   it('allows ::ffff:8.8.8.8', () => expect(isBlockedIp('::ffff:8.8.8.8')).toBe(false));
   it('blocks ::', () => expect(isBlockedIp('::')).toBe(true));
+
+  // IPv6 ULA (fc00::/7)
+  it('blocks fd00::1 (ULA)', () => expect(isBlockedIp('fd00::1')).toBe(true));
+  it('blocks fc00::1 (ULA)', () => expect(isBlockedIp('fc00::1')).toBe(true));
+
+  // IPv6 link-local (fe80::/10)
+  it('blocks fe80::1 (link-local)', () => expect(isBlockedIp('fe80::1')).toBe(true));
+
+  // CGNAT
+  it('blocks 100.64.0.1 (CGNAT)', () => expect(isBlockedIp('100.64.0.1')).toBe(true));
+  it('allows 100.63.0.1 (not CGNAT)', () => expect(isBlockedIp('100.63.0.1')).toBe(false));
+});
+
+describe('validateWebhookUrlWithDns', () => {
+  it('passes for domain resolving to public IP', async () => {
+    const dns = await import('node:dns');
+    vi.spyOn(dns.promises, 'resolve4').mockResolvedValue(['93.184.216.34']);
+    vi.spyOn(dns.promises, 'resolve6').mockResolvedValue([]);
+
+    const result = await validateWebhookUrlWithDns('https://example.com/hook');
+    expect(result.valid).toBe(true);
+
+    vi.restoreAllMocks();
+  });
+
+  it('blocks domain resolving to private IP (DNS rebinding)', async () => {
+    const dns = await import('node:dns');
+    vi.spyOn(dns.promises, 'resolve4').mockResolvedValue(['10.0.0.1']);
+    vi.spyOn(dns.promises, 'resolve6').mockResolvedValue([]);
+
+    const result = await validateWebhookUrlWithDns('https://evil.com/hook');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('내부');
+
+    vi.restoreAllMocks();
+  });
+
+  it('blocks when DNS resolves to nothing', async () => {
+    const dns = await import('node:dns');
+    vi.spyOn(dns.promises, 'resolve4').mockResolvedValue([]);
+    vi.spyOn(dns.promises, 'resolve6').mockResolvedValue([]);
+
+    const result = await validateWebhookUrlWithDns('https://nxdomain.example.com/hook');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('DNS');
+
+    vi.restoreAllMocks();
+  });
+
+  it('blocks when any resolved IP is private (mixed)', async () => {
+    const dns = await import('node:dns');
+    vi.spyOn(dns.promises, 'resolve4').mockResolvedValue(['93.184.216.34', '192.168.1.1']);
+    vi.spyOn(dns.promises, 'resolve6').mockResolvedValue([]);
+
+    const result = await validateWebhookUrlWithDns('https://mixed.example.com/hook');
+    expect(result.valid).toBe(false);
+
+    vi.restoreAllMocks();
+  });
 });

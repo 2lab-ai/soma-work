@@ -25,6 +25,8 @@ function isPrivateIpv4(a: number, b: number): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;         // 172.16.0.0/12
   if (a === 192 && b === 168) return true;                  // 192.168.0.0/16
   if (a === 169 && b === 254) return true;                  // 169.254.0.0/16 link-local
+  if (a === 100 && b >= 64 && b <= 127) return true;        // 100.64.0.0/10 CGNAT (RFC 6598)
+  if (a === 198 && (b === 18 || b === 19)) return true;     // 198.18.0.0/15 benchmarking
   return false;
 }
 
@@ -60,6 +62,12 @@ export function isBlockedIp(hostname: string): boolean {
     const [, a, b] = ipv4Match.map(Number);
     return isPrivateIpv4(a, b);
   }
+
+  // IPv6-native private ranges
+  const lower = clean.toLowerCase();
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;  // ULA fc00::/7
+  if (lower.startsWith('fe8') || lower.startsWith('fe9') ||
+      lower.startsWith('fea') || lower.startsWith('feb')) return true;  // link-local fe80::/10
 
   return false;
 }
@@ -116,7 +124,7 @@ export async function validateWebhookUrlWithDns(raw: string): Promise<WebhookUrl
   const hostname = parsed.hostname.toLowerCase();
 
   // Skip DNS resolution for IP literals — already checked by isBlockedIp
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) || hostname.startsWith('::')) {
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) || /^[0-9a-f:]+$/i.test(hostname)) {
     return { valid: true };
   }
 
