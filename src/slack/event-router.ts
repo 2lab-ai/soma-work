@@ -7,12 +7,17 @@ import { config } from '../config';
 import { Logger } from '../logger';
 import { registerChannel, unregisterChannel } from '../channel-registry';
 import { ConversationSession } from '../types';
+import { SlashCommandAdapter } from './slash-command-adapter';
+import { CommandRouter } from './commands/command-router';
+import { CommandParser } from './command-parser';
+import { CommandDependencies } from './commands/types';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
   actionHandlers: ActionHandlers;
+  commandDeps?: CommandDependencies;
 }
 
 /**
@@ -21,18 +26,24 @@ export interface EventRouterDeps {
 export class EventRouter {
   private logger = new Logger('EventRouter');
   private cleanupIntervalId: NodeJS.Timeout | null = null;
+  private commandRouter: CommandRouter | null = null;
 
   constructor(
     private app: App,
     private deps: EventRouterDeps,
     private messageHandler: MessageHandler
-  ) {}
+  ) {
+    if (deps.commandDeps) {
+      this.commandRouter = new CommandRouter(deps.commandDeps);
+    }
+  }
 
   /**
    * 모든 이벤트 핸들러 설정
    */
   setup(): void {
     this.setupMessageHandlers();
+    this.setupSlashCommands();
     this.setupMemberJoinHandler();
     this.deps.actionHandlers.registerHandlers(this.app);
     this.setupSessionExpiryCallbacks();
@@ -128,6 +139,112 @@ export class EventRouter {
         await this.handleThreadMessage(messageEvent, say);
       }
     });
+  }
+
+  /**
+   * Slash command 핸들러 설정
+   * Trace: docs/slash-commands/trace.md, Scenario 1-5
+   */
+  private setupSlashCommands(): void {
+    // /soma [subcommand] — 범용 명령 (Scenario 2, 3)
+    this.app.command('/soma', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /soma', {
+        text: command.text?.substring(0, 50),
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      try {
+        const ctx = SlashCommandAdapter.adapt(command, respond);
+
+        // Empty text → help fallback (Scenario 3, Case A)
+        if (!ctx.text.trim()) {
+          await respond({
+            text: CommandParser.getHelpMessage(),
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        // Route through existing CommandRouter
+        if (this.commandRouter) {
+          const result = await this.commandRouter.route(ctx);
+
+          // If CommandRouter didn't handle it, show help
+          if (!result.handled) {
+            await respond({
+              text: CommandParser.getHelpMessage(),
+              response_type: 'ephemeral',
+            });
+          }
+        } else if (!this.commandRouter) {
+          this.logger.warn('CommandRouter not available for slash commands');
+          await respond({
+            text: '⚠️ Bot is still initializing. Please try again in a moment.',
+            response_type: 'ephemeral',
+          });
+        }
+      } catch (error: any) {
+        this.logger.error('Error handling /soma slash command', { error: error.message });
+        await respond({
+          text: `⚠️ 명령 처리 중 오류가 발생했습니다: ${error.message}`,
+          response_type: 'ephemeral',
+        });
+      }
+    });
+
+    // /session — 세션 관리 (Scenario 4)
+    this.app.command('/session', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /session', {
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      try {
+        const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(
+          command.user_id,
+          { showControls: true }
+        );
+        await respond({
+          text,
+          blocks,
+          response_type: 'ephemeral',
+        });
+      } catch (error: any) {
+        this.logger.error('Error handling /session slash command', { error: error.message });
+        await respond({
+          text: `⚠️ 세션 조회 중 오류가 발생했습니다: ${error.message}`,
+          response_type: 'ephemeral',
+        });
+      }
+    });
+
+    // /new — 세션 리셋 fallback (Scenario 5)
+    this.app.command('/new', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /new', {
+        text: command.text?.substring(0, 50),
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      // SlashCommand has no thread_ts — always show fallback guidance
+      const prompt = command.text?.trim();
+      let message = '💡 `/new` 명령은 스레드 내에서만 사용할 수 있습니다.\n\n';
+      message += '봇이 응답하고 있는 스레드에서 `new` 를 텍스트로 입력해주세요.';
+      if (prompt) {
+        message += `\n프롬프트를 함께 전달하려면: \`new ${prompt}\``;
+      }
+
+      await respond({
+        text: message,
+        response_type: 'ephemeral',
+      });
+    });
+
+    this.logger.info('Slash commands registered: /soma, /session, /new');
   }
 
   /**
