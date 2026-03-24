@@ -76,6 +76,10 @@ export interface SlackContext {
   channel: string;
   threadTs?: string;
   mentionTs?: string;
+  /** Original thread where the mention occurred (before bot-initiated thread migration) */
+  sourceThreadTs?: string;
+  /** Original channel where the mention occurred (before channel routing) */
+  sourceChannel?: string;
   user: string;
   channelDescription?: string;
 }
@@ -304,13 +308,18 @@ export class McpConfigBuilder {
    */
   private buildSlackThreadServer(slackContext: SlackContext): Record<string, any> {
     const serverPath = this.getSlackThreadServerPath();
-    const threadTs = slackContext.threadTs;
+    // Use source thread (original thread before migration) if available,
+    // otherwise fall back to current threadTs.
+    // This is critical: after bot-initiated thread migration, threadTs points to
+    // the NEW (empty) thread, but we need to read from the ORIGINAL thread.
+    const threadTs = slackContext.sourceThreadTs || slackContext.threadTs;
+    const channel = slackContext.sourceChannel || slackContext.channel;
     if (!threadTs) {
       throw new Error('Cannot build slack-thread server without threadTs');
     }
 
     const threadContext = {
-      channel: slackContext.channel,
+      channel,
       threadTs,
       mentionTs: slackContext.mentionTs ?? '',
     };
