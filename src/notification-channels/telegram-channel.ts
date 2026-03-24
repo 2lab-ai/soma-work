@@ -65,13 +65,11 @@ export class TelegramChannel implements NotificationChannel {
 
       if (!response.ok) {
         logger.warn('TelegramChannel API error', { chatId, status: response.status });
-        throw new Error(`Telegram API returned ${response.status}`);
-      } else {
-        logger.info('TelegramChannel.send()', { chatId, category: event.category });
+        return;
       }
+      logger.info('TelegramChannel.send()', { chatId, category: event.category });
     } catch (error: any) {
-      logger.warn('TelegramChannel failed', { chatId, error: error.message });
-      // Graceful — do not throw
+      logger.warn('TelegramChannel network error', { chatId, error: error.message });
     }
   }
 }
