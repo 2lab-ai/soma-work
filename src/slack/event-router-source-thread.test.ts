@@ -51,7 +51,7 @@ const createMockSession = (overrides: Partial<ConversationSession> = {}): Conver
   lastActivity: new Date(),
   userId: 'U123',
   title: 'Test Session',
-  activityState: 'streaming',
+  activityState: 'working',
   ...overrides,
 });
 
@@ -94,7 +94,7 @@ describe('EventRouter — source thread re-mention', () => {
     const linkedSession = createMockSession({
       channelId: 'C123',
       threadRootTs: '999.000',
-      links: { pr: { url: 'https://github.com/pr/1', label: 'PR #1' } },
+      links: { pr: { url: 'https://github.com/pr/1', type: 'pr', provider: 'github', label: 'PR #1' } },
     });
     mockClaudeHandler.getSession.mockReturnValue(null);
     mockClaudeHandler.findSessionBySourceThread.mockReturnValue(linkedSession);
