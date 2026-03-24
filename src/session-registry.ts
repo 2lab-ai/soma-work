@@ -90,6 +90,8 @@ interface SerializedSession {
   isOnboarding?: boolean;
   // Source working directories tracked for cleanup
   sourceWorkingDirs?: string[];
+  // Mid-thread source thread reference
+  sourceThread?: { channel: string; threadTs: string };
 }
 
 /**
@@ -169,6 +171,19 @@ export class SessionRegistry {
    */
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
     return this.sessions.get(sessionKey);
+  }
+
+  /**
+   * Find a session that was created from a mid-thread mention in the given thread.
+   * Reverse lookup: original thread → bot-initiated session.
+   */
+  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.sourceThread?.channel === channel && session.sourceThread?.threadTs === threadTs) {
+        return session;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1095,6 +1110,7 @@ export class SessionRegistry {
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
+            sourceThread: session.sourceThread,
           });
         }
       }
@@ -1173,6 +1189,7 @@ export class SessionRegistry {
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
+          sourceThread: serialized.sourceThread,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
             (d: unknown) => {
               if (typeof d !== 'string') {
