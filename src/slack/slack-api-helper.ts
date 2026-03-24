@@ -287,6 +287,15 @@ export class SlackApiHelper {
   }
 
   /**
+   * Open a DM channel with a user.
+   * Trace: docs/turn-notification/trace.md, Scenario 2, Section 3b
+   */
+  async openDmChannel(userId: string): Promise<string> {
+    const result = await this.app.client.conversations.open({ users: userId });
+    return result.channel?.id || '';
+  }
+
+  /**
    * 시스템 메시지 전송 (⚡ zap 리액션으로 모델 응답과 구분)
    * 프로그램에서 직접 보내는 메시지에 사용
    */

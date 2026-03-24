@@ -37,6 +37,7 @@ import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
+import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 
 /**
  * Result of stream execution
@@ -94,6 +95,7 @@ interface StreamExecutorDeps {
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
   threadPanel?: ThreadPanel;
+  turnNotifier?: TurnNotifier;
 }
 
 interface StreamExecuteParams {
@@ -569,6 +571,23 @@ export class StreamExecutor {
         messageCount: streamResult.messageCount,
       });
 
+      // Fire turn completion notification (fire-and-forget)
+      // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
+      if (this.deps.turnNotifier) {
+        const category = determineTurnCategory({
+          hasPendingChoice,
+          isError: false,
+        });
+        this.deps.turnNotifier.notify({
+          category,
+          userId: session.ownerId || user,
+          channel,
+          threadTs,
+          sessionTitle: session.title,
+          durationMs: Date.now() - requestStartedAt.getTime(),
+        }).catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+      }
+
       // Update bot-initiated thread root with status
       // Clean up temporary files
       if (processedFiles.length > 0) {
@@ -643,6 +662,20 @@ export class StreamExecutor {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
+
+    // Fire Exception notification (fire-and-forget)
+    // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
+    if (this.deps.turnNotifier) {
+      this.deps.turnNotifier.notify({
+        category: 'Exception',
+        userId: session.ownerId || '',
+        channel,
+        threadTs,
+        sessionTitle: session.title,
+        message: error?.message,
+        durationMs: 0,
+      }).catch(() => {}); // Completely silent — error handling must not fail
+    }
 
     // Check for context overflow error
     if (this.isContextOverflowError(error)) {
