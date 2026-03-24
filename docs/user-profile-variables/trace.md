@@ -2,7 +2,7 @@
 
 > STV Trace | Created: 2026-03-24
 > Spec: docs/user-profile-variables/spec.md
-> Status: Retroactive — implementation complete, tests missing
+> Status: Complete — implementation + tests done
 
 ## Table of Contents
 1. [Scenario 1 — Email Auto-Fetch on Session Start](#scenario-1)
@@ -52,7 +52,7 @@
 | Condition | Handling | Impact |
 |-----------|----------|--------|
 | Slack API failure | catch → `logger.debug(...)` | Email remains `undefined`, session continues |
-| `users:read.email` scope missing | `profile.email` is `undefined` | No email stored, variable unresolved |
+| `users:read.email` scope missing | `profile.email` is `undefined` → empty sentinel `''` stored | No re-fetch on next message, variable unresolved |
 | User already has email cached | `getUserEmail()` returns truthy → skip | No API call made |
 
 ### 6. Output
@@ -94,7 +94,7 @@
 
 #### 3b. processVariables (Pattern Matcher)
 - File: `src/prompt-builder.ts:160-174`
-- Pattern: `VARIABLE_PATTERN = /\{\{([\w.]+)\}\}/g` (line 25)
+- Pattern: `VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g` (line 25) — `\{{` escaped vars skipped
 - For each match:
   - `varName === 'llm_chat_config'` → `llmChatConfigStore.toPromptSnippet()`
   - `varName.startsWith('user.') && userId` → `resolveUserVariable(varName, userId)`
@@ -223,29 +223,11 @@
 
 ---
 
-## ⚠️ Implementation Gap: displayName Not Stored
+## ✅ Resolved: displayName Storage + Escaping + Sentinel
 
-**Finding**: `getUserProfile()` returns `displayName` but `StreamExecutor` only stores `email`:
-```typescript
-// stream-executor.ts:244-246
-if (profile.email) {
-  userSettingsStore.setUserEmail(user, profile.email);
-}
-// displayName is NOT stored → user.displayName relies on slackName from other paths
-```
-
-`user.displayName` resolves to `settings.slackName`, which is set via:
-- `ensureUserExists(userId, slackName)` — onboarding
-- `updateUserJiraInfo(userId, slackName)` — Jira mapping sync
-
-If neither path ran, `slackName` is `undefined` and `{{user.displayName}}` stays unresolved.
-
-**Recommendation**: Store displayName alongside email in StreamExecutor:
-```typescript
-if (profile.email) userSettingsStore.setUserEmail(user, profile.email);
-if (profile.displayName) userSettingsStore.patchUserSettings(user, { slackName: profile.displayName });
-```
-Switching cost: **tiny (~3 lines)**. This is a bug, not a design decision.
+- **displayName**: `ensureUserExists(user, profile.displayName)` 호출로 slackName 저장
+- **이스케이프**: `\{{...}}` 패턴 지원 — common.prompt 문서 변수 자기 치환 방지
+- **Empty sentinel**: email scope 없을 때 `''` 저장 → 반복 API 호출 방지
 
 ---
 
@@ -258,13 +240,9 @@ Switching cost: **tiny (~3 lines)**. This is a bug, not a design decision.
 | Separate test describe block for user variables | tiny | Clean organization |
 
 ## Implementation Status
-| Scenario | Trace | Code | Tests (RED) | Status |
-|----------|-------|------|-------------|--------|
-| 1. Email Auto-Fetch | ✅ | ✅ implemented | ❌ missing | Tests needed |
-| 2. Variable Substitution | ✅ | ✅ implemented | ❌ missing | Tests needed |
-| 3. Fallback | ✅ | ✅ implemented | ❌ missing | Tests needed |
-| 4. Workflow Templates | ✅ | ✅ implemented | ❌ missing | Tests needed |
-
-## Next Step
-→ Write RED contract tests, then verify with `stv:verify`
-→ Fix displayName storage gap (tiny, ~3 lines)
+| Scenario | Trace | Code | Tests | Status |
+|----------|-------|------|-------|--------|
+| 1. Email Auto-Fetch | ✅ | ✅ | ✅ slack-api-helper.test.ts (4건) + user-settings-store.test.ts (5건) | Complete |
+| 2. Variable Substitution | ✅ | ✅ | ✅ prompt-builder.test.ts (11건) | Complete |
+| 3. Fallback | ✅ | ✅ | ✅ prompt-builder.test.ts (4건) | Complete |
+| 4. Workflow Templates | ✅ | ✅ | ✅ prompt-builder.test.ts (3건) | Complete |

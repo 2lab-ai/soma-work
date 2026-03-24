@@ -67,6 +67,59 @@ describe('SlackApiHelper', () => {
     });
   });
 
+  describe('getUserProfile', () => {
+    // Trace: S1, Section 3b — SlackApiHelper fetch
+
+    it('should return displayName and email from Slack profile', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: 'Zhuge', email: 'z@insightquest.io' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge');
+      expect(result.email).toBe('z@insightquest.io');
+    });
+
+    it('should fallback to real_name when display_name is empty', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: '', email: 'z@insightquest.io' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge Liang');
+    });
+
+    it('should return undefined email when scope missing', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: 'Zhuge' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge');
+      expect(result.email).toBeUndefined();
+    });
+
+    it('should fallback to userId on API failure', async () => {
+      mockApp.client.users.info.mockRejectedValue(new Error('API error'));
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('U123');
+      expect(result.email).toBeUndefined();
+    });
+  });
+
   describe('getChannelName', () => {
     it('should return "DM" for DM channels', async () => {
       const result = await helper.getChannelName('D123ABC');

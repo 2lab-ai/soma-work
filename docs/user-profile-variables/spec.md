@@ -15,18 +15,19 @@
 
 ## 3. Acceptance Criteria
 
-- [ ] `{{user.email}}` → Slack 프로필 이메일로 치환
-- [ ] `{{user.displayName}}` → Slack 표시 이름으로 치환
-- [ ] `{{user.slackId}}` → Slack 유저 ID로 치환
-- [ ] `{{user.jiraName}}` → Jira 표시 이름으로 치환
-- [ ] 미등록 유저의 변수는 `{{user.email}}` 형태 그대로 유지 (fallback)
-- [ ] 세션 시작 시 이메일 자동 fetch, UserSettings에 캐시
-- [ ] `users:read.email` scope 없을 때 graceful degradation
-- [ ] jira-create-pr 워크플로우 3곳에 Co-Authored-By 포함
-- [ ] pr-fix-and-update 워크플로우에 Co-Authored-By 포함
-- [ ] **단위 테스트**: processVariables user 변수 치환 검증
-- [ ] **단위 테스트**: getUserProfile Slack API mock 검증
-- [ ] **단위 테스트**: UserSettings email getter/setter 검증
+- [x] `{{user.email}}` → Slack 프로필 이메일로 치환
+- [x] `{{user.displayName}}` → Slack 표시 이름으로 치환
+- [x] `{{user.slackId}}` → Slack 유저 ID로 치환
+- [x] `{{user.jiraName}}` → Jira 표시 이름으로 치환
+- [x] 미등록 유저의 변수는 `{{user.email}}` 형태 그대로 유지 (fallback)
+- [x] 세션 시작 시 이메일 자동 fetch, UserSettings에 캐시
+- [x] `users:read.email` scope 없을 때 graceful degradation (empty sentinel)
+- [x] jira-create-pr 워크플로우 3곳에 Co-Authored-By 포함
+- [x] pr-fix-and-update 워크플로우에 Co-Authored-By 포함
+- [x] **단위 테스트**: processVariables user 변수 치환 검증
+- [x] **단위 테스트**: getUserProfile Slack API mock 검증
+- [x] **단위 테스트**: UserSettings email getter/setter 검증
+- [x] `\{{...}}` 이스케이프 — common.prompt 문서 변수가 치환되지 않도록
 
 ## 4. Scope
 
@@ -105,17 +106,16 @@ Resolved prompt with Co-Authored-By: Name <email>
 | Decision | Tier | Rationale |
 |----------|------|-----------|
 | email을 UserSettings에 저장 | tiny | 기존 패턴(jiraName, slackName)과 동일 |
-| VARIABLE_PATTERN을 `[\w.]`으로 확장 | tiny | 기존 `\w`에 dot만 추가, 하위 호환 |
+| VARIABLE_PATTERN을 `[\w.]`으로 확장 + `\{{` 이스케이프 | tiny | 기존 `\w`에 dot 추가 + negative lookbehind으로 이스케이프 지원 |
 | processVariables에 userId 파라미터 추가 | small | 시그니처 변경이나 호출부 1곳만 수정 |
 | resolveUserVariable을 switch문으로 구현 | tiny | 변수 4개, 단순 매핑 |
 | auto-fetch를 StreamExecutor에 배치 | small | 세션 시작의 자연스러운 위치, 기존 패턴 |
 | fallback을 "미치환 유지 + prompt 지시"로 처리 | small | 코드 변경 최소화, LLM이 판단 |
+| empty sentinel로 반복 fetch 방지 | tiny | `=== undefined` 체크 + `email ?? ''` 저장 |
 
-## 8. Open Questions
+## 8. Resolved Questions
 
-- **테스트 부재**: PR #62에 단위 테스트가 없다. Acceptance Criteria의 테스트 항목 3개가 미충족.
-- **displayName 매핑**: `user.displayName`이 `settings.slackName`을 반환하는데, Slack의 `display_name`과 `slackName`이 동일한지 확인 필요. `getUserProfile()`에서 fetch한 displayName을 slackName에 저장하는 로직이 없다 — email만 저장한다.
-
-## 9. Next Step
-
-→ `stv:trace docs/user-profile-variables/spec.md` 로 시나리오별 vertical trace 생성
+- **테스트 부재**: ✅ 해결됨 — prompt-builder.test.ts (23건), user-settings-store.test.ts (5건), slack-api-helper.test.ts (4건) 추가
+- **displayName 매핑**: ✅ 해결됨 — StreamExecutor에서 `ensureUserExists(user, profile.displayName)` 호출하여 slackName에 저장
+- **common.prompt 변수 자기 치환**: ✅ 해결됨 — `\{{...}}` 이스케이프 메커니즘 도입
+- **반복 API 호출**: ✅ 해결됨 — empty sentinel (`''`) 저장 + `=== undefined` 체크
