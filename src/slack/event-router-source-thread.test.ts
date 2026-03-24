@@ -39,6 +39,7 @@ const createMockActionHandlers = () => ({
 const createMockApp = () => ({
   message: vi.fn(),
   event: vi.fn(),
+  command: vi.fn(),
 });
 
 const createMockSession = (overrides: Partial<ConversationSession> = {}): ConversationSession => ({
