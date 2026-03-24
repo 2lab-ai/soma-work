@@ -40,25 +40,30 @@ export class ChoiceActionHandler {
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
-      // 선택 메시지 업데이트
-      if (completionMessageTs && channel) {
-        try {
-          await this.ctx.slackApi.updateMessage(
-            channel,
-            completionMessageTs,
-            `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-            [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-                },
-              },
-            ]
-          );
-        } catch (error) {
-          this.logger.warn('Failed to update choice message', error);
+      // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
+      if (channel) {
+        const completedBlocks = [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+            },
+          },
+        ];
+        const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
+        for (const targetTs of targetTimestamps) {
+          try {
+            await this.ctx.slackApi.updateMessage(
+              channel,
+              targetTs,
+              `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+              completedBlocks,
+              [] // 기존 attachments(버튼) 제거
+            );
+          } catch (error) {
+            this.logger.warn('Failed to update choice message', { targetTs, error });
+          }
         }
       }
 
@@ -310,23 +315,34 @@ export class ChoiceActionHandler {
 
     const completionMessageTs = pendingForm.messageTs || messageTs;
 
-    // 완료 UI 업데이트
-    try {
-      const completedBlocks = [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
-          },
+    // 완료 UI 업데이트 (모든 동기화 대상에 대해)
+    const completedBlocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
         },
-      ];
+      },
+    ];
 
-      if (completionMessageTs) {
-        await this.ctx.slackApi.updateMessage(channel, completionMessageTs, '✅ 모든 선택 완료', completedBlocks);
+    const targetTimestamps = this.resolveChoiceSyncMessageTs(
+      pendingForm.sessionKey,
+      messageTs,
+      completionMessageTs
+    );
+    for (const targetTs of targetTimestamps) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '✅ 모든 선택 완료',
+          completedBlocks,
+          [] // 기존 attachments(버튼 폼) 제거
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update completed form', { targetTs, error });
       }
-    } catch (error) {
-      this.logger.warn('Failed to update completed form', error);
     }
 
     // Claude에 전송
