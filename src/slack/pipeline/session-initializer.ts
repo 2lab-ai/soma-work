@@ -680,6 +680,9 @@ export class SessionInitializer {
       await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
       if (isMidThread) {
         const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
+        if (!newThreadPermalink) {
+          this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
+        }
         const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
         await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
       } else {

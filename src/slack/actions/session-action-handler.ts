@@ -64,8 +64,10 @@ export class SessionActionHandler {
       // Update UI to closed state before terminating
       await this.updateSessionUiAsClosed(session);
 
-      // Post summary to source thread before termination (while session data still exists)
-      await postSourceThreadSummary(this.ctx.slackApi, session, 'closed');
+      // Fire-and-forget: must not block session termination sequence
+      postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch((err) =>
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+      );
 
       // Abort active AI request before deleting session
       this.ctx.requestCoordinator?.abortSession(sessionKey);

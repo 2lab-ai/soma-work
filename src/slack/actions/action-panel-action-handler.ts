@@ -299,8 +299,10 @@ export class ActionPanelActionHandler {
         };
       }
 
-      // Post summary to source thread if this session was created from mid-thread mention
-      await postSourceThreadSummary(this.ctx.slackApi, session, 'merged');
+      // Fire-and-forget: do not block the merge response path
+      postSourceThreadSummary(this.ctx.slackApi, session, 'merged').catch((err) =>
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+      );
     } else {
       await respond({
         response_type: 'ephemeral',

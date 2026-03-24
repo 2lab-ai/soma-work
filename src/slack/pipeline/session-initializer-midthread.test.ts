@@ -154,7 +154,7 @@ const ACCEPTED_USER_SETTINGS = {
   defaultDirectory: '/some/dir',
   bypassPermission: false,
   persona: 'default' as const,
-  defaultModel: 'claude-sonnet-4-5-20250929',
+  defaultModel: 'claude-sonnet-4-5-20250929' as const,
   lastUpdated: '2024-01-01',
 };
 

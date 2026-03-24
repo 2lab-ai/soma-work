@@ -39,6 +39,11 @@ export async function postSourceThreadSummary(
       const permalink = await slackApi.getPermalink(sessionChannel, sessionThreadTs);
       if (permalink) {
         workThreadLink = `\n🧵 *작업 스레드*: <${permalink}|열기>`;
+      } else {
+        logger.warn('Failed to get permalink for work thread in summary', {
+          sessionChannel,
+          sessionThreadTs,
+        });
       }
     }
 
@@ -74,10 +79,10 @@ export async function postSourceThreadSummary(
       title: session.title,
     });
   } catch (error) {
-    logger.warn('Failed to post source thread summary (non-critical)', {
+    logger.error('Failed to post source thread summary', {
       trigger,
       sourceThread: session.sourceThread,
-      error: (error as Error).message,
+      error,
     });
   }
 }
