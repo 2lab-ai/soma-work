@@ -5,8 +5,7 @@ import {
   validateOfficialManifest,
   normaliseOfficialManifest,
 } from './marketplace-fetcher';
-import { EXTERNAL_PLUGIN_PATH } from './types';
-import { OfficialMarketplaceManifest } from './types';
+import { EXTERNAL_PLUGIN_PATH, OfficialMarketplaceManifest } from './types';
 
 // ---------------------------------------------------------------------------
 // gitUrlToRepo
