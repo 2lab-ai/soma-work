@@ -817,7 +817,10 @@ export class SessionRegistry {
     const isTmpPath = dirPath.startsWith('/tmp/') || dirPath.startsWith('/private/tmp/');
     if (!isTmpPath || dirPath.includes('..')) return false;
     const segments = dirPath.replace(/\/+$/, '').split('/').filter(Boolean);
-    return segments.length >= 3;
+    // /private/tmp/X has 3 segments but is same depth as /tmp/X (2 segments)
+    // Require at least one dir below the tmp root to prevent top-level deletion
+    const minDepth = dirPath.startsWith('/private/tmp/') ? 4 : 3;
+    return segments.length >= minDepth;
   }
 
   /**
@@ -869,7 +872,13 @@ export class SessionRegistry {
 
     // Resolve symlinks and re-validate the real path is under /tmp/
     // Note: macOS resolves /tmp -> /private/tmp, both are acceptable
-    const resolvedPath = fs.realpathSync(dirPath);
+    let resolvedPath: string;
+    try {
+      resolvedPath = fs.realpathSync(dirPath);
+    } catch (error) {
+      this.logger.warn('Failed to resolve real path for source working dir', { dirPath, error });
+      return false;
+    }
     if (!this.isValidSourceWorkingDirPath(resolvedPath)) {
       this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
       return false;
@@ -877,6 +886,11 @@ export class SessionRegistry {
 
     if (!session.sourceWorkingDirs) {
       session.sourceWorkingDirs = [];
+    }
+    const MAX_SOURCE_WORKING_DIRS = 50;
+    if (session.sourceWorkingDirs.length >= MAX_SOURCE_WORKING_DIRS) {
+      this.logger.warn('sourceWorkingDirs limit reached, rejecting new dir', { key, dirPath: resolvedPath, count: session.sourceWorkingDirs.length });
+      return false;
     }
     if (!session.sourceWorkingDirs.includes(resolvedPath)) {
       session.sourceWorkingDirs.push(resolvedPath);
@@ -892,10 +906,17 @@ export class SessionRegistry {
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
+    const failed: string[] = [];
     for (const dir of session.sourceWorkingDirs) {
-      this.safeRemoveSourceDir(dir);
+      if (!this.safeRemoveSourceDir(dir)) {
+        // Keep track of dirs that couldn't be removed for potential retry
+        failed.push(dir);
+      }
     }
-    session.sourceWorkingDirs = [];
+    session.sourceWorkingDirs = failed;
+    if (failed.length > 0) {
+      this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
+    }
   }
 
   /**

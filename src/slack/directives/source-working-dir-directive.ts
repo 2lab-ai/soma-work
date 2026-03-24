@@ -13,6 +13,10 @@
  * }
  */
 
+import { Logger } from '../../logger';
+
+const logger = new Logger('SourceWorkingDirDirective');
+
 export interface SourceWorkingDirExtractResult {
   action: 'add' | null;
   path: string | null;
@@ -133,7 +137,7 @@ export class SourceWorkingDirDirectiveHandler {
       return { action: 'add', path: dirPath };
     } catch (error) {
       if (!(error instanceof SyntaxError)) {
-        console.error('Unexpected error parsing source_working_dir directive', { jsonStr, error });
+        logger.error('Unexpected error parsing source_working_dir directive', { jsonStr, error });
       }
       return null;
     }
