@@ -238,12 +238,12 @@ export class StreamExecutor {
       }
 
       // Auto-fetch user profile (email + displayName) from Slack if not cached
-      if (!userSettingsStore.getUserEmail(user)) {
+      // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
+      if (userSettingsStore.getUserEmail(user) === undefined) {
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
-          if (profile.email) {
-            userSettingsStore.setUserEmail(user, profile.email);
-          }
+          // Store email or empty sentinel to prevent re-fetching when scope is missing
+          userSettingsStore.setUserEmail(user, profile.email ?? '');
           if (profile.displayName && profile.displayName !== user) {
             userSettingsStore.ensureUserExists(user, profile.displayName);
           }

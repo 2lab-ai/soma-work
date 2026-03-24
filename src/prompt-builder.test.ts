@@ -211,6 +211,28 @@ describe('PromptBuilder', () => {
       expect(prompt).toContain('Zhuge');
     });
 
+    it('should leave {{user.email}} as-is when email is empty sentinel', async () => {
+      // Fix: empty string sentinel from failed scope fetch should not resolve
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: '', // empty sentinel — scope missing
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('{{user.email}}');
+      expect(prompt).toContain('Zhuge');
+    });
+
     it('should resolve {{user.slackId}} from userId', async () => {
       // Trace: S2, Section 3c, slackId mapping
       const { userSettingsStore } = await import('./user-settings-store');

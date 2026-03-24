@@ -182,13 +182,13 @@ export class PromptBuilder {
 
     switch (varName) {
       case 'user.email':
-        return settings.email;
+        return settings.email || undefined; // empty sentinel → unresolved
       case 'user.displayName':
-        return settings.slackName;
+        return settings.slackName || undefined;
       case 'user.slackId':
-        return settings.userId;
+        return settings.userId || undefined;
       case 'user.jiraName':
-        return settings.jiraName;
+        return settings.jiraName || undefined;
       default:
         return undefined;
     }
