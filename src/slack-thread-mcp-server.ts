@@ -64,11 +64,18 @@ interface ThreadFile {
 interface GetThreadMessagesResult {
   thread_ts: string;
   channel: string;
-  total_replies: number;
   returned: number;
   messages: ThreadMessage[];
   has_more_before: boolean;
   has_more_after: boolean;
+}
+
+// ── Helpers ──────────────────────────────────────────────
+
+/** Extract pagination cursor from Slack API response, returning undefined when exhausted. */
+function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
+  const c = response.response_metadata?.next_cursor;
+  return c && c.length > 0 ? c : undefined;
 }
 
 // ── Server ───────────────────────────────────────────────
@@ -273,8 +280,7 @@ class SlackThreadMcpServer {
         collected.push(m);
       }
 
-      const nextCursor = response.response_metadata?.next_cursor;
-      cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+      cursor = extractCursor(response);
 
       // If the last message on this page is past the anchor, stop
       if (msgs.length > 0 && msgs[msgs.length - 1].ts! > anchorTs) break;
@@ -309,8 +315,7 @@ class SlackThreadMcpServer {
         if (collected.length >= count) break;
       }
 
-      const nextCursor = response.response_metadata?.next_cursor;
-      cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+      cursor = extractCursor(response);
 
       if (collected.length >= count) break;
     } while (cursor);
@@ -355,7 +360,6 @@ class SlackThreadMcpServer {
     const result: GetThreadMessagesResult = {
       thread_ts: this.context.threadTs,
       channel: this.context.channel,
-      total_replies: formatted.length,
       returned: formatted.length,
       messages: formatted,
       has_more_before: hasMoreBefore,

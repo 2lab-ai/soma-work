@@ -35,6 +35,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 
 /**
@@ -165,7 +166,7 @@ export class StreamExecutor {
     }
 
     // Thread context hint — only for mid-thread mentions (mentionTs !== threadTs)
-    if (mentionTs && threadTs && mentionTs !== threadTs) {
+    if (isMidThreadMention({ channel: '', user: '', threadTs, mentionTs })) {
       finalPrompt = `${finalPrompt}\n\n${this.getThreadContextHint()}`;
     }
 

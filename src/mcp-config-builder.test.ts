@@ -6,6 +6,7 @@ import {
   resolveInternalMcpServer,
   resolveModelCommandServerPath,
   resolvePermissionServerPath,
+  isMidThreadMention,
 } from './mcp-config-builder';
 
 describe('MCP server path resolver', () => {

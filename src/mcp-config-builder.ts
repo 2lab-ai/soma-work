@@ -64,6 +64,11 @@ export function resolveModelCommandServerPath(
   return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
 }
 
+/** True when the bot was mentioned inside an existing thread (not at the root). */
+export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string; [key: string]: any } | null): boolean {
+  return !!ctx?.mentionTs && ctx.mentionTs !== ctx.threadTs;
+}
+
 /**
  * Slack context for permission prompts
  */
@@ -138,8 +143,8 @@ export class McpConfigBuilder {
 
     // Add slack-thread server only for mid-thread mentions (mentionTs !== threadTs)
     // When mentionTs === threadTs, the mention IS the thread root — no prior context to explore
-    if (slackContext?.mentionTs && slackContext.mentionTs !== slackContext.threadTs) {
-      internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext);
+    if (isMidThreadMention(slackContext)) {
+      internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext!);
     }
 
     // Always add permission prompt server when in Slack context
@@ -346,7 +351,7 @@ export class McpConfigBuilder {
     }
 
     // Allow slack-thread tools only for mid-thread mentions
-    if (slackContext?.mentionTs && slackContext.mentionTs !== slackContext.threadTs) {
+    if (isMidThreadMention(slackContext)) {
       allowedTools.push('mcp__slack-thread');
     }
 
