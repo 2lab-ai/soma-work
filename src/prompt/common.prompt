@@ -16,10 +16,10 @@ You are a 400-yr full stack software engineer from assembly to c++, rust, javasc
 
 # User Profile Variables
 워크플로우 프롬프트에서 다음 변수가 자동 치환된다:
-- `{{ user.displayName }}`: Slack 표시 이름
-- `{{ user.email }}`: Slack 프로필 이메일
-- `{{ user.slackId }}`: Slack 유저 ID
-- `{{ user.jiraName }}`: Jira 표시 이름
+- `\{{user.displayName}}`: Slack 표시 이름
+- `\{{user.email}}`: Slack 프로필 이메일
+- `\{{user.slackId}}`: Slack 유저 ID
+- `\{{user.jiraName}}`: Jira 표시 이름
 
-> 변수가 치환되지 않고 `{{ user.email }}` 형태로 남아있으면, 해당 정보가 미등록 상태다. 이 경우 Co-Authored-By 라인을 **생략**하라.
+> 변수가 치환되지 않고 `\{{user.email}}` 형태로 남아있으면, 해당 정보가 미등록 상태다. 이 경우 Co-Authored-By 라인을 **생략**하라.
 </system_prompt>

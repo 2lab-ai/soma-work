@@ -141,7 +141,9 @@ describe('PromptBuilder', () => {
 
       expect(prompt).toBeDefined();
       expect(prompt).toContain('z@insightquest.io');
-      expect(prompt).not.toContain('{{user.email}}');
+      // Workflow template variables should be substituted into Co-Authored-By
+      // (common.prompt docs have escaped \{{user.email}} that renders as literal {{user.email}})
+      expect(prompt).toContain('Co-Authored-By: Zhuge <z@insightquest.io>');
     });
 
     it('should resolve {{user.displayName}} from slackName', async () => {
@@ -162,8 +164,8 @@ describe('PromptBuilder', () => {
       const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
 
       expect(prompt).toBeDefined();
-      expect(prompt).toContain('Zhuge');
-      expect(prompt).not.toContain('{{user.displayName}}');
+      // Co-Authored-By should have resolved displayName
+      expect(prompt).toContain('Co-Authored-By: Zhuge');
     });
 
     it('should leave user vars as-is when userId not provided', async () => {
@@ -288,6 +290,42 @@ describe('PromptBuilder', () => {
       // common.prompt is included in default prompt and documents user variables
       expect(prompt).toContain('User Profile Variables');
       expect(prompt).toContain('생략');
+    });
+  });
+
+  describe('variable escaping', () => {
+    it('should not substitute escaped \\{{...}} variables', async () => {
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      // buildSystemPrompt with 'default' includes common.prompt which has escaped \{{user.email}}
+      const prompt = builder.buildSystemPrompt('U123', 'default');
+
+      expect(prompt).toBeDefined();
+      // Escaped variables in common.prompt documentation should render as literal {{user.email}}
+      expect(prompt).toContain('{{user.email}}');
+      expect(prompt).toContain('{{user.displayName}}');
+    });
+
+    it('should unescape \\{{ to {{ after substitution', async () => {
+      // Even without user settings, escaped vars should become literal
+      const prompt = builder.buildSystemPrompt(undefined, 'default');
+
+      expect(prompt).toBeDefined();
+      // common.prompt has \{{user.email}} which should render as {{user.email}}
+      expect(prompt).toContain('{{user.email}}');
+      // Should NOT contain the backslash escape in final output
+      expect(prompt).not.toContain('\\{{user.email}}');
     });
   });
 

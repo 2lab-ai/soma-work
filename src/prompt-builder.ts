@@ -22,7 +22,8 @@ const PERSONA_DIR = path.join(__dirname, 'persona');
 // Include directive pattern: {{include:filename.prompt}}
 const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
 // Runtime variable pattern: {{variable_name}} or {{user.field}}
-const VARIABLE_PATTERN = /\{\{([\w.]+)\}\}/g;
+// Negative lookbehind: \{{ is escaped and won't be substituted
+const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
 
 /**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
@@ -156,9 +157,10 @@ export class PromptBuilder {
   /**
    * Process runtime variable placeholders in prompt content
    * Replaces {{variable_name}} and {{user.*}} with runtime values
+   * Escaped variables \{{...}} are preserved as literal {{...}}
    */
   private processVariables(content: string, userId?: string): string {
-    return content.replace(VARIABLE_PATTERN, (match, varName) => {
+    const result = content.replace(VARIABLE_PATTERN, (match, varName) => {
       if (varName === 'llm_chat_config') {
         return llmChatConfigStore.toPromptSnippet();
       }
@@ -171,6 +173,9 @@ export class PromptBuilder {
       // Unknown variables are left as-is
       return match;
     });
+
+    // Unescape \{{ → {{ after substitution
+    return result.replace(/\\\{\{/g, '{{');
   }
 
   /**
