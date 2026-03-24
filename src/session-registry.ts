@@ -833,7 +833,7 @@ export class SessionRegistry {
       return false;
     }
     try {
-      if (!fs.existsSync(dir)) return false;
+      if (!fs.existsSync(dir)) return true; // Already gone — treat as success
       const stat = fs.lstatSync(dir);
       if (stat.isSymbolicLink()) {
         this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
@@ -1175,8 +1175,12 @@ export class SessionRegistry {
           isOnboarding: serialized.isOnboarding,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
             (d: unknown) => {
-              const valid = this.isValidSourceWorkingDirPath(d as string);
-              if (!valid && d) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+              if (typeof d !== 'string') {
+                this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+                return false;
+              }
+              const valid = this.isValidSourceWorkingDirPath(d);
+              if (!valid) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
               return valid;
             }
           ),

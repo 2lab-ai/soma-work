@@ -427,11 +427,17 @@ export class StreamExecutor {
         onSourceWorkingDirDetected: async (dirPath) => {
           try {
             const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
-            this.logger.info('Source working dir directive processed', {
-              sessionKey,
-              dirPath,
-              added,
-            });
+            if (added) {
+              this.logger.info('Source working dir directive processed', {
+                sessionKey,
+                dirPath,
+              });
+            } else {
+              this.logger.warn('Source working dir directive rejected', {
+                sessionKey,
+                dirPath,
+              });
+            }
           } catch (error) {
             this.logger.error('Failed to process source working dir directive', {
               sessionKey,

@@ -471,28 +471,41 @@ export class StreamProcessor {
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
 
-    const linkResult = SessionLinkDirectiveHandler.extract(cleaned);
-    if (linkResult.links) {
-      cleaned = linkResult.cleanedText;
-      if (this.callbacks.onSessionLinksDetected) {
-        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+    // Each directive handler is isolated — one failure must not block subsequent handlers
+    try {
+      const linkResult = SessionLinkDirectiveHandler.extract(cleaned);
+      if (linkResult.links) {
+        cleaned = linkResult.cleanedText;
+        if (this.callbacks.onSessionLinksDetected) {
+          await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+        }
       }
+    } catch (error) {
+      this.logger.error('Failed to process session link directive', { error });
     }
 
-    const channelMessageResult = ChannelMessageDirectiveHandler.extract(cleaned);
-    if (channelMessageResult.messageText) {
-      cleaned = channelMessageResult.cleanedText;
-      if (this.callbacks.onChannelMessageDetected) {
-        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+    try {
+      const channelMessageResult = ChannelMessageDirectiveHandler.extract(cleaned);
+      if (channelMessageResult.messageText) {
+        cleaned = channelMessageResult.cleanedText;
+        if (this.callbacks.onChannelMessageDetected) {
+          await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+        }
       }
+    } catch (error) {
+      this.logger.error('Failed to process channel message directive', { error });
     }
 
-    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(cleaned);
-    if (workingDirResult.path) {
-      cleaned = workingDirResult.cleanedText;
-      if (this.callbacks.onSourceWorkingDirDetected) {
-        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
+    try {
+      const workingDirResult = SourceWorkingDirDirectiveHandler.extract(cleaned);
+      if (workingDirResult.path) {
+        cleaned = workingDirResult.cleanedText;
+        if (this.callbacks.onSourceWorkingDirDetected) {
+          await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
+        }
       }
+    } catch (error) {
+      this.logger.error('Failed to process source working dir directive', { error });
     }
 
     return cleaned;
