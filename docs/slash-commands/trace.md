@@ -182,12 +182,12 @@ Infrastructure: slash command 등록 및 라우팅 파이프라인 구축.
 - `command.text` → `SlashCommandAdapter.adapt()`
 
 #### 3b. SlashCommandAdapter.adapt()
-- Case A (빈 입력): `text = ""` → CommandRouter.route() → `handled: false` → help 메시지 fallback
-- Case B (미인식): `text = "asdf"` → CommandRouter → `isPotentialCommand` → 미인식 명령 안내
+- Case A (빈 입력): `text = ""` → EventRouter에서 즉시 help 메시지 fallback (CommandRouter 미진입)
+- Case B (미인식): `text = "asdf"` → CommandRouter → `isPotentialCommand` → false → `handled: false` → EventRouter가 help fallback 표시
 
 #### 3c. Response
 - Case A: help 메시지를 ephemeral로 표시 (빈 입력 = help와 동일하게 처리)
-- Case B: `"❓ 'asdf' 명령어를 인식할 수 없습니다."` ephemeral 응답
+- Case B: help 메시지를 ephemeral로 표시 (미인식 텍스트도 help fallback — 더 나은 UX)
 
 ### 4. Side Effects
 - 없음
@@ -200,7 +200,7 @@ Infrastructure: slash command 등록 및 라우팅 파이프라인 구축.
 
 ### 6. Output
 - Case A: Ephemeral help 메시지
-- Case B: Ephemeral `"❓ 'asdf' 명령어를 인식할 수 없습니다. help를 입력하여 사용 가능한 명령어를 확인하세요."`
+- Case B: Ephemeral help 메시지 (CommandRouter가 처리하지 못한 경우 help fallback)
 
 ### Contract Tests (RED)
 
