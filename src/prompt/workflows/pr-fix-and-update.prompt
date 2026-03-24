@@ -106,7 +106,8 @@ git commit -m "fix: address PR review feedback
 
 - [feedback 1 요약]
 - [feedback 2 요약]
-"
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 

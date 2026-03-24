@@ -41,6 +41,7 @@ export interface UserSettings {
   jiraAccountId?: string;
   jiraName?: string;
   slackName?: string;
+  email?: string;  // Slack profile email (auto-fetched via users.info)
   // User acceptance (admin approval)
   accepted: boolean;
   acceptedBy?: string;
@@ -229,6 +230,21 @@ export class UserSettingsStore {
    */
   getUserJiraName(userId: string): string | undefined {
     return this.settings[userId]?.jiraName;
+  }
+
+  /**
+   * Get user's email (auto-fetched from Slack profile)
+   */
+  getUserEmail(userId: string): string | undefined {
+    return this.settings[userId]?.email;
+  }
+
+  /**
+   * Set user's email
+   */
+  setUserEmail(userId: string, email: string): void {
+    this.patchUserSettings(userId, { email });
+    logger.info('Set user email', { userId, email });
   }
 
   /**

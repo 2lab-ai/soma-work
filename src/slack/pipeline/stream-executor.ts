@@ -237,6 +237,18 @@ export class StreamExecutor {
         await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
       }
 
+      // Auto-fetch user email from Slack profile if not cached
+      if (!userSettingsStore.getUserEmail(user)) {
+        try {
+          const profile = await this.deps.slackApi.getUserProfile(user);
+          if (profile.email) {
+            userSettingsStore.setUserEmail(user, profile.email);
+          }
+        } catch (e) {
+          this.logger.debug('Failed to fetch user email from Slack', { user, error: e });
+        }
+      }
+
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(
         this.deps.slackApi.getClient(),
