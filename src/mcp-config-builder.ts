@@ -14,6 +14,7 @@ import * as path from 'path';
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
+const SLACK_THREAD_SERVER_BASENAME = 'slack-thread-mcp-server';
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -63,12 +64,18 @@ export function resolveModelCommandServerPath(
   return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
 }
 
+/** True when the bot was mentioned inside an existing thread (not at the root). */
+export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
+  return !!ctx?.mentionTs && ctx.mentionTs !== ctx.threadTs;
+}
+
 /**
  * Slack context for permission prompts
  */
 export interface SlackContext {
   channel: string;
   threadTs?: string;
+  mentionTs?: string;
   user: string;
   channelDescription?: string;
 }
@@ -97,12 +104,6 @@ export interface McpConfig {
 export class McpConfigBuilder {
   private logger = new Logger('McpConfigBuilder');
   private mcpManager: McpManager;
-  private permissionServerPath: string | null = null;
-  private permissionServerPathChecked = false;
-  private modelCommandServerPath: string | null = null;
-  private modelCommandServerPathChecked = false;
-  private llmServerPath: string | null = null;
-  private llmServerPathChecked = false;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -138,6 +139,12 @@ export class McpConfigBuilder {
         slackContext,
         modelCommandContext
       );
+    }
+
+    // Add slack-thread server only for mid-thread mentions (mentionTs !== threadTs)
+    // When mentionTs === threadTs, the mention IS the thread root — no prior context to explore
+    if (isMidThreadMention(slackContext)) {
+      internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext!);
     }
 
     // Always add permission prompt server when in Slack context
@@ -233,72 +240,89 @@ export class McpConfigBuilder {
     };
   }
 
+  /**
+   * Resolve and cache an internal MCP server path with logging.
+   * Deduplicates the resolve/log/throw pattern used by all internal servers.
+   */
+  private resolveServerPath(
+    label: string,
+    basename: string,
+    cache: { path: string | null; checked: boolean; triedPaths: string[] }
+  ): string {
+    if (!cache.checked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolveInternalMcpServer(__dirname, basename, runtimeExt);
+      cache.checked = true;
+      cache.path = result.resolvedPath;
+      cache.triedPaths = result.triedPaths;
+
+      if (!result.resolvedPath) {
+        this.logger.error(`${label} MCP server file not found`, {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn(`${label} MCP server path fallback used`, {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+    }
+
+    if (!cache.path) {
+      throw new Error(`${label} MCP server file not found. Tried: ${cache.triedPaths.join(', ')}`);
+    }
+
+    return cache.path;
+  }
+
+  private static emptyCache() { return { path: null as string | null, checked: false, triedPaths: [] as string[] }; }
+
+  private permissionServerCache = McpConfigBuilder.emptyCache();
   private getPermissionServerPath(): string {
-    if (!this.permissionServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolvePermissionServerPath(__dirname, runtimeExt);
-      this.permissionServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('Permission MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('Permission MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.permissionServerPath = result.resolvedPath;
-    }
-
-    if (!this.permissionServerPath) {
-      throw new Error(`Permission MCP server file not found. Tried: ${this.getPermissionServerTriedPaths().join(', ')}`);
-    }
-
-    return this.permissionServerPath;
+    return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, this.permissionServerCache);
   }
 
-  private getPermissionServerTriedPaths(): string[] {
-    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-    return resolvePermissionServerPath(__dirname, runtimeExt).triedPaths;
-  }
-
+  private modelCommandServerCache = McpConfigBuilder.emptyCache();
   private getModelCommandServerPath(): string {
-    if (!this.modelCommandServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveModelCommandServerPath(__dirname, runtimeExt);
-      this.modelCommandServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('Model-command MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('Model-command MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.modelCommandServerPath = result.resolvedPath;
-    }
-
-    if (!this.modelCommandServerPath) {
-      throw new Error(`Model-command MCP server file not found. Tried: ${this.getModelCommandServerTriedPaths().join(', ')}`);
-    }
-
-    return this.modelCommandServerPath;
+    return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, this.modelCommandServerCache);
   }
 
-  private getModelCommandServerTriedPaths(): string[] {
-    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-    return resolveModelCommandServerPath(__dirname, runtimeExt).triedPaths;
+  private slackThreadServerCache = McpConfigBuilder.emptyCache();
+  private getSlackThreadServerPath(): string {
+    return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, this.slackThreadServerCache);
+  }
+
+  private llmServerCache = McpConfigBuilder.emptyCache();
+  private getLlmServerPath(): string {
+    return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, this.llmServerCache);
+  }
+
+  /**
+   * Build slack-thread MCP server configuration (thread context exploration)
+   */
+  private buildSlackThreadServer(slackContext: SlackContext): Record<string, any> {
+    const serverPath = this.getSlackThreadServerPath();
+    const threadTs = slackContext.threadTs;
+    if (!threadTs) {
+      throw new Error('Cannot build slack-thread server without threadTs');
+    }
+
+    const threadContext = {
+      channel: slackContext.channel,
+      threadTs,
+      mentionTs: slackContext.mentionTs ?? '',
+    };
+
+    return {
+      command: 'npx',
+      args: ['tsx', serverPath],
+      env: {
+        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
+        SLACK_THREAD_CONTEXT: JSON.stringify(threadContext),
+      },
+    };
   }
 
   private buildLlmServer(): Record<string, any> {
@@ -310,36 +334,6 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
-  }
-
-  private getLlmServerPath(): string {
-    if (!this.llmServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt);
-      this.llmServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('LLM MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('LLM MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.llmServerPath = result.resolvedPath;
-    }
-
-    if (!this.llmServerPath) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      throw new Error(`LLM MCP server file not found. Tried: ${resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt).triedPaths.join(', ')}`);
-    }
-
-    return this.llmServerPath;
   }
 
   /**
@@ -356,6 +350,11 @@ export class McpConfigBuilder {
 
     if (slackContext) {
       allowedTools.push('mcp__model-command');
+    }
+
+    // Allow slack-thread tools only for mid-thread mentions
+    if (isMidThreadMention(slackContext)) {
+      allowedTools.push('mcp__slack-thread');
     }
 
     // Always add permission prompt tool (even for bypass users, needed for dangerous commands)

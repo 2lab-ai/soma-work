@@ -35,6 +35,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 
 /**
@@ -107,6 +108,7 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+  mentionTs?: string;
 }
 
 interface FinalFooterData {
@@ -145,7 +147,9 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     userName: string,
     userId: string,
-    workingDirectory: string
+    workingDirectory: string,
+    threadTs?: string,
+    mentionTs?: string
   ): Promise<string> {
     // Prepare the prompt with file attachments
     let rawPrompt = processedFiles.length > 0
@@ -161,7 +165,31 @@ export class StreamExecutor {
       finalPrompt = `${finalPrompt}\n\n${contextInfo}`;
     }
 
+    // Thread context hint — only for mid-thread mentions (mentionTs !== threadTs)
+    if (isMidThreadMention({ threadTs, mentionTs })) {
+      finalPrompt = `${finalPrompt}\n\n${this.getThreadContextHint()}`;
+    }
+
     return finalPrompt;
+  }
+
+  /**
+   * Thread awareness prompt for sessions started from a thread mention.
+   * Guides the model to use get_thread_messages / download_thread_file
+   * to understand the conversation context before acting.
+   */
+  private getThreadContextHint(): string {
+    return `<thread-awareness>
+이 세션은 기존 Slack 스레드에서 멘션되어 시작되었습니다.
+유저의 요청을 이해하기 위해 스레드의 이전 대화를 확인해야 할 수 있습니다.
+
+사용 가능한 도구:
+- get_thread_messages: 스레드 메시지를 범위 지정하여 조회 (before/after 개수 지정)
+- download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
+
+먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
+파일이나 이미지가 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+</thread-awareness>`;
   }
 
   /**
@@ -209,7 +237,7 @@ export class StreamExecutor {
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
+      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
@@ -242,7 +270,7 @@ export class StreamExecutor {
         this.deps.slackApi.getClient(),
         channel
       );
-      const slackContext = { channel, threadTs, user, channelDescription };
+      const slackContext = { channel, threadTs, mentionTs: params.mentionTs, user, channelDescription };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
       const streamContext: StreamContext = {
