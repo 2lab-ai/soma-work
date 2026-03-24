@@ -355,6 +355,7 @@ export class SlackHandler {
         threadTs: activeThreadTs,
         user: event.user,
         say: wrappedSay,
+        mentionTs: ts,
       });
 
       // No continuation - exit loop
