@@ -6,6 +6,7 @@ import { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
 import { registerChannel, unregisterChannel } from '../channel-registry';
+import { ConversationSession } from '../types';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -290,7 +291,7 @@ export class EventRouter {
   private async respondWithLinkedSessionStatus(
     channel: string,
     threadTs: string,
-    session: import('../types').ConversationSession,
+    session: ConversationSession,
     say: SayFn
   ): Promise<void> {
     try {

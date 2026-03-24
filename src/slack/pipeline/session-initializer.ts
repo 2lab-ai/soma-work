@@ -675,17 +675,18 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
+    if (isMidThread) {
+      const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
+      if (!newThreadPermalink) {
+        this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
+      }
+      const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
+      await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
+    }
     if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
       const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
       await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
-      if (isMidThread) {
-        const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
-        if (!newThreadPermalink) {
-          this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
-        }
-        const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
-        await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
-      } else {
+      if (!isMidThread) {
         await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
       }
     }

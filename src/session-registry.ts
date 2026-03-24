@@ -90,6 +90,8 @@ interface SerializedSession {
   isOnboarding?: boolean;
   // Source working directories tracked for cleanup
   sourceWorkingDirs?: string[];
+  // Mid-thread source thread reference
+  sourceThread?: { channel: string; threadTs: string };
 }
 
 /**
@@ -1108,6 +1110,7 @@ export class SessionRegistry {
             threadRootTs: session.threadRootTs,
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
+            sourceThread: session.sourceThread,
           });
         }
       }
@@ -1186,6 +1189,7 @@ export class SessionRegistry {
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
+          sourceThread: serialized.sourceThread,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
             (d: unknown) => {
               if (typeof d !== 'string') {

@@ -74,10 +74,6 @@ export async function postSourceThreadSummary(
       title: session.title,
     });
   } catch (error) {
-    logger.error('Failed to post source thread summary', {
-      trigger,
-      sourceThread: session.sourceThread,
-      error,
-    });
+    logger.error('Failed to post source thread summary', error);
   }
 }
