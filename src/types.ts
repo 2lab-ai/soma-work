@@ -256,6 +256,12 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
+  // For bot-initiated threads created from mid-thread mentions:
+  // references the original thread where the bot was mentioned
+  sourceThread?: {
+    channel: string;
+    threadTs: string;
+  };
 }
 
 export interface WorkingDirectoryConfig {

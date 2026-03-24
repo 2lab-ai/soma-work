@@ -8,6 +8,7 @@ import { ContextWindowManager } from '../context-window-manager';
 import { ThreadPanel } from '../thread-panel';
 import { ClaudeHandler } from '../../claude-handler';
 import { ConversationSession } from '../../types';
+import { postSourceThreadSummary } from '../source-thread-summary';
 import { Logger } from '../../logger';
 import { RespondFn } from './types';
 
@@ -62,6 +63,9 @@ export class SessionActionHandler {
 
       // Update UI to closed state before terminating
       await this.updateSessionUiAsClosed(session);
+
+      // Post summary to source thread before termination (while session data still exists)
+      await postSourceThreadSummary(this.ctx.slackApi, session, 'closed');
 
       // Abort active AI request before deleting session
       this.ctx.requestCoordinator?.abortSession(sessionKey);

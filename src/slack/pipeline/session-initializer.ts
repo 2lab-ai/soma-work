@@ -85,6 +85,8 @@ export class SessionInitializer {
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
+    // Mid-thread mention: user mentioned bot inside an existing thread (thread_ts exists)
+    const isMidThread = thread_ts !== undefined;
 
     // Get user's display name
     const userName = await this.deps.slackApi.getUserName(user);
@@ -360,7 +362,8 @@ export class SessionInitializer {
             threadTs,
             user,
             userName,
-            workingDirectory
+            workingDirectory,
+            isMidThread
           );
           if (migrated) {
             return migrated;
@@ -381,7 +384,8 @@ export class SessionInitializer {
           threadTs,
           user,
           userName,
-          workingDirectory
+          workingDirectory,
+          isMidThread
         );
         if (migrated) {
           return migrated;
@@ -620,7 +624,8 @@ export class SessionInitializer {
     threadTs: string,
     user: string,
     userName: string,
-    workingDirectory: string
+    workingDirectory: string,
+    isMidThread: boolean = false
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -656,6 +661,9 @@ export class SessionInitializer {
     botSession.isOnboarding = session.isOnboarding;
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
+    if (isMidThread) {
+      botSession.sourceThread = { channel, threadTs };
+    }
 
     this.deps.claudeHandler.transitionToMain(
       channel,
@@ -670,9 +678,17 @@ export class SessionInitializer {
     if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
       const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
       await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
-      await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+      if (isMidThread) {
+        const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
+        const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
+        await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
+      } else {
+        await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+      }
     }
-    await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
+    if (!isMidThread) {
+      await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
+    }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
     const abortController = this.handleConcurrency(newSessionKey, channel, rootResult.ts, user, userName, botSession);

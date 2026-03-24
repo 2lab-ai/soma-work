@@ -7,6 +7,7 @@ import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
 import { mergeGitHubPR } from '../../link-metadata-fetcher';
 import { getChannelConfluenceUrl } from '../../channel-registry';
+import { postSourceThreadSummary } from '../source-thread-summary';
 import { ActionPanelBuilder } from '../action-panel-builder';
 
 interface PanelActionContext {
@@ -297,6 +298,9 @@ export class ActionPanelActionHandler {
           base: baseBranch,
         };
       }
+
+      // Post summary to source thread if this session was created from mid-thread mention
+      await postSourceThreadSummary(this.ctx.slackApi, session, 'merged');
     } else {
       await respond({
         response_type: 'ephemeral',
