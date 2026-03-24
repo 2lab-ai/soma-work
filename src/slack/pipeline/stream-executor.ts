@@ -147,7 +147,8 @@ export class StreamExecutor {
     userName: string,
     userId: string,
     workingDirectory: string,
-    threadTs?: string
+    threadTs?: string,
+    mentionTs?: string
   ): Promise<string> {
     // Prepare the prompt with file attachments
     let rawPrompt = processedFiles.length > 0
@@ -163,8 +164,8 @@ export class StreamExecutor {
       finalPrompt = `${finalPrompt}\n\n${contextInfo}`;
     }
 
-    // Thread context hint — guide the model to explore thread history
-    if (threadTs) {
+    // Thread context hint — only for mid-thread mentions (mentionTs !== threadTs)
+    if (mentionTs && threadTs && mentionTs !== threadTs) {
       finalPrompt = `${finalPrompt}\n\n${this.getThreadContextHint()}`;
     }
 
@@ -235,7 +236,7 @@ export class StreamExecutor {
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs);
+      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {

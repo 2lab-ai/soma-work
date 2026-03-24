@@ -142,8 +142,9 @@ export class McpConfigBuilder {
       );
     }
 
-    // Add slack-thread server when session started from a thread mention
-    if (slackContext?.threadTs) {
+    // Add slack-thread server only for mid-thread mentions (mentionTs !== threadTs)
+    // When mentionTs === threadTs, the mention IS the thread root — no prior context to explore
+    if (slackContext?.mentionTs && slackContext.mentionTs !== slackContext.threadTs) {
       internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext);
     }
 
@@ -419,8 +420,8 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__model-command');
     }
 
-    // Allow slack-thread tools when in thread context
-    if (slackContext?.threadTs) {
+    // Allow slack-thread tools only for mid-thread mentions
+    if (slackContext?.mentionTs && slackContext.mentionTs !== slackContext.threadTs) {
       allowedTools.push('mcp__slack-thread');
     }
 

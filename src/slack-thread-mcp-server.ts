@@ -71,11 +71,17 @@ interface GetThreadMessagesResult {
 
 // ── Server ───────────────────────────────────────────────
 
+/** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
+const ALLOWED_FILE_HOSTS = new Set([
+  'files.slack.com',
+  'files-pri.slack.com',
+  'files-tmb.slack.com',
+]);
+
 class SlackThreadMcpServer {
   private server: Server;
   private slack: WebClient;
   private context: SlackThreadContext;
-  private cachedMessages: any[] | null = null;
 
   constructor() {
     this.server = new Server(
@@ -200,70 +206,66 @@ class SlackThreadMcpServer {
     const before = Math.min(Math.max(args.before ?? 10, 0), 50);
     const after = Math.min(Math.max(args.after ?? 0, 0), 50);
 
-    const allMessages = await this.fetchAllMessages();
+    // Fetch messages before anchor (inclusive) — direct API, no caching
+    const beforeMessages = await this.fetchMessagesBefore(anchorTs, before);
 
-    // Find anchor index
-    const anchorIndex = allMessages.findIndex((m: any) => m.ts === anchorTs);
+    // Fetch messages after anchor (exclusive)
+    const afterMessages = after > 0
+      ? await this.fetchMessagesAfter(anchorTs, after)
+      : [];
 
-    let startIdx: number;
-    let endIdx: number;
+    const messages = [...beforeMessages, ...afterMessages];
+    const hasMoreBefore = beforeMessages.length > 0 && beforeMessages[0].ts !== this.context.threadTs;
+    const hasMoreAfter = afterMessages.length === after;
 
-    if (anchorIndex === -1) {
-      // Anchor not found — return the last `before` messages
-      logger.warn('Anchor ts not found, returning tail', { anchorTs, total: allMessages.length });
-      startIdx = Math.max(0, allMessages.length - before);
-      endIdx = allMessages.length;
-    } else {
-      startIdx = Math.max(0, anchorIndex - before);
-      endIdx = Math.min(allMessages.length, anchorIndex + after + 1);
-    }
-
-    const slice = allMessages.slice(startIdx, endIdx);
-
-    return this.formatMessages(
-      slice,
-      allMessages.length,
-      startIdx > 0,
-      endIdx < allMessages.length
-    );
+    return this.formatMessages(messages, messages.length, hasMoreBefore, hasMoreAfter);
   }
 
   /**
-   * Fetch all thread messages with pagination. Caches the result
-   * for the lifetime of this MCP server process (= one session).
+   * Fetch up to `count` messages ending at (and including) anchorTs.
+   * Uses Slack API `latest` + pagination — never loads the full thread.
    */
-  private async fetchAllMessages(): Promise<any[]> {
-    if (this.cachedMessages) {
-      logger.debug('Returning cached messages', { count: this.cachedMessages.length });
-      return this.cachedMessages;
-    }
-
-    const allMessages: any[] = [];
+  private async fetchMessagesBefore(anchorTs: string, count: number): Promise<any[]> {
+    const collected: any[] = [];
     let cursor: string | undefined;
 
     do {
       const response = await this.slack.conversations.replies({
         channel: this.context.channel,
         ts: this.context.threadTs,
+        latest: anchorTs,
+        inclusive: true,
         limit: 200,
         cursor,
       });
 
-      const messages = response.messages || [];
-      allMessages.push(...messages);
+      const msgs = response.messages || [];
+      collected.push(...msgs);
 
       const nextCursor = response.response_metadata?.next_cursor;
       cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+
+      // If we've collected enough, stop paginating
+      if (collected.length >= count + 1) break;
     } while (cursor);
 
-    this.cachedMessages = allMessages;
-    logger.info('Fetched and cached thread messages', {
+    // Return the last `count + 1` messages (anchor included)
+    return collected.slice(-(count + 1));
+  }
+
+  /**
+   * Fetch up to `count` messages starting after anchorTs (exclusive).
+   */
+  private async fetchMessagesAfter(anchorTs: string, count: number): Promise<any[]> {
+    const response = await this.slack.conversations.replies({
       channel: this.context.channel,
-      threadTs: this.context.threadTs,
-      count: allMessages.length,
+      ts: this.context.threadTs,
+      oldest: anchorTs,
+      inclusive: false,
+      limit: count,
     });
 
-    return allMessages;
+    return response.messages || [];
   }
 
   private formatMessages(
@@ -326,6 +328,20 @@ class SlackThreadMcpServer {
     }
     if (!file_name) {
       throw new Error('file_name is required');
+    }
+
+    // Validate URL host to prevent token exfiltration to attacker-controlled domains
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(file_url);
+    } catch {
+      throw new Error(`Invalid file URL: ${file_url}`);
+    }
+    if (!ALLOWED_FILE_HOSTS.has(parsedUrl.hostname)) {
+      throw new Error(
+        `Refused to send auth token to untrusted host: ${parsedUrl.hostname}. ` +
+        `Allowed: ${[...ALLOWED_FILE_HOSTS].join(', ')}`
+      );
     }
 
     // Download file using bot token
