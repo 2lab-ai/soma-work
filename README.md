@@ -6,6 +6,8 @@
 A TypeScript bot that brings AI coding intelligence into your Slack workspace.
 Powered by the Claude Code SDK, it provides a conversational coding assistant with 12 genius personas, automatic workflow dispatch, an extensible MCP tool ecosystem, and real-time task tracking.
 
+> **Default Plugins**: `superpowers` and `stv` are now auto-loaded on startup — no config required.
+
 [한국어 README](./README.ko.md)
 
 ---
