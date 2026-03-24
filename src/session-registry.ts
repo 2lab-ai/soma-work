@@ -809,6 +809,43 @@ export class SessionRegistry {
   }
 
   /**
+   * Validate that a directory path is a safe /tmp/ path suitable for tracking.
+   * Checks: absolute path under /tmp/ or /private/tmp/, no traversal, minimum depth.
+   */
+  private isValidSourceWorkingDirPath(dirPath: string): boolean {
+    if (typeof dirPath !== 'string') return false;
+    const isTmpPath = dirPath.startsWith('/tmp/') || dirPath.startsWith('/private/tmp/');
+    if (!isTmpPath || dirPath.includes('..')) return false;
+    const segments = dirPath.replace(/\/+$/, '').split('/').filter(Boolean);
+    return segments.length >= 3;
+  }
+
+  /**
+   * Safely remove a single directory after re-validating its path.
+   * Non-blocking: logs errors but never throws. Returns true if removed.
+   */
+  private safeRemoveSourceDir(dir: string): boolean {
+    if (!this.isValidSourceWorkingDirPath(dir)) {
+      this.logger.warn('Skipping cleanup of suspicious dir path', { dir });
+      return false;
+    }
+    try {
+      if (!fs.existsSync(dir)) return false;
+      const stat = fs.lstatSync(dir);
+      if (stat.isSymbolicLink()) {
+        this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
+        return false;
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      this.logger.info('Cleaned up source working dir', { dir });
+      return true;
+    } catch (error) {
+      this.logger.error('Failed to cleanup source working dir (non-blocking)', { dir, error });
+      return false;
+    }
+  }
+
+  /**
    * Add a source working directory to the session for lifecycle tracking.
    * The directory must already exist on disk.
    */
@@ -820,16 +857,8 @@ export class SessionRegistry {
       return false;
     }
 
-    // Security: only allow absolute paths under /tmp/ with no traversal
-    if (!dirPath.startsWith('/tmp/') || dirPath.includes('..')) {
-      this.logger.warn('Rejected source working dir outside /tmp/ or with traversal', { dirPath });
-      return false;
-    }
-
-    // Defense-in-depth: require at least one path segment after /tmp/
-    const segments = dirPath.replace(/\/+$/, '').split('/').filter(Boolean);
-    if (segments.length < 3) {
-      this.logger.warn('Rejected source working dir with insufficient depth', { dirPath });
+    if (!this.isValidSourceWorkingDirPath(dirPath)) {
+      this.logger.warn('Rejected invalid source working dir path', { dirPath });
       return false;
     }
 
@@ -839,10 +868,9 @@ export class SessionRegistry {
     }
 
     // Resolve symlinks and re-validate the real path is under /tmp/
-    // Note: macOS resolves /tmp → /private/tmp, both are acceptable
+    // Note: macOS resolves /tmp -> /private/tmp, both are acceptable
     const resolvedPath = fs.realpathSync(dirPath);
-    const isTmpPath = resolvedPath.startsWith('/tmp/') || resolvedPath.startsWith('/private/tmp/');
-    if (!isTmpPath || resolvedPath.includes('..')) {
+    if (!this.isValidSourceWorkingDirPath(resolvedPath)) {
       this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
       return false;
     }
@@ -864,60 +892,19 @@ export class SessionRegistry {
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
-
     for (const dir of session.sourceWorkingDirs) {
-      // Re-validate before deletion to guard against tampered state (incl. depth check)
-      const isValidTmpPath = dir.startsWith('/tmp/') || dir.startsWith('/private/tmp/');
-      const segments = dir.replace(/\/+$/, '').split('/').filter(Boolean);
-      if (!isValidTmpPath || dir.includes('..') || segments.length < 3) {
-        this.logger.warn('Skipping cleanup of suspicious dir path', { dir });
-        continue;
-      }
-      try {
-        if (fs.existsSync(dir)) {
-          // Defense-in-depth: reject if path became a symlink since registration
-          const stat = fs.lstatSync(dir);
-          if (stat.isSymbolicLink()) {
-            this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
-            continue;
-          }
-          fs.rmSync(dir, { recursive: true, force: true });
-          this.logger.info('Cleaned up source working dir', { dir });
-        }
-      } catch (error) {
-        this.logger.error('Failed to cleanup source working dir (non-blocking)', { dir, error });
-      }
+      this.safeRemoveSourceDir(dir);
     }
     session.sourceWorkingDirs = [];
   }
 
   /**
    * Cleanup source working dirs from a serialized (expired) session during loadSessions.
-   * Uses validated string-only checks since we don't have a live session object.
    */
   private cleanupExpiredSessionDirs(dirs?: string[]): void {
     if (!dirs?.length) return;
     for (const dir of dirs) {
-      if (typeof dir !== 'string') continue;
-      const isValidTmpPath = dir.startsWith('/tmp/') || dir.startsWith('/private/tmp/');
-      const segments = dir.replace(/\/+$/, '').split('/').filter(Boolean);
-      if (!isValidTmpPath || dir.includes('..') || segments.length < 3) {
-        this.logger.warn('Skipping cleanup of suspicious expired session dir', { dir });
-        continue;
-      }
-      try {
-        if (fs.existsSync(dir)) {
-          const stat = fs.lstatSync(dir);
-          if (stat.isSymbolicLink()) {
-            this.logger.warn('Skipping cleanup of expired session dir: symlink', { dir });
-            continue;
-          }
-          fs.rmSync(dir, { recursive: true, force: true });
-          this.logger.info('Cleaned up expired session source working dir', { dir });
-        }
-      } catch (error) {
-        this.logger.error('Failed to cleanup expired session dir (non-blocking)', { dir, error });
-      }
+      this.safeRemoveSourceDir(dir);
     }
   }
 
@@ -1184,11 +1171,9 @@ export class SessionRegistry {
           isOnboarding: serialized.isOnboarding,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
             (d: unknown) => {
-              if (typeof d !== 'string' || !(d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) || d.includes('..')) {
-                if (d) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
-                return false;
-              }
-              return true;
+              const valid = this.isValidSourceWorkingDirPath(d as string);
+              if (!valid && d) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+              return valid;
             }
           ),
         };
