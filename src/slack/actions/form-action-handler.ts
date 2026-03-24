@@ -97,25 +97,31 @@ export class FormActionHandler {
   ): Promise<void> {
     const completionMessageTs = this.resolveChoiceMessageTs(sessionKey, messageTs);
 
-    // 메시지 업데이트
-    if (completionMessageTs && channel) {
-      try {
-        await this.ctx.slackApi.updateMessage(
-          channel,
-          completionMessageTs,
-          `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`,
-          [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`,
-              },
-            },
-          ]
-        );
-      } catch (error) {
-        this.logger.warn('Failed to update choice message after custom input', error);
+    // 메시지 업데이트 (모든 동기화 대상에 대해)
+    if (channel) {
+      const completedText = `✅ *${question}*\n직접 입력: _${inputValue.substring(0, 200)}${inputValue.length > 200 ? '...' : ''}_`;
+      const completedBlocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: completedText,
+          },
+        },
+      ];
+      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
+      for (const targetTs of targetTimestamps) {
+        try {
+          await this.ctx.slackApi.updateMessage(
+            channel,
+            targetTs,
+            completedText,
+            completedBlocks,
+            [] // 기존 attachments(버튼) 제거
+          );
+        } catch (error) {
+          this.logger.warn('Failed to update choice message after custom input', { targetTs, error });
+        }
       }
     }
 
