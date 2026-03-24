@@ -343,6 +343,12 @@ export class SlackHandler {
 
     // Continuation loop - handles chained executions (e.g., renew: save -> reset -> load)
     while (true) {
+      // When bot migrates to a new thread, activeThreadTs/activeChannel point to the NEW thread.
+      // But the slack-thread MCP server needs the ORIGINAL thread to read history.
+      // Pass source thread info so SLACK_THREAD_CONTEXT uses the original thread.
+      const sourceThreadTs = activeThreadTs !== originalThreadTs ? originalThreadTs : undefined;
+      const sourceChannel = activeChannel !== channel ? channel : undefined;
+
       const result = await this.streamExecutor.execute({
         session: currentSession,
         sessionKey: sessionResult.sessionKey,
@@ -356,6 +362,8 @@ export class SlackHandler {
         user: event.user,
         say: wrappedSay,
         mentionTs: ts,
+        sourceThreadTs,
+        sourceChannel,
       });
 
       // No continuation - exit loop
