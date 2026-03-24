@@ -99,12 +99,6 @@ export interface McpConfig {
 export class McpConfigBuilder {
   private logger = new Logger('McpConfigBuilder');
   private mcpManager: McpManager;
-  private permissionServerPath: string | null = null;
-  private permissionServerPathChecked = false;
-  private modelCommandServerPath: string | null = null;
-  private modelCommandServerPathChecked = false;
-  private llmServerPath: string | null = null;
-  private llmServerPathChecked = false;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -241,72 +235,62 @@ export class McpConfigBuilder {
     };
   }
 
+  /**
+   * Resolve and cache an internal MCP server path with logging.
+   * Deduplicates the resolve/log/throw pattern used by all internal servers.
+   */
+  private resolveServerPath(
+    label: string,
+    basename: string,
+    cache: { path: string | null; checked: boolean }
+  ): string {
+    if (!cache.checked) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const result = resolveInternalMcpServer(__dirname, basename, runtimeExt);
+      cache.checked = true;
+      cache.path = result.resolvedPath;
+
+      if (!result.resolvedPath) {
+        this.logger.error(`${label} MCP server file not found`, {
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      } else if (result.fallbackUsed) {
+        this.logger.warn(`${label} MCP server path fallback used`, {
+          resolvedPath: result.resolvedPath,
+          tried: result.triedPaths,
+          runtimeExt,
+        });
+      }
+    }
+
+    if (!cache.path) {
+      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
+      const tried = resolveInternalMcpServer(__dirname, basename, runtimeExt).triedPaths;
+      throw new Error(`${label} MCP server file not found. Tried: ${tried.join(', ')}`);
+    }
+
+    return cache.path;
+  }
+
+  private permissionServerCache = { path: null as string | null, checked: false };
   private getPermissionServerPath(): string {
-    if (!this.permissionServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolvePermissionServerPath(__dirname, runtimeExt);
-      this.permissionServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('Permission MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('Permission MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.permissionServerPath = result.resolvedPath;
-    }
-
-    if (!this.permissionServerPath) {
-      throw new Error(`Permission MCP server file not found. Tried: ${this.getPermissionServerTriedPaths().join(', ')}`);
-    }
-
-    return this.permissionServerPath;
+    return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, this.permissionServerCache);
   }
 
-  private getPermissionServerTriedPaths(): string[] {
-    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-    return resolvePermissionServerPath(__dirname, runtimeExt).triedPaths;
-  }
-
+  private modelCommandServerCache = { path: null as string | null, checked: false };
   private getModelCommandServerPath(): string {
-    if (!this.modelCommandServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveModelCommandServerPath(__dirname, runtimeExt);
-      this.modelCommandServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('Model-command MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('Model-command MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.modelCommandServerPath = result.resolvedPath;
-    }
-
-    if (!this.modelCommandServerPath) {
-      throw new Error(`Model-command MCP server file not found. Tried: ${this.getModelCommandServerTriedPaths().join(', ')}`);
-    }
-
-    return this.modelCommandServerPath;
+    return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, this.modelCommandServerCache);
   }
 
-  private getModelCommandServerTriedPaths(): string[] {
-    const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-    return resolveModelCommandServerPath(__dirname, runtimeExt).triedPaths;
+  private slackThreadServerCache = { path: null as string | null, checked: false };
+  private getSlackThreadServerPath(): string {
+    return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, this.slackThreadServerCache);
+  }
+
+  private llmServerCache = { path: null as string | null, checked: false };
+  private getLlmServerPath(): string {
+    return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, this.llmServerCache);
   }
 
   /**
@@ -317,7 +301,7 @@ export class McpConfigBuilder {
     const threadContext = {
       channel: slackContext.channel,
       threadTs: slackContext.threadTs!,
-      mentionTs: slackContext.mentionTs || slackContext.threadTs!,
+      mentionTs: slackContext.mentionTs!,
     };
 
     return {
@@ -330,39 +314,6 @@ export class McpConfigBuilder {
     };
   }
 
-  private slackThreadServerPath: string | null = null;
-  private slackThreadServerPathChecked = false;
-
-  private getSlackThreadServerPath(): string {
-    if (!this.slackThreadServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(__dirname, SLACK_THREAD_SERVER_BASENAME, runtimeExt);
-      this.slackThreadServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('Slack-thread MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('Slack-thread MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.slackThreadServerPath = result.resolvedPath;
-    }
-
-    if (!this.slackThreadServerPath) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      throw new Error(`Slack-thread MCP server not found. Tried: ${resolveInternalMcpServer(__dirname, SLACK_THREAD_SERVER_BASENAME, runtimeExt).triedPaths.join(', ')}`);
-    }
-
-    return this.slackThreadServerPath;
-  }
-
   private buildLlmServer(): Record<string, any> {
     const llmServerPath = this.getLlmServerPath();
     return {
@@ -372,36 +323,6 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
-  }
-
-  private getLlmServerPath(): string {
-    if (!this.llmServerPathChecked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt);
-      this.llmServerPathChecked = true;
-
-      if (!result.resolvedPath) {
-        this.logger.error('LLM MCP server file not found', {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn('LLM MCP server path fallback used', {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-
-      this.llmServerPath = result.resolvedPath;
-    }
-
-    if (!this.llmServerPath) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      throw new Error(`LLM MCP server file not found. Tried: ${resolveInternalMcpServer(__dirname, LLM_SERVER_BASENAME, runtimeExt).triedPaths.join(', ')}`);
-    }
-
-    return this.llmServerPath;
   }
 
   /**

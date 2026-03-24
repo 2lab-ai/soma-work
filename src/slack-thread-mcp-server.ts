@@ -16,6 +16,10 @@
  *   - SLACK_THREAD_CONTEXT: JSON { channel, threadTs, mentionTs }
  */
 
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -23,10 +27,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebClient } from '@slack/web-api';
+
 import { StderrLogger } from './stderr-logger.js';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs/promises';
 
 const logger = new StderrLogger('SlackThreadMCP');
 
@@ -216,9 +218,9 @@ class SlackThreadMcpServer {
 
     const messages = [...beforeMessages, ...afterMessages];
     const hasMoreBefore = beforeMessages.length > 0 && beforeMessages[0].ts !== this.context.threadTs;
-    const hasMoreAfter = afterMessages.length === after;
+    const hasMoreAfter = after > 0 && afterMessages.length === after;
 
-    return this.formatMessages(messages, messages.length, hasMoreBefore, hasMoreAfter);
+    return this.formatMessages(messages, hasMoreBefore, hasMoreAfter);
   }
 
   /**
@@ -270,7 +272,6 @@ class SlackThreadMcpServer {
 
   private formatMessages(
     messages: any[],
-    totalCount: number,
     hasMoreBefore: boolean,
     hasMoreAfter: boolean
   ) {
@@ -306,7 +307,7 @@ class SlackThreadMcpServer {
     const result: GetThreadMessagesResult = {
       thread_ts: this.context.threadTs,
       channel: this.context.channel,
-      total_replies: totalCount,
+      total_replies: formatted.length,
       returned: formatted.length,
       messages: formatted,
       has_more_before: hasMoreBefore,
