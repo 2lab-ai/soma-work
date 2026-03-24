@@ -425,12 +425,20 @@ export class StreamExecutor {
           }
         },
         onSourceWorkingDirDetected: async (dirPath) => {
-          const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
-          this.logger.info('Source working dir directive processed', {
-            sessionKey,
-            dirPath,
-            added,
-          });
+          try {
+            const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
+            this.logger.info('Source working dir directive processed', {
+              sessionKey,
+              dirPath,
+              added,
+            });
+          } catch (error) {
+            this.logger.error('Failed to process source working dir directive', {
+              sessionKey,
+              dirPath,
+              error: (error as Error).message,
+            });
+          }
         },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);

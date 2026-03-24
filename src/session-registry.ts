@@ -823,6 +823,13 @@ export class SessionRegistry {
       return false;
     }
 
+    // Defense-in-depth: require at least one path segment after /tmp/
+    const segments = dirPath.replace(/\/+$/, '').split('/').filter(Boolean);
+    if (segments.length < 3) {
+      this.logger.warn('Rejected source working dir with insufficient depth', { dirPath });
+      return false;
+    }
+
     if (!fs.existsSync(dirPath)) {
       this.logger.warn('Source working dir does not exist, not registering', { dirPath });
       return false;
@@ -864,6 +871,12 @@ export class SessionRegistry {
       }
       try {
         if (fs.existsSync(dir)) {
+          // Defense-in-depth: reject if path became a symlink since registration
+          const stat = fs.lstatSync(dir);
+          if (stat.isSymbolicLink()) {
+            this.logger.warn('Skipping cleanup: path is now a symlink', { dir });
+            continue;
+          }
           fs.rmSync(dir, { recursive: true, force: true });
           this.logger.info('Cleaned up source working dir', { dir });
         }
