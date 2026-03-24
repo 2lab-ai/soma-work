@@ -103,6 +103,10 @@ export class ClaudeHandler {
     return this.sessionRegistry.getSessionByKey(sessionKey);
   }
 
+  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
+    return this.sessionRegistry.findSessionBySourceThread(channel, threadTs);
+  }
+
   getAllSessions(): Map<string, ConversationSession> {
     return this.sessionRegistry.getAllSessions();
   }

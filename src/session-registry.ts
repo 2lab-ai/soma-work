@@ -172,6 +172,19 @@ export class SessionRegistry {
   }
 
   /**
+   * Find a session that was created from a mid-thread mention in the given thread.
+   * Reverse lookup: original thread → bot-initiated session.
+   */
+  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.sourceThread?.channel === channel && session.sourceThread?.threadTs === threadTs) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get all active sessions
    */
   getAllSessions(): Map<string, ConversationSession> {

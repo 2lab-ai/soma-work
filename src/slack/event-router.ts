@@ -70,6 +70,20 @@ export class EventRouter {
         thread_ts: event.thread_ts,
         text: event.text?.substring(0, 50),
       });
+
+      // Source thread re-mention: if mentioned in a thread that has a linked bot session,
+      // respond with that session's status instead of creating a new session
+      if (event.thread_ts) {
+        const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
+        if (!existingSession) {
+          const linkedSession = this.deps.claudeHandler.findSessionBySourceThread(event.channel, event.thread_ts);
+          if (linkedSession) {
+            await this.respondWithLinkedSessionStatus(event.channel, event.thread_ts, linkedSession, say);
+            return;
+          }
+        }
+      }
+
       const text = event.text.replace(/<@[^>]+>/g, '').trim();
       await this.messageHandler(
         {
@@ -268,6 +282,41 @@ export class EventRouter {
     };
 
     this.deps.claudeHandler.setExpiryCallbacks(callbacks);
+  }
+
+  /**
+   * Respond with linked session status when bot is re-mentioned in the source thread.
+   */
+  private async respondWithLinkedSessionStatus(
+    channel: string,
+    threadTs: string,
+    session: import('../types').ConversationSession,
+    say: SayFn
+  ): Promise<void> {
+    try {
+      const title = session.title || 'Untitled';
+      const status = session.activityState || 'unknown';
+      const lines: string[] = [`📋 *"${title}"* — ${status}`];
+
+      if (session.links?.issue?.url) {
+        lines.push(`📌 *이슈*: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);
+      }
+      if (session.links?.pr?.url) {
+        lines.push(`🔀 *PR*: <${session.links.pr.url}|${session.links.pr.label || 'PR'}>`);
+      }
+
+      const workThreadTs = session.threadRootTs || session.threadTs;
+      if (session.channelId && workThreadTs) {
+        const permalink = await this.deps.slackApi.getPermalink(session.channelId, workThreadTs);
+        if (permalink) {
+          lines.push(`🧵 *작업 스레드*: <${permalink}|열기>`);
+        }
+      }
+
+      await say({ text: lines.join('\n'), thread_ts: threadTs });
+    } catch (error) {
+      this.logger.error('Failed to respond with linked session status', error);
+    }
   }
 
   /**
