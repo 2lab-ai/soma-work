@@ -72,6 +72,15 @@ describe('SourceWorkingDirDirectiveHandler', () => {
       });
     });
 
+    describe('macOS /private/tmp/', () => {
+      it('should accept /private/tmp/ paths (macOS)', () => {
+        const text = '{"type": "source_working_dir", "action": "add", "path": "/private/tmp/U123/20260323_guci_pr45"}';
+        const result = SourceWorkingDirDirectiveHandler.extract(text);
+        expect(result.action).toBe('add');
+        expect(result.path).toBe('/private/tmp/U123/20260323_guci_pr45');
+      });
+    });
+
     describe('validation', () => {
       it('should reject non-add actions', () => {
         const text = '{"type": "source_working_dir", "action": "remove", "path": "/tmp/U123/dir"}';

@@ -436,7 +436,7 @@ export class StreamExecutor {
             this.logger.error('Failed to process source working dir directive', {
               sessionKey,
               dirPath,
-              error: (error as Error).message,
+              error: error instanceof Error ? error.stack || error.message : String(error),
             });
           }
         },

@@ -124,14 +124,17 @@ export class SourceWorkingDirDirectiveHandler {
       const dirPath = parsed.path;
       if (!dirPath || typeof dirPath !== 'string') return null;
 
-      // Security: must be absolute path under /tmp/
-      if (!dirPath.startsWith('/tmp/')) return null;
+      // Security: must be absolute path under /tmp/ (or /private/tmp/ on macOS)
+      if (!dirPath.startsWith('/tmp/') && !dirPath.startsWith('/private/tmp/')) return null;
 
       // Reject path traversal
       if (dirPath.includes('..')) return null;
 
       return { action: 'add', path: dirPath };
-    } catch {
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        console.error('Unexpected error parsing source_working_dir directive', { jsonStr, error });
+      }
       return null;
     }
   }

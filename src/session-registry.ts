@@ -815,7 +815,10 @@ export class SessionRegistry {
   addSourceWorkingDir(channel: string, threadTs: string | undefined, dirPath: string): boolean {
     const key = this.getSessionKey(channel, threadTs);
     const session = this.sessions.get(key);
-    if (!session) return false;
+    if (!session) {
+      this.logger.warn('Cannot add source working dir: session not found', { channel, threadTs, key, dirPath });
+      return false;
+    }
 
     // Security: only allow absolute paths under /tmp/ with no traversal
     if (!dirPath.startsWith('/tmp/') || dirPath.includes('..')) {
@@ -863,9 +866,10 @@ export class SessionRegistry {
     if (!session.sourceWorkingDirs?.length) return;
 
     for (const dir of session.sourceWorkingDirs) {
-      // Re-validate before deletion to guard against tampered state
+      // Re-validate before deletion to guard against tampered state (incl. depth check)
       const isValidTmpPath = dir.startsWith('/tmp/') || dir.startsWith('/private/tmp/');
-      if (!isValidTmpPath || dir.includes('..')) {
+      const segments = dir.replace(/\/+$/, '').split('/').filter(Boolean);
+      if (!isValidTmpPath || dir.includes('..') || segments.length < 3) {
         this.logger.warn('Skipping cleanup of suspicious dir path', { dir });
         continue;
       }
@@ -885,6 +889,36 @@ export class SessionRegistry {
       }
     }
     session.sourceWorkingDirs = [];
+  }
+
+  /**
+   * Cleanup source working dirs from a serialized (expired) session during loadSessions.
+   * Uses validated string-only checks since we don't have a live session object.
+   */
+  private cleanupExpiredSessionDirs(dirs?: string[]): void {
+    if (!dirs?.length) return;
+    for (const dir of dirs) {
+      if (typeof dir !== 'string') continue;
+      const isValidTmpPath = dir.startsWith('/tmp/') || dir.startsWith('/private/tmp/');
+      const segments = dir.replace(/\/+$/, '').split('/').filter(Boolean);
+      if (!isValidTmpPath || dir.includes('..') || segments.length < 3) {
+        this.logger.warn('Skipping cleanup of suspicious expired session dir', { dir });
+        continue;
+      }
+      try {
+        if (fs.existsSync(dir)) {
+          const stat = fs.lstatSync(dir);
+          if (stat.isSymbolicLink()) {
+            this.logger.warn('Skipping cleanup of expired session dir: symlink', { dir });
+            continue;
+          }
+          fs.rmSync(dir, { recursive: true, force: true });
+          this.logger.info('Cleaned up expired session source working dir', { dir });
+        }
+      } catch (error) {
+        this.logger.error('Failed to cleanup expired session dir (non-blocking)', { dir, error });
+      }
+    }
   }
 
   /**
@@ -1108,11 +1142,19 @@ export class SessionRegistry {
           const sleepAge = sleepStartedAt
             ? now - sleepStartedAt.getTime()
             : MAX_SLEEP_DURATION + 1;
-          if (sleepAge >= MAX_SLEEP_DURATION) continue; // Expired sleep session
+          if (sleepAge >= MAX_SLEEP_DURATION) {
+            // Cleanup sourceWorkingDirs before discarding expired session
+            this.cleanupExpiredSessionDirs(serialized.sourceWorkingDirs);
+            continue;
+          }
         } else {
           // For active sessions: check against 24h timeout
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge) continue;
+          if (sessionAge >= maxAge) {
+            // Cleanup sourceWorkingDirs before discarding expired session
+            this.cleanupExpiredSessionDirs(serialized.sourceWorkingDirs);
+            continue;
+          }
         }
 
         const session: ConversationSession = {
@@ -1141,7 +1183,13 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
-            (d: unknown) => typeof d === 'string' && (d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) && !d.includes('..')
+            (d: unknown) => {
+              if (typeof d !== 'string' || !(d.startsWith('/tmp/') || d.startsWith('/private/tmp/')) || d.includes('..')) {
+                if (d) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
+                return false;
+              }
+              return true;
+            }
           ),
         };
         this.ensureSessionLinkState(session);
