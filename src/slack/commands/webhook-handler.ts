@@ -11,6 +11,7 @@
 import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
+import { validateWebhookUrl } from '../../webhook-url-validator';
 
 export class WebhookHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -40,12 +41,11 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        // Validate URL
-        try {
-          new URL(url);
-        } catch {
+        // Validate URL (SSRF prevention: HTTPS only + private IP block)
+        const validation = validateWebhookUrl(url);
+        if (!validation.valid) {
           await say({
-            text: `❌ 올바른 URL을 입력하세요: \`${url}\``,
+            text: `❌ ${validation.error}: \`${url}\``,
             thread_ts: threadTs,
           });
           break;
@@ -88,16 +88,29 @@ export class WebhookHandler implements CommandHandler {
             timestamp: new Date().toISOString(),
           };
 
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+
           const response = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testPayload),
+            signal: controller.signal,
           });
 
-          await say({
-            text: `✅ 테스트 웹훅 발송 성공 (HTTP ${response.status})`,
-            thread_ts: threadTs,
-          });
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            await say({
+              text: `✅ 테스트 웹훅 발송 성공 (HTTP ${response.status})`,
+              thread_ts: threadTs,
+            });
+          } else {
+            await say({
+              text: `⚠️ 웹훅 응답 오류 (HTTP ${response.status})`,
+              thread_ts: threadTs,
+            });
+          }
         } catch (error: any) {
           await say({
             text: `❌ 테스트 실패: ${error.message}`,

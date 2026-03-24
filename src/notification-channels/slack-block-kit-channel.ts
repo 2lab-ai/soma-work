@@ -47,7 +47,13 @@ export class SlackBlockKitChannel implements NotificationChannel {
         attachments: [{ color, blocks }],
       });
     } catch (error: any) {
-      logger.warn('Failed to post Block Kit notification', { error: error.message });
+      logger.warn('Failed to post Block Kit notification', {
+        channel: event.channel,
+        threadTs: event.threadTs,
+        userId: event.userId,
+        category: event.category,
+        error: error.message,
+      });
     }
   }
 }

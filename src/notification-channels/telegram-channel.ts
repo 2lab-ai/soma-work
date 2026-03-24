@@ -52,7 +52,8 @@ export class TelegramChannel implements NotificationChannel {
     const body = JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: 'Markdown',
+      // No parse_mode — sessionTitle is user input and can contain Markdown special chars
+      // that cause Telegram 400 "can't parse entities" errors
     });
 
     try {
@@ -64,6 +65,7 @@ export class TelegramChannel implements NotificationChannel {
 
       if (!response.ok) {
         logger.warn('TelegramChannel API error', { chatId, status: response.status });
+        throw new Error(`Telegram API returned ${response.status}`);
       } else {
         logger.info('TelegramChannel.send()', { chatId, category: event.category });
       }
