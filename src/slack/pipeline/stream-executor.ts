@@ -109,6 +109,10 @@ interface StreamExecuteParams {
   user: string;
   say: SayFn;
   mentionTs?: string;
+  /** Original thread ts before bot-initiated thread migration */
+  sourceThreadTs?: string;
+  /** Original channel before channel routing */
+  sourceChannel?: string;
 }
 
 interface FinalFooterData {
@@ -285,7 +289,11 @@ export class StreamExecutor {
         this.deps.slackApi.getClient(),
         channel
       );
-      const slackContext = { channel, threadTs, mentionTs: params.mentionTs, user, channelDescription };
+      const slackContext = {
+        channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
+        sourceThreadTs: params.sourceThreadTs,
+        sourceChannel: params.sourceChannel,
+      };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
       const streamContext: StreamContext = {
