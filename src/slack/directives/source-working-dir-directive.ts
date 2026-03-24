@@ -23,12 +23,6 @@ export interface SourceWorkingDirExtractResult {
   cleanedText: string;
 }
 
-const EMPTY_RESULT = (text: string): SourceWorkingDirExtractResult => ({
-  action: null,
-  path: null,
-  cleanedText: text,
-});
-
 export class SourceWorkingDirDirectiveHandler {
   /**
    * Extract source_working_dir directive from model text.
@@ -37,7 +31,7 @@ export class SourceWorkingDirDirectiveHandler {
    */
   static extract(text: string): SourceWorkingDirExtractResult {
     if (!text) {
-      return EMPTY_RESULT(text);
+      return { action: null, path: null, cleanedText: text };
     }
 
     // Try to find JSON in code blocks first (```json ... ```)
@@ -69,7 +63,7 @@ export class SourceWorkingDirDirectiveHandler {
       }
     }
 
-    return EMPTY_RESULT(text);
+    return { action: null, path: null, cleanedText: text };
   }
 
   /**

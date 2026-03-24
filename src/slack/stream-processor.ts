@@ -465,6 +465,40 @@ export class StreamProcessor {
   }
 
   /**
+   * Extract and dispatch all response directives (session links, channel messages,
+   * source working dirs) from text content. Returns the cleaned text with directives stripped.
+   */
+  private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
+    let cleaned = text;
+
+    const linkResult = SessionLinkDirectiveHandler.extract(cleaned);
+    if (linkResult.links) {
+      cleaned = linkResult.cleanedText;
+      if (this.callbacks.onSessionLinksDetected) {
+        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+      }
+    }
+
+    const channelMessageResult = ChannelMessageDirectiveHandler.extract(cleaned);
+    if (channelMessageResult.messageText) {
+      cleaned = channelMessageResult.cleanedText;
+      if (this.callbacks.onChannelMessageDetected) {
+        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+      }
+    }
+
+    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(cleaned);
+    if (workingDirResult.path) {
+      cleaned = workingDirResult.cleanedText;
+      if (this.callbacks.onSourceWorkingDirDetected) {
+        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
+      }
+    }
+
+    return cleaned;
+  }
+
+  /**
    * Handle text content in assistant message
    */
   private async handleTextMessage(
@@ -475,30 +509,7 @@ export class StreamProcessor {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
-    // Extract response directives: session links first, then user choice
-    const linkResult = SessionLinkDirectiveHandler.extract(textContent);
-    if (linkResult.links) {
-      textContent = linkResult.cleanedText;
-      if (this.callbacks.onSessionLinksDetected) {
-        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
-      }
-    }
-
-    const channelMessageResult = ChannelMessageDirectiveHandler.extract(textContent);
-    if (channelMessageResult.messageText) {
-      textContent = channelMessageResult.cleanedText;
-      if (this.callbacks.onChannelMessageDetected) {
-        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
-      }
-    }
-
-    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(textContent);
-    if (workingDirResult.path) {
-      textContent = workingDirResult.cleanedText;
-      if (this.callbacks.onSourceWorkingDirDetected) {
-        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
-      }
-    }
+    textContent = await this.extractAndDispatchDirectives(textContent, context);
 
     if (!textContent.trim()) {
       return;
@@ -996,30 +1007,7 @@ export class StreamProcessor {
     durationMs?: number
   ): Promise<void> {
     // Extract response directives before user choice
-    let processedResult = result;
-    const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
-    if (linkResult.links) {
-      processedResult = linkResult.cleanedText;
-      if (this.callbacks.onSessionLinksDetected) {
-        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
-      }
-    }
-
-    const channelMessageResult = ChannelMessageDirectiveHandler.extract(processedResult);
-    if (channelMessageResult.messageText) {
-      processedResult = channelMessageResult.cleanedText;
-      if (this.callbacks.onChannelMessageDetected) {
-        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
-      }
-    }
-
-    const workingDirResult = SourceWorkingDirDirectiveHandler.extract(processedResult);
-    if (workingDirResult.path) {
-      processedResult = workingDirResult.cleanedText;
-      if (this.callbacks.onSourceWorkingDirDetected) {
-        await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
-      }
-    }
+    const processedResult = await this.extractAndDispatchDirectives(result, context);
 
     if (!processedResult.trim()) {
       return;

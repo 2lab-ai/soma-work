@@ -884,9 +884,7 @@ export class SessionRegistry {
       return false;
     }
 
-    if (!session.sourceWorkingDirs) {
-      session.sourceWorkingDirs = [];
-    }
+    session.sourceWorkingDirs ??= [];
     const MAX_SOURCE_WORKING_DIRS = 50;
     if (session.sourceWorkingDirs.length >= MAX_SOURCE_WORKING_DIRS) {
       this.logger.warn('sourceWorkingDirs limit reached, rejecting new dir', { key, dirPath: resolvedPath, count: session.sourceWorkingDirs.length });
@@ -902,30 +900,15 @@ export class SessionRegistry {
 
   /**
    * Remove and delete all source working directories for a session.
+   * Updates the session's sourceWorkingDirs to only contain dirs that failed removal.
    * Non-blocking: logs errors but never throws.
    */
   private cleanupSourceWorkingDirs(session: ConversationSession): void {
     if (!session.sourceWorkingDirs?.length) return;
-    const failed: string[] = [];
-    for (const dir of session.sourceWorkingDirs) {
-      if (!this.safeRemoveSourceDir(dir)) {
-        // Keep track of dirs that couldn't be removed for potential retry
-        failed.push(dir);
-      }
-    }
+    const failed = session.sourceWorkingDirs.filter((dir) => !this.safeRemoveSourceDir(dir));
     session.sourceWorkingDirs = failed;
     if (failed.length > 0) {
       this.logger.warn('Some source working dirs could not be cleaned up', { count: failed.length, dirs: failed });
-    }
-  }
-
-  /**
-   * Cleanup source working dirs from a serialized (expired) session during loadSessions.
-   */
-  private cleanupExpiredSessionDirs(dirs?: string[]): void {
-    if (!dirs?.length) return;
-    for (const dir of dirs) {
-      this.safeRemoveSourceDir(dir);
     }
   }
 
@@ -1152,7 +1135,7 @@ export class SessionRegistry {
             : MAX_SLEEP_DURATION + 1;
           if (sleepAge >= MAX_SLEEP_DURATION) {
             // Cleanup sourceWorkingDirs before discarding expired session
-            this.cleanupExpiredSessionDirs(serialized.sourceWorkingDirs);
+            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
         } else {
@@ -1160,7 +1143,7 @@ export class SessionRegistry {
           const sessionAge = now - lastActivity.getTime();
           if (sessionAge >= maxAge) {
             // Cleanup sourceWorkingDirs before discarding expired session
-            this.cleanupExpiredSessionDirs(serialized.sourceWorkingDirs);
+            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
         }
