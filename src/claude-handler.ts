@@ -171,6 +171,10 @@ export class ClaudeHandler {
     return this.sessionRegistry.getSessionLinks(channelId, threadTs);
   }
 
+  addSourceWorkingDir(channelId: string, threadTs: string | undefined, dirPath: string): boolean {
+    return this.sessionRegistry.addSourceWorkingDir(channelId, threadTs, dirPath);
+  }
+
   getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
     return this.sessionRegistry.getSessionResourceSnapshot(channelId, threadTs);
   }

@@ -2,6 +2,7 @@ import { CommandHandler, CommandContext, CommandResult, CommandDependencies } fr
 import { CommandParser } from '../command-parser';
 import { userSettingsStore, MODEL_ALIASES, type ModelId } from '../../user-settings-store';
 import { getVerbosityFlags, getVerbosityName, VERBOSITY_NAMES, LOG_DETAIL } from '../output-flags';
+import { getDirSizeBytes, formatBytes as formatBytesUtil } from '../../utils/dir-size';
 
 /**
  * Handles $ prefix commands for current-session-only settings.
@@ -117,6 +118,19 @@ export class SessionCommandHandler implements CommandHandler {
       if (linkParts.length > 0) {
         lines.push(`*Links:* ${linkParts.join(' | ')}`);
       }
+    }
+
+    // Source working dirs with disk usage
+    if (session.sourceWorkingDirs?.length) {
+      let totalBytes = 0;
+      const dirLines: string[] = [];
+      for (const dir of session.sourceWorkingDirs) {
+        const size = getDirSizeBytes(dir);
+        totalBytes += size;
+        dirLines.push(`  • \`${dir}\` — ${formatBytesUtil(size)}`);
+      }
+      lines.push(`*Source Working Dirs:* (${formatBytesUtil(totalBytes)} total)`);
+      lines.push(...dirLines);
     }
 
     // Uptime

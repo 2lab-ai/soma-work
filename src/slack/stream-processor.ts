@@ -12,7 +12,7 @@ import {
   MessageFormatter,
 } from './index';
 import { SlackMessagePayload } from './choice-message-builder';
-import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler } from './directives';
+import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler, SourceWorkingDirDirectiveHandler } from './directives';
 import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
 
@@ -172,6 +172,8 @@ export interface StreamCallbacks {
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called when model outputs source_working_dir JSON directive */
+  onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
   onChoiceCreated?: (
     payload: SlackMessagePayload,
@@ -463,6 +465,53 @@ export class StreamProcessor {
   }
 
   /**
+   * Extract and dispatch all response directives (session links, channel messages,
+   * source working dirs) from text content. Returns the cleaned text with directives stripped.
+   */
+  private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
+    let cleaned = text;
+
+    // Each directive handler is isolated — one failure must not block subsequent handlers
+    try {
+      const linkResult = SessionLinkDirectiveHandler.extract(cleaned);
+      if (linkResult.links) {
+        cleaned = linkResult.cleanedText;
+        if (this.callbacks.onSessionLinksDetected) {
+          await this.callbacks.onSessionLinksDetected(linkResult.links, context);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process session link directive', { error });
+    }
+
+    try {
+      const channelMessageResult = ChannelMessageDirectiveHandler.extract(cleaned);
+      if (channelMessageResult.messageText) {
+        cleaned = channelMessageResult.cleanedText;
+        if (this.callbacks.onChannelMessageDetected) {
+          await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process channel message directive', { error });
+    }
+
+    try {
+      const workingDirResult = SourceWorkingDirDirectiveHandler.extract(cleaned);
+      if (workingDirResult.path) {
+        cleaned = workingDirResult.cleanedText;
+        if (this.callbacks.onSourceWorkingDirDetected) {
+          await this.callbacks.onSourceWorkingDirDetected(workingDirResult.path, context);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process source working dir directive', { error });
+    }
+
+    return cleaned;
+  }
+
+  /**
    * Handle text content in assistant message
    */
   private async handleTextMessage(
@@ -473,22 +522,7 @@ export class StreamProcessor {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
-    // Extract response directives: session links first, then user choice
-    const linkResult = SessionLinkDirectiveHandler.extract(textContent);
-    if (linkResult.links) {
-      textContent = linkResult.cleanedText;
-      if (this.callbacks.onSessionLinksDetected) {
-        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
-      }
-    }
-
-    const channelMessageResult = ChannelMessageDirectiveHandler.extract(textContent);
-    if (channelMessageResult.messageText) {
-      textContent = channelMessageResult.cleanedText;
-      if (this.callbacks.onChannelMessageDetected) {
-        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
-      }
-    }
+    textContent = await this.extractAndDispatchDirectives(textContent, context);
 
     if (!textContent.trim()) {
       return;
@@ -986,22 +1020,7 @@ export class StreamProcessor {
     durationMs?: number
   ): Promise<void> {
     // Extract response directives before user choice
-    let processedResult = result;
-    const linkResult = SessionLinkDirectiveHandler.extract(processedResult);
-    if (linkResult.links) {
-      processedResult = linkResult.cleanedText;
-      if (this.callbacks.onSessionLinksDetected) {
-        await this.callbacks.onSessionLinksDetected(linkResult.links, context);
-      }
-    }
-
-    const channelMessageResult = ChannelMessageDirectiveHandler.extract(processedResult);
-    if (channelMessageResult.messageText) {
-      processedResult = channelMessageResult.cleanedText;
-      if (this.callbacks.onChannelMessageDetected) {
-        await this.callbacks.onChannelMessageDetected(channelMessageResult.messageText, context);
-      }
-    }
+    const processedResult = await this.extractAndDispatchDirectives(result, context);
 
     if (!processedResult.trim()) {
       return;
