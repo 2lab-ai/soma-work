@@ -269,6 +269,21 @@ export class StreamExecutor {
         await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
       }
 
+      // Auto-fetch user profile (email + displayName) from Slack if not cached
+      // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
+      if (userSettingsStore.getUserEmail(user) === undefined) {
+        try {
+          const profile = await this.deps.slackApi.getUserProfile(user);
+          // Store email or empty sentinel to prevent re-fetching when scope is missing
+          userSettingsStore.setUserEmail(user, profile.email ?? '');
+          if (profile.displayName && profile.displayName !== user) {
+            userSettingsStore.ensureUserExists(user, profile.displayName);
+          }
+        } catch (e) {
+          this.logger.debug('Failed to fetch user profile from Slack', { user, error: e });
+        }
+      }
+
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(
         this.deps.slackApi.getClient(),

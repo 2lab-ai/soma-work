@@ -64,7 +64,9 @@ git commit -m "feat([scope]): [ISSUE-KEY] scaffold implementation
 
 - Add failing tests for [feature]
 - Add implementation skeleton
-- WIP: actual implementation needed"
+- WIP: actual implementation needed
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push -u origin feature/[ISSUE-KEY]-description
 ```
 
@@ -101,7 +103,9 @@ Red phase 완료 후, 유저에게 Green 진행 여부를 확인한다:
 npm test
 npm run build
 git add .
-git commit -m "feat([scope]): [ISSUE-KEY] implement green phase"
+git commit -m "feat([scope]): [ISSUE-KEY] implement green phase
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 
@@ -126,7 +130,9 @@ Green phase 완료 후 Refactor 진행 여부를 확인한다:
 npm test
 npm run build
 git add .
-git commit -m "refactor([scope]): [ISSUE-KEY] cleanup after green phase"
+git commit -m "refactor([scope]): [ISSUE-KEY] cleanup after green phase
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 

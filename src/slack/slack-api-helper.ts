@@ -186,6 +186,29 @@ export class SlackApiHelper {
   }
 
   /**
+   * 사용자 프로필 조회 (표시 이름 + 이메일)
+   * 이메일 조회에는 Slack Bot Token의 users:read.email scope가 필요
+   */
+  async getUserProfile(userId: string): Promise<{
+    displayName: string;
+    email?: string;
+  }> {
+    try {
+      const result = await this.enqueue(() =>
+        this.app.client.users.info({ user: userId })
+      );
+      const profile = (result.user as any)?.profile;
+      return {
+        displayName: profile?.display_name || (result.user as any)?.real_name || (result.user as any)?.name || userId,
+        email: profile?.email,
+      };
+    } catch (error) {
+      this.logger.warn('Failed to get user profile', { userId, error });
+      return { displayName: userId };
+    }
+  }
+
+  /**
    * 채널 ID로 채널 이름 조회
    * DM 채널은 'DM' 반환
    */
