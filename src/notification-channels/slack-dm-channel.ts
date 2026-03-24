@@ -43,6 +43,7 @@ export class SlackDmChannel implements NotificationChannel {
 
     // Use Slack API permalink when available, fall back to hardcoded format
     const permalink = await this.slackApi.getPermalink(event.channel, event.threadTs)
+      .catch(() => null)
       ?? buildThreadPermalink(event.channel, event.threadTs);
 
     let dmChannelId: string;

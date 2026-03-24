@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateWebhookUrl } from './webhook-url-validator';
+import { validateWebhookUrl, isBlockedIp } from './webhook-url-validator';
 
 describe('validateWebhookUrl', () => {
   it('accepts valid HTTPS URL', () => {
@@ -84,4 +84,44 @@ describe('validateWebhookUrl', () => {
   it('accepts 172.32.x.x (not private)', () => {
     expect(validateWebhookUrl('https://172.32.0.1/hook')).toEqual({ valid: true });
   });
+
+  // SSRF: IPv6 loopback
+  it('rejects [::1] (IPv6 loopback)', () => {
+    const result = validateWebhookUrl('https://[::1]/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects [::0] (IPv6 unspecified)', () => {
+    const result = validateWebhookUrl('https://[::0]/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  // SSRF: IPv6-mapped IPv4
+  it('rejects [::ffff:127.0.0.1] (IPv6-mapped loopback)', () => {
+    const result = validateWebhookUrl('https://[::ffff:127.0.0.1]/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects [::ffff:10.0.0.1] (IPv6-mapped private)', () => {
+    const result = validateWebhookUrl('https://[::ffff:10.0.0.1]/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects [::ffff:169.254.169.254] (IPv6-mapped metadata)', () => {
+    const result = validateWebhookUrl('https://[::ffff:169.254.169.254]/hook');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects [::ffff:192.168.1.1] (IPv6-mapped 192.168)', () => {
+    const result = validateWebhookUrl('https://[::ffff:192.168.1.1]/hook');
+    expect(result.valid).toBe(false);
+  });
+});
+
+describe('isBlockedIp', () => {
+  it('blocks ::1', () => expect(isBlockedIp('::1')).toBe(true));
+  it('blocks ::ffff:127.0.0.1', () => expect(isBlockedIp('::ffff:127.0.0.1')).toBe(true));
+  it('blocks ::ffff:10.0.0.1', () => expect(isBlockedIp('::ffff:10.0.0.1')).toBe(true));
+  it('allows ::ffff:8.8.8.8', () => expect(isBlockedIp('::ffff:8.8.8.8')).toBe(false));
+  it('blocks ::', () => expect(isBlockedIp('::')).toBe(true));
 });

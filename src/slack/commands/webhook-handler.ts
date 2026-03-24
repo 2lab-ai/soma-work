@@ -11,7 +11,7 @@
 import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
-import { validateWebhookUrl } from '../../webhook-url-validator';
+import { validateWebhookUrl, validateWebhookUrlWithDns } from '../../webhook-url-validator';
 
 export class WebhookHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -79,6 +79,16 @@ export class WebhookHandler implements CommandHandler {
         }
 
         try {
+          // SSRF defense: validate stored URL before test fetch (including DNS resolution)
+          const testValidation = await validateWebhookUrlWithDns(webhookUrl);
+          if (!testValidation.valid) {
+            await say({
+              text: `❌ 등록된 URL이 보안 정책에 위반됩니다: ${testValidation.error}`,
+              thread_ts: threadTs,
+            });
+            break;
+          }
+
           const testPayload = {
             event: 'turn_completed',
             category: 'WorkflowComplete',
