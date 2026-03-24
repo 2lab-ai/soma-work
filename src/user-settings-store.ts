@@ -46,6 +46,19 @@ export interface UserSettings {
   accepted: boolean;
   acceptedBy?: string;
   acceptedAt?: string;
+  // Notification preferences
+  notification?: NotificationSettings;
+}
+
+export interface NotificationSettings {
+  slackDm?: boolean;
+  webhookUrl?: string;
+  telegramChatId?: string;
+  categories?: {
+    userAskQuestion?: boolean;
+    workflowComplete?: boolean;
+    exception?: boolean;
+  };
 }
 
 interface SlackJiraMapping {
@@ -354,6 +367,18 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Patch notification settings for a user.
+   * Merges the patch into existing notification settings.
+   */
+  patchNotification(userId: string, patch: Partial<NotificationSettings>): void {
+    const existing = this.settings[userId]?.notification ?? {};
+    this.patchUserSettings(userId, {
+      notification: { ...existing, ...patch },
+    } as Partial<UserSettings>);
+    logger.info('Updated notification settings', { userId, patch });
   }
 
   /**
