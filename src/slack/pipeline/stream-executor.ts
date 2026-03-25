@@ -38,6 +38,8 @@ import { getChannelDescription } from '../../channel-description-cache';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
+import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
 /**
  * Result of stream execution
@@ -46,6 +48,8 @@ export interface ExecuteResult {
   success: boolean;
   messageCount: number;
   continuation?: Continuation;  // Next action to perform (if any)
+  /** Structured turn result collected by TurnObserver (Issue #42 S3) */
+  turnCollector?: TurnResultCollector;
 }
 
 // Fallback context window size when SDK doesn't report contextWindow.
@@ -222,6 +226,9 @@ export class StreamExecutor {
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
+    // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
+    const turnCollector = new TurnResultCollector();
+
     // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
     const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
@@ -351,6 +358,11 @@ export class StreamExecutor {
             say: ctx.say,
             logVerbosity: getVerbosity(),
           });
+          // Issue #42 S3: observer — 도구 시작 이벤트 수집
+          for (const tu of toolUses) {
+            turnCollector.onToolStart(tu.name, tu.id);
+          }
+          turnCollector.onPhaseChange('도구 실행 중');
         },
         onToolResult: async (toolResults, ctx) => {
           // Accumulate per-request tool stats
@@ -386,6 +398,20 @@ export class StreamExecutor {
           }
           if (commandResult.continuation) {
             toolContinuation = commandResult.continuation;
+          }
+          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집
+          // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
+          for (const tr of toolResults) {
+            const name = tr.toolName || 'unknown';
+            const stats = toolStats[name];
+            // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
+            turnCollector.onToolEnd(name, tr.toolUseId);
+          }
+          turnCollector.onPhaseChange('결과 반영 중');
+          if (commandResult.modelCommandResults) {
+            for (const mcr of commandResult.modelCommandResults) {
+              turnCollector.onModelCommandResult(mcr);
+            }
           }
         },
         onTodoUpdate: async (input, ctx) => {
@@ -489,6 +515,8 @@ export class StreamExecutor {
             waitingForChoice: true,
           });
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
+          // Issue #42 S3: observer — 선택 대기 상태 수집
+          turnCollector.onPhaseChange('입력 대기');
         },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
@@ -531,6 +559,17 @@ export class StreamExecutor {
         const abortError = new Error('Request was aborted');
         abortError.name = 'AbortError';
         throw abortError;
+      }
+
+      // Issue #42 S3: observer — endTurn 이벤트 + 텍스트 수집 + continuation/choice 동기화
+      if (streamResult.endTurnInfo) {
+        turnCollector.onEndTurn(streamResult.endTurnInfo);
+      }
+      if (streamResult.collectedText) {
+        turnCollector.onText(streamResult.collectedText);
+      }
+      if (toolContinuation) {
+        turnCollector.setContinuation(toolContinuation);
       }
 
       // Update reaction based on whether user choice is pending
@@ -603,7 +642,8 @@ export class StreamExecutor {
           say
         );
         if (continuation) {
-          return { success: true, messageCount: streamResult.messageCount, continuation };
+          turnCollector.setContinuation(continuation);
+          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
       }
 
@@ -618,7 +658,8 @@ export class StreamExecutor {
           say
         );
         if (continuation) {
-          return { success: true, messageCount: streamResult.messageCount, continuation };
+          turnCollector.setContinuation(continuation);
+          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
       }
 
@@ -627,10 +668,11 @@ export class StreamExecutor {
           success: true,
           messageCount: streamResult.messageCount,
           continuation: toolContinuation,
+          turnCollector,
         };
       }
 
-      return { success: true, messageCount: streamResult.messageCount };
+      return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
       await this.handleError(
@@ -1254,9 +1296,10 @@ export class StreamExecutor {
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
     context: StreamContext
-  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation }> {
+  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: ModelCommandResult[] }> {
     let hasPendingChoice = false;
     let continuation: Continuation | undefined;
+    const modelCommandResults: ModelCommandResult[] = [];
 
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {
@@ -1278,8 +1321,13 @@ export class StreamExecutor {
           commandId: parsed.commandId,
           error: parsed.error,
         });
+        // Issue #42 S3: 에러도 수집
+        modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
         continue;
       }
+
+      // Issue #42 S3: 성공 결과 수집
+      modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
 
       if (parsed.commandId === 'ASK_USER_QUESTION') {
         await this.renderAskUserQuestionFromCommand(
@@ -1353,7 +1401,7 @@ export class StreamExecutor {
       }
     }
 
-    return { hasPendingChoice, continuation };
+    return { hasPendingChoice, continuation, modelCommandResults };
   }
 
   private async renderAskUserQuestionFromCommand(
