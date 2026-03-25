@@ -30,6 +30,17 @@ export class WebhookHandler implements CommandHandler {
       return { handled: true };
     }
 
+    /** Save notification setting; returns false and reports error on failure. */
+    async function saveSetting(patch: Parameters<typeof userSettingsStore.patchNotification>[1]): Promise<boolean> {
+      try {
+        userSettingsStore.patchNotification(user, patch);
+        return true;
+      } catch (error: any) {
+        await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+        return false;
+      }
+    }
+
     switch (parsed.action) {
       case 'register': {
         const url = parsed.value?.trim();
@@ -51,12 +62,7 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        try {
-          userSettingsStore.patchNotification(user, { webhookUrl: url });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ webhookUrl: url })) break;
         await say({
           text: `✅ 웹훅이 등록되었습니다: \`${url}\``,
           thread_ts: threadTs,
@@ -65,12 +71,7 @@ export class WebhookHandler implements CommandHandler {
       }
 
       case 'remove':
-        try {
-          userSettingsStore.patchNotification(user, { webhookUrl: undefined });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ webhookUrl: undefined })) break;
         await say({
           text: `✅ 웹훅이 삭제되었습니다.`,
           thread_ts: threadTs,

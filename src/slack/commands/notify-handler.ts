@@ -31,14 +31,20 @@ export class NotifyHandler implements CommandHandler {
       return { handled: true };
     }
 
+    /** Save notification setting; returns false and reports error on failure. */
+    async function saveSetting(patch: Parameters<typeof userSettingsStore.patchNotification>[1]): Promise<boolean> {
+      try {
+        userSettingsStore.patchNotification(user, patch);
+        return true;
+      } catch (error: any) {
+        await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+        return false;
+      }
+    }
+
     switch (parsed.action) {
       case 'on':
-        try {
-          userSettingsStore.patchNotification(user, { slackDm: true });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ slackDm: true })) break;
         await say({
           text: `✅ Slack DM 알림이 활성화되었습니다.\n\nAI 턴 종료 시 DM으로 알림을 받습니다.`,
           thread_ts: threadTs,
@@ -46,12 +52,7 @@ export class NotifyHandler implements CommandHandler {
         break;
 
       case 'off':
-        try {
-          userSettingsStore.patchNotification(user, { slackDm: false });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ slackDm: false })) break;
         await say({
           text: `✅ Slack DM 알림이 비활성화되었습니다.`,
           thread_ts: threadTs,
@@ -84,12 +85,7 @@ export class NotifyHandler implements CommandHandler {
           });
           break;
         }
-        try {
-          userSettingsStore.patchNotification(user, { telegramChatId: value });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ telegramChatId: value })) break;
         await say({
           text: `✅ 텔레그램 알림이 등록되었습니다. Chat ID: ${value}`,
           thread_ts: threadTs,
@@ -98,12 +94,7 @@ export class NotifyHandler implements CommandHandler {
       }
 
       case 'telegram_off':
-        try {
-          userSettingsStore.patchNotification(user, { telegramChatId: undefined });
-        } catch (error: any) {
-          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-          break;
-        }
+        if (!await saveSetting({ telegramChatId: undefined })) break;
         await say({
           text: `✅ 텔레그램 알림이 해제되었습니다.`,
           thread_ts: threadTs,
