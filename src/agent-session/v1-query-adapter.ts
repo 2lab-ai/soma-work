@@ -8,7 +8,7 @@
  */
 
 import type { IAgentSession } from './agent-session.js';
-import type { AgentTurnResult } from './agent-session-types.js';
+import type { AgentTurnResult, ContinuationHandler } from './agent-session-types.js';
 import { mapToExecuteResult } from './map-to-execute-result.js';
 import type { TurnRunner } from './turn-runner.js';
 
@@ -41,6 +41,7 @@ export class V1QueryAdapter implements IAgentSession {
   private _started = false;
   private _abortController: AbortController;
   private _lastResult?: ReturnType<typeof mapToExecuteResult>;
+  private _lastRetryAfterMs?: number;
 
   constructor(config: V1QueryAdapterConfig) {
     this.executor = config.streamExecutor;
@@ -84,6 +85,64 @@ export class V1QueryAdapter implements IAgentSession {
     return this.turnCount;
   }
 
+  /** 마지막 실행에서 recoverable error로 인한 retry delay (ms) */
+  getRetryAfterMs(): number | undefined {
+    return this._lastRetryAfterMs;
+  }
+
+  /**
+   * start + continuation 루프 (Issue #87, Phase 3c)
+   *
+   * handleMessage의 while(true) 루프를 adapter 내부로 이동.
+   * ContinuationHandler 콜백으로 continuation 판정, reset, session refresh를 외부에서 주입.
+   */
+  async startWithContinuation(
+    prompt: string,
+    handler: ContinuationHandler,
+    processedFiles?: any[],
+  ): Promise<AgentTurnResult> {
+    // First turn: processedFiles 포함
+    if (processedFiles?.length) {
+      this.baseParams.processedFiles = processedFiles;
+    }
+
+    let lastResult = await this.start(prompt);
+
+    // Continuation loop
+    while (true) {
+      const decision = handler.shouldContinue(lastResult);
+      if (!decision.continue || !decision.prompt) break;
+
+      // Reset session if continuation requests it
+      const continuation = lastResult.continuation as any;
+      if (continuation?.resetSession && handler.onResetSession) {
+        await handler.onResetSession(continuation);
+
+        // Refresh session after reset
+        if (handler.refreshSession) {
+          const newSession = handler.refreshSession();
+          if (!newSession) {
+            throw new Error('Session lost after reset');
+          }
+          // Update base params with refreshed session
+          this.baseParams.session = newSession;
+        }
+      }
+
+      // 후속 턴: processedFiles 제거
+      this.baseParams.processedFiles = [];
+
+      lastResult = await this.continue(decision.prompt);
+    }
+
+    return lastResult;
+  }
+
+  /** 내부 baseParams 업데이트 (session refresh 등) */
+  updateBaseParams(patch: Record<string, any>): void {
+    Object.assign(this.baseParams, patch);
+  }
+
   private async executeTurn(text: string): Promise<AgentTurnResult> {
     const startTime = Date.now();
     const turnId = `turn-${this.turnCount}-${Date.now()}`;
@@ -102,7 +161,9 @@ export class V1QueryAdapter implements IAgentSession {
 
       // success=false without collector → 실패 (Review: Gemini P0 → P2)
       // catch block이 runner.fail()을 호출하므로 여기선 throw만
+      // retryAfterMs 보존: handleMessage에서 auto-retry 스케줄링에 사용
       if (!executeResult.success && !executeResult.turnCollector) {
+        this._lastRetryAfterMs = (executeResult as any).retryAfterMs;
         throw new Error('StreamExecutor returned success=false');
       }
 
