@@ -139,6 +139,12 @@ export class SessionInitializer {
         // Auto-register for cleanup on session end
         this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
         this.logger.info('Session working directory created', { sessionKey, sessionDir });
+      } else {
+        this.logger.warn('Failed to create session working directory, falling back to shared user dir', {
+          sessionKey,
+          user,
+          workingDirectory,
+        });
       }
 
       // Create conversation record and assign ID to session
@@ -675,8 +681,21 @@ export class SessionInitializer {
     botSession.isOnboarding = session.isOnboarding;
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
+    botSession.sessionWorkingDir = session.sessionWorkingDir;
     if (isMidThread) {
       botSession.sourceThread = { channel, threadTs };
+    }
+
+    // Transfer sourceWorkingDirs ownership to bot session before terminating original.
+    // This prevents the original session's cleanup from deleting the session working directory.
+    if (session.sourceWorkingDirs?.length) {
+      // Clear original session's sourceWorkingDirs so terminateSession won't delete them
+      const transferDirs = [...session.sourceWorkingDirs];
+      session.sourceWorkingDirs = [];
+      // Re-register in the new bot session
+      for (const dir of transferDirs) {
+        this.deps.claudeHandler.addSourceWorkingDir(channel, rootResult.ts, dir);
+      }
     }
 
     this.deps.claudeHandler.transitionToMain(

@@ -196,8 +196,8 @@ export class WorkingDirectoryManager {
         this.logger.error('Could not extract repo name from URL', { repoUrl });
         return undefined;
       }
-    } catch {
-      this.logger.error('Invalid repoUrl', { repoUrl });
+    } catch (error) {
+      this.logger.error('Invalid repoUrl', { repoUrl, error });
       return undefined;
     }
 
