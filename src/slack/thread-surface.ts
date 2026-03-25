@@ -7,6 +7,7 @@ import { ClaudeHandler } from '../claude-handler';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
+import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,32 @@ export class ThreadSurface {
         error: (error as Error).message,
       });
     }
+  }
+
+  /**
+   * Finalize agent phase based on endTurn info (Issue #42 S4).
+   * Called after stream completes, replaces ad-hoc phase logic in StreamExecutor.
+   */
+  async finalizeOnEndTurn(
+    session: ConversationSession,
+    sessionKey: string,
+    endTurnInfo: EndTurnInfo,
+    hasPendingChoice: boolean,
+  ): Promise<void> {
+    let agentPhase: string;
+    if (hasPendingChoice) {
+      agentPhase = '입력 대기';
+    } else if (endTurnInfo.reason === 'max_tokens') {
+      agentPhase = '토큰 한도 도달';
+    } else {
+      agentPhase = '사용자 액션 대기';
+    }
+
+    await this.setStatus(session, sessionKey, {
+      agentPhase,
+      activeTool: undefined,
+      waitingForChoice: hasPendingChoice,
+    });
   }
 
   /**
