@@ -198,7 +198,10 @@ export class StreamExecutor {
 - download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
 
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
-파일이나 이미지가 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+텍스트 파일이나 코드 파일이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+
+중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.
+이미지는 파일 이름과 메타데이터(mimetype, size)만 참조하고, 유저에게 이미지 내용을 설명해달라고 요청하세요.
 </thread-awareness>`;
   }
 
@@ -827,6 +830,13 @@ export class StreamExecutor {
       return true;
     }
 
+    // Image processing errors poison the conversation context — the malformed
+    // image data stays in session history and every subsequent request will
+    // hit the same 400 error.  Clear the session so the next attempt starts fresh.
+    if (this.isImageProcessingError(error)) {
+      return true;
+    }
+
     return this.isInvalidResumeSessionError(error);
   }
 
@@ -837,6 +847,23 @@ export class StreamExecutor {
       message.includes('prompt is too long') ||
       message.includes('context length exceeded') ||
       message.includes('maximum context length')
+    );
+  }
+
+  /**
+   * Detect API 400 errors caused by unprocessable image content in the
+   * conversation context.  Once an image that the API cannot handle is part
+   * of the session history, every subsequent request will fail with the same
+   * error, so the session must be cleared.
+   */
+  private isImageProcessingError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+
+    return (
+      message.includes('could not process image') ||
+      message.includes('invalid image') ||
+      message.includes('image too large') ||
+      message.includes('unsupported image')
     );
   }
 
