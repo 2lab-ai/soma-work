@@ -296,6 +296,54 @@ describe('TokenManager', () => {
     });
   });
 
+  // === Race Condition: Concurrent Sessions ===
+
+  describe('concurrent rotation race condition', () => {
+    it('should NOT double-rotate when two sessions pass the correct query-start token', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      // Both sessions started with tokenA (captured at query start)
+      const sessionAToken = 'tokenA';
+      const sessionBToken = 'tokenA';
+
+      // Session A rotates first: tokenA → tokenB
+      const resultA = tokenManager.rotateOnRateLimit(sessionAToken, new Date(Date.now() + 3600000));
+      expect(resultA.rotated).toBe(true);
+      expect(resultA.newToken).toBe('cct2');
+
+      // Session B tries with the same query-start token: CAS detects already rotated
+      const resultB = tokenManager.rotateOnRateLimit(sessionBToken, new Date(Date.now() + 3600000));
+      expect(resultB.rotated).toBe(false);
+      expect(resultB.reason).toBe('already_rotated');
+
+      // Active token should still be cct2 (tokenB), NOT rotated back to cct1
+      expect(tokenManager.getActiveToken().name).toBe('cct2');
+      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('tokenB');
+    });
+
+    it('BUG REPRODUCTION: reading env at error time causes double-rotation', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      // Session A rotates: tokenA → tokenB, env is now tokenB
+      tokenManager.rotateOnRateLimit('tokenA', new Date(Date.now() + 3600000));
+
+      // BUG: if session B reads process.env (now tokenB) instead of its query-start token,
+      // it incorrectly passes tokenB as the failed token
+      const envTokenAtErrorTime = process.env.CLAUDE_CODE_OAUTH_TOKEN!;
+      expect(envTokenAtErrorTime).toBe('tokenB'); // env was changed by session A
+
+      // This would incorrectly rotate tokenB → tokenA (back to rate-limited!)
+      const bugResult = tokenManager.rotateOnRateLimit(envTokenAtErrorTime, new Date(Date.now() + 3600000));
+      // With the bug, this WOULD rotate. This test documents the bug behavior.
+      expect(bugResult.rotated).toBe(true); // unfortunately rotates
+      expect(tokenManager.getActiveToken().value).toBe('tokenA'); // back to rate-limited token!
+    });
+  });
+
   // === Cooldown Time Parsing ===
 
   describe('parseCooldownTime', () => {

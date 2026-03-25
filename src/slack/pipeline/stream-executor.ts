@@ -51,6 +51,8 @@ export interface ExecuteResult {
   continuation?: Continuation;  // Next action to perform (if any)
   /** Structured turn result collected by TurnObserver (Issue #42 S3) */
   turnCollector?: TurnResultCollector;
+  /** If set, caller should auto-retry after this many ms (recoverable error). */
+  retryAfterMs?: number;
 }
 
 // Fallback context window size when SDK doesn't report contextWindow.
@@ -229,6 +231,10 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
+
+    // Capture token at query start for CAS-safe rotation on rate limit.
+    // Reading process.env at error time is wrong — another session may have already rotated it.
+    const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
 
     // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
     const turnCollector = new TurnResultCollector();
@@ -609,6 +615,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
       }
 
+      // Reset error retry count on success
+      session.errorRetryCount = 0;
+
       this.logger.info('Completed processing message', {
         sessionKey,
         messageCount: streamResult.messageCount,
@@ -713,7 +722,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
-      await this.handleError(
+      const retryAfterMs = await this.handleError(
         error,
         session,
         sessionKey,
@@ -721,14 +730,24 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         threadTs,
         processedFiles,
         say,
-        requestAborted
+        requestAborted,
+        queryTokenValue
       );
-      return { success: false, messageCount: 0 };
+      return { success: false, messageCount: 0, retryAfterMs };
     } finally {
       await this.cleanup(session, sessionKey);
     }
   }
 
+  /** Max auto-retries per error sequence before giving up */
+  private static readonly MAX_ERROR_RETRIES = 3;
+  /** Delay in ms before auto-retry on recoverable errors */
+  private static readonly ERROR_RETRY_DELAY_MS = 30_000;
+
+  /**
+   * Handle execution errors. Returns retryAfterMs if the error is recoverable
+   * and retry budget remains, so the caller can schedule an auto-retry.
+   */
   private async handleError(
     error: any,
     session: ConversationSession,
@@ -737,8 +756,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     threadTs: string,
     processedFiles: ProcessedFile[],
     say: SayFn,
-    requestAborted: boolean = false
-  ): Promise<void> {
+    requestAborted: boolean = false,
+    queryTokenValue?: string
+  ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
@@ -763,6 +783,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         durationMs: 0,
       }).catch(err => this.logger.warn('Exception notification failed', { error: err?.message }));
     }
+
+    let retryAfterMs: number | undefined;
+
     if (!isAbort) {
       this.logger.error('Error handling message', error);
 
@@ -802,9 +825,29 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           errorMessage: error.message,
         });
 
-        // Auto-rotate token on rate limit
+        // Auto-rotate token on rate limit (pass query-start token for CAS safety)
         if (this.isRateLimitError(error)) {
-          this.tryRotateToken(error);
+          this.tryRotateToken(error, queryTokenValue);
+        }
+
+        // Auto-retry: if recoverable and retry budget remains, signal caller to retry
+        const retryCount = session.errorRetryCount ?? 0;
+        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.errorRetryCount = retryCount + 1;
+          retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
+          this.logger.info('Scheduling auto-retry on recoverable error', {
+            sessionKey,
+            attempt: retryCount + 1,
+            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('Auto-retry budget exhausted', {
+            sessionKey,
+            retryCount,
+          });
+          // Reset for next error sequence
+          session.errorRetryCount = 0;
         }
       }
 
@@ -816,7 +859,8 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       // Notify user with detailed error info + Claude service status
       // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
       const statusInfo = await statusPromise;
-      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo);
+      const retryAttempt = retryAfterMs ? (session.errorRetryCount ?? 0) : undefined;
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
       await say({
         text: errorDetails,
         thread_ts: threadTs,
@@ -840,6 +884,8 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     if (processedFiles.length > 0) {
       await this.deps.fileHandler.cleanupTempFiles(processedFiles);
     }
+
+    return retryAfterMs;
   }
 
   private async updateToolCallMessage(channel: string, ts: string, text: string): Promise<void> {
@@ -965,9 +1011,15 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
   /**
    * Attempt to rotate to the next available token on rate limit.
    * Uses CAS pattern for idempotent handling across concurrent sessions.
+   *
+   * @param error - The error object (may contain stderrContent with rate limit details)
+   * @param queryTokenValue - Token value captured at query start time.
+   *   Using process.env at error time is incorrect because another session
+   *   may have already rotated the token, causing a double-rotation that
+   *   cycles back to the rate-limited token.
    */
-  private tryRotateToken(error: any): void {
-    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  private tryRotateToken(error: any, queryTokenValue?: string): void {
+    const failedToken = queryTokenValue || process.env.CLAUDE_CODE_OAUTH_TOKEN;
     if (!failedToken) return;
 
     // Parse cooldown from both error message and stderr content
@@ -1060,7 +1112,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null, retryAttempt?: number): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
@@ -1095,6 +1147,12 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       if (active) {
         lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
       }
+    }
+
+    // Append auto-retry info
+    if (retryAttempt !== undefined && retryAttempt > 0) {
+      const delaySec = StreamExecutor.ERROR_RETRY_DELAY_MS / 1000;
+      lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }
 
     // Append Claude service status only when there's an actual issue
@@ -1403,6 +1461,11 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     let continuation: Continuation | undefined;
     const modelCommandResults: ModelCommandResult[] = [];
 
+    // Collect ASK_USER_QUESTION results instead of rendering inline to avoid
+    // rapid-fire Slack API calls that hit rate limits when multiple questions
+    // are issued in a single turn.
+    const pendingQuestions: Array<UserChoice | UserChoices> = [];
+
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {
         continue;
@@ -1432,11 +1495,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
 
       if (parsed.commandId === 'ASK_USER_QUESTION') {
-        await this.renderAskUserQuestionFromCommand(
-          parsed.payload.question,
-          session,
-          context
-        );
+        pendingQuestions.push(parsed.payload.question);
         hasPendingChoice = true;
         continue;
       }
@@ -1503,6 +1562,21 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       }
     }
 
+    // Render collected ASK_USER_QUESTION results after the loop.
+    // When multiple questions arrive in one turn, only render the last one
+    // to avoid Slack API rate limiting from rapid chat.postMessage calls.
+    if (pendingQuestions.length > 0) {
+      if (pendingQuestions.length > 1) {
+        this.logger.warn('Multiple ASK_USER_QUESTION in single turn — rendering last only', {
+          sessionKey: context.sessionKey,
+          totalQuestions: pendingQuestions.length,
+          skipped: pendingQuestions.length - 1,
+        });
+      }
+      const lastQuestion = pendingQuestions[pendingQuestions.length - 1];
+      await this.renderAskUserQuestionFromCommand(lastQuestion, session, context);
+    }
+
     return { hasPendingChoice, continuation, modelCommandResults };
   }
 
@@ -1511,10 +1585,19 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     session: ConversationSession,
     context: StreamContext
   ): Promise<void> {
-    if (question.type === 'user_choices') {
-      await this.renderMultiChoiceFromCommand(question, context);
-    } else {
-      await this.renderSingleChoiceFromCommand(question, context);
+    try {
+      if (question.type === 'user_choices') {
+        await this.renderMultiChoiceFromCommand(question, context);
+      } else {
+        await this.renderSingleChoiceFromCommand(question, context);
+      }
+    } catch (error) {
+      // If both primary render AND fallback fail (e.g. Slack rate limit),
+      // ensure we still transition to waiting state so the user can retry.
+      this.logger.warn('ASK_USER_QUESTION render failed completely', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
     }
 
     this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
@@ -1668,10 +1751,17 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       ].filter((line) => line !== '').join('\n');
     }
 
-    await context.say({
-      text: fallbackText,
-      thread_ts: context.threadTs,
-    });
+    try {
+      await context.say({
+        text: fallbackText,
+        thread_ts: context.threadTs,
+      });
+    } catch (error) {
+      this.logger.warn('Choice fallback say() also failed', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
+    }
   }
 
   /**

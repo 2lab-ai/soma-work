@@ -254,6 +254,8 @@ export interface ConversationSession {
   threadRootTs?: string;
   // Onboarding flag: true when session is an onboarding flow for first-time user
   isOnboarding?: boolean;
+  // Session-unique base working directory (auto-created on new session, cleaned up on end)
+  sessionWorkingDir?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
   // For bot-initiated threads created from mid-thread mentions:
@@ -262,6 +264,9 @@ export interface ConversationSession {
     channel: string;
     threadTs: string;
   };
+  // Error auto-retry tracking: count of consecutive retries for the current error sequence.
+  // Reset to 0 on successful execution. Max 3 retries with 30s delay between each.
+  errorRetryCount?: number;
 }
 
 export interface WorkingDirectoryConfig {
