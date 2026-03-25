@@ -180,6 +180,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       slackApi: this.slackApi,
       messageValidator: this.messageValidator,
+      workingDirManager: this.workingDirManager,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
       contextWindowManager: this.contextWindowManager,
