@@ -39,7 +39,7 @@ import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
-import type { TurnObserver } from '../../agent-session/turn-observer.js';
+import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
 /**
  * Result of stream execution
@@ -1296,10 +1296,10 @@ export class StreamExecutor {
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
     context: StreamContext
-  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: Array<import('../../agent-session/agent-session-types.js').ModelCommandResult> }> {
+  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: ModelCommandResult[] }> {
     let hasPendingChoice = false;
     let continuation: Continuation | undefined;
-    const modelCommandResults: Array<import('../../agent-session/agent-session-types.js').ModelCommandResult> = [];
+    const modelCommandResults: ModelCommandResult[] = [];
 
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {

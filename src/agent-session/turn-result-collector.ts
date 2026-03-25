@@ -32,11 +32,12 @@ export class TurnResultCollector implements TurnObserver {
   // ─── TurnObserver 구현 ───────────────────────────────
 
   onToolStart(toolName: string, toolUseId: string): void {
-    this.toolStartTimes.set(toolUseId, Date.now());
+    const now = Date.now();
+    this.toolStartTimes.set(toolUseId, now);
     this.toolCalls.push({
       toolName,
       toolUseId,
-      startedAt: Date.now(),
+      startedAt: now,
     });
   }
 

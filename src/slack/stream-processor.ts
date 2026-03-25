@@ -229,7 +229,7 @@ export class StreamProcessor {
     cacheCreateTokens: number;
   } | null = null;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
-  private _endTurnInfo: import('../agent-session/agent-session-types.js').EndTurnInfo | undefined;
+  private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
   private _lastToolName: string | undefined;
 
