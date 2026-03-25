@@ -7,7 +7,7 @@
 
 import { NotificationChannel, TurnCompletionEvent } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
-import { validateWebhookUrl } from '../slack/commands/webhook-handler.js';
+import { validateWebhookUrlWithDns } from '../webhook-url-validator.js';
 
 const logger = new Logger('WebhookChannel');
 
@@ -38,10 +38,10 @@ export class WebhookChannel implements NotificationChannel {
     const url = settings?.notification?.webhookUrl;
     if (!url) return;
 
-    // Defense-in-depth: re-validate URL before every send (DNS rebinding, TOCTOU)
-    const urlErr = validateWebhookUrl(url);
-    if (urlErr) {
-      logger.warn('WebhookChannel blocked SSRF attempt', { url, reason: urlErr });
+    // SSRF defense: validate URL at send-time with DNS resolution (catches DNS rebinding)
+    const validation = await validateWebhookUrlWithDns(url);
+    if (!validation.valid) {
+      logger.warn('WebhookChannel blocked unsafe URL at send-time', { url: url.slice(0, 50), reason: validation.error });
       return;
     }
 
