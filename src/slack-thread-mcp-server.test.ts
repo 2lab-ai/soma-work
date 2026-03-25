@@ -177,7 +177,98 @@ describe('error classification logic', () => {
   });
 });
 
+describe('isImageFile helper', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+  function isImageFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
+  it('detects image mimetypes', () => {
+    expect(isImageFile('image/png')).toBe(true);
+    expect(isImageFile('image/jpeg')).toBe(true);
+    expect(isImageFile('image/gif')).toBe(true);
+    expect(isImageFile('image/webp')).toBe(true);
+    expect(isImageFile('image/svg+xml')).toBe(true);
+  });
+
+  it('detects image file extensions', () => {
+    expect(isImageFile(undefined, 'photo.jpg')).toBe(true);
+    expect(isImageFile(undefined, 'photo.JPEG')).toBe(true);
+    expect(isImageFile(undefined, 'icon.png')).toBe(true);
+    expect(isImageFile(undefined, 'animation.gif')).toBe(true);
+    expect(isImageFile(undefined, 'photo.heic')).toBe(true);
+    expect(isImageFile(undefined, 'photo.avif')).toBe(true);
+  });
+
+  it('rejects non-image types', () => {
+    expect(isImageFile('text/plain')).toBe(false);
+    expect(isImageFile('application/pdf')).toBe(false);
+    expect(isImageFile(undefined, 'document.pdf')).toBe(false);
+    expect(isImageFile(undefined, 'code.ts')).toBe(false);
+    expect(isImageFile(undefined, 'data.json')).toBe(false);
+  });
+
+  it('handles edge cases', () => {
+    expect(isImageFile(undefined, undefined)).toBe(false);
+    expect(isImageFile('', '')).toBe(false);
+    expect(isImageFile(undefined, 'noextension')).toBe(false);
+  });
+});
+
+describe('download_thread_file image blocking', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+  function isImageFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
+  it('blocks image file downloads and returns blocked response', () => {
+    const imageFiles = ['screenshot.png', 'photo.jpg', 'animation.gif', 'icon.webp', 'logo.svg'];
+
+    for (const fileName of imageFiles) {
+      expect(isImageFile(undefined, fileName)).toBe(true);
+      // Simulates the early return in handleDownloadFile
+      const response = {
+        blocked: true,
+        name: fileName,
+        reason: 'Image files cannot be downloaded and read — the API will reject them with "Could not process image".',
+      };
+      expect(response.blocked).toBe(true);
+    }
+  });
+
+  it('allows non-image file downloads', () => {
+    const nonImageFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+
+    for (const fileName of nonImageFiles) {
+      expect(isImageFile(undefined, fileName)).toBe(false);
+    }
+  });
+});
+
 describe('thread message formatting', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+  function isImageFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
   function formatMessage(m: any) {
     return {
       ts: m.ts,
@@ -192,14 +283,21 @@ describe('thread message formatting', () => {
       timestamp: m.ts
         ? new Date(parseFloat(m.ts) * 1000).toISOString()
         : new Date().toISOString(),
-      files: (m.files || []).map((f: any) => ({
-        id: f.id,
-        name: f.name,
-        mimetype: f.mimetype,
-        url_private_download: f.url_private_download,
-        size: f.size,
-        ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
-      })),
+      files: (m.files || []).map((f: any) => {
+        const fileIsImage = isImageFile(f.mimetype, f.name);
+        return {
+          id: f.id,
+          name: f.name,
+          mimetype: f.mimetype,
+          size: f.size,
+          ...(!fileIsImage && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+          ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
+          ...(fileIsImage ? {
+            is_image: true,
+            image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          } : {}),
+        };
+      }),
       reactions: (m.reactions || []).map((r: any) => ({
         name: r.name,
         count: r.count,
@@ -236,7 +334,7 @@ describe('thread message formatting', () => {
     expect(msg.is_bot).toBe(true);
   });
 
-  it('extracts file attachments', () => {
+  it('extracts image file attachments WITHOUT url_private_download and WITH image warning', () => {
     const msg = formatMessage({
       ts: '1700000002.000000',
       user: 'U123',
@@ -257,6 +355,32 @@ describe('thread message formatting', () => {
     expect(msg.files[0].id).toBe('F001');
     expect(msg.files[0].name).toBe('screenshot.png');
     expect(msg.files[0].thumb_360).toBeDefined();
+    // Image files must NOT have url_private_download (prevents Claude from downloading + Reading)
+    expect(msg.files[0].url_private_download).toBeUndefined();
+    expect(msg.files[0].is_image).toBe(true);
+    expect(msg.files[0].image_note).toContain('do NOT download or Read');
+  });
+
+  it('extracts non-image file attachments WITH url_private_download and WITHOUT image warning', () => {
+    const msg = formatMessage({
+      ts: '1700000002.500000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F002',
+          name: 'document.pdf',
+          mimetype: 'application/pdf',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F002/document.pdf',
+          size: 54321,
+        },
+      ],
+    });
+
+    expect(msg.files).toHaveLength(1);
+    expect(msg.files[0].url_private_download).toBe('https://files.slack.com/files-pri/T123-F002/document.pdf');
+    expect(msg.files[0].is_image).toBeUndefined();
+    expect(msg.files[0].image_note).toBeUndefined();
   });
 
   it('formats reactions', () => {

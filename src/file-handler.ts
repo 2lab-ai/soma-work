@@ -199,11 +199,13 @@ export class FileHandler {
       
       for (const file of files) {
         if (file.isImage) {
+          // CRITICAL: Do NOT include Path for images. If Claude sees a path,
+          // it WILL try to Read it, causing API 400 "Could not process image".
+          // Omitting the path is the only structural prevention — warnings are ignored.
           prompt += `\n## Image: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;
-          prompt += `Path: ${file.path}\n`;
-          prompt += `Note: This is an image file. Do NOT attempt to read it with the Read tool — the API may reject it with "Could not process image". Instead, acknowledge the image by name and ask the user to describe its contents if needed.\n`;
+          prompt += `Note: This is an image file. The image path is intentionally withheld to prevent API errors. Acknowledge the image by name and ask the user to describe its contents if analysis is needed.\n`;
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
