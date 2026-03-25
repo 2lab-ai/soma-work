@@ -119,6 +119,7 @@ export interface CrashRecoveredSession {
   ownerId: string;
   ownerName?: string;
   activityState: string;
+  sessionKey: string;
 }
 
 export class SessionRegistry {
@@ -1214,6 +1215,7 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
+            sessionKey: serialized.key,
           });
         }
       }
