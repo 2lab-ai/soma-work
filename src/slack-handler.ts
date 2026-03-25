@@ -382,8 +382,39 @@ export class SlackHandler {
         sourceChannel,
       });
 
-      // No continuation - exit loop
-      if (!result.continuation) break;
+      // No continuation - check for auto-retry on error, then exit loop
+      if (!result.continuation) {
+        // Auto-retry on recoverable errors: schedule retry after delay
+        if (!result.success && result.retryAfterMs) {
+          const retryDelay = result.retryAfterMs;
+          const retryCount = currentSession.errorRetryCount ?? 0;
+          this.logger.info('Scheduling auto-retry after recoverable error', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            retryCount,
+            delayMs: retryDelay,
+          });
+
+          // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
+          setTimeout(() => {
+            this.autoResumeSession(
+              { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+            ).then(() => {
+              this.logger.info('Error auto-retry completed', {
+                channelId: activeChannel,
+                threadTs: activeThreadTs,
+              });
+            }).catch((retryError) => {
+              this.logger.error('Error auto-retry failed', {
+                channelId: activeChannel,
+                threadTs: activeThreadTs,
+                error: (retryError as Error).message,
+              });
+            });
+          }, retryDelay);
+        }
+        break;
+      }
 
       // Reset session if requested (e.g., renew flow)
       if (result.continuation.resetSession) {
