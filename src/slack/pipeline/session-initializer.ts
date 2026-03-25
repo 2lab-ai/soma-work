@@ -5,6 +5,7 @@ import { ReactionManager } from '../reaction-manager';
 import { ContextWindowManager } from '../context-window-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
+import { WorkingDirectoryManager } from '../../working-directory-manager';
 import { Logger } from '../../logger';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
@@ -30,6 +31,7 @@ interface SessionInitializerDeps {
   claudeHandler: ClaudeHandler;
   slackApi: SlackApiHelper;
   messageValidator: MessageValidator;
+  workingDirManager: WorkingDirectoryManager;
   reactionManager: ReactionManager;
   contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
@@ -130,6 +132,15 @@ export class SessionInitializer {
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
+      // Create session-unique working directory for isolation
+      const sessionDir = this.deps.workingDirManager.createSessionBaseDir(user);
+      if (sessionDir) {
+        session.sessionWorkingDir = sessionDir;
+        // Auto-register for cleanup on session end
+        this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
+        this.logger.info('Session working directory created', { sessionKey, sessionDir });
+      }
+
       // Create conversation record and assign ID to session
       try {
         const conversationId = createConversation(channel, threadTs, user, userName);
@@ -173,6 +184,9 @@ export class SessionInitializer {
         };
       }
     }
+
+    // Determine effective working directory: prefer session-unique dir over fixed user dir
+    const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
@@ -362,7 +376,7 @@ export class SessionInitializer {
             threadTs,
             user,
             userName,
-            workingDirectory,
+            effectiveWorkingDir,
             isMidThread
           );
           if (migrated) {
@@ -384,7 +398,7 @@ export class SessionInitializer {
           threadTs,
           user,
           userName,
-          workingDirectory,
+          effectiveWorkingDir,
           isMidThread
         );
         if (migrated) {
@@ -408,7 +422,7 @@ export class SessionInitializer {
       sessionKey,
       isNewSession,
       userName,
-      workingDirectory,
+      workingDirectory: effectiveWorkingDir,
       abortController,
     };
   }

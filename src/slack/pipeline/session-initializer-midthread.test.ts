@@ -141,6 +141,7 @@ beforeEach(() => {
     claudeHandler: mockClaudeHandler,
     slackApi: mockSlackApi,
     messageValidator: mockMessageValidator,
+    workingDirManager: { createSessionBaseDir: vi.fn().mockReturnValue(undefined) } as any,
     reactionManager: mockReactionManager,
     requestCoordinator: mockRequestCoordinator,
     contextWindowManager: mockContextWindowManager,

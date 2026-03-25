@@ -137,6 +137,42 @@ export class WorkingDirectoryManager {
   }
 
   /**
+   * Create a session-unique base working directory under /tmp/{slackId}/.
+   *
+   * Pattern: /tmp/{slackId}/session_{epochMs}_{counter}
+   *
+   * Used as the cwd for Claude's Bash tool. Each session gets its own
+   * directory so concurrent sessions never share a working directory.
+   */
+  createSessionBaseDir(slackId: string): string | undefined {
+    if (!slackId) {
+      this.logger.warn('slackId is required for createSessionBaseDir');
+      return undefined;
+    }
+
+    const timestamp = Date.now().toString();
+    const counter = this.sessionDirCounter++;
+    const dirName = `session_${timestamp}_${counter}`;
+    const fullPath = normalizeTmpPath(path.join('/tmp', slackId, dirName));
+
+    try {
+      fs.mkdirSync(fullPath, { recursive: true });
+      this.logger.info('Created session base directory', {
+        slackId,
+        directory: fullPath,
+      });
+      return fullPath;
+    } catch (error) {
+      this.logger.error('Failed to create session base directory', {
+        slackId,
+        directory: fullPath,
+        error,
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * Create a unique session-scoped working directory under /tmp/{slackId}/.
    *
    * Pattern: /tmp/{slackId}/{repoName}_{epochMs}_{sanitizedPrName}
