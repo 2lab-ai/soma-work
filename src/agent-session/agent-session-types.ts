@@ -88,6 +88,18 @@ export interface AgentTurnResult {
   durationMs?: number;
 }
 
+// ─── Continuation ────────────────────────────────────
+
+/** continuation 루프 제어 콜백 (Issue #87) */
+export interface ContinuationHandler {
+  /** AgentTurnResult에서 continuation 여부 판정 + 다음 프롬프트 추출 */
+  shouldContinue(result: AgentTurnResult): { continue: boolean; prompt?: string };
+  /** resetSession 요청 시 세션 초기화 + dispatch 재실행 */
+  onResetSession?(continuation: any): Promise<void>;
+  /** 세션 재조회 (reset 후 갱신된 세션 반환) */
+  refreshSession?(): any;
+}
+
 // ─── Usage ────────────────────────────────────────────
 
 /** 토큰 사용량 — stream-processor.ts의 UsageData와 호환 */

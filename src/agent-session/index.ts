@@ -4,6 +4,7 @@
 export type {
   AgentPhase,
   AgentTurnResult,
+  ContinuationHandler,
   EndTurnInfo,
   ModelCommandResult,
   StopReason,
