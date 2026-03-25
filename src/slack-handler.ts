@@ -35,6 +35,12 @@ import {
   StreamExecutor,
   MessageEvent,
 } from './slack/pipeline';
+import { TurnNotifier } from './turn-notifier';
+import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-channel';
+import { SlackDmChannel } from './notification-channels/slack-dm-channel';
+import { WebhookChannel } from './notification-channels/webhook-channel';
+import { TelegramChannel } from './notification-channels/telegram-channel';
+import { userSettingsStore } from './user-settings-store';
 
 interface SlackPermalinkTarget {
   channelId: string;
@@ -179,6 +185,14 @@ export class SlackHandler {
       threadPanel: this.threadPanel,
     });
 
+    // Wire turn completion notification channels
+    const turnNotifier = new TurnNotifier([
+      new SlackBlockKitChannel(this.slackApi),
+      new SlackDmChannel(this.slackApi, userSettingsStore),
+      new WebhookChannel(userSettingsStore),
+      new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
+    ]);
+
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
       fileHandler: this.fileHandler,
@@ -193,6 +207,7 @@ export class SlackHandler {
       slackApi: this.slackApi,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
+      turnNotifier,
     });
 
     // EventRouter for event handling
