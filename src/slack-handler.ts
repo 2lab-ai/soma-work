@@ -582,17 +582,32 @@ export class SlackHandler {
    * Notify users whose sessions were interrupted by a crash/restart.
    * Should be called after loadSavedSessions() and after Slack app starts.
    */
+  /** Resume prompt sent to model for auto-resuming interrupted sessions */
+  private static readonly AUTO_RESUME_PROMPT =
+    'slack-thread → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+
+  /** Delay between processing crash-recovered sessions (ms) */
+  private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
+
   async notifyCrashRecovery(): Promise<number> {
     const recovered = this.claudeHandler.getCrashRecoveredSessions();
     if (recovered.length === 0) return 0;
 
     let notified = 0;
-    for (const session of recovered) {
+    let autoResumed = 0;
+    for (let i = 0; i < recovered.length; i++) {
+      const session = recovered[i];
+      const isWorking = session.activityState === 'working';
+
       try {
+        const notificationText = isWorking
+          ? `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 자동으로 재개합니다...`
+          : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
+
         await this.app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
-          text: `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`,
+          text: notificationText,
         });
         notified++;
       } catch (error) {
@@ -602,11 +617,59 @@ export class SlackHandler {
           error: (error as Error).message,
         });
       }
+
+      // Auto-resume sessions that were actively working (model mid-execution)
+      if (isWorking) {
+        try {
+          this.logger.info('Auto-resuming working session', {
+            channelId: session.channelId,
+            threadTs: session.threadTs,
+            ownerId: session.ownerId,
+          });
+          await this.autoResumeSession(session);
+          autoResumed++;
+          this.logger.info('Auto-resume completed', {
+            channelId: session.channelId,
+            threadTs: session.threadTs,
+          });
+        } catch (error) {
+          this.logger.error('Auto-resume failed', {
+            channelId: session.channelId,
+            threadTs: session.threadTs,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      // Delay between sessions to avoid overwhelming the system
+      if (i < recovered.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+      }
     }
 
     this.claudeHandler.clearCrashRecoveredSessions();
-    this.logger.info(`Sent crash recovery notifications to ${notified}/${recovered.length} sessions`);
+    this.logger.info(
+      `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
+    );
     return notified;
+  }
+
+  /**
+   * Auto-resume an interrupted session by sending a synthetic message
+   * through the existing handleMessage pipeline.
+   */
+  private async autoResumeSession(session: { channelId: string; threadTs?: string; ownerId: string }): Promise<void> {
+    const syntheticEvent: MessageEvent = {
+      user: session.ownerId,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_RESUME_PROMPT,
+    };
+
+    const noopSay = async () => ({ ts: undefined as string | undefined });
+
+    await this.handleMessage(syntheticEvent, noopSay);
   }
 
   /**
