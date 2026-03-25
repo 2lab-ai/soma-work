@@ -13,11 +13,19 @@ import { DATA_DIR } from '../env-paths';
 const logger = new Logger('MetricsEventStore');
 
 /**
- * Convert a Unix ms timestamp to 'YYYY-MM-DD' string (UTC).
+ * Convert a Unix ms timestamp to 'YYYY-MM-DD' string in configured timezone.
+ * Uses REPORT_TIMEZONE (default: Asia/Seoul) so file partitioning matches
+ * the scheduler/handler query dates, which also use the configured timezone.
  */
+const EVENT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
+
 function timestampToDateStr(timestamp: number): string {
   const d = new Date(timestamp);
-  return d.toISOString().slice(0, 10);
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: EVENT_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  return formatter.format(d);
 }
 
 /**
