@@ -776,6 +776,100 @@ describe('model-command integration', () => {
     expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
   });
 
+  it('renders only the last ASK_USER_QUESTION when multiple arrive in one turn', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'choice_ts' });
+
+    const makeAskResult = (id: string, questionText: string) => ({
+      toolUseId: id,
+      toolName: 'mcp__model-command__run',
+      result: JSON.stringify({
+        type: 'model_command_result',
+        commandId: 'ASK_USER_QUESTION',
+        ok: true,
+        payload: {
+          question: {
+            type: 'user_choice',
+            question: questionText,
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }),
+    });
+
+    const commandResult = await (executor as any).handleModelCommandToolResults(
+      [
+        makeAskResult('tool_q1', '첫 번째 질문'),
+        makeAskResult('tool_q2', '두 번째 질문'),
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(commandResult.hasPendingChoice).toBe(true);
+    // Only the LAST question should be rendered (say called once)
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: '두 번째 질문',
+      thread_ts: '171.100',
+    }));
+    expect(deps.threadPanel.attachChoice).toHaveBeenCalledTimes(1);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+  });
+
+  it('still works when say() throws — transitions to waiting state', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    // say always fails (e.g. Slack rate limit)
+    const say = vi.fn().mockRejectedValue(new Error('ratelimited'));
+
+    const commandResult = await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_q1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '테스트 질문',
+                choices: [
+                  { id: '1', label: 'A' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    // Even when rendering fails, should still mark as pending choice
+    expect(commandResult.hasPendingChoice).toBe(true);
+    // Activity state should still transition to waiting
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+  });
+
   it('buildRenewContinuation prefers tool-provided SAVE_CONTEXT_RESULT payload', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
