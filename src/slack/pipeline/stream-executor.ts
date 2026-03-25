@@ -867,13 +867,15 @@ export class StreamExecutor {
    */
   private isImageProcessingError(error: any): boolean {
     const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
 
     return (
-      message.includes('could not process image') ||
-      message.includes('invalid image format') ||
-      message.includes('invalid image content') ||
-      message.includes('image too large') ||
-      message.includes('unsupported image format')
+      combined.includes('could not process image') ||
+      combined.includes('invalid image format') ||
+      combined.includes('invalid image content') ||
+      combined.includes('image too large') ||
+      combined.includes('unsupported image format')
     );
   }
 
@@ -1028,8 +1030,14 @@ export class StreamExecutor {
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
       if (this.isImageProcessingError(error)) {
-        lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
-        lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
+        const msg = String(error?.message || '').toLowerCase();
+        if (msg.includes('image too large')) {
+          lines.push(`> *원인:* 이미지가 너무 큽니다. API에서 처리할 수 있는 크기를 초과했습니다.`);
+          lines.push(`> _이미지 크기를 줄이거나 텍스트로 내용을 설명해 주세요._`);
+        } else {
+          lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
+          lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
+        }
       } else {
         lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
       }
