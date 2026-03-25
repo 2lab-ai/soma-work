@@ -46,6 +46,8 @@ function generateDateRange(startDate: string, endDate: string): string[] {
 export class MetricsEventStore {
   private dataDir: string;
   private dirEnsured = false;
+  /** Per-file promise chain to serialize concurrent writes and prevent JSONL interleave. */
+  private writeQueues = new Map<string, Promise<void>>();
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || DATA_DIR;
@@ -78,7 +80,12 @@ export class MetricsEventStore {
       const filePath = this.getFilePath(dateStr);
       const line = JSON.stringify(event) + '\n';
 
-      await fs.promises.appendFile(filePath, line, 'utf-8');
+      // Serialize writes per file to prevent JSONL line interleave under concurrency
+      const prev = this.writeQueues.get(filePath) || Promise.resolve();
+      const next = prev.then(() => fs.promises.appendFile(filePath, line, 'utf-8'));
+      this.writeQueues.set(filePath, next.catch(() => {})); // keep chain alive on error
+      await next;
+
       logger.debug(`Appended event ${event.eventType} to ${path.basename(filePath)}`);
     } catch (error) {
       logger.error('Failed to append metrics event', error);

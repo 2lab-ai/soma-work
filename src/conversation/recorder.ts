@@ -127,7 +127,7 @@ export function recordUserTurn(
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event (fire-and-forget)
-  getMetricsEmitter().emitTurnUsed(conversationId, userId, userName, 'user').catch(() => {});
+  getMetricsEmitter().emitTurnUsed(conversationId, userId, userName, 'user').catch(err => logger.debug('metrics emit failed', err));
 }
 
 async function _recordUserTurnAsync(
@@ -170,7 +170,7 @@ export function recordAssistantTurn(
     logger.error(`Failed to record assistant turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event for assistant (fire-and-forget)
-  getMetricsEmitter().emitTurnUsed(conversationId, 'assistant', 'assistant', 'assistant').catch(() => {});
+  getMetricsEmitter().emitTurnUsed(conversationId, 'assistant', 'assistant', 'assistant').catch(err => logger.debug('metrics emit failed', err));
 }
 
 async function _recordAssistantTurnAsync(

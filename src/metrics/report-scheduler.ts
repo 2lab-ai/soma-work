@@ -41,9 +41,9 @@ function nowInTimezone(timezone: string): {
   const hour = parseInt(get('hour'), 10);
   const minute = parseInt(get('minute'), 10);
 
-  // Get day of week (0=Sunday, 1=Monday, ...)
-  const dateInTz = new Date(`${year}-${month}-${day}T00:00:00`);
-  const dayOfWeek = dateInTz.getDay();
+  // Get day of week (0=Sunday, 1=Monday, ...) — use UTC to avoid server TZ drift
+  const dateInTz = new Date(`${year}-${month}-${day}T00:00:00Z`);
+  const dayOfWeek = dateInTz.getUTCDay();
 
   return { hour, minute, dayOfWeek, dateStr: `${year}-${month}-${day}` };
 }
@@ -187,7 +187,9 @@ export class ReportScheduler {
    */
   private saveScheduleState(): void {
     try {
-      fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(this.scheduleState, null, 2), 'utf-8');
+      const tmp = SCHEDULE_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(this.scheduleState, null, 2), 'utf-8');
+      fs.renameSync(tmp, SCHEDULE_FILE);
     } catch (error) {
       logger.error('Failed to save schedule state', error);
     }

@@ -226,7 +226,7 @@ export class SessionRegistry {
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
 
     // Metrics: emit session_created event (fire-and-forget)
-    getMetricsEmitter().emitSessionCreated(session).catch(() => {});
+    getMetricsEmitter().emitSessionCreated(session).catch(err => this.logger.debug('metrics emit failed', err));
 
     return session;
   }
@@ -330,7 +330,7 @@ export class SessionRegistry {
     this.saveSessions();
 
     // Metrics: emit session_slept event (fire-and-forget)
-    getMetricsEmitter().emitSessionSlept(session).catch(() => {});
+    getMetricsEmitter().emitSessionSlept(session).catch(err => this.logger.debug('metrics emit failed', err));
 
     return true;
   }
@@ -683,24 +683,12 @@ export class SessionRegistry {
         changed = true;
 
         // Metrics: emit GitHub events on resource link changes (fire-and-forget)
-        const emitter = getMetricsEmitter();
-        const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
-
-        if (existingIndex < 0) {
-          // New link — emit creation event
-          if (operation.resourceType === 'issue') {
-            emitter.emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
-          } else if (operation.resourceType === 'pr') {
-            emitter.emitGitHubEvent('pr_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
-          }
-        }
-
-        // Detect PR merge: existing link status changed to 'merged'
-        if (operation.resourceType === 'pr' && normalized.status === 'merged' && existingIndex >= 0) {
-          const previousLink = history[existingIndex];
-          if (previousLink.status !== 'merged') {
-            emitter.emitGitHubEvent('pr_merged', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
-          }
+        // NOTE: pr_created / pr_merged are emitted exclusively from tool-result-interceptor.ts
+        //       (single source of truth via stdout parsing). Only issue_created is emitted here.
+        if (existingIndex < 0 && operation.resourceType === 'issue') {
+          const emitter = getMetricsEmitter();
+          const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+          emitter.emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(err => this.logger.debug('metrics emit failed', err));
         }
 
         continue;
@@ -970,7 +958,7 @@ export class SessionRegistry {
     }
 
     // Metrics: emit session_closed event before deletion (fire-and-forget)
-    getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(() => {});
+    getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(err => this.logger.debug('metrics emit failed', err));
 
     this.cleanupSourceWorkingDirs(session);
     this.sessions.delete(sessionKey);
