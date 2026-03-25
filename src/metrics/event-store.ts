@@ -37,9 +37,19 @@ function generateDateRange(startDate: string, endDate: string): string[] {
 
 export class MetricsEventStore {
   private dataDir: string;
+  private dirEnsured = false;
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || DATA_DIR;
+  }
+
+  /**
+   * Ensure data directory exists (idempotent, called once).
+   */
+  private async ensureDir(): Promise<void> {
+    if (this.dirEnsured) return;
+    await fs.promises.mkdir(this.dataDir, { recursive: true });
+    this.dirEnsured = true;
   }
 
   /**
@@ -55,6 +65,7 @@ export class MetricsEventStore {
    */
   async append(event: MetricsEvent): Promise<void> {
     try {
+      await this.ensureDir();
       const dateStr = timestampToDateStr(event.timestamp);
       const filePath = this.getFilePath(dateStr);
       const line = JSON.stringify(event) + '\n';

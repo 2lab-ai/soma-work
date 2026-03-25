@@ -26,20 +26,35 @@ interface ReportDeps {
 
 const REPORT_COMMAND_REGEX = /^report(?:\s+(daily|weekly))?$/i;
 
+const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
+
 /**
- * Get yesterday's date as YYYY-MM-DD (UTC).
+ * Get today's date string in configured timezone (YYYY-MM-DD).
+ */
+function getTodayInTimezone(): string {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  return formatter.format(new Date());
+}
+
+/**
+ * Get yesterday's date as YYYY-MM-DD in configured timezone.
  */
 function getYesterdayDateStr(): string {
-  const d = new Date();
+  const today = getTodayInTimezone();
+  const d = new Date(today + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
 /**
- * Get last Monday's date as YYYY-MM-DD (UTC).
+ * Get last Monday's date as YYYY-MM-DD in configured timezone.
  */
 function getLastMondayDateStr(): string {
-  const d = new Date();
+  const today = getTodayInTimezone();
+  const d = new Date(today + 'T00:00:00Z');
   const dayOfWeek = d.getUTCDay();
   const daysToLastMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   d.setUTCDate(d.getUTCDate() - daysToLastMonday - 7);

@@ -15,6 +15,7 @@ import { notifyRelease, getVersionInfo } from './release-notifier';
 import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
 import { tokenManager } from './token-manager';
+import { startReportScheduler, stopReportScheduler } from './metrics';
 
 const logger = new Logger('Main');
 
@@ -167,6 +168,25 @@ async function start() {
     const versionTag = versionInfoForLog ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})` : 'dev';
     logger.info(`⚡️ Claude Code Slack bot is running! [${versionTag}]`);
 
+    // Start report scheduler (non-blocking, non-critical)
+    try {
+      const slackApiForReports = {
+        async postMessage(channel: string, text: string, options?: { blocks?: any[]; threadTs?: string }) {
+          const result = await app.client.chat.postMessage({
+            channel,
+            text,
+            blocks: options?.blocks,
+            thread_ts: options?.threadTs,
+          });
+          return { ts: result.ts, channel: result.channel };
+        },
+      };
+      startReportScheduler(slackApiForReports);
+      timing('Report scheduler initialized');
+    } catch (error) {
+      logger.warn('Failed to start report scheduler (non-critical)', error);
+    }
+
     // Notify users whose sessions were interrupted by crash (non-blocking)
     slackHandler.notifyCrashRecovery().then(notified => {
       if (notified > 0) {
@@ -213,6 +233,9 @@ async function start() {
       logger.info('Shutting down gracefully...');
 
       try {
+        // Stop report scheduler
+        stopReportScheduler();
+
         // Notify all active sessions about shutdown
         await slackHandler.notifyShutdown();
 

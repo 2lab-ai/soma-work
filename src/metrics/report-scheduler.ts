@@ -120,10 +120,10 @@ export class ReportScheduler {
    * Check current time and trigger reports if needed.
    */
   async checkAndRun(): Promise<void> {
-    try {
-      const now = nowInTimezone(this.config.timezone);
+    const now = nowInTimezone(this.config.timezone);
 
-      // Daily check: at configured hour, minute 0
+    // Daily check: at configured hour, minute 0
+    try {
       if (now.hour === this.config.dailyHour && now.minute === 0) {
         if (this.scheduleState.lastDailyDate !== now.dateStr) {
           const reportDate = yesterday(now.dateStr);
@@ -131,14 +131,21 @@ export class ReportScheduler {
 
           const report = await this.aggregator.aggregateDaily(reportDate);
           const formatted = this.formatter.formatDaily(report);
-          await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
+          const result = await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
 
-          this.scheduleState.lastDailyDate = now.dateStr;
-          this.saveScheduleState();
+          // Only mark as sent if publish succeeded (spec: retry next minute on failure)
+          if (result) {
+            this.scheduleState.lastDailyDate = now.dateStr;
+            this.saveScheduleState();
+          }
         }
       }
+    } catch (error) {
+      logger.error('Daily report check failed', error);
+    }
 
-      // Weekly check: on configured day, at configured hour, minute 0
+    // Weekly check: on configured day, at configured hour, minute 0
+    try {
       if (now.dayOfWeek === this.config.weeklyDay && now.hour === this.config.weeklyHour && now.minute === 0) {
         if (this.scheduleState.lastWeeklyDate !== now.dateStr) {
           const weekStart = lastMonday(now.dateStr);
@@ -146,14 +153,17 @@ export class ReportScheduler {
 
           const report = await this.aggregator.aggregateWeekly(weekStart);
           const formatted = this.formatter.formatWeekly(report);
-          await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
+          const result = await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
 
-          this.scheduleState.lastWeeklyDate = now.dateStr;
-          this.saveScheduleState();
+          // Only mark as sent if publish succeeded (spec: retry next minute on failure)
+          if (result) {
+            this.scheduleState.lastWeeklyDate = now.dateStr;
+            this.saveScheduleState();
+          }
         }
       }
     } catch (error) {
-      logger.error('Scheduler check failed', error);
+      logger.error('Weekly report check failed', error);
     }
   }
 

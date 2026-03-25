@@ -682,14 +682,24 @@ export class SessionRegistry {
         session.links![activeKey] = { ...normalized };
         changed = true;
 
-        // Metrics: emit GitHub event on new resource link (fire-and-forget)
+        // Metrics: emit GitHub events on resource link changes (fire-and-forget)
+        const emitter = getMetricsEmitter();
+        const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+
         if (existingIndex < 0) {
-          const emitter = getMetricsEmitter();
-          const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+          // New link — emit creation event
           if (operation.resourceType === 'issue') {
             emitter.emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
           } else if (operation.resourceType === 'pr') {
             emitter.emitGitHubEvent('pr_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
+          }
+        }
+
+        // Detect PR merge: existing link status changed to 'merged'
+        if (operation.resourceType === 'pr' && normalized.status === 'merged' && existingIndex >= 0) {
+          const previousLink = history[existingIndex];
+          if (previousLink.status !== 'merged') {
+            emitter.emitGitHubEvent('pr_merged', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
           }
         }
 

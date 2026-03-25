@@ -97,17 +97,28 @@ export function interceptToolResults(
           commitSha: commitInfo.sha,
           linesAdded: commitInfo.linesAdded,
           linesDeleted: commitInfo.linesDeleted,
-        }).catch(() => {});
+        }).catch(err => logger.error('Failed to emit metrics event', err));
 
         // Also emit code_lines_added if there are lines
         if (commitInfo.linesAdded && commitInfo.linesAdded > 0) {
           emitter.emitGitHubEvent('code_lines_added', userId, userName, sessionKey, {
             linesAdded: commitInfo.linesAdded,
             linesDeleted: commitInfo.linesDeleted,
-          }).catch(() => {});
+          }).catch(err => logger.error('Failed to emit metrics event', err));
         }
 
         logger.debug(`Detected git commit: ${commitInfo.sha}, +${commitInfo.linesAdded}/-${commitInfo.linesDeleted}`);
+      }
+
+      // Detect gh pr create
+      const prCreateInfo = parseGhPrCreateResult(output);
+      if (prCreateInfo) {
+        emitter.emitGitHubEvent('pr_created', userId, userName, sessionKey, {
+          prUrl: prCreateInfo.prUrl,
+          prNumber: prCreateInfo.prNumber,
+        }).catch(err => logger.error('Failed to emit pr_created', err));
+
+        logger.debug(`Detected PR create: ${prCreateInfo.prUrl}`);
       }
 
       // Detect gh pr merge
@@ -115,7 +126,7 @@ export function interceptToolResults(
       if (mergeInfo) {
         emitter.emitGitHubEvent('pr_merged', userId, userName, sessionKey, {
           prNumber: mergeInfo.prNumber,
-        }).catch(() => {});
+        }).catch(err => logger.error('Failed to emit pr_merged', err));
 
         logger.debug(`Detected PR merge: #${mergeInfo.prNumber}`);
       }
