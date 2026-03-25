@@ -201,8 +201,9 @@ export class FileHandler {
         if (file.isImage) {
           prompt += `\n## Image: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
+          prompt += `Size: ${file.size} bytes\n`;
           prompt += `Path: ${file.path}\n`;
-          prompt += `Note: This is an image file that has been uploaded. You can analyze it using the Read tool to examine the image content.\n`;
+          prompt += `Note: This is an image file. Do NOT attempt to read it with the Read tool — the API may reject it with "Could not process image". Instead, acknowledge the image by name and ask the user to describe its contents if needed.\n`;
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
