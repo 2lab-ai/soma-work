@@ -8,7 +8,7 @@ import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
 import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
-import { normalizeTmpPath } from './path-utils';
+import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -178,15 +178,30 @@ export class McpConfigBuilder {
 
     // Restrict filesystem MCP to user's /tmp/{slackId} directory
     if (slackContext?.user && config.mcpServers?.filesystem) {
-      const userTmpDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-      const fsConfig = config.mcpServers.filesystem as { args?: string[] };
-      if (fsConfig.args && Array.isArray(fsConfig.args)) {
-        // Replace the last argument (baseDirectory) with user-scoped path
-        fsConfig.args = [...fsConfig.args.slice(0, -1), userTmpDir];
-        this.logger.debug('Filesystem MCP restricted to user directory', {
-          user: slackContext.user,
-          userTmpDir,
-        });
+      const userId = slackContext.user;
+      // Defense-in-depth: validate userId has no path traversal characters
+      if (!isSafePathSegment(userId)) {
+        this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', { userId });
+      } else {
+        const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));
+        const fsConfig = config.mcpServers.filesystem as { args?: string[] };
+        if (Array.isArray(fsConfig.args)) {
+          // Replace ALL /tmp-prefixed args (MCP filesystem accepts multiple dirs)
+          let replaced = false;
+          for (let i = 0; i < fsConfig.args.length; i++) {
+            if (fsConfig.args[i].startsWith('/tmp') || fsConfig.args[i].startsWith('/private/tmp')) {
+              fsConfig.args[i] = userTmpDir;
+              replaced = true;
+            }
+          }
+          if (!replaced) {
+            fsConfig.args.push(userTmpDir);
+          }
+          this.logger.debug('Filesystem MCP restricted to user directory', {
+            user: userId,
+            userTmpDir,
+          });
+        }
       }
     }
 

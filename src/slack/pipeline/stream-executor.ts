@@ -37,6 +37,7 @@ import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
+import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
@@ -790,6 +791,13 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
 
     if (!isAbort) {
       this.logger.error('Error handling message', error);
+
+      // Start status page fetch in parallel (non-blocking, 3s timeout)
+      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3a
+      const statusPromise = isApiLikeError(error)
+        ? fetchClaudeStatus().catch(() => null)
+        : Promise.resolve(null);
+
       await this.updateRuntimeStatus(session, sessionKey, {
         agentPhase: '오류 발생',
         activeTool: undefined,
@@ -851,8 +859,11 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         this.deps.statusReporter.getStatusEmoji('error')
       );
 
-      // Notify user with detailed error info (include retry info if applicable)
-      const errorDetails = this.formatErrorForUser(error, sessionCleared, retryAfterMs ? (session.errorRetryCount ?? 0) : undefined);
+      // Notify user with detailed error info + Claude service status
+      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
+      const statusInfo = await statusPromise;
+      const retryAttempt = retryAfterMs ? (session.errorRetryCount ?? 0) : undefined;
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
       await say({
         text: errorDetails,
         thread_ts: threadTs,
@@ -1104,7 +1115,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean, retryAttempt?: number): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null, retryAttempt?: number): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
@@ -1145,6 +1156,14 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     if (retryAttempt !== undefined && retryAttempt > 0) {
       const delaySec = StreamExecutor.ERROR_RETRY_DELAY_MS / 1000;
       lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
+    }
+
+    // Append Claude service status only when there's an actual issue
+    // Skip when all-operational — the error is likely account-specific, not a service outage
+    // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
+    if (statusInfo && statusInfo.overall !== 'operational') {
+      lines.push('');
+      lines.push(formatStatusForSlack(statusInfo));
     }
 
     return lines.join('\n');
@@ -1445,6 +1464,11 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     let continuation: Continuation | undefined;
     const modelCommandResults: ModelCommandResult[] = [];
 
+    // Collect ASK_USER_QUESTION results instead of rendering inline to avoid
+    // rapid-fire Slack API calls that hit rate limits when multiple questions
+    // are issued in a single turn.
+    const pendingQuestions: Array<UserChoice | UserChoices> = [];
+
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {
         continue;
@@ -1474,11 +1498,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
 
       if (parsed.commandId === 'ASK_USER_QUESTION') {
-        await this.renderAskUserQuestionFromCommand(
-          parsed.payload.question,
-          session,
-          context
-        );
+        pendingQuestions.push(parsed.payload.question);
         hasPendingChoice = true;
         continue;
       }
@@ -1545,6 +1565,21 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       }
     }
 
+    // Render collected ASK_USER_QUESTION results after the loop.
+    // When multiple questions arrive in one turn, only render the last one
+    // to avoid Slack API rate limiting from rapid chat.postMessage calls.
+    if (pendingQuestions.length > 0) {
+      if (pendingQuestions.length > 1) {
+        this.logger.warn('Multiple ASK_USER_QUESTION in single turn — rendering last only', {
+          sessionKey: context.sessionKey,
+          totalQuestions: pendingQuestions.length,
+          skipped: pendingQuestions.length - 1,
+        });
+      }
+      const lastQuestion = pendingQuestions[pendingQuestions.length - 1];
+      await this.renderAskUserQuestionFromCommand(lastQuestion, session, context);
+    }
+
     return { hasPendingChoice, continuation, modelCommandResults };
   }
 
@@ -1553,10 +1588,19 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     session: ConversationSession,
     context: StreamContext
   ): Promise<void> {
-    if (question.type === 'user_choices') {
-      await this.renderMultiChoiceFromCommand(question, context);
-    } else {
-      await this.renderSingleChoiceFromCommand(question, context);
+    try {
+      if (question.type === 'user_choices') {
+        await this.renderMultiChoiceFromCommand(question, context);
+      } else {
+        await this.renderSingleChoiceFromCommand(question, context);
+      }
+    } catch (error) {
+      // If both primary render AND fallback fail (e.g. Slack rate limit),
+      // ensure we still transition to waiting state so the user can retry.
+      this.logger.warn('ASK_USER_QUESTION render failed completely', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
     }
 
     this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
@@ -1710,10 +1754,17 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       ].filter((line) => line !== '').join('\n');
     }
 
-    await context.say({
-      text: fallbackText,
-      thread_ts: context.threadTs,
-    });
+    try {
+      await context.say({
+        text: fallbackText,
+        thread_ts: context.threadTs,
+      });
+    } catch (error) {
+      this.logger.warn('Choice fallback say() also failed', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
+    }
   }
 
   /**
