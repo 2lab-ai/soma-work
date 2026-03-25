@@ -42,21 +42,20 @@ const FETCH_TIMEOUT = 3000; // 3 seconds
 
 const statusCache = new Map<string, ClaudeStatusInfo>();
 
+// In-flight promise to coalesce concurrent requests during outages
+// Fix: Review feedback — prevent fetch stampede when multiple errors fire simultaneously
+let inflight: Promise<ClaudeStatusInfo | null> | null = null;
+
 export function invalidateStatusCache(): void {
   statusCache.clear();
+  inflight = null;
 }
 
 // ============================================================
 // Fetcher — Scenario 1, 2, 3
 // ============================================================
 
-export async function fetchClaudeStatus(): Promise<ClaudeStatusInfo | null> {
-  // Scenario 2: Cache check
-  const cached = statusCache.get('status');
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL) {
-    return cached;
-  }
-
+async function doFetch(): Promise<ClaudeStatusInfo | null> {
   try {
     const response = await fetch(STATUS_URL, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
@@ -88,6 +87,19 @@ export async function fetchClaudeStatus(): Promise<ClaudeStatusInfo | null> {
     logger.warn('Failed to fetch Claude status', { error: (error as Error).message });
     return null;
   }
+}
+
+export async function fetchClaudeStatus(): Promise<ClaudeStatusInfo | null> {
+  // Scenario 2: Cache check
+  const cached = statusCache.get('status');
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL) {
+    return cached;
+  }
+
+  // Coalesce concurrent requests — during an outage many errors fire at once
+  if (inflight) return inflight;
+  inflight = doFetch().finally(() => { inflight = null; });
+  return inflight;
 }
 
 // ============================================================
@@ -223,7 +235,7 @@ const SLACK_ERROR_PATTERNS = [
   'missing_scope',
   'token_revoked',
   'no more than 50 items allowed',
-  'an api error occurred',
+  'an api error occurred:',  // Slack-specific format (trailing colon distinguishes from generic API errors)
 ];
 
 const API_ERROR_KEYWORDS = [
@@ -247,8 +259,10 @@ export function isApiLikeError(error: { message?: string }): boolean {
     return false;
   }
 
-  // Check for HTTP status codes (4xx/5xx)
-  if (/\b[45]\d{2}\b/.test(message)) {
+  // Check for HTTP status codes (4xx/5xx) in error-related context
+  // Fix: Review feedback — avoid false-positives on incidental numbers (port 443, "450ms", etc.)
+  if (/(?:error|status|http|code)[:\s]*[45]\d{2}\b/i.test(message) ||
+      /\b[45]\d{2}\s+(?:error|bad|not|service|internal|gateway|timeout|unavailable|forbidden|unauthorized)/i.test(message)) {
     return true;
   }
 

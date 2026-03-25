@@ -358,6 +358,13 @@ describe('Scenario 5 — isApiError detection', () => {
     expect(isApiLikeError({ message: 'channel_not_found' })).toBe(false);
     expect(isApiLikeError({ message: 'An API error occurred: rate_limited' })).toBe(false);
   });
+
+  // Review fix: no false-positives on incidental numbers
+  it('isApiError_noFalsePositiveOnIncidentalNumbers', () => {
+    expect(isApiLikeError({ message: 'processed 412 tokens before failure' })).toBe(false);
+    expect(isApiLikeError({ message: 'timeout after 450ms' })).toBe(false);
+    expect(isApiLikeError({ message: 'connection to port 443 failed' })).toBe(false);
+  });
 });
 
 describe('Scenario 5 — formatErrorForUser with status', () => {
