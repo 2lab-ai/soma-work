@@ -292,6 +292,33 @@ describe('Auto-Resume: S4 — Multiple sessions with delay', () => {
     expect(elapsed).toBeGreaterThanOrEqual(1500); // Allow some tolerance
   });
 
+  // Regression: notifyCrashRecovery should NOT block on slow handleMessage (fire-and-forget)
+  it('notifyCrashRecovery_does_not_block_on_slow_handleMessage', async () => {
+    const { handler, mockGetCrashRecoveredSessions } = createTestHandler();
+    const handlerAny = handler as any;
+
+    // Simulate a handleMessage that takes 30 seconds (like real Claude streaming)
+    handlerAny.handleMessage = vi.fn().mockImplementation(
+      () => new Promise(resolve => setTimeout(resolve, 30_000)),
+    );
+
+    mockGetCrashRecoveredSessions.mockReturnValue([
+      { channelId: 'C1', threadTs: 't1', ownerId: 'U1', activityState: 'working', sessionKey: 'C1-t1' },
+      { channelId: 'C2', threadTs: 't2', ownerId: 'U2', activityState: 'working', sessionKey: 'C2-t2' },
+    ]);
+
+    const start = Date.now();
+    await handler.notifyCrashRecovery();
+    const elapsed = Date.now() - start;
+
+    // notifyCrashRecovery should complete in ~2s (delay between sessions)
+    // NOT 60s+ (waiting for handleMessage to finish)
+    expect(elapsed).toBeLessThan(5000);
+
+    // Both sessions should have been fired (even though still running)
+    expect(handlerAny.handleMessage).toHaveBeenCalledTimes(2);
+  });
+
   // Trace: S4, Section 3a — resumes only working sessions in batch
   it('notifyCrashRecovery_resumes_only_working_sessions_in_batch', async () => {
     const { handler, mockPostMessage, mockGetCrashRecoveredSessions } = createTestHandler();
