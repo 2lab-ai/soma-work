@@ -581,9 +581,9 @@ export class StreamExecutor {
           this.deps.statusReporter.getStatusEmoji(finalStatus)
         );
       }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
-      }
+      // Always clear status regardless of verbosity — heartbeat timer must be stopped
+      // to prevent leaked intervals when verbosity changes mid-stream.
+      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Transition activity state
       this.deps.claudeHandler.setActivityState(
@@ -712,7 +712,7 @@ export class StreamExecutor {
 
     const isAbort = requestAborted || this.isAbortLikeError(error);
 
-    // Fire Exception notification only for real errors (not abort/cancel)
+    // Fire Exception notification only for real errors, not abort/cancel
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (this.deps.turnNotifier && !isAbort) {
       this.deps.turnNotifier.notify({

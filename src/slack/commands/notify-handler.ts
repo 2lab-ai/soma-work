@@ -14,6 +14,9 @@ import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
 
+const NOTIFY_USAGE =
+  `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`;
+
 export class NotifyHandler implements CommandHandler {
   canHandle(text: string): boolean {
     return CommandParser.isNotifyCommand(text);
@@ -24,10 +27,7 @@ export class NotifyHandler implements CommandHandler {
     const parsed = CommandParser.parseNotifyCommand(text);
 
     if (!parsed) {
-      await say({
-        text: `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`,
-        thread_ts: threadTs,
-      });
+      await say({ text: NOTIFY_USAGE, thread_ts: threadTs });
       return { handled: true };
     }
 
@@ -69,10 +69,7 @@ export class NotifyHandler implements CommandHandler {
           `• 웹훅: ${notif?.webhookUrl ? `✅ \`${notif.webhookUrl}\`` : '❌ 미등록'}`,
           `• 텔레그램: ${notif?.telegramChatId ? `✅ Chat ID: \`${notif.telegramChatId}\`` : '❌ 미등록'}`,
         ];
-        await say({
-          text: lines.join('\n'),
-          thread_ts: threadTs,
-        });
+        await say({ text: lines.join('\n'), thread_ts: threadTs });
         break;
       }
 
@@ -81,6 +78,14 @@ export class NotifyHandler implements CommandHandler {
         if (!value) {
           await say({
             text: `📋 *알림 사용법*\n\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`,
+            thread_ts: threadTs,
+          });
+          break;
+        }
+        // Validate chatId format (numeric or negative numeric for groups, max 20 digits)
+        if (!/^-?\d{1,20}$/.test(value)) {
+          await say({
+            text: `❌ 올바른 Chat ID를 입력하세요 (숫자만 허용): \`${value}\``,
             thread_ts: threadTs,
           });
           break;
@@ -102,10 +107,7 @@ export class NotifyHandler implements CommandHandler {
         break;
 
       default:
-        await say({
-          text: `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`,
-          thread_ts: threadTs,
-        });
+        await say({ text: NOTIFY_USAGE, thread_ts: threadTs });
         break;
     }
 

@@ -378,10 +378,18 @@ export class UserSettingsStore {
     this.patchUserSettings(userId, {
       notification: { ...existing, ...patch },
     } as Partial<UserSettings>);
-    logger.info('Updated notification settings', {
-      userId,
-      keys: Object.keys(patch),
-    });
+    // Mask sensitive fields in log output
+    const safePatch = { ...patch };
+    if (safePatch.webhookUrl) {
+      try {
+        const u = new URL(safePatch.webhookUrl);
+        safePatch.webhookUrl = `${u.protocol}//${u.hostname}/***`;
+      } catch (e: any) {
+        logger.debug('URL masking: invalid webhookUrl stored', { userId, error: e?.message });
+        safePatch.webhookUrl = '***';
+      }
+    }
+    logger.info('Updated notification settings', { userId, patch: safePatch });
   }
 
   /**

@@ -12,7 +12,6 @@ const logger = new Logger('SlackDmChannel');
 interface SlackApiLike {
   openDmChannel(userId: string): Promise<string>;
   postMessage(channel: string, text: string, options?: any): Promise<any>;
-  getPermalink(channel: string, messageTs: string): Promise<string | null>;
 }
 
 interface SettingsStoreLike {
@@ -40,21 +39,14 @@ export class SlackDmChannel implements NotificationChannel {
     const emoji = getCategoryEmoji(event.category);
     const label = getCategoryLabel(event.category);
     const title = event.sessionTitle || 'Session';
-
-    // Use Slack API permalink when available, fall back to hardcoded format
-    const permalink = await this.slackApi.getPermalink(event.channel, event.threadTs)
-      .catch((err: any) => { logger.warn('getPermalink failed, using fallback', { error: err?.message }); return null; })
-      ?? buildThreadPermalink(event.channel, event.threadTs);
+    const permalink = buildThreadPermalink(event.channel, event.threadTs);
 
     let dmChannelId: string;
     try {
       dmChannelId = await this.slackApi.openDmChannel(event.userId);
     } catch (error: any) {
-      logger.warn('SlackDmChannel: failed to open DM', {
-        userId: event.userId,
-        error: error.message,
-      });
-      return; // Cannot send DM — graceful exit
+      logger.warn('SlackDmChannel: failed to open DM', { userId: event.userId, error: error.message });
+      return; // Graceful — do not throw
     }
 
     try {
@@ -72,11 +64,7 @@ export class SlackDmChannel implements NotificationChannel {
       await this.slackApi.postMessage(dmChannelId, text, { blocks });
       logger.info('SlackDmChannel.send()', { userId: event.userId, category: event.category });
     } catch (error: any) {
-      logger.warn('SlackDmChannel: failed to post message', {
-        userId: event.userId,
-        dmChannelId,
-        error: error.message,
-      });
+      logger.warn('SlackDmChannel: failed to send DM', { userId: event.userId, dmChannelId, error: error.message });
       // Graceful — do not throw
     }
   }

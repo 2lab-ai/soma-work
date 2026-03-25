@@ -11,7 +11,104 @@
 import { CommandHandler, CommandContext, CommandResult } from './types';
 import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
-import { validateWebhookUrl, validateWebhookUrlWithDns } from '../../webhook-url-validator';
+import { Logger } from '../../logger';
+
+const logger = new Logger('WebhookHandler');
+
+const WEBHOOK_USAGE =
+  `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`;
+
+/** RFC 1918 / link-local / loopback IPv4 patterns. */
+const IPV4_BLOCKED = [
+  /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./,
+  /^169\.254\./, /^0\./, /^127\./,
+];
+
+function isBlockedIPv4(ip: string): boolean {
+  return IPV4_BLOCKED.some(p => p.test(ip));
+}
+
+/**
+ * Validate webhook URL: HTTPS only + block private/internal network addresses.
+ * Returns error message string if invalid, null if valid.
+ */
+export function validateWebhookUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `올바른 URL을 입력하세요: \`${url}\``;
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return `HTTPS URL만 허용됩니다. 입력: \`${parsed.protocol}\``;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  // Strip IPv6 brackets for pattern matching, then strip trailing dot (FQDN normalization)
+  const raw = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
+  const bareHost = raw.replace(/\.$/, '');
+
+  // Only apply IP-range checks to actual IP addresses, not domain names
+  const isIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(bareHost);
+  const isIPv6 = bareHost.includes(':');
+
+  if (bareHost === 'localhost') {
+    return '내부 네트워크 주소는 허용되지 않습니다.';
+  }
+
+  if (isIPv4 && isBlockedIPv4(bareHost)) {
+    return '내부 네트워크 주소는 허용되지 않습니다.';
+  }
+
+  if (isIPv6) {
+    const IPV6_BLOCKED = [/^::1$/, /^fe80:/i, /^fc00:/i, /^fd[0-9a-f]{2}:/i];
+    if (IPV6_BLOCKED.some(p => p.test(bareHost))) {
+      return '내부 네트워크 주소는 허용되지 않습니다.';
+    }
+
+    // Detect IPv4-mapped IPv6 (::ffff:x.x.x.x or ::ffff:HHHH:HHHH) and re-check
+    const v4MappedMatch = bareHost.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i)
+      || bareHost.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (v4MappedMatch) {
+      let embeddedIPv4: string;
+      if (v4MappedMatch[2]) {
+        // Hex form: ::ffff:7f00:1 → 127.0.0.1
+        const hi = parseInt(v4MappedMatch[1], 16);
+        const lo = parseInt(v4MappedMatch[2], 16);
+        embeddedIPv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      } else {
+        embeddedIPv4 = v4MappedMatch[1];
+      }
+      if (isBlockedIPv4(embeddedIPv4)) {
+        return '내부 네트워크 주소는 허용되지 않습니다.';
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Apply a webhook setting patch with error handling. */
+async function applyWebhookPatch(
+  ctx: { user: string; threadTs: string; say: CommandContext['say'] },
+  patch: Parameters<typeof userSettingsStore.patchNotification>[1],
+  successText: string,
+  logLabel: string,
+): Promise<void> {
+  try {
+    userSettingsStore.patchNotification(ctx.user, patch);
+  } catch (error: any) {
+    logger.error(logLabel, { user: ctx.user, error: error.message });
+    await ctx.say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: ctx.threadTs }).catch(
+      (sayErr: any) => logger.warn('Failed to send error reply', { error: sayErr?.message })
+    );
+    return;
+  }
+  await ctx.say({ text: successText, thread_ts: ctx.threadTs }).catch(
+    (sayErr: any) => logger.warn('Failed to send success reply', { error: sayErr?.message })
+  );
+}
 
 export class WebhookHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -23,22 +120,8 @@ export class WebhookHandler implements CommandHandler {
     const parsed = CommandParser.parseWebhookCommand(text);
 
     if (!parsed) {
-      await say({
-        text: `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`,
-        thread_ts: threadTs,
-      });
+      await say({ text: WEBHOOK_USAGE, thread_ts: threadTs });
       return { handled: true };
-    }
-
-    /** Save notification setting; returns false and reports error on failure. */
-    async function saveSetting(patch: Parameters<typeof userSettingsStore.patchNotification>[1]): Promise<boolean> {
-      try {
-        userSettingsStore.patchNotification(user, patch);
-        return true;
-      } catch (error: any) {
-        await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
-        return false;
-      }
     }
 
     switch (parsed.action) {
@@ -52,30 +135,32 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        // Validate URL (SSRF prevention: HTTPS only + private IP block)
-        const validation = validateWebhookUrl(url);
-        if (!validation.valid) {
+        // Validate URL — HTTPS only, block private/internal networks
+        const urlError = validateWebhookUrl(url);
+        if (urlError) {
           await say({
-            text: `❌ ${validation.error}: \`${url}\``,
+            text: `❌ ${urlError}`,
             thread_ts: threadTs,
           });
           break;
         }
 
-        if (!await saveSetting({ webhookUrl: url })) break;
-        await say({
-          text: `✅ 웹훅이 등록되었습니다: \`${url}\``,
-          thread_ts: threadTs,
-        });
+        await applyWebhookPatch(
+          { user, threadTs, say },
+          { webhookUrl: url },
+          `✅ 웹훅이 등록되었습니다: \`${url}\``,
+          'Failed to register webhook',
+        );
         break;
       }
 
       case 'remove':
-        if (!await saveSetting({ webhookUrl: undefined })) break;
-        await say({
-          text: `✅ 웹훅이 삭제되었습니다.`,
-          thread_ts: threadTs,
-        });
+        await applyWebhookPatch(
+          { user, threadTs, say },
+          { webhookUrl: undefined },
+          `✅ 웹훅이 삭제되었습니다.`,
+          'Failed to remove webhook',
+        );
         break;
 
       case 'test': {
@@ -89,13 +174,10 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        // SSRF defense: validate stored URL before test fetch (including DNS resolution)
-        const testValidation = await validateWebhookUrlWithDns(webhookUrl);
-        if (!testValidation.valid) {
-          await say({
-            text: `❌ 등록된 URL이 보안 정책에 위반됩니다: ${testValidation.error}`,
-            thread_ts: threadTs,
-          });
+        // Re-validate stored URL before fetch (defense-in-depth: DNS rebinding, TOCTOU)
+        const revalidateErr = validateWebhookUrl(webhookUrl);
+        if (revalidateErr) {
+          await say({ text: `❌ 저장된 URL이 유효하지 않습니다: ${revalidateErr}`, thread_ts: threadTs });
           break;
         }
 
@@ -126,13 +208,14 @@ export class WebhookHandler implements CommandHandler {
             });
           } else {
             await say({
-              text: `⚠️ 웹훅 응답 오류 (HTTP ${response.status})`,
+              text: `❌ 테스트 실패: 서버가 HTTP ${response.status}을 반환했습니다`,
               thread_ts: threadTs,
             });
           }
         } catch (error: any) {
+          const msg = error.name === 'AbortError' ? '타임아웃 (5초 초과)' : error.message;
           await say({
-            text: `❌ 테스트 실패: ${error.message}`,
+            text: `❌ 테스트 실패: ${msg}`,
             thread_ts: threadTs,
           });
         } finally {
@@ -142,10 +225,7 @@ export class WebhookHandler implements CommandHandler {
       }
 
       default:
-        await say({
-          text: `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`,
-          thread_ts: threadTs,
-        });
+        await say({ text: WEBHOOK_USAGE, thread_ts: threadTs });
         break;
     }
 

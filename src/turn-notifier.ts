@@ -82,8 +82,7 @@ export class TurnNotifier {
           const enabled = await ch.isEnabled(event.userId);
           return enabled ? ch : null;
         } catch (error: any) {
-          logger.warn('TurnNotifier isEnabled check failed for channel', {
-            channel: ch.name,
+          logger.warn(`Channel ${ch.name} isEnabled() check failed`, {
             userId: event.userId,
             error: error?.message || String(error),
           });

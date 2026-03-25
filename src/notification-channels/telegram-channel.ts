@@ -56,21 +56,29 @@ export class TelegramChannel implements NotificationChannel {
       // that cause Telegram 400 "can't parse entities" errors
     });
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     try {
       const response = await this.fetchFn(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
+        signal: controller.signal,
+        redirect: 'error',
       });
 
       if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        logger.warn('TelegramChannel API error', { chatId, status: response.status, body: body.slice(0, 200) });
+        const respBody = await response.text().catch(() => '');
+        logger.warn('TelegramChannel API error', { chatId, status: response.status, body: respBody.slice(0, 200) });
         return;
       }
       logger.info('TelegramChannel.send()', { chatId, category: event.category });
     } catch (error: any) {
-      logger.warn('TelegramChannel network error', { chatId, error: error.message });
+      const msg = error.name === 'AbortError' ? 'timeout (5s)' : error.message;
+      logger.warn('TelegramChannel failed', { chatId, error: msg });
+      // Graceful — do not throw
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 }
