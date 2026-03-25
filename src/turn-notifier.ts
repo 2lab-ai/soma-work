@@ -14,6 +14,12 @@ const logger = new Logger('TurnNotifier');
 
 export type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception';
 
+/** Per-tool call statistics for rich notification */
+export interface ToolStatEntry {
+  count: number;
+  totalDurationMs: number;
+}
+
 export interface TurnCompletionEvent {
   category: TurnCategory;
   userId: string;
@@ -22,6 +28,20 @@ export interface TurnCompletionEvent {
   sessionTitle?: string;
   message?: string;
   durationMs: number;
+  // Rich notification fields (all optional for backward compatibility)
+  // Trace: docs/rich-turn-notification/trace.md, Scenario 1
+  persona?: string;
+  model?: string;
+  startedAt?: Date;
+  contextUsagePercent?: number;
+  contextUsageDelta?: number;
+  contextUsageTokens?: number;
+  contextWindowSize?: number;
+  fiveHourUsage?: number;
+  fiveHourDelta?: number;
+  sevenDayUsage?: number;
+  sevenDayDelta?: number;
+  toolStats?: Record<string, ToolStatEntry>;
 }
 
 export interface NotificationChannel {

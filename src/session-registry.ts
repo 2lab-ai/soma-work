@@ -20,6 +20,7 @@ import {
 } from './types';
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
+import { normalizeTmpPath } from './path-utils';
 import { DATA_DIR } from './env-paths';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -886,11 +887,11 @@ export class SessionRegistry {
       return false;
     }
 
-    // Resolve symlinks and re-validate the real path is under /tmp/
-    // Note: macOS resolves /tmp -> /private/tmp, both are acceptable
+    // Resolve symlinks, then normalize /private/tmp → /tmp for consistency.
+    // macOS resolves /tmp → /private/tmp via realpathSync; we normalize back.
     let resolvedPath: string;
     try {
-      resolvedPath = fs.realpathSync(dirPath);
+      resolvedPath = normalizeTmpPath(fs.realpathSync(dirPath));
     } catch (error) {
       this.logger.warn('Failed to resolve real path for source working dir', { dirPath, error });
       return false;
