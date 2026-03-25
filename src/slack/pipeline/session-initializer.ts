@@ -5,7 +5,9 @@ import { ReactionManager } from '../reaction-manager';
 import { ContextWindowManager } from '../context-window-manager';
 import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
+import { WorkingDirectoryManager } from '../../working-directory-manager';
 import { Logger } from '../../logger';
+import * as fs from 'fs';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession, WorkflowType } from '../../types';
@@ -30,6 +32,7 @@ interface SessionInitializerDeps {
   claudeHandler: ClaudeHandler;
   slackApi: SlackApiHelper;
   messageValidator: MessageValidator;
+  workingDirManager: WorkingDirectoryManager;
   reactionManager: ReactionManager;
   contextWindowManager: ContextWindowManager;
   requestCoordinator: RequestCoordinator;
@@ -46,6 +49,35 @@ export class SessionInitializer {
   private logger = new Logger('SessionInitializer');
 
   constructor(private deps: SessionInitializerDeps) {}
+
+  /**
+   * Transfer sourceWorkingDirs ownership from one session to another.
+   * Clears the source session's dirs so its cleanup won't delete them,
+   * then re-registers each dir in the target session. Dirs that fail
+   * to register are rolled back to the source session for cleanup.
+   */
+  private transferSourceWorkingDirs(
+    sourceSession: ConversationSession,
+    targetChannel: string,
+    targetThreadTs: string
+  ): void {
+    if (!sourceSession.sourceWorkingDirs?.length) return;
+
+    const transferDirs = [...sourceSession.sourceWorkingDirs];
+    sourceSession.sourceWorkingDirs = [];
+
+    const failedDirs: string[] = [];
+    for (const dir of transferDirs) {
+      const ok = this.deps.claudeHandler.addSourceWorkingDir(targetChannel, targetThreadTs, dir);
+      if (!ok) {
+        this.logger.warn('Failed to re-register sourceWorkingDir in target session', { dir });
+        failedDirs.push(dir);
+      }
+    }
+    if (failedDirs.length > 0) {
+      sourceSession.sourceWorkingDirs = failedDirs;
+    }
+  }
 
   /**
    * 작업 디렉토리 검증
@@ -130,6 +162,30 @@ export class SessionInitializer {
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
+      // Create session-unique working directory for isolation
+      const sessionDir = this.deps.workingDirManager.createSessionBaseDir(user);
+      if (sessionDir) {
+        session.sessionWorkingDir = sessionDir;
+        // Auto-register for cleanup on session end
+        const registered = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
+        if (registered) {
+          this.logger.info('Session working directory created', { sessionKey, sessionDir });
+        } else {
+          // Registration failed -- remove orphan directory to prevent disk leak
+          this.logger.warn('Failed to register session dir for cleanup, removing orphan', { sessionKey, sessionDir });
+          try {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+          } catch (rmErr) {
+            this.logger.error('Failed to remove orphan session dir', { sessionDir, error: rmErr });
+          }
+          session.sessionWorkingDir = undefined;
+        }
+      } else {
+        this.logger.warn('Failed to create session working directory, falling back to shared user dir', {
+          sessionKey, user, workingDirectory,
+        });
+      }
+
       // Create conversation record and assign ID to session
       try {
         const conversationId = createConversation(channel, threadTs, user, userName);
@@ -173,6 +229,9 @@ export class SessionInitializer {
         };
       }
     }
+
+    // Determine effective working directory: prefer session-unique dir over fixed user dir
+    const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
@@ -362,7 +421,7 @@ export class SessionInitializer {
             threadTs,
             user,
             userName,
-            workingDirectory,
+            effectiveWorkingDir,
             isMidThread
           );
           if (migrated) {
@@ -384,7 +443,7 @@ export class SessionInitializer {
           threadTs,
           user,
           userName,
-          workingDirectory,
+          effectiveWorkingDir,
           isMidThread
         );
         if (migrated) {
@@ -408,7 +467,7 @@ export class SessionInitializer {
       sessionKey,
       isNewSession,
       userName,
-      workingDirectory,
+      workingDirectory: effectiveWorkingDir,
       abortController,
     };
   }
@@ -661,9 +720,14 @@ export class SessionInitializer {
     botSession.isOnboarding = session.isOnboarding;
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
+    botSession.sessionWorkingDir = session.sessionWorkingDir;
     if (isMidThread) {
       botSession.sourceThread = { channel, threadTs };
     }
+
+    // Transfer sourceWorkingDirs ownership to bot session before terminating original.
+    // This prevents the original session's cleanup from deleting the session working directory.
+    this.transferSourceWorkingDirs(session, channel, rootResult.ts);
 
     this.deps.claudeHandler.transitionToMain(
       channel,
