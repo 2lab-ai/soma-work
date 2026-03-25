@@ -378,7 +378,10 @@ export class UserSettingsStore {
     this.patchUserSettings(userId, {
       notification: { ...existing, ...patch },
     } as Partial<UserSettings>);
-    logger.info('Updated notification settings', { userId, patch });
+    logger.info('Updated notification settings', {
+      userId,
+      keys: Object.keys(patch),
+    });
   }
 
   /**

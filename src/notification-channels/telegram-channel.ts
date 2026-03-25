@@ -14,7 +14,7 @@ interface SettingsStoreLike {
   getUserSettings(userId: string): { notification?: { telegramChatId?: string } } | undefined;
 }
 
-type FetchFn = (url: string, init: any) => Promise<{ ok: boolean; status: number }>;
+type FetchFn = (url: string, init: any) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
 function buildThreadPermalink(channel: string, threadTs: string): string {
   return `https://slack.com/archives/${channel}/p${threadTs.replace('.', '')}`;
@@ -52,7 +52,8 @@ export class TelegramChannel implements NotificationChannel {
     const body = JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: 'Markdown',
+      // No parse_mode — sessionTitle is user input and can contain Markdown special chars
+      // that cause Telegram 400 "can't parse entities" errors
     });
 
     try {
@@ -63,13 +64,13 @@ export class TelegramChannel implements NotificationChannel {
       });
 
       if (!response.ok) {
-        logger.warn('TelegramChannel API error', { chatId, status: response.status });
-      } else {
-        logger.info('TelegramChannel.send()', { chatId, category: event.category });
+        const body = await response.text().catch(() => '');
+        logger.warn('TelegramChannel API error', { chatId, status: response.status, body: body.slice(0, 200) });
+        return;
       }
+      logger.info('TelegramChannel.send()', { chatId, category: event.category });
     } catch (error: any) {
-      logger.warn('TelegramChannel failed', { chatId, error: error.message });
-      // Graceful — do not throw
+      logger.warn('TelegramChannel network error', { chatId, error: error.message });
     }
   }
 }
