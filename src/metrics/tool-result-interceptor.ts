@@ -21,7 +21,7 @@ interface ToolResultLike {
  * Parse commit info from git commit output.
  * Example output: "[main abc1234] commit message\n 3 files changed, 50 insertions(+), 10 deletions(-)"
  */
-function parseGitCommitResult(output: string): { sha?: string; linesAdded?: number; linesDeleted?: number } | null {
+export function parseGitCommitResult(output: string): { sha?: string; linesAdded?: number; linesDeleted?: number } | null {
   // Match: [branch sha] message
   const commitMatch = output.match(/\[[\w/.-]+\s+([a-f0-9]{7,})\]/);
   if (!commitMatch) return null;
@@ -41,7 +41,7 @@ function parseGitCommitResult(output: string): { sha?: string; linesAdded?: numb
  * Parse PR creation from gh pr create output.
  * Example: "https://github.com/org/repo/pull/123"
  */
-function parseGhPrCreateResult(output: string): { prUrl?: string; prNumber?: number } | null {
+export function parseGhPrCreateResult(output: string): { prUrl?: string; prNumber?: number } | null {
   const match = output.match(/(https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+))/);
   if (!match) return null;
   return { prUrl: match[1], prNumber: parseInt(match[2], 10) };
@@ -51,7 +51,7 @@ function parseGhPrCreateResult(output: string): { prUrl?: string; prNumber?: num
  * Parse PR merge from gh pr merge output.
  * Example: "✓ Merged pull request #123" or "Merged" or merge URL
  */
-function parseGhPrMergeResult(output: string): { prNumber?: number } | null {
+export function parseGhPrMergeResult(output: string): { prNumber?: number } | null {
   // "✓ Merged pull request #123"
   const match = output.match(/[Mm]erged\s+pull\s+request\s+#(\d+)/);
   if (match) return { prNumber: parseInt(match[1], 10) };
@@ -136,6 +136,3 @@ export function interceptToolResults(
     }
   }
 }
-
-// Export parsers for testing
-export { parseGitCommitResult, parseGhPrCreateResult, parseGhPrMergeResult };

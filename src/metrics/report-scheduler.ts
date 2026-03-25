@@ -18,7 +18,6 @@ const SCHEDULE_FILE = path.join(DATA_DIR, 'report-schedule.json');
 
 /**
  * Get current date/time in configured timezone.
- * Returns { year, month, day, hour, minute, dayOfWeek, dateStr }
  */
 function nowInTimezone(timezone: string): {
   hour: number;

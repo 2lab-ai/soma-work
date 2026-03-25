@@ -7,7 +7,6 @@ import {
   AggregatedMetrics,
   DailyReport,
   WeeklyReport,
-  UserRanking,
 } from './types';
 
 const MAX_RANKINGS_IN_BLOCKS = 10;
@@ -43,6 +42,15 @@ function metricsToPlainText(m: AggregatedMetrics): string {
     `머지: PR ${m.prsMerged} / 코드 +${m.mergeLinesAdded}`,
     `대화: 턴 ${m.turnsUsed}`,
   ].join('\n');
+}
+
+function rankMedal(rank: number): string {
+  switch (rank) {
+    case 1: return ':first_place_medal:';
+    case 2: return ':second_place_medal:';
+    case 3: return ':third_place_medal:';
+    default: return `#${rank}`;
+  }
 }
 
 export class ReportFormatter {
@@ -92,7 +100,7 @@ export class ReportFormatter {
       });
 
       for (const r of displayRankings) {
-        const medal = r.rank === 1 ? ':first_place_medal:' : r.rank === 2 ? ':second_place_medal:' : r.rank === 3 ? ':third_place_medal:' : `#${r.rank}`;
+        const medal = rankMedal(r.rank);
         blocks.push({
           type: 'section',
           text: {

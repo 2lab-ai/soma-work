@@ -5,9 +5,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
-import { MetricsEvent, MetricsEventType } from './types';
+import { MetricsEvent } from './types';
 import { DATA_DIR } from '../env-paths';
 
 const logger = new Logger('MetricsEventStore');

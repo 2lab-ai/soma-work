@@ -18,6 +18,10 @@ interface SessionLike {
   threadTs?: string;
 }
 
+function sessionKeyFrom(session: SessionLike): string {
+  return `${session.channelId}-${session.threadTs || 'direct'}`;
+}
+
 export class MetricsEventEmitter {
   private store: MetricsEventStore;
 
@@ -66,7 +70,7 @@ export class MetricsEventEmitter {
       'session_created',
       session.ownerId,
       session.ownerName || 'unknown',
-      `${session.channelId}-${session.threadTs || 'direct'}`,
+      sessionKeyFrom(session),
       { channelId: session.channelId, threadTs: session.threadTs },
     );
     await this.emit(event);
@@ -77,7 +81,7 @@ export class MetricsEventEmitter {
       'session_slept',
       session.ownerId,
       session.ownerName || 'unknown',
-      `${session.channelId}-${session.threadTs || 'direct'}`,
+      sessionKeyFrom(session),
       { channelId: session.channelId },
     );
     await this.emit(event);

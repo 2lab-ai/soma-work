@@ -93,17 +93,11 @@ export class ReportHandler implements CommandHandler {
     logger.info(`Manual ${subcommand} report triggered by ${user}`);
 
     try {
-      if (subcommand === 'daily') {
-        const date = getYesterdayDateStr();
-        const report = await this.deps.aggregator.aggregateDaily(date);
-        const formatted = this.deps.formatter.formatDaily(report);
-        await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
-      } else if (subcommand === 'weekly') {
-        const weekStart = getLastMondayDateStr();
-        const report = await this.deps.aggregator.aggregateWeekly(weekStart);
-        const formatted = this.deps.formatter.formatWeekly(report);
-        await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
-      }
+      const formatted = subcommand === 'daily'
+        ? this.deps.formatter.formatDaily(await this.deps.aggregator.aggregateDaily(getYesterdayDateStr()))
+        : this.deps.formatter.formatWeekly(await this.deps.aggregator.aggregateWeekly(getLastMondayDateStr()));
+
+      await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
     } catch (error) {
       logger.error(`Failed to generate ${subcommand} report`, error);
       await say({ text: `:x: 리포트 생성 실패: ${(error as Error).message}`, thread_ts: threadTs });
