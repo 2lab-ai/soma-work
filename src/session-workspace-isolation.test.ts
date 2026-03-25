@@ -88,6 +88,36 @@ describe('Session Workspace Isolation', () => {
       );
       expect(result).toBeUndefined();
     });
+
+    // Fix: trailing-slash URL handling
+    it('handles trailing-slash URLs correctly', () => {
+      const result = manager.createSessionWorkingDir(
+        'U001',
+        'https://github.com/org/my-repo/',
+        'test'
+      );
+      expect(result).toBeDefined();
+      expect(result).toContain('/my-repo_');
+    });
+
+    // Fix: slackId path traversal defense
+    it('rejects slackId with path traversal (..)', () => {
+      const result = manager.createSessionWorkingDir(
+        '../etc',
+        'https://github.com/org/repo',
+        'test'
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it('rejects slackId with forward slash', () => {
+      const result = manager.createSessionWorkingDir(
+        'U001/../../etc',
+        'https://github.com/org/repo',
+        'test'
+      );
+      expect(result).toBeUndefined();
+    });
   });
 
   // === Scenario 4: Concurrent Session Isolation ===

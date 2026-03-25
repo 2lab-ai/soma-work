@@ -150,6 +150,12 @@ export class WorkingDirectoryManager {
       return undefined;
     }
 
+    // Reject path traversal attempts in slackId
+    if (slackId.includes('/') || slackId.includes('..') || slackId.includes('\\')) {
+      this.logger.warn('slackId contains path separator or traversal sequence', { slackId });
+      return undefined;
+    }
+
     const timestamp = Date.now().toString();
     const counter = this.sessionDirCounter++;
     const dirName = `session_${timestamp}_${counter}`;
@@ -186,11 +192,19 @@ export class WorkingDirectoryManager {
       return undefined;
     }
 
+    // Reject path traversal attempts in slackId
+    if (slackId.includes('/') || slackId.includes('..') || slackId.includes('\\')) {
+      this.logger.warn('slackId contains path separator or traversal sequence', { slackId });
+      return undefined;
+    }
+
     // Extract repo name from URL
     let repoName: string;
     try {
       const url = new URL(repoUrl);
-      const lastSegment = url.pathname.split('/').pop();
+      // Strip trailing slashes before splitting to handle URLs like https://github.com/org/repo/
+      const pathname = url.pathname.replace(/\/+$/, '');
+      const lastSegment = pathname.split('/').pop();
       repoName = lastSegment?.replace(/\.git$/, '') || '';
       if (!repoName) {
         this.logger.error('Could not extract repo name from URL', { repoUrl });

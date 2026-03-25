@@ -21,11 +21,12 @@ const PRIVATE_TMP_EXACT = '/private/tmp';
  * Non-/tmp paths are returned unchanged.
  */
 export function normalizeTmpPath(inputPath: string): string {
+  // Handle exact matches first (before prefix check catches '/private/tmp/')
+  if (inputPath === PRIVATE_TMP_EXACT || inputPath === '/private/tmp/') {
+    return '/tmp';
+  }
   if (inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
     return '/tmp/' + inputPath.slice(PRIVATE_TMP_PREFIX.length);
-  }
-  if (inputPath === PRIVATE_TMP_EXACT) {
-    return '/tmp';
   }
   return inputPath;
 }

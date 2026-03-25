@@ -43,6 +43,13 @@ describe('Session Workspace Wiring', () => {
       expect(result).toBeUndefined();
     });
 
+    // Fix: path traversal defense
+    it('rejects slackId with path traversal', () => {
+      expect(manager.createSessionBaseDir('../etc')).toBeUndefined();
+      expect(manager.createSessionBaseDir('U001/../../etc')).toBeUndefined();
+      expect(manager.createSessionBaseDir('U001\\..\\etc')).toBeUndefined();
+    });
+
     // Trace W1 — uniqueness
     it('produces different paths for two calls', () => {
       const a = manager.createSessionBaseDir('U094E5L4A15');

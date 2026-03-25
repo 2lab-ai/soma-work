@@ -30,4 +30,14 @@ describe('normalizeTmpPath', () => {
   it('handles deeply nested /private/tmp paths', () => {
     expect(normalizeTmpPath('/private/tmp/a/b/c/d')).toBe('/tmp/a/b/c/d');
   });
+
+  // Edge: /private/tmp/ with trailing slash normalizes to /tmp (no trailing slash)
+  it('normalizes /private/tmp/ (trailing slash) to /tmp', () => {
+    expect(normalizeTmpPath('/private/tmp/')).toBe('/tmp');
+  });
+
+  // Edge: empty string returns empty string
+  it('returns empty string for empty input', () => {
+    expect(normalizeTmpPath('')).toBe('');
+  });
 });
