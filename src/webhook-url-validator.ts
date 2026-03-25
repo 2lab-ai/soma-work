@@ -97,8 +97,8 @@ export function validateWebhookUrl(raw: string): WebhookUrlValidation {
     return { valid: false, error: 'HTTPS URL만 등록 가능합니다.' };
   }
 
-  // Blocked hostnames
-  const hostname = parsed.hostname.toLowerCase();
+  // Blocked hostnames — strip trailing dot (FQDN normalization: `localhost.` → `localhost`)
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
   if (BLOCKED_HOSTNAMES.has(hostname)) {
     logger.warn('Blocked webhook URL (hostname)', { hostname });
     return { valid: false, error: '내부 네트워크 주소는 등록할 수 없습니다.' };
