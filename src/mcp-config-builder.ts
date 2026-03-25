@@ -186,12 +186,15 @@ export class McpConfigBuilder {
         const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));
         const fsConfig = config.mcpServers.filesystem as { args?: string[] };
         if (Array.isArray(fsConfig.args)) {
-          const tmpArgIndex = fsConfig.args.findIndex(
-            (arg) => arg.startsWith('/tmp') || arg.startsWith('/private/tmp')
-          );
-          if (tmpArgIndex >= 0) {
-            fsConfig.args[tmpArgIndex] = userTmpDir;
-          } else {
+          // Replace ALL /tmp-prefixed args (MCP filesystem accepts multiple dirs)
+          let replaced = false;
+          for (let i = 0; i < fsConfig.args.length; i++) {
+            if (fsConfig.args[i].startsWith('/tmp') || fsConfig.args[i].startsWith('/private/tmp')) {
+              fsConfig.args[i] = userTmpDir;
+              replaced = true;
+            }
+          }
+          if (!replaced) {
             fsConfig.args.push(userTmpDir);
           }
           this.logger.debug('Filesystem MCP restricted to user directory', {

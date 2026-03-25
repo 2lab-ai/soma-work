@@ -24,9 +24,13 @@ export function normalizeTmpPath(inputPath: string): string {
     return inputPath;
   }
   const rest = inputPath.slice(PRIVATE_TMP_PREFIX.length);
-  // rest is empty ("/private/tmp"), a slash ("/private/tmp/"), or "/subpath..."
+  // Reject false prefix matches like "/private/tmpdata"
+  if (rest !== '' && !rest.startsWith('/')) {
+    return inputPath;
+  }
+  // Preserve trailing slash: "/private/tmp/" → "/tmp/", "/private/tmp" → "/tmp"
   if (rest === '' || rest === '/') {
-    return '/tmp';
+    return '/tmp' + rest;
   }
   return '/tmp' + rest;
 }
