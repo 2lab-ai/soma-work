@@ -30,4 +30,19 @@ describe('normalizeTmpPath', () => {
   it('handles deeply nested /private/tmp paths', () => {
     expect(normalizeTmpPath('/private/tmp/a/b/c/d')).toBe('/tmp/a/b/c/d');
   });
+
+  // Edge: /private/tmp/ with trailing slash preserves slash
+  it('normalizes /private/tmp/ (trailing slash) to /tmp/', () => {
+    expect(normalizeTmpPath('/private/tmp/')).toBe('/tmp/');
+  });
+
+  // Edge: /private/tmpdata should NOT be normalized (false prefix match)
+  it('does not normalize /private/tmpdata (not a /tmp subpath)', () => {
+    expect(normalizeTmpPath('/private/tmpdata/foo')).toBe('/private/tmpdata/foo');
+  });
+
+  // Edge: empty string returns empty string
+  it('returns empty string for empty input', () => {
+    expect(normalizeTmpPath('')).toBe('');
+  });
 });

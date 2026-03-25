@@ -42,7 +42,7 @@ describe('Session Workspace Isolation', () => {
         'fix-auth-bug'
       );
       expect(result).toBeDefined();
-      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/soma-work_\d+_\d+_fix-auth-bug$/);
+      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/soma-work_\d+_[a-f0-9]+_fix-auth-bug$/);
       expect(fs.existsSync(result!)).toBe(true);
     });
 
@@ -84,6 +84,36 @@ describe('Session Workspace Isolation', () => {
       const result = manager.createSessionWorkingDir(
         'U001',
         'not-a-url',
+        'test'
+      );
+      expect(result).toBeUndefined();
+    });
+
+    // Fix: trailing-slash URL handling
+    it('handles trailing-slash URLs correctly', () => {
+      const result = manager.createSessionWorkingDir(
+        'U001',
+        'https://github.com/org/my-repo/',
+        'test'
+      );
+      expect(result).toBeDefined();
+      expect(result).toContain('/my-repo_');
+    });
+
+    // Fix: slackId path traversal defense
+    it('rejects slackId with path traversal (..)', () => {
+      const result = manager.createSessionWorkingDir(
+        '../etc',
+        'https://github.com/org/repo',
+        'test'
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it('rejects slackId with forward slash', () => {
+      const result = manager.createSessionWorkingDir(
+        'U001/../../etc',
+        'https://github.com/org/repo',
         'test'
       );
       expect(result).toBeUndefined();

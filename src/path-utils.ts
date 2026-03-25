@@ -6,13 +6,12 @@
  * resolve to /private/tmp). We normalize to /tmp for consistency.
  */
 
-const PRIVATE_TMP_PREFIX = '/private/tmp/';
-const PRIVATE_TMP_EXACT = '/private/tmp';
+const PRIVATE_TMP_PREFIX = '/private/tmp';
 
 /**
  * Normalize /private/tmp paths to /tmp.
  *
- * On macOS, /tmp → /private/tmp is a symlink. We standardize on the shorter
+ * On macOS, /tmp -> /private/tmp is a symlink. We standardize on the shorter
  * /tmp form because:
  * - bash commands use /tmp
  * - system prompts and directives use /tmp
@@ -20,12 +19,20 @@ const PRIVATE_TMP_EXACT = '/private/tmp';
  *
  * Non-/tmp paths are returned unchanged.
  */
+/** Check that a string is safe to use as a path segment (no traversal characters). */
+export function isSafePathSegment(segment: string): boolean {
+  if (!segment) return false;
+  return !segment.includes('/') && !segment.includes('..') && !segment.includes('\\');
+}
+
 export function normalizeTmpPath(inputPath: string): string {
-  if (inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
-    return '/tmp/' + inputPath.slice(PRIVATE_TMP_PREFIX.length);
+  if (!inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
+    return inputPath;
   }
-  if (inputPath === PRIVATE_TMP_EXACT) {
-    return '/tmp';
+  const rest = inputPath.slice(PRIVATE_TMP_PREFIX.length);
+  // Reject false prefix matches like "/private/tmpdata"
+  if (rest !== '' && !rest.startsWith('/')) {
+    return inputPath;
   }
-  return inputPath;
+  return '/tmp' + rest;
 }
