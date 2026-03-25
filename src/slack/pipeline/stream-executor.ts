@@ -705,9 +705,16 @@ export class StreamExecutor {
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Fire Exception notification (fire-and-forget)
+    // Check for context overflow error
+    if (this.isContextOverflowError(error)) {
+      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
+    }
+
+    const isAbort = requestAborted || this.isAbortLikeError(error);
+
+    // Fire Exception notification only for real errors (not abort/cancel)
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
-    if (this.deps.turnNotifier) {
+    if (this.deps.turnNotifier && !isAbort) {
       this.deps.turnNotifier.notify({
         category: 'Exception',
         userId: session.ownerId || '',
@@ -716,15 +723,8 @@ export class StreamExecutor {
         sessionTitle: session.title,
         message: error?.message,
         durationMs: 0,
-      }).catch(() => {}); // Completely silent — error handling must not fail
+      }).catch(err => this.logger.warn('Exception notification failed', { error: err?.message }));
     }
-
-    // Check for context overflow error
-    if (this.isContextOverflowError(error)) {
-      await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
-    }
-
-    const isAbort = requestAborted || this.isAbortLikeError(error);
     if (!isAbort) {
       this.logger.error('Error handling message', error);
       await this.updateRuntimeStatus(session, sessionKey, {

@@ -291,7 +291,9 @@ export class SlackApiHelper {
    * Trace: docs/turn-notification/trace.md, Scenario 2, Section 3b
    */
   async openDmChannel(userId: string): Promise<string> {
-    const result = await this.app.client.conversations.open({ users: userId });
+    const result = await this.enqueue(() =>
+      this.app.client.conversations.open({ users: userId })
+    );
     return result.channel?.id || '';
   }
 

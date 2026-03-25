@@ -18,6 +18,7 @@ describe('SlackDmChannel', () => {
     const mockSlackApi = {
       openDmChannel: vi.fn().mockResolvedValue('D999'),
       postMessage: vi.fn().mockResolvedValue(undefined),
+      getPermalink: vi.fn().mockResolvedValue('https://test.slack.com/archives/C123/p1234567890123456'),
     };
     const mockSettingsStore = {
       getUserSettings: vi.fn().mockReturnValue({
@@ -37,7 +38,7 @@ describe('SlackDmChannel', () => {
   });
 
   it('skips when disabled', async () => {
-    const mockSlackApi = { openDmChannel: vi.fn(), postMessage: vi.fn() };
+    const mockSlackApi = { openDmChannel: vi.fn(), postMessage: vi.fn(), getPermalink: vi.fn().mockResolvedValue(null) };
     const mockSettingsStore = {
       getUserSettings: vi.fn().mockReturnValue({
         notification: { slackDm: false },
@@ -61,6 +62,7 @@ describe('SlackDmChannel', () => {
       postMessage: vi.fn().mockImplementation(async () => {
         callOrder.push('post');
       }),
+      getPermalink: vi.fn().mockResolvedValue(null),
     };
     const mockSettingsStore = {
       getUserSettings: vi.fn().mockReturnValue({
@@ -78,6 +80,7 @@ describe('SlackDmChannel', () => {
     const mockSlackApi = {
       openDmChannel: vi.fn().mockRejectedValue(new Error('not_allowed_to_dm')),
       postMessage: vi.fn(),
+      getPermalink: vi.fn().mockResolvedValue(null),
     };
     const mockSettingsStore = {
       getUserSettings: vi.fn().mockReturnValue({
