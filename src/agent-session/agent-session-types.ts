@@ -80,4 +80,20 @@ export interface AgentTurnResult {
 
   /** 유저 입력 대기 중 */
   hasPendingChoice: boolean;
+
+  /** 토큰 사용량 (Issue #84) */
+  usage?: UsageData;
+
+  /** 턴 실행 소요 시간 ms (Issue #84) */
+  durationMs?: number;
+}
+
+// ─── Usage ────────────────────────────────────────────
+
+/** 토큰 사용량 — stream-processor.ts의 UsageData와 호환 */
+export interface UsageData {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreateTokens?: number;
 }

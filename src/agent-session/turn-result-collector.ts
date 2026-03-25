@@ -14,6 +14,7 @@ import type {
   EndTurnInfo,
   ModelCommandResult,
   ToolCallSummary,
+  UsageData,
   UserChoiceQuestion,
 } from './agent-session-types.js';
 
@@ -27,6 +28,7 @@ export class TurnResultCollector implements TurnObserver {
   private endTurnInfo: EndTurnInfo | null = null;
   private _hasPendingChoice = false;
   private _continuation: unknown | null = null;
+  private _usage: UsageData | undefined;
   private currentPhase: AgentPhase = '생각 중';
 
   // ─── TurnObserver 구현 ───────────────────────────────
@@ -93,6 +95,11 @@ export class TurnResultCollector implements TurnObserver {
     this._hasPendingChoice = value;
   }
 
+  /** StreamResult.usage에서 수집한 토큰 사용량 설정 (Issue #84) */
+  setUsage(usage: UsageData): void {
+    this._usage = usage;
+  }
+
   // ─── 결과 반환 ──────────────────────────────────────
 
   /** 현재 phase 조회 */
@@ -118,6 +125,7 @@ export class TurnResultCollector implements TurnObserver {
       },
       continuation: this._continuation,
       hasPendingChoice: this._hasPendingChoice,
+      usage: this._usage,
     };
   }
 }
