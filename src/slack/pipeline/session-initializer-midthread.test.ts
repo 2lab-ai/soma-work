@@ -174,8 +174,8 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  // Trace: S1, Sec 3b — deleteThreadBotMessages 미호출
-  it('midThread_doesNotDeleteBotMessages: does not delete bot messages when thread_ts exists', async () => {
+  // Trace (v2): S3, Sec 3b — deleteThreadBotMessages IS called for mid-thread (dispatch cleanup)
+  it('midThread_deletesDispatchClutter: deletes bot messages for mid-thread mentions (v2)', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -186,7 +186,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
   });
 
   // Trace: S1, Sec 3b — rootResult.ts → permalink → postMessage
@@ -254,7 +254,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
       sessionInitializer.initialize(event as any, '/test/dir')
     ).resolves.toBeDefined();
 
-    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
   });
 });
 
@@ -346,5 +346,234 @@ describe('Scenario 3: sourceThread storage on session', () => {
     const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
     expect(result.session.sourceThread).toBeUndefined();
+  });
+});
+
+// ============================================================
+// Issue #64 Fix v2 — Scenarios 3-5 (delete-then-retain ordering)
+// Trace: docs/issue64-midthread-fix-v2/trace.md
+// ============================================================
+
+// ============================================================
+// Scenario 3 (v2) — Mid-thread: delete-then-retain ordering
+// ============================================================
+describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
+    mockClaudeHandler.getSession.mockReturnValue(null);
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+  });
+
+  // Trace: S3, Sec 3b — deleteThreadBotMessages ALWAYS called (even for mid-thread)
+  it('midThread_alwaysCallsDelete: deleteThreadBotMessages called for mid-thread mentions', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // v2: deleteThreadBotMessages is NOW called for mid-thread (dispatch cleanup)
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
+  });
+
+  // Trace: S3, Sec 3b — delete THEN post ordering
+  it('midThread_deletesBeforeRetention: delete happens before retention message', async () => {
+    const callOrder: string[] = [];
+
+    mockSlackApi.deleteThreadBotMessages.mockImplementation(async () => {
+      callOrder.push('delete');
+    });
+
+    const originalPostMessage = mockSlackApi.postMessage;
+    mockSlackApi.postMessage.mockImplementation(async (...args: any[]) => {
+      const text = args[1];
+      if (typeof text === 'string' && text.includes('📋')) {
+        callOrder.push('retention');
+      }
+      return { ts: 'msg123' };
+    });
+
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // Contract: delete MUST happen before retention post
+    const deleteIdx = callOrder.indexOf('delete');
+    const retentionIdx = callOrder.indexOf('retention');
+
+    expect(deleteIdx).toBeGreaterThanOrEqual(0);
+    expect(retentionIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeLessThan(retentionIdx);
+  });
+
+  // Trace: S3, Sec 4 — retention message posted in original thread after delete
+  it('midThread_retentionPostedAfterDelete: retention message survives deletion', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // deleteThreadBotMessages was called first
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalled();
+
+    // Retention message was posted to original thread
+    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        call[1].includes('📋')
+    );
+    expect(retentionMessages).toHaveLength(1);
+  });
+
+  // Trace: S3, Sec 5 — null permalink graceful handling
+  it('midThread_permalinkNull_graceful: posts retention without link when permalink is null', async () => {
+    mockSlackApi.getPermalink.mockResolvedValue(null);
+
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // Should still post retention (without permalink)
+    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        call[1].includes('📋')
+    );
+    expect(retentionMessages).toHaveLength(1);
+
+    // Should NOT contain " → " (no permalink)
+    const text = retentionMessages[0][1];
+    expect(text).not.toContain(' → https://');
+  });
+});
+
+// ============================================================
+// Scenario 4 (v2) — Top-level: delete + redirect preserved
+// ============================================================
+describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
+    mockClaudeHandler.getSession.mockReturnValue(null);
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+  });
+
+  // Trace: S4, Sec 3b — delete + redirect
+  it('topLevel_deletesAndRedirects: deletes bot messages and posts redirect', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Hello!',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // Delete is called
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
+
+    // Redirect message "🧵" is posted to original thread
+    const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === 'thread123' &&
+        typeof call[1] === 'string' &&
+        call[1].includes('🧵')
+    );
+    expect(redirectMessages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Trace: S4, Sec 3b — no 📋 message for top-level
+  it('topLevel_noRetentionMessage: does not post retention message', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Hello!',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === 'thread123' &&
+        typeof call[1] === 'string' &&
+        call[1].includes('📋')
+    );
+    expect(retentionMessages).toHaveLength(0);
+  });
+
+  // Trace: S4, Sec 3a — sourceThread undefined
+  it('topLevel_noSourceThread: sourceThread is not set', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Hello!',
+    };
+
+    const result = await sessionInitializer.initialize(event as any, '/test/dir');
+    expect(result.session.sourceThread).toBeUndefined();
+  });
+});
+
+// ============================================================
+// Scenario 5 (v2) — Mid-thread: retention message has permalink
+// ============================================================
+describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
+    mockClaudeHandler.getSession.mockReturnValue(null);
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+  });
+
+  // Trace: S5, Sec 3b — permalink in retention message
+  it('midThread_retentionIncludesPermalink: retention message contains new thread permalink', async () => {
+    const permalink = 'https://workspace.slack.com/archives/C123/p1739000000001000';
+    mockSlackApi.getPermalink.mockResolvedValue(permalink);
+
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        call[1].includes('📋')
+    );
+
+    expect(retentionMessages).toHaveLength(1);
+    expect(retentionMessages[0][1]).toContain(permalink);
   });
 });

@@ -64,6 +64,7 @@ interface ThreadFile {
 interface GetThreadMessagesResult {
   thread_ts: string;
   channel: string;
+  thread_root: ThreadMessage | null;
   returned: number;
   messages: ThreadMessage[];
   has_more_before: boolean;
@@ -92,6 +93,7 @@ class SlackThreadMcpServer {
   private slack: WebClient;
   private token: string;
   private context: SlackThreadContext;
+  private capturedRoot: any | null = null;
 
   constructor() {
     this.server = new Server(
@@ -237,6 +239,9 @@ class SlackThreadMcpServer {
     const before = Math.min(Math.max(args.before ?? 10, 0), 50);
     const after = Math.min(Math.max(args.after ?? 0, 0), 50);
 
+    // Reset captured root for each call
+    this.capturedRoot = null;
+
     // Fetch messages before anchor (inclusive) — direct API, no caching
     const beforeMessages = await this.fetchMessagesBefore(anchorTs, before);
 
@@ -245,12 +250,17 @@ class SlackThreadMcpServer {
       ? await this.fetchMessagesAfter(anchorTs, after)
       : [];
 
+    // Fallback: if root wasn't captured (e.g., before=0), fetch it directly
+    if (!this.capturedRoot) {
+      await this.fetchThreadRoot();
+    }
+
     const messages = [...beforeMessages, ...afterMessages];
     // If we asked for N messages before and got exactly N, there are likely more
     const hasMoreBefore = before > 0 && beforeMessages.length === before;
     const hasMoreAfter = after > 0 && afterMessages.length === after;
 
-    return this.formatMessages(messages, hasMoreBefore, hasMoreAfter);
+    return this.formatMessages(messages, hasMoreBefore, hasMoreAfter, this.capturedRoot);
   }
 
   /**
@@ -275,8 +285,11 @@ class SlackThreadMcpServer {
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        // Skip thread root — always appears as messages[0] on first page
-        if (m.ts === this.context.threadTs) continue;
+        // Capture thread root — always appears as messages[0] on first page
+        if (m.ts === this.context.threadTs) {
+          this.capturedRoot = m;
+          continue;
+        }
         // Stop collecting once we pass the anchor
         if (m.ts! > anchorTs) break;
         collected.push(m);
@@ -325,12 +338,31 @@ class SlackThreadMcpServer {
     return collected.slice(0, count);
   }
 
-  private formatMessages(
-    messages: any[],
-    hasMoreBefore: boolean,
-    hasMoreAfter: boolean
-  ) {
-    const formatted: ThreadMessage[] = messages.map((m: any) => ({
+  /**
+   * Fetch thread root message directly. Used as fallback when
+   * fetchMessagesBefore was skipped (before=0).
+   */
+  private async fetchThreadRoot(): Promise<void> {
+    try {
+      const response = await this.slack.conversations.replies({
+        channel: this.context.channel,
+        ts: this.context.threadTs,
+        limit: 1,
+      });
+      const msgs = response.messages || [];
+      if (msgs.length > 0 && msgs[0].ts === this.context.threadTs) {
+        this.capturedRoot = msgs[0];
+        logger.debug('Thread root captured via fallback', { ts: msgs[0].ts });
+      } else {
+        logger.debug('Thread root not found (possibly deleted)');
+      }
+    } catch (error) {
+      logger.warn('Failed to fetch thread root', error);
+    }
+  }
+
+  private formatSingleMessage(m: any): ThreadMessage {
+    return {
       ts: m.ts,
       user: m.user || m.bot_id || 'unknown',
       user_name:
@@ -357,11 +389,21 @@ class SlackThreadMcpServer {
       })),
       is_bot: !!m.bot_id,
       subtype: m.subtype || null,
-    }));
+    };
+  }
+
+  private formatMessages(
+    messages: any[],
+    hasMoreBefore: boolean,
+    hasMoreAfter: boolean,
+    threadRoot: any | null = null
+  ) {
+    const formatted: ThreadMessage[] = messages.map((m: any) => this.formatSingleMessage(m));
 
     const result: GetThreadMessagesResult = {
       thread_ts: this.context.threadTs,
       channel: this.context.channel,
+      thread_root: threadRoot ? this.formatSingleMessage(threadRoot) : null,
       returned: formatted.length,
       messages: formatted,
       has_more_before: hasMoreBefore,
