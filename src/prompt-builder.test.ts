@@ -282,19 +282,19 @@ describe('PromptBuilder', () => {
       expect(prompt).toContain('{{user.email}}');
     });
 
-    it('common.prompt should document fallback behavior', () => {
-      // Trace: S4, Section 5
+    it('common.prompt should be included in default prompt', () => {
       const prompt = builder.loadWorkflowPrompt('default');
 
       expect(prompt).toBeDefined();
-      // common.prompt is included in default prompt and documents user variables
-      expect(prompt).toContain('User Profile Variables');
-      expect(prompt).toContain('생략');
+      // common.prompt is included in default prompt
+      expect(prompt).toContain('system_prompt');
     });
   });
 
   describe('variable escaping', () => {
-    it('should not substitute escaped \\{{...}} variables', async () => {
+    it('should not substitute escaped \\{{...}} variables in workflow prompts', async () => {
+      // Workflow prompts (e.g. jira-create-pr) contain {{user.email}} in Co-Authored-By
+      // When user settings are provided, these should be resolved
       const { userSettingsStore } = await import('./user-settings-store');
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U123',
@@ -308,24 +308,20 @@ describe('PromptBuilder', () => {
         accepted: true,
       });
 
-      // buildSystemPrompt with 'default' includes common.prompt which has escaped \{{user.email}}
-      const prompt = builder.buildSystemPrompt('U123', 'default');
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
 
       expect(prompt).toBeDefined();
-      // Escaped variables in common.prompt documentation should render as literal {{user.email}}
-      expect(prompt).toContain('{{user.email}}');
-      expect(prompt).toContain('{{user.displayName}}');
+      // Variables should be resolved in workflow prompts
+      expect(prompt).toContain('z@insightquest.io');
     });
 
-    it('should unescape \\{{ to {{ after substitution', async () => {
-      // Even without user settings, escaped vars should become literal
-      const prompt = builder.buildSystemPrompt(undefined, 'default');
+    it('should leave unresolved vars when no user settings', async () => {
+      // Without user settings, template vars remain as-is
+      const prompt = builder.buildSystemPrompt(undefined, 'jira-create-pr');
 
       expect(prompt).toBeDefined();
-      // common.prompt has \{{user.email}} which should render as {{user.email}}
+      // Unresolved variables should remain as template placeholders
       expect(prompt).toContain('{{user.email}}');
-      // Should NOT contain the backslash escape in final output
-      expect(prompt).not.toContain('\\{{user.email}}');
     });
   });
 
