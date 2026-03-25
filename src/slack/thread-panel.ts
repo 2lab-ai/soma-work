@@ -5,6 +5,7 @@ import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
 import { ThreadSurface } from './thread-surface';
+import type { EndTurnInfo } from '../agent-session/agent-session-types';
 
 interface ThreadPanelDeps {
   slackApi: SlackApiHelper;
@@ -70,6 +71,16 @@ export class ThreadPanel {
 
   async close(session: ConversationSession, sessionKey: string): Promise<void> {
     await this.surface.close(session, sessionKey);
+  }
+
+  /** TurnRunner용 — endTurn 기반 최종 상태 설정 (Issue #87) */
+  async finalizeOnEndTurn(
+    session: ConversationSession,
+    sessionKey: string,
+    endTurnInfo: EndTurnInfo,
+    hasPendingChoice: boolean,
+  ): Promise<void> {
+    await this.surface.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
   }
 
   // ---- internal helpers ----
