@@ -861,9 +861,10 @@ export class StreamExecutor {
 
     return (
       message.includes('could not process image') ||
-      message.includes('invalid image') ||
+      message.includes('invalid image format') ||
+      message.includes('invalid image content') ||
       message.includes('image too large') ||
-      message.includes('unsupported image')
+      message.includes('unsupported image format')
     );
   }
 
