@@ -388,7 +388,7 @@ export class SlackHandler {
 
     try {
       await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
-    } catch {
+    } catch (error) {
       // Auto-retry on recoverable errors (merged from main — auto-retry on error)
       const retryAfterMs = agentSession.getRetryAfterMs();
       if (retryAfterMs) {
@@ -420,7 +420,7 @@ export class SlackHandler {
         }, retryAfterMs);
         return; // Retry scheduled — don't re-throw
       }
-      throw undefined; // Non-recoverable error — propagate
+      throw error; // Non-recoverable error — propagate
     }
   }
 
