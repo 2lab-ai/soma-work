@@ -19,6 +19,12 @@ const PRIVATE_TMP_PREFIX = '/private/tmp';
  *
  * Non-/tmp paths are returned unchanged.
  */
+/** Check that a string is safe to use as a path segment (no traversal characters). */
+export function isSafePathSegment(segment: string): boolean {
+  if (!segment) return false;
+  return !segment.includes('/') && !segment.includes('..') && !segment.includes('\\');
+}
+
 export function normalizeTmpPath(inputPath: string): string {
   if (!inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
     return inputPath;
@@ -27,10 +33,6 @@ export function normalizeTmpPath(inputPath: string): string {
   // Reject false prefix matches like "/private/tmpdata"
   if (rest !== '' && !rest.startsWith('/')) {
     return inputPath;
-  }
-  // Preserve trailing slash: "/private/tmp/" → "/tmp/", "/private/tmp" → "/tmp"
-  if (rest === '' || rest === '/') {
-    return '/tmp' + rest;
   }
   return '/tmp' + rest;
 }

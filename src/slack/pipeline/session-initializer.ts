@@ -51,6 +51,35 @@ export class SessionInitializer {
   constructor(private deps: SessionInitializerDeps) {}
 
   /**
+   * Transfer sourceWorkingDirs ownership from one session to another.
+   * Clears the source session's dirs so its cleanup won't delete them,
+   * then re-registers each dir in the target session. Dirs that fail
+   * to register are rolled back to the source session for cleanup.
+   */
+  private transferSourceWorkingDirs(
+    sourceSession: ConversationSession,
+    targetChannel: string,
+    targetThreadTs: string
+  ): void {
+    if (!sourceSession.sourceWorkingDirs?.length) return;
+
+    const transferDirs = [...sourceSession.sourceWorkingDirs];
+    sourceSession.sourceWorkingDirs = [];
+
+    const failedDirs: string[] = [];
+    for (const dir of transferDirs) {
+      const ok = this.deps.claudeHandler.addSourceWorkingDir(targetChannel, targetThreadTs, dir);
+      if (!ok) {
+        this.logger.warn('Failed to re-register sourceWorkingDir in target session', { dir });
+        failedDirs.push(dir);
+      }
+    }
+    if (failedDirs.length > 0) {
+      sourceSession.sourceWorkingDirs = failedDirs;
+    }
+  }
+
+  /**
    * 작업 디렉토리 검증
    */
   async validateWorkingDirectory(
@@ -698,24 +727,7 @@ export class SessionInitializer {
 
     // Transfer sourceWorkingDirs ownership to bot session before terminating original.
     // This prevents the original session's cleanup from deleting the session working directory.
-    if (session.sourceWorkingDirs?.length) {
-      // Clear original session's sourceWorkingDirs so terminateSession won't delete them
-      const transferDirs = [...session.sourceWorkingDirs];
-      session.sourceWorkingDirs = [];
-      // Re-register in the new bot session, with rollback on failure
-      const failedDirs: string[] = [];
-      for (const dir of transferDirs) {
-        const ok = this.deps.claudeHandler.addSourceWorkingDir(channel, rootResult.ts, dir);
-        if (!ok) {
-          this.logger.warn('Failed to re-register sourceWorkingDir in bot session', { dir });
-          failedDirs.push(dir);
-        }
-      }
-      // Rollback: return failed dirs to original session so they get cleaned up
-      if (failedDirs.length > 0) {
-        session.sourceWorkingDirs = failedDirs;
-      }
-    }
+    this.transferSourceWorkingDirs(session, channel, rootResult.ts);
 
     this.deps.claudeHandler.transitionToMain(
       channel,

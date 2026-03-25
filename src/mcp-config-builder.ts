@@ -8,7 +8,7 @@ import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
 import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
-import { normalizeTmpPath } from './path-utils';
+import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -180,7 +180,7 @@ export class McpConfigBuilder {
     if (slackContext?.user && config.mcpServers?.filesystem) {
       const userId = slackContext.user;
       // Defense-in-depth: validate userId has no path traversal characters
-      if (userId.includes('/') || userId.includes('..') || userId.includes('\\')) {
+      if (!isSafePathSegment(userId)) {
         this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', { userId });
       } else {
         const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));

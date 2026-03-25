@@ -1,7 +1,7 @@
 import { Logger } from './logger';
 import { config } from './config';
 import { DirectoryFormatter } from './slack/formatters';
-import { normalizeTmpPath } from './path-utils';
+import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -19,8 +19,7 @@ export class WorkingDirectoryManager {
 
   /** Validate slackId: must be non-empty with no path traversal characters. */
   private isValidSlackId(slackId: string): boolean {
-    if (!slackId) return false;
-    return !slackId.includes('/') && !slackId.includes('..') && !slackId.includes('\\');
+    return isSafePathSegment(slackId);
   }
 
   /** Create a directory under /tmp/{slackId}/ with the given name, returning the normalized path or undefined on failure. */
@@ -163,7 +162,7 @@ export class WorkingDirectoryManager {
   /**
    * Create a session-unique base working directory under /tmp/{slackId}/.
    *
-   * Pattern: /tmp/{slackId}/session_{epochMs}_{counter}
+   * Pattern: /tmp/{slackId}/session_{epochMs}_{randomHex}
    *
    * Used as the cwd for Claude's Bash tool. Each session gets its own
    * directory so concurrent sessions never share a working directory.
