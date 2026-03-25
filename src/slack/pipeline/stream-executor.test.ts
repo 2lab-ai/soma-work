@@ -511,7 +511,7 @@ describe('model-command integration', () => {
       }
     );
 
-    expect(commandResult).toEqual({ hasPendingChoice: false, continuation: undefined });
+    expect(commandResult).toMatchObject({ hasPendingChoice: false, continuation: undefined });
     expect(deps.claudeHandler.updateSessionResources).toHaveBeenCalledWith(
       'C1',
       '171.100',
@@ -766,7 +766,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
+    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
@@ -815,7 +815,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
+    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
