@@ -58,6 +58,28 @@ describe('McpConfigBuilder filesystem restriction', () => {
     }
   });
 
+  // Fix: multiple /tmp args should ALL be replaced (not just first)
+  it('replaces all /tmp-prefixed args when multiple dirs configured', async () => {
+    const mcpManager = McpManager.fromParsedServers({
+      filesystem: {
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp', '/tmp/shared'],
+      },
+    });
+    const multiBuilder = new McpConfigBuilder(mcpManager);
+    const config = await multiBuilder.buildConfig({
+      channel: 'C001',
+      user: 'U094E5L4A15',
+    });
+
+    const fsArgs = (config.mcpServers?.filesystem as any)?.args;
+    // Both /tmp and /tmp/shared should be replaced with user-scoped path
+    const tmpArgs = fsArgs.filter((a: string) => a.startsWith('/tmp'));
+    for (const arg of tmpArgs) {
+      expect(arg).toBe('/tmp/U094E5L4A15');
+    }
+  });
+
   // Trace: Scenario 2, Section 3a → 6 — path is normalized (no /private/tmp)
   it('uses normalized path (not /private/tmp)', async () => {
     const config = await builder.buildConfig({

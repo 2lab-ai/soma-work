@@ -7,6 +7,7 @@ vi.mock('./env-paths', () => ({
 }));
 
 import { SessionRegistry } from './session-registry';
+import { normalizeTmpPath } from './path-utils';
 
 const TEST_DATA_DIR = '/tmp/soma-work-working-dir-test';
 const TEST_WORKING_DIR = '/tmp/soma-work-working-dir-test-dirs';
@@ -91,12 +92,8 @@ describe('SessionRegistry sourceWorkingDirs', () => {
     const restored = reader.getSession('C001', '100.001');
 
     // Only the valid /tmp/ path should survive deserialization
-    // Note: realpathSync resolves to /private/tmp on macOS, but normalizeTmpPath
-    // converts it back to /tmp for consistency
-    const resolvedDirPath = fs.realpathSync(dirPath);
-    const normalizedPath = resolvedDirPath.startsWith('/private/tmp/')
-      ? '/tmp/' + resolvedDirPath.slice('/private/tmp/'.length)
-      : resolvedDirPath;
+    // realpathSync resolves to /private/tmp on macOS; normalizeTmpPath converts back
+    const normalizedPath = normalizeTmpPath(fs.realpathSync(dirPath));
     expect(restored?.sourceWorkingDirs).toHaveLength(1);
     expect(restored?.sourceWorkingDirs?.[0]).toBe(normalizedPath);
   });
