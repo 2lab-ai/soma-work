@@ -294,7 +294,11 @@ export class SlackApiHelper {
     const result = await this.enqueue(() =>
       this.app.client.conversations.open({ users: userId })
     );
-    return result.channel?.id || '';
+    const channelId = result.channel?.id;
+    if (!channelId) {
+      throw new Error(`Failed to open DM channel for user ${userId}`);
+    }
+    return channelId;
   }
 
   /**

@@ -13,6 +13,9 @@ import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
 import { validateWebhookUrl, validateWebhookUrlWithDns } from '../../webhook-url-validator';
 
+const WEBHOOK_USAGE =
+  `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`;
+
 export class WebhookHandler implements CommandHandler {
   canHandle(text: string): boolean {
     return CommandParser.isWebhookCommand(text);
@@ -23,10 +26,7 @@ export class WebhookHandler implements CommandHandler {
     const parsed = CommandParser.parseWebhookCommand(text);
 
     if (!parsed) {
-      await say({
-        text: `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`,
-        thread_ts: threadTs,
-      });
+      await say({ text: WEBHOOK_USAGE, thread_ts: threadTs });
       return { handled: true };
     }
 
@@ -131,8 +131,9 @@ export class WebhookHandler implements CommandHandler {
             });
           }
         } catch (error: any) {
+          const msg = error.name === 'AbortError' ? '타임아웃 (5초 초과)' : error.message;
           await say({
-            text: `❌ 테스트 실패: ${error.message}`,
+            text: `❌ 테스트 실패: ${msg}`,
             thread_ts: threadTs,
           });
         } finally {
@@ -142,10 +143,7 @@ export class WebhookHandler implements CommandHandler {
       }
 
       default:
-        await say({
-          text: `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`,
-          thread_ts: threadTs,
-        });
+        await say({ text: WEBHOOK_USAGE, thread_ts: threadTs });
         break;
     }
 

@@ -5,7 +5,7 @@
  * Retry: up to 3 attempts with exponential backoff for 5xx/network errors.
  */
 
-import { NotificationChannel, TurnCompletionEvent } from '../turn-notifier.js';
+import { NotificationChannel, TurnCompletionEvent, maskUrl } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
 import { validateWebhookUrlWithDns } from '../webhook-url-validator.js';
 
@@ -41,7 +41,7 @@ export class WebhookChannel implements NotificationChannel {
     // SSRF defense: validate URL at send-time with DNS resolution (catches DNS rebinding)
     const validation = await validateWebhookUrlWithDns(url);
     if (!validation.valid) {
-      logger.warn('WebhookChannel blocked unsafe URL at send-time', { url: url.slice(0, 50), reason: validation.error });
+      logger.warn('WebhookChannel blocked unsafe URL at send-time', { url: maskUrl(url), reason: validation.error });
       return;
     }
 
@@ -74,20 +74,20 @@ export class WebhookChannel implements NotificationChannel {
         clearTimeout(timeoutId);
 
         if (response.ok) {
-          logger.info('WebhookChannel.send()', { url, attempt: attempt + 1, status: response.status });
+          logger.info('WebhookChannel.send()', { url: maskUrl(url), attempt: attempt + 1, status: response.status });
           return;
         }
 
         // 4xx = permanent failure, do not retry
         if (response.status >= 400 && response.status < 500) {
-          logger.warn('WebhookChannel 4xx permanent failure', { url, status: response.status });
+          logger.warn('WebhookChannel 4xx permanent failure', { url: maskUrl(url), status: response.status });
           return;
         }
 
         // 5xx = transient failure, retry
-        logger.warn('WebhookChannel 5xx, will retry', { url, attempt: attempt + 1, status: response.status });
+        logger.warn('WebhookChannel 5xx, will retry', { url: maskUrl(url), attempt: attempt + 1, status: response.status });
       } catch (error: any) {
-        logger.warn('WebhookChannel network error', { url, attempt: attempt + 1, error: error.message });
+        logger.warn('WebhookChannel network error', { url: maskUrl(url), attempt: attempt + 1, error: error.message });
       }
 
       // Backoff before next attempt (skip for last attempt)
@@ -97,6 +97,6 @@ export class WebhookChannel implements NotificationChannel {
       }
     }
 
-    logger.error('WebhookChannel FAILED after all attempts', { url: url.slice(0, 50) });
+    logger.error('WebhookChannel FAILED after all attempts', { url: maskUrl(url) });
   }
 }
