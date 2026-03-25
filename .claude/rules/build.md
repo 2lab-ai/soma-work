@@ -31,7 +31,7 @@ npx tsc --noEmit     # 타입 체크만
 |------|------|
 | `mcp-servers.json` | MCP 서버 설정 |
 | `.system.prompt` | 루트 시스템 프롬프트 |
-| `slack-app-manifest.yaml` | Slack 앱 매니페스트 |
+| `slack-app-manifest.json` | Slack 앱 매니페스트 |
 | `vitest.config.ts` | 테스트 설정 |
 | `Dockerfile` / `docker-compose.yml` | 컨테이너 설정 |
 
