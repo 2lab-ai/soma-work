@@ -675,6 +675,19 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
+    // 1. Always clean up dispatch clutter in original thread
+    await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
+
+    // 2. Post redirect/context into clean thread
+    if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
+      if (!isMidThread) {
+        await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
+      }
+      const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
+      await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
+    }
+
+    // 3. Mid-thread: post retention message AFTER delete (so it survives)
     if (isMidThread) {
       const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
       if (!newThreadPermalink) {
@@ -682,16 +695,6 @@ export class SessionInitializer {
       }
       const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
       await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
-    }
-    if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
-      const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
-      await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
-      if (!isMidThread) {
-        await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
-      }
-    }
-    if (!isMidThread) {
-      await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
