@@ -489,6 +489,31 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* ✅ 유지됨');
   });
 
+  it('clears session for image error even when message also matches recoverable patterns', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // This error matches BOTH "timed out" (recoverable) and "could not process image" (image error)
+    const error = new Error('Request timed out while processing: Could not process image');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Image processing error should take priority over recoverable — session MUST be cleared
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('이미지를 처리할 수 없습니다');
+  });
+
   it('clears session for invalid resume/session-not-found errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);

@@ -742,10 +742,18 @@ export class StreamExecutor {
 
       if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
-        this.logger.info('Session cleared due to non-recoverable error', {
-          sessionKey,
-          errorType: error.name || 'unknown',
-        });
+
+        if (this.isImageProcessingError(error)) {
+          this.logger.warn('Session cleared due to image processing error', {
+            sessionKey,
+            errorMessage: error.message,
+          });
+        } else {
+          this.logger.info('Session cleared due to non-recoverable error', {
+            sessionKey,
+            errorType: error.name || 'unknown',
+          });
+        }
       } else {
         this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
@@ -822,19 +830,20 @@ export class StreamExecutor {
       return false;
     }
 
-    if (this.isRecoverableClaudeSdkError(error)) {
-      return false;
+    // Image processing errors MUST be checked before recoverability.
+    // A poisoned image in session history makes every retry fail identically,
+    // so even if the error message also matches a "recoverable" pattern
+    // (e.g. "timed out" + "could not process image"), we must clear the session.
+    if (this.isImageProcessingError(error)) {
+      return true;
     }
 
     if (this.isContextOverflowError(error)) {
       return true;
     }
 
-    // Image processing errors poison the conversation context — the malformed
-    // image data stays in session history and every subsequent request will
-    // hit the same 400 error.  Clear the session so the next attempt starts fresh.
-    if (this.isImageProcessingError(error)) {
-      return true;
+    if (this.isRecoverableClaudeSdkError(error)) {
+      return false;
     }
 
     return this.isInvalidResumeSessionError(error);
@@ -1018,7 +1027,12 @@ export class StreamExecutor {
 
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
-      lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      if (this.isImageProcessingError(error)) {
+        lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
+        lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
+      } else {
+        lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      }
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
     }
