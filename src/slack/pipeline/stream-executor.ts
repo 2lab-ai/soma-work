@@ -198,7 +198,10 @@ export class StreamExecutor {
 - download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
 
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
-파일이나 이미지가 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+
+중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.
+이미지는 파일 이름과 메타데이터(mimetype, size)만 참조하고, 유저에게 이미지 내용을 설명해달라고 요청하세요.
 </thread-awareness>`;
   }
 
@@ -739,10 +742,18 @@ export class StreamExecutor {
 
       if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
-        this.logger.info('Session cleared due to non-recoverable error', {
-          sessionKey,
-          errorType: error.name || 'unknown',
-        });
+
+        if (this.isImageProcessingError(error)) {
+          this.logger.warn('Session cleared due to image processing error', {
+            sessionKey,
+            errorMessage: error.message,
+          });
+        } else {
+          this.logger.info('Session cleared due to non-recoverable error', {
+            sessionKey,
+            errorType: error.name || 'unknown',
+          });
+        }
       } else {
         this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
@@ -819,12 +830,20 @@ export class StreamExecutor {
       return false;
     }
 
-    if (this.isRecoverableClaudeSdkError(error)) {
-      return false;
+    // Image processing errors MUST be checked before recoverability.
+    // A poisoned image in session history makes every retry fail identically,
+    // so even if the error message also matches a "recoverable" pattern
+    // (e.g. "timed out" + "could not process image"), we must clear the session.
+    if (this.isImageProcessingError(error)) {
+      return true;
     }
 
     if (this.isContextOverflowError(error)) {
       return true;
+    }
+
+    if (this.isRecoverableClaudeSdkError(error)) {
+      return false;
     }
 
     return this.isInvalidResumeSessionError(error);
@@ -837,6 +856,26 @@ export class StreamExecutor {
       message.includes('prompt is too long') ||
       message.includes('context length exceeded') ||
       message.includes('maximum context length')
+    );
+  }
+
+  /**
+   * Detect API 400 errors caused by unprocessable image content in the
+   * conversation context.  Once an image that the API cannot handle is part
+   * of the session history, every subsequent request will fail with the same
+   * error, so the session must be cleared.
+   */
+  private isImageProcessingError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
+
+    return (
+      combined.includes('could not process image') ||
+      combined.includes('invalid image format') ||
+      combined.includes('invalid image content') ||
+      combined.includes('image too large') ||
+      combined.includes('unsupported image format')
     );
   }
 
@@ -990,7 +1029,18 @@ export class StreamExecutor {
 
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
-      lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      if (this.isImageProcessingError(error)) {
+        const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`.toLowerCase();
+        if (combined.includes('image too large')) {
+          lines.push(`> *원인:* 이미지가 너무 큽니다. API에서 처리할 수 있는 크기를 초과했습니다.`);
+          lines.push(`> _이미지 크기를 줄이거나 텍스트로 내용을 설명해 주세요._`);
+        } else {
+          lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
+          lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
+        }
+      } else {
+        lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      }
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
     }
