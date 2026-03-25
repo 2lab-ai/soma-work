@@ -42,7 +42,7 @@ describe('Session Workspace Isolation', () => {
         'fix-auth-bug'
       );
       expect(result).toBeDefined();
-      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/soma-work_\d+_\d+_fix-auth-bug$/);
+      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/soma-work_\d+_[a-f0-9]+_fix-auth-bug$/);
       expect(fs.existsSync(result!)).toBe(true);
     });
 

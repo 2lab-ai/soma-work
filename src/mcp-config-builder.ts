@@ -178,15 +178,33 @@ export class McpConfigBuilder {
 
     // Restrict filesystem MCP to user's /tmp/{slackId} directory
     if (slackContext?.user && config.mcpServers?.filesystem) {
-      const userTmpDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-      const fsConfig = config.mcpServers.filesystem as { args?: string[] };
-      if (fsConfig.args && Array.isArray(fsConfig.args)) {
-        // Replace the last argument (baseDirectory) with user-scoped path
-        fsConfig.args = [...fsConfig.args.slice(0, -1), userTmpDir];
-        this.logger.debug('Filesystem MCP restricted to user directory', {
-          user: slackContext.user,
-          userTmpDir,
-        });
+      const userId = slackContext.user;
+      // Defense-in-depth: validate userId has no path traversal characters
+      if (userId.includes('/') || userId.includes('..') || userId.includes('\\')) {
+        this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', { userId });
+      } else {
+        const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));
+        const fsConfig = config.mcpServers.filesystem as { args?: string[] };
+        if (fsConfig.args && Array.isArray(fsConfig.args)) {
+          // Find and replace existing /tmp or /private/tmp path args instead of assuming last arg
+          const replacedIndex = fsConfig.args.findIndex(
+            (arg) => arg.startsWith('/tmp') || arg.startsWith('/private/tmp')
+          );
+          if (replacedIndex >= 0) {
+            fsConfig.args = [
+              ...fsConfig.args.slice(0, replacedIndex),
+              userTmpDir,
+              ...fsConfig.args.slice(replacedIndex + 1),
+            ];
+          } else {
+            // Fallback: append user-scoped path
+            fsConfig.args = [...fsConfig.args, userTmpDir];
+          }
+          this.logger.debug('Filesystem MCP restricted to user directory', {
+            user: userId,
+            userTmpDir,
+          });
+        }
       }
     }
 

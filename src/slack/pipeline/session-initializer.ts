@@ -7,6 +7,7 @@ import { RequestCoordinator } from '../request-coordinator';
 import { MessageFormatter } from '../message-formatter';
 import { WorkingDirectoryManager } from '../../working-directory-manager';
 import { Logger } from '../../logger';
+import * as fs from 'fs';
 import { MessageEvent, SayFn, SessionInitResult } from './types';
 import { getDispatchService } from '../../dispatch-service';
 import { ConversationSession, WorkflowType } from '../../types';
@@ -137,7 +138,17 @@ export class SessionInitializer {
       if (sessionDir) {
         session.sessionWorkingDir = sessionDir;
         // Auto-register for cleanup on session end
-        this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
+        const registered = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
+        if (!registered) {
+          // Registration failed — remove orphan directory to prevent disk leak
+          this.logger.warn('Failed to register session dir for cleanup, removing orphan', { sessionKey, sessionDir });
+          try {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+          } catch (rmErr) {
+            this.logger.error('Failed to remove orphan session dir', { sessionDir, error: rmErr });
+          }
+          session.sessionWorkingDir = undefined;
+        }
         this.logger.info('Session working directory created', { sessionKey, sessionDir });
       } else {
         this.logger.warn('Failed to create session working directory, falling back to shared user dir', {
@@ -692,9 +703,18 @@ export class SessionInitializer {
       // Clear original session's sourceWorkingDirs so terminateSession won't delete them
       const transferDirs = [...session.sourceWorkingDirs];
       session.sourceWorkingDirs = [];
-      // Re-register in the new bot session
+      // Re-register in the new bot session, with rollback on failure
+      const failedDirs: string[] = [];
       for (const dir of transferDirs) {
-        this.deps.claudeHandler.addSourceWorkingDir(channel, rootResult.ts, dir);
+        const ok = this.deps.claudeHandler.addSourceWorkingDir(channel, rootResult.ts, dir);
+        if (!ok) {
+          this.logger.warn('Failed to re-register sourceWorkingDir in bot session', { dir });
+          failedDirs.push(dir);
+        }
+      }
+      // Rollback: return failed dirs to original session so they get cleaned up
+      if (failedDirs.length > 0) {
+        session.sourceWorkingDirs = failedDirs;
       }
     }
 

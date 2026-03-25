@@ -33,7 +33,7 @@ describe('Session Workspace Wiring', () => {
     it('creates a unique directory under /tmp/{slackId}/', () => {
       const result = manager.createSessionBaseDir('U094E5L4A15');
       expect(result).toBeDefined();
-      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/session_\d+_\d+$/);
+      expect(result).toMatch(/^\/tmp\/U094E5L4A15\/session_\d+_[a-f0-9]+$/);
       expect(fs.existsSync(result!)).toBe(true);
     });
 
@@ -75,7 +75,7 @@ describe('Session Workspace Wiring', () => {
       // The session's effective working dir should be the session-unique path
       const effectiveDir = session.sessionWorkingDir || '/tmp/U094E5L4A15';
       expect(effectiveDir).toBe(sessionDir);
-      expect(effectiveDir).toMatch(/session_\d+_\d+/);
+      expect(effectiveDir).toMatch(/session_\d+_[a-f0-9]+/);
     });
 
     // Trace W2 — sourceWorkingDirs registration

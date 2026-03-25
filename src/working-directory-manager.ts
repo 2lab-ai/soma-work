@@ -4,6 +4,7 @@ import { DirectoryFormatter } from './slack/formatters';
 import { normalizeTmpPath } from './path-utils';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 /**
  * WorkingDirectoryManager - Simplified version with fixed user directories
@@ -15,7 +16,10 @@ import * as fs from 'fs';
  */
 export class WorkingDirectoryManager {
   private logger = new Logger('WorkingDirectoryManager');
-  private sessionDirCounter = 0;
+  /** Generate a unique suffix for session directories (survives process restart) */
+  private uniqueSuffix(): string {
+    return crypto.randomBytes(4).toString('hex');
+  }
 
   /**
    * Get the working directory for a user.
@@ -157,8 +161,8 @@ export class WorkingDirectoryManager {
     }
 
     const timestamp = Date.now().toString();
-    const counter = this.sessionDirCounter++;
-    const dirName = `session_${timestamp}_${counter}`;
+    const suffix = this.uniqueSuffix();
+    const dirName = `session_${timestamp}_${suffix}`;
     const fullPath = normalizeTmpPath(path.join('/tmp', slackId, dirName));
 
     try {
@@ -222,10 +226,10 @@ export class WorkingDirectoryManager {
       .replace(/^_|_$/g, '')
       .substring(0, 50);
 
-    // Build unique directory name with epoch ms timestamp + monotonic counter
+    // Build unique directory name with epoch ms timestamp + random suffix
     const timestamp = Date.now().toString();
-    const counter = this.sessionDirCounter++;
-    const dirName = `${repoName}_${timestamp}_${counter}_${safePrName}`;
+    const suffix = this.uniqueSuffix();
+    const dirName = `${repoName}_${timestamp}_${suffix}_${safePrName}`;
     const fullPath = normalizeTmpPath(path.join('/tmp', slackId, dirName));
 
     try {
