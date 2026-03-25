@@ -201,6 +201,31 @@ describe('TurnResultCollector', () => {
     expect(collector.getResult().hasPendingChoice).toBe(true);
   });
 
+  // ─── Usage (Trace: Scenario 5) ────────────────────
+
+  // Trace: S5, Section 3b — setUsage included in result
+  it('setUsage() should include usage in getResult()', () => {
+    collector.setUsage({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 20 });
+    const result = collector.getResult();
+    expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 20 });
+  });
+
+  // Trace: S5, Section 5 — no usage returns undefined
+  it('getResult() returns undefined usage when setUsage not called', () => {
+    const result = collector.getResult();
+    expect(result.usage).toBeUndefined();
+  });
+
+  // Trace: S5, Section 3a — AgentTurnResult has usage and durationMs fields
+  it('AgentTurnResult shape includes optional usage and durationMs', () => {
+    collector.setUsage({ inputTokens: 10, outputTokens: 5 });
+    const result = collector.getResult();
+    // usage is set
+    expect(result.usage).toBeDefined();
+    // durationMs is NOT set by collector (set by V1QueryAdapter)
+    expect(result.durationMs).toBeUndefined();
+  });
+
   // ─── 결과 불변성 ───────────────────────────────────
 
   it('getResult should return a snapshot (not live reference)', () => {
