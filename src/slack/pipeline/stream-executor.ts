@@ -39,6 +39,7 @@ import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
 /**
@@ -397,6 +398,8 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
             say: ctx.say,
             logVerbosity: getVerbosity(),
           });
+          // Metrics: detect git/gh commands in Bash output (fire-and-forget)
+          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey);
           const commandResult = await this.handleModelCommandToolResults(
             toolResults,
             session,
