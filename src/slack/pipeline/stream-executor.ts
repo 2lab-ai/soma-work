@@ -198,7 +198,7 @@ export class StreamExecutor {
 - download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
 
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
-텍스트 파일이나 코드 파일이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
 
 중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.
 이미지는 파일 이름과 메타데이터(mimetype, size)만 참조하고, 유저에게 이미지 내용을 설명해달라고 요청하세요.
@@ -1030,8 +1030,8 @@ export class StreamExecutor {
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
       if (this.isImageProcessingError(error)) {
-        const msg = String(error?.message || '').toLowerCase();
-        if (msg.includes('image too large')) {
+        const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`.toLowerCase();
+        if (combined.includes('image too large')) {
           lines.push(`> *원인:* 이미지가 너무 큽니다. API에서 처리할 수 있는 크기를 초과했습니다.`);
           lines.push(`> _이미지 크기를 줄이거나 텍스트로 내용을 설명해 주세요._`);
         } else {

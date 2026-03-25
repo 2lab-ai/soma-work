@@ -537,6 +537,30 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('이미지를 처리할 수 없습니다');
   });
 
+  it('shows "image too large" guidance when error appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: Image too large to process';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('이미지가 너무 큽니다');
+  });
+
   it('clears session when image error appears only in stderrContent', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
