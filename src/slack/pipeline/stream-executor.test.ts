@@ -465,6 +465,28 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
+  it('clears session for "invalid image content" errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('invalid image content: base64 data is malformed');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
   it('does NOT clear session for unrelated errors containing partial image-related words', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
