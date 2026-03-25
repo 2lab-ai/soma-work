@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.png" alt="soma-work" width="120" />
-</p>
-
 <h1 align="center">soma-work</h1>
 
 <p align="center">

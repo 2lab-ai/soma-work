@@ -649,7 +649,7 @@ echo "2. Basic Information → App-Level Tokens → Generate (connections:write)
 
 1. https://api.slack.com/apps → **Create New App** → **From a manifest** 선택
 2. 워크스페이스 선택
-3. `slack-app-manifest.yaml` 내용 붙여넣기 (앱 이름은 환경별로 수정)
+3. `slack-app-manifest.json` 내용 붙여넣기 (앱 이름은 환경별로 수정)
 4. **Create** 클릭
 
 생성 후 토큰 확인:

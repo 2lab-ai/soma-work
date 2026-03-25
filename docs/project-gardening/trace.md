@@ -7,16 +7,16 @@
 
 | # | Scenario | Size | Status |
 |---|----------|------|--------|
-| 1 | Delete orphaned root files | tiny | 🔴 Ready |
-| 2 | Delete stale bun.lock | tiny | 🔴 Ready |
-| 3 | Remove incomplete slack-app-manifest.yaml | tiny | 🔴 Ready |
-| 4 | Archive completed feature docs | small | 🔴 Ready |
-| 5 | Archive debugging traces | small | 🔴 Ready |
-| 6 | Archive outdated plans | small | 🔴 Ready |
-| 7 | Clean up empty dirs after moves | tiny | 🔴 Ready |
-| 8 | Rewrite README.md | medium | 🔴 Ready |
-| 9 | Update README.ko.md | medium | 🔴 Ready |
-| 10 | Verify no broken references | small | 🔴 Ready |
+| 1 | Delete orphaned root files | tiny | 🟢 Done |
+| 2 | Delete stale bun.lock | tiny | 🟢 Done |
+| 3 | Remove incomplete slack-app-manifest.yaml | tiny | 🟢 Done |
+| 4 | Archive completed feature docs | small | 🟢 Done |
+| 5 | Archive debugging traces | small | 🟢 Done |
+| 6 | Archive outdated plans | small | 🟢 Done |
+| 7 | Clean up empty dirs after moves | tiny | 🟢 Done |
+| 8 | Rewrite README.md | medium | 🟢 Done |
+| 9 | Update README.ko.md | medium | 🟢 Done |
+| 10 | Verify no broken references | small | 🟢 Done |
 
 ---
 
