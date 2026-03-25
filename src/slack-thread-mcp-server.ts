@@ -56,9 +56,11 @@ interface ThreadFile {
   id: string;
   name: string;
   mimetype: string;
-  url_private_download: string;
+  url_private_download?: string;
   size: number;
   thumb_360?: string;
+  is_image?: boolean;
+  image_note?: string;
 }
 
 interface GetThreadMessagesResult {
@@ -72,6 +74,18 @@ interface GetThreadMessagesResult {
 }
 
 // ── Helpers ──────────────────────────────────────────────
+
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+/** Check if a mimetype or filename indicates an image file. */
+function isImageFile(mimetype?: string, filename?: string): boolean {
+  if (mimetype && mimetype.startsWith('image/')) return true;
+  if (filename) {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    if (IMAGE_EXTENSIONS.has(ext)) return true;
+  }
+  return false;
+}
 
 /** Extract pagination cursor from Slack API response, returning undefined when exhausted. */
 function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
@@ -172,7 +186,7 @@ class SlackThreadMcpServer {
         {
           name: 'download_thread_file',
           description:
-            'Download a file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports images, PDFs, text files, etc.',
+            'Download a non-image file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, etc. WARNING: Do NOT use this for image files (jpg, png, gif, webp, svg) — the API cannot process images and will return a 400 error. For images, just reference their name and metadata from get_thread_messages.',
           inputSchema: {
             type: 'object' as const,
             properties: {
@@ -375,14 +389,22 @@ class SlackThreadMcpServer {
       timestamp: m.ts
         ? new Date(parseFloat(m.ts) * 1000).toISOString()
         : new Date().toISOString(),
-      files: (m.files || []).map((f: any) => ({
-        id: f.id,
-        name: f.name,
-        mimetype: f.mimetype,
-        url_private_download: f.url_private_download,
-        size: f.size,
-        ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
-      })),
+      files: (m.files || []).map((f: any) => {
+        const fileIsImage = isImageFile(f.mimetype, f.name);
+        return {
+          id: f.id,
+          name: f.name,
+          mimetype: f.mimetype,
+          size: f.size,
+          // Omit download URL for images to prevent Claude from downloading and Reading them
+          ...(!fileIsImage && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+          ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
+          ...(fileIsImage ? {
+            is_image: true,
+            image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          } : {}),
+        };
+      }),
       reactions: (m.reactions || []).map((r: any) => ({
         name: r.name,
         count: r.count,
@@ -425,6 +447,21 @@ class SlackThreadMcpServer {
     }
     if (!file_name) {
       throw new Error('file_name is required');
+    }
+
+    // Block image file downloads — Reading images causes API 400 "Could not process image"
+    if (isImageFile(undefined, file_name)) {
+      logger.warn('Blocked image file download to prevent API error', { name: file_name });
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            blocked: true,
+            name: file_name,
+            reason: 'Image files cannot be downloaded and read — the API will reject them with "Could not process image". Reference the image by name and ask the user to describe its contents if needed.',
+          }),
+        }],
+      };
     }
 
     // Validate URL host to prevent token exfiltration to attacker-controlled domains
@@ -472,6 +509,10 @@ class SlackThreadMcpServer {
       size: buffer.length,
     });
 
+    // Double-check: if the response content-type indicates an image, warn instead of suggesting Read
+    const contentType = response.headers.get('content-type') || '';
+    const isImage = isImageFile(contentType, file_name);
+
     return {
       content: [
         {
@@ -480,7 +521,9 @@ class SlackThreadMcpServer {
             path: tempPath,
             name: file_name,
             size: buffer.length,
-            hint: 'Use the Read tool to examine this file.',
+            hint: isImage
+              ? 'This is an image file. Do NOT use the Read tool on it — the API will reject it with "Could not process image". Reference it by name and ask the user to describe its contents.'
+              : 'Use the Read tool to examine this file.',
           }),
         },
       ],
