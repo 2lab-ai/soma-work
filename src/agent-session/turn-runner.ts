@@ -61,6 +61,9 @@ export class TurnRunner {
 
   /** 턴 정상 종료 — deriveStatus() → finalizeOnEndTurn() */
   async finish(result: AgentTurnResult): Promise<void> {
+    // Trace S4 3c: deriveStatus로 최종 phase 결정
+    const _finalPhase = deriveStatus(result.endTurn, result.hasPendingChoice);
+
     try {
       await this.surface?.finalizeOnEndTurn(
         this.session,

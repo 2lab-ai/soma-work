@@ -157,6 +157,21 @@ describe('V1QueryAdapter', () => {
     );
   });
 
+  // Trace: S3, Section 3a — continue increments turnCount
+  it('continue() increments turnCount', async () => {
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as any,
+      executeParams: createMockExecuteParams(),
+    });
+
+    await adapter.start('First');
+    expect(adapter.getTurnCount()).toBe(1);
+    await adapter.continue('Second');
+    expect(adapter.getTurnCount()).toBe(2);
+    await adapter.continue('Third');
+    expect(adapter.getTurnCount()).toBe(3);
+  });
+
   // Trace: S3, Section 5 — continue before start throws
   it('continue() before start() throws', async () => {
     const adapter = new V1QueryAdapter({
