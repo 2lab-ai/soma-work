@@ -51,7 +51,7 @@ export class TurnRunner {
   async begin(turnId: string): Promise<void> {
     this._currentTurnId = turnId;
     this._turnStartTime = Date.now();
-    await this.safeSetStatus({ agentPhase: '생각 중' });
+    await this.safeSetStatus({ agentPhase: '생각 중', waitingForChoice: false });
   }
 
   /** 턴 중간 업데이트 — coarse-grained phase 변경만 */
@@ -62,6 +62,7 @@ export class TurnRunner {
   /** 턴 정상 종료 — deriveStatus() → finalizeOnEndTurn() */
   async finish(result: AgentTurnResult): Promise<void> {
     // Trace S4 3c: deriveStatus로 최종 phase 결정
+    // Phase 3c에서 TurnRunnerSurface API를 확장하여 finalPhase를 전달할 예정
     const _finalPhase = deriveStatus(result.endTurn, result.hasPendingChoice);
 
     try {
@@ -79,7 +80,7 @@ export class TurnRunner {
 
   /** 턴 실패 — '오류' 상태로 전환 */
   async fail(_error: Error): Promise<void> {
-    await this.safeSetStatus({ agentPhase: '오류' });
+    await this.safeSetStatus({ agentPhase: '오류', waitingForChoice: false });
     this._currentTurnId = undefined;
   }
 

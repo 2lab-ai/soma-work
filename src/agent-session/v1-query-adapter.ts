@@ -52,6 +52,7 @@ export class V1QueryAdapter implements IAgentSession {
   async start(prompt: string): Promise<AgentTurnResult> {
     this._started = true;
     this.turnCount = 1;
+    this._abortController = new AbortController();
     return this.executeTurn(prompt);
   }
 
@@ -99,6 +100,12 @@ export class V1QueryAdapter implements IAgentSession {
 
       const executeResult = await this.executor.execute(params);
 
+      // success=false without collector → 실패 (Review: Gemini P0 → P2)
+      // catch block이 runner.fail()을 호출하므로 여기선 throw만
+      if (!executeResult.success && !executeResult.turnCollector) {
+        throw new Error('StreamExecutor returned success=false');
+      }
+
       // turnCollector에서 AgentTurnResult 추출
       const turnResult: AgentTurnResult = executeResult.turnCollector
         ? {
@@ -106,7 +113,7 @@ export class V1QueryAdapter implements IAgentSession {
             durationMs: Date.now() - startTime,
           }
         : {
-            // turnCollector 없는 fallback (에러 등)
+            // turnCollector 없는 fallback
             messages: [],
             askUserQuestions: [],
             toolCalls: [],

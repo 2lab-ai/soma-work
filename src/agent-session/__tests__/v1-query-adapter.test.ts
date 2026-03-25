@@ -127,7 +127,7 @@ describe('V1QueryAdapter', () => {
   // Trace: S2, Section 5 — without turnCollector returns defaults
   it('start() without turnCollector returns default AgentTurnResult', async () => {
     mockExecutor.execute.mockResolvedValue({
-      success: false,
+      success: true,
       messageCount: 0,
     });
 
@@ -170,6 +170,38 @@ describe('V1QueryAdapter', () => {
     expect(adapter.getTurnCount()).toBe(2);
     await adapter.continue('Third');
     expect(adapter.getTurnCount()).toBe(3);
+  });
+
+  // Review Fix: success=false without turnCollector should throw
+  it('start() with success=false and no turnCollector throws', async () => {
+    mockExecutor.execute.mockResolvedValue({
+      success: false,
+      messageCount: 0,
+    });
+
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as any,
+      executeParams: createMockExecuteParams(),
+      turnRunner: mockRunner as any,
+    });
+
+    await expect(adapter.start('Hello')).rejects.toThrow('success=false');
+    expect(mockRunner.fail).toHaveBeenCalledTimes(1);
+    expect(mockRunner.finish).not.toHaveBeenCalled();
+  });
+
+  // Review Fix: start() after cancel() should work with fresh AbortController
+  it('start() after cancel() uses fresh AbortController', async () => {
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as any,
+      executeParams: createMockExecuteParams(),
+    });
+
+    await adapter.start('First');
+    adapter.cancel();
+    // Second start should not fail due to aborted controller
+    await adapter.start('Second');
+    expect(mockExecutor.execute).toHaveBeenCalledTimes(2);
   });
 
   // Trace: S3, Section 5 — continue before start throws
