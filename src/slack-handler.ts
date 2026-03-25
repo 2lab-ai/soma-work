@@ -627,26 +627,30 @@ export class SlackHandler {
       }
 
       // Auto-resume sessions that were actively working (model mid-execution)
+      // IMPORTANT: Fire-and-forget — do NOT await handleMessage.
+      // handleMessage triggers Claude SDK streaming which takes minutes.
+      // Awaiting would block the loop and prevent other sessions from resuming.
       if (isWorking) {
-        try {
-          this.logger.info('Auto-resuming working session', {
-            channelId: session.channelId,
-            threadTs: session.threadTs,
-            ownerId: session.ownerId,
+        this.logger.info('Auto-resuming working session', {
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+          ownerId: session.ownerId,
+        });
+        this.autoResumeSession(session, notificationTs)
+          .then(() => {
+            this.logger.info('Auto-resume completed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+            });
+          })
+          .catch((error) => {
+            this.logger.error('Auto-resume failed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+              error: (error as Error).message,
+            });
           });
-          await this.autoResumeSession(session, notificationTs);
-          autoResumed++;
-          this.logger.info('Auto-resume completed', {
-            channelId: session.channelId,
-            threadTs: session.threadTs,
-          });
-        } catch (error) {
-          this.logger.error('Auto-resume failed', {
-            channelId: session.channelId,
-            threadTs: session.threadTs,
-            error: (error as Error).message,
-          });
-        }
+        autoResumed++;
       }
 
       // Delay between sessions to avoid overwhelming the system
