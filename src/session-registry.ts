@@ -22,6 +22,7 @@ import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
 import { normalizeTmpPath } from './path-utils';
 import { DATA_DIR } from './env-paths';
+import { getMetricsEmitter } from './metrics/event-emitter';
 import * as path from 'path';
 import * as fs from 'fs';
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
@@ -223,6 +224,10 @@ export class SessionRegistry {
     };
 
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
+
+    // Metrics: emit session_created event (fire-and-forget)
+    getMetricsEmitter().emitSessionCreated(session).catch(() => {});
+
     return session;
   }
 
@@ -323,6 +328,10 @@ export class SessionRegistry {
       owner: session.ownerName,
     });
     this.saveSessions();
+
+    // Metrics: emit session_slept event (fire-and-forget)
+    getMetricsEmitter().emitSessionSlept(session).catch(() => {});
+
     return true;
   }
 
@@ -672,6 +681,18 @@ export class SessionRegistry {
         history.push(normalized);
         session.links![activeKey] = { ...normalized };
         changed = true;
+
+        // Metrics: emit GitHub event on new resource link (fire-and-forget)
+        if (existingIndex < 0) {
+          const emitter = getMetricsEmitter();
+          const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+          if (operation.resourceType === 'issue') {
+            emitter.emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
+          } else if (operation.resourceType === 'pr') {
+            emitter.emitGitHubEvent('pr_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(() => {});
+          }
+        }
+
         continue;
       }
 
@@ -937,6 +958,9 @@ export class SessionRegistry {
     if (!session) {
       return false;
     }
+
+    // Metrics: emit session_closed event before deletion (fire-and-forget)
+    getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(() => {});
 
     this.cleanupSourceWorkingDirs(session);
     this.sessions.delete(sessionKey);

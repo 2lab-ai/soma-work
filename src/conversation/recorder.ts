@@ -3,6 +3,7 @@ import { Logger } from '../logger';
 import { ConversationStorage } from './storage';
 import { ConversationRecord, ConversationTurn } from './types';
 import { summarizeResponse } from './summarizer';
+import { getMetricsEmitter } from '../metrics/event-emitter';
 
 const logger = new Logger('ConversationRecorder');
 
@@ -125,6 +126,8 @@ export function recordUserTurn(
   _recordUserTurnAsync(conversationId, content, userName, userId).catch(err => {
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
+  // Metrics: emit turn_used event (fire-and-forget)
+  getMetricsEmitter().emitTurnUsed(conversationId, userId, userName, 'user').catch(() => {});
 }
 
 async function _recordUserTurnAsync(
@@ -166,6 +169,8 @@ export function recordAssistantTurn(
   _recordAssistantTurnAsync(conversationId, content).catch(err => {
     logger.error(`Failed to record assistant turn for ${conversationId}`, err);
   });
+  // Metrics: emit turn_used event for assistant (fire-and-forget)
+  getMetricsEmitter().emitTurnUsed(conversationId, 'assistant', 'assistant', 'assistant').catch(() => {});
 }
 
 async function _recordAssistantTurnAsync(

@@ -1,0 +1,99 @@
+/**
+ * ReportHandler — Slash command handler for /report daily|weekly.
+ * Trace: docs/daily-weekly-report/trace.md, Scenario 6
+ */
+
+import { CommandHandler, CommandContext, CommandResult } from './types';
+import { Logger } from '../../logger';
+
+const logger = new Logger('ReportHandler');
+
+// Minimal interfaces to avoid tight coupling
+interface AggregatorLike {
+  aggregateDaily(date: string): Promise<any>;
+  aggregateWeekly(weekStart: string): Promise<any>;
+}
+
+interface FormatterLike {
+  formatDaily(report: any): { blocks: any[]; text: string };
+  formatWeekly(report: any): { blocks: any[]; text: string };
+}
+
+interface ReportDeps {
+  aggregator: AggregatorLike;
+  formatter: FormatterLike;
+}
+
+const REPORT_COMMAND_REGEX = /^report(?:\s+(daily|weekly))?$/i;
+
+/**
+ * Get yesterday's date as YYYY-MM-DD (UTC).
+ */
+function getYesterdayDateStr(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Get last Monday's date as YYYY-MM-DD (UTC).
+ */
+function getLastMondayDateStr(): string {
+  const d = new Date();
+  const dayOfWeek = d.getUTCDay();
+  const daysToLastMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  d.setUTCDate(d.getUTCDate() - daysToLastMonday - 7);
+  return d.toISOString().slice(0, 10);
+}
+
+const HELP_TEXT = [
+  '*:bar_chart: 리포트 명령어*',
+  '',
+  '`report daily` — 전일 일간 리포트 조회',
+  '`report weekly` — 전주 주간 리포트 조회 (사용자별 랭킹 포함)',
+].join('\n');
+
+export class ReportHandler implements CommandHandler {
+  private deps: ReportDeps;
+
+  constructor(deps: ReportDeps) {
+    this.deps = deps;
+  }
+
+  canHandle(text: string): boolean {
+    return REPORT_COMMAND_REGEX.test(text.trim());
+  }
+
+  async execute(ctx: CommandContext): Promise<CommandResult> {
+    const { text, say, threadTs, user } = ctx;
+    const match = text.trim().match(REPORT_COMMAND_REGEX);
+
+    if (!match || !match[1]) {
+      // No subcommand — show help
+      await say({ text: HELP_TEXT, thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const subcommand = match[1].toLowerCase();
+    logger.info(`Manual ${subcommand} report triggered by ${user}`);
+
+    try {
+      if (subcommand === 'daily') {
+        const date = getYesterdayDateStr();
+        const report = await this.deps.aggregator.aggregateDaily(date);
+        const formatted = this.deps.formatter.formatDaily(report);
+        await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
+      } else if (subcommand === 'weekly') {
+        const weekStart = getLastMondayDateStr();
+        const report = await this.deps.aggregator.aggregateWeekly(weekStart);
+        const formatted = this.deps.formatter.formatWeekly(report);
+        await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
+      }
+    } catch (error) {
+      logger.error(`Failed to generate ${subcommand} report`, error);
+      await say({ text: `:x: 리포트 생성 실패: ${(error as Error).message}`, thread_ts: threadTs });
+    }
+
+    return { handled: true };
+  }
+}
