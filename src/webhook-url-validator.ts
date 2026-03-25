@@ -9,6 +9,7 @@
  */
 
 import { promises as dns } from 'node:dns';
+import net from 'node:net';
 import { Logger } from './logger.js';
 
 const logger = new Logger('WebhookUrlValidator');
@@ -63,11 +64,13 @@ export function isBlockedIp(hostname: string): boolean {
     return isPrivateIpv4(a, b);
   }
 
-  // IPv6-native private ranges
-  const lower = clean.toLowerCase();
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;  // ULA fc00::/7
-  if (lower.startsWith('fe8') || lower.startsWith('fe9') ||
-      lower.startsWith('fea') || lower.startsWith('feb')) return true;  // link-local fe80::/10
+  // IPv6-native private ranges — only check if this is actually an IPv6 address (contains ':')
+  if (clean.includes(':')) {
+    const lower = clean.toLowerCase();
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true;  // ULA fc00::/7
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') ||
+        lower.startsWith('fea') || lower.startsWith('feb')) return true;  // link-local fe80::/10
+  }
 
   return false;
 }
@@ -114,6 +117,15 @@ export function validateWebhookUrl(raw: string): WebhookUrlValidation {
  * Validate webhook URL with DNS resolution — prevents DNS rebinding attacks.
  * Resolves the hostname and checks all returned IPs against blocked ranges.
  * Use this before actually fetching the URL.
+ *
+ * Known limitation (TOCTOU): DNS is resolved here for validation, but fetch()
+ * performs its own DNS resolution independently. An attacker controlling a DNS
+ * server could return a public IP during validation and a private IP during
+ * fetch (DNS rebinding). Mitigations in place:
+ * - HTTPS requirement makes exploitation harder (private IP needs valid TLS cert)
+ * - redirect: 'error' on fetch prevents redirect-based SSRF bypass
+ * Full fix would require a custom http.Agent with lookup callback for connect-time
+ * IP re-validation — acceptable tradeoff for current threat model.
  */
 export async function validateWebhookUrlWithDns(raw: string): Promise<WebhookUrlValidation> {
   // First pass: synchronous hostname/IP checks
@@ -124,14 +136,14 @@ export async function validateWebhookUrlWithDns(raw: string): Promise<WebhookUrl
   const hostname = parsed.hostname.toLowerCase();
 
   // Skip DNS resolution for IP literals — already checked by isBlockedIp
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) || /^[0-9a-f:]+$/i.test(hostname)) {
+  if (net.isIP(hostname) !== 0) {
     return { valid: true };
   }
 
   // Resolve DNS and validate all returned IPs
   const [ipv4s, ipv6s] = await Promise.all([
-    dns.resolve4(hostname).catch(() => [] as string[]),
-    dns.resolve6(hostname).catch(() => [] as string[]),
+    dns.resolve4(hostname).catch((err) => { logger.warn('DNS resolve4 failed', { hostname, code: err?.code }); return [] as string[]; }),
+    dns.resolve6(hostname).catch((err) => { logger.warn('DNS resolve6 failed', { hostname, code: err?.code }); return [] as string[]; }),
   ]);
 
   const allIps = [...ipv4s, ...ipv6s];

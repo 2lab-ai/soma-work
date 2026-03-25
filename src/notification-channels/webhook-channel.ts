@@ -7,7 +7,7 @@
 
 import { NotificationChannel, TurnCompletionEvent } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
-import { validateWebhookUrl, validateWebhookUrlWithDns } from '../webhook-url-validator.js';
+import { validateWebhookUrlWithDns } from '../webhook-url-validator.js';
 
 const logger = new Logger('WebhookChannel');
 
@@ -68,6 +68,7 @@ export class WebhookChannel implements NotificationChannel {
           headers: { 'Content-Type': 'application/json' },
           body,
           signal: controller.signal,
+          redirect: 'error',
         });
 
         clearTimeout(timeoutId);
@@ -96,6 +97,6 @@ export class WebhookChannel implements NotificationChannel {
       }
     }
 
-    logger.error('WebhookChannel FAILED after all attempts', { url });
+    logger.error('WebhookChannel FAILED after all attempts', { url: url.slice(0, 50) });
   }
 }

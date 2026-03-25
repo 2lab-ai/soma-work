@@ -51,7 +51,12 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        userSettingsStore.patchNotification(user, { webhookUrl: url });
+        try {
+          userSettingsStore.patchNotification(user, { webhookUrl: url });
+        } catch (error: any) {
+          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
+        }
         await say({
           text: `✅ 웹훅이 등록되었습니다: \`${url}\``,
           thread_ts: threadTs,
@@ -60,7 +65,12 @@ export class WebhookHandler implements CommandHandler {
       }
 
       case 'remove':
-        userSettingsStore.patchNotification(user, { webhookUrl: undefined });
+        try {
+          userSettingsStore.patchNotification(user, { webhookUrl: undefined });
+        } catch (error: any) {
+          await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
+        }
         await say({
           text: `✅ 웹훅이 삭제되었습니다.`,
           thread_ts: threadTs,
@@ -78,37 +88,35 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
+        // SSRF defense: validate stored URL before test fetch (including DNS resolution)
+        const testValidation = await validateWebhookUrlWithDns(webhookUrl);
+        if (!testValidation.valid) {
+          await say({
+            text: `❌ 등록된 URL이 보안 정책에 위반됩니다: ${testValidation.error}`,
+            thread_ts: threadTs,
+          });
+          break;
+        }
+
+        const testPayload = {
+          event: 'turn_completed',
+          category: 'WorkflowComplete',
+          sessionId: 'test-session',
+          userId: user,
+          message: 'This is a test webhook payload',
+          timestamp: new Date().toISOString(),
+        };
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         try {
-          // SSRF defense: validate stored URL before test fetch (including DNS resolution)
-          const testValidation = await validateWebhookUrlWithDns(webhookUrl);
-          if (!testValidation.valid) {
-            await say({
-              text: `❌ 등록된 URL이 보안 정책에 위반됩니다: ${testValidation.error}`,
-              thread_ts: threadTs,
-            });
-            break;
-          }
-
-          const testPayload = {
-            event: 'turn_completed',
-            category: 'WorkflowComplete',
-            sessionId: 'test-session',
-            userId: user,
-            message: 'This is a test webhook payload',
-            timestamp: new Date().toISOString(),
-          };
-
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-
           const response = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testPayload),
             signal: controller.signal,
+            redirect: 'error',
           });
-
-          clearTimeout(timeoutId);
 
           if (response.ok) {
             await say({
@@ -126,6 +134,8 @@ export class WebhookHandler implements CommandHandler {
             text: `❌ 테스트 실패: ${error.message}`,
             thread_ts: threadTs,
           });
+        } finally {
+          clearTimeout(timeoutId);
         }
         break;
       }

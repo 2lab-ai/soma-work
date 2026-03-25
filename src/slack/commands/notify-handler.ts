@@ -35,25 +35,27 @@ export class NotifyHandler implements CommandHandler {
       case 'on':
         try {
           userSettingsStore.patchNotification(user, { slackDm: true });
-          await say({
-            text: `✅ Slack DM 알림이 활성화되었습니다.\n\nAI 턴 종료 시 DM으로 알림을 받습니다.`,
-            thread_ts: threadTs,
-          });
         } catch (error: any) {
           await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
         }
+        await say({
+          text: `✅ Slack DM 알림이 활성화되었습니다.\n\nAI 턴 종료 시 DM으로 알림을 받습니다.`,
+          thread_ts: threadTs,
+        });
         break;
 
       case 'off':
         try {
           userSettingsStore.patchNotification(user, { slackDm: false });
-          await say({
-            text: `✅ Slack DM 알림이 비활성화되었습니다.`,
-            thread_ts: threadTs,
-          });
         } catch (error: any) {
           await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
         }
+        await say({
+          text: `✅ Slack DM 알림이 비활성화되었습니다.`,
+          thread_ts: threadTs,
+        });
         break;
 
       case 'status': {
@@ -84,26 +86,28 @@ export class NotifyHandler implements CommandHandler {
         }
         try {
           userSettingsStore.patchNotification(user, { telegramChatId: value });
-          await say({
-            text: `✅ 텔레그램 알림이 등록되었습니다. Chat ID: ${value}`,
-            thread_ts: threadTs,
-          });
         } catch (error: any) {
           await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
         }
+        await say({
+          text: `✅ 텔레그램 알림이 등록되었습니다. Chat ID: ${value}`,
+          thread_ts: threadTs,
+        });
         break;
       }
 
       case 'telegram_off':
         try {
           userSettingsStore.patchNotification(user, { telegramChatId: undefined });
-          await say({
-            text: `✅ 텔레그램 알림이 해제되었습니다.`,
-            thread_ts: threadTs,
-          });
         } catch (error: any) {
           await say({ text: `❌ 설정 저장 실패: ${error.message}`, thread_ts: threadTs });
+          break;
         }
+        await say({
+          text: `✅ 텔레그램 알림이 해제되었습니다.`,
+          thread_ts: threadTs,
+        });
         break;
 
       default:
