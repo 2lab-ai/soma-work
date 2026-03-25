@@ -5,7 +5,7 @@
  * Retry: up to 3 attempts with exponential backoff for 5xx/network errors.
  */
 
-import { NotificationChannel, TurnCompletionEvent } from '../turn-notifier.js';
+import { NotificationChannel, TurnCompletionEvent, maskUrl } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
 import { validateWebhookUrlWithDns } from '../webhook-url-validator.js';
 
@@ -13,16 +13,6 @@ const logger = new Logger('WebhookChannel');
 
 const MAX_ATTEMPTS = 3;
 const TIMEOUT_MS = 5000;
-
-/** Mask webhook URL to hide path/query secrets: `https://hooks.slack.com/***` */
-function maskUrl(raw: string): string {
-  try {
-    const u = new URL(raw);
-    return `${u.protocol}//${u.hostname}/***`;
-  } catch {
-    return '***';
-  }
-}
 
 interface SettingsStoreLike {
   getUserSettings(userId: string): { notification?: { webhookUrl?: string } } | undefined;

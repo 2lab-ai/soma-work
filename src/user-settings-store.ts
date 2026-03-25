@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Logger } from './logger.js';
+import { maskUrl } from './turn-notifier.js';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { type LogVerbosity, DEFAULT_LOG_VERBOSITY, getVerbosityFlags, VERBOSITY_NAMES } from './slack/output-flags';
 
@@ -381,13 +382,7 @@ export class UserSettingsStore {
     // Mask sensitive fields in log output
     const safePatch = { ...patch };
     if (safePatch.webhookUrl) {
-      try {
-        const u = new URL(safePatch.webhookUrl);
-        safePatch.webhookUrl = `${u.protocol}//${u.hostname}/***`;
-      } catch (e: any) {
-        logger.debug('URL masking: invalid webhookUrl stored', { userId, error: e?.message });
-        safePatch.webhookUrl = '***';
-      }
+      safePatch.webhookUrl = maskUrl(safePatch.webhookUrl);
     }
     logger.info('Updated notification settings', { userId, patch: safePatch });
   }

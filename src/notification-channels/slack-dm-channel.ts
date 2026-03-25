@@ -4,7 +4,7 @@
  * Opt-in: user must enable via `notify on`.
  */
 
-import { NotificationChannel, TurnCompletionEvent, getCategoryEmoji, getCategoryLabel } from '../turn-notifier.js';
+import { NotificationChannel, TurnCompletionEvent, getCategoryEmoji, getCategoryLabel, buildThreadPermalink } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
 
 const logger = new Logger('SlackDmChannel');
@@ -16,10 +16,6 @@ interface SlackApiLike {
 
 interface SettingsStoreLike {
   getUserSettings(userId: string): { notification?: { slackDm?: boolean } } | undefined;
-}
-
-function buildThreadPermalink(channel: string, threadTs: string): string {
-  return `https://slack.com/archives/${channel}/p${threadTs.replace('.', '')}`;
 }
 
 export class SlackDmChannel implements NotificationChannel {

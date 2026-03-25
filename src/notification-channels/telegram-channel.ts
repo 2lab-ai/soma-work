@@ -5,7 +5,7 @@
  * Requires TELEGRAM_BOT_TOKEN environment variable.
  */
 
-import { NotificationChannel, TurnCompletionEvent, getCategoryEmoji, getCategoryLabel } from '../turn-notifier.js';
+import { NotificationChannel, TurnCompletionEvent, getCategoryEmoji, getCategoryLabel, buildThreadPermalink } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
 
 const logger = new Logger('TelegramChannel');
@@ -16,9 +16,7 @@ interface SettingsStoreLike {
 
 type FetchFn = (url: string, init: any) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
-function buildThreadPermalink(channel: string, threadTs: string): string {
-  return `https://slack.com/archives/${channel}/p${threadTs.replace('.', '')}`;
-}
+const TIMEOUT_MS = 5000;
 
 export class TelegramChannel implements NotificationChannel {
   name = 'telegram';
@@ -57,7 +55,7 @@ export class TelegramChannel implements NotificationChannel {
     });
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const response = await this.fetchFn(url, {
         method: 'POST',
@@ -74,7 +72,7 @@ export class TelegramChannel implements NotificationChannel {
       }
       logger.info('TelegramChannel.send()', { chatId, category: event.category });
     } catch (error: any) {
-      const msg = error.name === 'AbortError' ? 'timeout (5s)' : error.message;
+      const msg = error.name === 'AbortError' ? `timeout (${TIMEOUT_MS / 1000}s)` : error.message;
       logger.warn('TelegramChannel failed', { chatId, error: msg });
       // Graceful — do not throw
     } finally {

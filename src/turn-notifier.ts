@@ -70,6 +70,23 @@ export function getCategoryLabel(category: TurnCategory): string {
   return CATEGORY_LABEL[category];
 }
 
+// --- Shared helpers ---
+
+/** Build a Slack thread permalink from channel ID and thread timestamp. */
+export function buildThreadPermalink(channel: string, threadTs: string): string {
+  return `https://slack.com/archives/${channel}/p${threadTs.replace('.', '')}`;
+}
+
+/** Mask a URL for safe logging: `https://hooks.slack.com/***` */
+export function maskUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.protocol}//${u.hostname}/***`;
+  } catch {
+    return '***';
+  }
+}
+
 // --- TurnNotifier service ---
 
 export class TurnNotifier {
