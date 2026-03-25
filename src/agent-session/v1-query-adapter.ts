@@ -8,7 +8,7 @@
  */
 
 import type { IAgentSession } from './agent-session.js';
-import type { AgentTurnResult } from './agent-session-types.js';
+import type { AgentTurnResult, ContinuationHandler } from './agent-session-types.js';
 import { mapToExecuteResult } from './map-to-execute-result.js';
 import type { TurnRunner } from './turn-runner.js';
 
@@ -82,6 +82,59 @@ export class V1QueryAdapter implements IAgentSession {
   /** 현재 턴 카운트 */
   getTurnCount(): number {
     return this.turnCount;
+  }
+
+  /**
+   * start + continuation 루프 (Issue #87, Phase 3c)
+   *
+   * handleMessage의 while(true) 루프를 adapter 내부로 이동.
+   * ContinuationHandler 콜백으로 continuation 판정, reset, session refresh를 외부에서 주입.
+   */
+  async startWithContinuation(
+    prompt: string,
+    handler: ContinuationHandler,
+    processedFiles?: any[],
+  ): Promise<AgentTurnResult> {
+    // First turn: processedFiles 포함
+    if (processedFiles?.length) {
+      this.baseParams.processedFiles = processedFiles;
+    }
+
+    let lastResult = await this.start(prompt);
+
+    // Continuation loop
+    while (true) {
+      const decision = handler.shouldContinue(lastResult);
+      if (!decision.continue || !decision.prompt) break;
+
+      // Reset session if continuation requests it
+      const continuation = lastResult.continuation as any;
+      if (continuation?.resetSession && handler.onResetSession) {
+        await handler.onResetSession(continuation);
+
+        // Refresh session after reset
+        if (handler.refreshSession) {
+          const newSession = handler.refreshSession();
+          if (!newSession) {
+            throw new Error('Session lost after reset');
+          }
+          // Update base params with refreshed session
+          this.baseParams.session = newSession;
+        }
+      }
+
+      // 후속 턴: processedFiles 제거
+      this.baseParams.processedFiles = [];
+
+      lastResult = await this.continue(decision.prompt);
+    }
+
+    return lastResult;
+  }
+
+  /** 내부 baseParams 업데이트 (session refresh 등) */
+  updateBaseParams(patch: Record<string, any>): void {
+    Object.assign(this.baseParams, patch);
   }
 
   private async executeTurn(text: string): Promise<AgentTurnResult> {
