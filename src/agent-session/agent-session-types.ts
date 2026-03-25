@@ -76,7 +76,7 @@ export interface AgentTurnResult {
   endTurn: EndTurnInfo;
 
   /** 후속 처리 (CONTINUE_SESSION or renew) */
-  continuation: any | null;
+  continuation: unknown | null;
 
   /** 유저 입력 대기 중 */
   hasPendingChoice: boolean;

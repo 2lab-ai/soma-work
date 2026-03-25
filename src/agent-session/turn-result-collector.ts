@@ -26,7 +26,7 @@ export class TurnResultCollector implements TurnObserver {
 
   private endTurnInfo: EndTurnInfo | null = null;
   private _hasPendingChoice = false;
-  private _continuation: any | null = null;
+  private _continuation: unknown | null = null;
   private currentPhase: AgentPhase = '생각 중';
 
   // ─── TurnObserver 구현 ───────────────────────────────
@@ -83,7 +83,7 @@ export class TurnResultCollector implements TurnObserver {
   // ─── 외부에서 설정 ──────────────────────────────────
 
   /** StreamExecutor의 handleModelCommandToolResults에서 감지한 continuation 설정 */
-  setContinuation(continuation: any): void {
+  setContinuation(continuation: unknown): void {
     this._continuation = continuation;
   }
 

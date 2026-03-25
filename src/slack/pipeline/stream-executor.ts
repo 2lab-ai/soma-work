@@ -400,11 +400,12 @@ export class StreamExecutor {
             toolContinuation = commandResult.continuation;
           }
           // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집
+          // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
-            const startTime = toolStartTimes.get(tr.toolUseId);
-            const duration = startTime ? Date.now() - startTime : undefined;
-            turnCollector.onToolEnd(name, tr.toolUseId, duration);
+            const stats = toolStats[name];
+            // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
+            turnCollector.onToolEnd(name, tr.toolUseId);
           }
           turnCollector.onPhaseChange('결과 반영 중');
           if (commandResult.modelCommandResults) {

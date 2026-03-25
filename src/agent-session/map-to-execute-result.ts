@@ -11,7 +11,7 @@ import type { AgentTurnResult } from './agent-session-types.js';
 interface ExecuteResultCompat {
   success: boolean;
   messageCount: number;
-  continuation?: any;
+  continuation?: unknown;
 }
 
 /**
