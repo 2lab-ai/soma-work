@@ -21,7 +21,7 @@ import { SlackHandler } from './slack-handler';
  * Helper to create a SlackHandler with mocked dependencies
  */
 function createTestHandler() {
-  const mockPostMessage = vi.fn().mockResolvedValue({ ok: true });
+  const mockPostMessage = vi.fn().mockResolvedValue({ ok: true, ts: '9999.0001' });
   const app = {
     client: {
       chat: { postMessage: mockPostMessage },
@@ -112,8 +112,8 @@ describe('Auto-Resume: S1 — Working session auto-resumes after restart', () =>
       thread_ts: '1700000001.000200',
       text: RESUME_PROMPT,
     });
-    // ts should be a string (timestamp-like)
-    expect(typeof syntheticEvent.ts).toBe('string');
+    // ts should use the notification message's ts (real Slack message)
+    expect(syntheticEvent.ts).toBe('9999.0001');
   });
 
   // Trace: S1, Section 6 — auto-resume notification message differs from manual
@@ -231,6 +231,43 @@ describe('Auto-Resume: S3 — Auto-resume failure is isolated', () => {
     expect(mockPostMessage).toHaveBeenCalledTimes(2);
     // handleMessage called for both working sessions
     expect(handlerAny.handleMessage).toHaveBeenCalledTimes(2);
+  });
+
+  // Trace: S3 — skips auto-resume when notification fails (channel inaccessible)
+  it('notifyCrashRecovery_skips_resume_when_notification_fails', async () => {
+    const { handler, mockPostMessage, mockGetCrashRecoveredSessions } = createTestHandler();
+    const handlerAny = handler as any;
+
+    const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
+    handlerAny.handleMessage = handleMessageSpy;
+
+    // Notification fails for first session
+    mockPostMessage
+      .mockRejectedValueOnce(new Error('channel_not_found'))
+      .mockResolvedValueOnce({ ok: true, ts: '9999.0002' });
+
+    mockGetCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C1',
+        threadTs: 't1',
+        ownerId: 'U1',
+        activityState: 'working',
+        sessionKey: 'C1-t1',
+      },
+      {
+        channelId: 'C2',
+        threadTs: 't2',
+        ownerId: 'U2',
+        activityState: 'working',
+        sessionKey: 'C2-t2',
+      },
+    ]);
+
+    await handler.notifyCrashRecovery();
+
+    // Only second session should have auto-resume called (first notification failed → skip)
+    expect(handleMessageSpy).toHaveBeenCalledTimes(1);
+    expect(handleMessageSpy.mock.calls[0][0].channel).toBe('C2');
   });
 });
 

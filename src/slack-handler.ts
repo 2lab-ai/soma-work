@@ -599,16 +599,19 @@ export class SlackHandler {
       const session = recovered[i];
       const isWorking = session.activityState === 'working';
 
+      // Post notification message and capture its ts for use as synthetic event anchor
+      let notificationTs: string | undefined;
       try {
         const notificationText = isWorking
           ? `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 자동으로 재개합니다...`
           : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
 
-        await this.app.client.chat.postMessage({
+        const result = await this.app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
           text: notificationText,
         });
+        notificationTs = result.ts as string | undefined;
         notified++;
       } catch (error) {
         this.logger.warn('Failed to send crash recovery notification', {
@@ -616,6 +619,11 @@ export class SlackHandler {
           threadTs: session.threadTs,
           error: (error as Error).message,
         });
+        // Skip auto-resume if notification failed — channel is likely inaccessible
+        if (i < recovered.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+        }
+        continue;
       }
 
       // Auto-resume sessions that were actively working (model mid-execution)
@@ -626,7 +634,7 @@ export class SlackHandler {
             threadTs: session.threadTs,
             ownerId: session.ownerId,
           });
-          await this.autoResumeSession(session);
+          await this.autoResumeSession(session, notificationTs);
           autoResumed++;
           this.logger.info('Auto-resume completed', {
             channelId: session.channelId,
@@ -658,12 +666,17 @@ export class SlackHandler {
    * Auto-resume an interrupted session by sending a synthetic message
    * through the existing handleMessage pipeline.
    */
-  private async autoResumeSession(session: { channelId: string; threadTs?: string; ownerId: string }): Promise<void> {
+  private async autoResumeSession(
+    session: { channelId: string; threadTs?: string; ownerId: string },
+    notificationTs?: string,
+  ): Promise<void> {
+    // Use the notification message's ts so that handleMessage's reaction calls
+    // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
     const syntheticEvent: MessageEvent = {
       user: session.ownerId,
       channel: session.channelId,
       thread_ts: session.threadTs,
-      ts: `${Date.now() / 1000}`,
+      ts: notificationTs || `${Date.now() / 1000}`,
       text: SlackHandler.AUTO_RESUME_PROMPT,
     };
 
