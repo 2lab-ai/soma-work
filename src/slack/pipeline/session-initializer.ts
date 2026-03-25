@@ -139,8 +139,10 @@ export class SessionInitializer {
         session.sessionWorkingDir = sessionDir;
         // Auto-register for cleanup on session end
         const registered = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, sessionDir);
-        if (!registered) {
-          // Registration failed — remove orphan directory to prevent disk leak
+        if (registered) {
+          this.logger.info('Session working directory created', { sessionKey, sessionDir });
+        } else {
+          // Registration failed -- remove orphan directory to prevent disk leak
           this.logger.warn('Failed to register session dir for cleanup, removing orphan', { sessionKey, sessionDir });
           try {
             fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -149,12 +151,9 @@ export class SessionInitializer {
           }
           session.sessionWorkingDir = undefined;
         }
-        this.logger.info('Session working directory created', { sessionKey, sessionDir });
       } else {
         this.logger.warn('Failed to create session working directory, falling back to shared user dir', {
-          sessionKey,
-          user,
-          workingDirectory,
+          sessionKey, user, workingDirectory,
         });
       }
 

@@ -6,13 +6,12 @@
  * resolve to /private/tmp). We normalize to /tmp for consistency.
  */
 
-const PRIVATE_TMP_PREFIX = '/private/tmp/';
-const PRIVATE_TMP_EXACT = '/private/tmp';
+const PRIVATE_TMP_PREFIX = '/private/tmp';
 
 /**
  * Normalize /private/tmp paths to /tmp.
  *
- * On macOS, /tmp → /private/tmp is a symlink. We standardize on the shorter
+ * On macOS, /tmp -> /private/tmp is a symlink. We standardize on the shorter
  * /tmp form because:
  * - bash commands use /tmp
  * - system prompts and directives use /tmp
@@ -21,12 +20,13 @@ const PRIVATE_TMP_EXACT = '/private/tmp';
  * Non-/tmp paths are returned unchanged.
  */
 export function normalizeTmpPath(inputPath: string): string {
-  // Handle exact matches first (before prefix check catches '/private/tmp/')
-  if (inputPath === PRIVATE_TMP_EXACT || inputPath === '/private/tmp/') {
+  if (!inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
+    return inputPath;
+  }
+  const rest = inputPath.slice(PRIVATE_TMP_PREFIX.length);
+  // rest is empty ("/private/tmp"), a slash ("/private/tmp/"), or "/subpath..."
+  if (rest === '' || rest === '/') {
     return '/tmp';
   }
-  if (inputPath.startsWith(PRIVATE_TMP_PREFIX)) {
-    return '/tmp/' + inputPath.slice(PRIVATE_TMP_PREFIX.length);
-  }
-  return inputPath;
+  return '/tmp' + rest;
 }
