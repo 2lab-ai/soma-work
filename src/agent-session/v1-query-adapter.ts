@@ -41,6 +41,7 @@ export class V1QueryAdapter implements IAgentSession {
   private _started = false;
   private _abortController: AbortController;
   private _lastResult?: ReturnType<typeof mapToExecuteResult>;
+  private _lastRetryAfterMs?: number;
 
   constructor(config: V1QueryAdapterConfig) {
     this.executor = config.streamExecutor;
@@ -82,6 +83,11 @@ export class V1QueryAdapter implements IAgentSession {
   /** 현재 턴 카운트 */
   getTurnCount(): number {
     return this.turnCount;
+  }
+
+  /** 마지막 실행에서 recoverable error로 인한 retry delay (ms) */
+  getRetryAfterMs(): number | undefined {
+    return this._lastRetryAfterMs;
   }
 
   /**
@@ -155,7 +161,9 @@ export class V1QueryAdapter implements IAgentSession {
 
       // success=false without collector → 실패 (Review: Gemini P0 → P2)
       // catch block이 runner.fail()을 호출하므로 여기선 throw만
+      // retryAfterMs 보존: handleMessage에서 auto-retry 스케줄링에 사용
       if (!executeResult.success && !executeResult.turnCollector) {
+        this._lastRetryAfterMs = (executeResult as any).retryAfterMs;
         throw new Error('StreamExecutor returned success=false');
       }
 

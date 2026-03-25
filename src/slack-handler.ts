@@ -386,7 +386,42 @@ export class SlackHandler {
       refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
     };
 
-    await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
+    try {
+      await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
+    } catch {
+      // Auto-retry on recoverable errors (merged from main — auto-retry on error)
+      const retryAfterMs = agentSession.getRetryAfterMs();
+      if (retryAfterMs) {
+        const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+        const retryCount = currentSession?.errorRetryCount ?? 0;
+        this.logger.info('Scheduling auto-retry after recoverable error', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          retryCount,
+          delayMs: retryAfterMs,
+        });
+
+        // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
+        setTimeout(() => {
+          this.autoResumeSession(
+            { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+          ).then(() => {
+            this.logger.info('Error auto-retry completed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+            });
+          }).catch((retryError) => {
+            this.logger.error('Error auto-retry failed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+              error: (retryError as Error).message,
+            });
+          });
+        }, retryAfterMs);
+        return; // Retry scheduled — don't re-throw
+      }
+      throw undefined; // Non-recoverable error — propagate
+    }
   }
 
   /**

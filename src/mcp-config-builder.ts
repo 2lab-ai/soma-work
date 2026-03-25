@@ -8,6 +8,7 @@ import { McpManager } from './mcp-manager';
 import { userSettingsStore } from './user-settings-store';
 import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
+import { normalizeTmpPath } from './path-utils';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -173,6 +174,20 @@ export class McpConfigBuilder {
         ...(mcpServers || {}),
         ...internalServers,
       };
+    }
+
+    // Restrict filesystem MCP to user's /tmp/{slackId} directory
+    if (slackContext?.user && config.mcpServers?.filesystem) {
+      const userTmpDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+      const fsConfig = config.mcpServers.filesystem as { args?: string[] };
+      if (fsConfig.args && Array.isArray(fsConfig.args)) {
+        // Replace the last argument (baseDirectory) with user-scoped path
+        fsConfig.args = [...fsConfig.args.slice(0, -1), userTmpDir];
+        this.logger.debug('Filesystem MCP restricted to user directory', {
+          user: slackContext.user,
+          userTmpDir,
+        });
+      }
     }
 
     // Build allowed tools list

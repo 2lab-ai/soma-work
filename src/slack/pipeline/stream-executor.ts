@@ -50,6 +50,8 @@ export interface ExecuteResult {
   continuation?: Continuation;  // Next action to perform (if any)
   /** Structured turn result collected by TurnObserver (Issue #42 S3) */
   turnCollector?: TurnResultCollector;
+  /** If set, caller should auto-retry after this many ms (recoverable error). */
+  retryAfterMs?: number;
 }
 
 // Fallback context window size when SDK doesn't report contextWindow.
@@ -228,6 +230,10 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
+
+    // Capture token at query start for CAS-safe rotation on rate limit.
+    // Reading process.env at error time is wrong — another session may have already rotated it.
+    const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
 
     // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
     const turnCollector = new TurnResultCollector();
@@ -608,6 +614,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
       }
 
+      // Reset error retry count on success
+      session.errorRetryCount = 0;
+
       this.logger.info('Completed processing message', {
         sessionKey,
         messageCount: streamResult.messageCount,
@@ -615,19 +624,53 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
 
       // Fire turn completion notification (fire-and-forget)
       // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
+      // Trace: docs/rich-turn-notification/trace.md, Scenario 2
       if (this.deps.turnNotifier) {
         const category = determineTurnCategory({
           hasPendingChoice,
           isError: false,
         });
-        this.deps.turnNotifier.notify({
-          category,
-          userId: session.ownerId || user,
-          channel,
-          threadTs,
-          sessionTitle: session.title,
-          durationMs: Date.now() - requestStartedAt.getTime(),
-        }).catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+        const durationMs = Date.now() - requestStartedAt.getTime();
+
+        // Collect rich notification data (fire-and-forget, non-blocking)
+        const enrichAndNotify = async () => {
+          const usageBefore = await usageBeforePromise;
+          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const contextWindow = session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+          const contextUsagePercentAfter = this.getCurrentContextUsagePercent(session.usage);
+          const contextUsageTokens = session.usage
+            ? (session.usage.currentInputTokens + session.usage.currentOutputTokens)
+            : undefined;
+
+          this.deps.turnNotifier!.notify({
+            category,
+            userId: session.ownerId || user,
+            channel,
+            threadTs,
+            sessionTitle: session.title,
+            durationMs,
+            // Rich fields
+            persona: userSettingsStore.getUserPersona(session.ownerId || user),
+            model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
+            startedAt: requestStartedAt,
+            contextUsagePercent: contextUsagePercentAfter,
+            contextUsageDelta: typeof contextUsagePercentAfter === 'number' && typeof contextUsagePercentBefore === 'number'
+              ? contextUsagePercentAfter - contextUsagePercentBefore
+              : undefined,
+            contextUsageTokens,
+            contextWindowSize: contextWindow,
+            fiveHourUsage: usageAfter?.fiveHour,
+            fiveHourDelta: typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
+              ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
+              : undefined,
+            sevenDayUsage: usageAfter?.sevenDay,
+            sevenDayDelta: typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
+              ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
+              : undefined,
+            toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
+          });
+        };
+        enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
       }
 
       // Update bot-initiated thread root with status
@@ -678,7 +721,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
-      await this.handleError(
+      const retryAfterMs = await this.handleError(
         error,
         session,
         sessionKey,
@@ -686,14 +729,24 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         threadTs,
         processedFiles,
         say,
-        requestAborted
+        requestAborted,
+        queryTokenValue
       );
-      return { success: false, messageCount: 0 };
+      return { success: false, messageCount: 0, retryAfterMs };
     } finally {
       await this.cleanup(session, sessionKey);
     }
   }
 
+  /** Max auto-retries per error sequence before giving up */
+  private static readonly MAX_ERROR_RETRIES = 3;
+  /** Delay in ms before auto-retry on recoverable errors */
+  private static readonly ERROR_RETRY_DELAY_MS = 30_000;
+
+  /**
+   * Handle execution errors. Returns retryAfterMs if the error is recoverable
+   * and retry budget remains, so the caller can schedule an auto-retry.
+   */
   private async handleError(
     error: any,
     session: ConversationSession,
@@ -702,8 +755,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     threadTs: string,
     processedFiles: ProcessedFile[],
     say: SayFn,
-    requestAborted: boolean = false
-  ): Promise<void> {
+    requestAborted: boolean = false,
+    queryTokenValue?: string
+  ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
@@ -728,6 +782,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         durationMs: 0,
       }).catch(err => this.logger.warn('Exception notification failed', { error: err?.message }));
     }
+
+    let retryAfterMs: number | undefined;
+
     if (!isAbort) {
       this.logger.error('Error handling message', error);
       await this.updateRuntimeStatus(session, sessionKey, {
@@ -760,9 +817,29 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           errorMessage: error.message,
         });
 
-        // Auto-rotate token on rate limit
+        // Auto-rotate token on rate limit (pass query-start token for CAS safety)
         if (this.isRateLimitError(error)) {
-          this.tryRotateToken(error);
+          this.tryRotateToken(error, queryTokenValue);
+        }
+
+        // Auto-retry: if recoverable and retry budget remains, signal caller to retry
+        const retryCount = session.errorRetryCount ?? 0;
+        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.errorRetryCount = retryCount + 1;
+          retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
+          this.logger.info('Scheduling auto-retry on recoverable error', {
+            sessionKey,
+            attempt: retryCount + 1,
+            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('Auto-retry budget exhausted', {
+            sessionKey,
+            retryCount,
+          });
+          // Reset for next error sequence
+          session.errorRetryCount = 0;
         }
       }
 
@@ -771,8 +848,8 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         this.deps.statusReporter.getStatusEmoji('error')
       );
 
-      // Notify user with detailed error info
-      const errorDetails = this.formatErrorForUser(error, sessionCleared);
+      // Notify user with detailed error info (include retry info if applicable)
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, retryAfterMs ? (session.errorRetryCount ?? 0) : undefined);
       await say({
         text: errorDetails,
         thread_ts: threadTs,
@@ -796,6 +873,8 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     if (processedFiles.length > 0) {
       await this.deps.fileHandler.cleanupTempFiles(processedFiles);
     }
+
+    return retryAfterMs;
   }
 
   private async updateToolCallMessage(channel: string, ts: string, text: string): Promise<void> {
@@ -921,9 +1000,15 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
   /**
    * Attempt to rotate to the next available token on rate limit.
    * Uses CAS pattern for idempotent handling across concurrent sessions.
+   *
+   * @param error - The error object (may contain stderrContent with rate limit details)
+   * @param queryTokenValue - Token value captured at query start time.
+   *   Using process.env at error time is incorrect because another session
+   *   may have already rotated the token, causing a double-rotation that
+   *   cycles back to the rate-limited token.
    */
-  private tryRotateToken(error: any): void {
-    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  private tryRotateToken(error: any, queryTokenValue?: string): void {
+    const failedToken = queryTokenValue || process.env.CLAUDE_CODE_OAUTH_TOKEN;
     if (!failedToken) return;
 
     // Parse cooldown from both error message and stderr content
@@ -1016,7 +1101,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, retryAttempt?: number): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
@@ -1051,6 +1136,12 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       if (active) {
         lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
       }
+    }
+
+    // Append auto-retry info
+    if (retryAttempt !== undefined && retryAttempt > 0) {
+      const delaySec = StreamExecutor.ERROR_RETRY_DELAY_MS / 1000;
+      lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }
 
     return lines.join('\n');
