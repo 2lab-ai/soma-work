@@ -615,19 +615,53 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
 
       // Fire turn completion notification (fire-and-forget)
       // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
+      // Trace: docs/rich-turn-notification/trace.md, Scenario 2
       if (this.deps.turnNotifier) {
         const category = determineTurnCategory({
           hasPendingChoice,
           isError: false,
         });
-        this.deps.turnNotifier.notify({
-          category,
-          userId: session.ownerId || user,
-          channel,
-          threadTs,
-          sessionTitle: session.title,
-          durationMs: Date.now() - requestStartedAt.getTime(),
-        }).catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+        const durationMs = Date.now() - requestStartedAt.getTime();
+
+        // Collect rich notification data (fire-and-forget, non-blocking)
+        const enrichAndNotify = async () => {
+          const usageBefore = await usageBeforePromise;
+          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const contextWindow = session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+          const contextUsagePercentAfter = this.getCurrentContextUsagePercent(session.usage);
+          const contextUsageTokens = session.usage
+            ? (session.usage.currentInputTokens + session.usage.currentOutputTokens)
+            : undefined;
+
+          this.deps.turnNotifier!.notify({
+            category,
+            userId: session.ownerId || user,
+            channel,
+            threadTs,
+            sessionTitle: session.title,
+            durationMs,
+            // Rich fields
+            persona: userSettingsStore.getUserPersona(session.ownerId || user),
+            model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
+            startedAt: requestStartedAt,
+            contextUsagePercent: contextUsagePercentAfter,
+            contextUsageDelta: typeof contextUsagePercentAfter === 'number' && typeof contextUsagePercentBefore === 'number'
+              ? contextUsagePercentAfter - contextUsagePercentBefore
+              : undefined,
+            contextUsageTokens,
+            contextWindowSize: contextWindow,
+            fiveHourUsage: usageAfter?.fiveHour,
+            fiveHourDelta: typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
+              ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
+              : undefined,
+            sevenDayUsage: usageAfter?.sevenDay,
+            sevenDayDelta: typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
+              ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
+              : undefined,
+            toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
+          });
+        };
+        enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
       }
 
       // Update bot-initiated thread root with status
