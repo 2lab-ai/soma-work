@@ -21,8 +21,9 @@ const PERSONA_DIR = path.join(__dirname, 'persona');
 
 // Include directive pattern: {{include:filename.prompt}}
 const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
-// Runtime variable pattern: {{variable_name}}
-const VARIABLE_PATTERN = /\{\{(\w+)\}\}/g;
+// Runtime variable pattern: {{variable_name}} or {{user.field}}
+// Negative lookbehind: \{{ is escaped and won't be substituted
+const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
 
 /**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
@@ -155,16 +156,47 @@ export class PromptBuilder {
 
   /**
    * Process runtime variable placeholders in prompt content
-   * Replaces {{variable_name}} with runtime values
+   * Replaces {{variable_name}} and {{user.*}} with runtime values
+   * Escaped variables \{{...}} are preserved as literal {{...}}
    */
-  private processVariables(content: string): string {
-    return content.replace(VARIABLE_PATTERN, (match, varName) => {
+  private processVariables(content: string, userId?: string): string {
+    const result = content.replace(VARIABLE_PATTERN, (match, varName) => {
       if (varName === 'llm_chat_config') {
         return llmChatConfigStore.toPromptSnippet();
       }
+
+      // user.* variable substitution
+      if (varName.startsWith('user.') && userId) {
+        return this.resolveUserVariable(varName, userId) ?? match;
+      }
+
       // Unknown variables are left as-is
       return match;
     });
+
+    // Unescape \{{ → {{ after substitution
+    return result.replace(/\\\{\{/g, '{{');
+  }
+
+  /**
+   * Resolve user.* variables from UserSettings
+   */
+  private resolveUserVariable(varName: string, userId: string): string | undefined {
+    const settings = userSettingsStore.getUserSettings(userId);
+    if (!settings) return undefined;
+
+    switch (varName) {
+      case 'user.email':
+        return settings.email || undefined; // empty sentinel → unresolved
+      case 'user.displayName':
+        return settings.slackName || undefined;
+      case 'user.slackId':
+        return settings.userId || undefined;
+      case 'user.jiraName':
+        return settings.jiraName || undefined;
+      default:
+        return undefined;
+    }
   }
 
   /**
@@ -284,10 +316,10 @@ export class PromptBuilder {
       }
     }
 
-    // Process runtime variables (e.g., {{llm_chat_config}})
+    // Process runtime variables (e.g., {{llm_chat_config}}, {{user.email}})
     // Done last so dynamic config values are always current
     if (systemPrompt) {
-      systemPrompt = this.processVariables(systemPrompt);
+      systemPrompt = this.processVariables(systemPrompt, userId);
     }
 
     return systemPrompt || undefined;

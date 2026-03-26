@@ -35,6 +35,14 @@ import {
   StreamExecutor,
   MessageEvent,
 } from './slack/pipeline';
+import { TurnNotifier } from './turn-notifier';
+import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-channel';
+import { SlackDmChannel } from './notification-channels/slack-dm-channel';
+import { WebhookChannel } from './notification-channels/webhook-channel';
+import { TelegramChannel } from './notification-channels/telegram-channel';
+import { userSettingsStore } from './user-settings-store';
+import { V1QueryAdapter, TurnRunner } from './agent-session';
+import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 
 interface SlackPermalinkTarget {
   channelId: string;
@@ -172,12 +180,21 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       slackApi: this.slackApi,
       messageValidator: this.messageValidator,
+      workingDirManager: this.workingDirManager,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
       contextWindowManager: this.contextWindowManager,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
     });
+
+    // Wire turn completion notification channels
+    const turnNotifier = new TurnNotifier([
+      new SlackBlockKitChannel(this.slackApi),
+      new SlackDmChannel(this.slackApi, userSettingsStore),
+      new WebhookChannel(userSettingsStore),
+      new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
+    ]);
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
@@ -193,6 +210,7 @@ export class SlackHandler {
       slackApi: this.slackApi,
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
+      turnNotifier,
     });
 
     // EventRouter for event handling
@@ -201,6 +219,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionManager: this.sessionUiManager,
       actionHandlers: this.actionHandlers,
+      commandDeps,
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
   }
@@ -336,50 +355,128 @@ export class SlackHandler {
       await this.slackApi.addReaction(channel, ts, 'brain');
     }
 
-    // Step 5: Execute stream with continuation loop
-    let currentText = effectiveText;
-    let currentSession = sessionResult.session;
-    let currentAbortController = sessionResult.abortController;
+    // Step 5: Execute via AgentSession (Phase 3c — Issue #87)
+    const sourceThreadTs = activeThreadTs !== originalThreadTs ? originalThreadTs : undefined;
+    const sourceChannel = activeChannel !== channel ? channel : undefined;
 
-    // Continuation loop - handles chained executions (e.g., renew: save -> reset -> load)
-    while (true) {
-      const result = await this.streamExecutor.execute({
-        session: currentSession,
-        sessionKey: sessionResult.sessionKey,
-        userName: sessionResult.userName,
-        workingDirectory: sessionResult.workingDirectory,
-        abortController: currentAbortController,
-        processedFiles: currentText === effectiveText ? processedFiles : [], // Only pass files on first iteration
-        text: currentText,
-        channel: activeChannel,
-        threadTs: activeThreadTs,
-        user: event.user,
-        say: wrappedSay,
-      });
+    const agentSession = this.createAgentSession(sessionResult, wrappedSay, {
+      channel: activeChannel,
+      threadTs: activeThreadTs,
+      user: event.user,
+      mentionTs: ts,
+      sourceThreadTs,
+      sourceChannel,
+    });
 
-      // No continuation - exit loop
-      if (!result.continuation) break;
-
-      // Reset session if requested (e.g., renew flow)
-      if (result.continuation.resetSession) {
+    const continuationHandler: ContinuationHandler = {
+      shouldContinue: (result) => {
+        const cont = result.continuation as any;
+        if (!cont) return { continue: false };
+        return { continue: true, prompt: cont.prompt };
+      },
+      onResetSession: async (continuation: any) => {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
-        // Re-run dispatch with the appropriate text
-        const dispatchText = result.continuation.dispatchText || result.continuation.prompt;
+        const dispatchText = continuation.dispatchText || continuation.prompt;
         await this.sessionInitializer.runDispatch(
           activeChannel,
           activeThreadTs,
           dispatchText,
-          result.continuation.forceWorkflow
+          continuation.forceWorkflow,
         );
+      },
+      refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
+    };
+
+    try {
+      await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
+    } catch (error) {
+      // Auto-retry on recoverable errors (merged from main — auto-retry on error)
+      const retryAfterMs = agentSession.getRetryAfterMs();
+      if (retryAfterMs) {
+        const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+        const retryCount = currentSession?.errorRetryCount ?? 0;
+        this.logger.info('Scheduling auto-retry after recoverable error', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          retryCount,
+          delayMs: retryAfterMs,
+        });
+
+        // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
+        setTimeout(() => {
+          this.autoResumeSession(
+            { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+          ).then(() => {
+            this.logger.info('Error auto-retry completed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+            });
+          }).catch((retryError) => {
+            this.logger.error('Error auto-retry failed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+              error: (retryError as Error).message,
+            });
+          });
+        }, retryAfterMs);
+        return; // Retry scheduled — don't re-throw
       }
-
-      // Prepare for next iteration
-      currentText = result.continuation.prompt;
-      currentAbortController = new AbortController();
-
-      // Re-fetch session after potential reset
-      currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs)!;
+      throw error; // Non-recoverable error — propagate
     }
+  }
+
+  /**
+   * AgentSession factory — V1QueryAdapter를 세션 컨텍스트로 조립 (Issue #87, Phase 3c)
+   */
+  private createAgentSession(
+    sessionResult: any,
+    say: any,
+    context: {
+      channel: string;
+      threadTs: string;
+      user: string;
+      mentionTs: string;
+      sourceThreadTs?: string;
+      sourceChannel?: string;
+    },
+  ): V1QueryAdapter {
+    // TurnRunnerSurface adapter: ThreadPanel → TurnRunnerSurface
+    const turnRunnerSurface: TurnRunnerSurface = {
+      setStatus: async (session, sessionKey, patch) => {
+        await this.threadPanel?.setStatus(session, sessionKey, patch);
+      },
+      finalizeOnEndTurn: async (session, sessionKey, endTurnInfo, hasPendingChoice) => {
+        await this.threadPanel?.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
+      },
+    };
+
+    const turnRunner = new TurnRunner({
+      threadSurface: turnRunnerSurface,
+      session: sessionResult.session,
+      sessionKey: sessionResult.sessionKey,
+    });
+
+    const executeParams = {
+      session: sessionResult.session,
+      sessionKey: sessionResult.sessionKey,
+      userName: sessionResult.userName,
+      workingDirectory: sessionResult.workingDirectory,
+      abortController: sessionResult.abortController,
+      processedFiles: [],
+      channel: context.channel,
+      threadTs: context.threadTs,
+      user: context.user,
+      say,
+      mentionTs: context.mentionTs,
+      sourceThreadTs: context.sourceThreadTs,
+      sourceChannel: context.sourceChannel,
+    };
+
+    return new V1QueryAdapter({
+      streamExecutor: this.streamExecutor,
+      executeParams,
+      turnRunner,
+    });
   }
 
   private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {
@@ -557,18 +654,36 @@ export class SlackHandler {
    * Notify users whose sessions were interrupted by a crash/restart.
    * Should be called after loadSavedSessions() and after Slack app starts.
    */
+  /** Resume prompt sent to model for auto-resuming interrupted sessions */
+  private static readonly AUTO_RESUME_PROMPT =
+    'slack-thread → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+
+  /** Delay between processing crash-recovered sessions (ms) */
+  private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
+
   async notifyCrashRecovery(): Promise<number> {
     const recovered = this.claudeHandler.getCrashRecoveredSessions();
     if (recovered.length === 0) return 0;
 
     let notified = 0;
-    for (const session of recovered) {
+    let autoResumed = 0;
+    for (let i = 0; i < recovered.length; i++) {
+      const session = recovered[i];
+      const isWorking = session.activityState === 'working';
+
+      // Post notification message and capture its ts for use as synthetic event anchor
+      let notificationTs: string | undefined;
       try {
-        await this.app.client.chat.postMessage({
+        const notificationText = isWorking
+          ? `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 자동으로 재개합니다...`
+          : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
+
+        const result = await this.app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
-          text: `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`,
+          text: notificationText,
         });
+        notificationTs = result.ts as string | undefined;
         notified++;
       } catch (error) {
         this.logger.warn('Failed to send crash recovery notification', {
@@ -576,12 +691,74 @@ export class SlackHandler {
           threadTs: session.threadTs,
           error: (error as Error).message,
         });
+        // Skip auto-resume if notification failed — channel is likely inaccessible
+        if (i < recovered.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+        }
+        continue;
+      }
+
+      // Auto-resume sessions that were actively working (model mid-execution)
+      // IMPORTANT: Fire-and-forget — do NOT await handleMessage.
+      // handleMessage triggers Claude SDK streaming which takes minutes.
+      // Awaiting would block the loop and prevent other sessions from resuming.
+      if (isWorking) {
+        this.logger.info('Auto-resuming working session', {
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+          ownerId: session.ownerId,
+        });
+        this.autoResumeSession(session, notificationTs)
+          .then(() => {
+            this.logger.info('Auto-resume completed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+            });
+          })
+          .catch((error) => {
+            this.logger.error('Auto-resume failed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+              error: (error as Error).message,
+            });
+          });
+        autoResumed++;
+      }
+
+      // Delay between sessions to avoid overwhelming the system
+      if (i < recovered.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
       }
     }
 
     this.claudeHandler.clearCrashRecoveredSessions();
-    this.logger.info(`Sent crash recovery notifications to ${notified}/${recovered.length} sessions`);
+    this.logger.info(
+      `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
+    );
     return notified;
+  }
+
+  /**
+   * Auto-resume an interrupted session by sending a synthetic message
+   * through the existing handleMessage pipeline.
+   */
+  private async autoResumeSession(
+    session: { channelId: string; threadTs?: string; ownerId: string },
+    notificationTs?: string,
+  ): Promise<void> {
+    // Use the notification message's ts so that handleMessage's reaction calls
+    // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
+    const syntheticEvent: MessageEvent = {
+      user: session.ownerId,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: notificationTs || `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_RESUME_PROMPT,
+    };
+
+    const noopSay = async () => ({ ts: undefined as string | undefined });
+
+    await this.handleMessage(syntheticEvent, noopSay);
   }
 
   /**

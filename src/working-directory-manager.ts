@@ -1,8 +1,10 @@
 import { Logger } from './logger';
 import { config } from './config';
 import { DirectoryFormatter } from './slack/formatters';
+import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 /**
  * WorkingDirectoryManager - Simplified version with fixed user directories
@@ -14,6 +16,29 @@ import * as fs from 'fs';
  */
 export class WorkingDirectoryManager {
   private logger = new Logger('WorkingDirectoryManager');
+
+  /** Validate slackId: must be non-empty with no path traversal characters. */
+  private isValidSlackId(slackId: string): boolean {
+    return isSafePathSegment(slackId);
+  }
+
+  /** Create a directory under /tmp/{slackId}/ with the given name, returning the normalized path or undefined on failure. */
+  private createUserScopedDir(slackId: string, dirName: string, label: string): string | undefined {
+    const fullPath = normalizeTmpPath(path.join('/tmp', slackId, dirName));
+    try {
+      fs.mkdirSync(fullPath, { recursive: true });
+      this.logger.info(`Created ${label}`, { slackId, directory: fullPath });
+      return fullPath;
+    } catch (error) {
+      this.logger.error(`Failed to create ${label}`, { slackId, directory: fullPath, error });
+      return undefined;
+    }
+  }
+
+  /** Generate a unique suffix for session directories (survives process restart). */
+  private uniqueSuffix(): string {
+    return crypto.randomBytes(4).toString('hex');
+  }
 
   /**
    * Get the working directory for a user.
@@ -132,5 +157,64 @@ export class WorkingDirectoryManager {
 
   formatChannelSetupMessage(_channelId: string, _channelName: string): string {
     return DirectoryFormatter.formatChannelSetupMessage(_channelId, _channelName);
+  }
+
+  /**
+   * Create a session-unique base working directory under /tmp/{slackId}/.
+   *
+   * Pattern: /tmp/{slackId}/session_{epochMs}_{randomHex}
+   *
+   * Used as the cwd for Claude's Bash tool. Each session gets its own
+   * directory so concurrent sessions never share a working directory.
+   */
+  createSessionBaseDir(slackId: string): string | undefined {
+    if (!this.isValidSlackId(slackId)) {
+      this.logger.warn('Invalid or empty slackId for createSessionBaseDir', { slackId });
+      return undefined;
+    }
+
+    const dirName = `session_${Date.now()}_${this.uniqueSuffix()}`;
+    return this.createUserScopedDir(slackId, dirName, 'session base directory');
+  }
+
+  /**
+   * Create a unique session-scoped working directory under /tmp/{slackId}/.
+   *
+   * Pattern: /tmp/{slackId}/{repoName}_{epochMs}_{sanitizedPrName}
+   *
+   * Each invocation produces a unique directory (epoch ms timestamp),
+   * so concurrent sessions for the same user/repo never collide.
+   */
+  createSessionWorkingDir(slackId: string, repoUrl: string, prName: string): string | undefined {
+    if (!this.isValidSlackId(slackId)) {
+      this.logger.warn('Invalid or empty slackId for createSessionWorkingDir', { slackId });
+      return undefined;
+    }
+
+    // Extract repo name from URL
+    let repoName: string;
+    try {
+      const url = new URL(repoUrl);
+      const pathname = url.pathname.replace(/\/+$/, '');
+      const lastSegment = pathname.split('/').pop();
+      repoName = lastSegment?.replace(/\.git$/, '') || '';
+      if (!repoName) {
+        this.logger.error('Could not extract repo name from URL', { repoUrl });
+        return undefined;
+      }
+    } catch (error) {
+      this.logger.error('Invalid repoUrl', { repoUrl, error });
+      return undefined;
+    }
+
+    // Sanitize prName for filesystem safety
+    const safePrName = prName
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .substring(0, 50);
+
+    const dirName = `${repoName}_${Date.now()}_${this.uniqueSuffix()}_${safePrName}`;
+    return this.createUserScopedDir(slackId, dirName, 'session working directory');
   }
 }

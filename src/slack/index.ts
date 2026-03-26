@@ -21,6 +21,7 @@ export { McpHealthMonitor } from './mcp-health-monitor';
 export { SessionUiManager, SayFn } from './session-manager';
 export { ActionHandlers, ActionHandlerContext, MessageHandler, MessageEvent } from './action-handlers';
 export { EventRouter, EventRouterDeps } from './event-router';
+export { SlashCommandAdapter } from './slash-command-adapter';
 
 // Phase 2: Session state and concurrency
 export { RequestCoordinator } from './request-coordinator';

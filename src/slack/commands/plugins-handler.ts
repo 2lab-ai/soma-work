@@ -1,5 +1,6 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import { isDefaultPlugin } from '../../plugin/defaults';
 
 /**
  * Handles `plugins` slash commands: list / add / remove.
@@ -55,11 +56,20 @@ export class PluginsHandler implements CommandHandler {
       '\ud83d\udd12 *local* (built-in) \u2014 Always loaded',
     ];
 
-    if (installed.length === 0) {
+    // Show default plugins as locked
+    for (const r of resolved) {
+      if (r.source === 'default') {
+        lines.push(`\ud83d\udd12 *${r.name}* (default) \u2014 Always loaded`);
+      }
+    }
+
+    // Show user-installed marketplace plugins
+    const userPlugins = installed.filter(ref => !isDefaultPlugin(ref));
+    if (userPlugins.length === 0) {
       lines.push('');
-      lines.push('_No marketplace plugins installed. Use `plugins add name@marketplace` to install._');
+      lines.push('_No additional marketplace plugins installed. Use `plugins add name@marketplace` to install._');
     } else {
-      for (const ref of installed) {
+      for (const ref of userPlugins) {
         const detail = resolved.find(r => r.name === ref);
         const pathInfo = detail ? ` (resolved: ${detail.localPath})` : '';
         lines.push(`\u2022 *${ref}* \u2014 Marketplace plugin${pathInfo}`);
@@ -101,10 +111,11 @@ export class PluginsHandler implements CommandHandler {
     threadTs: string,
     say: CommandContext['say'],
   ): Promise<CommandResult> {
-    // Protect the built-in local plugin
-    if (this.isBuiltInLocal(pluginRef)) {
+    // Protect the built-in local plugin and default plugins
+    if (this.isBuiltInLocal(pluginRef) || isDefaultPlugin(pluginRef)) {
+      const label = this.isBuiltInLocal(pluginRef) ? 'Built-in local' : 'Default';
       await say({
-        text: '\u274c Built-in local plugin cannot be removed.',
+        text: `\u274c ${label} plugin cannot be removed.`,
         thread_ts: threadTs,
       });
       return { handled: true };

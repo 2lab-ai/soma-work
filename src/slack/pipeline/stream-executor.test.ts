@@ -377,6 +377,214 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
+  it('clears session for "Could not process image" API 400 errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"}}');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  it('clears session for "invalid image format" errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Invalid image format in request');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  it('clears session for "image too large" errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Image too large to process in conversation');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('이미지가 너무 큽니다');
+  });
+
+  it('clears session for "unsupported image format" errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Unsupported image format: image/tiff');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  it('clears session for "invalid image content" errors', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('invalid image content: base64 data is malformed');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  it('does NOT clear session for unrelated errors containing partial image-related words', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // This should NOT match — "invalid image_url" is not an image processing error
+    const error = new Error('invalid image_url field in API request');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Session should NOT be cleared for unrelated errors
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  it('clears session for image error even when message also matches recoverable patterns', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // This error matches BOTH "timed out" (recoverable) and "could not process image" (image error)
+    const error = new Error('Request timed out while processing: Could not process image');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Image processing error should take priority over recoverable — session MUST be cleared
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('이미지를 처리할 수 없습니다');
+  });
+
+  it('shows "image too large" guidance when error appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: Image too large to process';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('이미지가 너무 큽니다');
+  });
+
+  it('clears session when image error appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // CLI may put the real error in stderr while message is generic
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: Could not process image in conversation context';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
   it('clears session for invalid resume/session-not-found errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
@@ -511,7 +719,7 @@ describe('model-command integration', () => {
       }
     );
 
-    expect(commandResult).toEqual({ hasPendingChoice: false, continuation: undefined });
+    expect(commandResult).toMatchObject({ hasPendingChoice: false, continuation: undefined });
     expect(deps.claudeHandler.updateSessionResources).toHaveBeenCalledWith(
       'C1',
       '171.100',
@@ -565,6 +773,100 @@ describe('model-command integration', () => {
       thread_ts: '171.100',
     }));
     expect(deps.threadPanel.attachChoice).toHaveBeenCalled();
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+  });
+
+  it('renders only the last ASK_USER_QUESTION when multiple arrive in one turn', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const say = vi.fn().mockResolvedValue({ ts: 'choice_ts' });
+
+    const makeAskResult = (id: string, questionText: string) => ({
+      toolUseId: id,
+      toolName: 'mcp__model-command__run',
+      result: JSON.stringify({
+        type: 'model_command_result',
+        commandId: 'ASK_USER_QUESTION',
+        ok: true,
+        payload: {
+          question: {
+            type: 'user_choice',
+            question: questionText,
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }),
+    });
+
+    const commandResult = await (executor as any).handleModelCommandToolResults(
+      [
+        makeAskResult('tool_q1', '첫 번째 질문'),
+        makeAskResult('tool_q2', '두 번째 질문'),
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    expect(commandResult.hasPendingChoice).toBe(true);
+    // Only the LAST question should be rendered (say called once)
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: '두 번째 질문',
+      thread_ts: '171.100',
+    }));
+    expect(deps.threadPanel.attachChoice).toHaveBeenCalledTimes(1);
+    expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
+  });
+
+  it('still works when say() throws — transitions to waiting state', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    // say always fails (e.g. Slack rate limit)
+    const say = vi.fn().mockRejectedValue(new Error('ratelimited'));
+
+    const commandResult = await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool_q1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '테스트 질문',
+                choices: [
+                  { id: '1', label: 'A' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+      }
+    );
+
+    // Even when rendering fails, should still mark as pending choice
+    expect(commandResult.hasPendingChoice).toBe(true);
+    // Activity state should still transition to waiting
     expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
   });
 
@@ -766,7 +1068,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
+    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
@@ -815,7 +1117,7 @@ describe('model-command integration', () => {
         sessionKey: 'C1-171.100',
         say,
       }
-    )).resolves.toEqual({ hasPendingChoice: true, continuation: undefined });
+    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');

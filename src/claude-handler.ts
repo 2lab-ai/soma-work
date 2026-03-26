@@ -62,10 +62,14 @@ export class ClaudeHandler {
       this.logger.debug('Empty plugin paths provided, keeping LOCAL_PLUGINS_DIR fallback');
       return;
     }
-    this.pluginPaths = paths;
+    // Always preserve LOCAL_PLUGINS_DIR so built-in src/local plugin is never lost
+    const hasLocal = paths.some(p => p.path === LOCAL_PLUGINS_DIR);
+    this.pluginPaths = hasLocal
+      ? paths
+      : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
     this.logger.info('Plugin paths configured', {
-      count: paths.length,
-      paths: paths.map(p => p.path),
+      count: this.pluginPaths.length,
+      paths: this.pluginPaths.map(p => p.path),
     });
   }
 
@@ -97,6 +101,10 @@ export class ClaudeHandler {
 
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
     return this.sessionRegistry.getSessionByKey(sessionKey);
+  }
+
+  findSessionBySourceThread(channel: string, threadTs: string): ConversationSession | undefined {
+    return this.sessionRegistry.findSessionBySourceThread(channel, threadTs);
   }
 
   getAllSessions(): Map<string, ConversationSession> {
@@ -165,6 +173,10 @@ export class ClaudeHandler {
 
   getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
     return this.sessionRegistry.getSessionLinks(channelId, threadTs);
+  }
+
+  addSourceWorkingDir(channelId: string, threadTs: string | undefined, dirPath: string): boolean {
+    return this.sessionRegistry.addSourceWorkingDir(channelId, threadTs, dirPath);
   }
 
   getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {

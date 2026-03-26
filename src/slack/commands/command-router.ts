@@ -21,6 +21,10 @@ import { PluginsHandler } from './plugins-handler';
 import { CctHandler } from './cct-handler';
 import { AdminHandler } from './admin-handler';
 import { LlmChatHandler } from './llm-chat-handler';
+import { NotifyHandler } from './notify-handler';
+import { WebhookHandler } from './webhook-handler';
+import { ReportHandler } from './report-handler';
+import { getReportDeps } from '../../metrics';
 import { CommandParser } from '../command-parser';
 
 /**
@@ -46,6 +50,8 @@ export class CommandRouter {
       new PersonaHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
+      new NotifyHandler(),
+      new WebhookHandler(),
       new RestoreHandler(),
       new NewHandler(deps),
       new OnboardingHandler(deps),
@@ -53,6 +59,7 @@ export class CommandRouter {
       new RenewHandler(deps),
       new LinkHandler(deps),
       new CloseHandler(deps),
+      new ReportHandler(getReportDeps()),
       new HelpHandler(),
       new SessionHandler(deps),
     ];
