@@ -35,7 +35,13 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
+import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError } from '../../claude-status-fetcher';
+import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
+import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import { interceptToolResults } from '../../metrics/tool-result-interceptor';
+import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
 /**
  * Result of stream execution
@@ -44,6 +50,10 @@ export interface ExecuteResult {
   success: boolean;
   messageCount: number;
   continuation?: Continuation;  // Next action to perform (if any)
+  /** Structured turn result collected by TurnObserver (Issue #42 S3) */
+  turnCollector?: TurnResultCollector;
+  /** If set, caller should auto-retry after this many ms (recoverable error). */
+  retryAfterMs?: number;
 }
 
 // Fallback context window size when SDK doesn't report contextWindow.
@@ -93,6 +103,7 @@ interface StreamExecutorDeps {
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
   threadPanel?: ThreadPanel;
+  turnNotifier?: TurnNotifier;
 }
 
 interface StreamExecuteParams {
@@ -107,6 +118,11 @@ interface StreamExecuteParams {
   threadTs: string;
   user: string;
   say: SayFn;
+  mentionTs?: string;
+  /** Original thread ts before bot-initiated thread migration */
+  sourceThreadTs?: string;
+  /** Original channel before channel routing */
+  sourceChannel?: string;
 }
 
 interface FinalFooterData {
@@ -145,7 +161,9 @@ export class StreamExecutor {
     processedFiles: ProcessedFile[],
     userName: string,
     userId: string,
-    workingDirectory: string
+    workingDirectory: string,
+    threadTs?: string,
+    mentionTs?: string
   ): Promise<string> {
     // Prepare the prompt with file attachments
     let rawPrompt = processedFiles.length > 0
@@ -161,7 +179,34 @@ export class StreamExecutor {
       finalPrompt = `${finalPrompt}\n\n${contextInfo}`;
     }
 
+    // Thread context hint — only for mid-thread mentions (mentionTs !== threadTs)
+    if (isMidThreadMention({ threadTs, mentionTs })) {
+      finalPrompt = `${finalPrompt}\n\n${this.getThreadContextHint()}`;
+    }
+
     return finalPrompt;
+  }
+
+  /**
+   * Thread awareness prompt for sessions started from a thread mention.
+   * Guides the model to use get_thread_messages / download_thread_file
+   * to understand the conversation context before acting.
+   */
+  private getThreadContextHint(): string {
+    return `<thread-awareness>
+이 세션은 기존 Slack 스레드에서 멘션되어 시작되었습니다.
+유저의 요청을 이해하기 위해 스레드의 이전 대화를 확인해야 할 수 있습니다.
+
+사용 가능한 도구:
+- get_thread_messages: 스레드 메시지를 범위 지정하여 조회 (before/after 개수 지정)
+- download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
+
+먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
+Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+
+중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.
+이미지는 파일 이름과 메타데이터(mimetype, size)만 참조하고, 유저에게 이미지 내용을 설명해달라고 요청하세요.
+</thread-awareness>`;
   }
 
   /**
@@ -188,6 +233,13 @@ export class StreamExecutor {
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
+    // Capture token at query start for CAS-safe rotation on rate limit.
+    // Reading process.env at error time is wrong — another session may have already rotated it.
+    const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+
+    // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
+    const turnCollector = new TurnResultCollector();
+
     // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
     const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
@@ -209,7 +261,7 @@ export class StreamExecutor {
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory);
+      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
@@ -237,12 +289,31 @@ export class StreamExecutor {
         await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
       }
 
+      // Auto-fetch user profile (email + displayName) from Slack if not cached
+      // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
+      if (userSettingsStore.getUserEmail(user) === undefined) {
+        try {
+          const profile = await this.deps.slackApi.getUserProfile(user);
+          // Store email or empty sentinel to prevent re-fetching when scope is missing
+          userSettingsStore.setUserEmail(user, profile.email ?? '');
+          if (profile.displayName && profile.displayName !== user) {
+            userSettingsStore.ensureUserExists(user, profile.displayName);
+          }
+        } catch (e) {
+          this.logger.debug('Failed to fetch user profile from Slack', { user, error: e });
+        }
+      }
+
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(
         this.deps.slackApi.getClient(),
         channel
       );
-      const slackContext = { channel, threadTs, user, channelDescription };
+      const slackContext = {
+        channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
+        sourceThreadTs: params.sourceThreadTs,
+        sourceChannel: params.sourceChannel,
+      };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
       const streamContext: StreamContext = {
@@ -298,6 +369,11 @@ export class StreamExecutor {
             say: ctx.say,
             logVerbosity: getVerbosity(),
           });
+          // Issue #42 S3: observer — 도구 시작 이벤트 수집
+          for (const tu of toolUses) {
+            turnCollector.onToolStart(tu.name, tu.id);
+          }
+          turnCollector.onPhaseChange('도구 실행 중');
         },
         onToolResult: async (toolResults, ctx) => {
           // Accumulate per-request tool stats
@@ -323,6 +399,8 @@ export class StreamExecutor {
             say: ctx.say,
             logVerbosity: getVerbosity(),
           });
+          // Metrics: detect git/gh commands in Bash output (fire-and-forget)
+          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey);
           const commandResult = await this.handleModelCommandToolResults(
             toolResults,
             session,
@@ -333,6 +411,20 @@ export class StreamExecutor {
           }
           if (commandResult.continuation) {
             toolContinuation = commandResult.continuation;
+          }
+          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집
+          // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
+          for (const tr of toolResults) {
+            const name = tr.toolName || 'unknown';
+            const stats = toolStats[name];
+            // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
+            turnCollector.onToolEnd(name, tr.toolUseId);
+          }
+          turnCollector.onPhaseChange('결과 반영 중');
+          if (commandResult.modelCommandResults) {
+            for (const mcr of commandResult.modelCommandResults) {
+              turnCollector.onModelCommandResult(mcr);
+            }
           }
         },
         onTodoUpdate: async (input, ctx) => {
@@ -388,6 +480,28 @@ export class StreamExecutor {
             });
           }
         },
+        onSourceWorkingDirDetected: async (dirPath) => {
+          try {
+            const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
+            if (added) {
+              this.logger.info('Source working dir directive processed', {
+                sessionKey,
+                dirPath,
+              });
+            } else {
+              this.logger.warn('Source working dir directive rejected', {
+                sessionKey,
+                dirPath,
+              });
+            }
+          } catch (error) {
+            this.logger.error('Failed to process source working dir directive', {
+              sessionKey,
+              dirPath,
+              error: error instanceof Error ? error.stack || error.message : String(error),
+            });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, usage);
 
@@ -414,6 +528,8 @@ export class StreamExecutor {
             waitingForChoice: true,
           });
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
+          // Issue #42 S3: observer — 선택 대기 상태 수집
+          turnCollector.onPhaseChange('입력 대기');
         },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
@@ -458,6 +574,17 @@ export class StreamExecutor {
         throw abortError;
       }
 
+      // Issue #42 S3: observer — endTurn 이벤트 + 텍스트 수집 + continuation/choice 동기화
+      if (streamResult.endTurnInfo) {
+        turnCollector.onEndTurn(streamResult.endTurnInfo);
+      }
+      if (streamResult.collectedText) {
+        turnCollector.onText(streamResult.collectedText);
+      }
+      if (toolContinuation) {
+        turnCollector.setContinuation(toolContinuation);
+      }
+
       // Update reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
       const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
@@ -467,9 +594,9 @@ export class StreamExecutor {
           this.deps.statusReporter.getStatusEmoji(finalStatus)
         );
       }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
-      }
+      // Always clear status regardless of verbosity — heartbeat timer must be stopped
+      // to prevent leaked intervals when verbosity changes mid-stream.
+      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Transition activity state
       this.deps.claudeHandler.setActivityState(
@@ -491,10 +618,65 @@ export class StreamExecutor {
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
       }
 
+      // Reset error retry count on success
+      session.errorRetryCount = 0;
+
       this.logger.info('Completed processing message', {
         sessionKey,
         messageCount: streamResult.messageCount,
       });
+
+      // Fire turn completion notification (fire-and-forget)
+      // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
+      // Trace: docs/rich-turn-notification/trace.md, Scenario 2
+      if (this.deps.turnNotifier) {
+        const category = determineTurnCategory({
+          hasPendingChoice,
+          isError: false,
+        });
+        const durationMs = Date.now() - requestStartedAt.getTime();
+
+        // Collect rich notification data (fire-and-forget, non-blocking)
+        const enrichAndNotify = async () => {
+          const usageBefore = await usageBeforePromise;
+          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const contextWindow = session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+          const contextUsagePercentAfter = this.getCurrentContextUsagePercent(session.usage);
+          const contextUsageTokens = session.usage
+            ? (session.usage.currentInputTokens + session.usage.currentOutputTokens
+              + (session.usage.currentCacheReadTokens ?? 0) + (session.usage.currentCacheCreateTokens ?? 0))
+            : undefined;
+
+          this.deps.turnNotifier!.notify({
+            category,
+            userId: session.ownerId || user,
+            channel,
+            threadTs,
+            sessionTitle: session.title,
+            durationMs,
+            // Rich fields
+            persona: userSettingsStore.getUserPersona(session.ownerId || user),
+            model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
+            startedAt: requestStartedAt,
+            contextUsagePercent: contextUsagePercentAfter,
+            contextUsageDelta: typeof contextUsagePercentAfter === 'number'
+              ? contextUsagePercentAfter - (contextUsagePercentBefore ?? 0)
+              : undefined,
+            contextUsageTokens,
+            contextWindowSize: contextWindow,
+            fiveHourUsage: usageAfter?.fiveHour,
+            fiveHourDelta: typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
+              ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
+              : undefined,
+            sevenDayUsage: usageAfter?.sevenDay,
+            sevenDayDelta: typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
+              ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
+              : undefined,
+            toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
+          });
+        };
+        enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+      }
 
       // Update bot-initiated thread root with status
       // Clean up temporary files
@@ -511,7 +693,8 @@ export class StreamExecutor {
           say
         );
         if (continuation) {
-          return { success: true, messageCount: streamResult.messageCount, continuation };
+          turnCollector.setContinuation(continuation);
+          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
       }
 
@@ -526,7 +709,8 @@ export class StreamExecutor {
           say
         );
         if (continuation) {
-          return { success: true, messageCount: streamResult.messageCount, continuation };
+          turnCollector.setContinuation(continuation);
+          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
       }
 
@@ -535,13 +719,14 @@ export class StreamExecutor {
           success: true,
           messageCount: streamResult.messageCount,
           continuation: toolContinuation,
+          turnCollector,
         };
       }
 
-      return { success: true, messageCount: streamResult.messageCount };
+      return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
-      await this.handleError(
+      const retryAfterMs = await this.handleError(
         error,
         session,
         sessionKey,
@@ -549,14 +734,24 @@ export class StreamExecutor {
         threadTs,
         processedFiles,
         say,
-        requestAborted
+        requestAborted,
+        queryTokenValue
       );
-      return { success: false, messageCount: 0 };
+      return { success: false, messageCount: 0, retryAfterMs };
     } finally {
       await this.cleanup(session, sessionKey);
     }
   }
 
+  /** Max auto-retries per error sequence before giving up */
+  private static readonly MAX_ERROR_RETRIES = 3;
+  /** Delay in ms before auto-retry on recoverable errors */
+  private static readonly ERROR_RETRY_DELAY_MS = 30_000;
+
+  /**
+   * Handle execution errors. Returns retryAfterMs if the error is recoverable
+   * and retry budget remains, so the caller can schedule an auto-retry.
+   */
   private async handleError(
     error: any,
     session: ConversationSession,
@@ -565,8 +760,9 @@ export class StreamExecutor {
     threadTs: string,
     processedFiles: ProcessedFile[],
     say: SayFn,
-    requestAborted: boolean = false
-  ): Promise<void> {
+    requestAborted: boolean = false,
+    queryTokenValue?: string
+  ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
@@ -577,8 +773,32 @@ export class StreamExecutor {
     }
 
     const isAbort = requestAborted || this.isAbortLikeError(error);
+
+    // Fire Exception notification only for real errors, not abort/cancel
+    // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
+    if (this.deps.turnNotifier && !isAbort) {
+      this.deps.turnNotifier.notify({
+        category: 'Exception',
+        userId: session.ownerId || '',
+        channel,
+        threadTs,
+        sessionTitle: session.title,
+        message: error?.message,
+        durationMs: 0,
+      }).catch(err => this.logger.warn('Exception notification failed', { error: err?.message }));
+    }
+
+    let retryAfterMs: number | undefined;
+
     if (!isAbort) {
       this.logger.error('Error handling message', error);
+
+      // Start status page fetch in parallel (non-blocking, 3s timeout)
+      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3a
+      const statusPromise = isApiLikeError(error)
+        ? fetchClaudeStatus().catch(() => null)
+        : Promise.resolve(null);
+
       await this.updateRuntimeStatus(session, sessionKey, {
         agentPhase: '오류 발생',
         activeTool: undefined,
@@ -591,19 +811,47 @@ export class StreamExecutor {
 
       if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
-        this.logger.info('Session cleared due to non-recoverable error', {
-          sessionKey,
-          errorType: error.name || 'unknown',
-        });
+
+        if (this.isImageProcessingError(error)) {
+          this.logger.warn('Session cleared due to image processing error', {
+            sessionKey,
+            errorMessage: error.message,
+          });
+        } else {
+          this.logger.info('Session cleared due to non-recoverable error', {
+            sessionKey,
+            errorType: error.name || 'unknown',
+          });
+        }
       } else {
         this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
           errorMessage: error.message,
         });
 
-        // Auto-rotate token on rate limit
+        // Auto-rotate token on rate limit (pass query-start token for CAS safety)
         if (this.isRateLimitError(error)) {
-          this.tryRotateToken(error);
+          this.tryRotateToken(error, queryTokenValue);
+        }
+
+        // Auto-retry: if recoverable and retry budget remains, signal caller to retry
+        const retryCount = session.errorRetryCount ?? 0;
+        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.errorRetryCount = retryCount + 1;
+          retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
+          this.logger.info('Scheduling auto-retry on recoverable error', {
+            sessionKey,
+            attempt: retryCount + 1,
+            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('Auto-retry budget exhausted', {
+            sessionKey,
+            retryCount,
+          });
+          // Reset for next error sequence
+          session.errorRetryCount = 0;
         }
       }
 
@@ -612,8 +860,11 @@ export class StreamExecutor {
         this.deps.statusReporter.getStatusEmoji('error')
       );
 
-      // Notify user with detailed error info
-      const errorDetails = this.formatErrorForUser(error, sessionCleared);
+      // Notify user with detailed error info + Claude service status
+      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
+      const statusInfo = await statusPromise;
+      const retryAttempt = retryAfterMs ? (session.errorRetryCount ?? 0) : undefined;
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
       await say({
         text: errorDetails,
         thread_ts: threadTs,
@@ -637,6 +888,8 @@ export class StreamExecutor {
     if (processedFiles.length > 0) {
       await this.deps.fileHandler.cleanupTempFiles(processedFiles);
     }
+
+    return retryAfterMs;
   }
 
   private async updateToolCallMessage(channel: string, ts: string, text: string): Promise<void> {
@@ -671,12 +924,20 @@ export class StreamExecutor {
       return false;
     }
 
-    if (this.isRecoverableClaudeSdkError(error)) {
-      return false;
+    // Image processing errors MUST be checked before recoverability.
+    // A poisoned image in session history makes every retry fail identically,
+    // so even if the error message also matches a "recoverable" pattern
+    // (e.g. "timed out" + "could not process image"), we must clear the session.
+    if (this.isImageProcessingError(error)) {
+      return true;
     }
 
     if (this.isContextOverflowError(error)) {
       return true;
+    }
+
+    if (this.isRecoverableClaudeSdkError(error)) {
+      return false;
     }
 
     return this.isInvalidResumeSessionError(error);
@@ -689,6 +950,26 @@ export class StreamExecutor {
       message.includes('prompt is too long') ||
       message.includes('context length exceeded') ||
       message.includes('maximum context length')
+    );
+  }
+
+  /**
+   * Detect API 400 errors caused by unprocessable image content in the
+   * conversation context.  Once an image that the API cannot handle is part
+   * of the session history, every subsequent request will fail with the same
+   * error, so the session must be cleared.
+   */
+  private isImageProcessingError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
+
+    return (
+      combined.includes('could not process image') ||
+      combined.includes('invalid image format') ||
+      combined.includes('invalid image content') ||
+      combined.includes('image too large') ||
+      combined.includes('unsupported image format')
     );
   }
 
@@ -734,9 +1015,15 @@ export class StreamExecutor {
   /**
    * Attempt to rotate to the next available token on rate limit.
    * Uses CAS pattern for idempotent handling across concurrent sessions.
+   *
+   * @param error - The error object (may contain stderrContent with rate limit details)
+   * @param queryTokenValue - Token value captured at query start time.
+   *   Using process.env at error time is incorrect because another session
+   *   may have already rotated the token, causing a double-rotation that
+   *   cycles back to the rate-limited token.
    */
-  private tryRotateToken(error: any): void {
-    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  private tryRotateToken(error: any, queryTokenValue?: string): void {
+    const failedToken = queryTokenValue || process.env.CLAUDE_CODE_OAUTH_TOKEN;
     if (!failedToken) return;
 
     // Parse cooldown from both error message and stderr content
@@ -829,7 +1116,7 @@ export class StreamExecutor {
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null, retryAttempt?: number): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
@@ -842,7 +1129,18 @@ export class StreamExecutor {
 
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
-      lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      if (this.isImageProcessingError(error)) {
+        const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`.toLowerCase();
+        if (combined.includes('image too large')) {
+          lines.push(`> *원인:* 이미지가 너무 큽니다. API에서 처리할 수 있는 크기를 초과했습니다.`);
+          lines.push(`> _이미지 크기를 줄이거나 텍스트로 내용을 설명해 주세요._`);
+        } else {
+          lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
+          lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
+        }
+      } else {
+        lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      }
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
     }
@@ -853,6 +1151,20 @@ export class StreamExecutor {
       if (active) {
         lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
       }
+    }
+
+    // Append auto-retry info
+    if (retryAttempt !== undefined && retryAttempt > 0) {
+      const delaySec = StreamExecutor.ERROR_RETRY_DELAY_MS / 1000;
+      lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
+    }
+
+    // Append Claude service status only when there's an actual issue
+    // Skip when all-operational — the error is likely account-specific, not a service outage
+    // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
+    if (statusInfo && statusInfo.overall !== 'operational') {
+      lines.push('');
+      lines.push(formatStatusForSlack(statusInfo));
     }
 
     return lines.join('\n');
@@ -933,7 +1245,8 @@ export class StreamExecutor {
       return undefined;
     }
 
-    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens;
+    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens
+      + (usage.currentCacheReadTokens ?? 0) + (usage.currentCacheCreateTokens ?? 0);
     const percent = (usedTokens / usage.contextWindow) * 100;
     return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
   }
@@ -1148,9 +1461,15 @@ export class StreamExecutor {
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
     context: StreamContext
-  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation }> {
+  ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: ModelCommandResult[] }> {
     let hasPendingChoice = false;
     let continuation: Continuation | undefined;
+    const modelCommandResults: ModelCommandResult[] = [];
+
+    // Collect ASK_USER_QUESTION results instead of rendering inline to avoid
+    // rapid-fire Slack API calls that hit rate limits when multiple questions
+    // are issued in a single turn.
+    const pendingQuestions: Array<UserChoice | UserChoices> = [];
 
     for (const toolResult of toolResults) {
       if (toolResult.toolName !== 'mcp__model-command__run') {
@@ -1172,15 +1491,16 @@ export class StreamExecutor {
           commandId: parsed.commandId,
           error: parsed.error,
         });
+        // Issue #42 S3: 에러도 수집
+        modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
         continue;
       }
 
+      // Issue #42 S3: 성공 결과 수집
+      modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
+
       if (parsed.commandId === 'ASK_USER_QUESTION') {
-        await this.renderAskUserQuestionFromCommand(
-          parsed.payload.question,
-          session,
-          context
-        );
+        pendingQuestions.push(parsed.payload.question);
         hasPendingChoice = true;
         continue;
       }
@@ -1247,7 +1567,22 @@ export class StreamExecutor {
       }
     }
 
-    return { hasPendingChoice, continuation };
+    // Render collected ASK_USER_QUESTION results after the loop.
+    // When multiple questions arrive in one turn, only render the last one
+    // to avoid Slack API rate limiting from rapid chat.postMessage calls.
+    if (pendingQuestions.length > 0) {
+      if (pendingQuestions.length > 1) {
+        this.logger.warn('Multiple ASK_USER_QUESTION in single turn — rendering last only', {
+          sessionKey: context.sessionKey,
+          totalQuestions: pendingQuestions.length,
+          skipped: pendingQuestions.length - 1,
+        });
+      }
+      const lastQuestion = pendingQuestions[pendingQuestions.length - 1];
+      await this.renderAskUserQuestionFromCommand(lastQuestion, session, context);
+    }
+
+    return { hasPendingChoice, continuation, modelCommandResults };
   }
 
   private async renderAskUserQuestionFromCommand(
@@ -1255,10 +1590,19 @@ export class StreamExecutor {
     session: ConversationSession,
     context: StreamContext
   ): Promise<void> {
-    if (question.type === 'user_choices') {
-      await this.renderMultiChoiceFromCommand(question, context);
-    } else {
-      await this.renderSingleChoiceFromCommand(question, context);
+    try {
+      if (question.type === 'user_choices') {
+        await this.renderMultiChoiceFromCommand(question, context);
+      } else {
+        await this.renderSingleChoiceFromCommand(question, context);
+      }
+    } catch (error) {
+      // If both primary render AND fallback fail (e.g. Slack rate limit),
+      // ensure we still transition to waiting state so the user can retry.
+      this.logger.warn('ASK_USER_QUESTION render failed completely', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
     }
 
     this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
@@ -1412,10 +1756,17 @@ export class StreamExecutor {
       ].filter((line) => line !== '').join('\n');
     }
 
-    await context.say({
-      text: fallbackText,
-      thread_ts: context.threadTs,
-    });
+    try {
+      await context.say({
+        text: fallbackText,
+        thread_ts: context.threadTs,
+      });
+    } catch (error) {
+      this.logger.warn('Choice fallback say() also failed', {
+        sessionKey: context.sessionKey,
+        error: (error as Error).message,
+      });
+    }
   }
 
   /**

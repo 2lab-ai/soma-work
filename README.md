@@ -1,30 +1,89 @@
-# soma-work
-![CI](https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg)
+<h1 align="center">soma-work</h1>
 
-> *"In the beginning was the Word, and the Word was Code."*
+<p align="center">
+  <strong>AI Coding Assistant for Slack — Powered by Claude Code SDK</strong>
+</p>
 
-A TypeScript bot that brings AI coding intelligence into your Slack workspace.
-Powered by the Claude Code SDK, it provides a conversational coding assistant with 12 genius personas, automatic workflow dispatch, an extensible MCP tool ecosystem, and real-time task tracking.
+<p align="center">
+  <a href="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml"><img src="https://github.com/2lab-ai/soma-work/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/Claude_Code_SDK-0.2-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code SDK" />
+</p>
 
-[한국어 README](./README.ko.md)
+<p align="center">
+  <a href="./README.ko.md">한국어</a>
+</p>
 
 ---
 
-## What It Does
+## What is soma-work?
 
-Send a DM, mention in a channel, or talk in a thread.
-The bot remembers context, reads code, analyzes files, reviews PRs, organizes Jira issues, and writes Confluence docs.
+A multi-tenant Slack bot that turns every workspace conversation into an AI-powered coding session. Send a DM, mention in a channel, or reply in a thread — the bot reads code, reviews PRs, plans Jira issues, and writes solutions with full context awareness.
 
 ```
-You:    Review this PR https://github.com/org/repo/pull/42
-Bot:    [Analyzes the PR, reads the code, writes review comments]
+You:   Review this PR https://github.com/org/repo/pull/42
+Bot:   [Analyzes diff, reads source, posts line-by-line review comments]
 
-You:    Summarize issue PTN-1234
-Bot:    [Fetches from Jira, analyzes related PRs/code, generates executive summary]
+You:   Summarize issue PTN-1234
+Bot:   [Fetches Jira issue, cross-references PRs/code, generates executive summary]
 
-You:    Optimize this function [file upload]
-Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
+You:   Optimize this function [attaches file]
+Bot:   [Analyzes uploaded code, identifies bottlenecks, proposes optimized version]
 ```
+
+---
+
+## ✨ Key Features
+
+### 🔀 Automatic Workflow Dispatch
+
+The bot classifies user input and routes it to the optimal workflow — no manual selection needed.
+
+| Workflow | Trigger | What Happens |
+|----------|---------|--------------|
+| **PR Review** | GitHub PR URL | Full code review with inline comments |
+| **PR Fix & Update** | `fix` + PR URL | Implements fix, commits, pushes |
+| **PR Docs** | `document` + PR URL | Generates Confluence documentation |
+| **Jira Planning** | Jira issue + `plan` | Task decomposition & work breakdown |
+| **Jira Summary** | Jira issue + `summary` | Executive report generation |
+| **Jira Brainstorming** | Jira issue + `brainstorm` | Idea divergence & synthesis |
+| **Jira → PR** | Jira issue + `create PR` | Auto-creates pull request from issue |
+| **Deploy** | Deploy-related request | Deployment workflow orchestration |
+| **Onboarding** | New user / `onboarding` | Interactive guided setup |
+| **Default** | Everything else | General-purpose coding assistant |
+
+### 🎭 12 Genius Personas
+
+Switch the bot's personality and reasoning style. Each persona brings a distinct approach to problem-solving.
+
+```
+persona einstein    → First-principles physics thinking
+persona linus       → Ruthless code review, no BS
+persona feynman     → "If I can't explain it simply..."
+persona vonneumann  → Mathematical precision
+```
+
+Available: `default` · `chaechae` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann`
+
+### 🔌 MCP Tool Ecosystem
+
+Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabilities infinitely. Built-in statistics tracking and estimated completion times.
+
+### 🔐 Interactive Permissions
+
+Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
+
+### 📎 File Analysis
+
+Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
+
+### 🔑 GitHub Integration
+
+GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
+
+---
 
 ## Architecture
 
@@ -35,20 +94,18 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
 └──────────────────────┬──────────────────────────────┘
                        │
                 ┌──────▼──────┐
-                │ SlackHandler │ ← Facade
-                │  (~600 LOC)  │
+                │ SlackHandler │  ← Facade
                 └──────┬──────┘
                        │
           ┌────────────┼────────────────┐
           │            │                │
    ┌──────▼──────┐ ┌──▼───────┐ ┌─────▼──────┐
    │ EventRouter │ │ Command  │ │  Stream    │
-   │   (293)     │ │ Router   │ │ Processor  │
-   │             │ │  (105)   │ │  (837)     │
+   │             │ │ Router   │ │ Processor  │
    └──────┬──────┘ └──┬───────┘ └─────┬──────┘
           │            │                │
           │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 20 Command  │  │  Pipeline  │
+          │     │ 26 Command  │  │  Pipeline  │
           │     │  Handlers   │  │ input →    │
           │     └─────────────┘  │ session →  │
           │                      │ stream     │
@@ -56,11 +113,9 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
           │                            │
    ┌──────▼────────────────────────────▼──────┐
    │              ClaudeHandler               │
-   │               (~610 LOC)                 │
    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
    │  │ Session  │ │ Prompt   │ │ Dispatch │ │
    │  │ Registry │ │ Builder  │ │ Service  │ │
-   │  │ (1,048)  │ │  (299)   │ │  (509)   │ │
    │  └──────────┘ └──────────┘ └──────────┘ │
    └──────────────────┬───────────────────────┘
                       │
@@ -72,88 +127,53 @@ Bot:    [Analyzes the file, finds bottlenecks, suggests optimized code]
    └─────────┘  └─────────┘  └─────────┘
 ```
 
-**Facade Pattern**: Three facades (`SlackHandler`, `ClaudeHandler`, `McpManager`) present simple interfaces over complex subsystems.
+**Three Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager` — present simple interfaces over complex subsystems. Each module follows Single Responsibility Principle.
 
-## Features
-
-### Workflow Dispatch
-Analyzes user input and automatically selects the optimal workflow.
-
-| Workflow | Trigger | Action |
-|----------|---------|--------|
-| PR Review | Contains PR URL | Code review + comments |
-| PR Fix & Update | "fix" + PR | Code fix + commit + push |
-| PR Docs | "document" + PR | Confluence page generation |
-| Jira Planning | Jira issue + planning | Task decomposition + planning |
-| Jira Summary | Jira issue + summary | Executive report generation |
-| Jira Brainstorming | Jira + brainstorm | Idea divergence + synthesis |
-| Jira Create PR | Jira issue + "PR" | Auto-create pull request |
-| Deploy | Deploy-related request | Deployment workflow |
-| Onboarding | New user / `onboarding` | Interactive onboarding guide |
-| Default | All other input | General-purpose coding assistant |
-
-### 12 Personas
-Switch the bot's personality and thinking style. Use `persona einstein` to think like Einstein, or `persona linus` for Linus Torvalds' code review style.
-
-`default` `chaechae` `linus` `buddha` `davinci` `einstein` `elon` `feynman` `jesus` `newton` `turing` `vonneumann`
-
-### Real-Time Task Tracking
-Tracks Claude's in-progress tasks in real time and displays them in Slack.
-
-### MCP Integration
-Connect MCP servers via stdio/SSE/HTTP protocols to infinitely extend Claude's toolset. Tracks call statistics and estimated completion times.
-
-### Interactive Actions
-Handles permission approvals, option prompts, and session management interactively through Slack buttons and forms.
-
-### File Analysis
-Upload images (JPG/PNG/GIF/WebP), text, or code files for analysis and prompt injection. 50MB limit.
-
-### GitHub Integration
-GitHub App authentication (recommended) or PAT fallback. Automatic token renewal for seamless Git operations.
+---
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `cwd` | Show/set current working directory |
-| `mcp` / `mcp reload` | List MCP servers / reload config |
-| `bypass [on/off]` | Toggle permission prompt bypass |
+| `cwd [path]` | Show / set working directory |
+| `mcp` · `mcp reload` | List MCP servers / reload config |
+| `bypass [on\|off]` | Toggle permission bypass |
 | `persona [name]` | Switch persona |
 | `model [name]` | Switch model (sonnet, opus, haiku) |
-| `verbosity [level]` | Set output verbosity level |
+| `verbosity [level]` | Set output verbosity |
 | `sessions` | List active sessions |
-| `new` / `renew` | Reset / renew session |
-| `close` | Close current thread's session |
+| `new` · `renew` | Reset / renew session |
+| `close` | Close current thread session |
 | `restore` | Restore a session |
 | `context` | Show context window status |
-| `link [url]` | Attach issue/PR/doc links to session |
+| `link [url]` | Attach issue/PR/doc links |
 | `onboarding` | Run onboarding workflow |
 | `admin` | Admin commands (accept/deny/users/config) |
-| `cct` / `set_cct` | CCT token status / manual switch |
+| `cct` · `set_cct` | CCT token status / manual switch |
 | `marketplace` | Plugin marketplace |
 | `plugins` | Manage installed plugins |
-| `$` / `$model` / `$verbosity` | Session-only settings (non-persistent) |
+| `$model` · `$verbosity` | Session-only settings (non-persistent) |
 | `help` | Show help |
+
+---
 
 ## Quick Start
 
 ### 1. Clone & Install
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/2lab-ai/soma-work.git
 cd soma-work
 npm install
 ```
 
 ### 2. Create Slack App
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**
-2. Choose **From an app manifest**
-3. Paste the contents of `slack-app-manifest.json` (or `.yaml`)
-4. After creating the app:
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
+2. Paste the contents of [`slack-app-manifest.json`](./slack-app-manifest.json)
+3. After creation:
    - **OAuth & Permissions** → copy Bot User OAuth Token (`xoxb-...`)
-   - **Basic Information** → generate App-Level Token (`connections:write` scope, `xapp-...`)
+   - **Basic Information** → generate App-Level Token with `connections:write` scope (`xapp-...`)
    - **Basic Information** → copy Signing Secret
 
 ### 3. Configure Environment
@@ -167,16 +187,16 @@ cp .env.example .env
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_SIGNING_SECRET=...
-BASE_DIRECTORY=/path/to/code/   # Base for per-user working directories
+BASE_DIRECTORY=/path/to/code/
 
 # Optional
-ANTHROPIC_API_KEY=...           # Only needed without Claude Code subscription
+ANTHROPIC_API_KEY=...              # Only needed without Claude Code subscription
 GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY="-----BEGIN RSA..."
 GITHUB_INSTALLATION_ID=12345678
-GITHUB_TOKEN=ghp_...            # Fallback when GitHub App not configured
-CLAUDE_CODE_USE_BEDROCK=1       # Use AWS Bedrock
-CLAUDE_CODE_USE_VERTEX=1        # Use Google Vertex AI
+GITHUB_TOKEN=ghp_...               # Fallback when GitHub App not configured
+CLAUDE_CODE_USE_BEDROCK=1          # Use AWS Bedrock
+CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
 ```
 
@@ -205,10 +225,12 @@ cp mcp-servers.example.json mcp-servers.json
 ### 5. Run
 
 ```bash
-npm run dev      # Development (watch mode)
-npm start        # Development (tsx)
-npm run build && npm run prod  # Production
+npm run dev                        # Development (watch mode)
+npm start                          # Development (tsx)
+npm run build && npm run prod      # Production
 ```
+
+---
 
 ## Deployment
 
@@ -222,101 +244,109 @@ docker-compose logs -f
 ### macOS LaunchAgent
 
 ```bash
-./service.sh install     # Install service
-./service.sh start       # Start
+./service.sh install     # Install as LaunchAgent
+./service.sh start       # Start service
 ./service.sh logs follow # Stream logs
 ```
 
-Service name: `ai.2lab.soma-work`. Auto-restarts on crash.
+Service identifier: `ai.2lab.soma-work` — auto-restarts on crash.
 
-> **Warning**: Do not use `service.sh` during development. Running multiple instances with the same Slack token causes message conflicts.
+> ⚠️ **Do not run `service.sh` during development.** Multiple instances with the same Slack token cause message conflicts.
+
+---
 
 ## GitHub Integration
 
 ### GitHub App (Recommended)
 
 1. Create an app at [GitHub Developer Settings](https://github.com/settings/apps)
-2. Permissions: Contents (RW), Issues (RW), Pull Requests (RW), Metadata (R)
+2. Required permissions: **Contents** (RW), **Issues** (RW), **Pull Requests** (RW), **Metadata** (R)
 3. Generate and download a Private Key
-4. Install the app on your repositories, note the Installation ID
+4. Install the app on target repositories; note the Installation ID
 5. Set `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID` in `.env`
 
 ### Personal Access Token (Fallback)
 
 1. GitHub Settings → Developer Settings → Personal Access Tokens
-2. Select `repo`, `read:org` scopes
+2. Required scopes: `repo`, `read:org`
 3. Set `GITHUB_TOKEN` in `.env`
 
-When GitHub App is configured, it takes priority. Otherwise falls back to PAT.
+GitHub App takes priority when configured. Falls back to PAT automatically.
+
+---
 
 ## Project Structure
 
 ```
-src/                            # ~27,000 lines of TypeScript
-├── slack/                      # Slack module (SRP separation)
-│   ├── actions/                # Interactive action handlers (9 handlers)
-│   ├── pipeline/               # Stream processing pipeline (5 files)
-│   ├── commands/               # Command handlers (20 handlers)
-│   ├── directives/             # Channel/session link directives
-│   └── formatters/             # Output formatters
-├── conversation/               # Conversation recording & replay
-├── model-commands/             # Model command catalog & validation
-├── mcp/                        # MCP server management
-├── github/                     # GitHub App auth + Git CLI
-├── permission/                 # Permission service + Slack UI
-├── plugin/                     # Plugin system (marketplace, cache, manager)
-├── prompt/                     # System prompts
-│   └── workflows/              # Workflow prompts (9 workflows)
-├── persona/                    # Bot personas (12 personas)
-└── local/                      # Claude Code SDK local plugins
-    ├── agents/                 # Agent definitions
-    ├── skills/                 # Skill implementations
-    ├── hooks/                  # Git/build hooks
-    ├── commands/               # Local slash commands
-    └── prompts/                # Local prompts
+src/                                # TypeScript source
+├── slack/                          # Slack integration layer
+│   ├── actions/                    # Interactive action handlers (12)
+│   ├── commands/                   # Command handlers (26)
+│   ├── pipeline/                   # Stream processing pipeline
+│   ├── directives/                 # Channel/session link directives
+│   └── formatters/                 # Output formatters
+├── conversation/                   # Conversation recording & replay
+├── model-commands/                 # Model command catalog & validation
+├── mcp/                            # MCP server management
+├── github/                         # GitHub App auth + Git CLI
+├── permission/                     # Permission service + Slack UI
+├── plugin/                         # Plugin system (marketplace, cache)
+├── prompt/                         # System prompts
+│   └── workflows/                  # Workflow prompts (9 workflows)
+├── persona/                        # Bot personas (12 personas)
+└── local/                          # Claude Code SDK extensions
+    ├── agents/                     # Agent definitions (11)
+    ├── skills/                     # Skill implementations
+    ├── hooks/                      # Git/build hooks
+    ├── commands/                   # Local slash commands
+    └── prompts/                    # Local prompts
 
-data/                           # Runtime data (auto-generated)
-docs/                           # Architecture + spec docs (14 specs)
-scripts/                        # Utility scripts
+docs/                               # Architecture & feature specs
+scripts/                            # Utility scripts
 ```
 
-| Category | Count |
-|----------|-------|
-| Source (excl. test/local) | 122 files, ~27,000 LOC |
-| Tests | 43 files, ~11,100 LOC |
-| Personas | 12 files, ~4,700 LOC |
-| Prompts/Workflows | ~2,150 LOC |
+| Category | Files | Lines of Code |
+|----------|------:|-------------:|
+| Source (excl. test/local) | 167 | ~36,000 |
+| Tests | 97 | ~22,400 |
+| Personas | 12 | ~4,700 |
+| Workflow Prompts | 9 | ~1,400 |
 
-## Design Decisions
+## Design Principles
 
-1. **Facade Pattern** — Simplifies complex subsystems behind 3 facades
-2. **Single Responsibility** — One responsibility per file (122 modules)
+1. **Facade Pattern** — Three facades simplify complex subsystems
+2. **Single Responsibility** — One responsibility per module (167 modules)
 3. **Pipeline Architecture** — Input preprocessing → session init → stream execution
-4. **Workflow Dispatch** — Input classification → specialized workflow prompts (9 workflows)
-5. **Append-Only Messages** — New messages instead of message edits
-6. **Session-Based Context** — Per-thread session persistence
+4. **Workflow Dispatch** — Input classification → specialized workflow prompts
+5. **Append-Only Messages** — New Slack messages instead of edits (reliability)
+6. **Session-Based Context** — Per-thread session persistence with auto-resume
 7. **Dependency Injection** — Testability through injected dependencies
 8. **Hierarchical CWD** — Thread > Channel > User working directory priority
+
+---
 
 ## Testing
 
 ```bash
-npx vitest          # Run all tests
-npx vitest run      # Single run
-npx vitest --watch  # Watch mode
+npx vitest run          # Single run
+npx vitest              # Watch mode
 ```
 
-43 test files (~11,100 LOC) cover critical paths: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, and more.
+97 test files (~22,400 LOC) covering: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, MCP integration, and more.
+
+---
 
 ## Troubleshooting
 
-| Symptom | What to check |
+| Symptom | What to Check |
 |---------|---------------|
-| Bot not responding | Check logs with `DEBUG=true`, Slack token validity, channel invitation |
-| Auth errors | Verify API keys, Socket Mode enabled, token expiration |
-| Broken message formatting | Markdown → Slack mrkdwn conversion limitations |
-| Session conflicts | Multiple instances running with same token |
+| Bot not responding | Logs (`DEBUG=true`), Slack token validity, channel invitation |
+| Auth errors | API keys, Socket Mode enabled, token expiration |
+| Broken formatting | Markdown → Slack mrkdwn conversion edge cases |
+| Session conflicts | Multiple instances running with same Slack token |
+
+---
 
 ## License
 
-MIT
+[MIT](./LICENSE)

@@ -7,6 +7,7 @@ import { ConversationSession } from '../../types';
 import { MessageHandler, SayFn, RespondFn } from './types';
 import { mergeGitHubPR } from '../../link-metadata-fetcher';
 import { getChannelConfluenceUrl } from '../../channel-registry';
+import { postSourceThreadSummary } from '../source-thread-summary';
 import { ActionPanelBuilder } from '../action-panel-builder';
 
 interface PanelActionContext {
@@ -297,6 +298,11 @@ export class ActionPanelActionHandler {
           base: baseBranch,
         };
       }
+
+      // Fire-and-forget: do not block the merge response path
+      postSourceThreadSummary(this.ctx.slackApi, session, 'merged').catch((err) =>
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+      );
     } else {
       await respond({
         response_type: 'ephemeral',

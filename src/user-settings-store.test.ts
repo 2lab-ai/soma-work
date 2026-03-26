@@ -126,6 +126,55 @@ describe('UserSettingsStore', () => {
     });
   });
 
+  describe('email getter/setter', () => {
+    // Trace: Scenario 1 — Email Auto-Fetch, Section 3c (UserSettingsStore persist)
+
+    it('should return undefined for user without email', () => {
+      // Trace: S1, Section 5 — no email cached
+      const userId = 'U_NO_EMAIL';
+      store.ensureUserExists(userId, 'Test User');
+
+      expect(store.getUserEmail(userId)).toBeUndefined();
+    });
+
+    it('should store and retrieve email', () => {
+      // Trace: S1, Section 3c — setUserEmail → getUserEmail
+      const userId = 'U_EMAIL';
+      store.ensureUserExists(userId, 'Test User');
+
+      store.setUserEmail(userId, 'test@example.com');
+
+      expect(store.getUserEmail(userId)).toBe('test@example.com');
+    });
+
+    it('should persist email to file', () => {
+      // Trace: S1, Section 4 — file write side effect
+      const userId = 'U_EMAIL_PERSIST';
+      store.ensureUserExists(userId, 'Test User');
+      store.setUserEmail(userId, 'persist@example.com');
+
+      // Create new store instance pointing to same directory
+      const store2 = new UserSettingsStore(testDir);
+      expect(store2.getUserEmail(userId)).toBe('persist@example.com');
+    });
+
+    it('should create user record if setting email for unknown user', () => {
+      // Trace: S1, Section 3c — patchUserSettings creates record
+      const userId = 'U_NEW_VIA_EMAIL';
+
+      store.setUserEmail(userId, 'new@example.com');
+
+      const settings = store.getUserSettings(userId);
+      expect(settings).toBeDefined();
+      expect(settings?.email).toBe('new@example.com');
+      expect(settings?.persona).toBe('default');
+    });
+
+    it('should return undefined for non-existent user', () => {
+      expect(store.getUserEmail('U_NONEXISTENT')).toBeUndefined();
+    });
+  });
+
   describe('settings migrations', () => {
     it('migrates legacy opus model defaults to the latest opus', () => {
       const userId = 'U_LEGACY_OPUS';

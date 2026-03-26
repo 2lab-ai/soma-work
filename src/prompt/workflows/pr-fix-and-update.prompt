@@ -26,6 +26,8 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
    - 리뷰, 코멘트, 변경 파일, 메타데이터 모두 포함
    - 워크플로우 액션에 필요한 ID (comment.id, node_id, html_url) 유지
 3. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
+   clone 완료 후, 반드시 다음 JSON directive를 출력하여 세션에 작업 폴더를 등록하라 (세션 종료 시 자동 정리됨):
+   {"type": "source_working_dir", "action": "add", "path": "<생성한 작업 폴더 절대 경로>"}
 
 ## 작업 프로세스
 
@@ -106,7 +108,8 @@ git commit -m "fix: address PR review feedback
 
 - [feedback 1 요약]
 - [feedback 2 요약]
-"
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 

@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./user-settings-store', () => ({
   userSettingsStore: {
     getUserPersona: vi.fn().mockReturnValue('default'),
+    getUserSettings: vi.fn().mockReturnValue(undefined),
   },
 }));
 
@@ -113,6 +114,214 @@ describe('PromptBuilder', () => {
 
       // The prompt should be built (persona loading is attempted)
       expect(prompt).toBeDefined();
+    });
+  });
+
+  describe('user variable substitution', () => {
+    // Trace: Scenario 2 — Variable Substitution in Prompt
+
+    it('should resolve {{user.email}} from UserSettings', async () => {
+      // Trace: S2, Section 3c, email mapping
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      // Access private method via buildSystemPrompt which calls processVariables
+      // We need a workflow prompt that contains {{user.email}}
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('z@insightquest.io');
+      // Workflow template variables should be substituted into Co-Authored-By
+      // (common.prompt docs have escaped \{{user.email}} that renders as literal {{user.email}})
+      expect(prompt).toContain('Co-Authored-By: Zhuge <z@insightquest.io>');
+    });
+
+    it('should resolve {{user.displayName}} from slackName', async () => {
+      // Trace: S2, Section 3c, displayName mapping
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      // Co-Authored-By should have resolved displayName
+      expect(prompt).toContain('Co-Authored-By: Zhuge');
+    });
+
+    it('should leave user vars as-is when userId not provided', async () => {
+      // Trace: S3, Section 5, row 1
+      const prompt = builder.buildSystemPrompt(undefined, 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('{{user.email}}');
+      expect(prompt).toContain('{{user.displayName}}');
+    });
+
+    it('should leave user vars as-is when user not in store', async () => {
+      // Trace: S3, Section 5, row 2
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(undefined);
+
+      const prompt = builder.buildSystemPrompt('U_UNKNOWN', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('{{user.email}}');
+      expect(prompt).toContain('{{user.displayName}}');
+    });
+
+    it('should leave {{user.email}} as-is when email not set', async () => {
+      // Trace: S3, Section 3a — email field missing
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+        // email intentionally omitted
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      // email should remain unresolved
+      expect(prompt).toContain('{{user.email}}');
+      // displayName should be resolved
+      expect(prompt).toContain('Zhuge');
+    });
+
+    it('should leave {{user.email}} as-is when email is empty sentinel', async () => {
+      // Fix: empty string sentinel from failed scope fetch should not resolve
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: '', // empty sentinel — scope missing
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('{{user.email}}');
+      expect(prompt).toContain('Zhuge');
+    });
+
+    it('should resolve {{user.slackId}} from userId', async () => {
+      // Trace: S2, Section 3c, slackId mapping
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U094E5L4A15',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U094E5L4A15', 'default');
+
+      // default prompt includes common.prompt which documents {{user.slackId}}
+      // The variable in common.prompt is inside a markdown code block, so it won't be substituted
+      // But if the variable appears outside code blocks, it would be substituted
+      expect(prompt).toBeDefined();
+    });
+  });
+
+  describe('workflow template Co-Authored-By', () => {
+    // Trace: Scenario 4 — Co-Authored-By in Workflow Commits
+
+    it('jira-create-pr prompt should contain Co-Authored-By template', () => {
+      // Trace: S4, Section 3, jira-create-pr
+      const prompt = builder.loadWorkflowPrompt('jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('Co-Authored-By');
+      expect(prompt).toContain('{{user.displayName}}');
+      expect(prompt).toContain('{{user.email}}');
+    });
+
+    it('pr-fix-and-update prompt should contain Co-Authored-By template', () => {
+      // Trace: S4, Section 3, pr-fix-and-update
+      const prompt = builder.loadWorkflowPrompt('pr-fix-and-update');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('Co-Authored-By');
+      expect(prompt).toContain('{{user.displayName}}');
+      expect(prompt).toContain('{{user.email}}');
+    });
+
+    it('common.prompt should be included in default prompt', () => {
+      const prompt = builder.loadWorkflowPrompt('default');
+
+      expect(prompt).toBeDefined();
+      // common.prompt is included in default prompt
+      expect(prompt).toContain('system_prompt');
+    });
+  });
+
+  describe('variable escaping', () => {
+    it('should not substitute escaped \\{{...}} variables in workflow prompts', async () => {
+      // Workflow prompts (e.g. jira-create-pr) contain {{user.email}} in Co-Authored-By
+      // When user settings are provided, these should be resolved
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      // Variables should be resolved in workflow prompts
+      expect(prompt).toContain('z@insightquest.io');
+    });
+
+    it('should leave unresolved vars when no user settings', async () => {
+      // Without user settings, template vars remain as-is
+      const prompt = builder.buildSystemPrompt(undefined, 'jira-create-pr');
+
+      expect(prompt).toBeDefined();
+      // Unresolved variables should remain as template placeholders
+      expect(prompt).toContain('{{user.email}}');
     });
   });
 

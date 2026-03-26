@@ -114,11 +114,20 @@ describe('FormActionHandler', () => {
 
     await handler.handleCustomInputSubmit(body, view);
 
+    // 모든 동기화 대상에 대해 attachments: [] 포함하여 업데이트
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'thread-choice-message-ts',
       expect.any(String),
-      expect.any(Array)
+      expect.any(Array),
+      [] // 기존 attachments(버튼) 제거
+    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C123',
+      'panel-message-ts',
+      expect.any(String),
+      expect.any(Array),
+      [] // 기존 attachments(버튼) 제거
     );
   });
 

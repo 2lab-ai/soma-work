@@ -1,9 +1,12 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { Logger } from '../../logger';
+import { getDirSizeBytes, formatBytes } from '../../utils/dir-size';
+import path from 'path';
 
 /**
- * Handles close command - close current thread's session with confirmation
+ * Handles close command - close current thread's session with confirmation.
+ * Shows summary of source working directories that will be deleted.
  */
 export class CloseHandler implements CommandHandler {
   private logger = new Logger('CloseHandler');
@@ -39,6 +42,16 @@ export class CloseHandler implements CommandHandler {
 
       const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
+      // Build cleanup summary for source working dirs
+      const cleanupSummary = this.buildCleanupSummary(session.sourceWorkingDirs);
+
+      const confirmText = [
+        `🔒 *세션 종료 확인*\n`,
+        session.title ? `*${session.title}*\n` : '',
+        cleanupSummary,
+        '이 세션을 종료하시겠습니까?',
+      ].filter(Boolean).join('\n');
+
       // Post confirmation message with buttons
       await say({
         text: '이 세션을 종료하시겠습니까?',
@@ -48,7 +61,7 @@ export class CloseHandler implements CommandHandler {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `🔒 *세션 종료 확인*\n\n${session.title ? `*${session.title}*\n` : ''}이 세션을 종료하시겠습니까?`,
+              text: confirmText,
             },
           },
           {
@@ -89,5 +102,26 @@ export class CloseHandler implements CommandHandler {
       });
       return { handled: true };
     }
+  }
+
+  /**
+   * Build a human-readable summary of directories to be deleted on session close.
+   * Returns empty string if no dirs are tracked.
+   */
+  private buildCleanupSummary(dirs?: string[]): string {
+    if (!dirs?.length) return '';
+
+    const lines: string[] = ['🗑️ *삭제 예정 디렉토리:*'];
+    let totalBytes = 0;
+
+    for (const dir of dirs) {
+      const size = getDirSizeBytes(dir);
+      totalBytes += size;
+      const dirName = path.basename(dir);
+      lines.push(`  • \`${dirName}\` — ${formatBytes(size)}`);
+    }
+
+    lines.push(`  *합계: ${formatBytes(totalBytes)}*\n`);
+    return lines.join('\n');
   }
 }
