@@ -41,9 +41,37 @@ describe('ReportHandler', () => {
   // Trace: Scenario 6, Section 3a — canHandle matches report commands
   it('canHandle_matchesReportCommands', () => {
     expect(handler.canHandle('report')).toBe(true);
+    expect(handler.canHandle('report today')).toBe(true);
     expect(handler.canHandle('report daily')).toBe(true);
     expect(handler.canHandle('report weekly')).toBe(true);
+    expect(handler.canHandle('report help')).toBe(true);
     expect(handler.canHandle('something else')).toBe(false);
+  });
+
+  // Default: `report` shows today's realtime data
+  it('reportNoArgs_showsTodayRealtime', async () => {
+    const result = await handler.execute({
+      user: 'U123', channel: 'C456', threadTs: '123.456',
+      text: 'report', say: mockSay as any,
+    });
+
+    expect(result.handled).toBe(true);
+    expect(mockDeps.aggregator.aggregateDaily).toHaveBeenCalled();
+    expect(mockDeps.formatter.formatDaily).toHaveBeenCalled();
+    expect(mockSay).toHaveBeenCalled();
+  });
+
+  // `report today` also shows today's data
+  it('reportToday_showsTodayRealtime', async () => {
+    const result = await handler.execute({
+      user: 'U123', channel: 'C456', threadTs: '123.456',
+      text: 'report today', say: mockSay as any,
+    });
+
+    expect(result.handled).toBe(true);
+    expect(mockDeps.aggregator.aggregateDaily).toHaveBeenCalled();
+    expect(mockDeps.formatter.formatDaily).toHaveBeenCalled();
+    expect(mockSay).toHaveBeenCalled();
   });
 
   // Trace: Scenario 6, Section 3a — daily report triggers aggregation
@@ -72,24 +100,24 @@ describe('ReportHandler', () => {
     expect(mockSay).toHaveBeenCalled();
   });
 
-  // Trace: Scenario 6, Section 3a — no args shows help
-  it('reportNoArgs_showsHelp', async () => {
+  // `report help` shows help text
+  it('reportHelp_showsHelp', async () => {
     const result = await handler.execute({
       user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report', say: mockSay as any,
+      text: 'report help', say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
     expect(mockSay).toHaveBeenCalled();
     const sayArg = mockSay.mock.calls[0][0];
-    // Help message should mention 'daily' and 'weekly'
-    expect(sayArg.text || JSON.stringify(sayArg)).toMatch(/daily|weekly/i);
+    expect(sayArg.text || JSON.stringify(sayArg)).toMatch(/daily|weekly|today|help/i);
+    // aggregator should NOT be called for help
+    expect(mockDeps.aggregator.aggregateDaily).not.toHaveBeenCalled();
+    expect(mockDeps.aggregator.aggregateWeekly).not.toHaveBeenCalled();
   });
 
-  // Trace: Scenario 6, Section 5 — missing channel config shows error
+  // Trace: Scenario 6, Section 5 — handler works when no REPORT_CHANNEL_ID is set
   it('missingChannelConfig_showsError', async () => {
-    // This test verifies the handler still works when no REPORT_CHANNEL_ID is set
-    // The handler posts to the thread, not to the report channel
     const result = await handler.execute({
       user: 'U123', channel: 'C456', threadTs: '123.456',
       text: 'report daily', say: mockSay as any,
