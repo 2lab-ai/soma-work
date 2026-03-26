@@ -161,6 +161,7 @@ describe('SessionInitializer - channel routing advisory', () => {
       claudeHandler: mockClaudeHandler,
       slackApi: mockSlackApi,
       messageValidator: mockMessageValidator,
+      workingDirManager: { createSessionBaseDir: vi.fn().mockReturnValue(undefined) } as any,
       reactionManager: mockReactionManager,
       contextWindowManager: mockContextWindowManager,
       requestCoordinator: mockRequestCoordinator,

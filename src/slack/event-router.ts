@@ -6,12 +6,18 @@ import { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
 import { registerChannel, unregisterChannel } from '../channel-registry';
+import { ConversationSession } from '../types';
+import { SlashCommandAdapter } from './slash-command-adapter';
+import { CommandRouter } from './commands/command-router';
+import { CommandParser } from './command-parser';
+import { CommandDependencies } from './commands/types';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
   actionHandlers: ActionHandlers;
+  commandDeps?: CommandDependencies;
 }
 
 /**
@@ -20,18 +26,24 @@ export interface EventRouterDeps {
 export class EventRouter {
   private logger = new Logger('EventRouter');
   private cleanupIntervalId: NodeJS.Timeout | null = null;
+  private commandRouter: CommandRouter | null = null;
 
   constructor(
     private app: App,
     private deps: EventRouterDeps,
     private messageHandler: MessageHandler
-  ) {}
+  ) {
+    if (deps.commandDeps) {
+      this.commandRouter = new CommandRouter(deps.commandDeps);
+    }
+  }
 
   /**
    * 모든 이벤트 핸들러 설정
    */
   setup(): void {
     this.setupMessageHandlers();
+    this.setupSlashCommands();
     this.setupMemberJoinHandler();
     this.deps.actionHandlers.registerHandlers(this.app);
     this.setupSessionExpiryCallbacks();
@@ -70,6 +82,20 @@ export class EventRouter {
         thread_ts: event.thread_ts,
         text: event.text?.substring(0, 50),
       });
+
+      // Source thread re-mention: if mentioned in a thread that has a linked bot session,
+      // respond with that session's status instead of creating a new session
+      if (event.thread_ts) {
+        const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
+        if (!existingSession) {
+          const linkedSession = this.deps.claudeHandler.findSessionBySourceThread(event.channel, event.thread_ts);
+          if (linkedSession) {
+            await this.respondWithLinkedSessionStatus(event.channel, event.thread_ts, linkedSession, say);
+            return;
+          }
+        }
+      }
+
       const text = event.text.replace(/<@[^>]+>/g, '').trim();
       await this.messageHandler(
         {
@@ -113,6 +139,180 @@ export class EventRouter {
         await this.handleThreadMessage(messageEvent, say);
       }
     });
+  }
+
+  // Commands that require thread/session context — not available via slash commands
+  // These need a real thread_ts to find or create sessions.
+  private static readonly SESSION_DEPENDENT_COMMANDS = [
+    'new', 'close', 'renew', 'context', 'restore', 'link',
+  ];
+
+  /**
+   * Slash command 핸들러 설정
+   * Trace: docs/slash-commands/trace.md, Scenario 1-5
+   */
+  private setupSlashCommands(): void {
+    // /soma [subcommand] — 범용 명령 (Scenario 2, 3)
+    this.app.command('/soma', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /soma', {
+        text: command.text?.substring(0, 50),
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      try {
+        const ctx = SlashCommandAdapter.adapt(command, respond);
+
+        // Empty text → help fallback (Scenario 3, Case A)
+        if (!ctx.text.trim()) {
+          await respond({
+            text: CommandParser.getHelpMessage(),
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        // Block session-dependent commands — slash commands have no thread context
+        const firstWord = ctx.text.trim().split(/\s+/)[0]?.toLowerCase();
+        if (firstWord && EventRouter.SESSION_DEPENDENT_COMMANDS.includes(firstWord)) {
+          await respond({
+            text: `⚠️ \`${firstWord}\` 명령은 스레드 컨텍스트가 필요합니다.\n봇이 응답하고 있는 스레드에서 \`${firstWord}\` 를 텍스트로 입력해주세요.`,
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        // Route through existing CommandRouter
+        if (this.commandRouter) {
+          const result = await this.commandRouter.route(ctx);
+
+          // If CommandRouter didn't handle it, show help
+          if (!result.handled) {
+            await respond({
+              text: CommandParser.getHelpMessage(),
+              response_type: 'ephemeral',
+            });
+          }
+        } else {
+          this.logger.warn('CommandRouter not available for slash commands');
+          await respond({
+            text: '⚠️ Bot is still initializing. Please try again in a moment.',
+            response_type: 'ephemeral',
+          });
+        }
+      } catch (error: any) {
+        const errorMessage = error?.message || String(error) || 'Unknown error';
+        this.logger.error('Error handling /soma slash command', {
+          error: errorMessage,
+          stack: error?.stack,
+          user: command.user_id,
+          channel: command.channel_id,
+          text: command.text?.substring(0, 50),
+        });
+        try {
+          await respond({
+            text: '⚠️ 명령 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            response_type: 'ephemeral',
+          });
+        } catch (respondError: any) {
+          this.logger.error('Failed to send error response for /soma', {
+            originalError: errorMessage,
+            respondError: respondError?.message,
+          });
+        }
+      }
+    });
+
+    // /session — 세션 관리 (Scenario 4)
+    // NOTE: Intentionally bypasses CommandRouter and calls SessionManager directly.
+    // The text command 'sessions' goes through CommandRouter → SessionHandler,
+    // but /session uses a direct call for clarity. If SessionHandler evolves,
+    // update this path as well. See: docs/slash-commands/trace.md, Scenario 4, Section 3a.
+    this.app.command('/session', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /session', {
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      try {
+        const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(
+          command.user_id,
+          { showControls: true }
+        );
+        await respond({
+          text,
+          blocks,
+          response_type: 'ephemeral',
+        });
+      } catch (error: any) {
+        const errorMessage = error?.message || String(error) || 'Unknown error';
+        this.logger.error('Error handling /session slash command', {
+          error: errorMessage,
+          stack: error?.stack,
+          user: command.user_id,
+          channel: command.channel_id,
+        });
+        try {
+          await respond({
+            text: '⚠️ 세션 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            response_type: 'ephemeral',
+          });
+        } catch (respondError: any) {
+          this.logger.error('Failed to send error response for /session', {
+            originalError: errorMessage,
+            respondError: respondError?.message,
+          });
+        }
+      }
+    });
+
+    // /new — 세션 리셋 fallback (Scenario 5)
+    this.app.command('/new', async ({ command, ack, respond }) => {
+      await ack();
+      this.logger.info('Slash command /new', {
+        text: command.text?.substring(0, 50),
+        user: command.user_id,
+        channel: command.channel_id,
+      });
+
+      try {
+        // SlashCommand has no thread_ts — always show fallback guidance
+        const prompt = command.text?.trim();
+        let message = '💡 `/new` 명령은 스레드 내에서만 사용할 수 있습니다.\n\n';
+        message += '봇이 응답하고 있는 스레드에서 `new` 를 텍스트로 입력해주세요.';
+        if (prompt) {
+          message += `\n프롬프트를 함께 전달하려면: \`new ${prompt}\``;
+        }
+
+        await respond({
+          text: message,
+          response_type: 'ephemeral',
+        });
+      } catch (error: any) {
+        const errorMessage = error?.message || String(error) || 'Unknown error';
+        this.logger.error('Error handling /new slash command', {
+          error: errorMessage,
+          stack: error?.stack,
+          user: command.user_id,
+          channel: command.channel_id,
+        });
+        try {
+          await respond({
+            text: '⚠️ /new 명령 처리 중 오류가 발생했습니다.',
+            response_type: 'ephemeral',
+          });
+        } catch (respondError: any) {
+          this.logger.error('Failed to send error response for /new', {
+            originalError: errorMessage,
+            respondError: respondError?.message,
+          });
+        }
+      }
+    });
+
+    this.logger.info('Slash commands registered: /soma, /session, /new');
   }
 
   /**
@@ -268,6 +468,41 @@ export class EventRouter {
     };
 
     this.deps.claudeHandler.setExpiryCallbacks(callbacks);
+  }
+
+  /**
+   * Respond with linked session status when bot is re-mentioned in the source thread.
+   */
+  private async respondWithLinkedSessionStatus(
+    channel: string,
+    threadTs: string,
+    session: ConversationSession,
+    say: SayFn
+  ): Promise<void> {
+    try {
+      const title = session.title || 'Untitled';
+      const status = session.activityState || 'unknown';
+      const lines: string[] = [`📋 *"${title}"* — ${status}`];
+
+      if (session.links?.issue?.url) {
+        lines.push(`📌 *이슈*: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);
+      }
+      if (session.links?.pr?.url) {
+        lines.push(`🔀 *PR*: <${session.links.pr.url}|${session.links.pr.label || 'PR'}>`);
+      }
+
+      const workThreadTs = session.threadRootTs || session.threadTs;
+      if (session.channelId && workThreadTs) {
+        const permalink = await this.deps.slackApi.getPermalink(session.channelId, workThreadTs);
+        if (permalink) {
+          lines.push(`🧵 *작업 스레드*: <${permalink}|열기>`);
+        }
+      }
+
+      await say({ text: lines.join('\n'), thread_ts: threadTs });
+    } catch (error) {
+      this.logger.error('Failed to respond with linked session status', error);
+    }
   }
 
   /**

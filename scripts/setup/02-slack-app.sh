@@ -14,7 +14,7 @@ run_step() {
     echo -e "${BOLD}Quick setup:${NC}"
     echo -e "  1. Go to ${CYAN}https://api.slack.com/apps${NC}"
     echo -e "  2. Click ${BOLD}Create New App${NC} → ${BOLD}From a manifest${NC}"
-    echo -e "  3. Paste the contents of ${CYAN}slack-app-manifest.yaml${NC} from this repo"
+    echo -e "  3. Paste the contents of ${CYAN}slack-app-manifest.json${NC} from this repo"
     echo -e "  4. After creating, go to:"
     echo -e "     - ${BOLD}OAuth & Permissions${NC} → Copy Bot User OAuth Token (xoxb-...)"
     echo -e "     - ${BOLD}Basic Information${NC}  → App-Level Tokens → Create one with"

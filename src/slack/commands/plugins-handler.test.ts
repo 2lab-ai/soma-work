@@ -134,7 +134,7 @@ describe('PluginsHandler', () => {
       await handler.execute(ctx);
 
       const message = say.mock.calls[0][0].text;
-      expect(message).toContain('No marketplace plugins installed');
+      expect(message).toContain('No additional marketplace plugins installed');
       expect(message).toContain('plugins add');
     });
 
