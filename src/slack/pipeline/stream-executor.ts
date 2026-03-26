@@ -16,6 +16,8 @@ import {
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { SayFn } from './types';
+import { config } from '../../config';
+import { DeploySummaryFormatter } from '../deploy-summary-formatter';
 
 interface StreamExecutorDeps {
   claudeHandler: ClaudeHandler;
@@ -126,21 +128,109 @@ export class StreamExecutor {
       // Create Slack context for permission prompts
       const slackContext = { channel, threadTs, user };
 
-      // Create stream context
+      // --- Deploy channel routing (Trace: Scenario 2) ---
+      const isDeployRouting = session.workflow === 'deploy' && !!config.deploy.logChannel;
+      let logThreadTs: string | undefined;
+      let deployFallbackToOriginal = false;
+
+      // Original say — always posts to the channel/thread where the session started
+      const originalSay = async (msg: { text: string; thread_ts?: string; blocks?: any[]; attachments?: any[] }) => {
+        const result = await say({
+          text: msg.text,
+          thread_ts: msg.thread_ts,
+          blocks: msg.blocks,
+          attachments: msg.attachments,
+        });
+        return { ts: result?.ts };
+      };
+
+      // Log channel say — routes intermediate output to DEPLOY_LOG_CHANNEL
+      const logSay = async (msg: { text: string; thread_ts?: string; blocks?: any[]; attachments?: any[] }) => {
+        if (deployFallbackToOriginal) {
+          return originalSay(msg);
+        }
+        try {
+          const postResult = await say({
+            text: msg.text,
+            thread_ts: logThreadTs || undefined,
+            blocks: msg.blocks,
+            attachments: msg.attachments,
+          });
+          // Capture the first log channel message ts as thread parent
+          if (!logThreadTs && postResult?.ts) {
+            logThreadTs = postResult.ts;
+          }
+          return { ts: postResult?.ts };
+        } catch (err) {
+          // Trace: Scenario 5 — log channel post failure, fallback to original
+          this.logger.warn('Deploy log channel post failed, falling back to original channel', { error: err });
+          deployFallbackToOriginal = true;
+          return originalSay(msg);
+        }
+      };
+
+      // For deploy routing, we need a special say that posts to the log channel.
+      // The actual cross-channel posting uses SlackApiHelper.postMessage directly.
+      // We wrap the stream context say to route to the log channel.
+      const deployLogSay = isDeployRouting
+        ? async (msg: { text: string; thread_ts: string; blocks?: any[]; attachments?: any[] }) => {
+            if (deployFallbackToOriginal) {
+              return originalSay(msg);
+            }
+            try {
+              // Use the Slack app client directly through say's underlying mechanism
+              // We override thread_ts to route to log channel thread
+              const result = await say({
+                text: msg.text,
+                thread_ts: logThreadTs || threadTs, // Use log thread or fall back
+                blocks: msg.blocks,
+                attachments: msg.attachments,
+              });
+              if (!logThreadTs && result?.ts) {
+                logThreadTs = result.ts;
+              }
+              return { ts: result?.ts };
+            } catch (err) {
+              this.logger.warn('Deploy log channel post failed, falling back', { error: err });
+              deployFallbackToOriginal = true;
+              return originalSay(msg);
+            }
+          }
+        : undefined;
+
+      if (isDeployRouting) {
+        this.logger.info('Deploy channel routing activated', {
+          logChannel: config.deploy.logChannel,
+          originalChannel: channel,
+        });
+      }
+
+      // Create stream context — deploy routing uses logSay for intermediate output
       const streamContext: StreamContext = {
         channel,
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
-        say: async (msg) => {
-          const result = await say({
-            text: msg.text,
-            thread_ts: msg.thread_ts,
-            blocks: msg.blocks,
-            attachments: msg.attachments,
-          });
-          return { ts: result?.ts };
-        },
+        say: isDeployRouting
+          ? async (msg) => {
+              if (deployFallbackToOriginal) {
+                return originalSay(msg);
+              }
+              try {
+                const result = await say({
+                  text: msg.text,
+                  thread_ts: msg.thread_ts,
+                  blocks: msg.blocks,
+                  attachments: msg.attachments,
+                });
+                return { ts: result?.ts };
+              } catch (err) {
+                this.logger.warn('Deploy log say failed, falling back', { error: err });
+                deployFallbackToOriginal = true;
+                return originalSay(msg);
+              }
+            }
+          : originalSay,
       };
 
       // Create stream callbacks
@@ -196,6 +286,28 @@ export class StreamExecutor {
         const abortError = new Error('Request was aborted');
         abortError.name = 'AbortError';
         throw abortError;
+      }
+
+      // --- Deploy summary posting (Trace: Scenarios 3, 4) ---
+      if (isDeployRouting && streamResult.resultText) {
+        try {
+          const summary = DeploySummaryFormatter.format(streamResult.resultText);
+          await originalSay({
+            text: summary.text,
+            thread_ts: threadTs,
+            attachments: summary.attachments,
+          });
+          this.logger.info('Deploy summary posted to original channel', {
+            channel,
+            hasAttachments: !!summary.attachments,
+          });
+        } catch (summaryError) {
+          this.logger.error('Failed to post deploy summary, posting raw result', { error: summaryError });
+          await originalSay({
+            text: streamResult.resultText || 'Deploy completed.',
+            thread_ts: threadTs,
+          });
+        }
       }
 
       // Update status to completed

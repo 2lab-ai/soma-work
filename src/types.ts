@@ -13,6 +13,7 @@ export type WorkflowType =
   | 'jira-create-pr'
   | 'pr-review'
   | 'pr-fix-and-update'
+  | 'deploy'
   | 'default';
 
 export interface ConversationSession {

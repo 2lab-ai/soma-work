@@ -114,6 +114,8 @@ export interface StreamResult {
   success: boolean;
   messageCount: number;
   aborted: boolean;
+  /** The last assistant text or result text from the stream (used for deploy summary) */
+  resultText?: string;
 }
 
 /**
@@ -136,6 +138,7 @@ export class StreamProcessor {
     abortSignal: AbortSignal
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
+    let lastResultText: string | undefined;
 
     try {
       for await (const message of stream) {
@@ -150,14 +153,22 @@ export class StreamProcessor {
 
         if (message.type === 'assistant') {
           await this.handleAssistantMessage(message, context, currentMessages);
+          // Track the last assistant text for deploy summary
+          if (currentMessages.length > 0) {
+            lastResultText = currentMessages[currentMessages.length - 1];
+          }
         } else if (message.type === 'user') {
           await this.handleUserMessage(message, context);
         } else if (message.type === 'result') {
           await this.handleResultMessage(message, context, currentMessages);
+          // Capture explicit result text if available
+          if ((message as any).subtype === 'success' && (message as any).result) {
+            lastResultText = (message as any).result;
+          }
         }
       }
 
-      return { success: true, messageCount: currentMessages.length, aborted: false };
+      return { success: true, messageCount: currentMessages.length, aborted: false, resultText: lastResultText };
     } catch (error: any) {
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };

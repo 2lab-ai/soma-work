@@ -20,6 +20,9 @@ export const config = {
     autoRestore: process.env.AUTOMATIC_RESTORE_CREDENTIAL === '1',
     alertChannel: process.env.CREDENTIAL_ALERT_CHANNEL || '#backend-general',
   },
+  deploy: {
+    logChannel: process.env.DEPLOY_LOG_CHANNEL || '',
+  },
   baseDirectory: process.env.BASE_DIRECTORY || '',
   github: {
     appId: process.env.GITHUB_APP_ID || '',

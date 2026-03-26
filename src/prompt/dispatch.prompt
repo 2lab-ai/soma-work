@@ -12,6 +12,7 @@
 | "fix" 또는 "work" + Jira 이슈 링크 | `jira-create-pr` |
 | GitHub PR 링크 (예: github.com/.../pull/123) | `pr-review` |
 | "fix" + GitHub PR 링크 | `pr-fix-and-update` |
+| "deploy" 또는 "배포" + 대상 지정 (예: "deploy Gucci Dev2", "배포 해줘") | `deploy` |
 | 그 외 모든 경우 | `default` |
 
 ## 세션 타이틀 생성 규칙
@@ -40,6 +41,9 @@
 
 - 입력: "fix https://xxx.atlassian.net/browse/ABC-789"
   출력: {"workflow": "jira-create-pr", "title": "ABC-789 구현"}
+
+- 입력: "deploy Gucci Dev2"
+  출력: {"workflow": "deploy", "title": "Gucci Dev2 배포"}
 
 - 입력: "Redis 캐시 구현 방법 알려줘"
   출력: {"workflow": "default", "title": "Redis 캐시 구현"}

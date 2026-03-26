@@ -268,6 +268,7 @@ export class DispatchService {
       'jira-create-pr',
       'pr-review',
       'pr-fix-and-update',
+      'deploy',
       'default',
     ];
 
