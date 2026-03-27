@@ -284,4 +284,33 @@ describe('SessionRegistry persistence', () => {
     expect(restored!.sessionWorkingDir).toBeUndefined();
     expect(restored!.sessionId).toBe('session-old');
   });
+
+  // Security: sessionWorkingDir with path traversal is dropped on load
+  it('drops sessionWorkingDir with path traversal on load', () => {
+    const fs = require('fs');
+    const maliciousSessions = [{
+      key: 'C123-171.011',
+      ownerId: 'U123',
+      ownerName: 'Tester',
+      channelId: 'C123',
+      threadTs: '171.011',
+      sessionId: 'session-malicious',
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+      state: 'MAIN',
+      workflow: 'default',
+      sessionWorkingDir: '/tmp/../etc/passwd', // path traversal attempt
+    }];
+    fs.writeFileSync(
+      require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
+      JSON.stringify(maliciousSessions, null, 2),
+    );
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C123', '171.011');
+
+    expect(restored).toBeDefined();
+    expect(restored!.sessionWorkingDir).toBeUndefined(); // dropped by validation
+  });
 });

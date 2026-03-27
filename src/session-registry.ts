@@ -1237,7 +1237,9 @@ export class SessionRegistry {
           ),
           // Session workspace isolation (#77): restore session-unique cwd
           // so Claude SDK resumes in the same project dir where conversations are stored
-          sessionWorkingDir: serialized.sessionWorkingDir,
+          sessionWorkingDir: serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
+            ? serialized.sessionWorkingDir
+            : undefined,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
