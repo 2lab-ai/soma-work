@@ -80,6 +80,8 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   // Trace: S1, Section 3b — component parsing
@@ -161,11 +163,6 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
     // Should return null or an empty-but-valid result, never throw
     // If components is empty, that's acceptable graceful degradation
     expect(status === null || status.components.length === 0).toBe(true);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.useRealTimers();
   });
 });
 
