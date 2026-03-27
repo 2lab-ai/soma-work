@@ -42,7 +42,7 @@ export class SessionHandler implements CommandHandler {
         } else {
           userSettingsStore.setUserSessionTheme(user, resolved);
           await say({
-            text: `🎨 세션 테마가 *${resolved} (${THEME_NAMES[resolved]})* 로 고정되었습니다.\n해제: \`session theme=rotate\``,
+            text: `🎨 세션 테마가 *${resolved} (${THEME_NAMES[resolved]})* 로 고정되었습니다.\n해제: \`sessions theme=rotate\``,
             thread_ts: threadTs,
           });
         }

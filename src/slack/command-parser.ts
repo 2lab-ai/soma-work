@@ -325,7 +325,8 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a session theme command (e.g., "session theme=A", "sessions theme=rotate")
+   * Check if text is a sessions theme command (e.g., "sessions theme=A", "sessions theme=rotate")
+   * Also accepts "session" (without s) as alias
    */
   static isSessionThemeCommand(text: string): boolean {
     return /^\/?sessions?\s+theme\s*=\s*\S+$/i.test(text.trim());

@@ -141,7 +141,7 @@ export class SessionUiManager {
         type: 'context',
         elements: [{
           type: 'mrkdwn',
-          text: `${themeLabel} ${THEME_NAMES[theme]}${isFixed ? '' : ' · 🔄 자동순환'} · \`session theme=X\` 로 고정`,
+          text: `${themeLabel} ${THEME_NAMES[theme]}${isFixed ? '' : ' · 🔄 자동순환'} · \`sessions theme=X\` 로 고정`,
         }],
       });
     }
