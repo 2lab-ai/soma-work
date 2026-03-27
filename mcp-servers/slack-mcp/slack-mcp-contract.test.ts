@@ -167,6 +167,28 @@ describe('Scenario 4: Security validation', () => {
     const source = await fs.readFile(serverPath, 'utf-8');
     expect(source).toMatch(/path.traversal|\.\..*not.allowed|traversal/i);
   });
+
+  // Codex review fix: allowlisted root directory
+  it('has ALLOWED_UPLOAD_ROOTS restricting to /tmp', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain('ALLOWED_UPLOAD_ROOTS');
+    expect(source).toContain("'/tmp'");
+  });
+
+  // Codex review fix: isFile() check
+  it('validates file is a regular file (not directory)', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain('isFile()');
+  });
+
+  // Codex review fix: no false success on missing file_id
+  it('rejects upload when Slack returns no file metadata', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain("if (!uploadedFile?.id)");
+  });
 });
 
 // ── Scenario 5: Existing tools work after rename ────────────

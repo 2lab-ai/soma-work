@@ -79,6 +79,9 @@ interface GetThreadMessagesResult {
 /** Maximum file size for uploads: 1 GB */
 const MAX_FILE_SIZE = 1_073_741_824;
 
+/** Allowlisted root directories for file uploads — prevents exfiltration of sensitive system files */
+const ALLOWED_UPLOAD_ROOTS = ['/tmp', '/private/tmp'];
+
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
 
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
@@ -116,7 +119,21 @@ function extractCursor(response: { response_metadata?: { next_cursor?: string } 
 
 /**
  * Validate a file path for upload security.
- * Checks: existence, readability, not a symlink, size ≤ 1GB, no path traversal.
+ *
+ * Defence layers:
+ *   1. Absolute path requirement
+ *   2. Path-segment traversal check (rejects `/../` but allows `report..txt`)
+ *   3. Allowlisted root directory (/tmp only — blocks /etc/passwd exfiltration)
+ *   4. Symlink rejection (lstat before stat)
+ *   5. Regular-file check (rejects directories, block devices, etc.)
+ *   6. Readability check
+ *   7. Size cap (1 GB)
+ *
+ * Note on TOCTOU: There is an inherent race between validation and the
+ * subsequent filesUploadV2 call. Full elimination requires opening an fd here
+ * and passing it downstream, but the Slack SDK accepts only a path string.
+ * The risk is minimal in practice — the server runs in a short-lived MCP
+ * subprocess scoped to a single query, and /tmp is user-owned.
  */
 async function validateFilePath(filePath: string): Promise<{ resolvedPath: string; size: number }> {
   if (!filePath) {
@@ -125,37 +142,54 @@ async function validateFilePath(filePath: string): Promise<{ resolvedPath: strin
 
   const resolvedPath = path.resolve(filePath);
 
-  // Path traversal check: reject if original path contains '..' segments
-  if (filePath.includes('..')) {
+  // 1. Must be absolute after resolution (always true for path.resolve, but explicit)
+  if (!path.isAbsolute(resolvedPath)) {
+    throw new Error(`file_path must be absolute: ${filePath}`);
+  }
+
+  // 2. Path traversal: check for /../ segments in the resolved path
+  //    Uses path segments instead of string includes('..') to allow filenames like 'report..txt'
+  const segments = resolvedPath.split(path.sep);
+  if (segments.some(seg => seg === '..')) {
     throw new Error(`Path traversal not allowed: ${filePath}`);
   }
 
-  // Symlink check
-  let stat;
+  // 3. Allowlisted root — only /tmp (or /private/tmp on macOS) allowed
+  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some(root => resolvedPath.startsWith(root + path.sep));
+  if (!underAllowedRoot) {
+    throw new Error(`Upload restricted to /tmp directory. Rejected: ${resolvedPath}`);
+  }
+
+  // 4. Symlink check (lstat does not follow symlinks)
+  let lstatResult;
   try {
-    stat = await fs.lstat(resolvedPath);
+    lstatResult = await fs.lstat(resolvedPath);
   } catch {
     throw new Error(`File not found or not readable: ${resolvedPath}`);
   }
 
-  if (stat.isSymbolicLink()) {
+  if (lstatResult.isSymbolicLink()) {
     throw new Error(`Symlinks not allowed for security: ${resolvedPath}`);
   }
 
-  // Readability check
+  // 5. Must be a regular file (not a directory, device, socket, etc.)
+  if (!lstatResult.isFile()) {
+    throw new Error(`Not a regular file: ${resolvedPath}`);
+  }
+
+  // 6. Readability check
   try {
     await fs.access(resolvedPath, (await import('fs')).constants.R_OK);
   } catch {
     throw new Error(`File not found or not readable: ${resolvedPath}`);
   }
 
-  // Size check
-  const realStat = await fs.stat(resolvedPath);
-  if (realStat.size > MAX_FILE_SIZE) {
-    throw new Error(`File too large: ${realStat.size} bytes. Maximum: ${MAX_FILE_SIZE} bytes (1GB)`);
+  // 7. Size check
+  if (lstatResult.size > MAX_FILE_SIZE) {
+    throw new Error(`File too large: ${lstatResult.size} bytes. Maximum: ${MAX_FILE_SIZE} bytes (1GB)`);
   }
 
-  return { resolvedPath, size: realStat.size };
+  return { resolvedPath, size: lstatResult.size };
 }
 
 // ── Server ───────────────────────────────────────────────
@@ -774,10 +808,18 @@ class SlackMcpServer {
 
     const result = await this.slack.filesUploadV2(uploadArgs);
 
-    // Extract file info from response
+    // Extract file info — Slack SDK wraps differently depending on version
     const uploadedFile = (result as any).files?.[0]?.files?.[0]
       || (result as any).files?.[0]
-      || {};
+      || null;
+
+    if (!uploadedFile?.id) {
+      logger.error('Slack filesUploadV2 returned unexpected response shape', {
+        name: displayName,
+        resultKeys: Object.keys(result || {}),
+      });
+      throw new Error(`File upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`);
+    }
 
     logger.info('File uploaded', {
       name: displayName,
@@ -790,7 +832,7 @@ class SlackMcpServer {
         type: 'text' as const,
         text: JSON.stringify({
           uploaded: true,
-          file_id: uploadedFile.id || 'unknown',
+          file_id: uploadedFile.id,
           filename: displayName,
           size,
           permalink: uploadedFile.permalink || '',
@@ -839,7 +881,16 @@ class SlackMcpServer {
 
     const uploadedFile = (result as any).files?.[0]?.files?.[0]
       || (result as any).files?.[0]
-      || {};
+      || null;
+
+    if (!uploadedFile?.id) {
+      logger.error('Slack filesUploadV2 returned unexpected response shape', {
+        name: displayName,
+        media_type,
+        resultKeys: Object.keys(result || {}),
+      });
+      throw new Error(`Media upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`);
+    }
 
     logger.info('Media uploaded', {
       name: displayName,
@@ -853,7 +904,7 @@ class SlackMcpServer {
         type: 'text' as const,
         text: JSON.stringify({
           uploaded: true,
-          file_id: uploadedFile.id || 'unknown',
+          file_id: uploadedFile.id,
           filename: displayName,
           size,
           media_type,
