@@ -75,22 +75,73 @@ loadConfig();
 
 // ── SQL Validation ─────────────────────────────────────────
 
+/** Dangerous MySQL functions that should never appear in read-only queries */
+const DANGEROUS_FUNCTIONS = /\b(SLEEP|BENCHMARK|LOAD_FILE|GET_LOCK|RELEASE_LOCK|IS_FREE_LOCK|IS_USED_LOCK)\s*\(/i;
+
+/** Locking clauses that turn SELECTs into write-intent operations */
+const LOCKING_CLAUSES = /\bFOR\s+UPDATE\b|\bLOCK\s+IN\s+SHARE\s+MODE\b|\bFOR\s+SHARE\b/i;
+
+/** INTO @variable (information leak / side-effect path) — but allow INTO OUTFILE/DUMPFILE which is caught separately */
+const INTO_VARIABLE = /\bINTO\s+@/i;
+
+/** INTO OUTFILE/DUMPFILE — checked on ORIGINAL query (comment-tolerant) */
+const INTO_FILE_ORIGINAL = /\bINTO\s*(?:\/\*[\s\S]*?\*\/\s*)*\s*(OUTFILE|DUMPFILE)\b/i;
+
 export function validateReadOnlyQuery(query: string): boolean {
-  const stripped = query.trim().replace(/\/\*[\s\S]*?\*\//g, '').trim();
+  const trimmed = query.trim();
+
+  // Block MySQL executable comments (/*!nnnnn ... */) — MySQL executes content inside
+  if (/\/\*!/.test(trimmed)) return false;
+
+  // Check INTO OUTFILE/DUMPFILE on ORIGINAL query (before comment stripping)
+  // This prevents comment token glue bypass: INTO/**/OUTFILE
+  if (INTO_FILE_ORIGINAL.test(trimmed)) return false;
+
+  // Now strip normal block comments for remaining checks
+  const stripped = trimmed.replace(/\/\*[\s\S]*?\*\//g, '').trim();
   const firstWord = stripped.split(/\s+/)[0]?.toUpperCase();
   const ALLOWED = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'DESC'];
   if (!ALLOWED.includes(firstWord || '')) return false;
+
   // Block semicolons outside string literals
   const withoutStrings = stripped.replace(/'[^']*'/g, '');
   if (/;/.test(withoutStrings)) return false;
-  // Block INTO OUTFILE/DUMPFILE
-  if (/\bINTO\s+(OUTFILE|DUMPFILE)\b/i.test(stripped)) return false;
+
+  // Block dangerous functions
+  if (DANGEROUS_FUNCTIONS.test(stripped)) return false;
+
+  // Block locking clauses
+  if (LOCKING_CLAUSES.test(stripped)) return false;
+
+  // Block INTO @variable
+  if (INTO_VARIABLE.test(stripped)) return false;
+
   return true;
+}
+
+// ── Input Sanitization ────────────────────────────────────
+
+/** Docker container/service names: alphanumeric, dots, hyphens, underscores */
+const DOCKER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+
+/** Docker timestamp args: ISO 8601 datetime or relative duration (e.g., 10m, 1h) */
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$|^\d+[smhd]$/;
+
+export function validateDockerName(value: string, field: string): void {
+  if (!DOCKER_NAME_RE.test(value)) {
+    throw new Error(`Invalid ${field} name: must match ${DOCKER_NAME_RE.source}`);
+  }
+}
+
+export function validateTimestamp(value: string, field: string): void {
+  if (!TIMESTAMP_RE.test(value)) {
+    throw new Error(`Invalid ${field}: must be ISO 8601 datetime or duration (e.g., 10m, 1h, 2024-01-01T00:00:00)`);
+  }
 }
 
 // ── Tool Handlers ──────────────────────────────────────────
 
-function handleList() {
+export function handleList() {
   const config = loadConfig();
   const servers = Object.entries(config).map(([name, srv]) => ({
     name,
@@ -102,7 +153,7 @@ function handleList() {
   };
 }
 
-function handleListService(args: Record<string, unknown>) {
+export function handleListService(args: Record<string, unknown>) {
   const server = args.server as string;
   const config = loadConfig();
 
@@ -128,10 +179,10 @@ function handleListService(args: Record<string, unknown>) {
   };
 }
 
-function handleLogs(args: Record<string, unknown>) {
+export function handleLogs(args: Record<string, unknown>) {
   const server = args.server as string;
   const service = args.service as string;
-  const tail = (args.tail as number) || 100;
+  const tail = (args.tail as number) ?? 100;
   const since = args.since as string | undefined;
   const until = args.until as string | undefined;
   const timestamps = args.timestamps as boolean | undefined;
@@ -141,6 +192,11 @@ function handleLogs(args: Record<string, unknown>) {
   if (!config[server]) {
     throw new Error(`Unknown server: ${server}`);
   }
+
+  // Validate user-controlled args before passing to SSH
+  validateDockerName(service, 'service');
+  if (since) validateTimestamp(since, 'since');
+  if (until) validateTimestamp(until, 'until');
 
   const sshHost = config[server].ssh.host;
   const sshArgs = [sshHost, 'docker', 'logs', '--tail', String(tail)];
@@ -162,7 +218,7 @@ function handleLogs(args: Record<string, unknown>) {
   };
 }
 
-async function handleDbQuery(args: Record<string, unknown>) {
+export async function handleDbQuery(args: Record<string, unknown>) {
   const server = args.server as string;
   const database = args.database as string;
   const query = args.query as string;
