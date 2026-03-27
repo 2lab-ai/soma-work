@@ -21,13 +21,13 @@ export interface LlmBackendConfig {
 
 export type LlmChatConfig = Record<LlmBackend, LlmBackendConfig>;
 
-const SETTABLE_KEYS = new Set(['model', 'model_reasoning_effort']);
+const SETTABLE_KEYS = new Set(['model', 'model_reasoning_effort', 'features.fast_mode']);
 
 const DEFAULT_CONFIG: LlmChatConfig = {
   codex: {
     backend: 'codex',
     model: 'gpt-5.3-codex',
-    configOverride: { model_reasoning_effort: 'xhigh' },
+    configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
   },
   gemini: {
     backend: 'gemini',
