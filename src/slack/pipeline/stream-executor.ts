@@ -37,7 +37,7 @@ import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
-import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError } from '../../claude-status-fetcher';
+import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
@@ -1190,11 +1190,11 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     }
 
     // Append Claude service status when there's an actual issue OR active incidents
-    // Fix: Bug 5 — show status when incidents exist even if all components are operational
-    // Trace: docs/api-error-status-coverage-fix/trace.md, S2
-    if (statusInfo && (statusInfo.overall !== 'operational' || statusInfo.incidents.length > 0)) {
+    // Fix: Bug 5 — extracted to shouldShowStatusBlock() for testability
+    // Trace: docs/status-fetcher-hardening/trace.md, S3
+    if (shouldShowStatusBlock(statusInfo ?? null)) {
       lines.push('');
-      lines.push(formatStatusForSlack(statusInfo));
+      lines.push(formatStatusForSlack(statusInfo ?? null));
     }
 
     return lines.join('\n');
