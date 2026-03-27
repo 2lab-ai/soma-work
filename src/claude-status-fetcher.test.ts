@@ -13,6 +13,7 @@ import {
   formatStatusForSlack,
   invalidateStatusCache,
   isApiLikeError,
+  shouldShowStatusBlock,
   type ClaudeStatusInfo,
 } from './claude-status-fetcher';
 
@@ -247,6 +248,8 @@ describe('Scenario 3 — Graceful degradation when unreachable', () => {
 
   // Trace: S3, Section 4
   it('fetchClaudeStatus_doesNotCacheNull', async () => {
+    vi.useFakeTimers();
+
     const mockFetch = vi.fn()
       .mockRejectedValueOnce(new Error('ECONNREFUSED'))
       .mockResolvedValueOnce({
@@ -258,9 +261,12 @@ describe('Scenario 3 — Graceful degradation when unreachable', () => {
     const first = await fetchClaudeStatus();
     expect(first).toBeNull();
 
+    // Advance past negative cache backoff (30s)
+    vi.advanceTimersByTime(31 * 1000);
+
     const second = await fetchClaudeStatus();
     expect(second).not.toBeNull();
-    // Both calls should have hit the network (null was not cached)
+    // Both calls should have hit the network (null was not cached permanently)
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
@@ -547,6 +553,8 @@ describe('S3 — Inflight coalescing', () => {
   });
 
   it('failed_inflight_allows_retry', async () => {
+    vi.useFakeTimers();
+
     const mockFetch = vi.fn()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce({
@@ -558,7 +566,10 @@ describe('S3 — Inflight coalescing', () => {
     const first = await fetchClaudeStatus();
     expect(first).toBeNull();
 
-    // After failure, inflight should be cleared, allowing retry
+    // Advance past negative cache backoff (30s)
+    vi.advanceTimersByTime(31 * 1000);
+
+    // After failure + backoff, inflight should be cleared, allowing retry
     const second = await fetchClaudeStatus();
     expect(second).not.toBeNull();
     expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -623,5 +634,251 @@ describe('S4 — Regex robustness', () => {
     // Should be clean text, not "<span>Claude API</span>"
     expect(status!.components[0].name).toBe('Claude API');
     expect(status!.components[0].name).not.toContain('<');
+  });
+});
+
+// ============================================================
+// S1 — Negative cache / backoff (Issue #120)
+// ============================================================
+
+describe('S1 — Negative cache / backoff', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('negative_cache_skips_fetch_within_backoff', async () => {
+    vi.useFakeTimers();
+
+    const mockFetch = vi.fn()
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_ALL_OPERATIONAL),
+      });
+    vi.stubGlobal('fetch', mockFetch);
+
+    // First call fails
+    const first = await fetchClaudeStatus();
+    expect(first).toBeNull();
+
+    // Second call within 30s backoff — should NOT hit fetch again
+    vi.advanceTimersByTime(10 * 1000); // 10 seconds
+    const second = await fetchClaudeStatus();
+    expect(second).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(1); // No second fetch
+  });
+
+  it('negative_cache_allows_retry_after_backoff', async () => {
+    vi.useFakeTimers();
+
+    const mockFetch = vi.fn()
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_ALL_OPERATIONAL),
+      });
+    vi.stubGlobal('fetch', mockFetch);
+
+    // First call fails
+    await fetchClaudeStatus();
+
+    // Advance past 30s backoff
+    vi.advanceTimersByTime(31 * 1000);
+    const retry = await fetchClaudeStatus();
+    expect(retry).not.toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+// S2 — Incident status scoping (Issue #120)
+// ============================================================
+
+describe('S2 — Incident status scoping', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('incident_status_scoped_to_correct_incident', async () => {
+    // Two incidents: first has its own updates, second has different updates
+    const html = `
+<div class="component-container status-red">
+  <div class="component-inner-container status-red">
+    <div class="name">Claude API</div>
+    <div class="component-status">Partial Outage</div>
+  </div>
+</div>
+<div class="incident-container impact-major">
+  <div class="incident-title impact-major">
+    <a>First Incident</a>
+  </div>
+  <div class="updates">
+    <div>Investigating</div>
+  </div>
+</div>
+<div class="incident-container impact-minor">
+  <div class="incident-title impact-minor">
+    <a>Second Incident</a>
+  </div>
+  <div class="updates">
+    <div>Resolved</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+    expect(status).not.toBeNull();
+    expect(status!.incidents.length).toBe(2);
+    expect(status!.incidents[0].title).toBe('First Incident');
+    expect(status!.incidents[0].status).toBe('Investigating');
+    expect(status!.incidents[1].title).toBe('Second Incident');
+    expect(status!.incidents[1].status).toBe('Resolved');
+  });
+
+  it('incident_without_updates_gets_unknown_status', async () => {
+    const html = `
+<div class="component-container status-yellow">
+  <div class="component-inner-container status-yellow">
+    <div class="name">Claude API</div>
+    <div class="component-status">Degraded</div>
+  </div>
+</div>
+<div class="incident-container impact-major">
+  <div class="incident-title impact-major">
+    <a>Incident With No Updates</a>
+  </div>
+</div>
+<div class="incident-container impact-minor">
+  <div class="incident-title impact-minor">
+    <a>Second Incident</a>
+  </div>
+  <div class="updates">
+    <div>Monitoring</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+    expect(status).not.toBeNull();
+    expect(status!.incidents.length).toBe(2);
+    // First incident has no updates div — should get 'Unknown', NOT 'Monitoring' from second
+    expect(status!.incidents[0].status).toBe('Unknown');
+    expect(status!.incidents[1].status).toBe('Monitoring');
+  });
+});
+
+// ============================================================
+// S3 — Guard condition (shouldShowStatusBlock) (Issue #120)
+// ============================================================
+
+describe('S3 — shouldShowStatusBlock guard', () => {
+  it('returns_true_on_degraded', () => {
+    const status: ClaudeStatusInfo = {
+      overall: 'degraded',
+      components: [{ name: 'API', status: 'degraded' }],
+      incidents: [],
+      fetchedAt: Date.now(),
+    };
+    expect(shouldShowStatusBlock(status)).toBe(true);
+  });
+
+  it('returns_true_on_operational_with_incidents', () => {
+    const status: ClaudeStatusInfo = {
+      overall: 'operational',
+      components: [{ name: 'API', status: 'operational' }],
+      incidents: [{ title: 'Issue', status: 'Investigating' }],
+      fetchedAt: Date.now(),
+    };
+    expect(shouldShowStatusBlock(status)).toBe(true);
+  });
+
+  it('returns_false_on_fully_operational_no_incidents', () => {
+    const status: ClaudeStatusInfo = {
+      overall: 'operational',
+      components: [{ name: 'API', status: 'operational' }],
+      incidents: [],
+      fetchedAt: Date.now(),
+    };
+    expect(shouldShowStatusBlock(status)).toBe(false);
+  });
+
+  it('returns_false_on_null', () => {
+    expect(shouldShowStatusBlock(null)).toBe(false);
+  });
+});
+
+// ============================================================
+// S4 — non-OK HTTP response test (Issue #120)
+// ============================================================
+
+describe('S4 — non-OK HTTP response', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('fetchClaudeStatus_returnsNullOnNonOkResponse', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve('Service Unavailable'),
+    }));
+
+    const status = await fetchClaudeStatus();
+    expect(status).toBeNull();
+  });
+});
+
+// ============================================================
+// S5 — Incident status value test (Issue #120)
+// ============================================================
+
+describe('S5 — Incident status value extraction', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('incident_status_extracted_from_updates_div', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+    }));
+
+    const status = await fetchClaudeStatus();
+    expect(status).not.toBeNull();
+    expect(status!.incidents.length).toBeGreaterThan(0);
+    // The SAMPLE_HTML_MIXED_STATUS has "Investigating" in the updates div
+    expect(status!.incidents[0].status).toBe('Investigating');
   });
 });
