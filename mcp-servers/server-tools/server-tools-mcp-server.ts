@@ -183,6 +183,9 @@ export function handleLogs(args: Record<string, unknown>) {
   const server = args.server as string;
   const service = args.service as string;
   const tail = (args.tail as number) ?? 100;
+  if (!Number.isInteger(tail) || tail < 0 || tail > 10000) {
+    throw new Error('Invalid tail: must be an integer between 0 and 10000');
+  }
   const since = args.since as string | undefined;
   const until = args.until as string | undefined;
   const timestamps = args.timestamps as boolean | undefined;

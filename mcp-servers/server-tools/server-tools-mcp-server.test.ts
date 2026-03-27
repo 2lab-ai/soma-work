@@ -473,6 +473,21 @@ describe('handleLogs', () => {
     );
   });
 
+  it('rejects negative tail values', () => {
+    mockConfig(PROD_CONFIG, 9200);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: -1 })).toThrow(/invalid tail/i);
+  });
+
+  it('rejects excessively large tail values', () => {
+    mockConfig(PROD_CONFIG, 9300);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: 999999 })).toThrow(/invalid tail/i);
+  });
+
+  it('rejects non-integer tail values', () => {
+    mockConfig(PROD_CONFIG, 9400);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: 1.5 })).toThrow(/invalid tail/i);
+  });
+
   it('throws for unknown server', () => {
     mockConfig(PROD_CONFIG, 10000);
     expect(() => handleLogs({ server: 'unknown', service: 'nginx' })).toThrow('Unknown server: unknown');
