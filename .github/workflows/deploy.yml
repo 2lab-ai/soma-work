@@ -94,6 +94,7 @@ jobs:
         run: |
           tar -czf deploy-bundle.tar.gz \
             dist \
+            mcp-servers \
             node_modules \
             package.json \
             service.sh
@@ -152,6 +153,7 @@ jobs:
             dist/ "$TARGET/dist/"
 
           rsync -a --delete node_modules/ "$TARGET/node_modules/"
+          rsync -a --delete mcp-servers/ "$TARGET/mcp-servers/"
           rsync -a \
             package.json \
             service.sh \

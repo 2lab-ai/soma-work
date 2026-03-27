@@ -25,8 +25,8 @@ type LlmChatFileConfig = Record<Backend, BackendConfig>;
 const HARDCODED_DEFAULTS: LlmChatFileConfig = {
   codex: {
     backend: 'codex',
-    model: 'gpt-5.3-codex',
-    configOverride: { model_reasoning_effort: 'xhigh' },
+    model: 'gpt-5.4',
+    configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
   },
   gemini: {
     backend: 'gemini',
