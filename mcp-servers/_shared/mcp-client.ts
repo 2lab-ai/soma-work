@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { Logger } from './logger';
+import { Logger } from '../../src/logger';
 
 /**
  * JSON-RPC 2.0 types
