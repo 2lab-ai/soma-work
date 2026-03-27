@@ -5,6 +5,20 @@
       "url": "https://mcp.atlassian.com/v1/sse"
     }
   },
+  "server-tools": {
+    "example-server": {
+      "ssh": { "host": "your-server.example.com" },
+      "databases": {
+        "main": {
+          "type": "mysql",
+          "host": "127.0.0.1",
+          "port": 3306,
+          "user": "readonly_user",
+          "password": "your_password"
+        }
+      }
+    }
+  },
   "plugin": {
     "marketplace": [
       {

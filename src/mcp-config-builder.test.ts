@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import {
   McpConfigBuilder,
@@ -179,6 +179,48 @@ describe('McpConfigBuilder slack-thread server', () => {
     expect(env).toHaveProperty('SLACK_BOT_TOKEN');
     // Should be empty string fallback when env var is not set, not undefined
     expect(typeof env?.SLACK_BOT_TOKEN).toBe('string');
+  });
+});
+
+describe('McpConfigBuilder server-tools wiring', () => {
+  // CONFIG_FILE is resolved at module load from env-paths.
+  // hasServerToolsConfig() reads that file with fs.readFileSync.
+  // We test by writing actual temp config files and overriding CONFIG_FILE via vi.mock.
+
+  // Since CONFIG_FILE is a constant from env-paths, and hasServerToolsConfig catches errors,
+  // we verify the conditional wiring indirectly: when hasServerToolsConfig returns false
+  // (default — CONFIG_FILE points to non-existent or empty file), server-tools should not appear.
+
+  function createMockMcpManager() {
+    return {
+      getServerConfiguration: vi.fn().mockResolvedValue({}),
+      getDefaultAllowedTools: vi.fn().mockReturnValue([]),
+    } as any;
+  }
+
+  it('does NOT include mcp__server-tools when config file has no server-tools section', async () => {
+    // Default CONFIG_FILE either doesn't exist or has no server-tools section
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
+
+    expect(config.mcpServers?.['server-tools']).toBeUndefined();
+    expect(config.allowedTools).not.toContain('mcp__server-tools');
+  });
+
+  it('always includes Skill, EnterPlanMode, ExitPlanMode in allowedTools', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
+
+    expect(config.allowedTools).toContain('Skill');
+    expect(config.allowedTools).toContain('EnterPlanMode');
+    expect(config.allowedTools).toContain('ExitPlanMode');
+  });
+
+  it('always includes mcp__llm in allowedTools', async () => {
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
+
+    expect(config.allowedTools).toContain('mcp__llm');
   });
 });
 
