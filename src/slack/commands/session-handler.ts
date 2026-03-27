@@ -1,6 +1,7 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { Logger } from '../../logger';
+import { userSettingsStore, THEME_NAMES, type SessionTheme } from '../../user-settings-store';
 
 /**
  * Handles session commands (sessions/all_sessions/terminate)
@@ -18,6 +19,36 @@ export class SessionHandler implements CommandHandler {
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { user, channel, text, threadTs, say } = ctx;
+
+    // Session theme command (e.g., "session theme=A")
+    if (CommandParser.isSessionThemeCommand(text)) {
+      const parsed = CommandParser.parseSessionThemeCommand(text);
+      if (parsed) {
+        const resolved = userSettingsStore.resolveThemeInput(parsed.theme);
+        if (resolved === null) {
+          const validThemes = Object.entries(THEME_NAMES)
+            .map(([k, v]) => `\`${k}\` (${v})`)
+            .join(', ');
+          await say({
+            text: `❌ 알 수 없는 테마: \`${parsed.theme}\`\n사용 가능: ${validThemes}, \`rotate\` (자동 순환)`,
+            thread_ts: threadTs,
+          });
+        } else if (resolved === 'rotate') {
+          userSettingsStore.setUserSessionTheme(user, undefined);
+          await say({
+            text: `🎨 세션 테마가 *자동 순환* 모드로 설정되었습니다. 매번 다른 테마가 표시됩니다.`,
+            thread_ts: threadTs,
+          });
+        } else {
+          userSettingsStore.setUserSessionTheme(user, resolved);
+          await say({
+            text: `🎨 세션 테마가 *${resolved} (${THEME_NAMES[resolved]})* 로 고정되었습니다.\n해제: \`session theme=rotate\``,
+            thread_ts: threadTs,
+          });
+        }
+      }
+      return { handled: true };
+    }
 
     // Sessions command (user's sessions)
     if (CommandParser.isSessionsCommand(text)) {

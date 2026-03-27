@@ -30,6 +30,16 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
+// Session list display themes
+export const SESSION_THEMES = ['A', 'B', 'C', 'D'] as const;
+export type SessionTheme = typeof SESSION_THEMES[number];
+export const THEME_NAMES: Record<SessionTheme, string> = {
+  A: 'Classic',
+  B: 'Compact',
+  C: 'Rich Card',
+  D: 'Minimal',
+};
+
 export interface UserSettings {
   userId: string;
   defaultDirectory: string;
@@ -37,6 +47,7 @@ export interface UserSettings {
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
   defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
+  sessionTheme?: SessionTheme;  // session list display theme (A/B/C/D), undefined = rotate
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -368,6 +379,35 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Get user's session theme (undefined = rotate)
+   */
+  getUserSessionTheme(userId: string): SessionTheme | undefined {
+    return this.settings[userId]?.sessionTheme;
+  }
+
+  /**
+   * Set user's session theme. Pass undefined to enable rotation.
+   */
+  setUserSessionTheme(userId: string, theme: SessionTheme | undefined): void {
+    this.patchUserSettings(userId, { sessionTheme: theme } as Partial<UserSettings>);
+    logger.info('Set user session theme', { userId, theme: theme ?? 'rotate' });
+  }
+
+  /**
+   * Resolve theme input string to SessionTheme
+   */
+  resolveThemeInput(input: string): SessionTheme | 'rotate' | null {
+    const normalized = input.toUpperCase().trim();
+    if (normalized === 'ROTATE' || normalized === 'AUTO') return 'rotate';
+    if (SESSION_THEMES.includes(normalized as SessionTheme)) return normalized as SessionTheme;
+    // Also accept full names
+    for (const [key, name] of Object.entries(THEME_NAMES)) {
+      if (name.toLowerCase() === input.toLowerCase().trim()) return key as SessionTheme;
+    }
+    return null;
   }
 
   /**

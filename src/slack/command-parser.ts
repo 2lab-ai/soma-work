@@ -10,6 +10,7 @@ export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
+export type SessionThemeCommandResult = { theme: string } | null;
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
 export type LlmChatAction =
   | { action: 'show' }
@@ -320,7 +321,22 @@ export class CommandParser {
    * Check if text is a sessions command (with optional 'public' flag)
    */
   static isSessionsCommand(text: string): boolean {
-    return /^\/?sessions?(?:\s+public)?$/i.test(text.trim());
+    return /^\/?sessions?(?:\s+(?:public|theme\s*=\s*\S+))?$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a session theme command (e.g., "session theme=A", "sessions theme=rotate")
+   */
+  static isSessionThemeCommand(text: string): boolean {
+    return /^\/?sessions?\s+theme\s*=\s*\S+$/i.test(text.trim());
+  }
+
+  /**
+   * Parse session theme command
+   */
+  static parseSessionThemeCommand(text: string): SessionThemeCommandResult {
+    const match = text.trim().match(/^\/?sessions?\s+theme\s*=\s*(\S+)$/i);
+    return match ? { theme: match[1] } : null;
   }
 
   /**
