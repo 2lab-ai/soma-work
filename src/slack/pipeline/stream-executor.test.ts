@@ -488,11 +488,12 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
-  it('does NOT clear session for unrelated errors containing partial image-related words', async () => {
+  it('clears session for unrelated errors containing partial image-related words (safe default)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
-    // This should NOT match — "invalid image_url" is not an image processing error
+    // "invalid image_url" is NOT an image processing error, but unknown errors
+    // now clear session as safe default (Issue #118)
     const error = new Error('invalid image_url field in API request');
 
     await (executor as any).handleError(
@@ -505,11 +506,11 @@ describe('Abort handling', () => {
       say
     );
 
-    // Session should NOT be cleared for unrelated errors
-    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // Issue #118: Unknown errors now clear session (safe default)
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('Session:* ✅ 유지됨');
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
   it('clears session for image error even when message also matches recoverable patterns', async () => {
@@ -583,6 +584,178 @@ describe('Abort handling', () => {
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118: S1 — "No conversation found" SDK error must be detected
+  it('clears session for "No conversation found with session ID" SDK error', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('No conversation found with session ID: 5f232806-df17-47a3-9eb0-8bc76a2bac99');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118: S2 — Unknown errors should clear session (safe default)
+  it('clears session on completely unrecognized error (safe default)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Some completely unexpected error from SDK v99');
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118: S3 — Existing recoverable errors must still be preserved
+  it.each([
+    "You've hit your limit",
+    'rate limit exceeded',
+    'temporarily unavailable',
+    'timed out waiting for response',
+    'Connection reset by peer',
+  ])('still preserves session on recoverable error: %s', async (msg) => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error(msg);
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // Issue #118: S4 — Existing invalid session patterns still matched
+  it.each([
+    'conversation not found',
+    'session not found',
+    'cannot resume this session',
+    'invalid resume token provided',
+  ])('clears session on existing invalid resume pattern: %s', async (msg) => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error(msg);
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118 codex review: stderr-only "No conversation found" must still clear session
+  it('clears session when "No conversation found" appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: No conversation found with session ID: abc-123';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Invalid resume (stderr) takes precedence over recoverable (message)
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118 codex review: stderr-only rate limit must still preserve session
+  it('preserves session when rate limit appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = "You've hit your limit · resets 8pm";
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // Issue #118 codex review: direct unit test for isInvalidResumeSessionError
+  it('isInvalidResumeSessionError detects "no conversation found" pattern directly', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('No conversation found with session ID: 5f232806');
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(true);
+  });
+
+  it('isInvalidResumeSessionError detects pattern in stderrContent', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'No conversation found with session ID: abc';
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(true);
+  });
+
+  it('isInvalidResumeSessionError returns false for unrelated errors', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Something completely different');
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(false);
   });
 
   it('clears session for invalid resume/session-not-found errors', async () => {
