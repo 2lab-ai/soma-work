@@ -201,4 +201,87 @@ describe('SessionRegistry persistence', () => {
     expect(restored).toBeDefined();
     expect(restored!.sessionWorkingDir).toBe('/tmp/U123/session_1711111111111_abc123');
   });
+
+  // Edge case: legacy session without sessionWorkingDir survives save/load
+  it('legacy session without sessionWorkingDir loads with undefined', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C123', '171.007');
+    session.sessionId = 'session-7';
+    session.state = 'MAIN';
+    // sessionWorkingDir intentionally NOT set (simulates pre-PR#77 session)
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C123', '171.007');
+
+    expect(restored).toBeDefined();
+    expect(restored!.sessionWorkingDir).toBeUndefined();
+    // effectiveWorkingDir fallback: undefined || baseDir = baseDir
+    const baseDir = '/tmp/U123';
+    const effectiveDir = restored!.sessionWorkingDir || baseDir;
+    expect(effectiveDir).toBe(baseDir);
+  });
+
+  // Edge case: multiple sessions with different sessionWorkingDirs
+  it('preserves distinct sessionWorkingDir per session across save/load', () => {
+    const writer = new SessionRegistry();
+
+    const s1 = writer.createSession('U123', 'Tester', 'C123', '171.008');
+    s1.sessionId = 'session-8a';
+    s1.sessionWorkingDir = '/tmp/U123/session_aaa';
+    s1.state = 'MAIN';
+
+    const s2 = writer.createSession('U456', 'Tester2', 'C456', '171.009');
+    s2.sessionId = 'session-8b';
+    s2.sessionWorkingDir = '/tmp/U456/session_bbb';
+    s2.state = 'MAIN';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+
+    const r1 = reader.getSession('C123', '171.008');
+    const r2 = reader.getSession('C456', '171.009');
+
+    expect(r1).toBeDefined();
+    expect(r2).toBeDefined();
+    expect(r1!.sessionWorkingDir).toBe('/tmp/U123/session_aaa');
+    expect(r2!.sessionWorkingDir).toBe('/tmp/U456/session_bbb');
+    // No cross-contamination
+    expect(r1!.sessionWorkingDir).not.toBe(r2!.sessionWorkingDir);
+  });
+
+  // Edge case: backward compatibility — old JSON without sessionWorkingDir field
+  it('loads old JSON format without sessionWorkingDir field gracefully', () => {
+    // Write a JSON file manually without sessionWorkingDir
+    const fs = require('fs');
+    const oldFormatSessions = [{
+      key: 'C123-171.010',
+      ownerId: 'U123',
+      ownerName: 'Tester',
+      channelId: 'C123',
+      threadTs: '171.010',
+      sessionId: 'session-old',
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+      state: 'MAIN',
+      workflow: 'default',
+      // NO sessionWorkingDir field — simulates pre-fix JSON
+    }];
+    fs.writeFileSync(
+      require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
+      JSON.stringify(oldFormatSessions, null, 2),
+    );
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C123', '171.010');
+
+    expect(restored).toBeDefined();
+    expect(restored!.sessionWorkingDir).toBeUndefined();
+    expect(restored!.sessionId).toBe('session-old');
+  });
 });
