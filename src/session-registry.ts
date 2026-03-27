@@ -957,6 +957,11 @@ export class SessionRegistry {
       return false;
     }
 
+    // Ghost Session Fix #99: set terminated flag BEFORE deleting from Map.
+    // In-flight code holding a reference to this session object will see the flag
+    // and self-terminate, even though the Map entry is gone.
+    session.terminated = true;
+
     // Metrics: emit session_closed event before deletion (fire-and-forget)
     getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(err => this.logger.debug('metrics emit failed', err));
 
