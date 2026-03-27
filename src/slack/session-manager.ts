@@ -234,15 +234,20 @@ export class SessionUiManager {
 
     const hasIssue = !!session.links?.issue;
     const hasPR = !!session.links?.pr;
+    const hasDoc = !!session.links?.doc;
     const isSleeping = session.state === 'SLEEPING';
     const expiresText = isSleeping
       ? `💤 ⏳ ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
       : `⏳ ${MessageFormatter.formatExpiresIn(session.lastActivity)}`;
 
+    // Truncate external titles to prevent exceeding 2000 char field limit
+    const truncate = (s: string, max = 120) => s.length > max ? s.slice(0, max) + '…' : s;
+
     // Layout strategy (always 2-column grid):
     //   Row 1: title       | model         (always)
     //   Row 2: issue       | time          (if issue)
     //   Row 3: PR          | expiry        (if PR)
+    //   Row N: doc         | (spacer)      (if doc, appended last)
     //   -- Fallbacks when fewer links --
     //   issue only:  Row 2: issue | 🕐 time · expiry
     //   PR only:     Row 2: PR    | 🕐 time · expiry
@@ -252,7 +257,7 @@ export class SessionUiManager {
       // 3-row card: title | model / issue | time / PR | expiry
       const issue = session.links!.issue!;
       const issueLabel = issue.label || '이슈';
-      const issueTitle = issueMeta?.title ? `: ${issueMeta.title}` : '';
+      const issueTitle = issueMeta?.title ? `: ${truncate(issueMeta.title)}` : '';
       const issueStatus = issueMeta?.status ? ` ${getStatusEmoji(issueMeta.status)}${issueMeta.status}` : '';
       fields.push({ type: 'mrkdwn', text: `🎫 <${issue.url}|${issueLabel}${issueTitle}>${issueStatus}` });
       fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo}` });
@@ -268,7 +273,7 @@ export class SessionUiManager {
       // 2-row card: title | model / issue | time · expiry
       const issue = session.links!.issue!;
       const issueLabel = issue.label || '이슈';
-      const issueTitle = issueMeta?.title ? `: ${issueMeta.title}` : '';
+      const issueTitle = issueMeta?.title ? `: ${truncate(issueMeta.title)}` : '';
       const issueStatus = issueMeta?.status ? ` ${getStatusEmoji(issueMeta.status)}${issueMeta.status}` : '';
       fields.push({ type: 'mrkdwn', text: `🎫 <${issue.url}|${issueLabel}${issueTitle}>${issueStatus}` });
       fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo} · ${expiresText}` });
@@ -277,7 +282,7 @@ export class SessionUiManager {
       // 2-row card: title | model / PR | time · expiry
       const pr = session.links!.pr!;
       const prLabel = pr.label || 'PR';
-      const prTitle = prMeta?.title ? `: ${prMeta.title}` : '';
+      const prTitle = prMeta?.title ? `: ${truncate(prMeta.title)}` : '';
       const prStatusEmoji = getStatusEmoji(prMeta?.status, 'pr');
       const prStatus = prMeta?.status ? ` ${prStatusEmoji}${prMeta.status}` : '';
       fields.push({ type: 'mrkdwn', text: `🔀 <${pr.url}|${prLabel}${prTitle}>${prStatus}${reviewChip}` });
@@ -287,6 +292,13 @@ export class SessionUiManager {
       // 2-row card: title | model / time | expiry
       fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo}` });
       fields.push({ type: 'mrkdwn', text: expiresText });
+    }
+
+    // Doc link row (appended if present, any combination)
+    if (hasDoc) {
+      const doc = session.links!.doc!;
+      fields.push({ type: 'mrkdwn', text: `📄 <${doc.url}|${doc.label || '문서'}>` });
+      fields.push({ type: 'mrkdwn', text: ' ' }); // spacer for grid alignment
     }
 
     // Ensure max 10 fields (Slack limit)
@@ -677,54 +689,6 @@ export class SessionUiManager {
     }
 
     return '_기타_';
-  }
-
-  /**
-   * Format links line for session display
-   * Shows title and status from Jira/GitHub API when available.
-   * Priority: issue title > PR title (when no issue)
-   */
-  private async formatLinksLine(links?: SessionLinks): Promise<string | null> {
-    if (!links) return null;
-
-    const parts: string[] = [];
-
-    // Fetch metadata (title + status) in parallel
-    const [issueMeta, prMeta] = await Promise.all([
-      links.issue ? fetchLinkMetadata(links.issue) : undefined,
-      links.pr ? fetchLinkMetadata(links.pr) : undefined,
-    ]);
-
-    if (links.issue) {
-      const label = links.issue.label || '이슈';
-      const title = issueMeta?.title ? `: ${issueMeta.title}` : '';
-      const statusEmoji = getStatusEmoji(issueMeta?.status);
-      const statusText = issueMeta?.status ? ` ${statusEmoji}${issueMeta.status}` : '';
-      parts.push(`🎫 <${links.issue.url}|${label}${title}>${statusText}`);
-    }
-    if (links.pr) {
-      const label = links.pr.label || 'PR';
-      // Only show PR title if there's no issue (issue title takes priority)
-      const title = !links.issue && prMeta?.title ? `: ${prMeta.title}` : '';
-      const statusEmoji = getStatusEmoji(prMeta?.status, 'pr');
-      const statusText = prMeta?.status ? ` ${statusEmoji}${prMeta.status}` : '';
-
-      // Fetch review status for open PRs
-      let reviewChip = '';
-      if (links.pr.provider === 'github' && prMeta?.status === 'open') {
-        const reviewStatus = await fetchGitHubPRReviewStatus(links.pr);
-        if (reviewStatus === 'approved') reviewChip = ' · ✅ Approved';
-        else if (reviewStatus === 'changes_requested') reviewChip = ' · 🔴 Changes Requested';
-        else if (reviewStatus === 'pending') reviewChip = ' · ⏳ Review 대기';
-      }
-
-      parts.push(`🔀 <${links.pr.url}|${label}${title}>${statusText}${reviewChip}`);
-    }
-    if (links.doc) {
-      parts.push(`📄 <${links.doc.url}|${links.doc.label || '문서'}>`);
-    }
-
-    return parts.length > 0 ? `🔗 ${parts.join(' | ')}` : null;
   }
 
   /**
