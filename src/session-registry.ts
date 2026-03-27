@@ -94,6 +94,8 @@ interface SerializedSession {
   sourceWorkingDirs?: string[];
   // Mid-thread source thread reference
   sourceThread?: { channel: string; threadTs: string };
+  // Session-unique working directory for workspace isolation (#77)
+  sessionWorkingDir?: string;
 }
 
 /**
@@ -1140,6 +1142,9 @@ export class SessionRegistry {
             isOnboarding: session.isOnboarding,
             sourceWorkingDirs: session.sourceWorkingDirs,
             sourceThread: session.sourceThread,
+            // Session workspace isolation (#77): persist session-unique cwd
+            // so Claude SDK can find its conversation files after restart
+            sessionWorkingDir: session.sessionWorkingDir,
           });
         }
       }
@@ -1230,6 +1235,9 @@ export class SessionRegistry {
               return valid;
             }
           ),
+          // Session workspace isolation (#77): restore session-unique cwd
+          // so Claude SDK resumes in the same project dir where conversations are stored
+          sessionWorkingDir: serialized.sessionWorkingDir,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);

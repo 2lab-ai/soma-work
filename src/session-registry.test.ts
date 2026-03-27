@@ -182,4 +182,23 @@ describe('SessionRegistry persistence', () => {
     const snapshot = registry.getSessionResourceSnapshot('C123', '171.005');
     expect(snapshot.active.issue).toBeUndefined();
   });
+
+  // Session Recovery Fix: sessionWorkingDir must survive save/load
+  // Without this, Claude SDK resumes in the wrong cwd → different project hash → "No conversation found"
+  it('persists and restores sessionWorkingDir across save/load', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C123', '171.006');
+    session.sessionId = 'session-6';
+    session.sessionWorkingDir = '/tmp/U123/session_1711111111111_abc123';
+    session.state = 'MAIN';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C123', '171.006');
+
+    expect(restored).toBeDefined();
+    expect(restored!.sessionWorkingDir).toBe('/tmp/U123/session_1711111111111_abc123');
+  });
 });
