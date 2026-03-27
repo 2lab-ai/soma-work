@@ -31,13 +31,21 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
 // Session list display themes
-export const SESSION_THEMES = ['A', 'B', 'C', 'D'] as const;
+export const SESSION_THEMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'] as const;
 export type SessionTheme = typeof SESSION_THEMES[number];
 export const THEME_NAMES: Record<SessionTheme, string> = {
   A: 'Classic',
   B: 'Compact',
   C: 'Rich Card',
   D: 'Minimal',
+  E: 'Dashboard',
+  F: 'Table',
+  G: 'One-Liner',
+  H: 'Status Bar',
+  I: 'Kanban',
+  J: 'Timeline',
+  K: 'Progress',
+  L: 'Notification',
 };
 
 export interface UserSettings {
