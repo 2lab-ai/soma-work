@@ -116,17 +116,19 @@ function parseStatusColor(colorClass: string): ComponentStatus {
 function parseStatusPage(html: string): ClaudeStatusInfo | null {
   try {
     // Extract components: match component-container blocks with status color and name
-    const componentRegex = /<div\s+class="component-container\s+(status-\w+)"[^>]*>[\s\S]*?<div\s+class="name">([\s\S]*?)<\/div>[\s\S]*?<\/div>\s*<\/div>/g;
+    // Fix: support extra CSS classes before status-* (e.g., "component-container border-color status-red")
+    const componentRegex = /<div\s+class="component-container[^"]*?(status-\w+)"[^>]*>[\s\S]*?<div\s+class="name">([\s\S]*?)<\/div>[\s\S]*?<\/div>\s*<\/div>/g;
 
     const components: ClaudeStatusInfo['components'] = [];
     let match: RegExpExecArray | null;
 
     while ((match = componentRegex.exec(html)) !== null) {
       const statusColor = match[1];
-      const name = match[2].trim();
-      if (name) {
+      // Fix: strip HTML tags from name (e.g., <span>Claude API</span> → Claude API)
+      const rawName = match[2].replace(/<[^>]*>/g, '').trim();
+      if (rawName) {
         components.push({
-          name,
+          name: rawName,
           status: parseStatusColor(statusColor),
         });
       }
@@ -155,11 +157,14 @@ function parseStatusPage(html: string): ClaudeStatusInfo | null {
     }
 
     // Derive overall status
+    // Fix: Bug 4 — unknown components should not default to 'operational'
     let overall: ClaudeStatusInfo['overall'] = 'operational';
     if (components.some(c => c.status === 'outage')) {
       overall = 'outage';
     } else if (components.some(c => c.status === 'degraded')) {
       overall = 'degraded';
+    } else if (components.some(c => c.status === 'unknown')) {
+      overall = 'unknown';
     }
 
     return {

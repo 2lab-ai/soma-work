@@ -162,6 +162,11 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
     // If components is empty, that's acceptable graceful degradation
     expect(status === null || status.components.length === 0).toBe(true);
   });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 });
 
 // ============================================================
@@ -172,6 +177,11 @@ describe('Scenario 2 — Cache hit on repeated errors', () => {
   beforeEach(() => {
     invalidateStatusCache();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   // Trace: S2, Section 3a — cache hit
@@ -223,6 +233,11 @@ describe('Scenario 3 — Graceful degradation when unreachable', () => {
   beforeEach(() => {
     invalidateStatusCache();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   // Trace: S3, Section 3a
@@ -392,5 +407,224 @@ describe('Scenario 5 — formatErrorForUser with status', () => {
 
     // Should return empty string when given null/undefined
     expect(result).toBe('');
+  });
+});
+
+// ============================================================
+// S1 — Fix unknown status overall derivation (Bug 4)
+// ============================================================
+
+describe('S1 — unknown status overall derivation', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('overall_unknown_when_all_components_unknown', async () => {
+    const html = `
+<div class="component-container status-purple">
+  <div class="component-inner-container status-purple">
+    <div class="name">Claude API</div>
+    <div class="component-status">Unknown</div>
+  </div>
+</div>
+<div class="component-container status-blue">
+  <div class="component-inner-container status-blue">
+    <div class="name">Claude Code</div>
+    <div class="component-status">Unknown</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+
+    expect(status).not.toBeNull();
+    // Bug 4: should be 'unknown', not 'operational'
+    expect(status!.overall).toBe('unknown');
+  });
+
+  it('overall_unknown_when_mix_of_operational_and_unknown', async () => {
+    const html = `
+<div class="component-container status-green">
+  <div class="component-inner-container status-green">
+    <div class="name">Claude API</div>
+    <div class="component-status">Operational</div>
+  </div>
+</div>
+<div class="component-container status-purple">
+  <div class="component-inner-container status-purple">
+    <div class="name">Claude Code</div>
+    <div class="component-status">Unknown</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+
+    expect(status).not.toBeNull();
+    expect(status!.overall).toBe('unknown');
+  });
+});
+
+// ============================================================
+// S2 — Fix operational+incidents guard (Bug 5)
+// ============================================================
+
+describe('S2 — operational with incidents visibility', () => {
+  it('formatStatusForSlack_operational_with_incidents_shows_full_block', () => {
+    const status: ClaudeStatusInfo = {
+      overall: 'operational',
+      components: [
+        { name: 'Claude API', status: 'operational' },
+        { name: 'Claude Code', status: 'operational' },
+      ],
+      incidents: [
+        { title: 'Investigating elevated latency', status: 'Investigating' },
+      ],
+      fetchedAt: Date.now(),
+    };
+
+    const result = formatStatusForSlack(status);
+
+    // Should show incidents even when overall is operational
+    expect(result).toContain('Investigating elevated latency');
+    expect(result).toContain('Active Incidents');
+  });
+});
+
+// ============================================================
+// S3 — Inflight coalescing test
+// ============================================================
+
+describe('S3 — Inflight coalescing', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('concurrent_calls_share_single_fetch', async () => {
+    let resolveFirst: (value: any) => void;
+    const fetchPromise = new Promise(resolve => { resolveFirst = resolve; });
+
+    const mockFetch = vi.fn().mockReturnValue(fetchPromise);
+    vi.stubGlobal('fetch', mockFetch);
+
+    // Fire 3 concurrent calls
+    const p1 = fetchClaudeStatus();
+    const p2 = fetchClaudeStatus();
+    const p3 = fetchClaudeStatus();
+
+    // Resolve the single fetch
+    resolveFirst!({
+      ok: true,
+      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+    });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+    // All should get same result
+    expect(r1).not.toBeNull();
+    expect(r2).toEqual(r1);
+    expect(r3).toEqual(r1);
+
+    // Only ONE fetch call
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('failed_inflight_allows_retry', async () => {
+    const mockFetch = vi.fn()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_ALL_OPERATIONAL),
+      });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const first = await fetchClaudeStatus();
+    expect(first).toBeNull();
+
+    // After failure, inflight should be cleared, allowing retry
+    const second = await fetchClaudeStatus();
+    expect(second).not.toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+// S4 — Regex robustness tests
+// ============================================================
+
+describe('S4 — Regex robustness', () => {
+  beforeEach(() => {
+    invalidateStatusCache();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('parser_handles_extra_css_classes', async () => {
+    const html = `
+<div class="component-container border-color status-red" data-component-id="abc123">
+  <div class="component-inner-container border-color status-red">
+    <div class="name">Claude API</div>
+    <div class="component-status">Partial Outage</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+
+    expect(status).not.toBeNull();
+    expect(status!.components.length).toBe(1);
+    expect(status!.components[0].name).toBe('Claude API');
+    expect(status!.components[0].status).toBe('outage');
+  });
+
+  it('parser_strips_html_from_component_names', async () => {
+    const html = `
+<div class="component-container status-green">
+  <div class="component-inner-container status-green">
+    <div class="name"><span>Claude API</span></div>
+    <div class="component-status">Operational</div>
+  </div>
+</div>`;
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(html),
+    }));
+
+    const status = await fetchClaudeStatus();
+
+    expect(status).not.toBeNull();
+    expect(status!.components.length).toBe(1);
+    // Should be clean text, not "<span>Claude API</span>"
+    expect(status!.components[0].name).toBe('Claude API');
+    expect(status!.components[0].name).not.toContain('<');
   });
 });
