@@ -53,7 +53,8 @@ export class V1QueryAdapter implements IAgentSession {
   async start(prompt: string): Promise<AgentTurnResult> {
     this._started = true;
     this.turnCount = 1;
-    this._abortController = new AbortController();
+    // Ghost Session Fix #99: reuse baseParams.abortController (registered in RequestCoordinator)
+    // instead of creating a new one that abort signals can't reach
     return this.executeTurn(prompt);
   }
 
@@ -62,17 +63,20 @@ export class V1QueryAdapter implements IAgentSession {
       throw new Error('Session not started. Call start() first.');
     }
     this.turnCount++;
-    this._abortController = new AbortController();
+    // Ghost Session Fix #99: reuse baseParams.abortController — same as start()
     return this.executeTurn(userPrompt);
   }
 
   cancel(): void {
-    this._abortController.abort();
+    // Ghost Session Fix #99: abort the current baseParams controller
+    const controller = (this.baseParams as any).abortController ?? this._abortController;
+    controller.abort();
   }
 
   dispose(): void {
-    // v1 query 기반이라 연결 유지 없음 — no-op
-    this._abortController.abort();
+    // v1 query 기반이라 연결 유지 없음 — abort and cleanup
+    const controller = (this.baseParams as any).abortController ?? this._abortController;
+    controller.abort();
   }
 
   /** 마지막 실행의 ExecuteResult 호환 반환 */
@@ -151,10 +155,13 @@ export class V1QueryAdapter implements IAgentSession {
     await this.runner?.begin(turnId);
 
     try {
+      // Ghost Session Fix #99: always use the current baseParams.abortController
+      // (the one registered in RequestCoordinator), not a cached copy
+      const currentController = (this.baseParams as any).abortController ?? this._abortController;
       const params = {
         ...this.baseParams,
         text,
-        abortController: this._abortController,
+        abortController: currentController,
       };
 
       const executeResult = await this.executor.execute(params);
