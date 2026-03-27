@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 /**
  * RED tests for Issue #112: Array-style pagination (offset/limit) for get_thread_messages
  *
- * Tests the core logic extracted from SlackThreadMcpServer:
+ * Tests the core logic extracted from SlackMcpServer:
  * - handleGetThreadMessages with offset/limit (array mode)
  * - handleGetThreadMessages with anchor_ts/before/after (legacy mode)
  * - Mode detection: array vs legacy
@@ -21,7 +21,7 @@ const fs = require('fs');
 const path = require('path');
 
 function readSourceInterface(): string[] {
-  const sourcePath = path.join(__dirname, 'slack-thread-mcp-server.ts');
+  const sourcePath = path.join(__dirname, 'slack-mcp-server.ts');
   const source = fs.readFileSync(sourcePath, 'utf-8');
 
   const interfaceMatch = source.match(/interface\s+GetThreadMessagesResult\s*\{([^}]+)\}/);
@@ -35,7 +35,7 @@ function readSourceInterface(): string[] {
 }
 
 function readSourceToolSchema(): string {
-  const sourcePath = path.join(__dirname, 'slack-thread-mcp-server.ts');
+  const sourcePath = path.join(__dirname, 'slack-mcp-server.ts');
   return fs.readFileSync(sourcePath, 'utf-8');
 }
 

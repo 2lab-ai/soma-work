@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 
 /**
- * Slack Thread MCP Server
+ * Slack MCP Server
  *
- * Provides thread context tools for Claude when the bot is mentioned
- * mid-thread. Allows the model to explore thread history on-demand
- * rather than injecting everything into the prompt upfront.
+ * Provides Slack thread tools for Claude: read messages, download files,
+ * and upload files/media to the current thread.
  *
  * Tools:
  *   - get_thread_messages: Fetch messages from the thread (array mode or legacy mode)
  *   - download_thread_file: Download a file attachment from the thread
+ *   - send_file: Upload a file to the current Slack thread
+ *   - send_media: Upload media (image/audio/video) to the current Slack thread
  *
  * Environment variables (set by McpConfigBuilder):
  *   - SLACK_BOT_TOKEN: Bot token for Slack API calls
- *   - SLACK_THREAD_CONTEXT: JSON { channel, threadTs, mentionTs }
+ *   - SLACK_MCP_CONTEXT: JSON { channel, threadTs, mentionTs }
  */
 
 import * as fs from 'fs/promises';
@@ -30,11 +31,11 @@ import { WebClient } from '@slack/web-api';
 
 import { StderrLogger } from '../_shared/stderr-logger.js';
 
-const logger = new StderrLogger('SlackThreadMCP');
+const logger = new StderrLogger('SlackMCP');
 
 // ── Types ────────────────────────────────────────────────
 
-interface SlackThreadContext {
+interface SlackMcpContext {
   channel: string;
   threadTs: string;
   mentionTs: string;
@@ -73,9 +74,21 @@ interface GetThreadMessagesResult {
   has_more: boolean;
 }
 
-// ── Helpers ──────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────
+
+/** Maximum file size for uploads: 1 GB */
+const MAX_FILE_SIZE = 1_073_741_824;
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+
+/** All media extensions that send_media accepts */
+const ALLOWED_MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+
+// ── Helpers ──────────────────────────────────────────────
 
 /** Check if a mimetype or filename indicates an image file. */
 function isImageFile(mimetype?: string, filename?: string): boolean {
@@ -87,10 +100,62 @@ function isImageFile(mimetype?: string, filename?: string): boolean {
   return false;
 }
 
+/** Classify a file extension into media category. */
+function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+  return null;
+}
+
 /** Extract pagination cursor from Slack API response, returning undefined when exhausted. */
 function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
   const c = response.response_metadata?.next_cursor;
   return c && c.length > 0 ? c : undefined;
+}
+
+/**
+ * Validate a file path for upload security.
+ * Checks: existence, readability, not a symlink, size ≤ 1GB, no path traversal.
+ */
+async function validateFilePath(filePath: string): Promise<{ resolvedPath: string; size: number }> {
+  if (!filePath) {
+    throw new Error('file_path is required');
+  }
+
+  const resolvedPath = path.resolve(filePath);
+
+  // Path traversal check: reject if original path contains '..' segments
+  if (filePath.includes('..')) {
+    throw new Error(`Path traversal not allowed: ${filePath}`);
+  }
+
+  // Symlink check
+  let stat;
+  try {
+    stat = await fs.lstat(resolvedPath);
+  } catch {
+    throw new Error(`File not found or not readable: ${resolvedPath}`);
+  }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Symlinks not allowed for security: ${resolvedPath}`);
+  }
+
+  // Readability check
+  try {
+    await fs.access(resolvedPath, (await import('fs')).constants.R_OK);
+  } catch {
+    throw new Error(`File not found or not readable: ${resolvedPath}`);
+  }
+
+  // Size check
+  const realStat = await fs.stat(resolvedPath);
+  if (realStat.size > MAX_FILE_SIZE) {
+    throw new Error(`File too large: ${realStat.size} bytes. Maximum: ${MAX_FILE_SIZE} bytes (1GB)`);
+  }
+
+  return { resolvedPath, size: realStat.size };
 }
 
 // ── Server ───────────────────────────────────────────────
@@ -102,15 +167,15 @@ const ALLOWED_FILE_HOSTS = new Set([
   'files-tmb.slack.com',
 ]);
 
-class SlackThreadMcpServer {
+class SlackMcpServer {
   private server: Server;
   private slack: WebClient;
   private token: string;
-  private context: SlackThreadContext;
+  private context: SlackMcpContext;
 
   constructor() {
     this.server = new Server(
-      { name: 'slack-thread', version: '2.0.0' },
+      { name: 'slack-mcp', version: '3.0.0' },
       { capabilities: { tools: {} } }
     );
 
@@ -119,9 +184,9 @@ class SlackThreadMcpServer {
       throw new Error('SLACK_BOT_TOKEN environment variable is required');
     }
 
-    const contextStr = process.env.SLACK_THREAD_CONTEXT;
+    const contextStr = process.env.SLACK_MCP_CONTEXT;
     if (!contextStr) {
-      throw new Error('SLACK_THREAD_CONTEXT environment variable is required');
+      throw new Error('SLACK_MCP_CONTEXT environment variable is required');
     }
 
     this.slack = new WebClient(token);
@@ -130,12 +195,12 @@ class SlackThreadMcpServer {
       this.context = JSON.parse(contextStr);
     } catch (err) {
       throw new Error(
-        `Failed to parse SLACK_THREAD_CONTEXT: ${(err as Error).message}. Raw: ${contextStr.substring(0, 200)}`
+        `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${contextStr.substring(0, 200)}`
       );
     }
 
     if (!this.context.channel || !this.context.threadTs) {
-      throw new Error('SLACK_THREAD_CONTEXT must contain channel and threadTs');
+      throw new Error('SLACK_MCP_CONTEXT must contain channel and threadTs');
     }
     // Default mentionTs to threadTs if not provided
     if (!this.context.mentionTs) {
@@ -213,6 +278,74 @@ class SlackThreadMcpServer {
             required: ['file_url', 'file_name'],
           },
         },
+        {
+          name: 'send_file',
+          description: [
+            'Upload a file from the local filesystem to the current Slack thread.',
+            'Supports any file type up to 1GB. The file is shared as a thread reply.',
+            'Use this for code outputs, reports, logs, archives, or any generated artifact.',
+          ].join('\n'),
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              file_path: {
+                type: 'string',
+                description: 'Absolute path to the file on local filesystem',
+              },
+              filename: {
+                type: 'string',
+                description: 'Display name in Slack (defaults to basename of file_path)',
+              },
+              title: {
+                type: 'string',
+                description: 'File title shown in Slack',
+              },
+              initial_comment: {
+                type: 'string',
+                description: 'Message posted alongside the file',
+              },
+            },
+            required: ['file_path'],
+          },
+        },
+        {
+          name: 'send_media',
+          description: [
+            'Upload a media file (image, audio, or video) to the current Slack thread.',
+            'Validates that the file is a supported media type before uploading.',
+            '',
+            'Supported formats:',
+            '- Images: jpg, jpeg, png, gif, webp, svg, bmp, ico, tiff, heic, heif, avif',
+            '- Audio: mp3, wav, ogg, flac, m4a, aac, wma',
+            '- Video: mp4, mov, avi, mkv, webm, wmv, m4v, mpg, mpeg, 3gp',
+          ].join('\n'),
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              file_path: {
+                type: 'string',
+                description: 'Absolute path to the media file',
+              },
+              filename: {
+                type: 'string',
+                description: 'Display name in Slack (defaults to basename of file_path)',
+              },
+              title: {
+                type: 'string',
+                description: 'Media title shown in Slack',
+              },
+              alt_text: {
+                type: 'string',
+                description: 'Alt text for images (accessibility)',
+              },
+              initial_comment: {
+                type: 'string',
+                description: 'Message posted alongside the media',
+              },
+            },
+            required: ['file_path'],
+          },
+        },
       ],
     }));
 
@@ -226,6 +359,10 @@ class SlackThreadMcpServer {
             return await this.handleGetThreadMessages(args as any);
           case 'download_thread_file':
             return await this.handleDownloadFile(args as any);
+          case 'send_file':
+            return await this.handleSendFile(args as any);
+          case 'send_media':
+            return await this.handleSendMedia(args as any);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -382,16 +519,13 @@ class SlackThreadMcpServer {
   /**
    * Fetch a slice of thread messages by offset and limit.
    * Thread is 0-indexed: offset 0 = root, offset 1 = first reply, etc.
-   *
-   * Uses conversations.replies pagination to skip to the desired offset
-   * and collect up to `limit` messages.
    */
   private async fetchThreadSlice(offset: number, limit: number, totalCount: number): Promise<any[]> {
     if (totalCount === 0 || offset >= totalCount) return [];
 
     const collected: any[] = [];
     let cursor: string | undefined;
-    let currentIndex = 0; // Tracks position including root (index 0)
+    let currentIndex = 0;
 
     do {
       const response = await this.slack.conversations.replies({
@@ -408,14 +542,12 @@ class SlackThreadMcpServer {
         }
         currentIndex++;
 
-        // Early exit once we have enough
         if (collected.length >= limit) break;
       }
 
       cursor = extractCursor(response);
 
       if (collected.length >= limit) break;
-      // If we've passed the target range, stop
       if (currentIndex >= offset + limit) break;
     } while (cursor);
 
@@ -424,9 +556,6 @@ class SlackThreadMcpServer {
 
   /**
    * Legacy: Fetch up to `count` replies ending at (and including) anchorTs.
-   * conversations.replies does not support `latest`, so we paginate
-   * forward from thread start, skip the root message, and collect
-   * until we pass the anchor.
    */
   private async fetchMessagesBefore(anchorTs: string, count: number): Promise<any[]> {
     if (count === 0) return [];
@@ -444,26 +573,21 @@ class SlackThreadMcpServer {
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        // Skip thread root in legacy mode
         if (m.ts === this.context.threadTs) continue;
-        // Stop collecting once we pass the anchor
         if (m.ts! > anchorTs) break;
         collected.push(m);
       }
 
       cursor = extractCursor(response);
 
-      // If the last message on this page is past the anchor, stop
       if (msgs.length > 0 && msgs[msgs.length - 1].ts! > anchorTs) break;
     } while (cursor);
 
-    // Return the last `count` messages (anchor included if it exists)
     return collected.slice(-count);
   }
 
   /**
    * Legacy: Fetch up to `count` replies starting after anchorTs (exclusive).
-   * Filters out the thread root which conversations.replies always includes.
    */
   private async fetchMessagesAfter(anchorTs: string, count: number): Promise<any[]> {
     const collected: any[] = [];
@@ -475,13 +599,13 @@ class SlackThreadMcpServer {
         ts: this.context.threadTs,
         oldest: anchorTs,
         inclusive: false,
-        limit: Math.min(count + 1, 200), // +1 to account for possible root inclusion
+        limit: Math.min(count + 1, 200),
         cursor,
       });
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        if (m.ts === this.context.threadTs) continue; // Skip root
+        if (m.ts === this.context.threadTs) continue;
         collected.push(m);
         if (collected.length >= count) break;
       }
@@ -517,7 +641,6 @@ class SlackThreadMcpServer {
           name: f.name,
           mimetype: f.mimetype,
           size: f.size,
-          // Omit download URL for images to prevent Claude from downloading and Reading them
           ...(!fileIsImage && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
           ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
           ...(fileIsImage ? {
@@ -593,7 +716,7 @@ class SlackThreadMcpServer {
     const buffer = Buffer.from(await response.arrayBuffer());
 
     // Write to temp directory
-    const tempDir = path.join(os.tmpdir(), 'slack-thread-files');
+    const tempDir = path.join(os.tmpdir(), 'slack-mcp-files');
     await fs.mkdir(tempDir, { recursive: true });
 
     // Sanitize filename to prevent path traversal
@@ -607,7 +730,6 @@ class SlackThreadMcpServer {
       size: buffer.length,
     });
 
-    // Double-check: if the response content-type indicates an image, warn instead of suggesting Read
     const contentType = response.headers.get('content-type') || '';
     const isImage = isImageFile(contentType, file_name);
 
@@ -628,12 +750,127 @@ class SlackThreadMcpServer {
     };
   }
 
+  // ── send_file ──────────────────────────────────────────
+
+  private async handleSendFile(args: {
+    file_path: string;
+    filename?: string;
+    title?: string;
+    initial_comment?: string;
+  }) {
+    const { resolvedPath, size } = await validateFilePath(args.file_path);
+    const displayName = args.filename || path.basename(resolvedPath);
+
+    logger.info('Uploading file', { name: displayName, size, path: resolvedPath });
+
+    const uploadArgs: any = {
+      file: resolvedPath,
+      filename: displayName,
+      channel_id: this.context.channel,
+      thread_ts: this.context.threadTs,
+    };
+    if (args.title) uploadArgs.title = args.title;
+    if (args.initial_comment) uploadArgs.initial_comment = args.initial_comment;
+
+    const result = await this.slack.filesUploadV2(uploadArgs);
+
+    // Extract file info from response
+    const uploadedFile = (result as any).files?.[0]?.files?.[0]
+      || (result as any).files?.[0]
+      || {};
+
+    logger.info('File uploaded', {
+      name: displayName,
+      size,
+      file_id: uploadedFile.id,
+    });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          uploaded: true,
+          file_id: uploadedFile.id || 'unknown',
+          filename: displayName,
+          size,
+          permalink: uploadedFile.permalink || '',
+          channel: this.context.channel,
+          thread_ts: this.context.threadTs,
+        }),
+      }],
+    };
+  }
+
+  // ── send_media ─────────────────────────────────────────
+
+  private async handleSendMedia(args: {
+    file_path: string;
+    filename?: string;
+    title?: string;
+    alt_text?: string;
+    initial_comment?: string;
+  }) {
+    const { resolvedPath, size } = await validateFilePath(args.file_path);
+    const displayName = args.filename || path.basename(resolvedPath);
+
+    // Validate media type
+    const ext = path.extname(resolvedPath).toLowerCase().slice(1);
+    if (!ALLOWED_MEDIA_EXTENSIONS.has(ext)) {
+      throw new Error(
+        `Unsupported media type: .${ext}. Allowed: ${[...ALLOWED_MEDIA_EXTENSIONS].join(', ')}`
+      );
+    }
+
+    const media_type = getMediaType(ext);
+
+    logger.info('Uploading media', { name: displayName, size, media_type, path: resolvedPath });
+
+    const uploadArgs: any = {
+      file: resolvedPath,
+      filename: displayName,
+      channel_id: this.context.channel,
+      thread_ts: this.context.threadTs,
+    };
+    if (args.title) uploadArgs.title = args.title;
+    if (args.alt_text) uploadArgs.alt_text = args.alt_text;
+    if (args.initial_comment) uploadArgs.initial_comment = args.initial_comment;
+
+    const result = await this.slack.filesUploadV2(uploadArgs);
+
+    const uploadedFile = (result as any).files?.[0]?.files?.[0]
+      || (result as any).files?.[0]
+      || {};
+
+    logger.info('Media uploaded', {
+      name: displayName,
+      size,
+      file_id: uploadedFile.id,
+      media_type,
+    });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          uploaded: true,
+          file_id: uploadedFile.id || 'unknown',
+          filename: displayName,
+          size,
+          media_type,
+          permalink: uploadedFile.permalink || '',
+          channel: this.context.channel,
+          thread_ts: this.context.threadTs,
+        }),
+      }],
+    };
+  }
+
   // ── Entry point ──────────────────────────────────────
 
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info('SlackThread MCP server started', {
+    logger.info('SlackMCP server started', {
       channel: this.context.channel,
       threadTs: this.context.threadTs,
       mentionTs: this.context.mentionTs,
@@ -643,8 +880,8 @@ class SlackThreadMcpServer {
 
 // ── Main ─────────────────────────────────────────────────
 
-const server = new SlackThreadMcpServer();
+const server = new SlackMcpServer();
 server.run().catch((err) => {
-  logger.error('Failed to start SlackThread MCP server', err);
+  logger.error('Failed to start SlackMCP server', err);
   process.exit(1);
 });

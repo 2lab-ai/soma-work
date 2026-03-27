@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 /**
  * Integration tests for get_thread_messages with mocked Slack API.
  *
- * Since SlackThreadMcpServer is not exported and auto-starts on import,
+ * Since SlackMcpServer is not exported and auto-starts on import,
  * we extract the core logic into standalone functions that mirror the
  * server's behavior, then test with mocked conversations.replies.
  *
