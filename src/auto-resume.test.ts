@@ -395,3 +395,50 @@ describe('Auto-Resume: CrashRecoveredSession sessionKey field', () => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 });
+
+describe('Session Recovery: sessionId must be cleared after restart', () => {
+  // Trace: docs/debugging/session-recovery-20260327/trace.md
+  // Root cause: loadSessions() restores stale sessionId → claude-handler tries resume → 100% fail
+  it('loadSessions_should_NOT_restore_sessionId_from_file', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const TEST_DIR = '/tmp/soma-work-auto-resume-test';
+    if (!fs.existsSync(TEST_DIR)) {
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+    }
+
+    const sessionsData = [
+      {
+        key: 'C999-1700000000.000200',
+        ownerId: 'U789',
+        ownerName: 'TestUser',
+        userId: 'U789',
+        channelId: 'C999',
+        threadTs: '1700000000.000200',
+        sessionId: 'stale-session-id-that-should-not-survive-restart',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        activityState: 'working',
+        state: 'MAIN',
+      },
+    ];
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'sessions.json'),
+      JSON.stringify(sessionsData),
+    );
+
+    const { SessionRegistry } = await import('./session-registry');
+    const registry = new SessionRegistry();
+    registry.loadSessions();
+
+    // After restart, sessionId MUST be undefined — Claude SDK conversations
+    // are in-memory only and do not survive process restart.
+    const session = registry.getSession('C999', '1700000000.000200');
+    expect(session).toBeDefined();
+    expect(session!.sessionId).toBeUndefined();
+
+    // Cleanup
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+});

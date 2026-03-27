@@ -1199,7 +1199,11 @@ export class SessionRegistry {
           userId: serialized.userId, // Legacy field
           channelId: serialized.channelId,
           threadTs: serialized.threadTs,
-          sessionId: serialized.sessionId,
+          // Session Recovery Fix: Claude SDK conversations are in-memory only.
+          // After server restart, all conversation IDs are stale — do NOT restore.
+          // claudeHandler.query() will start a new conversation instead of failing with
+          // "No conversation found with session ID: xxx"
+          sessionId: undefined,
           isActive: serialized.isActive,
           lastActivity,
           workingDirectory: serialized.workingDirectory,
