@@ -37,7 +37,7 @@ import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
-import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError } from '../../claude-status-fetcher';
+import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
@@ -946,11 +946,21 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       return true;
     }
 
+    // Issue #118: Check invalid-resume BEFORE recoverable, because
+    // "process exited with code 1" (recoverable) may wrap "No conversation found" (non-recoverable).
+    // More specific patterns must take precedence over broad ones.
+    if (this.isInvalidResumeSessionError(error)) {
+      return true;
+    }
+
     if (this.isRecoverableClaudeSdkError(error)) {
       return false;
     }
 
-    return this.isInvalidResumeSessionError(error);
+    // Issue #118: Unknown errors should clear session as safe default.
+    // Preserving a broken session causes infinite retry loops (3x auto-retry
+    // with same broken sessionId). Cost of clearing (context loss) < infinite error loop.
+    return true;
   }
 
   private isContextOverflowError(error: any): boolean {
@@ -984,7 +994,11 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
   }
 
   private isRecoverableClaudeSdkError(error: any): boolean {
+    // Issue #118: Check both message AND stderrContent (rate-limit/transient
+    // errors often appear only in stderr while message is "process exited with code 1")
     const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
 
     const recoverablePatterns = [
       "you've hit your limit",
@@ -1005,7 +1019,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       'eai_again',
     ];
 
-    return recoverablePatterns.some(pattern => message.includes(pattern));
+    return recoverablePatterns.some(pattern => combined.includes(pattern));
   }
 
   private isRateLimitError(error: any): boolean {
@@ -1056,9 +1070,14 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
   }
 
   private isInvalidResumeSessionError(error: any): boolean {
+    // Issue #118: Check both message AND stderrContent — SDK may wrap the real
+    // cause in stderr while message is just "process exited with code 1"
     const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
 
     const invalidSessionPatterns = [
+      'no conversation found',  // Issue #118: exact SDK error message
       'conversation not found',
       'session not found',
       'cannot resume',
@@ -1066,7 +1085,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       'resume session',
     ];
 
-    return invalidSessionPatterns.some(pattern => message.includes(pattern));
+    return invalidSessionPatterns.some(pattern => combined.includes(pattern));
   }
 
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
@@ -1170,12 +1189,12 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }
 
-    // Append Claude service status only when there's an actual issue
-    // Skip when all-operational — the error is likely account-specific, not a service outage
-    // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
-    if (statusInfo && statusInfo.overall !== 'operational') {
+    // Append Claude service status when there's an actual issue OR active incidents
+    // Fix: Bug 5 — extracted to shouldShowStatusBlock() for testability
+    // Trace: docs/status-fetcher-hardening/trace.md, S3
+    if (shouldShowStatusBlock(statusInfo ?? null)) {
       lines.push('');
-      lines.push(formatStatusForSlack(statusInfo));
+      lines.push(formatStatusForSlack(statusInfo ?? null));
     }
 
     return lines.join('\n');
