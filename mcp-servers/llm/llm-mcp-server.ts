@@ -5,8 +5,8 @@ import * as fs from 'fs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { McpClient } from './mcp-client.js';
-import { StderrLogger } from './stderr-logger.js';
+import { McpClient } from '../_shared/mcp-client.js';
+import { StderrLogger } from '../_shared/stderr-logger.js';
 
 const logger = new StderrLogger('LlmMCP');
 
@@ -25,8 +25,8 @@ type LlmChatFileConfig = Record<Backend, BackendConfig>;
 const HARDCODED_DEFAULTS: LlmChatFileConfig = {
   codex: {
     backend: 'codex',
-    model: 'gpt-5.3-codex',
-    configOverride: { model_reasoning_effort: 'xhigh' },
+    model: 'gpt-5.4',
+    configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
   },
   gemini: {
     backend: 'gemini',
