@@ -39,6 +39,7 @@ type ComponentStatus = ClaudeStatusInfo['components'][number]['status'];
 const STATUS_URL = 'https://status.claude.com';
 const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 const FETCH_TIMEOUT = 3000; // 3 seconds
+const NEGATIVE_CACHE_TTL = 30 * 1000; // 30 seconds — backoff after fetch failure
 
 const statusCache = new Map<string, ClaudeStatusInfo>();
 
@@ -46,9 +47,13 @@ const statusCache = new Map<string, ClaudeStatusInfo>();
 // Fix: Review feedback — prevent fetch stampede when multiple errors fire simultaneously
 let inflight: Promise<ClaudeStatusInfo | null> | null = null;
 
+// Negative cache: timestamp of last failed fetch to avoid repeated timeouts
+let lastFailedAt = 0;
+
 export function invalidateStatusCache(): void {
   statusCache.clear();
   inflight = null;
+  lastFailedAt = 0;
 }
 
 // ============================================================
@@ -63,6 +68,7 @@ async function doFetch(): Promise<ClaudeStatusInfo | null> {
 
     if (!response.ok) {
       logger.warn('Status page returned non-OK', { status: response.status });
+      lastFailedAt = Date.now();
       return null;
     }
 
@@ -85,6 +91,7 @@ async function doFetch(): Promise<ClaudeStatusInfo | null> {
     return info;
   } catch (error) {
     logger.warn('Failed to fetch Claude status', { error: (error as Error).message });
+    lastFailedAt = Date.now();
     return null;
   }
 }
@@ -94,6 +101,12 @@ export async function fetchClaudeStatus(): Promise<ClaudeStatusInfo | null> {
   const cached = statusCache.get('status');
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL) {
     return cached;
+  }
+
+  // Negative cache: skip fetch during backoff period after failure
+  // Fix: Codex review — prevent repeated 3s timeouts when status page is down
+  if (lastFailedAt && Date.now() - lastFailedAt < NEGATIVE_CACHE_TTL) {
+    return null;
   }
 
   // Coalesce concurrent requests — during an outage many errors fire at once
@@ -142,8 +155,11 @@ function parseStatusPage(html: string): ClaudeStatusInfo | null {
       const title = match[1].trim();
       if (title) {
         // Try to find the status from the updates section following this incident
+        // Fix: Codex review — scope to current incident only, stop at next incident-container
         const afterMatch = html.slice(match.index + match[0].length);
-        const updatesMatch = afterMatch.match(/<div\s+class="updates"[^>]*>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
+        const nextIncidentIdx = afterMatch.indexOf('incident-container');
+        const scopedHtml = nextIncidentIdx > 0 ? afterMatch.slice(0, nextIncidentIdx) : afterMatch;
+        const updatesMatch = scopedHtml.match(/<div\s+class="updates"[^>]*>[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
         const status = updatesMatch ? updatesMatch[1].trim() : 'Unknown';
 
         incidents.push({ title, status });
@@ -217,6 +233,16 @@ export function formatStatusForSlack(status: ClaudeStatusInfo | null): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Guard condition: should we show the status block to the user?
+ * Extracted from stream-executor.ts for testability.
+ * Show when: degraded/outage/unknown OR has active incidents.
+ */
+export function shouldShowStatusBlock(status: ClaudeStatusInfo | null): boolean {
+  if (!status) return false;
+  return status.overall !== 'operational' || status.incidents.length > 0;
 }
 
 function capitalize(s: string): string {
