@@ -46,6 +46,7 @@ export class SessionUiManager {
 
   /**
    * 사용자의 세션 목록을 Block Kit 형식으로 포맷팅
+   * section.fields 기반 카드 레이아웃: 2열 그리드로 정보를 구조화
    */
   async formatUserSessionsBlocks(
     userId: string,
@@ -107,7 +108,7 @@ export class SessionUiManager {
     for (const [repoName, groupSessions] of repoGroups.entries()) {
       blocks.push({ type: 'divider' });
 
-      // Group header (only if multiple groups)
+      // Group header
       if (showGroupHeaders) {
         blocks.push({
           type: 'context',
@@ -122,105 +123,12 @@ export class SessionUiManager {
 
       for (const { key, session } of groupSessions) {
         sessionIndex++;
-        const channelName = await this.slackApi.getChannelName(session.channelId);
-        const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-        const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-        const modelDisplay = session.model
-          ? userSettingsStore.getModelDisplayName(session.model as any)
-          : 'Sonnet 4';
-        const initiator = session.currentInitiatorName
-          ? ` | 🎯 ${session.currentInitiatorName}`
-          : '';
 
-        // 스레드 퍼머링크
-        const permalink = session.threadTs
-          ? await this.slackApi.getPermalink(session.channelId, session.threadTs)
-          : null;
-
-        const sessionId = key;
-
-        // 세션 정보 텍스트 구성
-        const activityEmoji = this.formatActivityEmoji(session.activityState);
-        let sessionText = `${activityEmoji}*${sessionIndex}.*`;
-        if (session.title) {
-          sessionText += ` ${session.title}`;
-        }
-        sessionText += ` _${channelName}_`;
-        if (session.threadTs && permalink) {
-          sessionText += ` <${permalink}|(열기)>`;
-        } else if (session.threadTs) {
-          sessionText += ` (thread)`;
-        }
-
-        // Links line
-        const linksLine = await this.formatLinksLine(session.links);
-        if (linksLine) {
-          sessionText += `\n${linksLine}`;
-        }
-
-        // Show different status line for sleeping sessions
-        if (session.state === 'SLEEPING') {
-          const sleepExpires = session.sleepStartedAt
-            ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt)
-            : '?';
-          sessionText += `\n💤 *Sleep* | 🤖 ${modelDisplay} | 🕐 ${timeAgo} | ⏳ ${sleepExpires}`;
-        } else {
-          sessionText += `\n🤖 ${modelDisplay} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`;
-        }
-
-        const block: any = {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: sessionText,
-          },
-        };
-
-        // Only show kill button when controls are enabled
-        if (showControls) {
-          block.accessory = {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: '🗑️ 종료',
-              emoji: true,
-            },
-            style: 'danger',
-            value: sessionId,
-            action_id: 'terminate_session',
-            confirm: {
-              title: {
-                type: 'plain_text',
-                text: '세션 종료',
-              },
-              text: {
-                type: 'mrkdwn',
-                text: `정말로 이 세션을 종료하시겠습니까?\n*${channelName}*`,
-              },
-              confirm: {
-                type: 'plain_text',
-                text: '종료',
-              },
-              deny: {
-                type: 'plain_text',
-                text: '취소',
-              },
-            },
-          };
-        }
-
-        blocks.push(block);
-
-        // Action buttons: Jira transitions + PR merge (only when controls enabled)
-        if (showControls) {
-          const actionElements = await this.buildSessionActionButtons(key, session);
-          if (actionElements.length > 0) {
-            blocks.push({
-              type: 'actions',
-              elements: actionElements,
-            });
-          }
-        }
+        // Build session card using section.fields (2-column grid)
+        const cardBlocks = await this.buildSessionCard(
+          sessionIndex, key, session, showControls
+        );
+        blocks.push(...cardBlocks);
       }
     }
 
@@ -258,6 +166,182 @@ export class SessionUiManager {
       text: `📋 내 세션 목록 (${userSessions.length}개)`,
       blocks,
     };
+  }
+
+  /**
+   * Build a single session card as Block Kit blocks.
+   * Uses section.fields for structured 2-column grid layout:
+   *   Left column: content (session name, issue, PR)
+   *   Right column: metadata (model, time, expiry)
+   *   Accessory: terminate button
+   */
+  private async buildSessionCard(
+    index: number,
+    sessionKey: string,
+    session: ConversationSession,
+    showControls: boolean
+  ): Promise<any[]> {
+    const blocks: any[] = [];
+
+    const channelName = await this.slackApi.getChannelName(session.channelId);
+    const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
+    const modelDisplay = session.model
+      ? userSettingsStore.getModelDisplayName(session.model as any)
+      : 'Sonnet 4';
+
+    // Permalink
+    const permalink = session.threadTs
+      ? await this.slackApi.getPermalink(session.channelId, session.threadTs)
+      : null;
+
+    // === Row 1: Session identity ===
+    const activityEmoji = this.formatActivityEmoji(session.activityState);
+    let titleText = `${activityEmoji}*${index}.* `;
+    if (session.title) {
+      titleText += session.title;
+    }
+    titleText += ` _${channelName}_`;
+    if (session.threadTs && permalink) {
+      titleText += `  <${permalink}|(열기)>`;
+    }
+
+    // Right side: model + initiator
+    let modelText = `🤖 ${modelDisplay}`;
+    if (session.currentInitiatorName) {
+      modelText += `\n🎯 ${session.currentInitiatorName}`;
+    }
+
+    const fields: any[] = [
+      { type: 'mrkdwn', text: titleText },
+      { type: 'mrkdwn', text: modelText },
+    ];
+
+    // === Build link fields + metadata ===
+    // Fetch metadata in parallel
+    const [issueMeta, prMeta] = await Promise.all([
+      session.links?.issue ? fetchLinkMetadata(session.links.issue) : undefined,
+      session.links?.pr ? fetchLinkMetadata(session.links.pr) : undefined,
+    ]);
+
+    // PR review status (only for open GitHub PRs)
+    let reviewChip = '';
+    if (session.links?.pr?.provider === 'github' && prMeta?.status === 'open') {
+      const reviewStatus = await fetchGitHubPRReviewStatus(session.links.pr);
+      if (reviewStatus === 'approved') reviewChip = ' ✅';
+      else if (reviewStatus === 'changes_requested') reviewChip = ' 🔴';
+      else if (reviewStatus === 'pending') reviewChip = ' ⏳';
+    }
+
+    const hasIssue = !!session.links?.issue;
+    const hasPR = !!session.links?.pr;
+    const isSleeping = session.state === 'SLEEPING';
+    const expiresText = isSleeping
+      ? `💤 ⏳ ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
+      : `⏳ ${MessageFormatter.formatExpiresIn(session.lastActivity)}`;
+
+    // Layout strategy (always 2-column grid):
+    //   Row 1: title       | model         (always)
+    //   Row 2: issue       | time          (if issue)
+    //   Row 3: PR          | expiry        (if PR)
+    //   -- Fallbacks when fewer links --
+    //   issue only:  Row 2: issue | 🕐 time · expiry
+    //   PR only:     Row 2: PR    | 🕐 time · expiry
+    //   no links:    Row 2: time  | expiry
+
+    if (hasIssue && hasPR) {
+      // 3-row card: title | model / issue | time / PR | expiry
+      const issue = session.links!.issue!;
+      const issueLabel = issue.label || '이슈';
+      const issueTitle = issueMeta?.title ? `: ${issueMeta.title}` : '';
+      const issueStatus = issueMeta?.status ? ` ${getStatusEmoji(issueMeta.status)}${issueMeta.status}` : '';
+      fields.push({ type: 'mrkdwn', text: `🎫 <${issue.url}|${issueLabel}${issueTitle}>${issueStatus}` });
+      fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo}` });
+
+      const pr = session.links!.pr!;
+      const prLabel = pr.label || 'PR';
+      const prStatusEmoji = getStatusEmoji(prMeta?.status, 'pr');
+      const prStatus = prMeta?.status ? ` ${prStatusEmoji}${prMeta.status}` : '';
+      fields.push({ type: 'mrkdwn', text: `🔀 <${pr.url}|${prLabel}>${prStatus}${reviewChip}` });
+      fields.push({ type: 'mrkdwn', text: expiresText });
+
+    } else if (hasIssue) {
+      // 2-row card: title | model / issue | time · expiry
+      const issue = session.links!.issue!;
+      const issueLabel = issue.label || '이슈';
+      const issueTitle = issueMeta?.title ? `: ${issueMeta.title}` : '';
+      const issueStatus = issueMeta?.status ? ` ${getStatusEmoji(issueMeta.status)}${issueMeta.status}` : '';
+      fields.push({ type: 'mrkdwn', text: `🎫 <${issue.url}|${issueLabel}${issueTitle}>${issueStatus}` });
+      fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo} · ${expiresText}` });
+
+    } else if (hasPR) {
+      // 2-row card: title | model / PR | time · expiry
+      const pr = session.links!.pr!;
+      const prLabel = pr.label || 'PR';
+      const prTitle = prMeta?.title ? `: ${prMeta.title}` : '';
+      const prStatusEmoji = getStatusEmoji(prMeta?.status, 'pr');
+      const prStatus = prMeta?.status ? ` ${prStatusEmoji}${prMeta.status}` : '';
+      fields.push({ type: 'mrkdwn', text: `🔀 <${pr.url}|${prLabel}${prTitle}>${prStatus}${reviewChip}` });
+      fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo} · ${expiresText}` });
+
+    } else {
+      // 2-row card: title | model / time | expiry
+      fields.push({ type: 'mrkdwn', text: `🕐 ${timeAgo}` });
+      fields.push({ type: 'mrkdwn', text: expiresText });
+    }
+
+    // Ensure max 10 fields (Slack limit)
+    const sectionBlock: any = {
+      type: 'section',
+      fields: fields.slice(0, 10),
+    };
+
+    // Terminate button as accessory
+    if (showControls) {
+      sectionBlock.accessory = {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '🗑️ 종료',
+          emoji: true,
+        },
+        style: 'danger',
+        value: sessionKey,
+        action_id: 'terminate_session',
+        confirm: {
+          title: {
+            type: 'plain_text',
+            text: '세션 종료',
+          },
+          text: {
+            type: 'mrkdwn',
+            text: `정말로 이 세션을 종료하시겠습니까?\n*${session.title || channelName}*`,
+          },
+          confirm: {
+            type: 'plain_text',
+            text: '종료',
+          },
+          deny: {
+            type: 'plain_text',
+            text: '취소',
+          },
+        },
+      };
+    }
+
+    blocks.push(sectionBlock);
+
+    // Action buttons: Jira transitions + PR merge (only when controls enabled)
+    if (showControls) {
+      const actionElements = await this.buildSessionActionButtons(sessionKey, session);
+      if (actionElements.length > 0) {
+        blocks.push({
+          type: 'actions',
+          elements: actionElements,
+        });
+      }
+    }
+
+    return blocks;
   }
 
   /**
