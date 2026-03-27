@@ -11,6 +11,7 @@ import { ConversationSession } from '../../types';
 import { postSourceThreadSummary } from '../source-thread-summary';
 import { Logger } from '../../logger';
 import { RespondFn } from './types';
+import { userSettingsStore } from '../../user-settings-store';
 
 interface SessionActionContext {
   slackApi: SlackApiHelper;
@@ -343,7 +344,8 @@ export class SessionActionHandler {
     const channelId = session.channelId;
     if (session.actionPanel?.messageTs) {
       try {
-        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true });
+        const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
         const panelPayload = ActionPanelBuilder.build({
           sessionKey,
           workflow: session.workflow,

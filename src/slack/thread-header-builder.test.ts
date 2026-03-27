@@ -25,6 +25,7 @@ describe('ThreadHeaderBuilder', () => {
       title: 'Prada /test-vsprots 페이지 개발',
       workflow: 'default',
       ownerName: 'Bash',
+      theme: 'D',
     });
 
     const blocks = (payload.blocks || []) as any[];
@@ -48,6 +49,7 @@ describe('ThreadHeaderBuilder', () => {
   it('does not render Slack message links in thread header link context', () => {
     const payload = ThreadHeaderBuilder.build({
       title: 'Header',
+      theme: 'D',
       links: {
         issue: {
           url: 'https://workspace.slack.com/archives/C123/p1739000000001000',

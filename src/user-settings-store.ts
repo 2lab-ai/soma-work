@@ -30,18 +30,20 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
-// Session list display themes
+// UI display themes (shared across Session List, Thread Header, Turn End, AskUser)
+// Ordered from minimal → rich density
 export const SESSION_THEMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'] as const;
 export type SessionTheme = typeof SESSION_THEMES[number];
+export const DEFAULT_THEME: SessionTheme = 'A';
 export const THEME_NAMES: Record<SessionTheme, string> = {
-  A: 'Classic',
-  B: 'Compact',
-  C: 'Rich Card',
-  D: 'Minimal',
+  A: 'Minimal',
+  B: 'One-Liner',
+  C: 'Compact',
+  D: 'Classic',
   E: 'Dashboard',
-  F: 'Table',
-  G: 'One-Liner',
-  H: 'Status Bar',
+  F: 'Status Bar',
+  G: 'Rich Card',
+  H: 'Table',
   I: 'Kanban',
   J: 'Timeline',
   K: 'Progress',
@@ -55,7 +57,7 @@ export interface UserSettings {
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
   defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
-  sessionTheme?: SessionTheme;  // session list display theme (A/B/C/D), undefined = rotate
+  sessionTheme?: SessionTheme;  // UI display theme (A-L). undefined = default ('A' Minimal)
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -390,26 +392,33 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get user's session theme (undefined = rotate)
+   * Get user's UI theme. Returns stored theme or DEFAULT_THEME ('A').
    */
-  getUserSessionTheme(userId: string): SessionTheme | undefined {
+  getUserSessionTheme(userId: string): SessionTheme {
+    return this.settings[userId]?.sessionTheme ?? DEFAULT_THEME;
+  }
+
+  /**
+   * Get user's raw theme setting. undefined means "use default".
+   */
+  getUserRawSessionTheme(userId: string): SessionTheme | undefined {
     return this.settings[userId]?.sessionTheme;
   }
 
   /**
-   * Set user's session theme. Pass undefined to enable rotation.
+   * Set user's UI theme. Pass undefined to reset to default.
    */
   setUserSessionTheme(userId: string, theme: SessionTheme | undefined): void {
     this.patchUserSettings(userId, { sessionTheme: theme } as Partial<UserSettings>);
-    logger.info('Set user session theme', { userId, theme: theme ?? 'rotate' });
+    logger.info('Set user session theme', { userId, theme: theme ?? 'default' });
   }
 
   /**
-   * Resolve theme input string to SessionTheme
+   * Resolve theme input string to SessionTheme or 'default'
    */
-  resolveThemeInput(input: string): SessionTheme | 'rotate' | null {
+  resolveThemeInput(input: string): SessionTheme | 'default' | null {
     const normalized = input.toUpperCase().trim();
-    if (normalized === 'ROTATE' || normalized === 'AUTO') return 'rotate';
+    if (normalized === 'DEFAULT' || normalized === 'RESET' || normalized === 'AUTO') return 'default';
     if (SESSION_THEMES.includes(normalized as SessionTheme)) return normalized as SessionTheme;
     // Also accept full names
     for (const [key, name] of Object.entries(THEME_NAMES)) {

@@ -3,7 +3,7 @@ import { MessageFormatter } from './message-formatter';
 import { ReactionManager } from './reaction-manager';
 import { ConversationSession, SessionLinks, ActivityState } from '../types';
 import { ClaudeHandler } from '../claude-handler';
-import { userSettingsStore, SESSION_THEMES, THEME_NAMES, type SessionTheme } from '../user-settings-store';
+import { userSettingsStore, THEME_NAMES, type SessionTheme } from '../user-settings-store';
 import {
   fetchLinkMetadata,
   getStatusEmoji,
@@ -32,9 +32,6 @@ export class SessionUiManager {
 
   private reactionManager?: ReactionManager;
 
-  /** Per-user rotation counter for session theme cycling */
-  private themeRotationCounters = new Map<string, number>();
-
   constructor(
     private claudeHandler: ClaudeHandler,
     private slackApi: SlackApiHelper
@@ -42,17 +39,10 @@ export class SessionUiManager {
 
   /**
    * Resolve the theme for a given user.
-   * If user has a fixed theme, return it. Otherwise rotate A→B→C→D.
+   * Returns stored theme or default ('A' Minimal).
    */
-  private resolveTheme(userId: string): SessionTheme {
-    const fixed = userSettingsStore.getUserSessionTheme(userId);
-    if (fixed) return fixed;
-
-    // Rotate
-    const counter = this.themeRotationCounters.get(userId) ?? 0;
-    const theme = SESSION_THEMES[counter % SESSION_THEMES.length];
-    this.themeRotationCounters.set(userId, counter + 1);
-    return theme;
+  resolveTheme(userId: string): SessionTheme {
+    return userSettingsStore.getUserSessionTheme(userId);
   }
 
   /**
@@ -114,11 +104,11 @@ export class SessionUiManager {
     const themeLabel = `Theme ${theme}`;
     const isFixed = !!userSettingsStore.getUserSessionTheme(userId);
 
-    // Theme-specific header
+    // Theme-specific header (new mapping: A=Minimal, B=One-Liner, ...)
     const headerTexts: Partial<Record<SessionTheme, string>> = {
-      D: `📋 세션 (${userSessions.length})`,
+      A: `📋 세션 (${userSessions.length})`,
+      B: `📋 세션 (${userSessions.length})`,
       E: `📊 세션 대시보드`,
-      G: `📋 세션 (${userSessions.length})`,
       J: `🕐 세션 타임라인`,
       L: `🔔 세션 알림`,
     };
@@ -134,7 +124,7 @@ export class SessionUiManager {
     ];
 
     // Theme indicator + stats (context block)
-    const themeTag = `${themeLabel} ${THEME_NAMES[theme]}${isFixed ? '' : ' · 🔄'}`;
+    const themeTag = `${themeLabel} ${THEME_NAMES[theme]}`;
     if (theme === 'E') {
       // Dashboard: count by activity state
       const working = userSessions.filter(s => s.session.activityState === 'working').length;
@@ -144,7 +134,8 @@ export class SessionUiManager {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: `⚙️ 작업중 *${working}* · ✋ 대기 *${waiting}* · 💤 유휴 *${idle}* · 합계 *${userSessions.length}* · ${themeTag}` }],
       });
-    } else if (theme === 'H') {
+    } else if (theme === 'F') {
+      // Status Bar: colored dots
       const working = userSessions.filter(s => s.session.activityState === 'working').length;
       const waiting = userSessions.filter(s => s.session.activityState === 'waiting').length;
       const idle = userSessions.length - working - waiting;
@@ -152,7 +143,8 @@ export class SessionUiManager {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: `🟢 작업중 ${working} │ 🟡 대기 ${waiting} │ ⚪ 유휴 ${idle} │ ${themeTag}` }],
       });
-    } else if (theme === 'C') {
+    } else if (theme === 'G') {
+      // Rich Card: count
       blocks.push({
         type: 'context',
         elements: [{ type: 'mrkdwn', text: `${userSessions.length}개 활성 · ${themeTag}` }],
@@ -160,13 +152,14 @@ export class SessionUiManager {
     } else {
       blocks.push({
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: `${themeTag} · \`sessions theme=X\`` }],
+        elements: [{ type: 'mrkdwn', text: `${themeTag} · \`theme\`` }],
       });
     }
 
     let sessionIndex = 0;
     const showGroupHeaders = repoGroups.size > 1;
-    const noDividerThemes: SessionTheme[] = ['B', 'G'];
+    // Minimal (A) and One-Liner (B) skip dividers for density
+    const noDividerThemes: SessionTheme[] = ['A', 'B'];
     const useDividers = !noDividerThemes.includes(theme);
 
     for (const [repoName, groupSessions] of repoGroups.entries()) {
@@ -287,45 +280,23 @@ export class SessionUiManager {
     const data = await this.fetchCardData(session);
     const truncate = (s: string, max = 120) => s.length > max ? s.slice(0, max) + '…' : s;
 
-    let blocks: any[];
-    switch (theme) {
-      case 'B':
-        blocks = this.buildCardThemeB(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'C':
-        blocks = this.buildCardThemeC(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'D':
-        blocks = this.buildCardThemeD(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'E':
-        blocks = this.buildCardThemeE(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'F':
-        blocks = this.buildCardThemeF(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'G':
-        blocks = this.buildCardThemeG(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'H':
-        blocks = this.buildCardThemeH(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'I':
-        blocks = this.buildCardThemeI(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'J':
-        blocks = this.buildCardThemeJ(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'K':
-        blocks = this.buildCardThemeK(index, sessionKey, session, showControls, data, truncate);
-        break;
-      case 'L':
-        blocks = this.buildCardThemeL(index, sessionKey, session, showControls, data, truncate);
-        break;
-      default:
-        blocks = this.buildCardThemeA(index, sessionKey, session, showControls, data, truncate);
-        break;
-    }
+    // Theme letter → builder mapping (reordered: A=Minimal → L=Notification)
+    const args = [index, sessionKey, session, showControls, data, truncate] as const;
+    const builders: Record<SessionTheme, () => any[]> = {
+      A: () => this.buildCardThemeD(...args),   // Minimal (was D)
+      B: () => this.buildCardThemeG(...args),   // One-Liner (was G)
+      C: () => this.buildCardThemeB(...args),   // Compact (was B)
+      D: () => this.buildCardThemeA(...args),   // Classic (was A)
+      E: () => this.buildCardThemeE(...args),   // Dashboard
+      F: () => this.buildCardThemeH(...args),   // Status Bar (was H)
+      G: () => this.buildCardThemeC(...args),   // Rich Card (was C)
+      H: () => this.buildCardThemeF(...args),   // Table (was F)
+      I: () => this.buildCardThemeI(...args),   // Kanban
+      J: () => this.buildCardThemeJ(...args),   // Timeline
+      K: () => this.buildCardThemeK(...args),   // Progress
+      L: () => this.buildCardThemeL(...args),   // Notification
+    };
+    let blocks = (builders[theme] || builders.A)();
 
     // Action buttons (shared across all themes)
     if (showControls) {
