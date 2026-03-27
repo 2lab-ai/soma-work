@@ -689,6 +689,75 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
+  // Issue #118 codex review: stderr-only "No conversation found" must still clear session
+  it('clears session when "No conversation found" appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: No conversation found with session ID: abc-123';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Invalid resume (stderr) takes precedence over recoverable (message)
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+  });
+
+  // Issue #118 codex review: stderr-only rate limit must still preserve session
+  it('preserves session when rate limit appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = "You've hit your limit · resets 8pm";
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // Issue #118 codex review: direct unit test for isInvalidResumeSessionError
+  it('isInvalidResumeSessionError detects "no conversation found" pattern directly', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('No conversation found with session ID: 5f232806');
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(true);
+  });
+
+  it('isInvalidResumeSessionError detects pattern in stderrContent', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'No conversation found with session ID: abc';
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(true);
+  });
+
+  it('isInvalidResumeSessionError returns false for unrelated errors', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Something completely different');
+    expect((executor as any).isInvalidResumeSessionError(error)).toBe(false);
+  });
+
   it('clears session for invalid resume/session-not-found errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
