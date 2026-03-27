@@ -3,20 +3,20 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from '../_shared/stderr-logger.js';
 import {
   getDefaultSessionSnapshot,
   listModelCommands,
   normalizeSessionSnapshot,
   runModelCommand,
-} from './model-commands/catalog.js';
-import { validateModelCommandRunArgs } from './model-commands/validator.js';
+} from '../../src/model-commands/catalog.js';
+import { validateModelCommandRunArgs } from '../../src/model-commands/validator.js';
 import {
   ModelCommandContext,
   ModelCommandListResponse,
   ModelCommandRunResponse,
-} from './model-commands/types.js';
-import { WorkflowType } from './types.js';
+} from '../../src/model-commands/types.js';
+import { WorkflowType } from '../../src/types.js';
 
 const logger = new StderrLogger('ModelCommandMCP');
 
