@@ -28,9 +28,19 @@ export class RequestCoordinator {
   }
 
   /**
-   * Remove the controller for a session (on completion or cleanup)
+   * Remove the controller for a session (on completion or cleanup).
+   * Ghost Session Fix #99: CAS guard — if expectedController is provided,
+   * only remove if the current controller matches (reference equality).
+   * Prevents older request's finally block from removing newer request's controller.
    */
-  removeController(sessionKey: string): void {
+  removeController(sessionKey: string, expectedController?: AbortController): void {
+    if (expectedController) {
+      const current = this.activeControllers.get(sessionKey);
+      if (current !== expectedController) {
+        this.logger.debug('CAS mismatch: skipping removeController', { sessionKey });
+        return;
+      }
+    }
     this.activeControllers.delete(sessionKey);
     this.logger.debug('Removed controller for session', { sessionKey });
   }

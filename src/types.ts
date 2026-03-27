@@ -236,6 +236,8 @@ export interface ConversationSession {
   linkSequence?: number;
   // Tool-driven save result used by renew command (preferred over text parsing)
   renewSaveResult?: SaveContextResultPayload;
+  // Ghost Session Fix #99: defense-in-depth flag for in-flight code to self-terminate
+  terminated?: boolean;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
