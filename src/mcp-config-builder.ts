@@ -15,7 +15,7 @@ import * as path from 'path';
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
-const SLACK_THREAD_SERVER_BASENAME = 'slack-thread-mcp-server';
+const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
 const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
 
 /** Root of the project (one level up from src/) */
@@ -152,10 +152,10 @@ export class McpConfigBuilder {
       );
     }
 
-    // Add slack-thread server only for mid-thread mentions (mentionTs !== threadTs)
+    // Add slack-mcp server only for mid-thread mentions (mentionTs !== threadTs)
     // When mentionTs === threadTs, the mention IS the thread root — no prior context to explore
     if (isMidThreadMention(slackContext)) {
-      internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext!);
+      internalServers['slack-mcp'] = this.buildSlackMcpServer(slackContext!);
     }
 
     // Conditionally add server-tools when config.json has server-tools section
@@ -335,9 +335,9 @@ export class McpConfigBuilder {
     return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'model-command'), this.modelCommandServerCache);
   }
 
-  private slackThreadServerCache = McpConfigBuilder.emptyCache();
-  private getSlackThreadServerPath(): string {
-    return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'slack-thread'), this.slackThreadServerCache);
+  private slackMcpServerCache = McpConfigBuilder.emptyCache();
+  private getSlackMcpServerPath(): string {
+    return this.resolveServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'slack-mcp'), this.slackMcpServerCache);
   }
 
   private llmServerCache = McpConfigBuilder.emptyCache();
@@ -351,10 +351,10 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Build slack-thread MCP server configuration (thread context exploration)
+   * Build slack-mcp server configuration (thread context + file upload)
    */
-  private buildSlackThreadServer(slackContext: SlackContext): Record<string, any> {
-    const serverPath = this.getSlackThreadServerPath();
+  private buildSlackMcpServer(slackContext: SlackContext): Record<string, any> {
+    const serverPath = this.getSlackMcpServerPath();
     // Use source thread (original thread before migration) if available,
     // otherwise fall back to current threadTs.
     // This is critical: after bot-initiated thread migration, threadTs points to
@@ -362,7 +362,7 @@ export class McpConfigBuilder {
     const threadTs = slackContext.sourceThreadTs || slackContext.threadTs;
     const channel = slackContext.sourceChannel || slackContext.channel;
     if (!threadTs) {
-      throw new Error('Cannot build slack-thread server without threadTs');
+      throw new Error('Cannot build slack-mcp server without threadTs');
     }
 
     const threadContext = {
@@ -376,7 +376,7 @@ export class McpConfigBuilder {
       args: ['tsx', serverPath],
       env: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
-        SLACK_THREAD_CONTEXT: JSON.stringify(threadContext),
+        SLACK_MCP_CONTEXT: JSON.stringify(threadContext),
       },
     };
   }
@@ -408,9 +408,9 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__model-command');
     }
 
-    // Allow slack-thread tools only for mid-thread mentions
+    // Allow slack-mcp tools only for mid-thread mentions
     if (isMidThreadMention(slackContext)) {
-      allowedTools.push('mcp__slack-thread');
+      allowedTools.push('mcp__slack-mcp');
     }
 
     // Always add permission prompt tool (even for bypass users, needed for dangerous commands)

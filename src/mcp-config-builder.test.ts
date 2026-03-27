@@ -90,7 +90,7 @@ describe('McpConfigBuilder disallowedTools', () => {
   });
 });
 
-describe('McpConfigBuilder slack-thread server', () => {
+describe('McpConfigBuilder slack-mcp server', () => {
   function createMockMcpManager() {
     return {
       getServerConfiguration: vi.fn().mockResolvedValue({}),
@@ -98,7 +98,7 @@ describe('McpConfigBuilder slack-thread server', () => {
     } as any;
   }
 
-  it('registers slack-thread server when mentionTs differs from threadTs (mid-thread)', async () => {
+  it('registers slack-mcp server when mentionTs differs from threadTs (mid-thread)', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -107,18 +107,18 @@ describe('McpConfigBuilder slack-thread server', () => {
       user: 'U123',
     });
 
-    expect(config.mcpServers?.['slack-thread']).toBeDefined();
-    expect(config.allowedTools).toContain('mcp__slack-thread');
+    expect(config.mcpServers?.['slack-mcp']).toBeDefined();
+    expect(config.allowedTools).toContain('mcp__slack-mcp');
 
-    // Verify SLACK_THREAD_CONTEXT env is set with correct structure
-    const contextStr = config.mcpServers?.['slack-thread']?.env?.SLACK_THREAD_CONTEXT;
+    // Verify SLACK_MCP_CONTEXT env is set with correct structure
+    const contextStr = config.mcpServers?.['slack-mcp']?.env?.SLACK_MCP_CONTEXT;
     const ctx = JSON.parse(contextStr || '{}');
     expect(ctx.channel).toBe('C123');
     expect(ctx.threadTs).toBe('1700000000.000000');
     expect(ctx.mentionTs).toBe('1700000010.000000');
   });
 
-  it('uses sourceThreadTs/sourceChannel in SLACK_THREAD_CONTEXT when bot migrates to new thread', async () => {
+  it('uses sourceThreadTs/sourceChannel in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     // After bot-initiated thread migration:
     // - threadTs = NEW thread ts (where bot posts replies)
@@ -132,9 +132,9 @@ describe('McpConfigBuilder slack-thread server', () => {
       user: 'U123',
     });
 
-    expect(config.mcpServers?.['slack-thread']).toBeDefined();
+    expect(config.mcpServers?.['slack-mcp']).toBeDefined();
 
-    const contextStr = config.mcpServers?.['slack-thread']?.env?.SLACK_THREAD_CONTEXT;
+    const contextStr = config.mcpServers?.['slack-mcp']?.env?.SLACK_MCP_CONTEXT;
     const ctx = JSON.parse(contextStr || '{}');
     // Should use ORIGINAL thread, not NEW thread
     expect(ctx.channel).toBe('C_ORIGINAL');
@@ -142,7 +142,7 @@ describe('McpConfigBuilder slack-thread server', () => {
     expect(ctx.mentionTs).toBe('1700000010.000000');
   });
 
-  it('does NOT register slack-thread server when mentionTs === threadTs (thread root)', async () => {
+  it('does NOT register slack-mcp server when mentionTs === threadTs (thread root)', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -151,11 +151,11 @@ describe('McpConfigBuilder slack-thread server', () => {
       user: 'U123',
     });
 
-    expect(config.mcpServers?.['slack-thread']).toBeUndefined();
-    expect(config.allowedTools).not.toContain('mcp__slack-thread');
+    expect(config.mcpServers?.['slack-mcp']).toBeUndefined();
+    expect(config.allowedTools).not.toContain('mcp__slack-mcp');
   });
 
-  it('does NOT register slack-thread server when mentionTs is absent', async () => {
+  it('does NOT register slack-mcp server when mentionTs is absent', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -163,10 +163,10 @@ describe('McpConfigBuilder slack-thread server', () => {
       user: 'U123',
     });
 
-    expect(config.mcpServers?.['slack-thread']).toBeUndefined();
+    expect(config.mcpServers?.['slack-mcp']).toBeUndefined();
   });
 
-  it('sets SLACK_BOT_TOKEN in slack-thread server env (empty string fallback)', async () => {
+  it('sets SLACK_BOT_TOKEN in slack-mcp server env (empty string fallback)', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({
       channel: 'C123',
@@ -175,7 +175,7 @@ describe('McpConfigBuilder slack-thread server', () => {
       user: 'U123',
     });
 
-    const env = config.mcpServers?.['slack-thread']?.env;
+    const env = config.mcpServers?.['slack-mcp']?.env;
     expect(env).toHaveProperty('SLACK_BOT_TOKEN');
     // Should be empty string fallback when env var is not set, not undefined
     expect(typeof env?.SLACK_BOT_TOKEN).toBe('string');

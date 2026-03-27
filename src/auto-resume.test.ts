@@ -49,7 +49,7 @@ function createTestHandler() {
   };
 }
 
-const RESUME_PROMPT = 'slack-thread → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+const RESUME_PROMPT = 'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
 
 describe('Auto-Resume: S1 — Working session auto-resumes after restart', () => {
   // Trace: S1, Section 3b-3c — notifyCrashRecovery calls handleMessage for working sessions
