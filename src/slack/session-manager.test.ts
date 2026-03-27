@@ -68,8 +68,12 @@ describe('SessionUiManager', () => {
       const result = await manager.formatUserSessionsBlocks('U123');
 
       expect(result.text).toBe('📋 내 세션 목록 (1개)');
-      expect(result.blocks.some((b: any) => b.text?.text?.includes('My Session'))).toBe(true);
-      expect(result.blocks.some((b: any) => b.text?.text?.includes('Other Session'))).toBe(false);
+      // section.fields layout: session title is in the first field of the section block
+      const containsTitle = (b: any, title: string) =>
+        b.text?.text?.includes(title) ||
+        b.fields?.some((f: any) => f.text?.includes(title));
+      expect(result.blocks.some((b: any) => containsTitle(b, 'My Session'))).toBe(true);
+      expect(result.blocks.some((b: any) => containsTitle(b, 'Other Session'))).toBe(false);
     });
 
     it('should include terminate button for each session', async () => {
