@@ -1,14 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 /**
- * Unit tests for SlackThreadMcpServer internals.
+ * Unit tests for SlackMcpServer internals.
  *
  * Since the server class is not exported and relies on process.env + MCP transport,
  * we test the validation logic and key behaviors via controlled process.env manipulation.
  * The actual server is instantiated by importing the module.
  */
 
-describe('SlackThreadMcpServer constructor validation', () => {
+describe('SlackMcpServer constructor validation', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -22,7 +22,7 @@ describe('SlackThreadMcpServer constructor validation', () => {
 
   it('throws when SLACK_BOT_TOKEN is missing', async () => {
     delete process.env.SLACK_BOT_TOKEN;
-    process.env.SLACK_THREAD_CONTEXT = JSON.stringify({
+    process.env.SLACK_MCP_CONTEXT = JSON.stringify({
       channel: 'C123',
       threadTs: '1700000000.000000',
       mentionTs: '1700000010.000000',
@@ -36,55 +36,55 @@ describe('SlackThreadMcpServer constructor validation', () => {
     }).rejects.toThrow('SLACK_BOT_TOKEN');
   });
 
-  it('throws when SLACK_THREAD_CONTEXT is missing', () => {
+  it('throws when SLACK_MCP_CONTEXT is missing', () => {
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
-    delete process.env.SLACK_THREAD_CONTEXT;
+    delete process.env.SLACK_MCP_CONTEXT;
 
-    const contextStr = process.env.SLACK_THREAD_CONTEXT;
+    const contextStr = process.env.SLACK_MCP_CONTEXT;
     expect(contextStr).toBeUndefined();
     expect(() => {
-      if (!contextStr) throw new Error('SLACK_THREAD_CONTEXT environment variable is required');
-    }).toThrow('SLACK_THREAD_CONTEXT');
+      if (!contextStr) throw new Error('SLACK_MCP_CONTEXT environment variable is required');
+    }).toThrow('SLACK_MCP_CONTEXT');
   });
 
-  it('throws on malformed SLACK_THREAD_CONTEXT JSON', () => {
+  it('throws on malformed SLACK_MCP_CONTEXT JSON', () => {
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
-    process.env.SLACK_THREAD_CONTEXT = '{bad json';
+    process.env.SLACK_MCP_CONTEXT = '{bad json';
 
     expect(() => {
       try {
-        JSON.parse(process.env.SLACK_THREAD_CONTEXT!);
+        JSON.parse(process.env.SLACK_MCP_CONTEXT!);
       } catch (err) {
         throw new Error(
-          `Failed to parse SLACK_THREAD_CONTEXT: ${(err as Error).message}. Raw: ${process.env.SLACK_THREAD_CONTEXT!.substring(0, 200)}`
+          `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${process.env.SLACK_MCP_CONTEXT!.substring(0, 200)}`
         );
       }
-    }).toThrow('Failed to parse SLACK_THREAD_CONTEXT');
+    }).toThrow('Failed to parse SLACK_MCP_CONTEXT');
   });
 
   it('throws when channel is missing from context', () => {
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
-    process.env.SLACK_THREAD_CONTEXT = JSON.stringify({ threadTs: '123' });
+    process.env.SLACK_MCP_CONTEXT = JSON.stringify({ threadTs: '123' });
 
-    const context = JSON.parse(process.env.SLACK_THREAD_CONTEXT);
+    const context = JSON.parse(process.env.SLACK_MCP_CONTEXT);
     // channel is undefined → validation should throw
     expect(() => {
       if (!context.channel || !context.threadTs) {
-        throw new Error('SLACK_THREAD_CONTEXT must contain channel and threadTs');
+        throw new Error('SLACK_MCP_CONTEXT must contain channel and threadTs');
       }
-    }).toThrow('SLACK_THREAD_CONTEXT must contain channel and threadTs');
+    }).toThrow('SLACK_MCP_CONTEXT must contain channel and threadTs');
   });
 
   it('throws when threadTs is missing from context', () => {
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
-    process.env.SLACK_THREAD_CONTEXT = JSON.stringify({ channel: 'C123' });
+    process.env.SLACK_MCP_CONTEXT = JSON.stringify({ channel: 'C123' });
 
-    const context = JSON.parse(process.env.SLACK_THREAD_CONTEXT);
+    const context = JSON.parse(process.env.SLACK_MCP_CONTEXT);
     expect(() => {
       if (!context.channel || !context.threadTs) {
-        throw new Error('SLACK_THREAD_CONTEXT must contain channel and threadTs');
+        throw new Error('SLACK_MCP_CONTEXT must contain channel and threadTs');
       }
-    }).toThrow('SLACK_THREAD_CONTEXT must contain channel and threadTs');
+    }).toThrow('SLACK_MCP_CONTEXT must contain channel and threadTs');
   });
 
   it('defaults mentionTs to threadTs when not provided', () => {

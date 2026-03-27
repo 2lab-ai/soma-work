@@ -656,7 +656,7 @@ export class SlackHandler {
    */
   /** Resume prompt sent to model for auto-resuming interrupted sessions */
   private static readonly AUTO_RESUME_PROMPT =
-    'slack-thread → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+    'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
 
   /** Delay between processing crash-recovered sessions (ms) */
   private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
