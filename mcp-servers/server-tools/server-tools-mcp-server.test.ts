@@ -1,9 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as child_process from 'child_process';
-import { validateReadOnlyQuery, loadConfig, resetConfigCache } from './server-tools-mcp-server.js';
 
-// Mock child_process
+// Mock child_process BEFORE importing the module under test
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
   return {
@@ -41,71 +40,224 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
 }));
 
 // Mock stderr-logger
-vi.mock('../_shared/stderr-logger.js', () => {
-  return {
-    StderrLogger: class {
-      debug() {}
-      info() {}
-      warn() {}
-      error() {}
-    },
-  };
-});
+vi.mock('../_shared/stderr-logger.js', () => ({
+  StderrLogger: class {
+    debug() {}
+    info() {}
+    warn() {}
+    error() {}
+  },
+}));
 
-// ── validateReadOnlyQuery tests ────────────────────────────
+import {
+  validateReadOnlyQuery,
+  validateDockerName,
+  validateTimestamp,
+  loadConfig,
+  resetConfigCache,
+  handleList,
+  handleListService,
+  handleLogs,
+  handleDbQuery,
+} from './server-tools-mcp-server.js';
+
+// ── Helper: set up config mock ──────────────────────────────
+
+function mockConfig(data: Record<string, any>, mtimeMs = Date.now()) {
+  process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
+  vi.mocked(fs.statSync).mockReturnValue({ mtimeMs, size: 999 } as fs.Stats);
+  vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(data));
+  resetConfigCache();
+  loadConfig();
+}
+
+const PROD_CONFIG = {
+  'server-tools': {
+    prod: {
+      ssh: { host: 'prod.example.com' },
+      databases: {
+        app_db: { type: 'mysql', host: 'db.internal', port: 3306, user: 'root', password: 'pw' },
+      },
+    },
+    staging: {
+      ssh: { host: 'staging.example.com' },
+    },
+  },
+};
+
+// ══════════════════════════════════════════════════════════════
+// validateReadOnlyQuery
+// ══════════════════════════════════════════════════════════════
 
 describe('validateReadOnlyQuery', () => {
-  it('allows SELECT queries', () => {
-    expect(validateReadOnlyQuery('SELECT * FROM users')).toBe(true);
-    expect(validateReadOnlyQuery('select id, name from users where id = 1')).toBe(true);
-    expect(validateReadOnlyQuery('  SELECT count(*) FROM orders  ')).toBe(true);
+  // ── Allowed queries ───────────────────────────────────────
+  describe('allows safe read-only queries', () => {
+    it.each([
+      'SELECT * FROM users',
+      'select id, name from users where id = 1',
+      '  SELECT count(*) FROM orders  ',
+      'SHOW TABLES',
+      'SHOW DATABASES',
+      'DESCRIBE users',
+      'EXPLAIN SELECT * FROM users',
+      'DESC users',
+      '/* comment */ SELECT * FROM users',
+      '/* DROP TABLE users */ SELECT 1',
+    ])('allows: %s', (query) => {
+      expect(validateReadOnlyQuery(query)).toBe(true);
+    });
   });
 
-  it('allows SHOW, DESCRIBE, EXPLAIN, DESC queries', () => {
-    expect(validateReadOnlyQuery('SHOW TABLES')).toBe(true);
-    expect(validateReadOnlyQuery('SHOW DATABASES')).toBe(true);
-    expect(validateReadOnlyQuery('DESCRIBE users')).toBe(true);
-    expect(validateReadOnlyQuery('EXPLAIN SELECT * FROM users')).toBe(true);
-    expect(validateReadOnlyQuery('DESC users')).toBe(true);
+  // ── Blocked: basic write operations ──────────────────────
+  describe('blocks write operations', () => {
+    it.each([
+      'INSERT INTO users VALUES (1, "test")',
+      'UPDATE users SET name = "test"',
+      'DELETE FROM users WHERE id = 1',
+      'DROP TABLE users',
+      'CREATE TABLE test (id INT)',
+      'ALTER TABLE users ADD COLUMN age INT',
+      'TRUNCATE TABLE users',
+    ])('blocks: %s', (query) => {
+      expect(validateReadOnlyQuery(query)).toBe(false);
+    });
   });
 
-  it('blocks INSERT, UPDATE, DELETE, DROP', () => {
-    expect(validateReadOnlyQuery('INSERT INTO users VALUES (1, "test")')).toBe(false);
-    expect(validateReadOnlyQuery('UPDATE users SET name = "test"')).toBe(false);
-    expect(validateReadOnlyQuery('DELETE FROM users WHERE id = 1')).toBe(false);
-    expect(validateReadOnlyQuery('DROP TABLE users')).toBe(false);
-    expect(validateReadOnlyQuery('CREATE TABLE test (id INT)')).toBe(false);
-    expect(validateReadOnlyQuery('ALTER TABLE users ADD COLUMN age INT')).toBe(false);
-    expect(validateReadOnlyQuery('TRUNCATE TABLE users')).toBe(false);
+  // ── Blocked: semicolons (multi-statement) ────────────────
+  describe('blocks multi-statement queries', () => {
+    it('blocks semicolons outside string literals', () => {
+      expect(validateReadOnlyQuery('SELECT 1; DROP TABLE users')).toBe(false);
+      expect(validateReadOnlyQuery('SELECT * FROM users; SELECT * FROM orders')).toBe(false);
+    });
+
+    it('allows semicolons inside string literals', () => {
+      expect(validateReadOnlyQuery("SELECT * FROM users WHERE name = 'test;value'")).toBe(true);
+    });
   });
 
-  it('blocks multi-statement queries (semicolons outside strings)', () => {
-    expect(validateReadOnlyQuery('SELECT 1; DROP TABLE users')).toBe(false);
-    expect(validateReadOnlyQuery('SELECT * FROM users; SELECT * FROM orders')).toBe(false);
+  // ── Blocked: INTO OUTFILE/DUMPFILE ───────────────────────
+  describe('blocks INTO OUTFILE/DUMPFILE', () => {
+    it('blocks standard INTO OUTFILE', () => {
+      expect(validateReadOnlyQuery("SELECT * FROM users INTO OUTFILE '/tmp/data.csv'")).toBe(false);
+      expect(validateReadOnlyQuery("SELECT * FROM users INTO DUMPFILE '/tmp/data.bin'")).toBe(false);
+      expect(validateReadOnlyQuery("SELECT * FROM users into outfile '/tmp/data.csv'")).toBe(false);
+    });
+
+    it('blocks INTO/**/OUTFILE comment token glue', () => {
+      expect(validateReadOnlyQuery("SELECT * FROM users INTO/**/OUTFILE '/tmp/x'")).toBe(false);
+      expect(validateReadOnlyQuery("SELECT * FROM users INTO /* */ OUTFILE '/tmp/x'")).toBe(false);
+      expect(validateReadOnlyQuery("SELECT * FROM users INTO/**/DUMPFILE '/tmp/x'")).toBe(false);
+    });
   });
 
-  it('allows semicolons inside string literals', () => {
-    expect(validateReadOnlyQuery("SELECT * FROM users WHERE name = 'test;value'")).toBe(true);
+  // ── Blocked: MySQL executable comments ───────────────────
+  describe('blocks MySQL executable comments', () => {
+    it('blocks /*!nnnnn ... */ pattern', () => {
+      expect(validateReadOnlyQuery('SELECT /*!50000 1; DROP TABLE users */')).toBe(false);
+      expect(validateReadOnlyQuery('/*!32302 SELECT */ 1')).toBe(false);
+      expect(validateReadOnlyQuery('SELECT /*!99999 SLEEP(10) */')).toBe(false);
+    });
   });
 
-  it('blocks INTO OUTFILE/DUMPFILE', () => {
-    expect(validateReadOnlyQuery("SELECT * FROM users INTO OUTFILE '/tmp/data.csv'")).toBe(false);
-    expect(validateReadOnlyQuery("SELECT * FROM users INTO DUMPFILE '/tmp/data.bin'")).toBe(false);
-    expect(validateReadOnlyQuery("SELECT * FROM users into outfile '/tmp/data.csv'")).toBe(false);
+  // ── Blocked: dangerous functions ─────────────────────────
+  describe('blocks dangerous SQL functions', () => {
+    it.each([
+      'SELECT SLEEP(999)',
+      'SELECT LOAD_FILE("/etc/passwd")',
+      'SELECT BENCHMARK(1000000, SHA1("test"))',
+      'SELECT GET_LOCK("x", 100)',
+      'SELECT RELEASE_LOCK("x")',
+      'SELECT IS_FREE_LOCK("x")',
+    ])('blocks: %s', (query) => {
+      expect(validateReadOnlyQuery(query)).toBe(false);
+    });
   });
 
-  it('strips block comments before validation', () => {
-    expect(validateReadOnlyQuery('/* comment */ SELECT * FROM users')).toBe(true);
-    expect(validateReadOnlyQuery('/* DROP TABLE users */ SELECT 1')).toBe(true);
+  // ── Blocked: locking clauses ─────────────────────────────
+  describe('blocks locking clauses', () => {
+    it('blocks FOR UPDATE', () => {
+      expect(validateReadOnlyQuery('SELECT * FROM users FOR UPDATE')).toBe(false);
+    });
+
+    it('blocks LOCK IN SHARE MODE', () => {
+      expect(validateReadOnlyQuery('SELECT * FROM users LOCK IN SHARE MODE')).toBe(false);
+    });
+
+    it('blocks FOR SHARE', () => {
+      expect(validateReadOnlyQuery('SELECT * FROM users FOR SHARE')).toBe(false);
+    });
   });
 
-  it('rejects empty queries', () => {
-    expect(validateReadOnlyQuery('')).toBe(false);
-    expect(validateReadOnlyQuery('   ')).toBe(false);
+  // ── Blocked: INTO @variable ──────────────────────────────
+  describe('blocks INTO @variable', () => {
+    it('blocks SELECT INTO @var', () => {
+      expect(validateReadOnlyQuery('SELECT id INTO @myvar FROM users')).toBe(false);
+    });
+  });
+
+  // ── Edge cases ───────────────────────────────────────────
+  describe('edge cases', () => {
+    it('rejects empty queries', () => {
+      expect(validateReadOnlyQuery('')).toBe(false);
+      expect(validateReadOnlyQuery('   ')).toBe(false);
+    });
   });
 });
 
-// ── Config loading tests ───────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Input Sanitization
+// ══════════════════════════════════════════════════════════════
+
+describe('validateDockerName', () => {
+  it('accepts valid Docker container names', () => {
+    expect(() => validateDockerName('nginx', 'service')).not.toThrow();
+    expect(() => validateDockerName('my-app_web.1', 'service')).not.toThrow();
+    expect(() => validateDockerName('redis-cluster', 'service')).not.toThrow();
+    expect(() => validateDockerName('a', 'service')).not.toThrow();
+  });
+
+  it('rejects names with shell metacharacters', () => {
+    expect(() => validateDockerName('nginx; rm -rf /', 'service')).toThrow(/invalid.*service/i);
+    expect(() => validateDockerName('nginx$(whoami)', 'service')).toThrow(/invalid.*service/i);
+    expect(() => validateDockerName('test`id`', 'service')).toThrow(/invalid.*service/i);
+    expect(() => validateDockerName('a | cat /etc/passwd', 'service')).toThrow(/invalid.*service/i);
+  });
+
+  it('rejects names starting with special chars', () => {
+    expect(() => validateDockerName('.hidden', 'service')).toThrow(/invalid.*service/i);
+    expect(() => validateDockerName('-flag', 'service')).toThrow(/invalid.*service/i);
+  });
+
+  it('rejects empty names', () => {
+    expect(() => validateDockerName('', 'service')).toThrow(/invalid.*service/i);
+  });
+});
+
+describe('validateTimestamp', () => {
+  it('accepts valid ISO 8601 dates and durations', () => {
+    expect(() => validateTimestamp('2024-01-01', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2024-01-01T00:00', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2024-01-01T00:00:00', 'since')).not.toThrow();
+    expect(() => validateTimestamp('10m', 'since')).not.toThrow();
+    expect(() => validateTimestamp('1h', 'since')).not.toThrow();
+    expect(() => validateTimestamp('2d', 'since')).not.toThrow();
+    expect(() => validateTimestamp('30s', 'since')).not.toThrow();
+  });
+
+  it('rejects values with shell metacharacters', () => {
+    expect(() => validateTimestamp('1h; rm -rf /', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('$(date)', 'since')).toThrow(/invalid.*since/i);
+    expect(() => validateTimestamp('`date`', 'since')).toThrow(/invalid.*since/i);
+  });
+
+  it('rejects empty values', () => {
+    expect(() => validateTimestamp('', 'since')).toThrow(/invalid.*since/i);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// Config loading
+// ══════════════════════════════════════════════════════════════
 
 describe('Config loading', () => {
   const originalEnv = process.env;
@@ -121,33 +273,18 @@ describe('Config loading', () => {
   });
 
   it('loads server-tools section from config file', () => {
-    const configData = {
-      'server-tools': {
-        prod: {
-          ssh: { host: 'prod.example.com' },
-          databases: {
-            main: { type: 'mysql', host: 'db.internal', port: 3306, user: 'root', password: 'secret' },
-          },
-        },
-      },
-    };
-
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 1000, size: 500 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
-
+    mockConfig(PROD_CONFIG, 1000);
     const config = loadConfig();
     expect(config).toHaveProperty('prod');
     expect(config.prod.ssh.host).toBe('prod.example.com');
-    expect(config.prod.databases?.main.host).toBe('db.internal');
+    expect(config.prod.databases?.app_db.host).toBe('db.internal');
   });
 
   it('returns empty config when server-tools section is missing', () => {
     process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 2000, size: 100 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ other: {} }));
+    resetConfigCache();
 
     const config = loadConfig();
     expect(Object.keys(config)).toHaveLength(0);
@@ -155,38 +292,34 @@ describe('Config loading', () => {
 
   it('uses mtime cache and does not re-read unchanged file', () => {
     process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-
-    const configData = {
-      'server-tools': {
-        staging: { ssh: { host: 'staging.example.com' } },
-      },
-    };
-
-    // Clear any previous call counts
     vi.mocked(fs.statSync).mockClear();
     vi.mocked(fs.readFileSync).mockClear();
 
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 3000, size: 200 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ 'server-tools': { staging: { ssh: { host: 'staging.example.com' } } } }),
+    );
 
-    // First call — reads file
+    resetConfigCache();
     loadConfig();
     expect(fs.readFileSync).toHaveBeenCalledTimes(1);
 
-    // Second call — same mtime, should use cache
+    // Same mtime → cache hit
     loadConfig();
     expect(fs.readFileSync).toHaveBeenCalledTimes(1);
 
-    // Third call with changed mtime — should re-read
+    // Changed mtime → re-read
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 4000, size: 200 } as fs.Stats);
     loadConfig();
     expect(fs.readFileSync).toHaveBeenCalledTimes(2);
   });
 });
 
-// ── Tool behavior tests (using internal logic) ─────────────
+// ══════════════════════════════════════════════════════════════
+// handleList — calls actual handler
+// ══════════════════════════════════════════════════════════════
 
-describe('list tool', () => {
+describe('handleList', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -199,60 +332,40 @@ describe('list tool', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns configured servers', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
+  it('returns configured servers with databases', () => {
+    mockConfig(PROD_CONFIG, 5000);
 
-    const configData = {
-      'server-tools': {
-        web: {
-          ssh: { host: 'web.example.com' },
-          databases: {
-            app_db: { type: 'mysql', host: 'db.internal', port: 3306, user: 'root', password: 'pw' },
-          },
-        },
-        api: {
-          ssh: { host: 'api.example.com' },
-        },
-      },
-    };
+    const result = handleList();
+    const parsed = JSON.parse(result.content[0].text);
 
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 5000, size: 300 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
-
-    const config = loadConfig();
-    const servers = Object.entries(config).map(([name, srv]) => ({
-      name,
-      ssh_host: srv.ssh.host,
-      databases: srv.databases ? Object.keys(srv.databases) : [],
-    }));
-
-    expect(servers).toHaveLength(2);
-    expect(servers[0]).toEqual({
-      name: 'web',
-      ssh_host: 'web.example.com',
+    expect(parsed.servers).toHaveLength(2);
+    expect(parsed.servers[0]).toEqual({
+      name: 'prod',
+      ssh_host: 'prod.example.com',
       databases: ['app_db'],
     });
-    expect(servers[1]).toEqual({
-      name: 'api',
-      ssh_host: 'api.example.com',
+    expect(parsed.servers[1]).toEqual({
+      name: 'staging',
+      ssh_host: 'staging.example.com',
       databases: [],
     });
   });
 
-  it('returns empty when no config', () => {
-    // No SOMA_CONFIG_FILE set
+  it('returns empty array when no config', () => {
     delete process.env.SOMA_CONFIG_FILE;
-    const config = loadConfig();
-    const servers = Object.entries(config).map(([name, srv]) => ({
-      name,
-      ssh_host: srv.ssh.host,
-      databases: srv.databases ? Object.keys(srv.databases) : [],
-    }));
-    expect(servers).toHaveLength(0);
+    resetConfigCache();
+
+    const result = handleList();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.servers).toHaveLength(0);
   });
 });
 
-describe('list_service tool', () => {
+// ══════════════════════════════════════════════════════════════
+// handleListService — calls actual handler
+// ══════════════════════════════════════════════════════════════
+
+describe('handleListService', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -265,64 +378,35 @@ describe('list_service tool', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds correct SSH command', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-
-    const configData = {
-      'server-tools': {
-        prod: { ssh: { host: 'prod.example.com' } },
-      },
-    };
-
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 6000, size: 100 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
+  it('calls SSH with correct args and parses JSON output', () => {
+    mockConfig(PROD_CONFIG, 6000);
 
     const dockerOutput = '{"Names":"nginx","Status":"Up 2 hours"}\n{"Names":"redis","Status":"Up 3 hours"}\n';
     vi.mocked(child_process.execFileSync).mockReturnValue(dockerOutput);
 
-    // Simulate the handler logic
-    const config = loadConfig();
-    const server = 'prod';
-    const sshHost = config[server].ssh.host;
-
-    const output = child_process.execFileSync(
-      'ssh',
-      [sshHost, 'docker', 'ps', '--format', 'json'],
-      { timeout: 30000, encoding: 'utf-8' },
-    );
+    const result = handleListService({ server: 'prod' });
+    const containers = JSON.parse(result.content[0].text);
 
     expect(child_process.execFileSync).toHaveBeenCalledWith(
       'ssh',
       ['prod.example.com', 'docker', 'ps', '--format', 'json'],
       expect.objectContaining({ timeout: 30000 }),
     );
-
-    const containers = (output as string)
-      .trim()
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => JSON.parse(line));
-
     expect(containers).toHaveLength(2);
     expect(containers[0].Names).toBe('nginx');
   });
 
-  it('throws error for unknown server', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 7000, size: 50 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ 'server-tools': {} }));
-
-    const config = loadConfig();
-    expect(() => {
-      if (!config['nonexistent']) {
-        throw new Error('Unknown server: nonexistent');
-      }
-    }).toThrow('Unknown server: nonexistent');
+  it('throws for unknown server', () => {
+    mockConfig(PROD_CONFIG, 7000);
+    expect(() => handleListService({ server: 'nonexistent' })).toThrow('Unknown server: nonexistent');
   });
 });
 
-describe('logs tool', () => {
+// ══════════════════════════════════════════════════════════════
+// handleLogs — calls actual handler
+// ══════════════════════════════════════════════════════════════
+
+describe('handleLogs', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -335,38 +419,17 @@ describe('logs tool', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds correct SSH command with all options', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
+  it('calls SSH with all options', () => {
+    mockConfig(PROD_CONFIG, 8000);
+    vi.mocked(child_process.execFileSync).mockReturnValue('log output');
 
-    const configData = {
-      'server-tools': {
-        prod: { ssh: { host: 'prod.example.com' } },
-      },
-    };
-
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 8000, size: 100 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
-    vi.mocked(child_process.execFileSync).mockReturnValue('some log output');
-
-    const config = loadConfig();
-    const server = 'prod';
-    const service = 'nginx';
-    const tail = 50;
-    const since = '2024-01-01T00:00:00';
-    const until = '2024-01-02T00:00:00';
-    const timestamps = true;
-
-    const sshHost = config[server].ssh.host;
-    const sshArgs = [sshHost, 'docker', 'logs', '--tail', String(tail)];
-    if (since) sshArgs.push('--since', since);
-    if (until) sshArgs.push('--until', until);
-    if (timestamps) sshArgs.push('--timestamps');
-    sshArgs.push(service);
-
-    child_process.execFileSync('ssh', sshArgs, {
-      timeout: 30000,
-      maxBuffer: 1024 * 1024,
-      encoding: 'utf-8',
+    handleLogs({
+      server: 'prod',
+      service: 'nginx',
+      tail: 50,
+      since: '2024-01-01T00:00:00',
+      until: '2024-01-02T00:00:00',
+      timestamps: true,
     });
 
     expect(child_process.execFileSync).toHaveBeenCalledWith(
@@ -384,29 +447,11 @@ describe('logs tool', () => {
     );
   });
 
-  it('uses default tail of 100', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
+  it('defaults tail to 100 when omitted', () => {
+    mockConfig(PROD_CONFIG, 9000);
+    vi.mocked(child_process.execFileSync).mockReturnValue('output');
 
-    const configData = {
-      'server-tools': {
-        prod: { ssh: { host: 'prod.example.com' } },
-      },
-    };
-
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 9000, size: 100 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData));
-    vi.mocked(child_process.execFileSync).mockReturnValue('log output');
-
-    const config = loadConfig();
-    const tail = undefined || 100;
-
-    const sshArgs = [config['prod'].ssh.host, 'docker', 'logs', '--tail', String(tail), 'myservice'];
-
-    child_process.execFileSync('ssh', sshArgs, {
-      timeout: 30000,
-      maxBuffer: 1024 * 1024,
-      encoding: 'utf-8',
-    });
+    handleLogs({ server: 'prod', service: 'nginx' });
 
     expect(child_process.execFileSync).toHaveBeenCalledWith(
       'ssh',
@@ -415,58 +460,115 @@ describe('logs tool', () => {
     );
   });
 
-  it('throws error for unknown server', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
+  it('passes tail=0 as "0", not "100"', () => {
+    mockConfig(PROD_CONFIG, 9100);
+    vi.mocked(child_process.execFileSync).mockReturnValue('output');
 
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 10000, size: 50 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ 'server-tools': {} }));
+    handleLogs({ server: 'prod', service: 'nginx', tail: 0 });
 
-    const config = loadConfig();
-    expect(() => {
-      if (!config['unknown']) {
-        throw new Error('Unknown server: unknown');
-      }
-    }).toThrow('Unknown server: unknown');
+    expect(child_process.execFileSync).toHaveBeenCalledWith(
+      'ssh',
+      expect.arrayContaining(['--tail', '0']),
+      expect.any(Object),
+    );
+  });
+
+  it('rejects negative tail values', () => {
+    mockConfig(PROD_CONFIG, 9200);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: -1 })).toThrow(/invalid tail/i);
+  });
+
+  it('rejects excessively large tail values', () => {
+    mockConfig(PROD_CONFIG, 9300);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: 999999 })).toThrow(/invalid tail/i);
+  });
+
+  it('rejects non-integer tail values', () => {
+    mockConfig(PROD_CONFIG, 9400);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', tail: 1.5 })).toThrow(/invalid tail/i);
+  });
+
+  it('throws for unknown server', () => {
+    mockConfig(PROD_CONFIG, 10000);
+    expect(() => handleLogs({ server: 'unknown', service: 'nginx' })).toThrow('Unknown server: unknown');
+  });
+
+  it('rejects service names with shell metacharacters', () => {
+    mockConfig(PROD_CONFIG, 10100);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx; rm -rf /' })).toThrow(/invalid.*service/i);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx$(whoami)' })).toThrow(/invalid.*service/i);
+  });
+
+  it('rejects since/until with shell metacharacters', () => {
+    mockConfig(PROD_CONFIG, 10200);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', since: '1h; rm -rf /' })).toThrow(
+      /invalid.*since/i,
+    );
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', until: '$(date)' })).toThrow(
+      /invalid.*until/i,
+    );
+  });
+
+  it('returns log output as text content', () => {
+    mockConfig(PROD_CONFIG, 10300);
+    vi.mocked(child_process.execFileSync).mockReturnValue('line1\nline2\nline3\n');
+
+    const result = handleLogs({ server: 'prod', service: 'nginx', tail: 3 });
+
+    expect(result.content[0].text).toBe('line1\nline2\nline3\n');
+    expect(result.content[0].type).toBe('text');
   });
 });
 
-describe('db_query tool', () => {
-  it('validates SELECT queries only', () => {
-    expect(validateReadOnlyQuery('SELECT * FROM users')).toBe(true);
-    expect(validateReadOnlyQuery('INSERT INTO users VALUES (1)')).toBe(false);
-    expect(validateReadOnlyQuery('UPDATE users SET x = 1')).toBe(false);
-    expect(validateReadOnlyQuery('DELETE FROM users')).toBe(false);
-    expect(validateReadOnlyQuery('DROP TABLE users')).toBe(false);
+// ══════════════════════════════════════════════════════════════
+// handleDbQuery — calls actual handler (validation path only)
+// ══════════════════════════════════════════════════════════════
+
+describe('handleDbQuery', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfigCache();
   });
 
-  it('throws error for unknown server', () => {
-    const config: Record<string, any> = {};
-    const server = 'nonexistent';
-
-    expect(() => {
-      if (!config[server]) {
-        throw new Error(`Unknown server: ${server}`);
-      }
-    }).toThrow('Unknown server: nonexistent');
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
   });
 
-  it('throws error for unknown database', () => {
-    const config: Record<string, any> = {
-      prod: {
-        ssh: { host: 'prod.example.com' },
-        databases: {
-          app_db: { type: 'mysql', host: 'db.internal', port: 3306, user: 'root', password: 'pw' },
-        },
-      },
-    };
+  it('throws for unknown server', async () => {
+    mockConfig(PROD_CONFIG, 11000);
+    await expect(handleDbQuery({ server: 'nonexistent', database: 'app_db', query: 'SELECT 1' })).rejects.toThrow(
+      'Unknown server: nonexistent',
+    );
+  });
 
-    const server = 'prod';
-    const database = 'nonexistent_db';
+  it('throws for unknown database', async () => {
+    mockConfig(PROD_CONFIG, 11100);
+    await expect(handleDbQuery({ server: 'prod', database: 'no_such_db', query: 'SELECT 1' })).rejects.toThrow(
+      'Unknown database: no_such_db on server prod',
+    );
+  });
 
-    expect(() => {
-      if (!config[server].databases?.[database]) {
-        throw new Error(`Unknown database: ${database} on server ${server}`);
-      }
-    }).toThrow('Unknown database: nonexistent_db on server prod');
+  it('rejects non-read-only queries', async () => {
+    mockConfig(PROD_CONFIG, 11200);
+    await expect(handleDbQuery({ server: 'prod', database: 'app_db', query: 'DROP TABLE users' })).rejects.toThrow(
+      'Only read-only queries are allowed',
+    );
+  });
+
+  it('rejects queries with SLEEP', async () => {
+    mockConfig(PROD_CONFIG, 11300);
+    await expect(handleDbQuery({ server: 'prod', database: 'app_db', query: 'SELECT SLEEP(999)' })).rejects.toThrow(
+      'Only read-only queries are allowed',
+    );
+  });
+
+  it('rejects MySQL executable comment injection', async () => {
+    mockConfig(PROD_CONFIG, 11400);
+    await expect(
+      handleDbQuery({ server: 'prod', database: 'app_db', query: 'SELECT /*!50000 1; DROP TABLE users */' }),
+    ).rejects.toThrow('Only read-only queries are allowed');
   });
 });
