@@ -31,7 +31,7 @@ describe('session.terminated Flag (Ghost Session Fix #99)', () => {
     const { SessionRegistry } = await import('../../session-registry.js');
 
     // Create a minimal registry with the session
-    const registry = new SessionRegistry({} as any);
+    const registry = new SessionRegistry();
 
     // Inject session directly into the registry's internal Map
     // We access the private sessions Map via any cast
