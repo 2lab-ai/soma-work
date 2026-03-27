@@ -143,7 +143,7 @@ describe('Source interface matches v2 contract', () => {
   function requireActualInterface(): { GetThreadMessagesResultKeys: string[] } {
     const fs = require('fs');
     const path = require('path');
-    const sourcePath = path.join(__dirname, 'slack-thread-mcp-server.ts');
+    const sourcePath = path.join(__dirname, 'slack-mcp-server.ts');
     const source = fs.readFileSync(sourcePath, 'utf-8');
 
     const interfaceMatch = source.match(/interface\s+GetThreadMessagesResult\s*\{([^}]+)\}/);
