@@ -115,14 +115,6 @@ describe('SessionUiManager', () => {
       return { result, cardBlocks, allBlocks: result.blocks };
     };
 
-    // Helper: find the section block (title)
-    const findSection = (blocks: any[]) =>
-      blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('*1.*'));
-
-    // Helper: find the context block (metadata)
-    const findContext = (blocks: any[]) =>
-      blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🤖'));
-
     it('should render no-links card as section.text + context (2 blocks)', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test Session' }));
       expect(cardBlocks).toHaveLength(2);
@@ -162,7 +154,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github' },
+          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github', type: 'issue' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -174,7 +166,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github' },
+          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github', type: 'pr' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -186,8 +178,8 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github' },
-          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github' },
+          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github', type: 'issue' as const },
+          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github', type: 'pr' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -202,7 +194,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          doc: { url: 'https://docs.example.com/guide', label: 'Guide', provider: 'other' },
+          doc: { url: 'https://docs.example.com/guide', label: 'Guide', provider: 'unknown', type: 'doc' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -214,7 +206,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          doc: { url: 'https://docs.example.com', provider: 'other' },
+          doc: { url: 'https://docs.example.com', provider: 'unknown', type: 'doc' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -225,7 +217,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', provider: 'github' },
+          issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', provider: 'github', type: 'issue' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -316,7 +308,7 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          issue: { url: 'https://jira.example.com/browse/TEST-1', provider: 'jira' },
+          issue: { url: 'https://jira.example.com/browse/TEST-1', provider: 'jira', type: 'issue' as const },
         },
       }));
       const ctx = cardBlocks[1];
@@ -327,12 +319,26 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         links: {
-          pr: { url: 'https://github.com/org/repo/pull/1', provider: 'github' },
+          pr: { url: 'https://github.com/org/repo/pull/1', provider: 'github', type: 'pr' as const },
         },
       }));
       const ctx = cardBlocks[1];
       expect(ctx.elements[0].text).toContain('🔀');
       expect(ctx.elements[0].text).toMatch(/<[^|]+\|PR>/);
+    });
+
+    it('should keep context text under Slack 3000 char mrkdwn limit', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          issue: { url: 'https://jira.example.com/browse/' + 'A'.repeat(200), label: '#' + 'X'.repeat(50), provider: 'jira', type: 'issue' as const },
+          pr: { url: 'https://github.com/' + 'B'.repeat(200) + '/pull/999', label: 'PR #' + 'Y'.repeat(50), provider: 'github', type: 'pr' as const },
+          doc: { url: 'https://docs.example.com/' + 'C'.repeat(200), label: 'D'.repeat(50), provider: 'unknown', type: 'doc' as const },
+        },
+        currentInitiatorName: 'Z'.repeat(100),
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text.length).toBeLessThanOrEqual(3000);
     });
 
     it('should keep total blocks within Slack 50 limit for 10 sessions', async () => {

@@ -312,12 +312,16 @@ export class SessionUiManager {
     metaParts.push(`🕐 ${timeAgo}`);
     metaParts.push(expiresText);
 
+    // Slack mrkdwn text object limit is 3000 chars
+    const metaText = metaParts.join(' | ');
+    const safeMetaText = metaText.length > 2990 ? metaText.slice(0, 2990) + '…' : metaText;
+
     blocks.push({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: metaParts.join(' | '),
+          text: safeMetaText,
         },
       ],
     });
