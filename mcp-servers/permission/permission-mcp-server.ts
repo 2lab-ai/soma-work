@@ -7,9 +7,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebClient } from '@slack/web-api';
-import { StderrLogger } from './stderr-logger.js';
-import { sharedStore, PendingApproval, PermissionResponse } from './shared-store.js';
-import { SlackPermissionMessenger } from './permission/index.js';
+import { StderrLogger } from '../_shared/stderr-logger.js';
+import { sharedStore, PendingApproval, PermissionResponse } from '../../src/shared-store.js';
+import { SlackPermissionMessenger } from '../../src/permission/index.js';
 
 const logger = new StderrLogger('PermissionMCP');
 

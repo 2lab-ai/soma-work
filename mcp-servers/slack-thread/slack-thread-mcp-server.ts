@@ -28,7 +28,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebClient } from '@slack/web-api';
 
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from '../_shared/stderr-logger.js';
 
 const logger = new StderrLogger('SlackThreadMCP');
 

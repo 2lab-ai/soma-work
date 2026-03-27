@@ -5,8 +5,8 @@ import * as fs from 'fs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { McpClient } from './mcp-client.js';
-import { StderrLogger } from './stderr-logger.js';
+import { McpClient } from '../_shared/mcp-client.js';
+import { StderrLogger } from '../_shared/stderr-logger.js';
 
 const logger = new StderrLogger('LlmMCP');
 

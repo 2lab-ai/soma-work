@@ -16,6 +16,12 @@ const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
 const SLACK_THREAD_SERVER_BASENAME = 'slack-thread-mcp-server';
+const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
+
+/** Root of the project (one level up from src/) */
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+/** Directory containing extracted MCP servers */
+const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -152,6 +158,11 @@ export class McpConfigBuilder {
       internalServers['slack-thread'] = this.buildSlackThreadServer(slackContext!);
     }
 
+    // Conditionally add server-tools when config.json has server-tools section
+    if (this.hasServerToolsConfig()) {
+      internalServers['server-tools'] = this.buildServerToolsServer();
+    }
+
     // Always add permission prompt server when in Slack context
     // Even bypass users need the MCP server for dangerous command approval via Slack UI
     if (slackContext) {
@@ -281,11 +292,12 @@ export class McpConfigBuilder {
   private resolveServerPath(
     label: string,
     basename: string,
+    serverDir: string,
     cache: { path: string | null; checked: boolean; triedPaths: string[] }
   ): string {
     if (!cache.checked) {
       const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(__dirname, basename, runtimeExt);
+      const result = resolveInternalMcpServer(serverDir, basename, runtimeExt);
       cache.checked = true;
       cache.path = result.resolvedPath;
       cache.triedPaths = result.triedPaths;
@@ -315,22 +327,27 @@ export class McpConfigBuilder {
 
   private permissionServerCache = McpConfigBuilder.emptyCache();
   private getPermissionServerPath(): string {
-    return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, this.permissionServerCache);
+    return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'permission'), this.permissionServerCache);
   }
 
   private modelCommandServerCache = McpConfigBuilder.emptyCache();
   private getModelCommandServerPath(): string {
-    return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, this.modelCommandServerCache);
+    return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'model-command'), this.modelCommandServerCache);
   }
 
   private slackThreadServerCache = McpConfigBuilder.emptyCache();
   private getSlackThreadServerPath(): string {
-    return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, this.slackThreadServerCache);
+    return this.resolveServerPath('Slack-thread', SLACK_THREAD_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'slack-thread'), this.slackThreadServerCache);
   }
 
   private llmServerCache = McpConfigBuilder.emptyCache();
   private getLlmServerPath(): string {
-    return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, this.llmServerCache);
+    return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'llm'), this.llmServerCache);
+  }
+
+  private serverToolsCache = McpConfigBuilder.emptyCache();
+  private getServerToolsServerPath(): string {
+    return this.resolveServerPath('Server-tools', SERVER_TOOLS_BASENAME, path.join(MCP_SERVERS_DIR, 'server-tools'), this.serverToolsCache);
   }
 
   /**
@@ -401,10 +418,43 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
     }
 
+    // Allow server-tools when configured
+    if (this.hasServerToolsConfig()) {
+      allowedTools.push('mcp__server-tools');
+    }
+
     // Auto-approve plan mode tools (no terminal interaction needed)
     allowedTools.push('EnterPlanMode');
     allowedTools.push('ExitPlanMode');
 
     return allowedTools;
+  }
+
+  /**
+   * Check if config.json has a server-tools section with at least one server
+   */
+  private hasServerToolsConfig(): boolean {
+    if (!CONFIG_FILE) return false;
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      const serverTools = raw?.['server-tools'];
+      return !!serverTools && typeof serverTools === 'object' && Object.keys(serverTools).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build server-tools MCP server configuration
+   */
+  private buildServerToolsServer(): Record<string, any> {
+    const serverPath = this.getServerToolsServerPath();
+    return {
+      command: 'npx',
+      args: ['tsx', serverPath],
+      env: {
+        SOMA_CONFIG_FILE: CONFIG_FILE,
+      },
+    };
   }
 }
