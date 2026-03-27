@@ -8,7 +8,7 @@
  * rather than injecting everything into the prompt upfront.
  *
  * Tools:
- *   - get_thread_messages: Fetch messages around an anchor point in the thread
+ *   - get_thread_messages: Fetch messages from the thread (array mode or legacy mode)
  *   - download_thread_file: Download a file attachment from the thread
  *
  * Environment variables (set by McpConfigBuilder):
@@ -66,11 +66,11 @@ interface ThreadFile {
 interface GetThreadMessagesResult {
   thread_ts: string;
   channel: string;
-  thread_root: ThreadMessage | null;
+  total_count: number;
+  offset: number;
   returned: number;
   messages: ThreadMessage[];
-  has_more_before: boolean;
-  has_more_after: boolean;
+  has_more: boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -107,11 +107,10 @@ class SlackThreadMcpServer {
   private slack: WebClient;
   private token: string;
   private context: SlackThreadContext;
-  private capturedRoot: any | null = null;
 
   constructor() {
     this.server = new Server(
-      { name: 'slack-thread', version: '1.0.0' },
+      { name: 'slack-thread', version: '2.0.0' },
       { capabilities: { tools: {} } }
     );
 
@@ -152,33 +151,45 @@ class SlackThreadMcpServer {
         {
           name: 'get_thread_messages',
           description: [
-            'Fetch messages from the current Slack thread.',
-            'Returns structured messages with author, text, timestamps, file attachments, and reactions.',
-            'Use this to understand the conversation context before acting on user requests.',
+            'Fetch messages from the current Slack thread as an ordered array.',
+            'Thread is 0-indexed: index 0 = root message, index 1 = first reply, etc.',
+            'Returns total_count so you can compute offsets (e.g., last 5: offset=total_count-5).',
             '',
             `Thread: channel=${this.context.channel}, thread_ts=${this.context.threadTs}`,
             `The mention that triggered this session: ts=${this.context.mentionTs}`,
             '',
-            'Examples:',
+            'Array mode (default):',
+            '- get_thread_messages({ offset: 0, limit: 1 })  -> root message only',
+            '- get_thread_messages({ offset: 1, limit: 10 }) -> first 10 replies (no root)',
+            '- get_thread_messages({ offset: 0, limit: 20 }) -> root + 19 replies',
+            '',
+            'Legacy mode (backward compat):',
             '- get_thread_messages({ before: 20, after: 0 }) -> 20 messages before the mention',
-            '- get_thread_messages({ before: 5, after: 5 }) -> 5 messages before and after the mention',
-            '- get_thread_messages({ anchor_ts: "...", before: 0, after: 10 }) -> 10 messages after a specific point',
+            '- get_thread_messages({ anchor_ts: "...", before: 0, after: 10 }) -> 10 after a point',
           ].join('\n'),
           inputSchema: {
             type: 'object' as const,
             properties: {
+              offset: {
+                type: 'number',
+                description: 'Array mode: 0-based index to start from (0=root, 1=first reply). Default: 0',
+              },
+              limit: {
+                type: 'number',
+                description: 'Array mode: max messages to return (default: 10, max: 50)',
+              },
               anchor_ts: {
                 type: 'string',
                 description:
-                  'Reference message timestamp. Defaults to the mention message ts. Use a specific ts to paginate from a different point.',
+                  'Legacy mode: reference message timestamp. Presence of anchor_ts/before/after triggers legacy mode.',
               },
               before: {
                 type: 'number',
-                description: 'Number of messages to fetch BEFORE anchor_ts (default: 10, max: 50)',
+                description: 'Legacy mode: messages before anchor_ts (default: 10, max: 50)',
               },
               after: {
                 type: 'number',
-                description: 'Number of messages to fetch AFTER anchor_ts (default: 0, max: 50)',
+                description: 'Legacy mode: messages after anchor_ts (default: 0, max: 50)',
               },
             },
           },
@@ -245,6 +256,60 @@ class SlackThreadMcpServer {
   // ── get_thread_messages ──────────────────────────────
 
   private async handleGetThreadMessages(args: {
+    offset?: number;
+    limit?: number;
+    anchor_ts?: string;
+    before?: number;
+    after?: number;
+  }) {
+    // Mode detection: if anchor_ts, before, or after is explicitly provided → legacy mode
+    const isLegacyMode = args.anchor_ts !== undefined
+      || args.before !== undefined
+      || args.after !== undefined;
+
+    if (isLegacyMode) {
+      return this.handleLegacyMode(args);
+    }
+
+    return this.handleArrayMode(args);
+  }
+
+  // ── Array mode: offset/limit ───────────────────────────
+
+  private async handleArrayMode(args: { offset?: number; limit?: number }) {
+    const offset = Math.max(args.offset ?? 0, 0);
+    const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
+
+    // Get total count first (cheap: single API call with limit=1)
+    const totalCount = await this.getTotalCount();
+
+    // Clamp offset to valid range
+    const clampedOffset = Math.min(offset, Math.max(totalCount - 1, 0));
+
+    // Fetch the requested slice
+    const messages = await this.fetchThreadSlice(clampedOffset, limit, totalCount);
+
+    const formatted = messages.map(m => this.formatSingleMessage(m));
+    const hasMore = clampedOffset + formatted.length < totalCount;
+
+    const result: GetThreadMessagesResult = {
+      thread_ts: this.context.threadTs,
+      channel: this.context.channel,
+      total_count: totalCount,
+      offset: clampedOffset,
+      returned: formatted.length,
+      messages: formatted,
+      has_more: hasMore,
+    };
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    };
+  }
+
+  // ── Legacy mode: anchor_ts/before/after ────────────────
+
+  private async handleLegacyMode(args: {
     anchor_ts?: string;
     before?: number;
     after?: number;
@@ -253,10 +318,7 @@ class SlackThreadMcpServer {
     const before = Math.min(Math.max(args.before ?? 10, 0), 50);
     const after = Math.min(Math.max(args.after ?? 0, 0), 50);
 
-    // Reset captured root for each call
-    this.capturedRoot = null;
-
-    // Fetch messages before anchor (inclusive) — direct API, no caching
+    // Fetch messages before anchor (inclusive)
     const beforeMessages = await this.fetchMessagesBefore(anchorTs, before);
 
     // Fetch messages after anchor (exclusive)
@@ -264,21 +326,104 @@ class SlackThreadMcpServer {
       ? await this.fetchMessagesAfter(anchorTs, after)
       : [];
 
-    // Fallback: if root wasn't captured (e.g., before=0), fetch it directly
-    if (!this.capturedRoot) {
-      await this.fetchThreadRoot();
+    const allMessages = [...beforeMessages, ...afterMessages];
+    const formatted = allMessages.map(m => this.formatSingleMessage(m));
+
+    // Get total count for response
+    const totalCount = await this.getTotalCount();
+
+    // Compute approximate offset of first returned message
+    const approxOffset = formatted.length > 0 ? Math.max(totalCount - before - after, 0) : 0;
+    const hasMore = before > 0
+      ? beforeMessages.length === before
+      : after > 0 ? afterMessages.length === after : false;
+
+    const result: GetThreadMessagesResult = {
+      thread_ts: this.context.threadTs,
+      channel: this.context.channel,
+      total_count: totalCount,
+      offset: approxOffset,
+      returned: formatted.length,
+      messages: formatted,
+      has_more: hasMore,
+    };
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    };
+  }
+
+  // ── Data fetching methods ──────────────────────────────
+
+  /**
+   * Get total message count in thread (root + replies).
+   * Uses conversations.replies with limit=1 to get reply_count from the root message.
+   */
+  private async getTotalCount(): Promise<number> {
+    try {
+      const response = await this.slack.conversations.replies({
+        channel: this.context.channel,
+        ts: this.context.threadTs,
+        limit: 1,
+      });
+      const root = response.messages?.[0];
+      if (root && root.ts === this.context.threadTs) {
+        // reply_count is number of replies (excludes root), so total = reply_count + 1
+        const replyCount = (root as any).reply_count ?? 0;
+        return replyCount + 1;
+      }
+      return 1; // Just the root
+    } catch (error) {
+      logger.warn('Failed to get thread total count', error);
+      return 0;
     }
-
-    const messages = [...beforeMessages, ...afterMessages];
-    // If we asked for N messages before and got exactly N, there are likely more
-    const hasMoreBefore = before > 0 && beforeMessages.length === before;
-    const hasMoreAfter = after > 0 && afterMessages.length === after;
-
-    return this.formatMessages(messages, hasMoreBefore, hasMoreAfter, this.capturedRoot);
   }
 
   /**
-   * Fetch up to `count` replies ending at (and including) anchorTs.
+   * Fetch a slice of thread messages by offset and limit.
+   * Thread is 0-indexed: offset 0 = root, offset 1 = first reply, etc.
+   *
+   * Uses conversations.replies pagination to skip to the desired offset
+   * and collect up to `limit` messages.
+   */
+  private async fetchThreadSlice(offset: number, limit: number, totalCount: number): Promise<any[]> {
+    if (totalCount === 0 || offset >= totalCount) return [];
+
+    const collected: any[] = [];
+    let cursor: string | undefined;
+    let currentIndex = 0; // Tracks position including root (index 0)
+
+    do {
+      const response = await this.slack.conversations.replies({
+        channel: this.context.channel,
+        ts: this.context.threadTs,
+        limit: 200,
+        cursor,
+      });
+
+      const msgs = response.messages || [];
+      for (const m of msgs) {
+        if (currentIndex >= offset && currentIndex < offset + limit) {
+          collected.push(m);
+        }
+        currentIndex++;
+
+        // Early exit once we have enough
+        if (collected.length >= limit) break;
+      }
+
+      cursor = extractCursor(response);
+
+      if (collected.length >= limit) break;
+      // If we've passed the target range, stop
+      if (currentIndex >= offset + limit) break;
+    } while (cursor);
+
+    return collected;
+  }
+
+  /**
+   * Legacy: Fetch up to `count` replies ending at (and including) anchorTs.
    * conversations.replies does not support `latest`, so we paginate
    * forward from thread start, skip the root message, and collect
    * until we pass the anchor.
@@ -299,11 +444,8 @@ class SlackThreadMcpServer {
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        // Capture thread root — always appears as messages[0] on first page
-        if (m.ts === this.context.threadTs) {
-          this.capturedRoot = m;
-          continue;
-        }
+        // Skip thread root in legacy mode
+        if (m.ts === this.context.threadTs) continue;
         // Stop collecting once we pass the anchor
         if (m.ts! > anchorTs) break;
         collected.push(m);
@@ -320,7 +462,7 @@ class SlackThreadMcpServer {
   }
 
   /**
-   * Fetch up to `count` replies starting after anchorTs (exclusive).
+   * Legacy: Fetch up to `count` replies starting after anchorTs (exclusive).
    * Filters out the thread root which conversations.replies always includes.
    */
   private async fetchMessagesAfter(anchorTs: string, count: number): Promise<any[]> {
@@ -352,28 +494,7 @@ class SlackThreadMcpServer {
     return collected.slice(0, count);
   }
 
-  /**
-   * Fetch thread root message directly. Used as fallback when
-   * fetchMessagesBefore was skipped (before=0).
-   */
-  private async fetchThreadRoot(): Promise<void> {
-    try {
-      const response = await this.slack.conversations.replies({
-        channel: this.context.channel,
-        ts: this.context.threadTs,
-        limit: 1,
-      });
-      const msgs = response.messages || [];
-      if (msgs.length > 0 && msgs[0].ts === this.context.threadTs) {
-        this.capturedRoot = msgs[0];
-        logger.debug('Thread root captured via fallback', { ts: msgs[0].ts });
-      } else {
-        logger.debug('Thread root not found (possibly deleted)');
-      }
-    } catch (error) {
-      logger.warn('Failed to fetch thread root', error);
-    }
-  }
+  // ── Message formatting ─────────────────────────────────
 
   private formatSingleMessage(m: any): ThreadMessage {
     return {
@@ -411,29 +532,6 @@ class SlackThreadMcpServer {
       })),
       is_bot: !!m.bot_id,
       subtype: m.subtype || null,
-    };
-  }
-
-  private formatMessages(
-    messages: any[],
-    hasMoreBefore: boolean,
-    hasMoreAfter: boolean,
-    threadRoot: any | null = null
-  ) {
-    const formatted: ThreadMessage[] = messages.map((m: any) => this.formatSingleMessage(m));
-
-    const result: GetThreadMessagesResult = {
-      thread_ts: this.context.threadTs,
-      channel: this.context.channel,
-      thread_root: threadRoot ? this.formatSingleMessage(threadRoot) : null,
-      returned: formatted.length,
-      messages: formatted,
-      has_more_before: hasMoreBefore,
-      has_more_after: hasMoreAfter,
-    };
-
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
     };
   }
 

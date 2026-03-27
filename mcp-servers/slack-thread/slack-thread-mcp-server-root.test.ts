@@ -1,28 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * Contract tests for Issue #64 Fix A: Thread root inclusion in get_thread_messages
- * Trace: docs/issue64-midthread-fix-v2/trace.md
- * Scenarios 1-2 (slack-thread-mcp-server scope)
+ * Contract tests for GetThreadMessagesResult interface — updated for v2 (array mode).
  *
- * These tests verify the MCP server's result format, NOT the Slack API.
- * We mock conversations.replies and test the transformation logic.
- *
- * RED: All tests should FAIL against current code because thread_root
- * field does not exist yet.
+ * v2 changes:
+ * - thread_root field REMOVED (root is now messages[0] at offset=0)
+ * - has_more_before/has_more_after REPLACED by has_more + total_count math
+ * - NEW fields: total_count, offset, has_more
  */
-
-// ── Inline mock of SlackThreadMcpServer internals ──────────────
-// The MCP server is a standalone process (stdio transport), so we
-// re-implement the core logic under test as a minimal harness.
-// This avoids needing to start a real MCP server.
-
-// We import the actual module to test after setting env vars.
-// However, the module auto-starts on import, so we need to test
-// the result format by inspecting the JSON output contract.
-
-// For contract tests, we define the EXPECTED interface and verify
-// that the actual module's output matches.
 
 interface ExpectedThreadMessage {
   ts: string;
@@ -39,84 +24,63 @@ interface ExpectedThreadMessage {
 interface ExpectedGetThreadMessagesResult {
   thread_ts: string;
   channel: string;
-  thread_root: ExpectedThreadMessage | null;
+  total_count: number;
+  offset: number;
   returned: number;
   messages: ExpectedThreadMessage[];
-  has_more_before: boolean;
-  has_more_after: boolean;
+  has_more: boolean;
 }
 
-// ── Scenario 1: Thread root included in get_thread_messages ────
+// ── Scenario 1: Root accessible at offset=0 ────────────────────
 
-describe('Scenario 1: thread root included in get_thread_messages result', () => {
-  // Trace: S1, Sec 3e — thread_root field in result
-  it('threadRoot_includedInResult: result JSON has thread_root field', () => {
-    // Contract: the GetThreadMessagesResult interface must include thread_root
-    const sampleResult: ExpectedGetThreadMessagesResult = {
-      thread_ts: '1700000000.000000',
-      channel: 'C123',
-      thread_root: {
-        ts: '1700000000.000000',
-        user: 'U_AUTHOR',
-        user_name: 'Author',
-        text: 'Parent message content',
-        timestamp: '2023-11-14T22:13:20.000Z',
-        files: [],
-        reactions: [],
-        is_bot: false,
-        subtype: null,
-      },
-      returned: 5,
-      messages: [],
-      has_more_before: false,
-      has_more_after: false,
-    };
-
-    // Verify the interface shape is valid
-    expect(sampleResult.thread_root).toBeDefined();
-    expect(sampleResult.thread_root!.ts).toBe('1700000000.000000');
-
-    // RED CHECK: Verify the actual module exports a result with thread_root
-    // This will fail until the module is updated
-    const { GetThreadMessagesResultKeys } = requireActualInterface();
-    expect(GetThreadMessagesResultKeys).toContain('thread_root');
-  });
-
-  // Trace: S1, Sec 3e — returned excludes root
-  it('threadRoot_notCountedInReturned: returned count excludes thread_root', () => {
+describe('Scenario 1: thread root accessible at offset=0 in array mode', () => {
+  it('root is first message when offset=0', () => {
     const result: ExpectedGetThreadMessagesResult = {
       thread_ts: '1700000000.000000',
       channel: 'C123',
-      thread_root: {
-        ts: '1700000000.000000',
-        user: 'U_AUTHOR',
-        user_name: 'Author',
-        text: 'Parent',
-        timestamp: '2023-11-14T22:13:20.000Z',
-        files: [],
-        reactions: [],
-        is_bot: false,
-        subtype: null,
-      },
-      returned: 3,
+      total_count: 10,
+      offset: 0,
+      returned: 1,
       messages: [
-        { ts: '1', user: 'U1', user_name: 'A', text: 'a', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
-        { ts: '2', user: 'U2', user_name: 'B', text: 'b', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
-        { ts: '3', user: 'U3', user_name: 'C', text: 'c', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
+        {
+          ts: '1700000000.000000',
+          user: 'U_AUTHOR',
+          user_name: 'Author',
+          text: 'Parent message content',
+          timestamp: '2023-11-14T22:13:20.000Z',
+          files: [],
+          reactions: [],
+          is_bot: false,
+          subtype: null,
+        },
       ],
-      has_more_before: false,
-      has_more_after: false,
+      has_more: true,
     };
 
-    // returned === messages.length, thread_root is bonus
-    expect(result.returned).toBe(result.messages.length);
-    expect(result.thread_root).not.toBeNull();
-    // thread_root is NOT in messages array
-    expect(result.messages.find(m => m.ts === result.thread_root!.ts)).toBeUndefined();
+    expect(result.messages[0].ts).toBe(result.thread_ts);
+    expect(result.offset).toBe(0);
+    expect(result.has_more).toBe(true);
   });
 
-  // Trace: S1, Sec 3d — same ThreadMessage shape
-  it('threadRoot_formattedAsThreadMessage: thread_root has same shape as messages[]', () => {
+  it('returned count equals messages.length', () => {
+    const result: ExpectedGetThreadMessagesResult = {
+      thread_ts: '1700000000.000000',
+      channel: 'C123',
+      total_count: 50,
+      offset: 0,
+      returned: 3,
+      messages: [
+        { ts: '1700000000.000000', user: 'U_AUTHOR', user_name: 'Author', text: 'Root', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
+        { ts: '1', user: 'U1', user_name: 'A', text: 'a', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
+        { ts: '2', user: 'U2', user_name: 'B', text: 'b', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
+      ],
+      has_more: true,
+    };
+
+    expect(result.returned).toBe(result.messages.length);
+  });
+
+  it('root has same ThreadMessage shape as replies', () => {
     const requiredFields: (keyof ExpectedThreadMessage)[] = [
       'ts', 'user', 'user_name', 'text', 'timestamp', 'files', 'reactions', 'is_bot', 'subtype',
     ];
@@ -139,79 +103,72 @@ describe('Scenario 1: thread root included in get_thread_messages result', () =>
   });
 });
 
-// ── Scenario 2: Thread root with before:0 ──────────────────────
+// ── Scenario 2: Array mode pagination math ──────────────────────
 
-describe('Scenario 2: thread root returned even with before:0', () => {
-  // Trace: S2, Sec 3a — fallback fetch
-  it('threadRoot_beforeZero_stillReturnsRoot: thread_root present when before=0', () => {
-    // When before=0, fetchMessagesBefore returns [] immediately.
-    // The handler must still fetch and include thread_root via fallback.
+describe('Scenario 2: array mode pagination correctness', () => {
+  it('has_more computable from total_count, offset, returned', () => {
     const result: ExpectedGetThreadMessagesResult = {
       thread_ts: '1700000000.000000',
       channel: 'C123',
-      thread_root: {
-        ts: '1700000000.000000',
-        user: 'U_AUTHOR',
-        user_name: 'Author',
-        text: 'Parent message',
-        timestamp: '2023-11-14T22:13:20.000Z',
-        files: [],
-        reactions: [],
-        is_bot: false,
-        subtype: null,
-      },
-      returned: 5,
+      total_count: 50,
+      offset: 10,
+      returned: 10,
       messages: [],
-      has_more_before: false,
-      has_more_after: false,
+      has_more: true,
     };
 
-    // Contract: thread_root is present even though before=0
-    expect(result.thread_root).not.toBeNull();
-
-    // RED CHECK: actual module behavior
-    const { GetThreadMessagesResultKeys } = requireActualInterface();
-    expect(GetThreadMessagesResultKeys).toContain('thread_root');
+    // has_more = offset + returned < total_count
+    expect(result.offset + result.returned < result.total_count).toBe(result.has_more);
   });
 
-  // Trace: S2, Sec 5 — root deleted
-  it('threadRoot_deletedRoot_returnsNull: thread_root is null when root message is deleted', () => {
+  it('last page has has_more=false', () => {
     const result: ExpectedGetThreadMessagesResult = {
       thread_ts: '1700000000.000000',
       channel: 'C123',
-      thread_root: null,
-      returned: 0,
+      total_count: 5,
+      offset: 3,
+      returned: 2,
       messages: [],
-      has_more_before: false,
-      has_more_after: false,
+      has_more: false,
     };
 
-    // Contract: thread_root can be null (graceful degradation)
-    expect(result.thread_root).toBeNull();
+    expect(result.offset + result.returned).toBe(result.total_count);
+    expect(result.has_more).toBe(false);
   });
 });
 
-// ── Helper: extract actual interface keys from source ───────────
-// This reads the actual source file and checks for the thread_root field.
-// RED: will fail until implementation adds thread_root to the interface.
-function requireActualInterface(): { GetThreadMessagesResultKeys: string[] } {
-  // Read the actual source code to verify the interface
-  const fs = require('fs');
-  const path = require('path');
-  const sourcePath = path.join(__dirname, 'slack-thread-mcp-server.ts');
-  const source = fs.readFileSync(sourcePath, 'utf-8');
+// ── Helper: verify actual interface matches expected shape ───────
 
-  // Extract the GetThreadMessagesResult interface fields
-  const interfaceMatch = source.match(/interface\s+GetThreadMessagesResult\s*\{([^}]+)\}/);
-  if (!interfaceMatch) {
-    return { GetThreadMessagesResultKeys: [] };
+describe('Source interface matches v2 contract', () => {
+  function requireActualInterface(): { GetThreadMessagesResultKeys: string[] } {
+    const fs = require('fs');
+    const path = require('path');
+    const sourcePath = path.join(__dirname, 'slack-thread-mcp-server.ts');
+    const source = fs.readFileSync(sourcePath, 'utf-8');
+
+    const interfaceMatch = source.match(/interface\s+GetThreadMessagesResult\s*\{([^}]+)\}/);
+    if (!interfaceMatch) return { GetThreadMessagesResultKeys: [] };
+
+    const fields = interfaceMatch[1]
+      .split('\n')
+      .map((line: string) => line.trim())
+      .filter((line: string) => line.includes(':'))
+      .map((line: string) => line.split(':')[0].trim().replace('?', ''));
+
+    return { GetThreadMessagesResultKeys: fields };
   }
 
-  const fields = interfaceMatch[1]
-    .split('\n')
-    .map((line: string) => line.trim())
-    .filter((line: string) => line.includes(':'))
-    .map((line: string) => line.split(':')[0].trim().replace('?', ''));
+  it('has total_count, offset, has_more fields', () => {
+    const { GetThreadMessagesResultKeys } = requireActualInterface();
+    expect(GetThreadMessagesResultKeys).toContain('total_count');
+    expect(GetThreadMessagesResultKeys).toContain('offset');
+    expect(GetThreadMessagesResultKeys).toContain('has_more');
+  });
 
-  return { GetThreadMessagesResultKeys: fields };
-}
+  it('does NOT have thread_root, has_more_before, has_more_after', () => {
+    const { GetThreadMessagesResultKeys } = requireActualInterface();
+    expect(GetThreadMessagesResultKeys).not.toContain('thread_root');
+    expect(GetThreadMessagesResultKeys).not.toContain('has_more_before');
+    expect(GetThreadMessagesResultKeys).not.toContain('has_more_after');
+  });
+});
