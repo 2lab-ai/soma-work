@@ -68,10 +68,9 @@ describe('SessionUiManager', () => {
       const result = await manager.formatUserSessionsBlocks('U123');
 
       expect(result.text).toBe('📋 내 세션 목록 (1개)');
-      // section.fields layout: session title is in the first field of the section block
+      // section.text layout: session title is in section.text.text
       const containsTitle = (b: any, title: string) =>
-        b.text?.text?.includes(title) ||
-        b.fields?.some((f: any) => f.text?.includes(title));
+        b.text?.text?.includes(title);
       expect(result.blocks.some((b: any) => containsTitle(b, 'My Session'))).toBe(true);
       expect(result.blocks.some((b: any) => containsTitle(b, 'Other Session'))).toBe(false);
     });
@@ -98,6 +97,255 @@ describe('SessionUiManager', () => {
       const result = await manager.formatUserSessionsBlocks('U123');
 
       expect(result.text).toBe('📭 활성 세션 없음');
+    });
+  });
+
+  describe('buildSessionCard (via formatUserSessionsBlocks)', () => {
+    // Helper: create sessions map and get card blocks (skip header/divider/footer)
+    const getCardBlocks = async (session: ConversationSession) => {
+      const sessions = new Map([['s1', session]]);
+      mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
+      const result = await manager.formatUserSessionsBlocks('U123');
+      // Card blocks are between divider and final divider
+      // Structure: header, divider, [card blocks...], divider, refresh, tip
+      const cardBlocks = result.blocks.filter((b: any) =>
+        b.type === 'section' && b.text?.text?.includes('*1.*') ||
+        b.type === 'context' && b.elements?.[0]?.text?.includes('🤖')
+      );
+      return { result, cardBlocks, allBlocks: result.blocks };
+    };
+
+    // Helper: find the section block (title)
+    const findSection = (blocks: any[]) =>
+      blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('*1.*'));
+
+    // Helper: find the context block (metadata)
+    const findContext = (blocks: any[]) =>
+      blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🤖'));
+
+    it('should render no-links card as section.text + context (2 blocks)', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test Session' }));
+      expect(cardBlocks).toHaveLength(2);
+      expect(cardBlocks[0].type).toBe('section');
+      expect(cardBlocks[0].text.type).toBe('mrkdwn');
+      expect(cardBlocks[1].type).toBe('context');
+    });
+
+    it('should not use section.fields (regression guard)', async () => {
+      const { allBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
+      const fieldsBlocks = allBlocks.filter((b: any) => b.fields);
+      expect(fieldsBlocks).toHaveLength(0);
+    });
+
+    it('should include title, channel, and permalink in section.text', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
+      const section = cardBlocks[0];
+      expect(section.text.text).toContain('My Title');
+      expect(section.text.text).toContain('#general');
+      expect(section.text.text).toContain('(열기)');
+    });
+
+    it('should include model in context metadata', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🤖');
+    });
+
+    it('should include time and expiry in context', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🕐');
+      expect(ctx.elements[0].text).toContain('⏳');
+    });
+
+    it('should render issue link in context when issue exists', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🎫');
+      expect(ctx.elements[0].text).toContain('#42');
+    });
+
+    it('should render PR link in context when PR exists', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🔀');
+      expect(ctx.elements[0].text).toContain('PR #73');
+    });
+
+    it('should render both issue and PR in context when both exist', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github' },
+          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      const metaText = ctx.elements[0].text;
+      expect(metaText).toContain('🎫');
+      expect(metaText).toContain('#42');
+      expect(metaText).toContain('🔀');
+      expect(metaText).toContain('PR #73');
+    });
+
+    it('should render doc link in context when doc exists', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          doc: { url: 'https://docs.example.com/guide', label: 'Guide', provider: 'other' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('📄');
+      expect(ctx.elements[0].text).toContain('Guide');
+    });
+
+    it('should default doc label to 문서 when label is missing', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          doc: { url: 'https://docs.example.com', provider: 'other' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('문서');
+    });
+
+    it('should use pipe separators between metadata parts', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', provider: 'github' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      const pipeCount = (ctx.elements[0].text.match(/\|/g) || []).length;
+      expect(pipeCount).toBeGreaterThanOrEqual(3); // model | issue | time | expiry
+    });
+
+    it('should omit terminate accessory when showControls is false', async () => {
+      const sessions = new Map([['s1', createMockSession({ title: 'Test' })]]);
+      mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
+      const result = await manager.formatUserSessionsBlocks('U123', { showControls: false });
+      const sectionBlocks = result.blocks.filter((b: any) => b.type === 'section' && b.text?.text?.includes('*1.*'));
+      expect(sectionBlocks[0].accessory).toBeUndefined();
+    });
+
+    it('should omit actions block when showControls is false', async () => {
+      const sessions = new Map([['s1', createMockSession({ title: 'Test' })]]);
+      mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
+      const result = await manager.formatUserSessionsBlocks('U123', { showControls: false });
+      const actionsBlocks = result.blocks.filter((b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('jira_')));
+      expect(actionsBlocks).toHaveLength(0);
+    });
+
+    it('should show sleeping session with sleep expiry text', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Sleeping Session',
+        state: 'SLEEPING',
+        sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('💤');
+    });
+
+    it('should show ? for sleeping expiry when sleepStartedAt is missing', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Sleeping Session',
+        state: 'SLEEPING',
+        sleepStartedAt: undefined,
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('?');
+    });
+
+    it('should prefix title with working emoji when activityState is working', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Active Work',
+        activityState: 'working',
+      }));
+      const section = cardBlocks[0];
+      expect(section.text.text).toMatch(/^⚙️/);
+    });
+
+    it('should prefix title with waiting emoji when activityState is waiting', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Waiting',
+        activityState: 'waiting',
+      }));
+      const section = cardBlocks[0];
+      expect(section.text.text).toMatch(/^✋/);
+    });
+
+    it('should not include permalink when threadTs is missing', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'No Thread',
+        threadTs: undefined,
+      }));
+      const section = cardBlocks[0];
+      expect(section.text.text).not.toContain('(열기)');
+      expect(mockSlackApi.getPermalink).not.toHaveBeenCalled();
+    });
+
+    it('should include initiator in context when currentInitiatorName is set', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        currentInitiatorName: 'Zhuge',
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🎯 Zhuge');
+    });
+
+    it('should use channelName in terminate confirm when title is missing', async () => {
+      const { allBlocks } = await getCardBlocks(createMockSession({ title: undefined }));
+      const section = allBlocks.find((b: any) => b.accessory?.action_id === 'terminate_session');
+      expect(section.accessory.confirm.text.text).toContain('#general');
+    });
+
+    it('should default issue label to 이슈 when label is missing', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          issue: { url: 'https://jira.example.com/browse/TEST-1', provider: 'jira' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('이슈');
+    });
+
+    it('should default PR label to PR when label is missing', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({
+        title: 'Test',
+        links: {
+          pr: { url: 'https://github.com/org/repo/pull/1', provider: 'github' },
+        },
+      }));
+      const ctx = cardBlocks[1];
+      expect(ctx.elements[0].text).toContain('🔀');
+      expect(ctx.elements[0].text).toMatch(/<[^|]+\|PR>/);
+    });
+
+    it('should keep total blocks within Slack 50 limit for 10 sessions', async () => {
+      const sessions = new Map<string, ConversationSession>();
+      for (let i = 0; i < 10; i++) {
+        sessions.set(`session${i}`, createMockSession({
+          title: `Session ${i}`,
+          lastActivity: new Date(Date.now() - i * 1000),
+        }));
+      }
+      mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
+      const result = await manager.formatUserSessionsBlocks('U123');
+      expect(result.blocks.length).toBeLessThanOrEqual(50);
     });
   });
 
