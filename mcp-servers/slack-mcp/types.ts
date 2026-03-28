@@ -29,6 +29,8 @@ export interface ThreadFile {
   thumb_360?: string;
   is_image?: boolean;
   image_note?: string;
+  is_media?: boolean;
+  media_note?: string;
 }
 
 export interface GetThreadMessagesResult {

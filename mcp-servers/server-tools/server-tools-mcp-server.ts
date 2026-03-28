@@ -28,7 +28,7 @@ const configCache = new ConfigCache<ServerToolsConfig>({}, {
   section: 'server-tools',
   loader: (raw: any) => {
     if (raw && typeof raw === 'object') return raw as ServerToolsConfig;
-    return null;
+    return {} as ServerToolsConfig; // Section removed/invalid → clear config
   },
 });
 

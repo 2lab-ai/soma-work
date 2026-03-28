@@ -54,8 +54,11 @@ export class ConfigCache<T> {
       // Always update mtime/size so we don't re-read unchanged file
       this.mtimeMs = stat.mtimeMs;
       this.size = stat.size;
-    } catch {
-      // File doesn't exist or is invalid — keep current cache
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        this.logger.warn(`Failed to reload ${this.options.section} config, keeping previous values`, error);
+      }
     }
 
     return this.cached;

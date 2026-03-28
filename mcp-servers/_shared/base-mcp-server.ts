@@ -16,7 +16,7 @@ export interface ToolDefinition {
  * Standard MCP tool result
  */
 export interface ToolResult {
-  content: Array<{ type: string; text: string; [key: string]: any }>;
+  content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string } | { type: 'resource'; resource: unknown }>;
   isError?: boolean;
 }
 
