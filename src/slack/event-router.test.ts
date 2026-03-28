@@ -343,7 +343,8 @@ describe('EventRouter', () => {
 
       await handler({ event: mockEvent, say: mockSay });
 
-      // Should call messageHandler with mention stripped and files intact
+      // Should call messageHandler exactly once with mention stripped and files intact
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
       expect(mockMessageHandler).toHaveBeenCalledWith(
         expect.objectContaining({
           text: 'analyze this file',
@@ -353,6 +354,8 @@ describe('EventRouter', () => {
       );
       // Should NOT add no_entry emoji
       expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('C456', '123.456', 'no_entry');
+      // Should NOT mutate original event text
+      expect(mockEvent.text).toBe('<@B123> analyze this file');
     });
 
     it('should add no_entry for file upload without mention and no session', async () => {
@@ -429,6 +432,123 @@ describe('EventRouter', () => {
       await handler({ event: mockEvent, say: mockSay });
 
       expect(mockMessageHandler).toHaveBeenCalled();
+    });
+
+    it('should process bot-mention-only + file with no extra text', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'message'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123>',
+        subtype: 'file_share',
+        files: [{ id: 'F1', name: 'screenshot.png', mimetype: 'image/png' }],
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Should still call messageHandler even with empty text after mention strip
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '',
+          files: expect.arrayContaining([expect.objectContaining({ id: 'F1' })]),
+        }),
+        mockSay
+      );
+    });
+
+    it('should preserve other user mentions and only strip bot mention', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'message'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> compare with <@U999> file',
+        subtype: 'file_share',
+        files: [{ id: 'F1', name: 'test.png', mimetype: 'image/png' }],
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Should preserve other user mentions
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'compare with <@U999> file',
+        }),
+        mockSay
+      );
+    });
+
+    it('should add no_entry when file has other user mention but not bot', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'message'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@U999> check this',
+        subtype: 'file_share',
+        files: [{ id: 'F1', name: 'test.png', mimetype: 'image/png' }],
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      expect(mockMessageHandler).not.toHaveBeenCalled();
+      expect(mockSlackApi.addReaction).toHaveBeenCalledWith('C456', '123.456', 'no_entry');
+    });
+
+    it('should handle multiple files with bot mention', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'message'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> review these files',
+        subtype: 'file_share',
+        files: [
+          { id: 'F1', name: 'test.png', mimetype: 'image/png' },
+          { id: 'F2', name: 'data.csv', mimetype: 'text/csv' },
+          { id: 'F3', name: 'code.ts', mimetype: 'text/typescript' },
+        ],
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      const passedEvent = (mockMessageHandler as any).mock.calls[0][0];
+      expect(passedEvent.files).toHaveLength(3);
     });
   });
 
