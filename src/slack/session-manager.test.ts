@@ -6,7 +6,7 @@ vi.mock('../user-settings-store', async (importOriginal) => {
     ...actual,
     userSettingsStore: {
       ...actual.userSettingsStore,
-      getUserSessionTheme: vi.fn().mockReturnValue('D'),
+      getUserSessionTheme: vi.fn().mockReturnValue('default'),
     },
   };
 });
@@ -95,9 +95,13 @@ describe('SessionUiManager', () => {
 
       const result = await manager.formatUserSessionsBlocks('U123');
 
-      const sessionBlock = result.blocks.find((b: any) => b.accessory?.action_id === 'terminate_session');
-      expect(sessionBlock).toBeDefined();
-      expect(sessionBlock.accessory.style).toBe('danger');
+      // In the new default theme, terminate button is in an actions block
+      const actionsBlock = result.blocks.find((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      );
+      expect(actionsBlock).toBeDefined();
+      const terminateBtn = actionsBlock.elements.find((e: any) => e.action_id === 'terminate_session');
+      expect(terminateBtn.style).toBe('danger');
     });
 
     it('should skip sessions without sessionId', async () => {
@@ -113,88 +117,115 @@ describe('SessionUiManager', () => {
   });
 
   describe('buildSessionCard (via formatUserSessionsBlocks)', () => {
-    // Helper: create sessions map and get card blocks (skip header/divider/footer)
+    // Helper: create sessions map and get card blocks (skip header/theme-context/divider/footer)
     const getCardBlocks = async (session: ConversationSession) => {
       const sessions = new Map([['s1', session]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123');
-      // Card blocks are between divider and final divider
-      // Structure: header, divider, [card blocks...], divider, refresh, tip
-      const cardBlocks = result.blocks.filter((b: any) =>
-        b.type === 'section' && b.text?.text?.includes('*1.*') ||
-        b.type === 'context' && b.elements?.[0]?.text?.includes('🤖')
+      // New default theme card structure:
+      //   section (title + fields) [+ context with linkHistory] + actions (열기 + ✕)
+      // The full block list: header, theme-context, divider, [card...], divider, refresh, tip
+      // Extract card blocks by finding the section with the session title
+      const titleSectionIdx = result.blocks.findIndex((b: any) =>
+        b.type === 'section' && b.fields && b.text?.text
       );
+      if (titleSectionIdx === -1) return { result, cardBlocks: [], allBlocks: result.blocks };
+      // Collect card blocks: from titleSection until next divider or end-of-card marker
+      const cardBlocks: any[] = [];
+      for (let i = titleSectionIdx; i < result.blocks.length; i++) {
+        const b = result.blocks[i];
+        if (b.type === 'divider' || (b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'refresh_sessions'))) break;
+        cardBlocks.push(b);
+      }
       return { result, cardBlocks, allBlocks: result.blocks };
     };
 
-    it('should render no-links card as section.text + context (2 blocks)', async () => {
+    it('should render default card with section.fields', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test Session' }));
-      expect(cardBlocks).toHaveLength(2);
+      // Default theme: section with title+fields, then actions
+      expect(cardBlocks.length).toBeGreaterThanOrEqual(1);
       expect(cardBlocks[0].type).toBe('section');
       expect(cardBlocks[0].text.type).toBe('mrkdwn');
-      expect(cardBlocks[1].type).toBe('context');
+      expect(cardBlocks[0].fields).toBeDefined();
     });
 
-    it('should not use section.fields (regression guard)', async () => {
+    it('should use section.fields for model, time, channel, owner', async () => {
       const { allBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
       const fieldsBlocks = allBlocks.filter((b: any) => b.fields);
-      expect(fieldsBlocks).toHaveLength(0);
+      expect(fieldsBlocks.length).toBeGreaterThanOrEqual(1);
+      const fieldTexts = fieldsBlocks[0].fields.map((f: any) => f.text).join(' ');
+      expect(fieldTexts).toContain('모델');
+      expect(fieldTexts).toContain('시간');
+      expect(fieldTexts).toContain('채널');
     });
 
-    it('should include title, channel, and permalink in section.text', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
+    it('should include title and channel in card', async () => {
+      const { cardBlocks, allBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
       const section = cardBlocks[0];
       expect(section.text.text).toContain('My Title');
-      expect(section.text.text).toContain('#general');
-      expect(section.text.text).toContain('(열기)');
+      // Channel is in fields
+      const fieldTexts = section.fields.map((f: any) => f.text).join(' ');
+      expect(fieldTexts).toContain('#general');
     });
 
-    it('should include model in context metadata', async () => {
+    it('should include 열기 button when permalink exists', async () => {
+      const { allBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
+      const actionsBlock = allBlocks.find((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text === '열기')
+      );
+      expect(actionsBlock).toBeDefined();
+    });
+
+    it('should include model in fields', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('🤖');
+      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
+      expect(fieldTexts).toContain('모델');
     });
 
-    it('should include time and expiry in context', async () => {
+    it('should include time in fields', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('🕐');
-      expect(ctx.elements[0].text).toContain('⏳');
+      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
+      expect(fieldTexts).toContain('시간');
     });
 
-    it('should render issue link in context when issue exists', async () => {
+    it('should render issue link in linkHistory context when linkHistory has issues', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github', type: 'issue' as const },
+        linkHistory: {
+          issues: [{ url: 'https://github.com/org/repo/issues/42', label: '#42', type: 'issue' as const, provider: 'github' as const }],
+          prs: [], docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('🎫');
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
+      expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('#42');
     });
 
-    it('should render PR link in context when PR exists', async () => {
+    it('should render PR link in linkHistory context when linkHistory has PRs', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github', type: 'pr' as const },
+        linkHistory: {
+          issues: [],
+          prs: [{ url: 'https://github.com/org/repo/pull/73', label: 'PR #73', type: 'pr' as const, provider: 'github' as const }],
+          docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('🔀');
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🔀'));
+      expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('PR #73');
     });
 
-    it('should render both issue and PR in context when both exist', async () => {
+    it('should render both issue and PR in linkHistory context when both exist', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          issue: { url: 'https://github.com/org/repo/issues/42', label: '#42', provider: 'github', type: 'issue' as const },
-          pr: { url: 'https://github.com/org/repo/pull/73', label: 'PR #73', provider: 'github', type: 'pr' as const },
+        linkHistory: {
+          issues: [{ url: 'https://github.com/org/repo/issues/42', label: '#42', type: 'issue' as const, provider: 'github' as const }],
+          prs: [{ url: 'https://github.com/org/repo/pull/73', label: 'PR #73', type: 'pr' as const, provider: 'github' as const }],
+          docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
+      expect(ctx).toBeDefined();
       const metaText = ctx.elements[0].text;
       expect(metaText).toContain('🎫');
       expect(metaText).toContain('#42');
@@ -202,47 +233,56 @@ describe('SessionUiManager', () => {
       expect(metaText).toContain('PR #73');
     });
 
-    it('should render doc link in context when doc exists', async () => {
+    it('should render doc link in linkHistory context when linkHistory has docs', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          doc: { url: 'https://docs.example.com/guide', label: 'Guide', provider: 'unknown', type: 'doc' as const },
+        linkHistory: {
+          issues: [], prs: [],
+          docs: [{ url: 'https://docs.example.com/guide', label: 'Guide', type: 'doc' as const, provider: 'unknown' as const }],
         },
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('📄');
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('📄'));
+      expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('Guide');
     });
 
-    it('should default doc label to 문서 when label is missing', async () => {
+    it('should not render linkHistory context when no linkHistory exists', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          doc: { url: 'https://docs.example.com', provider: 'unknown', type: 'doc' as const },
-        },
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('문서');
+      // No context block for links when linkHistory is empty/undefined
+      const linkCtx = cardBlocks.find((b: any) =>
+        b.type === 'context' && (
+          b.elements?.[0]?.text?.includes('🎫') ||
+          b.elements?.[0]?.text?.includes('🔀') ||
+          b.elements?.[0]?.text?.includes('📄')
+        )
+      );
+      expect(linkCtx).toBeUndefined();
     });
 
-    it('should use pipe separators between metadata parts', async () => {
+    it('should use dot separators between linkHistory parts', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', provider: 'github', type: 'issue' as const },
+        linkHistory: {
+          issues: [{ url: 'https://github.com/org/repo/issues/1', label: '#1', type: 'issue' as const, provider: 'github' as const }],
+          prs: [{ url: 'https://github.com/org/repo/pull/2', label: 'PR #2', type: 'pr' as const, provider: 'github' as const }],
+          docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
-      const pipeCount = (ctx.elements[0].text.match(/\|/g) || []).length;
-      expect(pipeCount).toBeGreaterThanOrEqual(3); // model | issue | time | expiry
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
+      expect(ctx).toBeDefined();
+      expect(ctx.elements[0].text).toContain('·');
     });
 
-    it('should omit terminate accessory when showControls is false', async () => {
+    it('should omit terminate button when showControls is false', async () => {
       const sessions = new Map([['s1', createMockSession({ title: 'Test' })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123', { showControls: false });
-      const sectionBlocks = result.blocks.filter((b: any) => b.type === 'section' && b.text?.text?.includes('*1.*'));
-      expect(sectionBlocks[0].accessory).toBeUndefined();
+      const terminateActions = result.blocks.filter((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      );
+      expect(terminateActions).toHaveLength(0);
     });
 
     it('should omit actions block when showControls is false', async () => {
@@ -253,24 +293,23 @@ describe('SessionUiManager', () => {
       expect(actionsBlocks).toHaveLength(0);
     });
 
-    it('should show sleeping session with sleep expiry text', async () => {
+    it('should render sleeping session card without errors', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Sleeping Session',
         state: 'SLEEPING',
         sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('💤');
+      // Default theme card should still render with title
+      expect(cardBlocks[0].text.text).toContain('Sleeping Session');
     });
 
-    it('should show ? for sleeping expiry when sleepStartedAt is missing', async () => {
+    it('should render sleeping session without sleepStartedAt', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Sleeping Session',
         state: 'SLEEPING',
         sleepStartedAt: undefined,
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('?');
+      expect(cardBlocks[0].text.text).toContain('Sleeping Session');
     });
 
     it('should prefix title with working emoji when activityState is working', async () => {
@@ -291,65 +330,77 @@ describe('SessionUiManager', () => {
       expect(section.text.text).toMatch(/^✋/);
     });
 
-    it('should not include permalink when threadTs is missing', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
+    it('should not include permalink button when threadTs is missing', async () => {
+      const { allBlocks } = await getCardBlocks(createMockSession({
         title: 'No Thread',
         threadTs: undefined,
       }));
-      const section = cardBlocks[0];
-      expect(section.text.text).not.toContain('(열기)');
+      const openBtn = allBlocks.find((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text === '열기')
+      );
+      // No 열기 button when no permalink
+      expect(openBtn).toBeUndefined();
       expect(mockSlackApi.getPermalink).not.toHaveBeenCalled();
     });
 
-    it('should include initiator in context when currentInitiatorName is set', async () => {
+    it('should include owner in fields', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        currentInitiatorName: 'Zhuge',
+        ownerName: 'Zhuge',
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('🎯 Zhuge');
+      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
+      expect(fieldTexts).toContain('Zhuge');
     });
 
     it('should use channelName in terminate confirm when title is missing', async () => {
       const { allBlocks } = await getCardBlocks(createMockSession({ title: undefined }));
-      const section = allBlocks.find((b: any) => b.accessory?.action_id === 'terminate_session');
-      expect(section.accessory.confirm.text.text).toContain('#general');
+      const actionsBlock = allBlocks.find((b: any) =>
+        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      );
+      const terminateBtn = actionsBlock.elements.find((e: any) => e.action_id === 'terminate_session');
+      expect(terminateBtn.confirm.text.text).toContain('#general');
     });
 
-    it('should default issue label to 이슈 when label is missing', async () => {
+    it('should default issue label in linkHistory context when label is missing', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          issue: { url: 'https://jira.example.com/browse/TEST-1', provider: 'jira', type: 'issue' as const },
+        linkHistory: {
+          issues: [{ url: 'https://jira.example.com/browse/TEST-1', type: 'issue' as const, provider: 'jira' as const }],
+          prs: [],
+          docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
-      expect(ctx.elements[0].text).toContain('이슈');
+      const ctx = cardBlocks.find((b: any) => b.type === 'context');
+      expect(ctx).toBeDefined();
+      // formatLinkHistoryContext uses link.label || link.url
+      expect(ctx.elements[0].text).toContain('jira.example.com');
     });
 
-    it('should default PR label to PR when label is missing', async () => {
+    it('should default PR label in linkHistory context when label is missing', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          pr: { url: 'https://github.com/org/repo/pull/1', provider: 'github', type: 'pr' as const },
+        linkHistory: {
+          prs: [{ url: 'https://github.com/org/repo/pull/1', type: 'pr' as const, provider: 'github' as const }],
+          issues: [],
+          docs: [],
         },
       }));
-      const ctx = cardBlocks[1];
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🔀'));
+      expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('🔀');
-      expect(ctx.elements[0].text).toMatch(/<[^|]+\|PR>/);
     });
 
-    it('should keep context text under Slack 3000 char mrkdwn limit', async () => {
+    it('should keep linkHistory context text under Slack 3000 char mrkdwn limit', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
-        links: {
-          issue: { url: 'https://jira.example.com/browse/' + 'A'.repeat(200), label: '#' + 'X'.repeat(50), provider: 'jira', type: 'issue' as const },
-          pr: { url: 'https://github.com/' + 'B'.repeat(200) + '/pull/999', label: 'PR #' + 'Y'.repeat(50), provider: 'github', type: 'pr' as const },
-          doc: { url: 'https://docs.example.com/' + 'C'.repeat(200), label: 'D'.repeat(50), provider: 'unknown', type: 'doc' as const },
+        linkHistory: {
+          issues: [{ url: 'https://jira.example.com/browse/' + 'A'.repeat(200), label: '#' + 'X'.repeat(50), type: 'issue' as const, provider: 'jira' as const }],
+          prs: [{ url: 'https://github.com/' + 'B'.repeat(200) + '/pull/999', label: 'PR #' + 'Y'.repeat(50), type: 'pr' as const, provider: 'github' as const }],
+          docs: [{ url: 'https://docs.example.com/' + 'C'.repeat(200), label: 'D'.repeat(50), type: 'doc' as const, provider: 'unknown' as const }],
         },
-        currentInitiatorName: 'Z'.repeat(100),
       }));
-      const ctx = cardBlocks[1];
+      const ctx = cardBlocks.find((b: any) => b.type === 'context');
+      expect(ctx).toBeDefined();
       expect(ctx.elements[0].text.length).toBeLessThanOrEqual(3000);
     });
 

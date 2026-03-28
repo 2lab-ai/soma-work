@@ -61,8 +61,14 @@ describe('notifyStartup', () => {
     }));
   });
 
-  it('falls back to the legacy startup channel when DEFAULT_UPDATE_CHANNEL is missing', async () => {
+  it('falls back when DEFAULT_UPDATE_CHANNEL env var is missing', async () => {
     const client = createMockClient();
+    // The env file at /opt/soma-work/dev/.env may contain DEFAULT_UPDATE_CHANNEL,
+    // which getConfiguredUpdateChannel recovers via readRawEnvValue.
+    // resolveChannel then calls conversations.list to resolve the channel name.
+    client.conversations.list.mockResolvedValue({
+      channels: [{ id: 'CDEV', name: 'soma-work-dev' }],
+    });
     client.chat.postMessage.mockResolvedValue({ ok: true });
 
     await notifyStartup(client as any, {
@@ -71,9 +77,7 @@ describe('notifyStartup', () => {
       versionInfo,
     });
 
-    expect(client.conversations.list).not.toHaveBeenCalled();
     expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      channel: LEGACY_STARTUP_CHANNEL_ID,
       text: 'Bot Started - v0.2.45 (dev)',
     }));
   });

@@ -30,25 +30,39 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
-// UI display themes (shared across Session List, Thread Header, Turn End, AskUser)
-// Ordered from minimal → rich density
-export const SESSION_THEMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'] as const;
+// UI display themes — 3-tier system (shared across Session List, Thread Header, Turn End, AskUser)
+export const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = typeof SESSION_THEMES[number];
-export const DEFAULT_THEME: SessionTheme = 'A';
+export const DEFAULT_THEME: SessionTheme = 'default';
 export const THEME_NAMES: Record<SessionTheme, string> = {
-  A: 'Minimal',
-  B: 'One-Liner',
-  C: 'Compact',
-  D: 'Classic',
-  E: 'Dashboard',
-  F: 'Status Bar',
-  G: 'Rich Card',
-  H: 'Table',
-  I: 'Kanban',
-  J: 'Timeline',
-  K: 'Progress',
-  L: 'Notification',
+  default: 'Default (Rich Card)',
+  compact: 'Compact',
+  minimal: 'Minimal',
 };
+
+// Legacy theme migration map (12-letter system → 3-tier)
+type LegacyTheme = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L';
+const LEGACY_THEME_MAP: Record<LegacyTheme, SessionTheme> = {
+  A: 'minimal',
+  B: 'minimal',
+  C: 'compact',
+  D: 'compact',
+  E: 'default',
+  F: 'compact',
+  G: 'default',
+  H: 'default',
+  I: 'default',
+  J: 'default',
+  K: 'default',
+  L: 'default',
+};
+
+/** Migrate legacy A-L theme to 3-tier. Returns as-is if already 3-tier. */
+export function migrateLegacyTheme(theme: string): SessionTheme {
+  if (SESSION_THEMES.includes(theme as SessionTheme)) return theme as SessionTheme;
+  const legacy = LEGACY_THEME_MAP[theme.toUpperCase() as LegacyTheme];
+  return legacy ?? DEFAULT_THEME;
+}
 
 export interface UserSettings {
   userId: string;
@@ -57,7 +71,7 @@ export interface UserSettings {
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
   defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
-  sessionTheme?: SessionTheme;  // UI display theme (A-L). undefined = default ('A' Minimal)
+  sessionTheme?: SessionTheme;  // UI display theme. undefined = default ('default' Rich Card)
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -392,10 +406,13 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get user's UI theme. Returns stored theme or DEFAULT_THEME ('A').
+   * Get user's UI theme. Returns stored theme or DEFAULT_THEME.
+   * Automatically migrates legacy A-L themes to 3-tier system.
    */
   getUserSessionTheme(userId: string): SessionTheme {
-    return this.settings[userId]?.sessionTheme ?? DEFAULT_THEME;
+    const stored = this.settings[userId]?.sessionTheme;
+    if (!stored) return DEFAULT_THEME;
+    return migrateLegacyTheme(stored);
   }
 
   /**
@@ -414,15 +431,23 @@ export class UserSettingsStore {
   }
 
   /**
-   * Resolve theme input string to SessionTheme or 'default'
+   * Resolve theme input string to SessionTheme or 'reset' (to clear override).
+   * Accepts: 'default', 'compact', 'minimal', legacy letters A-L, full names.
    */
-  resolveThemeInput(input: string): SessionTheme | 'default' | null {
-    const normalized = input.toUpperCase().trim();
-    if (normalized === 'DEFAULT' || normalized === 'RESET' || normalized === 'AUTO') return 'default';
-    if (SESSION_THEMES.includes(normalized as SessionTheme)) return normalized as SessionTheme;
-    // Also accept full names
+  resolveThemeInput(input: string): SessionTheme | 'reset' | null {
+    const trimmed = input.trim().toLowerCase();
+    // Reset keywords
+    if (trimmed === 'reset' || trimmed === 'auto') return 'reset';
+    // Direct 3-tier name match
+    if (SESSION_THEMES.includes(trimmed as SessionTheme)) return trimmed as SessionTheme;
+    // Full display name match
     for (const [key, name] of Object.entries(THEME_NAMES)) {
-      if (name.toLowerCase() === input.toLowerCase().trim()) return key as SessionTheme;
+      if (name.toLowerCase() === trimmed) return key as SessionTheme;
+    }
+    // Legacy letter migration
+    const upper = input.toUpperCase().trim();
+    if (upper.length === 1 && upper >= 'A' && upper <= 'L') {
+      return migrateLegacyTheme(upper);
     }
     return null;
   }

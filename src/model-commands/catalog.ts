@@ -32,9 +32,13 @@ const UPDATE_SESSION_SCHEMA = {
       type: 'number',
       description: 'Optional optimistic lock sequence from GET_SESSION',
     },
+    title: {
+      type: 'string',
+      maxLength: 100,
+      description: 'Update session title (e.g. after linking issue or merging PR)',
+    },
     operations: {
       type: 'array',
-      minItems: 1,
       items: {
         type: 'object',
         properties: {
@@ -53,7 +57,8 @@ const UPDATE_SESSION_SCHEMA = {
       },
     },
   },
-  required: ['operations'],
+  // operations OR title must be present (either or both)
+  additionalProperties: false,
 };
 
 const ASK_USER_QUESTION_SCHEMA = {
@@ -299,7 +304,7 @@ export function applySessionUpdateToSnapshot(
 
   let changed = false;
 
-  for (const operation of request.operations) {
+  for (const operation of request.operations ?? []) {
     const historyKey = HISTORY_KEY_BY_RESOURCE[operation.resourceType];
     const activeKey = ACTIVE_KEY_BY_RESOURCE[operation.resourceType];
     const links = snapshot[historyKey];
@@ -375,17 +380,24 @@ export function runModelCommand(
       ok: true,
       payload: {
         session,
+        title: context.sessionTitle ?? null,
       },
     };
   }
 
   if (request.commandId === 'UPDATE_SESSION') {
-    const updateResult = applySessionUpdateToSnapshot(
-      session,
-      request.params
-    );
-    if (!updateResult.ok) {
-      return toRunError('UPDATE_SESSION', updateResult.error);
+    // Apply resource operations if present
+    let resultSnapshot = session;
+    const operations = request.params.operations ?? [];
+    if (operations.length > 0) {
+      const updateResult = applySessionUpdateToSnapshot(
+        session,
+        { ...request.params, operations }
+      );
+      if (!updateResult.ok) {
+        return toRunError('UPDATE_SESSION', updateResult.error);
+      }
+      resultSnapshot = updateResult.snapshot;
     }
 
     return {
@@ -393,9 +405,11 @@ export function runModelCommand(
       commandId: 'UPDATE_SESSION',
       ok: true,
       payload: {
-        session: updateResult.snapshot,
-        appliedOperations: request.params.operations.length,
+        session: resultSnapshot,
+        appliedOperations: operations.length,
         request: request.params,
+        // title is passed through for host to apply
+        ...(request.params.title ? { title: request.params.title } : {}),
       },
     };
   }

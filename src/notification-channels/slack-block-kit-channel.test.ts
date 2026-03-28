@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../user-settings-store', () => ({
   userSettingsStore: {
-    getUserSessionTheme: vi.fn().mockReturnValue('D'),
+    getUserSessionTheme: vi.fn().mockReturnValue('default'),
   },
 }));
 
@@ -75,7 +75,7 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
   // Trace: Scenario 3, Section 3a Line 3
   describe('Clock range line', () => {
-    it('renders start → end time with elapsed', async () => {
+    it('renders start time and elapsed duration', async () => {
       const api = createMockSlackApi();
       const channel = new SlackBlockKitChannel(api);
       await channel.send(makeRichEvent());
@@ -86,10 +86,8 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
         b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
       ).join('\n');
 
-      // Should contain clock emoji and arrow
-      expect(allText).toContain(':alarm_clock:');
-      expect(allText).toContain('→');
-      // Should contain elapsed in M:SS format
+      // Should contain start time from formatClock (locale time string)
+      // and elapsed duration in M:SS format
       expect(allText).toMatch(/\d+:\d{2}/);
     });
   });

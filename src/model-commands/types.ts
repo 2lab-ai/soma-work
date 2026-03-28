@@ -23,6 +23,8 @@ export interface ModelCommandContext {
   workflow?: WorkflowType;
   renewState?: RenewState;
   session?: SessionResourceSnapshot;
+  /** Current session title (for GET_SESSION response) */
+  sessionTitle?: string;
 }
 
 export interface ModelCommandDescriptor {
@@ -57,11 +59,13 @@ export interface ModelCommandParamsMap {
 export interface ModelCommandPayloadMap {
   GET_SESSION: {
     session: SessionResourceSnapshot;
+    title: string | null;
   };
   UPDATE_SESSION: {
     session: SessionResourceSnapshot;
     appliedOperations: number;
     request: SessionResourceUpdateRequest;
+    title?: string;
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;
