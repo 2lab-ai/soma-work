@@ -269,6 +269,10 @@ export interface ConversationSession {
   // Error auto-retry tracking: count of consecutive retries for the current error sequence.
   // Reset to 0 on successful execution. Max 3 retries with 30s delay between each.
   errorRetryCount?: number;
+  // Separate retry counter for file-access-blocked errors.
+  // Isolated from errorRetryCount so that prior rate-limit or transient errors
+  // don't consume file-access retry budget (and vice versa).
+  fileAccessRetryCount?: number;
   // Error context for intelligent retry: when a non-fatal error occurs (e.g., file access blocked),
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
