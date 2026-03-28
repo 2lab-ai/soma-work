@@ -203,4 +203,30 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(fh.isAudioFile('video/mp4')).toBe(false);
     expect(fh.isAudioFile('text/plain')).toBe(false);
   });
+
+  // Gemini review P2 fix: media files skip download, return metadata-only ProcessedFile
+  it('downloadFile returns metadata-only ProcessedFile for video without downloading', async () => {
+    const fh = handler as any;
+    const file = { name: 'big-video.mp4', mimetype: 'video/mp4', size: 200_000_000, url_private_download: 'https://example.com/video' };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isVideo).toBe(true);
+    expect(result.name).toBe('big-video.mp4');
+    expect(result.size).toBe(200_000_000);
+    expect(result.path).toBe('');
+    expect(result.tempPath).toBeUndefined();
+  });
+
+  it('downloadFile returns metadata-only ProcessedFile for audio without downloading', async () => {
+    const fh = handler as any;
+    const file = { name: 'podcast.mp3', mimetype: 'audio/mpeg', size: 80_000_000, url_private_download: 'https://example.com/audio' };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isAudio).toBe(true);
+    expect(result.name).toBe('podcast.mp3');
+    expect(result.size).toBe(80_000_000);
+    expect(result.path).toBe('');
+  });
 });

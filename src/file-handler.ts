@@ -38,6 +38,22 @@ export class FileHandler {
   }
 
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
+    // Media files (video/audio) only need metadata — skip download entirely.
+    // This ensures large media files are still acknowledged instead of silently dropped.
+    if (this.isVideoFile(file.mimetype) || this.isAudioFile(file.mimetype)) {
+      this.logger.info('Media file detected, skipping download (metadata only)', { name: file.name, mimetype: file.mimetype });
+      return {
+        path: '',
+        name: file.name,
+        mimetype: file.mimetype,
+        isImage: false,
+        isText: false,
+        isVideo: this.isVideoFile(file.mimetype),
+        isAudio: this.isAudioFile(file.mimetype),
+        size: file.size || 0,
+      };
+    }
+
     // Check file size limit (50MB)
     if (file.size > 50 * 1024 * 1024) {
       this.logger.warn('File too large, skipping', { name: file.name, size: file.size });
