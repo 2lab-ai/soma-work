@@ -552,7 +552,7 @@ ENV_EOF
 ## Repository
 - https://github.com/2lab-ai/soma/
 - https://github.com/2lab-ai/soma-work/
-  - PR target: develop
+  - PR target: main
 PROMPT_EOF
         success "  .system.prompt 생성됨"
     else
