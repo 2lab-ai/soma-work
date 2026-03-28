@@ -202,6 +202,12 @@ export interface StreamResult {
   hasUserChoice?: boolean;
   /** EndTurn 정보 — stop_reason 기반 (Issue #42 S3) */
   endTurnInfo?: EndTurnInfo;
+  /** SDK result error details (Issue #122) — subtype + errors[] from SDKResultError */
+  sdkResultError?: {
+    subtype: string;
+    errors: string[];
+    numTurns?: number;
+  };
 }
 
 export type { EndTurnInfo };
@@ -232,6 +238,8 @@ export class StreamProcessor {
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
   private _lastToolName: string | undefined;
+  /** SDK result error details from SDKResultError (Issue #122) */
+  private _sdkResultError: StreamResult['sdkResultError'] | undefined;
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -276,6 +284,8 @@ export class StreamProcessor {
           await this.handleUserMessage(message, context);
         } else if (message.type === 'result') {
           lastUsage = await this.handleResultMessage(message, context, currentMessages);
+        } else if (message.type === 'system') {
+          await this.handleSystemMessage(message, context);
         }
       }
 
@@ -302,6 +312,7 @@ export class StreamProcessor {
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
+        sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -903,6 +914,40 @@ export class StreamProcessor {
   }
 
   /**
+   * Handle system messages from SDK (compact_boundary, status, init, etc.)
+   * Issue #122: Previously all system messages were silently dropped.
+   */
+  private async handleSystemMessage(message: any, context: StreamContext): Promise<void> {
+    const subtype = message.subtype as string | undefined;
+
+    if (subtype === 'compact_boundary') {
+      const metadata = message.compact_metadata;
+      this.logger.info('SDK auto-compact completed', {
+        trigger: metadata?.trigger,
+        preTokens: metadata?.pre_tokens,
+        hasPreservedSegment: !!metadata?.preserved_segment,
+      });
+      await this.callbacks.onStatusUpdate?.('working');
+    } else if (subtype === 'status') {
+      const status = message.status as string | null;
+      if (status === 'compacting') {
+        this.logger.info('SDK context compacting in progress');
+        await this.callbacks.onStatusUpdate?.('working');
+      } else {
+        this.logger.debug('SDK status update', { status });
+      }
+    } else if (subtype === 'init') {
+      // Init is already handled in claude-handler.ts — log only
+      this.logger.debug('SDK session init (handled by ClaudeHandler)', {
+        sessionId: message.session_id,
+        model: message.model,
+      });
+    } else {
+      this.logger.debug('Unhandled SDK system message', { subtype });
+    }
+  }
+
+  /**
    * Handle result message (completion)
    * @returns Usage data extracted from the message
    */
@@ -938,6 +983,26 @@ export class StreamProcessor {
         currentMessages.push(finalResult);
         await this.handleFinalResult(finalResult, context, usage, message.duration_ms);
       }
+    } else if (message.is_error || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'))) {
+      // Handle SDKResultError: error_during_execution, error_max_turns, error_max_budget_usd, etc.
+      const errors: string[] = message.errors || [];
+      this.logger.error('SDK result error', {
+        subtype: message.subtype,
+        isError: message.is_error,
+        numTurns: message.num_turns,
+        errors,
+        duration: message.duration_ms,
+        totalCost: message.total_cost_usd,
+      });
+      if (errors.length > 0) {
+        this.logger.error('SDK result error details', { errors: errors.join(' | ') });
+      }
+      // Store for StreamResult so stream-executor can surface to user
+      this._sdkResultError = {
+        subtype: message.subtype || 'error_during_execution',
+        errors,
+        numTurns: message.num_turns,
+      };
     }
 
     return usage;
