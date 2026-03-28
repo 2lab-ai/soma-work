@@ -40,7 +40,7 @@ export class FileHandler {
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
     // Media files (video/audio) only need metadata — skip download entirely.
     // This ensures large media files are still acknowledged instead of silently dropped.
-    if (this.isVideoFile(file.mimetype) || this.isAudioFile(file.mimetype)) {
+    if (this.isVideoFile(file.mimetype, file.name) || this.isAudioFile(file.mimetype, file.name)) {
       this.logger.info('Media file detected, skipping download (metadata only)', { name: file.name, mimetype: file.mimetype });
       return {
         path: '',
@@ -48,8 +48,8 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: false,
         isText: false,
-        isVideo: this.isVideoFile(file.mimetype),
-        isAudio: this.isAudioFile(file.mimetype),
+        isVideo: this.isVideoFile(file.mimetype, file.name),
+        isAudio: this.isAudioFile(file.mimetype, file.name),
         size: file.size || 0,
       };
     }
@@ -119,8 +119,8 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: this.isImageFile(file.mimetype),
         isText: this.isTextFile(file.mimetype),
-        isVideo: this.isVideoFile(file.mimetype),
-        isAudio: this.isAudioFile(file.mimetype),
+        isVideo: this.isVideoFile(file.mimetype, file.name),
+        isAudio: this.isAudioFile(file.mimetype, file.name),
         size: buffer.length,
         tempPath,
       };
@@ -197,12 +197,25 @@ export class FileHandler {
     return mimetype.startsWith('image/');
   }
 
-  private isVideoFile(mimetype: string): boolean {
-    return mimetype.startsWith('video/');
+  private static VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  private static AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+
+  private isVideoFile(mimetype: string, filename?: string): boolean {
+    if (mimetype.startsWith('video/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (FileHandler.VIDEO_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
   }
 
-  private isAudioFile(mimetype: string): boolean {
-    return mimetype.startsWith('audio/');
+  private isAudioFile(mimetype: string, filename?: string): boolean {
+    if (mimetype.startsWith('audio/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (FileHandler.AUDIO_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
   }
 
   private isTextFile(mimetype: string): boolean {
