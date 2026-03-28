@@ -133,7 +133,9 @@ export type SessionResourceOperation =
 
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;
-  operations: SessionResourceOperation[];
+  operations?: SessionResourceOperation[];
+  /** Update session title (e.g. after linking issue or merging PR) */
+  title?: string;
 }
 
 export interface SessionResourceUpdateResult {

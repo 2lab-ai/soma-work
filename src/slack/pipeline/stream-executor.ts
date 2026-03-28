@@ -1724,30 +1724,50 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
 
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
-        const updateResult = this.deps.claudeHandler.updateSessionResources(
-          context.channel,
-          context.threadTs,
-          request
-        );
 
-        if (!updateResult.ok) {
-          this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+        // Apply resource operations if present
+        let operationsOk = true;
+        if (request.operations && request.operations.length > 0) {
+          const updateResult = this.deps.claudeHandler.updateSessionResources(
+            context.channel,
+            context.threadTs,
+            request
+          );
+
+          if (!updateResult.ok) {
+            operationsOk = false;
+            this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+              sessionKey: context.sessionKey,
+              reason: updateResult.reason,
+              error: updateResult.error,
+              mismatch: updateResult.sequenceMismatch,
+            });
+            await context.say({
+              text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
+              thread_ts: context.threadTs,
+            });
+          } else {
+            this.logger.info('Applied UPDATE_SESSION on host', {
+              sessionKey: context.sessionKey,
+              sequence: updateResult.snapshot.sequence,
+              issueCount: updateResult.snapshot.issues.length,
+              prCount: updateResult.snapshot.prs.length,
+              docCount: updateResult.snapshot.docs.length,
+            });
+          }
+        }
+
+        // Apply title update only if no operations or operations succeeded
+        const titleUpdate = (parsed.payload as Record<string, unknown>).title as string | undefined;
+        if (titleUpdate && operationsOk) {
+          this.deps.claudeHandler.updateSessionTitle(
+            context.channel,
+            context.threadTs,
+            titleUpdate
+          );
+          this.logger.info('Applied session title update from UPDATE_SESSION', {
             sessionKey: context.sessionKey,
-            reason: updateResult.reason,
-            error: updateResult.error,
-            mismatch: updateResult.sequenceMismatch,
-          });
-          await context.say({
-            text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
-            thread_ts: context.threadTs,
-          });
-        } else {
-          this.logger.info('Applied UPDATE_SESSION on host', {
-            sessionKey: context.sessionKey,
-            sequence: updateResult.snapshot.sequence,
-            issueCount: updateResult.snapshot.issues.length,
-            prCount: updateResult.snapshot.prs.length,
-            docCount: updateResult.snapshot.docs.length,
+            title: titleUpdate,
           });
         }
       }

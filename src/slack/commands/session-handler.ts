@@ -42,19 +42,19 @@ export class SessionHandler implements CommandHandler {
             .map(([k, v]) => `\`${k}\` (${v})`)
             .join(', ');
           await say({
-            text: `❌ 알 수 없는 테마: \`${parsed.theme}\`\n사용 가능: ${validThemes}, \`default\` (A Minimal)`,
+            text: `❌ 알 수 없는 테마: \`${parsed.theme}\`\n사용 가능: ${validThemes}, \`reset\` (기본값으로 초기화)`,
             thread_ts: threadTs,
           });
-        } else if (resolved === 'default') {
+        } else if (resolved === 'reset') {
           userSettingsStore.setUserSessionTheme(user, undefined);
           await say({
-            text: `🎨 테마가 *기본값 (A Minimal)* 으로 초기화되었습니다.`,
+            text: `🎨 테마가 *기본값 (Default Rich Card)* 으로 초기화되었습니다.`,
             thread_ts: threadTs,
           });
         } else {
           userSettingsStore.setUserSessionTheme(user, resolved);
           await say({
-            text: `🎨 테마가 *${resolved} (${THEME_NAMES[resolved]})* 로 설정되었습니다. 모든 UI에 적용됩니다.\n초기화: \`sessions theme=default\``,
+            text: `🎨 테마가 *${THEME_NAMES[resolved]}* 로 설정되었습니다. 모든 UI에 적용됩니다.\n초기화: \`sessions theme=reset\``,
             thread_ts: threadTs,
           });
         }

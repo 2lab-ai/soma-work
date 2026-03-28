@@ -130,6 +130,10 @@ export class ClaudeHandler {
     this.sessionRegistry.setSessionTitle(channelId, threadTs, title);
   }
 
+  updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
+    this.sessionRegistry.updateSessionTitle(channelId, threadTs, title);
+  }
+
   /**
    * Mark a session as bot-initiated with its root message ts
    */
@@ -629,6 +633,7 @@ export class ClaudeHandler {
         slackContext.channel,
         slackContext.threadTs
       ),
+      sessionTitle: session?.title,
     };
   }
 }

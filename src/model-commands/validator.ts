@@ -194,18 +194,25 @@ function parseUpdateSessionRequest(
     return invalidArgs('UPDATE_SESSION params must be an object');
   }
 
+  // Extract title
+  const title = typeof raw.title === 'string' ? raw.title : undefined;
+
+  // Operations validation: allow empty/missing if title exists
   const rawOps = raw.operations;
-  if (!Array.isArray(rawOps) || rawOps.length === 0) {
-    return invalidArgs('UPDATE_SESSION operations must be a non-empty array');
+  const operations: SessionResourceOperation[] = [];
+  if (Array.isArray(rawOps) && rawOps.length > 0) {
+    for (const entry of rawOps) {
+      const parsed = parseSessionOperation(entry);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      operations.push(parsed.value);
+    }
   }
 
-  const operations: SessionResourceOperation[] = [];
-  for (const entry of rawOps) {
-    const parsed = parseSessionOperation(entry);
-    if (!parsed.ok) {
-      return parsed;
-    }
-    operations.push(parsed.value);
+  // Must have at least one of operations or title
+  if (operations.length === 0 && !title) {
+    return invalidArgs('UPDATE_SESSION requires operations or title');
   }
 
   const expectedSequence = raw.expectedSequence;
@@ -218,6 +225,7 @@ function parseUpdateSessionRequest(
     value: {
       expectedSequence: expectedSequence as number | undefined,
       operations,
+      ...(title ? { title } : {}),
     },
   };
 }

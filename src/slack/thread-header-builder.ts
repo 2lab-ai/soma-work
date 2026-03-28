@@ -1,6 +1,10 @@
-import { SessionLinks, SessionUsage, WorkflowType, ConversationSession } from '../types';
+import { SessionLink, SessionLinkHistory, SessionLinks, SessionUsage, WorkflowType, ConversationSession } from '../types';
 import { ContextWindowManager } from './context-window-manager';
 import { type SessionTheme } from '../user-settings-store';
+import { getStatusEmoji } from '../link-metadata-fetcher';
+
+/** Max links to display per type in Default theme */
+const MAX_LINKS_PER_TYPE = 5;
 
 export interface ThreadHeaderData {
   title?: string;
@@ -8,12 +12,14 @@ export interface ThreadHeaderData {
   ownerName?: string;
   ownerId?: string;
   links?: SessionLinks;
+  /** Full link history for Default theme multi-link display */
+  linkHistory?: SessionLinkHistory;
   closed?: boolean;
   /** Model name for display (e.g. "claude-opus-4-6-20250414") */
   model?: string;
   /** Current session usage for context bar */
   usage?: SessionUsage;
-  /** UI display theme (A-L) */
+  /** UI display theme */
   theme?: SessionTheme;
 }
 
@@ -31,6 +37,7 @@ export class ThreadHeaderBuilder {
       ownerName: session.ownerName,
       ownerId: session.ownerId,
       links: session.links,
+      linkHistory: session.linkHistory,
       model: session.model,
       usage: session.usage,
       ...overrides,
@@ -38,23 +45,14 @@ export class ThreadHeaderBuilder {
   }
 
   static build(data: ThreadHeaderData): ThreadHeaderPayload {
-    const theme = data.theme || 'A';
+    const theme = data.theme || 'default';
     const textFallback = this.buildTextFallback(data);
 
     switch (theme) {
-      case 'A': return { text: textFallback, blocks: this.buildMinimal(data) };
-      case 'B': return { text: textFallback, blocks: this.buildOneLiner(data) };
-      case 'C': return { text: textFallback, blocks: this.buildCompact(data) };
-      case 'D': return { text: textFallback, blocks: this.buildClassic(data) };
-      case 'E': return { text: textFallback, blocks: this.buildDashboard(data) };
-      case 'F': return { text: textFallback, blocks: this.buildStatusBar(data) };
-      case 'G': return { text: textFallback, blocks: this.buildRichCard(data) };
-      case 'H': return { text: textFallback, blocks: this.buildTable(data) };
-      case 'I': return { text: textFallback, blocks: this.buildKanban(data) };
-      case 'J': return { text: textFallback, blocks: this.buildTimeline(data) };
-      case 'K': return { text: textFallback, blocks: this.buildProgress(data) };
-      case 'L': return { text: textFallback, blocks: this.buildNotification(data) };
-      default: return { text: textFallback, blocks: this.buildMinimal(data) };
+      case 'default': return { text: textFallback, blocks: this.buildDefault(data) };
+      case 'compact': return { text: textFallback, blocks: this.buildCompact(data) };
+      case 'minimal': return { text: textFallback, blocks: this.buildMinimal(data) };
+      default: return { text: textFallback, blocks: this.buildDefault(data) };
     }
   }
 
@@ -124,37 +122,38 @@ export class ThreadHeaderBuilder {
   }
 
   // ---------------------------------------------------------------------------
-  // Theme A: Minimal — single context line "title · model · time"
+  // Theme: Default (Rich Card) — maximum info density, all links with metadata
   // ---------------------------------------------------------------------------
-  private static buildMinimal(data: ThreadHeaderData): any[] {
+  private static buildDefault(data: ThreadHeaderData): any[] {
     const title = this.resolveTitle(data);
-    const els: any[] = [this.mrkdwn(title)];
-    if (data.model) {
-      els.push(this.mrkdwn(`\`${this.formatModelName(data.model)}\``));
+    const blocks: any[] = [this.headerBlock(title)];
+
+    // Row 1: @owner + workflow + model
+    const row1: any[] = [];
+    const mention = this.ownerMention(data);
+    if (mention) row1.push(mention);
+    row1.push(...this.metaElements(data));
+    if (row1.length > 0) blocks.push(this.contextBlock(row1));
+
+    // Row 2+: All links from linkHistory (max 5 per type) with metadata
+    const allLinkElements = this.formatAllLinks(data.linkHistory, data.links);
+    if (allLinkElements.length > 0) {
+      // Group into context blocks (max 10 elements each)
+      for (let i = 0; i < allLinkElements.length; i += 10) {
+        blocks.push(this.contextBlock(allLinkElements.slice(i, i + 10)));
+      }
     }
-    const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) els.push(this.mrkdwn(ctxBar));
-    if (data.closed) els.push(this.mrkdwn('_종료됨_'));
-    return [this.contextBlock(els)];
+
+    // Closed indicator
+    if (data.closed) {
+      blocks.push(this.contextBlock([this.mrkdwn('🔴 _종료됨_')]));
+    }
+
+    return blocks;
   }
 
   // ---------------------------------------------------------------------------
-  // Theme B: One-Liner — everything on one context line
-  // ---------------------------------------------------------------------------
-  private static buildOneLiner(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const els: any[] = [];
-    if (owner) els.push(this.mrkdwn(`${owner} —`));
-    els.push(this.mrkdwn(title));
-    els.push(...this.metaElements(data));
-    els.push(...this.linkElements(data));
-    if (data.closed) els.push(this.mrkdwn('_종료됨_'));
-    return [this.contextBlock(els)];
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme C: Compact — section.text + thin context
+  // Theme: Compact — section.text + thin context, active links only
   // ---------------------------------------------------------------------------
   private static buildCompact(data: ThreadHeaderData): any[] {
     const title = this.resolveTitle(data);
@@ -173,295 +172,94 @@ export class ThreadHeaderBuilder {
   }
 
   // ---------------------------------------------------------------------------
-  // Theme D: Classic — current implementation (header + context)
+  // Theme: Minimal — single context line, bare minimum
   // ---------------------------------------------------------------------------
-  private static buildClassic(data: ThreadHeaderData): any[] {
+  private static buildMinimal(data: ThreadHeaderData): any[] {
     const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const rawHeaderText = owner ? `${owner} — ${title}` : title;
-
-    const blocks: any[] = [this.headerBlock(rawHeaderText)];
-
-    const contextElements: any[] = [];
-    if (data.ownerId) contextElements.push(this.mrkdwn(`<@${data.ownerId}>`));
-    contextElements.push(...this.metaElements(data));
-    contextElements.push(...this.linkElements(data));
-    if (data.closed) contextElements.push(this.mrkdwn('_종료됨_'));
-
-    if (contextElements.length > 0) blocks.push(this.contextBlock(contextElements));
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme E: Dashboard — header with 📊 + two context rows
-  // ---------------------------------------------------------------------------
-  private static buildDashboard(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const headerText = owner ? `📊 ${owner} — ${title}` : `📊 ${title}`;
-    const blocks: any[] = [this.headerBlock(headerText)];
-
-    // Context row 1: workflow + model + ctx bar
-    const row1 = this.metaElements(data);
-    if (row1.length > 0) blocks.push(this.contextBlock(row1));
-
-    // Context row 2: links + closed
-    const row2: any[] = [...this.linkElements(data)];
-    if (data.closed) row2.push(this.mrkdwn('_종료됨_'));
-    if (row2.length > 0) blocks.push(this.contextBlock(row2));
-
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme F: Status Bar — header + status context with colored dots
-  // ---------------------------------------------------------------------------
-  private static buildStatusBar(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const headerText = owner ? `${owner} — ${title}` : title;
-    const blocks: any[] = [this.headerBlock(headerText)];
-
-    const statusDot = data.closed ? '🔴 종료됨' : '🟢 Active';
-    const els: any[] = [this.mrkdwn(statusDot)];
-    const mention = this.ownerMention(data);
-    if (mention) els.push(mention);
-    els.push(...this.metaElements(data));
-    els.push(...this.linkElements(data));
-    blocks.push(this.contextBlock(els));
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme G: Rich Card — header + owner context + meta context
-  // ---------------------------------------------------------------------------
-  private static buildRichCard(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const blocks: any[] = [this.headerBlock(title)];
-
-    // Context row 1: @owner + workflow + model
-    const row1: any[] = [];
-    const mention = this.ownerMention(data);
-    if (mention) row1.push(mention);
-    row1.push(...this.metaElements(data));
-    if (row1.length > 0) blocks.push(this.contextBlock(row1));
-
-    // Context row 2: ctx bar + links
-    const row2: any[] = [...this.linkElements(data)];
-    if (data.closed) row2.push(this.mrkdwn('_종료됨_'));
-    if (row2.length > 0) blocks.push(this.contextBlock(row2));
-
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme H: Table — header + section.fields (2-col key/value)
-  // ---------------------------------------------------------------------------
-  private static buildTable(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const headerText = owner ? `${owner} — ${title}` : title;
-    const blocks: any[] = [this.headerBlock(headerText)];
-
-    const workflow = data.workflow || 'default';
-    const fields: any[] = [];
+    const els: any[] = [this.mrkdwn(title)];
     if (data.model) {
-      fields.push(this.mrkdwn(`*모델*\n\`${this.formatModelName(data.model)}\``));
+      els.push(this.mrkdwn(`\`${this.formatModelName(data.model)}\``));
     }
-    fields.push(this.mrkdwn(`*워크플로우*\n\`${workflow}\``));
-
     const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) {
-      fields.push(this.mrkdwn(`*컨텍스트*\n${ctxBar}`));
-    }
-
-    const linkParts = this.formatLinks(data.links);
-    if (linkParts.length > 0) {
-      fields.push(this.mrkdwn(`*링크*\n${linkParts.join(' · ')}`));
-    }
-
-    if (data.closed) {
-      fields.push(this.mrkdwn(`*상태*\n_종료됨_`));
-    }
-
-    if (fields.length > 0) {
-      blocks.push({ type: 'section', fields });
-    }
-
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme I: Kanban — context separator + section
-  // ---------------------------------------------------------------------------
-  private static buildKanban(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const blocks: any[] = [];
-
-    blocks.push(this.contextBlock([this.mrkdwn(`── ${title} ──`)]));
-
-    const parts: string[] = [];
-    if (owner) parts.push(`<@${data.ownerId || owner}>`);
-    const workflow = data.workflow || 'default';
-    parts.push(`\`${workflow}\``);
-    if (data.model) parts.push(`\`${this.formatModelName(data.model)}\``);
-    const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) parts.push(ctxBar);
-    const linkParts = this.formatLinks(data.links);
-    parts.push(...linkParts);
-    if (data.closed) parts.push('_종료됨_');
-
-    blocks.push({ type: 'section', text: this.mrkdwn(parts.join(' · ')) });
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme J: Timeline — time context top + header + context
-  // ---------------------------------------------------------------------------
-  private static buildTimeline(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const blocks: any[] = [];
-
-    // Time context at top
-    const now = new Date();
-    const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    blocks.push(this.contextBlock([this.mrkdwn(`🕐 ${timeStr}`)]));
-
-    const headerText = owner ? `${owner} — ${title}` : title;
-    blocks.push(this.headerBlock(headerText));
-
-    const els: any[] = [];
-    const mention = this.ownerMention(data);
-    if (mention) els.push(mention);
-    els.push(...this.metaElements(data));
+    if (ctxBar) els.push(this.mrkdwn(ctxBar));
+    // Active links only (labels)
     els.push(...this.linkElements(data));
     if (data.closed) els.push(this.mrkdwn('_종료됨_'));
-    if (els.length > 0) blocks.push(this.contextBlock(els));
-
-    return blocks;
+    return [this.contextBlock(els)];
   }
 
   // ---------------------------------------------------------------------------
-  // Theme K: Progress — header + section with progress bar + context
-  // ---------------------------------------------------------------------------
-  private static buildProgress(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const headerText = owner ? `${owner} — ${title}` : title;
-    const blocks: any[] = [this.headerBlock(headerText)];
-
-    // Section: @mention + model + progress bar
-    const secParts: string[] = [];
-    if (data.ownerId) secParts.push(`<@${data.ownerId}>`);
-    if (data.model) secParts.push(`\`${this.formatModelName(data.model)}\``);
-
-    // Progress bar from context window usage
-    if (data.usage && data.usage.contextWindow > 0) {
-      const used = ContextWindowManager.computeUsedTokens(data.usage);
-      const total = data.usage.contextWindow;
-      const usedPct = Math.max(0, Math.min(100, (used / total) * 100));
-      const filled = Math.round(usedPct / 10);
-      const bar = '▓'.repeat(filled) + '░'.repeat(10 - filled);
-      secParts.push(`${bar} ${Math.round(usedPct)}%`);
-    }
-
-    if (data.closed) secParts.push('_종료됨_');
-    if (secParts.length > 0) {
-      blocks.push({ type: 'section', text: this.mrkdwn(secParts.join(' · ')) });
-    }
-
-    // Context: links
-    const linkEls = this.linkElements(data);
-    if (linkEls.length > 0) blocks.push(this.contextBlock(linkEls));
-
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme L: Notification — section with blockquote style
-  // ---------------------------------------------------------------------------
-  private static buildNotification(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
-    const workflow = data.workflow || 'default';
-
-    const lines: string[] = [];
-    if (owner) {
-      lines.push(`⚡ ${owner}이(가) ${title} 세션을 시작했습니다`);
-    } else {
-      lines.push(`⚡ ${title} 세션이 시작되었습니다`);
-    }
-
-    const metaParts: string[] = [`\`${workflow}\``];
-    if (data.model) metaParts.push(`\`${this.formatModelName(data.model)}\``);
-    const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) metaParts.push(ctxBar);
-    lines.push(`> ${metaParts.join(' · ')}`);
-
-    const linkParts = this.formatLinks(data.links);
-    if (linkParts.length > 0) lines.push(`> ${linkParts.join(' · ')}`);
-    if (data.closed) lines.push('> _종료됨_');
-
-    return [{ type: 'section', text: this.mrkdwn(lines.join('\n')) }];
-  }
-
-  // ---------------------------------------------------------------------------
-  // Public static helpers (unchanged)
+  // Link formatting
   // ---------------------------------------------------------------------------
 
   /**
-   * Format model name for display.
-   * "claude-opus-4-6-20250414" → "opus-4.6"
-   * "claude-sonnet-4-5-20250414" → "sonnet-4.5"
+   * Format all links from linkHistory for Default theme.
+   * Shows up to MAX_LINKS_PER_TYPE per type with title and status.
+   * Falls back to active links if no history available.
    */
-  static formatModelName(model: string): string {
-    // Match patterns like "claude-opus-4-6", "claude-sonnet-4-5"
-    const match = model.match(/claude-(\w+)-(\d+)-(\d+)/);
-    if (match) {
-      return `${match[1]}-${match[2]}.${match[3]}`;
+  private static formatAllLinks(
+    linkHistory?: SessionLinkHistory,
+    activeLinks?: SessionLinks
+  ): any[] {
+    const elements: any[] = [];
+
+    if (!linkHistory) {
+      // Fallback: use active links only
+      return this.formatLinks(activeLinks).map(t => this.mrkdwn(t));
     }
-    // Fallback: strip "claude-" prefix and date suffix
-    return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+
+    // Issues
+    const issues = linkHistory.issues || [];
+    const displayIssues = issues.slice(-MAX_LINKS_PER_TYPE);
+    for (const link of displayIssues) {
+      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '📋')));
+    }
+    if (issues.length > MAX_LINKS_PER_TYPE) {
+      elements.push(this.mrkdwn(`_+${issues.length - MAX_LINKS_PER_TYPE} more issues_`));
+    }
+
+    // PRs
+    const prs = linkHistory.prs || [];
+    const displayPrs = prs.slice(-MAX_LINKS_PER_TYPE);
+    for (const link of displayPrs) {
+      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '🔀')));
+    }
+    if (prs.length > MAX_LINKS_PER_TYPE) {
+      elements.push(this.mrkdwn(`_+${prs.length - MAX_LINKS_PER_TYPE} more PRs_`));
+    }
+
+    // Docs
+    const docs = linkHistory.docs || [];
+    const displayDocs = docs.slice(-MAX_LINKS_PER_TYPE);
+    for (const link of displayDocs) {
+      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '📄')));
+    }
+    if (docs.length > MAX_LINKS_PER_TYPE) {
+      elements.push(this.mrkdwn(`_+${docs.length - MAX_LINKS_PER_TYPE} more docs_`));
+    }
+
+    return elements;
   }
 
   /**
-   * Format context window usage as a compact bar.
-   * Returns "▓░░░░ 156k/1M (85%)" or undefined if no usage data.
+   * Format a single link with its metadata (title + status emoji).
+   * Example: "📋 <url|SOMA-123>: Fix login bug ✅"
    */
-  static formatContextBar(usage?: SessionUsage): string | undefined {
-    if (!usage || usage.contextWindow <= 0) return undefined;
-
-    const used = ContextWindowManager.computeUsedTokens(usage);
-    const total = usage.contextWindow;
-    const remainingPercent = Math.max(0, Math.min(100, ((total - used) / total) * 100));
-    const usedPercent = 100 - remainingPercent;
-
-    // 5-segment bar
-    const filledSegments = Math.round(usedPercent / 20);
-    const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
-
-    const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
-    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)} (${pct}%)`;
+  private static formatLinkWithMeta(link: SessionLink, emoji: string): string {
+    const label = link.label || link.url;
+    let text = `${emoji} <${link.url}|${label}>`;
+    if (link.title) {
+      const truncated = link.title.length > 40 ? link.title.slice(0, 39) + '…' : link.title;
+      text += `: ${truncated}`;
+    }
+    if (link.status) {
+      const statusEmoji = getStatusEmoji(link.status, link.type);
+      text += ` ${statusEmoji || `[${link.status}]`}`;
+    }
+    return text;
   }
 
-  /**
-   * Format token count for compact display.
-   * 1_000_000 → "1M", 200_000 → "200k", 156_700 → "156.7k"
-   */
-  static formatTokenCount(n: number): string {
-    if (n >= 1_000_000) {
-      const m = n / 1_000_000;
-      return m === Math.floor(m) ? `${m}M` : `${m.toFixed(1)}M`;
-    }
-    if (n >= 1000) {
-      const k = n / 1000;
-      return k === Math.floor(k) ? `${k}k` : `${k.toFixed(1)}k`;
-    }
-    return n.toString();
-  }
-
+  /** Format active links only (for Compact/Minimal themes) */
   private static formatLinks(links?: SessionLinks): string[] {
     if (!links) return [];
     const parts: string[] = [];
@@ -486,5 +284,56 @@ export class ThreadHeaderBuilder {
 
   private static isSlackMessageUrl(url: string): boolean {
     return url.includes('slack.com/archives/') || url.includes('app.slack.com/client/');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public static helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Format model name for display.
+   * "claude-opus-4-6-20250414" → "opus-4.6"
+   */
+  static formatModelName(model: string): string {
+    const match = model.match(/claude-(\w+)-(\d+)-(\d+)/);
+    if (match) {
+      return `${match[1]}-${match[2]}.${match[3]}`;
+    }
+    return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  }
+
+  /**
+   * Format context window usage as a compact bar.
+   * Returns "▓░░░░ 156k/1M (85%)" or undefined if no usage data.
+   */
+  static formatContextBar(usage?: SessionUsage): string | undefined {
+    if (!usage || usage.contextWindow <= 0) return undefined;
+
+    const used = ContextWindowManager.computeUsedTokens(usage);
+    const total = usage.contextWindow;
+    const remainingPercent = Math.max(0, Math.min(100, ((total - used) / total) * 100));
+    const usedPercent = 100 - remainingPercent;
+
+    const filledSegments = Math.round(usedPercent / 20);
+    const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
+
+    const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
+    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)} (${pct}%)`;
+  }
+
+  /**
+   * Format token count for compact display.
+   * 1_000_000 → "1M", 200_000 → "200k", 156_700 → "156.7k"
+   */
+  static formatTokenCount(n: number): string {
+    if (n >= 1_000_000) {
+      const m = n / 1_000_000;
+      return m === Math.floor(m) ? `${m}M` : `${m.toFixed(1)}M`;
+    }
+    if (n >= 1000) {
+      const k = n / 1000;
+      return k === Math.floor(k) ? `${k}k` : `${k.toFixed(1)}k`;
+    }
+    return n.toString();
   }
 }
