@@ -1731,3 +1731,26 @@ describe('File access blocked error recovery', () => {
     expect(payload.text).not.toContain('자동 재시도합니다');
   });
 });
+
+// ── Trace: docs/fix-thread-header-files/trace.md ──
+// S2: Thread-awareness hint guides array mode + root file check
+describe('getThreadContextHint — array mode guidance', () => {
+  it('threadHint_guidesArrayMode: hint mentions array mode and root file check', () => {
+    // Access private method via prototype
+    const hint = (StreamExecutor.prototype as any).getThreadContextHint.call({});
+
+    // Must mention array mode / offset-based access
+    expect(hint).toMatch(/offset/i);
+
+    // Must explicitly guide to check root message (offset 0) for files
+    expect(hint).toMatch(/offset\s*0|root/i);
+
+    // Must NOT primarily steer toward legacy mode (before/after)
+    // The hint should mention array mode first, not legacy mode
+    const arrayModeIndex = hint.indexOf('offset');
+    const legacyModeIndex = hint.indexOf('before/after');
+    if (legacyModeIndex >= 0) {
+      expect(arrayModeIndex).toBeLessThan(legacyModeIndex);
+    }
+  });
+});

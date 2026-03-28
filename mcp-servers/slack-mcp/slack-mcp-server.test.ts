@@ -673,3 +673,172 @@ describe('hasMore pagination heuristics', () => {
     expect(hasMoreAfter).toBe(true);
   });
 });
+
+// ── Trace: docs/fix-thread-header-files/trace.md ──
+
+// S1: Legacy mode includes root message
+describe('fetchMessagesBefore — root message inclusion', () => {
+  const threadTs = '1700000000.000000';
+
+  /**
+   * Simulates fetchMessagesBefore logic (matches production code).
+   * Root message is always preserved even when .slice(-count) would trim it.
+   */
+  function fetchMessagesBefore(
+    messages: { ts: string; files?: any[] }[],
+    anchorTs: string,
+    count: number
+  ): { ts: string; files?: any[] }[] {
+    if (count === 0) return [];
+    let rootMessage: { ts: string; files?: any[] } | null = null;
+    const collected: { ts: string; files?: any[] }[] = [];
+    for (const m of messages) {
+      if (m.ts > anchorTs) break;
+      if (m.ts === threadTs) rootMessage = m;
+      collected.push(m);
+    }
+    const sliced = collected.slice(-count);
+    // Ensure root is always present
+    if (rootMessage && !sliced.some(m => m.ts === threadTs)) {
+      sliced.unshift(rootMessage);
+    }
+    return sliced;
+  }
+
+  // Trace: S1, Section 3 — root message with files IS included
+  it('legacyMode_includesRootMessage: root message with files is included in results', () => {
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'screenshot.png', mimetype: 'image/png', size: 1024 }] },
+      { ts: '1700000001.000000', files: [] },
+      { ts: '1700000002.000000', files: [] },
+    ];
+    const anchorTs = '1700000002.000000';
+
+    const result = fetchMessagesBefore(messages, anchorTs, 10);
+
+    // Root message MUST be in results
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    // Root message files MUST be present
+    const rootMsg = result.find(m => m.ts === threadTs);
+    expect(rootMsg?.files).toHaveLength(1);
+    expect(rootMsg?.files?.[0].name).toBe('screenshot.png');
+  });
+
+  // Trace: S1 — deep thread: root survives .slice(-count)
+  it('legacyMode_deepThread_rootSurvivesSlice: root is preserved even when slice would trim it', () => {
+    // 25 replies + root = 26 messages, before=20 → slice(-20) would normally drop root
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'header-image.png' }] },
+      ...Array.from({ length: 24 }, (_, i) => ({
+        ts: `170000000${String(i + 1).padStart(1, '0')}.000000`,
+      })),
+    ];
+    const anchorTs = '1700000024.000000';
+
+    const result = fetchMessagesBefore(messages, anchorTs, 20);
+
+    // Root MUST be present even though slice(-20) would normally exclude it
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    const rootMsg = result.find(m => m.ts === threadTs);
+    expect(rootMsg?.files?.[0].name).toBe('header-image.png');
+    // Result is count + 1 (root injected beyond count)
+    expect(result.length).toBe(21);
+  });
+
+  // Trace: S1, Section 5 — count limiting still works with root naturally in window
+  it('legacyMode_countLimitWithRoot: count limit works when root is naturally within window', () => {
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'image.png' }] },
+      { ts: '1700000001.000000' },
+      { ts: '1700000002.000000' },
+      { ts: '1700000003.000000' },
+    ];
+    const anchorTs = '1700000003.000000';
+
+    // Request last 2: root is NOT in the natural window, but gets injected
+    const result = fetchMessagesBefore(messages, anchorTs, 2);
+    // Root injected + 2 sliced = 3
+    expect(result[0].ts).toBe(threadTs);
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
+  });
+});
+
+// S3: Array mode root message files regression guard
+describe('formatSingleMessage — root message file metadata', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+  function isImageFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
+  function isMediaFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return IMAGE_EXTENSIONS.has(ext);
+    }
+    return false;
+  }
+
+  function formatFileMetadata(f: any) {
+    const fileIsImage = isImageFile(f.mimetype, f.name);
+    const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+    return {
+      id: f.id,
+      name: f.name,
+      mimetype: f.mimetype,
+      size: f.size,
+      ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+      ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
+      ...(fileIsImage ? {
+        is_image: true,
+        image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+      } : {}),
+    };
+  }
+
+  // Trace: S3 — root message image file metadata preserved in array mode
+  it('arrayMode_rootMessageIncludesFiles: image file has is_image and metadata', () => {
+    const file = {
+      id: 'F_ROOT_IMG',
+      name: 'header-screenshot.png',
+      mimetype: 'image/png',
+      size: 204800,
+      url_private_download: 'https://files.slack.com/files-pri/T123/header-screenshot.png',
+      thumb_360: 'https://files.slack.com/files-tmb/T123/header-screenshot_360.png',
+    };
+
+    const formatted = formatFileMetadata(file);
+
+    expect(formatted.id).toBe('F_ROOT_IMG');
+    expect(formatted.name).toBe('header-screenshot.png');
+    expect(formatted.mimetype).toBe('image/png');
+    expect(formatted.size).toBe(204800);
+    expect(formatted.is_image).toBe(true);
+    expect(formatted.image_note).toBeDefined();
+    expect(formatted.thumb_360).toBeDefined();
+    // Image files should NOT have url_private_download (prevent binary read errors)
+    expect(formatted.url_private_download).toBeUndefined();
+  });
+
+  // Trace: S3 — non-image file retains url_private_download
+  it('arrayMode_rootMessageNonImageFile: PDF file has url_private_download', () => {
+    const file = {
+      id: 'F_ROOT_PDF',
+      name: 'spec.pdf',
+      mimetype: 'application/pdf',
+      size: 512000,
+      url_private_download: 'https://files.slack.com/files-pri/T123/spec.pdf',
+    };
+
+    const formatted = formatFileMetadata(file);
+
+    expect(formatted.url_private_download).toBe('https://files.slack.com/files-pri/T123/spec.pdf');
+    expect(formatted.is_image).toBeUndefined();
+  });
+});
