@@ -71,7 +71,7 @@ describe('McpConfigBuilder disallowedTools', () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C123', user: 'U123' });
 
-    expect(config.disallowedTools).toEqual(['AskUserQuestion']);
+    expect(config.disallowedTools).toEqual(['AskUserQuestion', 'CronCreate', 'CronDelete', 'CronList']);
   });
 
   it('adds EnterPlanMode and ExitPlanMode to allowedTools', async () => {
