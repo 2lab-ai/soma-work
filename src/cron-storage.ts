@@ -128,7 +128,23 @@ export function isValidCronExpression(expression: string): boolean {
 
   for (let i = 0; i < 5; i++) {
     const [min, max] = ranges[i];
-    // Extract all numeric values from the field
+    const parts = fields[i].split(',');
+    for (const part of parts) {
+      // Check step value: */0 is invalid (division by zero)
+      if (part.includes('/')) {
+        const step = parseInt(part.split('/')[1], 10);
+        if (isNaN(step) || step <= 0) return false;
+      }
+      // Check reversed ranges: 5-1 is invalid
+      if (part.includes('-') && !part.startsWith('*')) {
+        const rangePart = part.split('/')[0]; // strip step
+        const [startStr, endStr] = rangePart.split('-');
+        const start = parseInt(startStr, 10);
+        const end = parseInt(endStr, 10);
+        if (!isNaN(start) && !isNaN(end) && start > end) return false;
+      }
+    }
+    // Check numeric values in range
     const nums = fields[i].match(/\d+/g);
     if (nums && nums.some(n => {
       const v = parseInt(n, 10);

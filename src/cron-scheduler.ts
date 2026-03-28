@@ -47,6 +47,7 @@ export class CronScheduler {
   private deps: CronSchedulerDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
   private pendingCronQueue: Map<string, CronJob[]> = new Map();
+  private isRunning = false;
 
   constructor(deps: CronSchedulerDeps) {
     this.deps = deps;
@@ -78,39 +79,50 @@ export class CronScheduler {
    * Trace: docs/cron-scheduler/trace.md, Scenario 4, Section 3a
    */
   async tick(): Promise<void> {
+    // Guard against overlapping ticks (setInterval can fire while previous tick is still running)
+    if (this.isRunning) {
+      logger.debug('Tick skipped — previous tick still running');
+      return;
+    }
+    this.isRunning = true;
+
     const now = new Date();
     const currentMinute = currentMinuteStr();
 
-    let jobs: CronJob[];
     try {
-      jobs = this.deps.storage.getAll();
-    } catch (error: any) {
-      logger.error('Failed to load cron jobs', { error: error?.message });
-      return;
-    }
-
-    for (const job of jobs) {
+      let jobs: CronJob[];
       try {
-        // Dedup: skip if already run this minute
-        // Trace: S4, Section 3a — lastRunMinute dedup
-        if (job.lastRunMinute === currentMinute) continue;
-
-        // Check if cron expression matches current time
-        if (!matchesCronExpression(job.expression, now)) continue;
-
-        logger.info('Cron job due', { name: job.name, owner: job.owner, channel: job.channel });
-
-        await this.executeJob(job, now);
+        jobs = this.deps.storage.getAll();
       } catch (error: any) {
-        logger.error('Cron job execution failed', {
-          name: job.name,
-          error: error?.message,
-        });
-        // Mark as run to prevent retry storm
-        try {
-          this.deps.storage.updateLastRun(job.id, now);
-        } catch {}
+        logger.error('Failed to load cron jobs', { error: error?.message });
+        return;
       }
+
+      for (const job of jobs) {
+        try {
+          // Dedup: skip if already run this minute
+          // Trace: S4, Section 3a — lastRunMinute dedup
+          if (job.lastRunMinute === currentMinute) continue;
+
+          // Check if cron expression matches current time
+          if (!matchesCronExpression(job.expression, now)) continue;
+
+          logger.info('Cron job due', { name: job.name, owner: job.owner, channel: job.channel });
+
+          await this.executeJob(job, now);
+        } catch (error: any) {
+          logger.error('Cron job execution failed', {
+            name: job.name,
+            error: error?.message,
+          });
+          // Mark as run to prevent retry storm
+          try {
+            this.deps.storage.updateLastRun(job.id, now);
+          } catch {}
+        }
+      }
+    } finally {
+      this.isRunning = false;
     }
   }
 
@@ -139,15 +151,16 @@ export class CronScheduler {
   private findSession(owner: string, channel: string, threadTs?: string | null): ConversationSession | undefined {
     const sessions = this.deps.sessionRegistry.getAllSessions();
 
+    const isEligible = (s: ConversationSession) =>
+      s.ownerId === owner &&
+      s.channelId === channel &&
+      s.isActive &&
+      s.state !== 'SLEEPING'; // Sleeping sessions should not receive cron injections
+
     // If threadTs specified, match exactly
     if (threadTs) {
       for (const [, session] of sessions) {
-        if (
-          session.ownerId === owner &&
-          session.channelId === channel &&
-          session.threadTs === threadTs &&
-          session.isActive
-        ) {
+        if (isEligible(session) && session.threadTs === threadTs) {
           return session;
         }
       }
@@ -155,11 +168,7 @@ export class CronScheduler {
 
     // Fallback: match owner+channel (any thread)
     for (const [, session] of sessions) {
-      if (
-        session.ownerId === owner &&
-        session.channelId === channel &&
-        session.isActive
-      ) {
+      if (isEligible(session)) {
         return session;
       }
     }
