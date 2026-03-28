@@ -251,7 +251,7 @@ class SlackMcpServer extends BaseMcpServer {
     const before = Math.min(Math.max(args.before ?? 10, 0), 50);
     const after = Math.min(Math.max(args.after ?? 0, 0), 50);
 
-    const beforeMessages = await fetchMessagesBefore(this.slack, this.context.channel, this.context.threadTs, anchorTs, before);
+    const { messages: beforeMessages, rootWasInjected } = await fetchMessagesBefore(this.slack, this.context.channel, this.context.threadTs, anchorTs, before);
     const afterMessages = after > 0
       ? await fetchMessagesAfter(this.slack, this.context.channel, this.context.threadTs, anchorTs, after)
       : [];
@@ -261,8 +261,11 @@ class SlackMcpServer extends BaseMcpServer {
     const totalCount = await getTotalCount(this.slack, this.context.channel, this.context.threadTs, this.logger);
 
     const approxOffset = formatted.length > 0 ? Math.max(totalCount - before - after, 0) : 0;
+    // Subtract injected root from length comparison to avoid false positive:
+    // when root is prepended beyond count, length > before even if no unseen messages exist.
+    const effectiveBeforeLen = rootWasInjected ? beforeMessages.length - 1 : beforeMessages.length;
     const hasMore = before > 0
-      ? beforeMessages.length === before
+      ? effectiveBeforeLen >= before
       : after > 0 ? afterMessages.length === after : false;
 
     const result: GetThreadMessagesResult = {
