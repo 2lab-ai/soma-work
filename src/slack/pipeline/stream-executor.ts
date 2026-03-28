@@ -40,6 +40,8 @@ import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import { SummaryTimer } from '../summary-timer.js';
+import { CompletionMessageTracker } from '../completion-message-tracker.js';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
@@ -104,6 +106,8 @@ interface StreamExecutorDeps {
   assistantStatusManager: AssistantStatusManager;
   threadPanel?: ThreadPanel;
   turnNotifier?: TurnNotifier;
+  summaryTimer?: SummaryTimer;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 interface StreamExecuteParams {
@@ -228,6 +232,22 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       user,
       say,
     } = params;
+
+    // Cancel summary timer on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S2
+    if (this.deps.summaryTimer) {
+      this.deps.summaryTimer.cancel(params.sessionKey);
+    }
+
+    // Delete tracked completion messages on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S7
+    if (this.deps.completionMessageTracker) {
+      this.deps.completionMessageTracker.deleteAll(
+        params.sessionKey,
+        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        params.channel
+      ).catch(() => {});
+    }
 
     let toolChoicePending = false;
     let toolContinuation: Continuation | undefined;
@@ -731,6 +751,23 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           });
         };
         enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+
+        // Start summary timer for non-error completions (fire-and-forget)
+        // Trace: docs/turn-summary-lifecycle/trace.md, S1
+        if (this.deps.summaryTimer && category !== 'Exception') {
+          this.deps.summaryTimer.start(sessionKey, () => {
+            // Summary timer fired — session fork will be handled by SummaryService
+            this.logger.info('Summary timer fired', { sessionKey });
+          });
+        }
+
+        // Track completion message for auto-deletion
+        // Trace: docs/turn-summary-lifecycle/trace.md, S6
+        if (this.deps.completionMessageTracker) {
+          // The completion message ts would be tracked here once we know the message ts
+          // For now, this is the wiring point — actual message ts tracking requires
+          // capturing the say() result in the completion notification flow
+        }
       }
 
       // Update bot-initiated thread root with status

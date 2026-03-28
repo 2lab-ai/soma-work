@@ -129,6 +129,11 @@ export class FormActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     if (session) {
       await this.ctx.threadPanel?.clearChoice(sessionKey);
+      // TODO: Delete tracked completion messages on custom input submission
+      // Trace: docs/turn-summary-lifecycle/trace.md, S8
+      // CompletionMessageTracker.deleteAll(sessionKey, ...) should be called here.
+      // Wiring requires passing the tracker through FormActionContext,
+      // which is a larger change.
       this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
       const say = this.createSayFn(channel);
       const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
