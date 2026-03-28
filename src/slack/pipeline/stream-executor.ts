@@ -198,11 +198,12 @@ export class StreamExecutor {
 유저의 요청을 이해하기 위해 스레드의 이전 대화를 확인해야 할 수 있습니다.
 
 사용 가능한 도구:
-- get_thread_messages: 스레드 메시지를 offset/limit으로 조회 (offset 0 = root message, offset 1 = 첫 번째 reply)
+- get_thread_messages: 스레드 메시지를 offset/limit으로 조회 (offset 0 = root message, offset 1 = 첫 번째 reply). 멘션 근처 메시지는 before/after 파라미터로도 접근 가능.
 - download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
 
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
 특히 root message(offset 0)에 첨부된 파일이나 이미지가 있는지 반드시 확인하세요 — 유저가 참조하는 핵심 자료가 thread 시작 메시지에 있는 경우가 많습니다.
+긴 스레드의 경우, 멘션 근처 컨텍스트는 before/after 파라미터로 효율적으로 조회할 수 있습니다.
 Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
 
 중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.

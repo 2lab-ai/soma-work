@@ -681,9 +681,8 @@ describe('fetchMessagesBefore — root message inclusion', () => {
   const threadTs = '1700000000.000000';
 
   /**
-   * Simulates fetchMessagesBefore logic.
-   * The bug was: root message (m.ts === threadTs) was skipped with `continue`.
-   * Fix: root message is now included in the collected results.
+   * Simulates fetchMessagesBefore logic (matches production code).
+   * Root message is always preserved even when .slice(-count) would trim it.
    */
   function fetchMessagesBefore(
     messages: { ts: string; files?: any[] }[],
@@ -691,13 +690,19 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     count: number
   ): { ts: string; files?: any[] }[] {
     if (count === 0) return [];
+    let rootMessage: { ts: string; files?: any[] } | null = null;
     const collected: { ts: string; files?: any[] }[] = [];
     for (const m of messages) {
-      // FIX: No longer skipping root message (m.ts === threadTs)
       if (m.ts > anchorTs) break;
+      if (m.ts === threadTs) rootMessage = m;
       collected.push(m);
     }
-    return collected.slice(-count);
+    const sliced = collected.slice(-count);
+    // Ensure root is always present
+    if (rootMessage && !sliced.some(m => m.ts === threadTs)) {
+      sliced.unshift(rootMessage);
+    }
+    return sliced;
   }
 
   // Trace: S1, Section 3 — root message with files IS included
@@ -719,8 +724,29 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     expect(rootMsg?.files?.[0].name).toBe('screenshot.png');
   });
 
-  // Trace: S1, Section 5 — count limiting still works with root included
-  it('legacyMode_countLimitWithRoot: count limit works correctly when root is included', () => {
+  // Trace: S1 — deep thread: root survives .slice(-count)
+  it('legacyMode_deepThread_rootSurvivesSlice: root is preserved even when slice would trim it', () => {
+    // 25 replies + root = 26 messages, before=20 → slice(-20) would normally drop root
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'header-image.png' }] },
+      ...Array.from({ length: 24 }, (_, i) => ({
+        ts: `170000000${String(i + 1).padStart(1, '0')}.000000`,
+      })),
+    ];
+    const anchorTs = '1700000024.000000';
+
+    const result = fetchMessagesBefore(messages, anchorTs, 20);
+
+    // Root MUST be present even though slice(-20) would normally exclude it
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    const rootMsg = result.find(m => m.ts === threadTs);
+    expect(rootMsg?.files?.[0].name).toBe('header-image.png');
+    // Result is count + 1 (root injected beyond count)
+    expect(result.length).toBe(21);
+  });
+
+  // Trace: S1, Section 5 — count limiting still works with root naturally in window
+  it('legacyMode_countLimitWithRoot: count limit works when root is naturally within window', () => {
     const messages = [
       { ts: threadTs, files: [{ id: 'F1', name: 'image.png' }] },
       { ts: '1700000001.000000' },
@@ -729,12 +755,11 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     ];
     const anchorTs = '1700000003.000000';
 
-    // Request only last 2 messages — root may be excluded by count, not by skip
+    // Request last 2: root is NOT in the natural window, but gets injected
     const result = fetchMessagesBefore(messages, anchorTs, 2);
-    expect(result).toHaveLength(2);
-    // Should be the last 2: ts 002 and 003
-    expect(result[0].ts).toBe('1700000002.000000');
-    expect(result[1].ts).toBe('1700000003.000000');
+    // Root injected + 2 sliced = 3
+    expect(result[0].ts).toBe(threadTs);
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
   });
 });
 
