@@ -230,6 +230,17 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result.tempPath).toBeUndefined();
   });
 
+  // Gemini review: isImageFile extension fallback consistency
+  it('isImageFile detects image by extension when mimetype is generic', () => {
+    const fh = handler as any;
+    expect(fh.isImageFile('application/octet-stream', 'photo.png')).toBe(true);
+    expect(fh.isImageFile('application/octet-stream', 'pic.jpg')).toBe(true);
+    expect(fh.isImageFile('application/octet-stream', 'icon.heic')).toBe(true);
+    expect(fh.isImageFile('application/octet-stream', 'photo.avif')).toBe(true);
+    expect(fh.isImageFile('application/octet-stream', 'data.json')).toBe(false);
+    expect(fh.isImageFile('application/octet-stream', 'clip.mp4')).toBe(false);
+  });
+
   // Gemini review P2 fix: media files skip download, return metadata-only ProcessedFile
   it('downloadFile returns metadata-only ProcessedFile for video without downloading', async () => {
     const fh = handler as any;

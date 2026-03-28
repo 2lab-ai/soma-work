@@ -90,7 +90,7 @@ export class FileHandler {
       const buffer = Buffer.from(arrayBuffer);
 
       // Validate image content by checking magic bytes
-      if (this.isImageFile(file.mimetype)) {
+      if (this.isImageFile(file.mimetype, file.name)) {
         const validation = this.validateImageContent(buffer, file.mimetype);
         if (!validation.valid) {
           this.logger.error('Downloaded content is not a valid image', {
@@ -117,7 +117,7 @@ export class FileHandler {
         path: tempPath,
         name: file.name,
         mimetype: file.mimetype,
-        isImage: this.isImageFile(file.mimetype),
+        isImage: this.isImageFile(file.mimetype, file.name),
         isText: this.isTextFile(file.mimetype),
         isVideo: this.isVideoFile(file.mimetype, file.name),
         isAudio: this.isAudioFile(file.mimetype, file.name),
@@ -193,11 +193,17 @@ export class FileHandler {
     return true;
   }
 
-  private isImageFile(mimetype: string): boolean {
-    return mimetype.startsWith('image/');
-  }
-
+  private static IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
   private static VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+
+  private isImageFile(mimetype: string, filename?: string): boolean {
+    if (mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (FileHandler.IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
   private static AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
   private isVideoFile(mimetype: string, filename?: string): boolean {
