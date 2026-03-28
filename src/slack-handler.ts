@@ -403,9 +403,14 @@ export class SlackHandler {
         });
 
         // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
+        // If the session has error context (e.g., file access blocked), pass it to
+        // the retry prompt so the model can adapt its approach.
+        const errorContext = currentSession?.lastErrorContext;
         setTimeout(() => {
           this.autoResumeSession(
             { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+            undefined,
+            errorContext,
           ).then(() => {
             this.logger.info('Error auto-retry completed', {
               channelId: activeChannel,
@@ -745,15 +750,23 @@ export class SlackHandler {
   private async autoResumeSession(
     session: { channelId: string; threadTs?: string; ownerId: string },
     notificationTs?: string,
+    errorContext?: string,
   ): Promise<void> {
     // Use the notification message's ts so that handleMessage's reaction calls
     // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
+
+    // When error context is available (e.g., file access blocked), inject it into
+    // the resume prompt so the model knows what went wrong and can adapt.
+    const resumePrompt = errorContext
+      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n⚠️ 이전 시도 중 오류 발생: ${errorContext}`
+      : SlackHandler.AUTO_RESUME_PROMPT;
+
     const syntheticEvent: MessageEvent = {
       user: session.ownerId,
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: notificationTs || `${Date.now() / 1000}`,
-      text: SlackHandler.AUTO_RESUME_PROMPT,
+      text: resumePrompt,
     };
 
     const noopSay = async () => ({ ts: undefined as string | undefined });
