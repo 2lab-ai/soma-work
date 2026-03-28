@@ -457,6 +457,11 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
     }
 
+    // Allow cron MCP tools in Slack context
+    if (slackContext) {
+      allowedTools.push('mcp__cron');
+    }
+
     // Allow server-tools when configured
     if (this.hasServerToolsConfig()) {
       allowedTools.push('mcp__server-tools');

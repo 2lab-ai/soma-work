@@ -44,7 +44,7 @@ describe('CronStorage', () => {
     expect(job.threadTs).toBeNull();
     expect(job.createdAt).toBeDefined();
     expect(job.lastRunAt).toBeNull();
-    expect(job.lastRunDate).toBeNull();
+    expect(job.lastRunMinute).toBeNull();
   });
 
   // Trace: S2, Section 5 — Sad Path (duplicate)
@@ -139,14 +139,14 @@ describe('CronStorage', () => {
 
   // --- updateLastRun ---
 
-  it('updates lastRunAt and lastRunDate', () => {
+  it('updates lastRunAt and lastRunMinute', () => {
     const job = storage.addJob({ name: 'run-test', expression: '* * * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
     const now = new Date('2026-03-28T09:00:00Z');
     storage.updateLastRun(job.id, now);
 
     const updated = storage.getAll()[0];
     expect(updated.lastRunAt).toBe('2026-03-28T09:00:00.000Z');
-    expect(updated.lastRunDate).toBe('2026-03-28');
+    expect(updated.lastRunMinute).toBe('2026-03-28T09:00');
   });
 });
 
@@ -191,6 +191,15 @@ describe('isValidCronExpression', () => {
     expect(isValidCronExpression('0 9 * * *')).toBe(true);
     expect(isValidCronExpression('bad')).toBe(false);
     expect(isValidCronExpression('0 9 * *')).toBe(false); // only 4 fields
+  });
+
+  it('rejects out-of-range values', () => {
+    expect(isValidCronExpression('61 * * * *')).toBe(false);   // minute > 59
+    expect(isValidCronExpression('* 25 * * *')).toBe(false);   // hour > 23
+    expect(isValidCronExpression('* * 32 * *')).toBe(false);   // dom > 31
+    expect(isValidCronExpression('* * * 13 *')).toBe(false);   // month > 12
+    expect(isValidCronExpression('* * * * 8')).toBe(false);    // dow > 7
+    expect(isValidCronExpression('99 99 * * *')).toBe(false);  // both out of range
   });
 });
 

@@ -36,11 +36,11 @@ export interface CronSchedulerDeps {
   threadCreator: ThreadCreator;
 }
 
-/**
- * Get today's date string in YYYY-MM-DD format.
- */
-function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+// Get current minute string in YYYY-MM-DDTHH:mm format for dedup.
+// Prevents re-fire within the same calendar minute while allowing
+// multi-fire-per-day crons (e.g. every 15 min).
+function currentMinuteStr(): string {
+  return new Date().toISOString().slice(0, 16);
 }
 
 export class CronScheduler {
@@ -79,7 +79,7 @@ export class CronScheduler {
    */
   async tick(): Promise<void> {
     const now = new Date();
-    const today = todayStr();
+    const currentMinute = currentMinuteStr();
 
     let jobs: CronJob[];
     try {
@@ -91,9 +91,9 @@ export class CronScheduler {
 
     for (const job of jobs) {
       try {
-        // Dedup: skip if already run today
-        // Trace: S4, Section 3a — lastRunDate dedup
-        if (job.lastRunDate === today) continue;
+        // Dedup: skip if already run this minute
+        // Trace: S4, Section 3a — lastRunMinute dedup
+        if (job.lastRunMinute === currentMinute) continue;
 
         // Check if cron expression matches current time
         if (!matchesCronExpression(job.expression, now)) continue;
@@ -118,7 +118,7 @@ export class CronScheduler {
    * Execute a single cron job: check session state and inject or queue.
    */
   private async executeJob(job: CronJob, now: Date): Promise<void> {
-    const session = this.findSession(job.owner, job.channel);
+    const session = this.findSession(job.owner, job.channel, job.threadTs);
 
     if (!session) {
       // Scenario 6: No session → create new thread
@@ -136,8 +136,24 @@ export class CronScheduler {
    * Find an active session for the given owner+channel.
    * Trace: docs/cron-scheduler/trace.md, Scenario 4, Section 3b
    */
-  private findSession(owner: string, channel: string): ConversationSession | undefined {
+  private findSession(owner: string, channel: string, threadTs?: string | null): ConversationSession | undefined {
     const sessions = this.deps.sessionRegistry.getAllSessions();
+
+    // If threadTs specified, match exactly
+    if (threadTs) {
+      for (const [, session] of sessions) {
+        if (
+          session.ownerId === owner &&
+          session.channelId === channel &&
+          session.threadTs === threadTs &&
+          session.isActive
+        ) {
+          return session;
+        }
+      }
+    }
+
+    // Fallback: match owner+channel (any thread)
     for (const [, session] of sessions) {
       if (
         session.ownerId === owner &&

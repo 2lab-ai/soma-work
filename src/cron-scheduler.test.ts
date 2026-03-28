@@ -22,7 +22,7 @@ function createTestJob(overrides: Partial<CronJob> = {}): CronJob {
     threadTs: null,
     createdAt: '2026-03-28T00:00:00Z',
     lastRunAt: null,
-    lastRunDate: null,
+    lastRunMinute: null,
     ...overrides,
   };
 }
@@ -127,13 +127,13 @@ describe('CronScheduler — Idle Session Injection', () => {
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
 
-    // Second tick — should skip because lastRunDate matches today
+    // Second tick — should skip because lastRunMinute matches current minute
     await scheduler.tick();
     expect(injectedMessages).toHaveLength(1); // Still 1, not 2
   });
 
   // Trace: S4, Section 4 — Side-Effect
-  it('updates lastRunDate after successful injection', async () => {
+  it('updates lastRunMinute after successful injection', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
       name: 'run-track', expression: '* * * * *', prompt: 'track',
@@ -149,7 +149,7 @@ describe('CronScheduler — Idle Session Injection', () => {
     await scheduler.tick();
 
     const updated = storage.getAll()[0];
-    expect(updated.lastRunDate).toBe(new Date().toISOString().slice(0, 10));
+    expect(updated.lastRunMinute).toBe(new Date().toISOString().slice(0, 16));
     expect(updated.lastRunAt).toBeDefined();
   });
 

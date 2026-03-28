@@ -27,7 +27,10 @@ export interface CronJob {
   threadTs: string | null;
   createdAt: string;
   lastRunAt: string | null;
-  lastRunDate: string | null;
+  /** Dedup key: YYYY-MM-DDTHH:mm — prevents re-fire within the same minute */
+  lastRunMinute: string | null;
+  /** @deprecated Use lastRunMinute. Kept for backward compat with existing data. */
+  lastRunDate?: string | null;
 }
 
 interface CronData {
@@ -110,10 +113,32 @@ export function isValidCronExpression(expression: string): boolean {
   const fields = expression.trim().split(/\s+/);
   if (fields.length !== 5) return false;
 
-  // Basic validation: each field should match the cron pattern
-  // Supports: *, N, N-M, */N, N-M/N, comma-separated combinations
+  // Regex: *, N, N-M, */N, N-M/N, comma-separated combinations
   const cronFieldRegex = /^((\*|\d+(-\d+)?)(\/\d+)?)(,((\*|\d+(-\d+)?)(\/\d+)?))*$/;
-  return fields.every(f => cronFieldRegex.test(f));
+  if (!fields.every(f => cronFieldRegex.test(f))) return false;
+
+  // Range validation per field: [min, max]
+  const ranges: [number, number][] = [
+    [0, 59],  // minute
+    [0, 23],  // hour
+    [1, 31],  // day of month
+    [1, 12],  // month
+    [0, 7],   // day of week (0 and 7 = Sunday)
+  ];
+
+  for (let i = 0; i < 5; i++) {
+    const [min, max] = ranges[i];
+    // Extract all numeric values from the field
+    const nums = fields[i].match(/\d+/g);
+    if (nums && nums.some(n => {
+      const v = parseInt(n, 10);
+      return v < min || v > max;
+    })) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function isValidCronName(name: string): boolean {
@@ -169,7 +194,7 @@ export class CronStorage {
   }
 
   /** Add a new job. Throws on duplicate name for same owner. */
-  addJob(job: Omit<CronJob, 'id' | 'createdAt' | 'lastRunAt' | 'lastRunDate'>): CronJob {
+  addJob(job: Omit<CronJob, 'id' | 'createdAt' | 'lastRunAt' | 'lastRunMinute' | 'lastRunDate'>): CronJob {
     const data = this.load();
 
     // Check duplicate
@@ -183,7 +208,7 @@ export class CronStorage {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       lastRunAt: null,
-      lastRunDate: null,
+      lastRunMinute: null,
     };
 
     data.jobs.push(newJob);
@@ -208,14 +233,14 @@ export class CronStorage {
     return true;
   }
 
-  /** Update lastRunAt and lastRunDate for a job. */
+  /** Update lastRunAt and lastRunMinute for a job. */
   updateLastRun(jobId: string, now: Date): void {
     const data = this.load();
     const job = data.jobs.find(j => j.id === jobId);
     if (!job) return;
 
     job.lastRunAt = now.toISOString();
-    job.lastRunDate = now.toISOString().slice(0, 10);
+    job.lastRunMinute = now.toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm
     this.save(data);
   }
 }

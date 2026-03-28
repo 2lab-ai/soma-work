@@ -111,7 +111,7 @@ function handleList(context: CronContext, storage: CronStorage): { text: string;
   }
 
   const lines = jobs.map(j =>
-    `- **${j.name}** | \`${j.expression}\` | ch:${j.channel} | last: ${j.lastRunDate || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`
+    `- **${j.name}** | \`${j.expression}\` | ch:${j.channel} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`
   );
 
   return { text: `Registered cron jobs (${jobs.length}):\n${lines.join('\n')}`, isError: false };
