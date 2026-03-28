@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main, deploy/prod]
+    branches: [deploy/prod]
   workflow_dispatch:
 
 concurrency:
