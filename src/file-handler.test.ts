@@ -204,6 +204,32 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(fh.isAudioFile('text/plain')).toBe(false);
   });
 
+  // Codex review P1 fix: detect media by extension when MIME is generic
+  it('isVideoFile detects video by extension when mimetype is generic', () => {
+    const fh = handler as any;
+    expect(fh.isVideoFile('application/octet-stream', 'clip.mp4')).toBe(true);
+    expect(fh.isVideoFile('application/octet-stream', 'movie.mov')).toBe(true);
+    expect(fh.isVideoFile('application/octet-stream', 'notes.txt')).toBe(false);
+  });
+
+  it('isAudioFile detects audio by extension when mimetype is generic', () => {
+    const fh = handler as any;
+    expect(fh.isAudioFile('application/octet-stream', 'song.mp3')).toBe(true);
+    expect(fh.isAudioFile('application/octet-stream', 'voice.m4a')).toBe(true);
+    expect(fh.isAudioFile('application/octet-stream', 'data.json')).toBe(false);
+  });
+
+  it('downloadFile detects media by extension when mimetype is application/octet-stream', async () => {
+    const fh = handler as any;
+    const file = { name: 'recording.mp4', mimetype: 'application/octet-stream', size: 5_000_000, url_private_download: 'https://example.com/video' };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isVideo).toBe(true);
+    expect(result.path).toBe('');
+    expect(result.tempPath).toBeUndefined();
+  });
+
   // Gemini review P2 fix: media files skip download, return metadata-only ProcessedFile
   it('downloadFile returns metadata-only ProcessedFile for video without downloading', async () => {
     const fh = handler as any;
