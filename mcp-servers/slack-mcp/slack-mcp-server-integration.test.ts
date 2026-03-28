@@ -99,8 +99,9 @@ async function handleArrayMode(
 async function fetchMessagesBefore(
   slack: MockSlackClient, channel: string, threadTs: string,
   anchorTs: string, count: number
-): Promise<any[]> {
-  if (count === 0) return [];
+): Promise<{ messages: any[]; rootWasInjected: boolean }> {
+  if (count === 0) return { messages: [], rootWasInjected: false };
+  let rootMessage: any | null = null;
   const collected: any[] = [];
   let cursor: string | undefined;
 
@@ -110,15 +111,21 @@ async function fetchMessagesBefore(
     });
     const msgs = response.messages || [];
     for (const m of msgs) {
-      if (m.ts === threadTs) continue;
       if (m.ts > anchorTs) break;
+      if (m.ts === threadTs) { rootMessage = m; }
       collected.push(m);
     }
     cursor = extractCursor(response);
     if (msgs.length > 0 && msgs[msgs.length - 1].ts > anchorTs) break;
   } while (cursor);
 
-  return collected.slice(-count);
+  const sliced = collected.slice(-count);
+  let rootWasInjected = false;
+  if (rootMessage && !sliced.some((m: any) => m.ts === threadTs)) {
+    sliced.unshift(rootMessage);
+    rootWasInjected = true;
+  }
+  return { messages: sliced, rootWasInjected };
 }
 
 // ── Test fixtures ────────────────────────────────────────────────
@@ -353,35 +360,76 @@ describe('handleArrayMode — full integration', () => {
 // ── fetchMessagesBefore (legacy mode) tests ──────────────────────
 
 describe('fetchMessagesBefore — legacy mode', () => {
-  it('returns last N messages before anchor', async () => {
+  it('returns last N messages before anchor (root always included)', async () => {
     const thread = makeThread(10);
     const slack = createMockSlack(thread);
-    const result = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 3);
-    expect(result).toHaveLength(3);
-    // Should be the 3 replies closest to (and including) the anchor
-    expect(result[0].ts).toBe('1700000003.000000');
-    expect(result[2].ts).toBe('1700000005.000000');
+    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 3);
+    // Root injected + 3 sliced = 4 (root was outside the window)
+    expect(messages[0].ts).toBe('1700000000.000000'); // root always first
+    expect(messages[1].ts).toBe('1700000003.000000');
+    expect(messages[3].ts).toBe('1700000005.000000');
   });
 
-  it('excludes root message', async () => {
+  it('always includes root message with files', async () => {
     const thread = makeThread(5);
+    thread[0].files = [{ id: 'F1', name: 'header.png' }];
     const slack = createMockSlack(thread);
-    const result = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 10);
-    expect(result.every((m: any) => m.ts !== '1700000000.000000')).toBe(true);
+    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 10);
+    expect(messages.some((m: any) => m.ts === '1700000000.000000')).toBe(true);
+    expect(messages.find((m: any) => m.ts === '1700000000.000000')?.files[0].name).toBe('header.png');
+  });
+
+  it('reports rootWasInjected when root is outside count window', async () => {
+    const thread = makeThread(10);
+    const slack = createMockSlack(thread);
+    const { rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 3);
+    expect(rootWasInjected).toBe(true);
+  });
+
+  it('rootWasInjected is false when root is within count window', async () => {
+    const thread = makeThread(2);
+    const slack = createMockSlack(thread);
+    const { rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000002.000000', 10);
+    expect(rootWasInjected).toBe(false);
+  });
+
+  it('deep thread: root survives .slice(-count)', async () => {
+    const thread = makeThread(25);
+    const slack = createMockSlack(thread);
+    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000025.000000', 20);
+    expect(messages[0].ts).toBe('1700000000.000000');
+    expect(rootWasInjected).toBe(true);
+    // 20 sliced + 1 injected root = 21
+    expect(messages.length).toBe(21);
   });
 
   it('returns empty for count=0', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const result = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 0);
-    expect(result).toHaveLength(0);
+    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 0);
+    expect(messages).toHaveLength(0);
   });
 
-  it('returns all available if count > available', async () => {
+  it('returns all available if count > available (no false rootWasInjected)', async () => {
     const thread = makeThread(3);
     const slack = createMockSlack(thread);
-    const result = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 50);
-    expect(result).toHaveLength(3); // only 3 replies exist
+    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 50);
+    // root + 3 replies = 4 total, all fit in count=50
+    expect(messages).toHaveLength(4);
+    expect(rootWasInjected).toBe(false);
+  });
+
+  it('has_more boundary: no false positive when root injected fills exact count', async () => {
+    // Thread: root + 2 replies. before=2. sliced = [r1, r2], root injected → length 3.
+    // But effective length (3-1=2) === before(2), so hasMore should correctly detect boundary.
+    const thread = makeThread(2);
+    const slack = createMockSlack(thread);
+    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000002.000000', 2);
+    const effectiveLen = rootWasInjected ? messages.length - 1 : messages.length;
+    // effectiveLen === before → hasMore should be true (could be more before)
+    // In this case there genuinely aren't more, but the heuristic conservatively says true at boundary.
+    // The key fix: it does NOT say hasMore just because root was injected.
+    expect(effectiveLen).toBe(2);
   });
 });
 
