@@ -365,9 +365,11 @@ export class EventRouter {
         user: messageEvent.user,
         fileCount: messageEvent.files?.length,
       });
-      // Strip mention before passing to handleMessage (same as app_mention handler)
-      messageEvent.text = text.replace(/<@[^>]+>/g, '').trim();
-      await this.messageHandler(messageEvent as MessageEvent, say);
+      // Clone event to avoid mutating the original Slack event object.
+      // Strip only bot mention (preserve other user mentions in the prompt).
+      const clonedEvent = { ...messageEvent };
+      clonedEvent.text = text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim();
+      await this.messageHandler(clonedEvent as MessageEvent, say);
       return;
     }
 
