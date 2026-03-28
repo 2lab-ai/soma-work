@@ -617,7 +617,7 @@ class SlackMcpServer {
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        if (m.ts === this.context.threadTs) continue;
+        // Root message is included — it may contain files/images the user referenced
         if (m.ts! > anchorTs) break;
         collected.push(m);
       }

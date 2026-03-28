@@ -673,3 +673,147 @@ describe('hasMore pagination heuristics', () => {
     expect(hasMoreAfter).toBe(true);
   });
 });
+
+// ── Trace: docs/fix-thread-header-files/trace.md ──
+
+// S1: Legacy mode includes root message
+describe('fetchMessagesBefore — root message inclusion', () => {
+  const threadTs = '1700000000.000000';
+
+  /**
+   * Simulates fetchMessagesBefore logic.
+   * The bug was: root message (m.ts === threadTs) was skipped with `continue`.
+   * Fix: root message is now included in the collected results.
+   */
+  function fetchMessagesBefore(
+    messages: { ts: string; files?: any[] }[],
+    anchorTs: string,
+    count: number
+  ): { ts: string; files?: any[] }[] {
+    if (count === 0) return [];
+    const collected: { ts: string; files?: any[] }[] = [];
+    for (const m of messages) {
+      // FIX: No longer skipping root message (m.ts === threadTs)
+      if (m.ts > anchorTs) break;
+      collected.push(m);
+    }
+    return collected.slice(-count);
+  }
+
+  // Trace: S1, Section 3 — root message with files IS included
+  it('legacyMode_includesRootMessage: root message with files is included in results', () => {
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'screenshot.png', mimetype: 'image/png', size: 1024 }] },
+      { ts: '1700000001.000000', files: [] },
+      { ts: '1700000002.000000', files: [] },
+    ];
+    const anchorTs = '1700000002.000000';
+
+    const result = fetchMessagesBefore(messages, anchorTs, 10);
+
+    // Root message MUST be in results
+    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    // Root message files MUST be present
+    const rootMsg = result.find(m => m.ts === threadTs);
+    expect(rootMsg?.files).toHaveLength(1);
+    expect(rootMsg?.files?.[0].name).toBe('screenshot.png');
+  });
+
+  // Trace: S1, Section 5 — count limiting still works with root included
+  it('legacyMode_countLimitWithRoot: count limit works correctly when root is included', () => {
+    const messages = [
+      { ts: threadTs, files: [{ id: 'F1', name: 'image.png' }] },
+      { ts: '1700000001.000000' },
+      { ts: '1700000002.000000' },
+      { ts: '1700000003.000000' },
+    ];
+    const anchorTs = '1700000003.000000';
+
+    // Request only last 2 messages — root may be excluded by count, not by skip
+    const result = fetchMessagesBefore(messages, anchorTs, 2);
+    expect(result).toHaveLength(2);
+    // Should be the last 2: ts 002 and 003
+    expect(result[0].ts).toBe('1700000002.000000');
+    expect(result[1].ts).toBe('1700000003.000000');
+  });
+});
+
+// S3: Array mode root message files regression guard
+describe('formatSingleMessage — root message file metadata', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+
+  function isImageFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && mimetype.startsWith('image/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (IMAGE_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
+  function isMediaFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return IMAGE_EXTENSIONS.has(ext);
+    }
+    return false;
+  }
+
+  function formatFileMetadata(f: any) {
+    const fileIsImage = isImageFile(f.mimetype, f.name);
+    const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+    return {
+      id: f.id,
+      name: f.name,
+      mimetype: f.mimetype,
+      size: f.size,
+      ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+      ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
+      ...(fileIsImage ? {
+        is_image: true,
+        image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+      } : {}),
+    };
+  }
+
+  // Trace: S3 — root message image file metadata preserved in array mode
+  it('arrayMode_rootMessageIncludesFiles: image file has is_image and metadata', () => {
+    const file = {
+      id: 'F_ROOT_IMG',
+      name: 'header-screenshot.png',
+      mimetype: 'image/png',
+      size: 204800,
+      url_private_download: 'https://files.slack.com/files-pri/T123/header-screenshot.png',
+      thumb_360: 'https://files.slack.com/files-tmb/T123/header-screenshot_360.png',
+    };
+
+    const formatted = formatFileMetadata(file);
+
+    expect(formatted.id).toBe('F_ROOT_IMG');
+    expect(formatted.name).toBe('header-screenshot.png');
+    expect(formatted.mimetype).toBe('image/png');
+    expect(formatted.size).toBe(204800);
+    expect(formatted.is_image).toBe(true);
+    expect(formatted.image_note).toBeDefined();
+    expect(formatted.thumb_360).toBeDefined();
+    // Image files should NOT have url_private_download (prevent binary read errors)
+    expect(formatted.url_private_download).toBeUndefined();
+  });
+
+  // Trace: S3 — non-image file retains url_private_download
+  it('arrayMode_rootMessageNonImageFile: PDF file has url_private_download', () => {
+    const file = {
+      id: 'F_ROOT_PDF',
+      name: 'spec.pdf',
+      mimetype: 'application/pdf',
+      size: 512000,
+      url_private_download: 'https://files.slack.com/files-pri/T123/spec.pdf',
+    };
+
+    const formatted = formatFileMetadata(file);
+
+    expect(formatted.url_private_download).toBe('https://files.slack.com/files-pri/T123/spec.pdf');
+    expect(formatted.is_image).toBeUndefined();
+  });
+});
