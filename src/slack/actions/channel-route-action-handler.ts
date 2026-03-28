@@ -13,6 +13,7 @@ import { Logger } from '../../logger';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import { MessageFormatter } from '../message-formatter';
 import { SessionLinks, SessionLink } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 
 const logger = new Logger('ChannelRouteAction');
 
@@ -273,6 +274,7 @@ export class ChannelRouteActionHandler {
       ownerName,
       ownerId: userId,
       links,
+      theme: userSettingsStore.getUserSessionTheme(userId),
     });
 
     logger.info('🔀 Creating thread in target channel', {

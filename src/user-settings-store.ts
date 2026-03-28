@@ -30,6 +30,26 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
+// UI display themes (shared across Session List, Thread Header, Turn End, AskUser)
+// Ordered from minimal → rich density
+export const SESSION_THEMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'] as const;
+export type SessionTheme = typeof SESSION_THEMES[number];
+export const DEFAULT_THEME: SessionTheme = 'A';
+export const THEME_NAMES: Record<SessionTheme, string> = {
+  A: 'Minimal',
+  B: 'One-Liner',
+  C: 'Compact',
+  D: 'Classic',
+  E: 'Dashboard',
+  F: 'Status Bar',
+  G: 'Rich Card',
+  H: 'Table',
+  I: 'Kanban',
+  J: 'Timeline',
+  K: 'Progress',
+  L: 'Notification',
+};
+
 export interface UserSettings {
   userId: string;
   defaultDirectory: string;
@@ -37,6 +57,7 @@ export interface UserSettings {
   persona: string;  // persona file name (without .md extension)
   defaultModel: ModelId;  // default model for new sessions
   defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
+  sessionTheme?: SessionTheme;  // UI display theme (A-L). undefined = default ('A' Minimal)
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -368,6 +389,42 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Get user's UI theme. Returns stored theme or DEFAULT_THEME ('A').
+   */
+  getUserSessionTheme(userId: string): SessionTheme {
+    return this.settings[userId]?.sessionTheme ?? DEFAULT_THEME;
+  }
+
+  /**
+   * Get user's raw theme setting. undefined means "use default".
+   */
+  getUserRawSessionTheme(userId: string): SessionTheme | undefined {
+    return this.settings[userId]?.sessionTheme;
+  }
+
+  /**
+   * Set user's UI theme. Pass undefined to reset to default.
+   */
+  setUserSessionTheme(userId: string, theme: SessionTheme | undefined): void {
+    this.patchUserSettings(userId, { sessionTheme: theme } as Partial<UserSettings>);
+    logger.info('Set user session theme', { userId, theme: theme ?? 'default' });
+  }
+
+  /**
+   * Resolve theme input string to SessionTheme or 'default'
+   */
+  resolveThemeInput(input: string): SessionTheme | 'default' | null {
+    const normalized = input.toUpperCase().trim();
+    if (normalized === 'DEFAULT' || normalized === 'RESET' || normalized === 'AUTO') return 'default';
+    if (SESSION_THEMES.includes(normalized as SessionTheme)) return normalized as SessionTheme;
+    // Also accept full names
+    for (const [key, name] of Object.entries(THEME_NAMES)) {
+      if (name.toLowerCase() === input.toLowerCase().trim()) return key as SessionTheme;
+    }
+    return null;
   }
 
   /**

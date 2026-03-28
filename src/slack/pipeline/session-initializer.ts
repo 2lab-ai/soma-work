@@ -692,6 +692,7 @@ export class SessionInitializer {
       ownerName: session.ownerName,
       ownerId: session.ownerId,
       links: session.links,
+      theme: userSettingsStore.getUserSessionTheme(user),
     });
 
     this.logger.debug('🧵 Posting bot thread root message', {

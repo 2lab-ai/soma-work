@@ -336,7 +336,7 @@ this is not valid json
     });
 
     it('should create blocks with question', () => {
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key', 'D');
       const blocks = getBlocks(payload);
       const questionBlock = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Which option?'));
       expect(questionBlock).toBeDefined();
@@ -347,7 +347,7 @@ this is not valid json
         ...sampleChoice,
         context: 'Important context',
       };
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'D');
       const blocks = getBlocks(payload);
       const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'));
       expect(contextBlock).toBeDefined();
@@ -363,7 +363,7 @@ this is not valid json
     });
 
     it('should include descriptions in fields', () => {
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key', 'D');
       const blocks = getBlocks(payload);
       // New UI: options displayed as fields in section
       const fieldsSection = blocks.find((b: any) =>

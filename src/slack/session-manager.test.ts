@@ -1,4 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../user-settings-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../user-settings-store')>();
+  return {
+    ...actual,
+    userSettingsStore: {
+      ...actual.userSettingsStore,
+      getUserSessionTheme: vi.fn().mockReturnValue('D'),
+    },
+  };
+});
+
 import { SessionUiManager } from './session-manager';
 import { SlackApiHelper } from './slack-api-helper';
 import { ClaudeHandler } from '../claude-handler';

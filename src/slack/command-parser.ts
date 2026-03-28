@@ -10,6 +10,7 @@ export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
+export type SessionThemeCommandResult = { theme: string | null } | null;
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
 export type LlmChatAction =
   | { action: 'show' }
@@ -320,7 +321,35 @@ export class CommandParser {
    * Check if text is a sessions command (with optional 'public' flag)
    */
   static isSessionsCommand(text: string): boolean {
-    return /^\/?sessions?(?:\s+public)?$/i.test(text.trim());
+    return /^\/?sessions?(?:\s+(?:public|theme(?:\s*=\s*\S+)?))?$/i.test(text.trim())
+      || /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Check if text is a sessions theme command.
+   * Matches: "sessions theme", "sessions theme=A", "theme", "theme set B", "theme=C"
+   */
+  static isSessionThemeCommand(text: string): boolean {
+    const t = text.trim();
+    return /^\/?sessions?\s+theme(\s*=\s*\S+)?$/i.test(t)
+      || /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(t);
+  }
+
+  /**
+   * Parse session theme command.
+   * Returns { theme: string } for set, { theme: null } for query, null if not a theme command.
+   */
+  static parseSessionThemeCommand(text: string): SessionThemeCommandResult {
+    const t = text.trim();
+    // "sessions theme=X" or "sessions theme X"
+    const sessMatch = t.match(/^\/?sessions?\s+theme\s*[=\s]\s*(\S+)$/i);
+    if (sessMatch) return { theme: sessMatch[1] };
+    // "theme set X" or "theme=X" or "theme X"
+    const themeMatch = t.match(/^\/?theme\s+(?:set\s+)?(\S+)$/i) || t.match(/^\/?theme\s*=\s*(\S+)$/i);
+    if (themeMatch) return { theme: themeMatch[1] };
+    // "sessions theme" or "theme" alone → query
+    if (/^\/?sessions?\s+theme$/i.test(t) || /^\/?theme$/i.test(t)) return { theme: null };
+    return null;
   }
 
   /**
