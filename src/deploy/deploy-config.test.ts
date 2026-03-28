@@ -12,7 +12,7 @@ describe('deploy config expectations', () => {
   it('deploy workflow routes main to dev targets and deploy/prod to the production target', () => {
     const workflow = read('.github/workflows/deploy.yml');
 
-    expect(workflow).toContain('branches: [main, deploy/prod]');
+    expect(workflow).toContain('branches: [deploy/dev, deploy/prod]');
     expect(workflow).toContain('deploy/prod)');
     expect(workflow).toContain('"name":"mac-mini-dev"');
     expect(workflow).toContain('"name":"oudwood-dev"');

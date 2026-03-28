@@ -2,8 +2,13 @@ name: Deploy
 
 on:
   push:
-    branches: [main, deploy/prod]
+    branches: [deploy/dev, deploy/prod]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        type: string
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -20,6 +25,14 @@ jobs:
       matrix: ${{ steps.targets.outputs.matrix }}
 
     steps:
+      - name: Validate manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ inputs.confirm }}" != "deploy" ]]; then
+            echo "::error::Confirmation required. Pass confirm='deploy' to proceed."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -29,7 +42,7 @@ jobs:
         id: target
         run: |
           case "${{ github.ref_name }}" in
-            main)
+            main|deploy/dev)
               echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
               ;;
             deploy/prod)
@@ -46,7 +59,7 @@ jobs:
         run: |
           echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "deploy/dev" ]]; then
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
@@ -88,7 +101,14 @@ jobs:
         run: npm run build
 
       - name: Version bump & release notes
-        run: ./scripts/version-bump.sh "${{ github.ref_name }}"
+        run: |
+          REF="${{ github.ref_name }}"
+          # Normalize deploy branch names to their target refs
+          case "$REF" in
+            deploy/dev) REF="main" ;;
+            deploy/prod) REF="deploy/prod" ;;
+          esac
+          ./scripts/version-bump.sh "$REF"
 
       - name: Pack deploy bundle
         run: |

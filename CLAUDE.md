@@ -78,6 +78,20 @@ src/
 - **Session Mock**: `src/test-utils/mock-session.ts` — Session mock factory
 - 모든 기능은 Mock 기반 e2e 테스트 커버리지 확보 목표
 
+## Deployment
+
+main 머지 시 자동 배포 없음. 명시적 브랜치 push로만 배포된다.
+
+| 명령 | 대상 환경 | 배포 호스트 |
+|------|----------|------------|
+| `git push origin main:deploy/dev` | dev | mac-mini dev, oudwood-512 dev |
+| `git push origin main:deploy/prod` | prod (main) | mac-mini main |
+
+수동 트리거도 가능:
+```bash
+gh workflow run deploy --ref main -f confirm=deploy
+```
+
 ## Key Gotchas
 
 - **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.
