@@ -4,6 +4,11 @@ on:
   push:
     branches: [deploy/prod]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        type: string
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -20,6 +25,14 @@ jobs:
       matrix: ${{ steps.targets.outputs.matrix }}
 
     steps:
+      - name: Validate manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ inputs.confirm }}" != "deploy" ]]; then
+            echo "::error::Confirmation required. Pass confirm='deploy' to proceed."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
