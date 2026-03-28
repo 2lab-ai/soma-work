@@ -140,7 +140,7 @@ describe('EventRouter', () => {
   });
 
   describe('app_mention handler', () => {
-    it('should strip mention and handle message', async () => {
+    it('should strip bot mention and handle message', async () => {
       router.setup();
 
       // Find app_mention handler
@@ -162,6 +162,137 @@ describe('EventRouter', () => {
 
       expect(mockMessageHandler).toHaveBeenCalledWith(
         expect.objectContaining({ text: 'Hello bot' }),
+        mockSay
+      );
+    });
+
+    it('should preserve other user mentions and only strip bot mention — Issue #141', async () => {
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'app_mention'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> review <@U999> PR please',
+        thread_ts: undefined,
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Should preserve <@U999> and only strip bot mention <@B123>
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'review <@U999> PR please' }),
+        mockSay
+      );
+    });
+
+    it('should handle multiple bot mentions with other user mentions — Issue #141', async () => {
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'app_mention'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> compare <@U111> and <@U222> code <@B123>',
+        thread_ts: undefined,
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Both <@B123> removed, both <@U111> and <@U222> preserved
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'compare <@U111> and <@U222> code' }),
+        mockSay
+      );
+    });
+
+    it('should not mutate original event text — Issue #141', async () => {
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'app_mention'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> review <@U999> code',
+        thread_ts: undefined,
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Original event text should not be mutated
+      expect(mockEvent.text).toBe('<@B123> review <@U999> code');
+    });
+
+    it('should preserve all mentions when getBotUserId fails — Issue #141', async () => {
+      mockSlackApi.getBotUserId.mockRejectedValueOnce(new Error('API error'));
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'app_mention'
+      );
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: '<@B123> review <@U999> code',
+        thread_ts: undefined,
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // When botId unavailable, preserve all mentions (don't strip anything)
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ text: '<@B123> review <@U999> code' }),
+        mockSay
+      );
+    });
+
+    it('should handle text with no mentions at all — Issue #141', async () => {
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find(
+        (call) => call[0] === 'app_mention'
+      );
+      const handler = eventCall![1];
+
+      // Edge case: app_mention event with no mention markers in text (unlikely but defensive)
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        ts: '123.456',
+        text: 'hello world',
+        thread_ts: undefined,
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'hello world' }),
         mockSay
       );
     });
