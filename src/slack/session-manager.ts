@@ -190,7 +190,7 @@ export class SessionUiManager {
   /**
    * Pre-fetched session card data shared across all themes
    */
-  private async fetchCardData(session: ConversationSession) {
+  private async fetchCardData(session: ConversationSession, theme: SessionTheme = 'default') {
     const channelName = await this.slackApi.getChannelName(session.channelId);
     const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
     const modelDisplay = session.model
@@ -201,19 +201,26 @@ export class SessionUiManager {
       : null;
     const activityEmoji = this.formatActivityEmoji(session.activityState);
 
-    // Fetch metadata in parallel
-    const [issueMeta, prMeta] = await Promise.all([
-      session.links?.issue ? fetchLinkMetadata(session.links.issue) : undefined,
-      session.links?.pr ? fetchLinkMetadata(session.links.pr) : undefined,
-    ]);
-
-    // PR review status
+    // Default theme uses formatLinkHistoryContext() which gets metadata from linkHistory directly,
+    // so skip expensive metadata API calls for default theme.
+    let issueMeta: Awaited<ReturnType<typeof fetchLinkMetadata>> | undefined;
+    let prMeta: Awaited<ReturnType<typeof fetchLinkMetadata>> | undefined;
     let reviewChip = '';
-    if (session.links?.pr?.provider === 'github' && prMeta?.status === 'open') {
-      const reviewStatus = await fetchGitHubPRReviewStatus(session.links.pr);
-      if (reviewStatus === 'approved') reviewChip = ' ✅';
-      else if (reviewStatus === 'changes_requested') reviewChip = ' 🔴';
-      else if (reviewStatus === 'pending') reviewChip = ' ⏳';
+
+    if (theme !== 'default') {
+      // Fetch metadata in parallel (only needed for compact/minimal themes)
+      [issueMeta, prMeta] = await Promise.all([
+        session.links?.issue ? fetchLinkMetadata(session.links.issue) : undefined,
+        session.links?.pr ? fetchLinkMetadata(session.links.pr) : undefined,
+      ]);
+
+      // PR review status
+      if (session.links?.pr?.provider === 'github' && prMeta?.status === 'open') {
+        const reviewStatus = await fetchGitHubPRReviewStatus(session.links.pr);
+        if (reviewStatus === 'approved') reviewChip = ' ✅';
+        else if (reviewStatus === 'changes_requested') reviewChip = ' 🔴';
+        else if (reviewStatus === 'pending') reviewChip = ' ⏳';
+      }
     }
 
     const isSleeping = session.state === 'SLEEPING';
@@ -240,7 +247,7 @@ export class SessionUiManager {
     showControls: boolean,
     theme: SessionTheme = 'default'
   ): Promise<any[]> {
-    const data = await this.fetchCardData(session);
+    const data = await this.fetchCardData(session, theme);
     const truncate = (s: string, max = 120) => s.length > max ? s.slice(0, max) + '…' : s;
 
     const args = [index, sessionKey, session, showControls, data, truncate] as const;
@@ -308,7 +315,7 @@ export class SessionUiManager {
 
     const formatLinks = (links: Array<{ url: string; label?: string; status?: string }>, emoji: string, type: 'issue' | 'pr' | 'doc') => {
       if (links.length === 0) return;
-      const shown = links.slice(0, maxPerType);
+      const shown = links.slice(-maxPerType);
       const overflow = links.length - shown.length;
       for (const link of shown) {
         const statusEmoji = link.status ? ` ${getStatusEmoji(link.status, type === 'pr' ? 'pr' : undefined)}` : '';
