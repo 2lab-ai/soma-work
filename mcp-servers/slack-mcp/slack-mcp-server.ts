@@ -103,10 +103,14 @@ function isImageFile(mimetype?: string, filename?: string): boolean {
   return false;
 }
 
-/** Check if a filename indicates a media file (image, video, or audio). */
-function isMediaFile(filename: string): boolean {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+/** Check if a mimetype or filename indicates a media file (image, video, or audio). */
+function isMediaFile(mimetype?: string, filename?: string): boolean {
+  if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+  if (filename) {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  }
+  return false;
 }
 
 /** Classify a file extension into media category. */
@@ -676,7 +680,7 @@ class SlackMcpServer {
         : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
-        const fileIsMedia = fileIsImage || isMediaFile(f.name || '');
+        const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
         return {
           id: f.id,
           name: f.name,
@@ -716,7 +720,7 @@ class SlackMcpServer {
     }
 
     // Block media file downloads — Reading binary media (image/video/audio) causes errors
-    if (isMediaFile(file_name)) {
+    if (isMediaFile(undefined, file_name)) {
       logger.warn('Blocked media file download to prevent API error', { name: file_name });
       return {
         content: [{

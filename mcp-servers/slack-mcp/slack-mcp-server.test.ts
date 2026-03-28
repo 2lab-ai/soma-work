@@ -264,49 +264,64 @@ describe('download_thread_file media blocking (video/audio)', () => {
   const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
   const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
-  function isMediaFile(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  function isMediaFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+    }
+    return false;
   }
 
   // Trace: Scenario 2, Section 3a — isMediaFile for video
   it('isMediaFile returns true for video extensions', () => {
-    expect(isMediaFile('video.mp4')).toBe(true);
-    expect(isMediaFile('movie.mov')).toBe(true);
-    expect(isMediaFile('clip.webm')).toBe(true);
-    expect(isMediaFile('film.avi')).toBe(true);
-    expect(isMediaFile('reel.mkv')).toBe(true);
+    expect(isMediaFile(undefined, 'video.mp4')).toBe(true);
+    expect(isMediaFile(undefined, 'movie.mov')).toBe(true);
+    expect(isMediaFile(undefined, 'clip.webm')).toBe(true);
+    expect(isMediaFile(undefined, 'film.avi')).toBe(true);
+    expect(isMediaFile(undefined, 'reel.mkv')).toBe(true);
   });
 
   // Trace: Scenario 2, Section 3a — isMediaFile for audio
   it('isMediaFile returns true for audio extensions', () => {
-    expect(isMediaFile('song.mp3')).toBe(true);
-    expect(isMediaFile('recording.wav')).toBe(true);
-    expect(isMediaFile('podcast.ogg')).toBe(true);
-    expect(isMediaFile('track.flac')).toBe(true);
-    expect(isMediaFile('voice.m4a')).toBe(true);
+    expect(isMediaFile(undefined, 'song.mp3')).toBe(true);
+    expect(isMediaFile(undefined, 'recording.wav')).toBe(true);
+    expect(isMediaFile(undefined, 'podcast.ogg')).toBe(true);
+    expect(isMediaFile(undefined, 'track.flac')).toBe(true);
+    expect(isMediaFile(undefined, 'voice.m4a')).toBe(true);
   });
 
   // Trace: Scenario 2, Section 3a — isMediaFile regression for images
   it('isMediaFile returns true for image extensions (regression)', () => {
-    expect(isMediaFile('photo.jpg')).toBe(true);
-    expect(isMediaFile('icon.png')).toBe(true);
-    expect(isMediaFile('logo.svg')).toBe(true);
+    expect(isMediaFile(undefined, 'photo.jpg')).toBe(true);
+    expect(isMediaFile(undefined, 'icon.png')).toBe(true);
+    expect(isMediaFile(undefined, 'logo.svg')).toBe(true);
   });
 
   // Trace: Scenario 2, Section 5 — non-media allowed
   it('isMediaFile returns false for text/code extensions', () => {
-    expect(isMediaFile('script.ts')).toBe(false);
-    expect(isMediaFile('data.json')).toBe(false);
-    expect(isMediaFile('readme.md')).toBe(false);
-    expect(isMediaFile('document.pdf')).toBe(false);
-    expect(isMediaFile('archive.zip')).toBe(false);
+    expect(isMediaFile(undefined, 'script.ts')).toBe(false);
+    expect(isMediaFile(undefined, 'data.json')).toBe(false);
+    expect(isMediaFile(undefined, 'readme.md')).toBe(false);
+    expect(isMediaFile(undefined, 'document.pdf')).toBe(false);
+    expect(isMediaFile(undefined, 'archive.zip')).toBe(false);
+  });
+
+  // Codex review P1 fix: isMediaFile detects media by mimetype even without extension
+  it('isMediaFile returns true for video/audio mimetypes without known extension', () => {
+    expect(isMediaFile('video/mp4')).toBe(true);
+    expect(isMediaFile('video/quicktime')).toBe(true);
+    expect(isMediaFile('audio/ogg')).toBe(true);
+    expect(isMediaFile('audio/mpeg')).toBe(true);
+    expect(isMediaFile('video/webm', 'no-extension')).toBe(true);
+    // Non-media mimetype + non-media extension → false
+    expect(isMediaFile('application/pdf', 'doc.pdf')).toBe(false);
   });
 
   // Trace: Scenario 2, Section 3b — blocked response for video
   it('download_thread_file blocks video files with blocked response', () => {
     const fileName = 'recording.mp4';
-    expect(isMediaFile(fileName)).toBe(true);
+    expect(isMediaFile(undefined, fileName)).toBe(true);
     const response = {
       blocked: true,
       name: fileName,
@@ -319,7 +334,7 @@ describe('download_thread_file media blocking (video/audio)', () => {
   // Trace: Scenario 2, Section 3b — blocked response for audio
   it('download_thread_file blocks audio files with blocked response', () => {
     const fileName = 'voice-memo.mp3';
-    expect(isMediaFile(fileName)).toBe(true);
+    expect(isMediaFile(undefined, fileName)).toBe(true);
     const response = {
       blocked: true,
       name: fileName,
@@ -330,8 +345,8 @@ describe('download_thread_file media blocking (video/audio)', () => {
 
   // Trace: Scenario 2, Section 5 — text files still allowed
   it('download_thread_file still allows text files', () => {
-    expect(isMediaFile('code.ts')).toBe(false);
-    expect(isMediaFile('data.csv')).toBe(false);
+    expect(isMediaFile(undefined, 'code.ts')).toBe(false);
+    expect(isMediaFile(undefined, 'data.csv')).toBe(false);
   });
 });
 
@@ -349,9 +364,13 @@ describe('thread message formatting', () => {
     return false;
   }
 
-  function isMediaFile(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  function isMediaFile(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+    }
+    return false;
   }
 
   function formatMessage(m: any) {
@@ -370,7 +389,7 @@ describe('thread message formatting', () => {
         : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
-        const fileIsMedia = fileIsImage || isMediaFile(f.name || '');
+        const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
         return {
           id: f.id,
           name: f.name,
