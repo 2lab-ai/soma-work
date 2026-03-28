@@ -60,6 +60,8 @@ export class CronScheduler {
   start(): void {
     if (this.timer) return;
     logger.info('CronScheduler started');
+    // Fire immediately on start, then every 60s
+    this.tick().catch(err => logger.error('Initial tick failed', { error: err?.message }));
     this.timer = setInterval(() => this.tick(), POLL_INTERVAL_MS);
   }
 
