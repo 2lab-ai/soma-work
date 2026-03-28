@@ -162,6 +162,8 @@ export class SlackHandler {
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
 
+    const completionMessageTracker = new CompletionMessageTracker();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -171,6 +173,7 @@ export class SlackHandler {
       reactionManager: this.reactionManager,
       threadPanel: this.threadPanel,
       requestCoordinator: this.requestCoordinator,
+      completionMessageTracker,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -201,7 +204,6 @@ export class SlackHandler {
     ]);
 
     const summaryTimer = new SummaryTimer();
-    const completionMessageTracker = new CompletionMessageTracker();
     const forkExecutor = createForkExecutor(this.claudeHandler);
     const summaryService = new SummaryService(forkExecutor);
 
