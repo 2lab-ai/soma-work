@@ -411,3 +411,88 @@ describe('CronScheduler — No Session New Thread', () => {
     expect(injectedMessages[0].channel).toBe('CABC');
   });
 });
+
+// --- Hardening tests (Codex review findings) ---
+
+describe('CronScheduler — Hardening', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-hardening-${Date.now()}.json`);
+  });
+
+  it('threadTs-specific cron targets exact session among multiple', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'thread-specific', expression: '* * * * *', prompt: 'For thread-2 only',
+      owner: 'U123', channel: 'C456', threadTs: 'thread-2',
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+
+    // Two sessions in same channel for same user
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-2');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-2', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-2', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].thread_ts).toBe('thread-2');
+  });
+
+  it('messageInjector throw still marks lastRunMinute (no retry storm)', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'throw-test', expression: '* * * * *', prompt: 'boom',
+      owner: 'U123', channel: 'C456', threadTs: null,
+    });
+
+    const { deps } = createMockDeps(storage);
+    deps.messageInjector = vi.fn(async () => { throw new Error('injector failed'); });
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick(); // should not throw
+
+    const updated = storage.getAll()[0];
+    expect(updated.lastRunMinute).toBe(new Date().toISOString().slice(0, 16));
+  });
+
+  it('overlapping ticks are skipped via isRunning guard', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'overlap-test', expression: '* * * * *', prompt: 'slow',
+      owner: 'U123', channel: 'C456', threadTs: null,
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+
+    // Make messageInjector slow
+    let resolveInjector: () => void;
+    deps.messageInjector = vi.fn(() => new Promise<void>(resolve => { resolveInjector = resolve; }));
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    const tick1 = scheduler.tick(); // starts, blocks on messageInjector
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    await scheduler.tick(); // should be skipped (isRunning)
+
+    resolveInjector!(); // unblock first tick
+    await tick1;
+
+    expect(deps.messageInjector).toHaveBeenCalledTimes(1); // Only once, second tick was skipped
+  });
+});
