@@ -75,6 +75,11 @@ export class ClaudeHandler {
 
   // ===== Session Registry Delegation =====
 
+  /** Expose SessionRegistry for CronScheduler integration */
+  getSessionRegistry(): SessionRegistry {
+    return this.sessionRegistry;
+  }
+
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.sessionRegistry.setExpiryCallbacks(callbacks);
   }

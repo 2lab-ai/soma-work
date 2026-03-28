@@ -17,6 +17,7 @@ const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
 const LLM_SERVER_BASENAME = 'llm-mcp-server';
 const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
 const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
+const CRON_SERVER_BASENAME = 'cron-mcp-server';
 
 /** Root of the project (one level up from src/) */
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -25,6 +26,12 @@ const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
+
+/**
+ * Native SDK cron tools — disallowed to prevent conflict with soma's managed CronScheduler.
+ * Trace: docs/cron-scheduler/trace.md, Scenario 1
+ */
+const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
 
 export interface PermissionServerPathResult {
   resolvedPath: string | null;
@@ -158,6 +165,11 @@ export class McpConfigBuilder {
       internalServers['slack-mcp'] = this.buildSlackMcpServer(slackContext!);
     }
 
+    // Add cron MCP server for cron CRUD (Trace: docs/cron-scheduler/trace.md, S2-S3)
+    if (slackContext) {
+      internalServers['cron'] = this.buildCronServer(slackContext);
+    }
+
     // Conditionally add server-tools when config.json has server-tools section
     if (this.hasServerToolsConfig()) {
       internalServers['server-tools'] = this.buildServerToolsServer();
@@ -230,10 +242,11 @@ export class McpConfigBuilder {
       });
     }
 
-    // Disallow native interactive tools in Slack context
-    // These tools expect terminal input which doesn't exist in Slack
+    // Disallow native interactive tools and SDK cron tools in Slack context
+    // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
+    // Trace: docs/cron-scheduler/trace.md, Scenario 1
     if (slackContext) {
-      config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS];
+      config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS, ...NATIVE_CRON_TOOLS];
     }
 
     if (slackContext && userBypass) {
@@ -281,6 +294,27 @@ export class McpConfigBuilder {
       args: ['tsx', modelCommandServerPath],
       env: {
         SOMA_COMMAND_CONTEXT: JSON.stringify(context),
+      },
+    };
+  }
+
+  /**
+   * Build cron MCP server configuration.
+   * Trace: docs/cron-scheduler/trace.md, Scenarios 2-3
+   */
+  private buildCronServer(slackContext: SlackContext): Record<string, any> {
+    const cronServerPath = this.getCronServerPath();
+    const context = {
+      user: slackContext.user,
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs,
+    };
+
+    return {
+      command: 'npx',
+      args: ['tsx', cronServerPath],
+      env: {
+        SOMA_CRON_CONTEXT: JSON.stringify(context),
       },
     };
   }
@@ -350,6 +384,11 @@ export class McpConfigBuilder {
     return this.resolveServerPath('Server-tools', SERVER_TOOLS_BASENAME, path.join(MCP_SERVERS_DIR, 'server-tools'), this.serverToolsCache);
   }
 
+  private cronServerCache = McpConfigBuilder.emptyCache();
+  private getCronServerPath(): string {
+    return this.resolveServerPath('Cron', CRON_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'cron'), this.cronServerCache);
+  }
+
   /**
    * Build slack-mcp server configuration (thread context + file upload)
    */
@@ -416,6 +455,11 @@ export class McpConfigBuilder {
     // Always add permission prompt tool (even for bypass users, needed for dangerous commands)
     if (slackContext) {
       allowedTools.push('mcp__permission-prompt__permission_prompt');
+    }
+
+    // Allow cron MCP tools in Slack context
+    if (slackContext) {
+      allowedTools.push('mcp__cron');
     }
 
     // Allow server-tools when configured
