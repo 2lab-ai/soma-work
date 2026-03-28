@@ -140,4 +140,43 @@ describe('SummaryService', () => {
       expect(session.actionPanel!.summaryBlocks).toBeUndefined();
     });
   });
+
+  describe('displayOnThread — block structure', () => {
+    it('produces a divider followed by a section block with mrkdwn text', () => {
+      const service = new SummaryService();
+      const session = makeSession();
+      service.displayOnThread(session, 'Short summary');
+
+      const blocks = session.actionPanel!.summaryBlocks!;
+      expect(blocks[0]).toEqual({ type: 'divider' });
+      expect(blocks[1].type).toBe('section');
+      expect(blocks[1].text.type).toBe('mrkdwn');
+      expect(blocks[1].text.text).toContain('*Executive Summary*');
+      expect(blocks[1].text.text).toContain('Short summary');
+    });
+
+    it('splits long summary text into multiple section blocks under 2900 chars each', () => {
+      const service = new SummaryService();
+      const session = makeSession();
+      const longText = 'x'.repeat(6000);
+      service.displayOnThread(session, longText);
+
+      const blocks = session.actionPanel!.summaryBlocks!;
+      // divider + at least 3 section blocks (header prefix + 6000 chars / 2900)
+      expect(blocks.length).toBeGreaterThanOrEqual(4);
+      // Every section block text should be <= 2900 chars (plus header on the first)
+      for (let i = 1; i < blocks.length; i++) {
+        expect(blocks[i].text.text.length).toBeLessThanOrEqual(2900 + '*Executive Summary*\n'.length);
+      }
+    });
+  });
+
+  describe('displayOnThread — no actionPanel', () => {
+    it('is a no-op when session has no actionPanel', () => {
+      const service = new SummaryService();
+      const session = makeSession({ actionPanel: undefined });
+      // Should not throw
+      expect(() => service.displayOnThread(session, 'summary')).not.toThrow();
+    });
+  });
 });

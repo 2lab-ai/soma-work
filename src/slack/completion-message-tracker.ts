@@ -45,11 +45,15 @@ export class CompletionMessageTracker {
     const timestamps = [...set];
     logger.info('Deleting completion messages', { sessionKey, count: timestamps.length });
 
+    // Remove only snapshotted entries from the set (not the whole set)
+    // so that track() calls during the await below survive.
+    for (const ts of timestamps) { set.delete(ts); }
+    // If set is now empty, clean up the map entry
+    if (set.size === 0) { this.tracked.delete(sessionKey); }
+
     await Promise.allSettled(
       timestamps.map(ts => deleteMessage(channel, ts))
     );
-
-    this.tracked.delete(sessionKey);
   }
 
   /** Check if there are tracked messages for a session */

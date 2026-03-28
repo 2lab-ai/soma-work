@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EsHandler } from './es-handler';
+import { SUMMARY_PROMPT } from '../summary-service.js';
 
 // Trace: docs/turn-summary-lifecycle/trace.md
 
@@ -52,6 +53,20 @@ describe('EsHandler', () => {
       expect(result.continueWithPrompt).toBeDefined();
       expect(typeof result.continueWithPrompt).toBe('string');
       expect(result.continueWithPrompt!.length).toBeGreaterThan(0);
+    });
+
+    it('returns SUMMARY_PROMPT as continueWithPrompt (no prompt drift)', async () => {
+      const ctx = {
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '171.100',
+        text: 'es',
+        say: vi.fn(),
+      };
+
+      const result = await handler.execute(ctx);
+
+      expect(result.continueWithPrompt).toBe(SUMMARY_PROMPT);
     });
   });
 });

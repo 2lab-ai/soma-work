@@ -144,17 +144,19 @@ export class SummaryService {
    * Convert summary text to Slack Block Kit blocks.
    */
   private buildSummaryBlocks(summaryText: string): any[] {
-    return [
-      {
-        type: 'divider',
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Executive Summary*\n${summaryText}`,
-        },
-      },
-    ];
+    const MAX_CHARS = 2900;
+    const blocks: any[] = [{ type: 'divider' }];
+
+    if (summaryText.length <= MAX_CHARS) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Executive Summary*\n${summaryText}` } });
+    } else {
+      // First chunk with header
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Executive Summary*\n${summaryText.slice(0, MAX_CHARS)}` } });
+      // Remaining chunks
+      for (let i = MAX_CHARS; i < summaryText.length; i += MAX_CHARS) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: summaryText.slice(i, i + MAX_CHARS) } });
+      }
+    }
+    return blocks;
   }
 }

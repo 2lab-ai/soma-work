@@ -105,4 +105,52 @@ describe('CompletionMessageTracker', () => {
       expect(tracker.count('session-1')).toBe(2);
     });
   });
+
+  describe('Dedup', () => {
+    it('track() does not duplicate the same timestamp', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+      expect(tracker.count('session-1')).toBe(1);
+    });
+  });
+
+  describe('Session isolation', () => {
+    it('different sessions have independent tracked sets', async () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-A', '1000.0001', 'WorkflowComplete');
+      tracker.track('session-B', '2000.0001', 'WorkflowComplete');
+
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>().mockResolvedValue(undefined);
+
+      await tracker.deleteAll('session-A', deleteMessage, 'C-CHANNEL');
+
+      expect(tracker.has('session-A')).toBe(false);
+      expect(tracker.has('session-B')).toBe(true);
+      expect(tracker.count('session-B')).toBe(1);
+    });
+  });
+
+  describe('Race condition — track() during deleteAll()', () => {
+    it('preserves timestamps added by track() during deleteAll() await', async () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+      tracker.track('session-1', '1000.0002', 'WorkflowComplete');
+
+      // deleteMessage that simulates a concurrent track() during the await
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>()
+        .mockImplementation(async (_channel: string, ts: string) => {
+          // On the first delete call, simulate a concurrent track()
+          if (ts === '1000.0001') {
+            tracker.track('session-1', '9999.9999', 'WorkflowComplete');
+          }
+        });
+
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
+      // The newly tracked timestamp should survive
+      expect(tracker.has('session-1')).toBe(true);
+      expect(tracker.count('session-1')).toBe(1);
+    });
+  });
 });

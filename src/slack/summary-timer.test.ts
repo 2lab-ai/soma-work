@@ -76,4 +76,41 @@ describe('SummaryTimer', () => {
       expect(timer.has('nonexistent')).toBe(false);
     });
   });
+
+  describe('cancelAll()', () => {
+    it('cancels all active timers so no callbacks fire', () => {
+      const cb1 = vi.fn();
+      const cb2 = vi.fn();
+      timer.start('session-1', cb1);
+      timer.start('session-2', cb2);
+
+      expect(timer.has('session-1')).toBe(true);
+      expect(timer.has('session-2')).toBe(true);
+
+      timer.cancelAll();
+
+      expect(timer.has('session-1')).toBe(false);
+      expect(timer.has('session-2')).toBe(false);
+
+      vi.advanceTimersByTime(SummaryTimer.DELAY_MS + 1000);
+      expect(cb1).not.toHaveBeenCalled();
+      expect(cb2).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('multi-session', () => {
+    it('manages independent timers per session', () => {
+      const cb1 = vi.fn();
+      const cb2 = vi.fn();
+      timer.start('session-1', cb1);
+      timer.start('session-2', cb2);
+
+      // Cancel only session-1
+      timer.cancel('session-1');
+
+      vi.advanceTimersByTime(SummaryTimer.DELAY_MS);
+      expect(cb1).not.toHaveBeenCalled();
+      expect(cb2).toHaveBeenCalledOnce();
+    });
+  });
 });
