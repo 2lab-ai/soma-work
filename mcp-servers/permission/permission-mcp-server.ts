@@ -3,8 +3,8 @@
 import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
-import { sharedStore, PendingApproval, PermissionResponse } from '../../src/shared-store.js';
-import { SlackPermissionMessenger } from '../../src/permission/index.js';
+import { sharedStore, PendingApproval, PermissionResponse } from '../_shared/shared-store.js';
+import { SlackPermissionMessenger } from '../_shared/slack-messenger.js';
 
 interface PermissionRequest {
   tool_name: string;

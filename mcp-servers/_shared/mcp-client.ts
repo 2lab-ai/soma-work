@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { Logger } from '../../src/logger';
+import { StderrLogger } from './stderr-logger.js';
 
 /**
  * JSON-RPC 2.0 types
@@ -78,7 +78,7 @@ interface PendingRequest {
 export class McpClient extends EventEmitter {
   private config: McpClientConfig;
   private process: ChildProcess | null = null;
-  private logger: Logger;
+  private logger: StderrLogger;
   private requestId = 0;
   private pendingRequests: Map<number, PendingRequest> = new Map();
   private buffer = '';
@@ -89,7 +89,7 @@ export class McpClient extends EventEmitter {
   constructor(config: McpClientConfig, name: string = 'McpClient') {
     super();
     this.config = config;
-    this.logger = new Logger(name);
+    this.logger = new StderrLogger(name);
   }
 
   /**

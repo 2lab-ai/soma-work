@@ -15,7 +15,7 @@ import {
   CronStorage,
   isValidCronExpression,
   isValidCronName,
-} from '../../src/cron-storage.js';
+} from '../_shared/cron-storage.js';
 
 const logger = new StderrLogger('CronMcpServer');
 
