@@ -412,7 +412,7 @@ describe('CronScheduler — No Session New Thread', () => {
   });
 });
 
-// --- B2 RED test: start() should tick immediately ---
+// --- B2 test: start() should tick immediately ---
 describe('CronScheduler — Immediate tick on start', () => {
   let tmpFile: string;
 
@@ -420,25 +420,21 @@ describe('CronScheduler — Immediate tick on start', () => {
     tmpFile = path.join(os.tmpdir(), `cron-sched-b2-${Date.now()}.json`);
   });
 
-  it('B2-RED: start() fires tick immediately, not after 60s delay', async () => {
+  it('B2: start() invokes tick() synchronously before returning', () => {
     const storage = new CronStorage(tmpFile);
-    storage.addJob({
-      name: 'immediate-test', expression: '* * * * *', prompt: 'Fire now',
-      owner: 'U123', channel: 'C456', threadTs: null,
-    });
-
-    const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
-    // No session — will create new thread, proving tick() ran
+    const { deps } = createMockDeps(storage);
 
     const scheduler = new CronScheduler(deps);
+    // Spy on tick to verify it's called during start()
+    const tickSpy = vi.spyOn(scheduler, 'tick').mockResolvedValue(undefined);
+
     scheduler.start();
 
-    // Give it a small window (50ms) — if tick is immediate, it should fire
-    await new Promise(resolve => setTimeout(resolve, 50));
-    scheduler.stop();
+    // tick() should have been called exactly once — synchronously during start()
+    expect(tickSpy).toHaveBeenCalledTimes(1);
 
-    // If start() calls tick() immediately, a new thread should have been created
-    expect(createdThreads.length + injectedMessages.length).toBeGreaterThan(0);
+    scheduler.stop();
+    tickSpy.mockRestore();
   });
 });
 
