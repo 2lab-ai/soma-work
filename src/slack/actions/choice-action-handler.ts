@@ -6,12 +6,14 @@ import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
 import { ThreadPanel } from '../thread-panel';
+import { CompletionMessageTracker } from '../completion-message-tracker';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
   threadPanel?: ThreadPanel;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 /**
@@ -70,11 +72,16 @@ export class ChoiceActionHandler {
       // 세션 확인 및 메시지 처리
       if (session) {
         await this.ctx.threadPanel?.clearChoice(sessionKey);
-        // TODO: Delete tracked completion messages on choice selection
-        // Trace: docs/turn-summary-lifecycle/trace.md, S8
-        // CompletionMessageTracker.deleteAll(sessionKey, ...) should be called here.
-        // Wiring requires passing the tracker through ChoiceActionContext,
-        // which is a larger change.
+        // Delete tracked completion messages on choice selection (S8)
+        if (channel) {
+          this.ctx.completionMessageTracker?.deleteAll(
+            sessionKey,
+            async (ch, ts) => {
+              try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
+            },
+            channel,
+          ).catch(() => {});
+        }
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
@@ -355,11 +362,16 @@ export class ChoiceActionHandler {
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
       await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
-      // TODO: Delete tracked completion messages on form submission
-      // Trace: docs/turn-summary-lifecycle/trace.md, S8
-      // CompletionMessageTracker.deleteAll(pendingForm.sessionKey, ...) should be called here.
-      // Wiring requires passing the tracker through ChoiceActionContext,
-      // which is a larger change.
+      // Delete tracked completion messages on form submission (S8)
+      if (channel) {
+        this.ctx.completionMessageTracker?.deleteAll(
+          pendingForm.sessionKey,
+          async (ch, ts) => {
+            try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
+          },
+          channel,
+        ).catch(() => {});
+      }
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
