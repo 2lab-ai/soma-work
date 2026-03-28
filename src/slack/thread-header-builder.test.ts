@@ -25,16 +25,16 @@ describe('ThreadHeaderBuilder', () => {
       title: 'Prada /test-vsprots 페이지 개발',
       workflow: 'default',
       ownerName: 'Bash',
-      theme: 'D',
+      theme: 'default',
     });
 
     const blocks = (payload.blocks || []) as any[];
     const lines = collectBlockTexts(blocks).join(' ');
 
-    // Header block with "OwnerName — Title" format
+    // Header block with title (Default theme shows title only in header, owner in context)
     const headerBlock = blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
-    expect(headerBlock.text.text).toBe('Bash — Prada /test-vsprots 페이지 개발');
+    expect(headerBlock.text.text).toBe('Prada /test-vsprots 페이지 개발');
 
     // Context with workflow (owner mention not testable without ownerId)
     expect(lines).toContain('`default`');
@@ -49,7 +49,7 @@ describe('ThreadHeaderBuilder', () => {
   it('does not render Slack message links in thread header link context', () => {
     const payload = ThreadHeaderBuilder.build({
       title: 'Header',
-      theme: 'D',
+      theme: 'default',
       links: {
         issue: {
           url: 'https://workspace.slack.com/archives/C123/p1739000000001000',
