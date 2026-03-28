@@ -412,6 +412,36 @@ describe('CronScheduler — No Session New Thread', () => {
   });
 });
 
+// --- B2 RED test: start() should tick immediately ---
+describe('CronScheduler — Immediate tick on start', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-b2-${Date.now()}.json`);
+  });
+
+  it('B2-RED: start() fires tick immediately, not after 60s delay', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'immediate-test', expression: '* * * * *', prompt: 'Fire now',
+      owner: 'U123', channel: 'C456', threadTs: null,
+    });
+
+    const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
+    // No session — will create new thread, proving tick() ran
+
+    const scheduler = new CronScheduler(deps);
+    scheduler.start();
+
+    // Give it a small window (50ms) — if tick is immediate, it should fire
+    await new Promise(resolve => setTimeout(resolve, 50));
+    scheduler.stop();
+
+    // If start() calls tick() immediately, a new thread should have been created
+    expect(createdThreads.length + injectedMessages.length).toBeGreaterThan(0);
+  });
+});
+
 // --- Hardening tests (Codex review findings) ---
 
 describe('CronScheduler — Hardening', () => {
