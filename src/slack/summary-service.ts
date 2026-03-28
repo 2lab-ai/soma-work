@@ -30,18 +30,56 @@ export interface SummarySessionInfo {
 }
 
 /**
+ * Function type for executing a prompt against a forked session.
+ * Injected at construction time — production wiring provides the real implementation,
+ * tests provide a mock.
+ *
+ * @param prompt - The full summary prompt to execute
+ * @param model - Model to use (from session)
+ * @returns The LLM's response text, or null on failure
+ */
+export type ForkExecutor = (prompt: string, model?: string) => Promise<string | null>;
+
+/**
  * Handles executive summary generation and display.
  *
- * - execute(): forks a session, runs summary.prompt, collects response
+ * - execute(): builds prompt from session context, calls forkExecutor, returns response
  * - displayOnThread(): sets summaryBlocks on actionPanel for ThreadSurface rendering
  * - clearDisplay(): removes summaryBlocks, triggers re-render
  *
  * Trace: docs/turn-summary-lifecycle/trace.md, S3 + S5
  */
 export class SummaryService {
+  private forkExecutor: ForkExecutor;
+
   /**
-   * Execute summary.prompt via session fork and collect response.
-   * Returns the collected summary text, or null if execution fails.
+   * @param forkExecutor - Injected function that executes prompt via forked session.
+   *   If not provided, falls back to returning the prompt text (stub behavior for testing).
+   */
+  constructor(forkExecutor?: ForkExecutor) {
+    this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
+  }
+
+  /**
+   * Build the full summary prompt from session context + template.
+   */
+  buildPrompt(session: SummarySessionInfo): string {
+    const contextParts: string[] = [];
+    if (session.links?.issue) {
+      contextParts.push(`Active Issue: ${session.links.issue.url} (${session.links.issue.title || session.links.issue.label || 'untitled'})`);
+    }
+    if (session.links?.pr) {
+      contextParts.push(`Active PR: ${session.links.pr.url} (${session.links.pr.title || session.links.pr.label || 'untitled'})`);
+    }
+
+    return contextParts.length > 0
+      ? `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}`
+      : SUMMARY_PROMPT;
+  }
+
+  /**
+   * Execute summary.prompt via forked session and collect response.
+   * Returns the LLM's response text, or null if execution fails.
    *
    * Trace: S3, Section 3b
    */
@@ -57,25 +95,19 @@ export class SummaryService {
       hasPR: !!session.links?.pr,
     });
 
-    // Build context from session links
-    const contextParts: string[] = [];
-    if (session.links?.issue) {
-      contextParts.push(`Active Issue: ${session.links.issue.url} (${session.links.issue.title || session.links.issue.label || 'untitled'})`);
+    const fullPrompt = this.buildPrompt(session);
+
+    try {
+      const response = await this.forkExecutor(fullPrompt, session.model);
+      logger.info('Summary fork completed', {
+        hasResponse: !!response,
+        responseLength: response?.length ?? 0,
+      });
+      return response;
+    } catch (err: any) {
+      logger.error('Summary fork failed', { error: err?.message || String(err) });
+      return null;
     }
-    if (session.links?.pr) {
-      contextParts.push(`Active PR: ${session.links.pr.url} (${session.links.pr.title || session.links.pr.label || 'untitled'})`);
-    }
-
-    const fullPrompt = contextParts.length > 0
-      ? `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}`
-      : SUMMARY_PROMPT;
-
-    // In production, this would fork a session via ClaudeHandler and stream the response.
-    // For now, return the constructed prompt as the "result" — actual fork integration
-    // will be wired when SummaryService is registered in SlackHandler.
-    logger.info('Summary prompt constructed', { promptLength: fullPrompt.length });
-
-    return fullPrompt;
   }
 
   /**
@@ -102,7 +134,7 @@ export class SummaryService {
    */
   clearDisplay(session: SummarySessionInfo): void {
     if (!session.actionPanel) return;
-    if (!session.actionPanel.summaryBlocks) return; // no-op if nothing displayed
+    if (!session.actionPanel.summaryBlocks) return;
 
     session.actionPanel.summaryBlocks = undefined;
     logger.info('Summary cleared from thread');
