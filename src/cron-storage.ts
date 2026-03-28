@@ -47,11 +47,12 @@ export function matchesCronExpression(expression: string, date: Date): boolean {
   const fields = expression.trim().split(/\s+/);
   if (fields.length !== 5) return false;
 
-  const minute = date.getMinutes();
-  const hour = date.getHours();
-  const dom = date.getDate();
-  const month = date.getMonth() + 1; // 1-based
-  const dow = date.getDay(); // 0=Sunday
+  // Use UTC methods — cron expressions are evaluated in UTC
+  const minute = date.getUTCMinutes();
+  const hour = date.getUTCHours();
+  const dom = date.getUTCDate();
+  const month = date.getUTCMonth() + 1; // 1-based
+  const dow = date.getUTCDay(); // 0=Sunday
 
   return (
     matchField(fields[0], minute, 0, 59) &&
