@@ -675,6 +675,58 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('…');
   });
 
+  // Issue #122 followup: Bearer token leak fix
+  it('masks full Authorization Bearer header including token value', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('auth error');
+    (error as any).stderrContent = 'Authorization: Bearer sk-proj-abc123def456';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('sk-proj-abc123def456');
+    expect(payload.text).not.toContain('Bearer');
+  });
+
+  it('masks GitHub fine-grained PATs (github_pat_*)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('git error');
+    (error as any).stderrContent = 'Using github_pat_22A4BCDEF_abcdefghijklmn for auth';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('github_pat_');
+  });
+
+  it('strips ANSI escape codes from stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('error');
+    (error as any).stderrContent = '\x1B[31mError:\x1B[0m something failed\x1B]0;title\x07';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Error:');
+    expect(payload.text).toContain('something failed');
+    expect(payload.text).not.toContain('\x1B');
+    expect(payload.text).not.toContain('\x07');
+  });
+
   // Issue #118: S1 — "No conversation found" SDK error must be detected
   it('clears session for "No conversation found with session ID" SDK error', async () => {
     const deps = createExecutorDeps();
