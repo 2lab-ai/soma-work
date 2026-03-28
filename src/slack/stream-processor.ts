@@ -202,6 +202,12 @@ export interface StreamResult {
   hasUserChoice?: boolean;
   /** EndTurn 정보 — stop_reason 기반 (Issue #42 S3) */
   endTurnInfo?: EndTurnInfo;
+  /** SDK result error details (Issue #122) — subtype + errors[] from SDKResultError */
+  sdkResultError?: {
+    subtype: string;
+    errors: string[];
+    numTurns?: number;
+  };
 }
 
 export type { EndTurnInfo };
@@ -232,6 +238,8 @@ export class StreamProcessor {
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
   private _lastToolName: string | undefined;
+  /** SDK result error details from SDKResultError (Issue #122) */
+  private _sdkResultError: StreamResult['sdkResultError'] | undefined;
 
   constructor(callbacks: StreamCallbacks = {}) {
     this.callbacks = callbacks;
@@ -304,6 +312,7 @@ export class StreamProcessor {
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
+        sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -988,6 +997,12 @@ export class StreamProcessor {
       if (errors.length > 0) {
         this.logger.error('SDK result error details', { errors: errors.join(' | ') });
       }
+      // Store for StreamResult so stream-executor can surface to user
+      this._sdkResultError = {
+        subtype: message.subtype || 'error_during_execution',
+        errors,
+        numTurns: message.num_turns,
+      };
     }
 
     return usage;
