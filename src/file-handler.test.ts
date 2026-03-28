@@ -89,3 +89,112 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
     expect(result).toContain('doc.pdf');
   });
 });
+
+// ── Scenario 1 — Media file support (Trace: docs/media-file-support/trace.md) ──
+
+describe('FileHandler.formatFilePrompt — video/audio media support', () => {
+  const handler = new FileHandler();
+
+  function makeVideoFile(name = 'clip.mp4'): ProcessedFile {
+    return {
+      path: '/tmp/slack-file-12345-clip.mp4',
+      name,
+      mimetype: 'video/mp4',
+      isImage: false,
+      isText: false,
+      isVideo: true,
+      isAudio: false,
+      size: 5000000,
+      tempPath: '/tmp/slack-file-12345-clip.mp4',
+    };
+  }
+
+  function makeAudioFile(name = 'voice.mp3'): ProcessedFile {
+    return {
+      path: '/tmp/slack-file-12345-voice.mp3',
+      name,
+      mimetype: 'audio/mpeg',
+      isImage: false,
+      isText: false,
+      isVideo: false,
+      isAudio: true,
+      size: 1200000,
+      tempPath: '/tmp/slack-file-12345-voice.mp3',
+    };
+  }
+
+  // Trace: Scenario 1, Section 3c — formatFilePrompt omits path for video
+  it('does NOT include Path for video files', async () => {
+    const result = await handler.formatFilePrompt([makeVideoFile()], '');
+
+    expect(result).not.toContain('/tmp/slack-file-12345-clip.mp4');
+    expect(result).not.toMatch(/Path:/i);
+    expect(result).toContain('clip.mp4');
+    expect(result).toContain('video/mp4');
+    expect(result).toContain('5000000');
+  });
+
+  // Trace: Scenario 1, Section 3c — formatFilePrompt omits path for audio
+  it('does NOT include Path for audio files', async () => {
+    const result = await handler.formatFilePrompt([makeAudioFile()], '');
+
+    expect(result).not.toContain('/tmp/slack-file-12345-voice.mp3');
+    expect(result).not.toMatch(/Path:/i);
+    expect(result).toContain('voice.mp3');
+    expect(result).toContain('audio/mpeg');
+  });
+
+  // Trace: Scenario 1, Section 3c — ProcessedFile.isVideo → "Media:" header
+  it('includes Media header for video files', async () => {
+    const result = await handler.formatFilePrompt([makeVideoFile()], '');
+
+    expect(result).toContain('## Media:');
+    expect(result).not.toContain('Read tool');
+  });
+
+  // Trace: Scenario 1, Section 3c — ProcessedFile.isAudio → "Media:" header
+  it('includes Media header for audio files', async () => {
+    const result = await handler.formatFilePrompt([makeAudioFile()], '');
+
+    expect(result).toContain('## Media:');
+  });
+
+  // Trace: Scenario 1, Section 3c — regression: image still works
+  it('still suppresses path for image files (regression)', async () => {
+    const imageFile: ProcessedFile = {
+      path: '/tmp/slack-file-12345-screenshot.png',
+      name: 'screenshot.png',
+      mimetype: 'image/png',
+      isImage: true,
+      isText: false,
+      isVideo: false,
+      isAudio: false,
+      size: 54321,
+      tempPath: '/tmp/slack-file-12345-screenshot.png',
+    };
+    const result = await handler.formatFilePrompt([imageFile], '');
+
+    expect(result).not.toContain('/tmp/slack-file-12345-screenshot.png');
+    expect(result).toContain('screenshot.png');
+  });
+
+  // Trace: Scenario 1, Section 3b — isVideoFile identifies video mimetypes
+  it('isVideoFile returns true for video mimetypes', () => {
+    const fh = handler as any;
+    expect(fh.isVideoFile('video/mp4')).toBe(true);
+    expect(fh.isVideoFile('video/quicktime')).toBe(true);
+    expect(fh.isVideoFile('video/webm')).toBe(true);
+    expect(fh.isVideoFile('audio/mpeg')).toBe(false);
+    expect(fh.isVideoFile('image/png')).toBe(false);
+  });
+
+  // Trace: Scenario 1, Section 3b — isAudioFile identifies audio mimetypes
+  it('isAudioFile returns true for audio mimetypes', () => {
+    const fh = handler as any;
+    expect(fh.isAudioFile('audio/mpeg')).toBe(true);
+    expect(fh.isAudioFile('audio/wav')).toBe(true);
+    expect(fh.isAudioFile('audio/ogg')).toBe(true);
+    expect(fh.isAudioFile('video/mp4')).toBe(false);
+    expect(fh.isAudioFile('text/plain')).toBe(false);
+  });
+});

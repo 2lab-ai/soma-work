@@ -257,8 +257,88 @@ describe('download_thread_file image blocking', () => {
   });
 });
 
+// ── Scenario 2 — download_thread_file media blocking (Trace: docs/media-file-support/trace.md) ──
+
+describe('download_thread_file media blocking (video/audio)', () => {
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+
+  function isMediaFile(filename: string): boolean {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  }
+
+  // Trace: Scenario 2, Section 3a — isMediaFile for video
+  it('isMediaFile returns true for video extensions', () => {
+    expect(isMediaFile('video.mp4')).toBe(true);
+    expect(isMediaFile('movie.mov')).toBe(true);
+    expect(isMediaFile('clip.webm')).toBe(true);
+    expect(isMediaFile('film.avi')).toBe(true);
+    expect(isMediaFile('reel.mkv')).toBe(true);
+  });
+
+  // Trace: Scenario 2, Section 3a — isMediaFile for audio
+  it('isMediaFile returns true for audio extensions', () => {
+    expect(isMediaFile('song.mp3')).toBe(true);
+    expect(isMediaFile('recording.wav')).toBe(true);
+    expect(isMediaFile('podcast.ogg')).toBe(true);
+    expect(isMediaFile('track.flac')).toBe(true);
+    expect(isMediaFile('voice.m4a')).toBe(true);
+  });
+
+  // Trace: Scenario 2, Section 3a — isMediaFile regression for images
+  it('isMediaFile returns true for image extensions (regression)', () => {
+    expect(isMediaFile('photo.jpg')).toBe(true);
+    expect(isMediaFile('icon.png')).toBe(true);
+    expect(isMediaFile('logo.svg')).toBe(true);
+  });
+
+  // Trace: Scenario 2, Section 5 — non-media allowed
+  it('isMediaFile returns false for text/code extensions', () => {
+    expect(isMediaFile('script.ts')).toBe(false);
+    expect(isMediaFile('data.json')).toBe(false);
+    expect(isMediaFile('readme.md')).toBe(false);
+    expect(isMediaFile('document.pdf')).toBe(false);
+    expect(isMediaFile('archive.zip')).toBe(false);
+  });
+
+  // Trace: Scenario 2, Section 3b — blocked response for video
+  it('download_thread_file blocks video files with blocked response', () => {
+    const fileName = 'recording.mp4';
+    expect(isMediaFile(fileName)).toBe(true);
+    const response = {
+      blocked: true,
+      name: fileName,
+      reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+    };
+    expect(response.blocked).toBe(true);
+    expect(response.reason).toContain('Media files');
+  });
+
+  // Trace: Scenario 2, Section 3b — blocked response for audio
+  it('download_thread_file blocks audio files with blocked response', () => {
+    const fileName = 'voice-memo.mp3';
+    expect(isMediaFile(fileName)).toBe(true);
+    const response = {
+      blocked: true,
+      name: fileName,
+      reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+    };
+    expect(response.blocked).toBe(true);
+  });
+
+  // Trace: Scenario 2, Section 5 — text files still allowed
+  it('download_thread_file still allows text files', () => {
+    expect(isMediaFile('code.ts')).toBe(false);
+    expect(isMediaFile('data.csv')).toBe(false);
+  });
+});
+
 describe('thread message formatting', () => {
   const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
   function isImageFile(mimetype?: string, filename?: string): boolean {
     if (mimetype && mimetype.startsWith('image/')) return true;
@@ -267,6 +347,11 @@ describe('thread message formatting', () => {
       if (IMAGE_EXTENSIONS.has(ext)) return true;
     }
     return false;
+  }
+
+  function isMediaFile(filename: string): boolean {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
   }
 
   function formatMessage(m: any) {
@@ -285,16 +370,21 @@ describe('thread message formatting', () => {
         : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
+        const fileIsMedia = fileIsImage || isMediaFile(f.name || '');
         return {
           id: f.id,
           name: f.name,
           mimetype: f.mimetype,
           size: f.size,
-          ...(!fileIsImage && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+          ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
           ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
           ...(fileIsImage ? {
             is_image: true,
             image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          } : {}),
+          ...(!fileIsImage && fileIsMedia ? {
+            is_media: true,
+            media_note: 'Media file — do NOT download or Read. Reference by name only.',
           } : {}),
         };
       }),
@@ -417,6 +507,121 @@ describe('thread message formatting', () => {
     });
 
     expect(msg.user_name).toBe('U123');
+  });
+
+  // ── Scenario 3 — Thread message listing media metadata (Trace: docs/media-file-support/trace.md) ──
+
+  // Trace: Scenario 3, Section 3a — video file excludes download URL
+  it('excludes download URL for video files', () => {
+    const msg = formatMessage({
+      ts: '1700000010.000000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F010',
+          name: 'demo.mp4',
+          mimetype: 'video/mp4',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F010/demo.mp4',
+          size: 5000000,
+        },
+      ],
+    });
+
+    expect(msg.files).toHaveLength(1);
+    expect(msg.files[0].name).toBe('demo.mp4');
+    expect(msg.files[0].url_private_download).toBeUndefined();
+    expect(msg.files[0].is_media).toBe(true);
+    expect(msg.files[0].media_note).toContain('do NOT download or Read');
+  });
+
+  // Trace: Scenario 3, Section 3a — audio file excludes download URL
+  it('excludes download URL for audio files', () => {
+    const msg = formatMessage({
+      ts: '1700000011.000000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F011',
+          name: 'recording.mp3',
+          mimetype: 'audio/mpeg',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F011/recording.mp3',
+          size: 1200000,
+        },
+      ],
+    });
+
+    expect(msg.files).toHaveLength(1);
+    expect(msg.files[0].name).toBe('recording.mp3');
+    expect(msg.files[0].url_private_download).toBeUndefined();
+    expect(msg.files[0].is_media).toBe(true);
+    expect(msg.files[0].media_note).toContain('do NOT download or Read');
+  });
+
+  // Trace: Scenario 3, Section 3b — media_note content for video
+  it('adds media_note for video files', () => {
+    const msg = formatMessage({
+      ts: '1700000012.000000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F012',
+          name: 'screen-recording.mov',
+          mimetype: 'video/quicktime',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F012/screen-recording.mov',
+          size: 8000000,
+        },
+      ],
+    });
+
+    const file = msg.files[0];
+    expect(file.is_media).toBe(true);
+    expect(file.media_note).toBeDefined();
+  });
+
+  // Trace: Scenario 3, Section 5 — text files still have download URL
+  it('still includes download URL for text files', () => {
+    const msg = formatMessage({
+      ts: '1700000013.000000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F013',
+          name: 'code.ts',
+          mimetype: 'text/typescript',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F013/code.ts',
+          size: 500,
+        },
+      ],
+    });
+
+    expect(msg.files[0].url_private_download).toBe('https://files.slack.com/files-pri/T123-F013/code.ts');
+    expect(msg.files[0].is_media).toBeUndefined();
+  });
+
+  // Trace: Scenario 3, Section 3a — regression: images still work
+  it('still excludes download URL for image files (regression)', () => {
+    const msg = formatMessage({
+      ts: '1700000014.000000',
+      user: 'U123',
+      text: '',
+      files: [
+        {
+          id: 'F014',
+          name: 'photo.jpg',
+          mimetype: 'image/jpeg',
+          url_private_download: 'https://files.slack.com/files-pri/T123-F014/photo.jpg',
+          size: 30000,
+        },
+      ],
+    });
+
+    expect(msg.files[0].url_private_download).toBeUndefined();
+    // Image should still have is_image (backward compat)
+    expect(msg.files[0].is_image).toBe(true);
   });
 });
 

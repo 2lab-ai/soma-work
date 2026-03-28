@@ -11,6 +11,8 @@ export interface ProcessedFile {
   mimetype: string;
   isImage: boolean;
   isText: boolean;
+  isVideo: boolean;
+  isAudio: boolean;
   size: number;
   tempPath?: string;
 }
@@ -101,6 +103,8 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: this.isImageFile(file.mimetype),
         isText: this.isTextFile(file.mimetype),
+        isVideo: this.isVideoFile(file.mimetype),
+        isAudio: this.isAudioFile(file.mimetype),
         size: buffer.length,
         tempPath,
       };
@@ -177,6 +181,14 @@ export class FileHandler {
     return mimetype.startsWith('image/');
   }
 
+  private isVideoFile(mimetype: string): boolean {
+    return mimetype.startsWith('video/');
+  }
+
+  private isAudioFile(mimetype: string): boolean {
+    return mimetype.startsWith('audio/');
+  }
+
   private isTextFile(mimetype: string): boolean {
     const textTypes = [
       'text/',
@@ -206,6 +218,13 @@ export class FileHandler {
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;
           prompt += `Note: This is an image file. The image path is intentionally withheld to prevent API errors. Acknowledge the image by name and ask the user to describe its contents if analysis is needed.\n`;
+        } else if (file.isVideo || file.isAudio) {
+          // Same structural prevention as images: omit path to prevent AI from attempting Read on binary media.
+          const mediaCategory = file.isVideo ? 'video' : 'audio';
+          prompt += `\n## Media: ${file.name}\n`;
+          prompt += `File type: ${file.mimetype}\n`;
+          prompt += `Size: ${file.size} bytes\n`;
+          prompt += `Note: This is a ${mediaCategory} file. The file path is intentionally withheld. Acknowledge the file by name and metadata.\n`;
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;

@@ -103,6 +103,12 @@ function isImageFile(mimetype?: string, filename?: string): boolean {
   return false;
 }
 
+/** Check if a filename indicates a media file (image, video, or audio). */
+function isMediaFile(filename: string): boolean {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+}
+
 /** Classify a file extension into media category. */
 function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
   if (IMAGE_EXTENSIONS.has(ext)) return 'image';
@@ -296,7 +302,7 @@ class SlackMcpServer {
         {
           name: 'download_thread_file',
           description:
-            'Download a non-image file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, etc. WARNING: Do NOT use this for image files (jpg, png, gif, webp, svg) — the API cannot process images and will return a 400 error. For images, just reference their name and metadata from get_thread_messages.',
+            'Download a non-media file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, etc. WARNING: Do NOT use this for media files (images, videos, audio) — they cannot be read by the Read tool. For media files, just reference their name and metadata from get_thread_messages.',
           inputSchema: {
             type: 'object' as const,
             properties: {
@@ -670,16 +676,21 @@ class SlackMcpServer {
         : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
+        const fileIsMedia = fileIsImage || isMediaFile(f.name || '');
         return {
           id: f.id,
           name: f.name,
           mimetype: f.mimetype,
           size: f.size,
-          ...(!fileIsImage && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+          ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
           ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
           ...(fileIsImage ? {
             is_image: true,
             image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          } : {}),
+          ...(!fileIsImage && fileIsMedia ? {
+            is_media: true,
+            media_note: 'Media file — do NOT download or Read. Reference by name only.',
           } : {}),
         };
       }),
@@ -704,16 +715,16 @@ class SlackMcpServer {
       throw new Error('file_name is required');
     }
 
-    // Block image file downloads — Reading images causes API 400 "Could not process image"
-    if (isImageFile(undefined, file_name)) {
-      logger.warn('Blocked image file download to prevent API error', { name: file_name });
+    // Block media file downloads — Reading binary media (image/video/audio) causes errors
+    if (isMediaFile(file_name)) {
+      logger.warn('Blocked media file download to prevent API error', { name: file_name });
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             blocked: true,
             name: file_name,
-            reason: 'Image files cannot be downloaded and read — the API will reject them with "Could not process image". Reference the image by name and ask the user to describe its contents if needed.',
+            reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
           }),
         }],
       };
