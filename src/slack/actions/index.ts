@@ -54,6 +54,7 @@ export class ActionHandlers {
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
         threadPanel: ctx.threadPanel,
+        completionMessageTracker: ctx.completionMessageTracker,
       },
       this.formStore
     );
