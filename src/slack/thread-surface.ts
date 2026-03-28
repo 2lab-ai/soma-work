@@ -556,6 +556,12 @@ export class ThreadSurface {
     // ActionPanelBuilder.build() returns full blocks — use them after header
     blocks.push(...panelPayload.blocks);
 
+    // Append executive summary blocks if present
+    // Trace: docs/turn-summary-lifecycle/trace.md, S3
+    if (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)) {
+      blocks.push(...session.actionPanel.summaryBlocks);
+    }
+
     return blocks;
   }
 
