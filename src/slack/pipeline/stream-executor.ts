@@ -541,6 +541,19 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
         },
+        onStatusUpdate: async (status: string) => {
+          if (status === 'working') {
+            if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+              await this.deps.reactionManager.updateReaction(
+                sessionKey,
+                this.deps.statusReporter.getStatusEmoji('working')
+              );
+            }
+            if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+              await this.deps.assistantStatusManager.setStatus(channel, threadTs, '컨텍스트 압축 중...');
+            }
+          }
+        },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
 
@@ -595,9 +608,12 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         turnCollector.setContinuation(toolContinuation);
       }
 
+      // Issue #122 followup: treat SDK result errors as failures
+      const hasSdkError = !!streamResult.sdkResultError;
+
       // Update reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
-      const finalStatus = hasPendingChoice ? 'waiting' : 'completed';
+      const finalStatus = hasSdkError ? 'error' : (hasPendingChoice ? 'waiting' : 'completed');
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
           sessionKey,
@@ -628,8 +644,34 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
       }
 
-      // Reset error retry count on success
-      session.errorRetryCount = 0;
+      // Issue #122: Surface SDK result errors to user (errors[] from SDKResultError)
+      if (streamResult.sdkResultError) {
+        const { subtype, errors, numTurns } = streamResult.sdkResultError;
+        const escMrkdwn = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const errorLines = [
+          `⚠️ *[SDK Result Error]* ${escMrkdwn(subtype)}`,
+          `> *Turns:* ${numTurns ?? 'unknown'}`,
+        ];
+        if (errors.length > 0) {
+          const capped = errors.slice(0, 5).map(e => {
+            const escaped = escMrkdwn(e);
+            return escaped.length > 200 ? `${escaped.slice(0, 197)}...` : escaped;
+          });
+          errorLines.push(...capped.map(e => `> • ${e}`));
+          if (errors.length > 5) {
+            errorLines.push(`> _...and ${errors.length - 5} more errors_`);
+          }
+        } else {
+          errorLines.push(`> _No error details provided by SDK_`);
+        }
+        await say({ text: errorLines.join('\n'), thread_ts: threadTs });
+      }
+
+      // Reset error retry count and error context on success (skip if SDK reported an error)
+      if (!hasSdkError) {
+        session.errorRetryCount = 0;
+        session.lastErrorContext = undefined;
+      }
 
       this.logger.info('Completed processing message', {
         sessionKey,
@@ -642,7 +684,7 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       if (this.deps.turnNotifier) {
         const category = determineTurnCategory({
           hasPendingChoice,
-          isError: false,
+          isError: hasSdkError,
         });
         const durationMs = Date.now() - requestStartedAt.getTime();
 
@@ -833,6 +875,37 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
             errorType: error.name || 'unknown',
           });
         }
+      } else if (this.isFileAccessBlockedError(error)) {
+        // File access blocked: preserve session and inject error context so the
+        // model can adapt its approach on retry instead of repeating the same action.
+        const blockedPath = this.extractBlockedPath(error);
+        const errorContext = blockedPath
+          ? `파일 접근이 차단되었습니다: ${blockedPath}. 해당 파일에 접근하지 말고 다른 방법으로 계속 진행하세요.`
+          : `파일 접근이 차단되었습니다. 접근이 차단된 파일은 시도하지 말고 다른 방법으로 계속 진행하세요.`;
+
+        session.lastErrorContext = errorContext;
+
+        this.logger.warn('File access blocked - session preserved with error context for intelligent retry', {
+          sessionKey,
+          blockedPath,
+          errorMessage: error.message,
+        });
+
+        // Use shorter retry delay — this isn't a rate limit, just a sandbox restriction
+        const retryCount = session.errorRetryCount ?? 0;
+        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.errorRetryCount = retryCount + 1;
+          retryAfterMs = StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS;
+          this.logger.info('Scheduling file-access-blocked retry with error context', {
+            sessionKey,
+            attempt: retryCount + 1,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('File access retry budget exhausted', { sessionKey, retryCount });
+          session.errorRetryCount = 0;
+          session.lastErrorContext = undefined;
+        }
       } else {
         this.logger.warn('Recoverable error - session preserved', {
           sessionKey,
@@ -951,6 +1024,10 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     // More specific patterns must take precedence over broad ones.
     if (this.isInvalidResumeSessionError(error)) {
       return true;
+    }
+
+    if (this.isFileAccessBlockedError(error)) {
+      return false;
     }
 
     if (this.isRecoverableClaudeSdkError(error)) {
@@ -1088,6 +1165,40 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     return invalidSessionPatterns.some(pattern => combined.includes(pattern));
   }
 
+  /**
+   * Detect provider sandbox errors where file access is blocked by the SDK.
+   * These are NOT fatal — the model can adapt by trying alternative approaches.
+   * Instead of crashing, we preserve the session and inject error context so the
+   * model knows which file/resource is inaccessible.
+   */
+  private isFileAccessBlockedError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
+
+    return (
+      combined.includes('file access blocked') ||
+      (combined.includes('permission denied') && combined.includes('normalizedprovidererror'))
+    );
+  }
+
+  /**
+   * Extract the blocked resource path from a file access error message.
+   * e.g., "File access blocked: /home/user/file.png" → "/home/user/file.png"
+   */
+  private extractBlockedPath(error: any): string | undefined {
+    const message = String(error?.message || '');
+    const stderr = String(error?.stderrContent || '');
+    const combined = `${message}\n${stderr}`;
+
+    // Match patterns like "File access blocked: /path/to/file"
+    const match = combined.match(/file access blocked:\s*(.+?)(?:\n|$)/i);
+    return match?.[1]?.trim();
+  }
+
+  /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
+  private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
+
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
@@ -1171,8 +1282,36 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       } else {
         lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
       }
+    } else if (this.isFileAccessBlockedError(error)) {
+      const blockedPath = this.extractBlockedPath(error);
+      lines.push(`> *Session:* ✅ 유지됨 - 다른 방법으로 자동 재시도합니다.`);
+      lines.push(`> *원인:* 파일 접근이 SDK 샌드박스에 의해 차단되었습니다.`);
+      if (blockedPath) {
+        lines.push(`> *차단된 경로:* \`${blockedPath}\``);
+      }
+      lines.push(`> _모델에게 에러를 전달하여 대안 경로로 계속 진행합니다._`);
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+    }
+
+    // Issue #122: Append SDK stderr details so users can see the actual error cause
+    if (error.stderrContent) {
+      const raw = String(error.stderrContent);
+      // Sanitize: strip ANSI escape codes (CSI + OSC + charset) and mask credentials
+      const sanitized = raw
+        .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '')  // strip ANSI
+        .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]')  // auth headers ("Bearer <token>")
+        .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
+        .replace(/\bsk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]')      // Anthropic API keys
+        .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]')   // Slack tokens
+        .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]')        // GitHub PATs
+        .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]');   // GitHub fine-grained PATs
+      // Take last 500 chars to keep message manageable
+      const truncated = sanitized.length > 500
+        ? `…${sanitized.slice(-500)}`
+        : sanitized;
+      lines.push(`> *SDK Details:*`);
+      lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
     }
 
     // Append token rotation info if rate limit triggered rotation
@@ -1185,7 +1324,10 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
 
     // Append auto-retry info
     if (retryAttempt !== undefined && retryAttempt > 0) {
-      const delaySec = StreamExecutor.ERROR_RETRY_DELAY_MS / 1000;
+      const delayMs = this.isFileAccessBlockedError(error)
+        ? StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS
+        : StreamExecutor.ERROR_RETRY_DELAY_MS;
+      const delaySec = delayMs / 1000;
       lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }
 
@@ -1647,7 +1789,9 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
     question: UserChoice,
     context: StreamContext
   ): Promise<void> {
-    const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey);
+    const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
+    const theme = session ? userSettingsStore.getUserSessionTheme(session.ownerId) : undefined;
+    const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme);
     try {
       const result = await context.say({
         text: question.question,

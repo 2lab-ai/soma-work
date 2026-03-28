@@ -81,7 +81,19 @@ export class EventRouter {
         user: event.user,
         thread_ts: event.thread_ts,
         text: event.text?.substring(0, 50),
+        hasFiles: !!((event as any).files?.length),
       });
+
+      // Dedup guard: if message has files, the file_share handler is authoritative.
+      // app_mention does not reliably carry the files field, so let file_share handle it.
+      // (Issue #127: file attachments ignored on session initiation)
+      if ((event as any).files?.length > 0) {
+        this.logger.debug('Skipping app_mention with files (handled by file_share handler)', {
+          channel: event.channel,
+          fileCount: (event as any).files.length,
+        });
+        return;
+      }
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session
@@ -342,8 +354,27 @@ export class EventRouter {
       return;
     }
 
-    // No session - add no_entry emoji to indicate file was seen but not processed
-    this.logger.debug('Ignoring file upload - not in DM and no existing session', {
+    // Issue #127: First mention + file attachment — no session exists yet.
+    // app_mention does not reliably include files, so file_share is the authoritative path.
+    // If the message contains a bot mention, treat it as session initiation with files.
+    const text: string = messageEvent.text || '';
+    const botId = await this.deps.slackApi.getBotUserId();
+    if (botId && text.includes(`<@${botId}>`)) {
+      this.logger.info('Handling file upload with bot mention as new session initiation', {
+        channel,
+        user: messageEvent.user,
+        fileCount: messageEvent.files?.length,
+      });
+      // Clone event to avoid mutating the original Slack event object.
+      // Strip only bot mention (preserve other user mentions in the prompt).
+      const clonedEvent = { ...messageEvent };
+      clonedEvent.text = text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim();
+      await this.messageHandler(clonedEvent as MessageEvent, say);
+      return;
+    }
+
+    // No session and no mention - file not relevant to bot
+    this.logger.debug('Ignoring file upload - not in DM, no session, no mention', {
       channel,
       threadTs,
       isDM,

@@ -11,6 +11,8 @@ export interface ProcessedFile {
   mimetype: string;
   isImage: boolean;
   isText: boolean;
+  isVideo: boolean;
+  isAudio: boolean;
   size: number;
   tempPath?: string;
 }
@@ -36,6 +38,22 @@ export class FileHandler {
   }
 
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
+    // Media files (video/audio) only need metadata — skip download entirely.
+    // This ensures large media files are still acknowledged instead of silently dropped.
+    if (this.isVideoFile(file.mimetype, file.name) || this.isAudioFile(file.mimetype, file.name)) {
+      this.logger.info('Media file detected, skipping download (metadata only)', { name: file.name, mimetype: file.mimetype });
+      return {
+        path: '',
+        name: file.name,
+        mimetype: file.mimetype,
+        isImage: false,
+        isText: false,
+        isVideo: this.isVideoFile(file.mimetype, file.name),
+        isAudio: this.isAudioFile(file.mimetype, file.name),
+        size: file.size || 0,
+      };
+    }
+
     // Check file size limit (50MB)
     if (file.size > 50 * 1024 * 1024) {
       this.logger.warn('File too large, skipping', { name: file.name, size: file.size });
@@ -101,6 +119,8 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: this.isImageFile(file.mimetype),
         isText: this.isTextFile(file.mimetype),
+        isVideo: this.isVideoFile(file.mimetype, file.name),
+        isAudio: this.isAudioFile(file.mimetype, file.name),
         size: buffer.length,
         tempPath,
       };
@@ -177,6 +197,27 @@ export class FileHandler {
     return mimetype.startsWith('image/');
   }
 
+  private static VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  private static AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+
+  private isVideoFile(mimetype: string, filename?: string): boolean {
+    if (mimetype.startsWith('video/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (FileHandler.VIDEO_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
+  private isAudioFile(mimetype: string, filename?: string): boolean {
+    if (mimetype.startsWith('audio/')) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      if (FileHandler.AUDIO_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+
   private isTextFile(mimetype: string): boolean {
     const textTypes = [
       'text/',
@@ -206,6 +247,13 @@ export class FileHandler {
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;
           prompt += `Note: This is an image file. The image path is intentionally withheld to prevent API errors. Acknowledge the image by name and ask the user to describe its contents if analysis is needed.\n`;
+        } else if (file.isVideo || file.isAudio) {
+          // Same structural prevention as images: omit path to prevent AI from attempting Read on binary media.
+          const mediaCategory = file.isVideo ? 'video' : 'audio';
+          prompt += `\n## Media: ${file.name}\n`;
+          prompt += `File type: ${file.mimetype}\n`;
+          prompt += `Size: ${file.size} bytes\n`;
+          prompt += `Note: This is a ${mediaCategory} file. The file path is intentionally withheld. Acknowledge the file by name and metadata.\n`;
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;

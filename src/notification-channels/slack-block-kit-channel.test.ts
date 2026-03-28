@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../user-settings-store', () => ({
+  userSettingsStore: {
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
+  },
+}));
+
 import { SlackBlockKitChannel } from './slack-block-kit-channel';
 import { TurnCompletionEvent } from '../turn-notifier';
 

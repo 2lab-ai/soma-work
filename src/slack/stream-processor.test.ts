@@ -467,4 +467,219 @@ describe('StreamProcessor', () => {
       ).rejects.toThrow('Some other error');
     });
   });
+
+  // Issue #122: System message handling + SDK result error
+  describe('system message handling (Issue #122)', () => {
+    it('should handle compact_boundary system message without throwing', async () => {
+      const messages = [
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+          compact_metadata: {
+            trigger: 'auto',
+            pre_tokens: 150000,
+          },
+        },
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'After compact' }],
+          },
+        },
+      ];
+
+      const onStatusUpdate = vi.fn().mockResolvedValue(undefined);
+      const processor = new StreamProcessor({ onStatusUpdate });
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.messageCount).toBe(1);
+      expect(onStatusUpdate).toHaveBeenCalledWith('working');
+    });
+
+    it('should handle status compacting system message', async () => {
+      const messages = [
+        {
+          type: 'system',
+          subtype: 'status',
+          status: 'compacting',
+        },
+      ];
+
+      const onStatusUpdate = vi.fn().mockResolvedValue(undefined);
+      const processor = new StreamProcessor({ onStatusUpdate });
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.success).toBe(true);
+      expect(onStatusUpdate).toHaveBeenCalledWith('working');
+    });
+
+    it('should handle init system message without error', async () => {
+      const messages = [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'test-session',
+          model: 'claude-opus-4-6',
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should handle unknown system subtypes gracefully', async () => {
+      const messages = [
+        {
+          type: 'system',
+          subtype: 'some_future_subtype',
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('SDK result error handling (Issue #122)', () => {
+    it('should capture error_during_execution in sdkResultError', async () => {
+      const messages = [
+        {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          num_turns: 5,
+          errors: ['context window exceeded', 'prompt too long'],
+          duration_ms: 10000,
+          total_cost_usd: 0.5,
+          stop_reason: null,
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.sdkResultError).toBeDefined();
+      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
+      expect(result.sdkResultError!.errors).toEqual(['context window exceeded', 'prompt too long']);
+      expect(result.sdkResultError!.numTurns).toBe(5);
+    });
+
+    it('should capture error_max_turns in sdkResultError', async () => {
+      const messages = [
+        {
+          type: 'result',
+          subtype: 'error_max_turns',
+          is_error: true,
+          num_turns: 25,
+          errors: ['exceeded maximum turns'],
+          duration_ms: 60000,
+          total_cost_usd: 2.0,
+          stop_reason: null,
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.sdkResultError).toBeDefined();
+      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
+    });
+
+    it('should not set sdkResultError on success result', async () => {
+      const messages = [
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'Done',
+          duration_ms: 1000,
+          total_cost_usd: 0.01,
+          stop_reason: 'end_turn',
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      const result = await processor.process(
+        createMockStream(messages) as any,
+        mockContext,
+        abortController.signal
+      );
+
+      expect(result.sdkResultError).toBeUndefined();
+    });
+
+    it('should capture error with empty errors[] and fallback subtype', async () => {
+      const messages = [
+        { type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 25,
+          errors: [], duration_ms: 60000, total_cost_usd: 2.0, stop_reason: null },
+      ];
+      const processor = new StreamProcessor();
+      const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+      expect(result.sdkResultError).toBeDefined();
+      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
+      expect(result.sdkResultError!.errors).toEqual([]);
+    });
+
+    it('should capture error_ prefix subtype even when is_error is false', async () => {
+      const messages = [
+        { type: 'result', subtype: 'error_max_budget_usd', is_error: false, num_turns: 10,
+          errors: ['budget exceeded'], duration_ms: 30000, total_cost_usd: 5.0, stop_reason: null },
+      ];
+      const processor = new StreamProcessor();
+      const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+      expect(result.sdkResultError).toBeDefined();
+      expect(result.sdkResultError!.subtype).toBe('error_max_budget_usd');
+    });
+
+    it('should default subtype to error_during_execution when subtype is missing', async () => {
+      const messages = [
+        { type: 'result', is_error: true, num_turns: 1, errors: ['unknown failure'],
+          duration_ms: 100, stop_reason: null },
+      ];
+      const processor = new StreamProcessor();
+      const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+      expect(result.sdkResultError).toBeDefined();
+      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
+    });
+
+    it('should not call say or increment messageCount on error result', async () => {
+      const messages = [
+        { type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 3,
+          errors: ['failed'], duration_ms: 5000, stop_reason: null },
+      ];
+      const processor = new StreamProcessor();
+      const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+      expect(result.messageCount).toBe(0);
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+  });
 });

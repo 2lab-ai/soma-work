@@ -3,6 +3,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('../../user-settings-store', () => ({
+  userSettingsStore: {
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
+  },
+}));
 import { Continuation } from '../../types';
 import { ExecuteResult } from './stream-executor';
 import { StreamExecutor } from './stream-executor';
@@ -586,6 +592,147 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
+  // Issue #122: stderrContent output in error messages
+  it('includes sanitized stderrContent in error message shown to user', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: prompt is too long\nRetrying with shorter context...';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('SDK Details:');
+    expect(payload.text).toContain('prompt is too long');
+  });
+
+  it('masks Anthropic API keys in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('auth failed');
+    (error as any).stderrContent = 'Using key sk-ant-api03-ABCDEF1234567890 for request';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('sk-ant-api03');
+  });
+
+  it('masks Slack tokens in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('connection error');
+    (error as any).stderrContent = 'token: xoxb-1234-5678-abcdef leaked';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('xoxb-');
+  });
+
+  it('truncates long stderrContent to 500 chars', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('error');
+    (error as any).stderrContent = 'x'.repeat(1000);
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    // Should contain the truncation indicator and be within reasonable length
+    expect(payload.text).toContain('…');
+  });
+
+  // Issue #122 followup: Bearer token leak fix
+  it('masks full Authorization Bearer header including token value', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('auth error');
+    (error as any).stderrContent = 'Authorization: Bearer sk-proj-abc123def456';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('sk-proj-abc123def456');
+    expect(payload.text).not.toContain('Bearer');
+  });
+
+  it('masks GitHub fine-grained PATs (github_pat_*)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('git error');
+    (error as any).stderrContent = 'Using github_pat_22A4BCDEF_abcdefghijklmn for auth';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('github_pat_');
+  });
+
+  it('strips ANSI escape codes from stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('error');
+    (error as any).stderrContent = '\x1B[31mError:\x1B[0m something failed\x1B]0;title\x07';
+
+    await (executor as any).handleError(
+      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Error:');
+    expect(payload.text).toContain('something failed');
+    expect(payload.text).not.toContain('\x1B');
+    expect(payload.text).not.toContain('\x07');
+  });
+
   // Issue #118: S1 — "No conversation found" SDK error must be detected
   it('clears session for "No conversation found with session ID" SDK error', async () => {
     const deps = createExecutorDeps();
@@ -790,6 +937,7 @@ describe('model-command integration', () => {
           ok: true,
           snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 1 },
         }),
+        getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
       },
       fileHandler: {
         cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
@@ -1294,5 +1442,206 @@ describe('model-command integration', () => {
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
+  });
+});
+
+// ── File Access Blocked Error Recovery ──────────────────────────────────
+
+describe('File access blocked error recovery', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: {
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: { cleanup: vi.fn() },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('x'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: {},
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  // ── isFileAccessBlockedError unit tests ──
+
+  it('detects "File access blocked" in error message', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: File access blocked: /home/user/file.png');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(true);
+  });
+
+  it('detects "File access blocked" in stderrContent', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: File access blocked: /tmp/secret.key';
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(true);
+  });
+
+  it('does NOT match generic "access blocked" without "file" prefix', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Access blocked: some resource');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(false);
+  });
+
+  it('detects "permission denied" + "normalizedprovidererror" combo', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: permission denied for /etc/shadow');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(true);
+  });
+
+  it('does NOT match unrelated errors', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Some completely different error');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(false);
+  });
+
+  it('does NOT match "permission denied" without "normalizedprovidererror"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('permission denied: /usr/bin/foo');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(false);
+  });
+
+  // ── extractBlockedPath unit tests ──
+
+  it('extracts path from "File access blocked: /path/to/file"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: File access blocked: /home/zhugehyuk/kl-v2.png');
+    expect((executor as any).extractBlockedPath(error)).toBe('/home/zhugehyuk/kl-v2.png');
+  });
+
+  it('extracts path from stderrContent', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'File access blocked: /var/secret/credentials.json';
+    expect((executor as any).extractBlockedPath(error)).toBe('/var/secret/credentials.json');
+  });
+
+  it('returns undefined when no path found', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Some random error');
+    expect((executor as any).extractBlockedPath(error)).toBeUndefined();
+  });
+
+  // ── handleError integration tests ──
+
+  it('preserves session and stores error context on file access blocked', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = {} as any;
+    const error = new Error('NormalizedProviderError: File access blocked: /home/zhugehyuk/kl-v2.png');
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Session NOT cleared
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // Error context stored on session
+    expect(session.lastErrorContext).toContain('파일 접근이 차단되었습니다');
+    expect(session.lastErrorContext).toContain('/home/zhugehyuk/kl-v2.png');
+    // Retry scheduled with short delay
+    expect(retryAfterMs).toBe(5_000);
+    // Error message shown to user
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('SDK 샌드박스');
+    expect(payload.text).toContain('자동 재시도');
+  });
+
+  it('preserves session when file access blocked appears in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = {} as any;
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'File access blocked: /root/.ssh/id_rsa';
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(session.lastErrorContext).toContain('/root/.ssh/id_rsa');
+    expect(retryAfterMs).toBe(5_000);
+  });
+
+  it('exhausts retry budget after MAX_ERROR_RETRIES and clears error context', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { errorRetryCount: 3 } as any; // Already at max
+    const error = new Error('File access blocked: /etc/passwd');
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    // Budget exhausted — no retry
+    expect(retryAfterMs).toBeUndefined();
+    // Error context and retry count cleared
+    expect(session.errorRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  it('shows blocked path in user error message', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = {} as any;
+    const error = new Error('File access blocked: /home/user/secret.env');
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('/home/user/secret.env');
+    expect(payload.text).toContain('차단된 경로');
   });
 });
