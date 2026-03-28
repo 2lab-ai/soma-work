@@ -1603,7 +1603,7 @@ describe('File access blocked error recovery', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
-    const session = { errorRetryCount: 3 } as any; // Already at max
+    const session = { fileAccessRetryCount: 3 } as any; // Already at max
     const error = new Error('File access blocked: /etc/passwd');
 
     const retryAfterMs = await (executor as any).handleError(
@@ -1618,8 +1618,8 @@ describe('File access blocked error recovery', () => {
 
     // Budget exhausted — no retry
     expect(retryAfterMs).toBeUndefined();
-    // Error context and retry count cleared
-    expect(session.errorRetryCount).toBe(0);
+    // Error context and retry count cleared (uses fileAccessRetryCount, not errorRetryCount)
+    expect(session.fileAccessRetryCount).toBe(0);
     expect(session.lastErrorContext).toBeUndefined();
   });
 
@@ -1643,5 +1643,91 @@ describe('File access blocked error recovery', () => {
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('/home/user/secret.env');
     expect(payload.text).toContain('차단된 경로');
+  });
+
+  // ── P1 fix: isolated retry counter ──
+
+  it('uses fileAccessRetryCount independent of errorRetryCount', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // Prior rate-limit errors consumed errorRetryCount — should NOT affect file-access retries
+    const session = { errorRetryCount: 3 } as any;
+    const error = new Error('File access blocked: /tmp/test.png');
+
+    const retryAfterMs = await (executor as any).handleError(
+      error, session, 'C123:t1', 'C123', 't1', [], say
+    );
+
+    // Should still retry because fileAccessRetryCount is independent
+    expect(retryAfterMs).toBe(5_000);
+    expect(session.fileAccessRetryCount).toBe(1);
+    // errorRetryCount untouched
+    expect(session.errorRetryCount).toBe(3);
+  });
+
+  it('increments fileAccessRetryCount sequentially 1→2→3 then exhausts', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = {} as any;
+    const error = new Error('File access blocked: /tmp/file.txt');
+
+    // Attempt 1
+    let result = await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+    expect(result).toBe(5_000);
+    expect(session.fileAccessRetryCount).toBe(1);
+
+    // Attempt 2
+    result = await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+    expect(result).toBe(5_000);
+    expect(session.fileAccessRetryCount).toBe(2);
+
+    // Attempt 3
+    result = await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+    expect(result).toBe(5_000);
+    expect(session.fileAccessRetryCount).toBe(3);
+
+    // Attempt 4 — exhausted
+    result = await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+    expect(result).toBeUndefined();
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  // ── P2 fix: stale context clearing ──
+
+  it('clears lastErrorContext when a non-file-access recoverable error occurs', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = {
+      lastErrorContext: '파일 접근이 차단되었습니다: /tmp/old.png',
+      fileAccessRetryCount: 1,
+    } as any;
+    // Generic recoverable error (not file-access, not fatal)
+    const error = new Error('overloaded');
+    (error as any).name = 'NormalizedProviderError';
+
+    await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+
+    // Stale file-access context should be cleared
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  // ── P2 fix: UX message when retry exhausted ──
+
+  it('shows "retry 횟수 초과" when file-access retry budget exhausted', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { fileAccessRetryCount: 3 } as any;
+    const error = new Error('File access blocked: /etc/passwd');
+
+    await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('재시도 횟수를 초과');
+    expect(payload.text).not.toContain('자동 재시도합니다');
   });
 });
