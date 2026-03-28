@@ -1439,11 +1439,17 @@ describe('File access blocked error recovery', () => {
     expect((executor as any).isFileAccessBlockedError(error)).toBe(true);
   });
 
-  it('detects "access blocked" in stderrContent', () => {
+  it('detects "File access blocked" in stderrContent', () => {
     const executor = new StreamExecutor({} as any);
     const error = new Error('process exited with code 1');
-    (error as any).stderrContent = 'Error: Access blocked: /tmp/secret.key';
+    (error as any).stderrContent = 'Error: File access blocked: /tmp/secret.key';
     expect((executor as any).isFileAccessBlockedError(error)).toBe(true);
+  });
+
+  it('does NOT match generic "access blocked" without "file" prefix', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('Access blocked: some resource');
+    expect((executor as any).isFileAccessBlockedError(error)).toBe(false);
   });
 
   it('detects "permission denied" + "normalizedprovidererror" combo', () => {
