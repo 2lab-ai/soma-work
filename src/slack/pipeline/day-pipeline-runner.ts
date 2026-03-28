@@ -19,6 +19,14 @@ export interface PipelineContext {
   hasPR: boolean;
   isBug: boolean;
   verifyPassCount: number;
+  verifyAttempts: number;
+}
+
+export interface PipelineResult {
+  completed: boolean;
+  phasesCompleted: string[];
+  haltedAt?: string;
+  haltReason?: string;
 }
 
 const MAX_VERIFY_ITERATIONS = 5;
@@ -76,5 +84,70 @@ export class DayPipelineRunner {
 
   static get MAX_VERIFY_ITERATIONS(): number {
     return MAX_VERIFY_ITERATIONS;
+  }
+
+  /**
+   * Execute the full pipeline sequentially.
+   * Each phase completes before the next begins.
+   * Returns result with completion status.
+   *
+   * Trace: docs/turn-summary-lifecycle/trace.md, S10
+   */
+  async run(ctx: PipelineContext, executeStep: (skill: string, args?: string) => Promise<boolean>): Promise<PipelineResult> {
+    const result: PipelineResult = { completed: false, phasesCompleted: [] };
+
+    for (const phase of this.phases) {
+      for (const step of phase.steps) {
+        // Check conditional steps
+        if (this.shouldSkipStep(step, ctx)) continue;
+
+        // Handle parallel steps (day2 reviews)
+        if (step.parallel && step.parallel.length > 0) {
+          const parallelResults = await Promise.allSettled(
+            step.parallel.map(s => executeStep(s.skill, s.args))
+          );
+          const anyFailed = parallelResults.some(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value));
+          if (anyFailed) {
+            result.haltedAt = phase.name;
+            result.haltReason = `Parallel step failed in ${phase.name}`;
+            return result;
+          }
+          continue;
+        }
+
+        // Handle verify loop
+        if (step.skill === 'stv:verify') {
+          let passed = false;
+          ctx.verifyAttempts = 0;
+          while (!passed && !this.isVerifyLoopExceeded(ctx.verifyAttempts)) {
+            passed = await executeStep(step.skill, step.args);
+            if (!passed) {
+              ctx.verifyAttempts++;
+              // Re-run do-work to fix issues
+              await executeStep('stv:do-work');
+            }
+          }
+          if (!passed) {
+            result.haltedAt = phase.name;
+            result.haltReason = `Verify loop exceeded max iterations (${ctx.verifyAttempts})`;
+            return result;
+          }
+          continue;
+        }
+
+        // Normal step execution
+        const success = await executeStep(step.skill, step.args);
+        if (!success) {
+          result.haltedAt = phase.name;
+          result.haltReason = `Step ${step.skill} failed in ${phase.name}`;
+          return result;
+        }
+      }
+
+      result.phasesCompleted.push(phase.name);
+    }
+
+    result.completed = true;
+    return result;
   }
 }

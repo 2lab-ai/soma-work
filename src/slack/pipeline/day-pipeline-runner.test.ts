@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DayPipelineHandler } from '../commands/day-pipeline-handler';
-import { DayPipelineRunner } from './day-pipeline-runner';
+import { DayPipelineRunner, PipelineContext } from './day-pipeline-runner';
 
 // Trace: docs/turn-summary-lifecycle/trace.md
 
@@ -63,10 +63,10 @@ describe('DayPipelineRunner', () => {
     const day1 = phases.find((p) => p.name === 'day1')!;
     const newTaskStep = day1.steps.find((s) => s.skill === 'stv:new-task')!;
 
-    const ctxWithIssue = { hasIssue: true, hasPR: false, isBug: false, verifyPassCount: 0 };
+    const ctxWithIssue = { hasIssue: true, hasPR: false, isBug: false, verifyPassCount: 0, verifyAttempts: 0 };
     expect(runner.shouldSkipStep(newTaskStep, ctxWithIssue)).toBe(true);
 
-    const ctxWithoutIssue = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0 };
+    const ctxWithoutIssue = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0, verifyAttempts: 0 };
     expect(runner.shouldSkipStep(newTaskStep, ctxWithoutIssue)).toBe(false);
   });
 
@@ -83,8 +83,8 @@ describe('DayPipelineRunner', () => {
     const phases = runner.getPhases();
     const day0 = phases.find((p) => p.name === 'day0')!;
 
-    const bugCtx = { hasIssue: false, hasPR: false, isBug: true, verifyPassCount: 0 };
-    const noBugCtx = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0 };
+    const bugCtx = { hasIssue: false, hasPR: false, isBug: true, verifyPassCount: 0, verifyAttempts: 0 };
+    const noBugCtx = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0, verifyAttempts: 0 };
 
     for (const step of day0.steps) {
       expect(runner.shouldSkipStep(step, bugCtx)).toBe(false);
@@ -113,7 +113,38 @@ describe('DayPipelineRunner', () => {
     const day1 = phases.find((p) => p.name === 'day1')!;
     const doWorkStep = day1.steps.find((s) => s.skill === 'stv:do-work')!;
 
-    const ctx = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0 };
+    const ctx = { hasIssue: false, hasPR: false, isBug: false, verifyPassCount: 0, verifyAttempts: 0 };
     expect(runner.shouldSkipStep(doWorkStep, ctx)).toBe(false);
+  });
+
+  describe('run()', () => {
+    it('executes all phases sequentially and returns completed', async () => {
+      const runner = new DayPipelineRunner();
+      const ctx: PipelineContext = { hasIssue: true, isBug: false, hasPR: false, verifyPassCount: 0, verifyAttempts: 0 };
+      const executedSteps: string[] = [];
+      const executeStep = async (skill: string) => {
+        executedSteps.push(skill);
+        return true;
+      };
+
+      const result = await runner.run(ctx, executeStep);
+      expect(result.completed).toBe(true);
+      expect(result.phasesCompleted).toContain('day0');
+      expect(result.phasesCompleted).toContain('day1');
+      expect(result.phasesCompleted).toContain('day2');
+    });
+
+    it('halts when a step fails', async () => {
+      const runner = new DayPipelineRunner();
+      const ctx: PipelineContext = { hasIssue: false, isBug: true, hasPR: false, verifyPassCount: 0, verifyAttempts: 0 };
+      const executeStep = async (skill: string) => {
+        if (skill === 'stv:debug') return false;
+        return true;
+      };
+
+      const result = await runner.run(ctx, executeStep);
+      expect(result.completed).toBe(false);
+      expect(result.haltedAt).toBe('day0');
+    });
   });
 });
