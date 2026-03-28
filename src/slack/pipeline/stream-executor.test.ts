@@ -586,6 +586,95 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
+  // Issue #122: stderrContent output in error messages
+  it('includes sanitized stderrContent in error message shown to user', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent = 'Error: prompt is too long\nRetrying with shorter context...';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('SDK Details:');
+    expect(payload.text).toContain('prompt is too long');
+  });
+
+  it('masks Anthropic API keys in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('auth failed');
+    (error as any).stderrContent = 'Using key sk-ant-api03-ABCDEF1234567890 for request';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('sk-ant-api03');
+  });
+
+  it('masks Slack tokens in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('connection error');
+    (error as any).stderrContent = 'token: xoxb-1234-5678-abcdef leaked';
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('[REDACTED]');
+    expect(payload.text).not.toContain('xoxb-');
+  });
+
+  it('truncates long stderrContent to 500 chars', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('error');
+    (error as any).stderrContent = 'x'.repeat(1000);
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say
+    );
+
+    const payload = say.mock.calls[0][0];
+    // Should contain the truncation indicator and be within reasonable length
+    expect(payload.text).toContain('…');
+  });
+
   // Issue #118: S1 — "No conversation found" SDK error must be detected
   it('clears session for "No conversation found with session ID" SDK error', async () => {
     const deps = createExecutorDeps();
