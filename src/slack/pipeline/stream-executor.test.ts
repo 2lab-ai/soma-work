@@ -3,6 +3,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('../../user-settings-store', () => ({
+  userSettingsStore: {
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
+  },
+}));
 import { Continuation } from '../../types';
 import { ExecuteResult } from './stream-executor';
 import { StreamExecutor } from './stream-executor';
@@ -879,6 +885,7 @@ describe('model-command integration', () => {
           ok: true,
           snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 1 },
         }),
+        getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
       },
       fileHandler: {
         cleanupTempFiles: vi.fn().mockResolvedValue(undefined),

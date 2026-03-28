@@ -13,6 +13,7 @@ vi.mock('../../user-settings-store', () => ({
     }),
     createPendingUser: vi.fn(),
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
   DEFAULT_MODEL: 'claude-opus-4-6',
 }));
