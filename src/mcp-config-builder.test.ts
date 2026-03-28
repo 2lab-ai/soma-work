@@ -1,5 +1,16 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
+
+// Mock env-paths to use a non-existent config file, preventing test pollution
+// from the host machine's actual config (which may contain server-tools section).
+vi.mock('./env-paths', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./env-paths')>();
+  return {
+    ...orig,
+    CONFIG_FILE: '/tmp/__nonexistent_test_config__.json',
+  };
+});
+
 import {
   McpConfigBuilder,
   McpConfig,
@@ -199,7 +210,7 @@ describe('McpConfigBuilder server-tools wiring', () => {
   }
 
   it('does NOT include mcp__server-tools when config file has no server-tools section', async () => {
-    // Default CONFIG_FILE either doesn't exist or has no server-tools section
+    // CONFIG_FILE is mocked to non-existent path via vi.mock('./env-paths')
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
 

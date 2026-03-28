@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { BaseMcpServer } from '../_shared/base-mcp-server.js';
+import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import { StderrLogger } from '../_shared/stderr-logger.js';
 import {
   getDefaultSessionSnapshot,
@@ -109,101 +108,54 @@ export function buildModelCommandRunResponse(
   return result;
 }
 
-class ModelCommandMcpServer {
-  private server: Server;
+class ModelCommandMcpServer extends BaseMcpServer {
   private context: ModelCommandContext;
 
   constructor() {
+    super('model-command');
     this.context = parseModelCommandContext(process.env.SOMA_COMMAND_CONTEXT);
-    this.server = new Server(
+  }
+
+  defineTools(): ToolDefinition[] {
+    return [
       {
-        name: 'model-command',
-        version: '1.0.0',
+        name: 'list',
+        description: 'List available model commands for current session context',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
       {
-        capabilities: {
-          tools: {},
+        name: 'run',
+        description: 'Run a model command with typed params',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            commandId: {
+              type: 'string',
+              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT'],
+            },
+            params: { type: 'object', description: 'Command params object' },
+          },
+          required: ['commandId'],
         },
-      }
-    );
-    this.setupHandlers();
+      },
+    ];
   }
 
-  private setupHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+  async handleTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    if (name === 'list') {
+      const payload = buildModelCommandListResponse(this.context);
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+    }
+
+    if (name === 'run') {
+      const payload = buildModelCommandRunResponse(args, this.context);
       return {
-        tools: [
-          {
-            name: 'list',
-            description: 'List available model commands for current session context',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              additionalProperties: false,
-            },
-          },
-          {
-            name: 'run',
-            description: 'Run a model command with typed params',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                commandId: {
-                  type: 'string',
-                  enum: [
-                    'GET_SESSION',
-                    'UPDATE_SESSION',
-                    'ASK_USER_QUESTION',
-                    'CONTINUE_SESSION',
-                    'SAVE_CONTEXT_RESULT',
-                  ],
-                },
-                params: {
-                  type: 'object',
-                  description: 'Command params object',
-                },
-              },
-              required: ['commandId'],
-            },
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        isError: !payload.ok,
       };
-    });
+    }
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-      if (request.params.name === 'list') {
-        const payload = buildModelCommandListResponse(this.context);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(payload),
-            },
-          ],
-        };
-      }
-
-      if (request.params.name === 'run') {
-        const payload = buildModelCommandRunResponse(request.params.arguments, this.context);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(payload),
-            },
-          ],
-          isError: !payload.ok,
-        };
-      }
-
-      throw new Error(`Unknown tool: ${request.params.name}`);
-    });
-  }
-
-  async run(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    logger.debug('Model-command MCP server started');
+    throw new Error(`Unknown tool: ${name}`);
   }
 }
 
