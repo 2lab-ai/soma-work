@@ -1730,6 +1730,38 @@ describe('File access blocked error recovery', () => {
     expect(payload.text).toContain('재시도 횟수를 초과');
     expect(payload.text).not.toContain('자동 재시도합니다');
   });
+
+  // ── Codex P2: fileAccessRetryCount reset on different error class ──
+
+  it('resets fileAccessRetryCount when a non-file-access recoverable error occurs', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { fileAccessRetryCount: 2 } as any;
+    // Generic recoverable error
+    const error = new Error('overloaded');
+    (error as any).name = 'NormalizedProviderError';
+
+    await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+
+    // File-access retry counter should be reset to 0
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  // ── Codex P3: extractBlockedPath for permission denied pattern ──
+
+  it('extracts path from "permission denied for /path"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: permission denied for /etc/shadow');
+    expect((executor as any).extractBlockedPath(error)).toBe('/etc/shadow');
+  });
+
+  it('extracts path from "permission denied: /path"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: permission denied: /var/secret/key.pem');
+    expect((executor as any).extractBlockedPath(error)).toBe('/var/secret/key.pem');
+  });
 });
 
 // ── Trace: docs/fix-thread-header-files/trace.md ──

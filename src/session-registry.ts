@@ -859,6 +859,10 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
+      // Clear error retry state so fresh session doesn't inherit exhausted budgets
+      session.errorRetryCount = 0;
+      session.fileAccessRetryCount = 0;
+      session.lastErrorContext = undefined;
     }
   }
 
@@ -906,6 +910,11 @@ export class SessionRegistry {
 
     // Reset activity state
     session.activityState = 'idle';
+
+    // Clear error retry state (including file-access-specific counters)
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+    session.lastErrorContext = undefined;
 
     this.saveSessions();
     return true;
