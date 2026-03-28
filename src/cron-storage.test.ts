@@ -184,29 +184,53 @@ describe('matchesCronExpression', () => {
     expect(matchesCronExpression('', date)).toBe(false);
   });
 
-  // --- B1 RED tests: matchesCronExpression must use UTC, not local time ---
-  it('B1-RED: matches UTC hour regardless of server timezone', () => {
-    // 2026-03-29T00:30:00Z = KST 09:30 Mar 29
-    // Cron '30 0 * * *' should match UTC hour 0, NOT local hour 9
+  // --- B1 tests: matchesCronExpression must use UTC, not local time ---
+  // These tests explicitly verify getUTC*() vs get*() by asserting
+  // against known UTC component values that differ from common local
+  // timezones (e.g. KST/UTC+9, EST/UTC-5, IST/UTC+5:30).
+  it('B1: matches UTC hour regardless of server timezone', () => {
+    // 2026-03-29T00:30:00Z → UTC hour=0, min=30
+    // Any UTC+ timezone would see hour=9+ (KST), hour=5:30+ (IST), etc.
     const date = new Date('2026-03-29T00:30:00Z');
-    expect(matchesCronExpression('30 0 * * *', date)).toBe(true);   // UTC hour=0, min=30
-    expect(matchesCronExpression('30 9 * * *', date)).toBe(false);  // UTC hour≠9
+    expect(date.getUTCHours()).toBe(0); // sanity: confirm UTC
+    expect(matchesCronExpression('30 0 * * *', date)).toBe(true);
+    expect(matchesCronExpression('30 9 * * *', date)).toBe(false);
   });
 
-  it('B1-RED: matches UTC day-of-month across timezone date boundary', () => {
-    // 2026-03-28T23:00:00Z = KST 2026-03-29T08:00:00 (next day in KST)
-    // Cron should match UTC dom=28, NOT local dom=29
+  it('B1: matches UTC day-of-month across timezone date boundary', () => {
+    // 2026-03-28T23:00:00Z → UTC dom=28
+    // In UTC+1 and above, local dom=29
     const date = new Date('2026-03-28T23:00:00Z');
-    expect(matchesCronExpression('0 23 28 * *', date)).toBe(true);  // UTC dom=28
-    expect(matchesCronExpression('0 23 29 * *', date)).toBe(false); // UTC dom≠29
+    expect(date.getUTCDate()).toBe(28); // sanity
+    expect(matchesCronExpression('0 23 28 * *', date)).toBe(true);
+    expect(matchesCronExpression('0 23 29 * *', date)).toBe(false);
   });
 
-  it('B1-RED: matches UTC day-of-week across timezone boundary', () => {
-    // 2026-03-28T23:00:00Z is Saturday in UTC
-    // In KST it's already Sunday Mar 29
+  it('B1: matches UTC day-of-week across timezone boundary', () => {
+    // 2026-03-28T23:00:00Z → UTC Saturday (dow=6)
+    // In UTC+1 and above, local Sunday (dow=0)
     const date = new Date('2026-03-28T23:00:00Z');
-    expect(matchesCronExpression('0 23 * * 6', date)).toBe(true);   // UTC dow=6 (Sat)
-    expect(matchesCronExpression('0 23 * * 0', date)).toBe(false);  // UTC dow≠0 (Sun)
+    expect(date.getUTCDay()).toBe(6); // sanity
+    expect(matchesCronExpression('0 23 * * 6', date)).toBe(true);
+    expect(matchesCronExpression('0 23 * * 0', date)).toBe(false);
+  });
+
+  it('B1: matches UTC minute across half-hour offset timezone', () => {
+    // 2026-03-29T00:15:00Z → UTC min=15
+    // In IST (UTC+5:30), local min=45
+    const date = new Date('2026-03-29T00:15:00Z');
+    expect(date.getUTCMinutes()).toBe(15); // sanity
+    expect(matchesCronExpression('15 0 * * *', date)).toBe(true);
+    expect(matchesCronExpression('45 0 * * *', date)).toBe(false);  // would match IST local min
+  });
+
+  it('B1: matches UTC month across year boundary', () => {
+    // 2026-12-31T23:30:00Z → UTC month=12, dom=31
+    // In UTC+1 and above, local month=1 (January), dom=1
+    const date = new Date('2026-12-31T23:30:00Z');
+    expect(date.getUTCMonth()).toBe(11); // JS 0-based → cron 1-based = 12
+    expect(matchesCronExpression('30 23 31 12 *', date)).toBe(true);  // UTC dec 31
+    expect(matchesCronExpression('30 23 1 1 *', date)).toBe(false);   // would match UTC+1 jan 1
   });
 });
 
