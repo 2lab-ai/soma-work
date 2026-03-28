@@ -230,13 +230,22 @@ When `get_thread_messages` returns files, video/audio files must have appropriat
 | 3. Thread message listing media metadata | done | GREEN (45/45) | Verified | Complete |
 
 ## Trace Deviations
-None — 모든 구현이 trace 문서와 일치함.
+
+### Deviation 1 — isMediaFile signature expanded (Codex+Gemini P1)
+- **Original**: `isMediaFile(filename: string)` — extension-only check
+- **Updated**: `isMediaFile(mimetype?: string, filename?: string)` — mimetype + extension check
+- **Reason**: Files with video/audio mimetype but no recognized extension bypassed blocking
+
+### Deviation 2 — Media files skip download entirely (Gemini P2)
+- **Original**: All files downloaded, then categorized. 50MB limit applied universally.
+- **Updated**: Video/audio files return metadata-only ProcessedFile immediately, no download.
+- **Reason**: Media prompt only uses name/mimetype/size. Downloading binary was wasteful, and 50MB limit silently dropped large media.
 
 ## Verified At
-2026-03-28 — All 3 scenarios GREEN + Verified
+2026-03-28 — All 3 scenarios GREEN + Verified + Review fixes applied
 
 ## Files Modified
-- `src/file-handler.ts` — ProcessedFile interface + isVideoFile/isAudioFile + formatFilePrompt media branch
-- `src/file-handler.test.ts` — 7 new tests (video/audio support)
-- `mcp-servers/slack-mcp/slack-mcp-server.ts` — isMediaFile + handleDownloadFile media blocking + formatSingleMessage media metadata + tool description
-- `mcp-servers/slack-mcp/slack-mcp-server.test.ts` — 12 new tests (media blocking + formatting)
+- `src/file-handler.ts` — ProcessedFile interface + isVideoFile/isAudioFile + formatFilePrompt media branch + media-skip-download
+- `src/file-handler.test.ts` — 14 tests (video/audio support + download skip)
+- `mcp-servers/slack-mcp/slack-mcp-server.ts` — isMediaFile(mimetype,filename) + handleDownloadFile media blocking + formatSingleMessage media metadata + tool description
+- `mcp-servers/slack-mcp/slack-mcp-server.test.ts` — 13 new tests (media blocking + formatting + mimetype detection)
