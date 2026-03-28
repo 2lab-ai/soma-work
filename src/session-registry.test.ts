@@ -285,6 +285,30 @@ describe('SessionRegistry persistence', () => {
     expect(restored!.sessionId).toBe('session-old');
   });
 
+  it('updateSessionTitle overwrites existing title', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.020');
+    session.sessionId = 'session-title-1';
+    session.title = 'Original Title';
+
+    registry.updateSessionTitle('C123', '171.020', 'New Title');
+
+    const updated = registry.getSession('C123', '171.020');
+    expect(updated?.title).toBe('New Title');
+  });
+
+  it('updateSessionTitle works on session with no prior title', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C123', '171.021');
+    session.sessionId = 'session-title-2';
+    // No title set
+
+    registry.updateSessionTitle('C123', '171.021', 'First Title');
+
+    const updated = registry.getSession('C123', '171.021');
+    expect(updated?.title).toBe('First Title');
+  });
+
   // Security: sessionWorkingDir with path traversal is dropped on load
   it('drops sessionWorkingDir with path traversal on load', () => {
     const fs = require('fs');

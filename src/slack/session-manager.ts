@@ -1,7 +1,7 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { MessageFormatter } from './message-formatter';
 import { ReactionManager } from './reaction-manager';
-import { ConversationSession, SessionLinks, ActivityState } from '../types';
+import { ConversationSession, SessionLinks, SessionLinkHistory, ActivityState } from '../types';
 import { ClaudeHandler } from '../claude-handler';
 import { userSettingsStore, THEME_NAMES, type SessionTheme } from '../user-settings-store';
 import {
@@ -39,7 +39,7 @@ export class SessionUiManager {
 
   /**
    * Resolve the theme for a given user.
-   * Returns stored theme or default ('A' Minimal).
+   * Returns stored theme or default ('default' Rich Card).
    */
   resolveTheme(userId: string): SessionTheme {
     return userSettingsStore.getUserSessionTheme(userId);
@@ -101,66 +101,29 @@ export class SessionUiManager {
 
     // Resolve theme for this user
     const theme = this.resolveTheme(userId);
-    const themeLabel = `Theme ${theme}`;
-    const isFixed = !!userSettingsStore.getUserSessionTheme(userId);
+    const themeLabel = THEME_NAMES[theme];
 
-    // Theme-specific header (new mapping: A=Minimal, B=One-Liner, ...)
-    const headerTexts: Partial<Record<SessionTheme, string>> = {
-      A: `📋 세션 (${userSessions.length})`,
-      B: `📋 세션 (${userSessions.length})`,
-      E: `📊 세션 대시보드`,
-      J: `🕐 세션 타임라인`,
-      L: `🔔 세션 알림`,
-    };
     const blocks: any[] = [
       {
         type: 'header',
         text: {
           type: 'plain_text',
-          text: headerTexts[theme] || `📋 내 세션 목록 (${userSessions.length}개)`,
+          text: `📋 내 세션 목록 (${userSessions.length}개)`,
           emoji: true,
         },
       },
     ];
 
-    // Theme indicator + stats (context block)
-    const themeTag = `${themeLabel} ${THEME_NAMES[theme]}`;
-    if (theme === 'E') {
-      // Dashboard: count by activity state
-      const working = userSessions.filter(s => s.session.activityState === 'working').length;
-      const waiting = userSessions.filter(s => s.session.activityState === 'waiting').length;
-      const idle = userSessions.length - working - waiting;
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `⚙️ 작업중 *${working}* · ✋ 대기 *${waiting}* · 💤 유휴 *${idle}* · 합계 *${userSessions.length}* · ${themeTag}` }],
-      });
-    } else if (theme === 'F') {
-      // Status Bar: colored dots
-      const working = userSessions.filter(s => s.session.activityState === 'working').length;
-      const waiting = userSessions.filter(s => s.session.activityState === 'waiting').length;
-      const idle = userSessions.length - working - waiting;
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `🟢 작업중 ${working} │ 🟡 대기 ${waiting} │ ⚪ 유휴 ${idle} │ ${themeTag}` }],
-      });
-    } else if (theme === 'G') {
-      // Rich Card: count
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `${userSessions.length}개 활성 · ${themeTag}` }],
-      });
-    } else {
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `${themeTag} · \`theme\`` }],
-      });
-    }
+    // Theme indicator (context block)
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `${themeLabel} · \`theme\`` }],
+    });
 
     let sessionIndex = 0;
     const showGroupHeaders = repoGroups.size > 1;
-    // Minimal (A) and One-Liner (B) skip dividers for density
-    const noDividerThemes: SessionTheme[] = ['A', 'B'];
-    const useDividers = !noDividerThemes.includes(theme);
+    // Minimal theme skips dividers for density
+    const useDividers = theme !== 'minimal';
 
     for (const [repoName, groupSessions] of repoGroups.entries()) {
       if (useDividers) blocks.push({ type: 'divider' });
@@ -227,7 +190,7 @@ export class SessionUiManager {
   /**
    * Pre-fetched session card data shared across all themes
    */
-  private async fetchCardData(session: ConversationSession) {
+  private async fetchCardData(session: ConversationSession, theme: SessionTheme = 'default') {
     const channelName = await this.slackApi.getChannelName(session.channelId);
     const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
     const modelDisplay = session.model
@@ -238,19 +201,26 @@ export class SessionUiManager {
       : null;
     const activityEmoji = this.formatActivityEmoji(session.activityState);
 
-    // Fetch metadata in parallel
-    const [issueMeta, prMeta] = await Promise.all([
-      session.links?.issue ? fetchLinkMetadata(session.links.issue) : undefined,
-      session.links?.pr ? fetchLinkMetadata(session.links.pr) : undefined,
-    ]);
-
-    // PR review status
+    // Default theme uses formatLinkHistoryContext() which gets metadata from linkHistory directly,
+    // so skip expensive metadata API calls for default theme.
+    let issueMeta: Awaited<ReturnType<typeof fetchLinkMetadata>> | undefined;
+    let prMeta: Awaited<ReturnType<typeof fetchLinkMetadata>> | undefined;
     let reviewChip = '';
-    if (session.links?.pr?.provider === 'github' && prMeta?.status === 'open') {
-      const reviewStatus = await fetchGitHubPRReviewStatus(session.links.pr);
-      if (reviewStatus === 'approved') reviewChip = ' ✅';
-      else if (reviewStatus === 'changes_requested') reviewChip = ' 🔴';
-      else if (reviewStatus === 'pending') reviewChip = ' ⏳';
+
+    if (theme !== 'default') {
+      // Fetch metadata in parallel (only needed for compact/minimal themes)
+      [issueMeta, prMeta] = await Promise.all([
+        session.links?.issue ? fetchLinkMetadata(session.links.issue) : undefined,
+        session.links?.pr ? fetchLinkMetadata(session.links.pr) : undefined,
+      ]);
+
+      // PR review status
+      if (session.links?.pr?.provider === 'github' && prMeta?.status === 'open') {
+        const reviewStatus = await fetchGitHubPRReviewStatus(session.links.pr);
+        if (reviewStatus === 'approved') reviewChip = ' ✅';
+        else if (reviewStatus === 'changes_requested') reviewChip = ' 🔴';
+        else if (reviewStatus === 'pending') reviewChip = ' ⏳';
+      }
     }
 
     const isSleeping = session.state === 'SLEEPING';
@@ -268,35 +238,32 @@ export class SessionUiManager {
 
   /**
    * Build a single session card as Block Kit blocks.
-   * Dispatches to theme-specific layout builder.
+   * Dispatches to theme-specific layout builder (3-tier: default/compact/minimal).
    */
   private async buildSessionCard(
     index: number,
     sessionKey: string,
     session: ConversationSession,
     showControls: boolean,
-    theme: SessionTheme = 'A'
+    theme: SessionTheme = 'default'
   ): Promise<any[]> {
-    const data = await this.fetchCardData(session);
+    const data = await this.fetchCardData(session, theme);
     const truncate = (s: string, max = 120) => s.length > max ? s.slice(0, max) + '…' : s;
 
-    // Theme letter → builder mapping (reordered: A=Minimal → L=Notification)
     const args = [index, sessionKey, session, showControls, data, truncate] as const;
-    const builders: Record<SessionTheme, () => any[]> = {
-      A: () => this.buildCardThemeD(...args),   // Minimal (was D)
-      B: () => this.buildCardThemeG(...args),   // One-Liner (was G)
-      C: () => this.buildCardThemeB(...args),   // Compact (was B)
-      D: () => this.buildCardThemeA(...args),   // Classic (was A)
-      E: () => this.buildCardThemeE(...args),   // Dashboard
-      F: () => this.buildCardThemeH(...args),   // Status Bar (was H)
-      G: () => this.buildCardThemeC(...args),   // Rich Card (was C)
-      H: () => this.buildCardThemeF(...args),   // Table (was F)
-      I: () => this.buildCardThemeI(...args),   // Kanban
-      J: () => this.buildCardThemeJ(...args),   // Timeline
-      K: () => this.buildCardThemeK(...args),   // Progress
-      L: () => this.buildCardThemeL(...args),   // Notification
-    };
-    let blocks = (builders[theme] || builders.A)();
+    let blocks: any[];
+    switch (theme) {
+      case 'compact':
+        blocks = this.buildCardCompact(...args);
+        break;
+      case 'minimal':
+        blocks = this.buildCardMinimal(...args);
+        break;
+      case 'default':
+      default:
+        blocks = this.buildCardDefault(...args);
+        break;
+    }
 
     // Action buttons (shared across all themes)
     if (showControls) {
@@ -335,446 +302,163 @@ export class SessionUiManager {
     return text.length > limit ? text.slice(0, limit) + '…' : text;
   }
 
-  // ─── Theme A: Classic (section.text + context, pipe separator, dividers) ───
-  private buildCardThemeA(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
+  /**
+   * Format linkHistory entries into context text.
+   * Shows up to maxPerType links per type (issue/pr/doc), with "+N more" overflow.
+   */
+  private formatLinkHistoryContext(
+    linkHistory: SessionLinkHistory | undefined,
+    maxPerType = 5
+  ): string {
+    if (!linkHistory) return '';
+    const parts: string[] = [];
 
-    // Title
-    let titleText = `${data.activityEmoji}*${index}.* `;
-    if (session.title) titleText += session.title;
-    titleText += ` _${data.channelName}_`;
-    if (data.permalink) titleText += `  <${data.permalink}|(열기)>`;
+    const formatLinks = (links: Array<{ url: string; label?: string; status?: string }>, emoji: string, type: 'issue' | 'pr' | 'doc') => {
+      if (links.length === 0) return;
+      const shown = links.slice(-maxPerType);
+      const overflow = links.length - shown.length;
+      for (const link of shown) {
+        const statusEmoji = link.status ? ` ${getStatusEmoji(link.status, type === 'pr' ? 'pr' : undefined)}` : '';
+        parts.push(`${emoji} <${link.url}|${link.label || link.url}>${statusEmoji}`);
+      }
+      if (overflow > 0) parts.push(`${emoji} +${overflow} more`);
+    };
 
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: titleText } };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName);
-    blocks.push(sectionBlock);
+    formatLinks(linkHistory.issues || [], '🎫', 'issue');
+    formatLinks(linkHistory.prs || [], '🔀', 'pr');
+    formatLinks(linkHistory.docs || [], '📄', 'doc');
 
-    // Metadata (pipe-separated)
-    const metaParts: string[] = [];
-    let modelPart = `🤖 ${data.modelDisplay}`;
-    if (session.currentInitiatorName) modelPart += ` · 🎯 ${session.currentInitiatorName}`;
-    metaParts.push(modelPart);
-
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueTitle = data.issueMeta?.title ? `: ${truncate(data.issueMeta.title)}` : '';
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}${data.issueMeta.status}` : '';
-      metaParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}${issueTitle}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prTitle = !session.links?.issue && data.prMeta?.title ? `: ${truncate(data.prMeta.title)}` : '';
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      const prStatus = data.prMeta?.status ? ` ${prStatusEmoji}${data.prMeta.status}` : '';
-      metaParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}${prTitle}>${prStatus}${data.reviewChip}`);
-    }
-    if (session.links?.doc) metaParts.push(`📄 <${session.links.doc.url}|${session.links.doc.label || '문서'}>`);
-    metaParts.push(`🕐 ${data.timeAgo}`);
-    metaParts.push(data.expiresText);
-
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' | ')) }] });
-    return blocks;
+    return parts.join('  ·  ');
   }
 
-  // ─── Theme B: Compact (no dividers, dot separator, short labels) ───
-  private buildCardThemeB(
+  // ─── Default: Rich Card (section.text with title+activityEmoji, section.fields, context with linkHistory, actions [열기, ✕]) ───
+  private buildCardDefault(
     index: number, sessionKey: string, session: ConversationSession,
     showControls: boolean, data: any, truncate: (s: string, max?: number) => string
   ): any[] {
     const blocks: any[] = [];
 
-    // Title (no numbering, dot separator for channel)
-    let titleText = `${data.activityEmoji}*${session.title || '대화'}* · _${data.channelName}_`;
-    if (data.permalink) titleText += ` <${data.permalink}|(열기)>`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: titleText } };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName, '🗑️');
-    blocks.push(sectionBlock);
-
-    // Metadata (dot-separated, short labels)
-    const metaParts: string[] = [];
-    let modelPart = `🤖 ${data.modelDisplay}`;
-    if (session.currentInitiatorName) modelPart += ` · 🎯 ${session.currentInitiatorName}`;
-    metaParts.push(modelPart);
-
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      metaParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      metaParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`);
-    }
-    if (session.links?.doc) metaParts.push(`📄 <${session.links.doc.url}|${session.links.doc.label || '문서'}>`);
-    metaParts.push(`🕐 ${data.timeAgo}`);
-    metaParts.push(`⏳ ${data.expiresShort}`);
-
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' · ')) }] });
-    return blocks;
-  }
-
-  // ─── Theme C: Rich Card (two-line title, split meta rows) ───
-  private buildCardThemeC(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-
-    // Title: two lines — session name + channel/model/initiator
-    let titleLine1 = `${data.activityEmoji}*${session.title || '대화'}*`;
-    let titleLine2 = `_${data.channelName}_ · ${data.modelDisplay}`;
-    if (session.currentInitiatorName) titleLine2 += ` · 🎯 ${session.currentInitiatorName}`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: `${titleLine1}\n${titleLine2}` } };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName);
-    blocks.push(sectionBlock);
-
-    // Meta row 1: links
-    const linkParts: string[] = [];
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueTitle = data.issueMeta?.title ? `: ${truncate(data.issueMeta.title)}` : '';
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}${data.issueMeta.status}` : '';
-      linkParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}${issueTitle}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prTitle = !session.links?.issue && data.prMeta?.title ? `: ${truncate(data.prMeta.title)}` : '';
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      const prStatus = data.prMeta?.status ? ` ${prStatusEmoji}${data.prMeta.status}` : '';
-      linkParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}${prTitle}>${prStatus}${data.reviewChip}`);
-    }
-    if (session.links?.doc) linkParts.push(`📄 <${session.links.doc.url}|${session.links.doc.label || '문서'}>`);
-
-    if (linkParts.length > 0) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(linkParts.join('  ·  ')) }] });
-    }
-
-    // Meta row 2: time + thread link
-    const timeParts: string[] = [];
-    timeParts.push(`🕐 ${data.timeAgo}`);
-    timeParts.push(data.expiresText);
-    if (data.permalink) timeParts.push(`<${data.permalink}|스레드 열기 ↗>`);
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(timeParts.join('  ·  ')) }] });
-
-    return blocks;
-  }
-
-  // ─── Theme D: Minimal (ultra-dense, English time, ✕ button) ───
-  private buildCardThemeD(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-
-    // Title: name + ↗ link only
-    let titleText = `${data.activityEmoji}*${session.title || '대화'}*`;
-    if (data.permalink) titleText += ` <${data.permalink}|↗>`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: titleText } };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName, '✕');
-    blocks.push(sectionBlock);
-
-    // Single dense context line
-    const metaParts: string[] = [];
-    metaParts.push(data.modelDisplay);
-    metaParts.push(`#${data.channelName}`);
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? `${getStatusEmoji(data.issueMeta.status)}` : '';
-      metaParts.push(`<${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      metaParts.push(`<${pr.url}|${pr.label || 'PR'}>${prStatusEmoji}${data.reviewChip}`);
-    }
-    metaParts.push(data.timeAgo);
-    metaParts.push(data.expiresShort);
-
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' · ')) }] });
-    return blocks;
-  }
-
-  // ─── Theme E: Dashboard (stats header + overflow menu) ───
-  private buildCardThemeE(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
+    // Section with title + activityEmoji
+    const titleText = `${data.activityEmoji}*${session.title || '대화'}*`;
 
     const sectionBlock: any = {
       type: 'section',
-      text: { type: 'mrkdwn', text: `${data.activityEmoji}*${session.title || '대화'}*` },
+      text: { type: 'mrkdwn', text: titleText },
+      fields: [
+        { type: 'mrkdwn', text: `*모델*\n${data.modelDisplay}` },
+        { type: 'mrkdwn', text: `*시간*\n${data.timeAgo}` },
+        { type: 'mrkdwn', text: `*채널*\n#${data.channelName}` },
+        { type: 'mrkdwn', text: `*소유자*\n${session.ownerName || session.ownerId}` },
+      ],
     };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName, '⋮');
     blocks.push(sectionBlock);
 
-    const metaParts: string[] = [];
-    metaParts.push(`#${data.channelName}`);
-    metaParts.push(data.modelDisplay);
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      metaParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
+    // Context with all links from linkHistory (max 5 each type, +N more)
+    const linkContext = this.formatLinkHistoryContext(session.linkHistory, 5);
+    if (linkContext) {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(linkContext) }] });
     }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      metaParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`);
-    }
-    metaParts.push(data.timeAgo);
 
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' · ')) }] });
+    // Actions: 열기 + ✕
+    const actionElements: any[] = [];
+    if (data.permalink) {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '열기', emoji: true },
+        url: data.permalink,
+        action_id: `open_thread_${sessionKey.substring(0, 8)}`,
+      });
+    }
+    if (showControls) {
+      actionElements.push(this.buildTerminateAccessory(sessionKey, session, data.channelName, '✕'));
+    }
+    if (actionElements.length > 0) {
+      blocks.push({ type: 'actions', elements: actionElements });
+    }
+
     return blocks;
   }
 
-  // ─── Theme F: Table (section.fields 2-col aligned) ───
-  private buildCardThemeF(
+  // ─── Compact: section.text with activityEmoji+title+model+timeAgo, context with active issue/pr label, actions [열기, ✕] ───
+  private buildCardCompact(
     index: number, sessionKey: string, session: ConversationSession,
     showControls: boolean, data: any, truncate: (s: string, max?: number) => string
   ): any[] {
     const blocks: any[] = [];
 
-    let infoText = `*${session.title || '대화'}*\n#${data.channelName} · ${data.modelDisplay}`;
+    // Section text: activityEmoji + title + model + timeAgo
+    const titleText = `${data.activityEmoji}*${session.title || '대화'}* · ${data.modelDisplay} · ${data.timeAgo}`;
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: titleText } });
+
+    // Context with active issue/pr label
+    const contextParts: string[] = [];
     if (session.links?.issue) {
       const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? `${getStatusEmoji(data.issueMeta.status)}` : '';
-      infoText += `\n🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`;
+      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
+      contextParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
     }
     if (session.links?.pr) {
       const pr = session.links.pr;
       const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      infoText += ` 🔀 <${pr.url}|${pr.label || 'PR'}>${prStatusEmoji}${data.reviewChip}`;
+      contextParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`);
+    }
+    if (contextParts.length > 0) {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(contextParts.join(' · ')) }] });
     }
 
-    blocks.push({
-      type: 'section',
-      fields: [
-        { type: 'mrkdwn', text: `${data.activityEmoji}\`${index}\`` },
-        { type: 'mrkdwn', text: this.safeMrkdwn(infoText) },
-      ],
-    });
+    // Actions: 열기 + ✕
+    const actionElements: any[] = [];
+    if (data.permalink) {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '열기', emoji: true },
+        url: data.permalink,
+        action_id: `open_thread_${sessionKey.substring(0, 8)}`,
+      });
+    }
+    if (showControls) {
+      actionElements.push(this.buildTerminateAccessory(sessionKey, session, data.channelName, '✕'));
+    }
+    if (actionElements.length > 0) {
+      blocks.push({ type: 'actions', elements: actionElements });
+    }
+
     return blocks;
   }
 
-  // ─── Theme G: One-Liner (context only, ultra flat) ───
-  private buildCardThemeG(
+  // ─── Minimal: context with activityEmoji+title+timeAgo+active link, actions [✕] ───
+  private buildCardMinimal(
     index: number, sessionKey: string, session: ConversationSession,
     showControls: boolean, data: any, truncate: (s: string, max?: number) => string
   ): any[] {
+    const blocks: any[] = [];
+
+    // Single context line: activityEmoji + title + timeAgo + active link
     const parts: string[] = [];
     parts.push(`${data.activityEmoji}*${session.title || '대화'}*`);
-    parts.push(`#${data.channelName}`);
-    parts.push(data.modelDisplay);
+    parts.push(data.timeAgo);
+
+    // Show the most relevant active link (issue first, then PR)
     if (session.links?.issue) {
       const issue = session.links.issue;
       const issueStatus = data.issueMeta?.status ? `${getStatusEmoji(data.issueMeta.status)}` : '';
       parts.push(`<${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
+    } else if (session.links?.pr) {
       const pr = session.links.pr;
       const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
       parts.push(`<${pr.url}|${pr.label || 'PR'}>${prStatusEmoji}${data.reviewChip}`);
     }
-    parts.push(data.timeAgo);
-    if (data.permalink) parts.push(`<${data.permalink}|↗>`);
 
-    return [{ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(parts.join(' · ')) }] }];
-  }
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(parts.join(' · ')) }] });
 
-  // ─── Theme H: Status Bar (colored dots + 열기 button) ───
-  private buildCardThemeH(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-    const statusDot = session.activityState === 'working' ? '🟢'
-      : session.activityState === 'waiting' ? '🟡' : '⚪';
-
-    let titleText = `${statusDot} *${session.title || '대화'}* — _${data.channelName}_`;
-    titleText += ` ${data.modelDisplay}`;
-    if (session.currentInitiatorName) titleText += ` · 🎯 ${session.currentInitiatorName}`;
-    titleText += ` · ${data.timeAgo}`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: titleText } };
-    if (data.permalink) {
-      sectionBlock.accessory = {
-        type: 'button',
-        text: { type: 'plain_text', text: '열기 ↗', emoji: true },
-        url: data.permalink,
-        action_id: `open_thread_${sessionKey.substring(0, 8)}`,
-      };
-    }
-    blocks.push(sectionBlock);
-
-    // Links context
-    const linkParts: string[] = [];
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueTitle = data.issueMeta?.title ? `: ${truncate(data.issueMeta.title)}` : '';
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}${data.issueMeta.status}` : '';
-      linkParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}${issueTitle}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      const prStatus = data.prMeta?.status ? ` ${prStatusEmoji}${data.prMeta.status}` : '';
-      linkParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}>${prStatus}${data.reviewChip}`);
-    }
-    if (linkParts.length > 0) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(linkParts.join(' · ')) }] });
+    // Actions: ✕ only
+    if (showControls) {
+      blocks.push({
+        type: 'actions',
+        elements: [this.buildTerminateAccessory(sessionKey, session, data.channelName, '✕')],
+      });
     }
 
-    return blocks;
-  }
-
-  // ─── Theme I: Kanban (grouped by status — separator per card) ───
-  private buildCardThemeI(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-    const statusLabel = session.activityState === 'working' ? '⚙️ 작업중'
-      : session.activityState === 'waiting' ? '✋ 대기중' : '💤 유휴';
-
-    let titleText = `*${session.title || '대화'}*\n#${data.channelName} · ${data.modelDisplay}`;
-    if (session.currentInitiatorName) titleText += ` · 🎯 ${session.currentInitiatorName}`;
-    if (data.permalink) titleText += ` · <${data.permalink}|↗>`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: titleText } };
-    if (showControls) sectionBlock.accessory = this.buildTerminateAccessory(sessionKey, session, data.channelName, '🗑️');
-    blocks.push(sectionBlock);
-
-    const metaParts: string[] = [];
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      metaParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      metaParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`);
-    }
-    metaParts.push(`🕐 ${data.timeAgo}`);
-    metaParts.push(`⏳ ${data.expiresShort}`);
-
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' · ')) }] });
-    return blocks;
-  }
-
-  // ─── Theme J: Timeline (time as anchor) ───
-  private buildCardThemeJ(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-
-    // Time anchor
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `🕐 *${data.timeAgo}*` }] });
-
-    let bodyText = `${data.activityEmoji}*${session.title || '대화'}* · _${data.channelName}_`;
-    bodyText += `\n${data.modelDisplay}`;
-    if (session.currentInitiatorName) bodyText += ` · 🎯 ${session.currentInitiatorName}`;
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      bodyText += ` · 🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`;
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      bodyText += ` · 🔀 <${pr.url}|${pr.label || 'PR'}>${prStatusEmoji}${data.reviewChip}`;
-    }
-    bodyText += ` · ${data.expiresText}`;
-
-    const sectionBlock: any = { type: 'section', text: { type: 'mrkdwn', text: this.safeMrkdwn(bodyText) } };
-    if (data.permalink) {
-      sectionBlock.accessory = {
-        type: 'button',
-        text: { type: 'plain_text', text: '↗', emoji: true },
-        url: data.permalink,
-        action_id: `open_thread_${sessionKey.substring(0, 8)}`,
-      };
-    }
-    blocks.push(sectionBlock);
-
-    return blocks;
-  }
-
-  // ─── Theme K: Progress Card (▓░ bar + percentage) ───
-  private buildCardThemeK(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-    const statusLabel = session.activityState === 'working' ? '⚙️ 작업중'
-      : session.activityState === 'waiting' ? '✋ 대기중' : '💤 유휴';
-
-    // Estimate progress from activity state
-    const pct = session.activityState === 'working' ? 75
-      : session.activityState === 'waiting' ? 40 : 10;
-    const filled = Math.round(pct / 5);
-    const bar = '▓'.repeat(filled) + '░'.repeat(20 - filled);
-
-    let bodyText = `*${session.title || '대화'}*\n${statusLabel} · ${data.modelDisplay}`;
-    if (session.currentInitiatorName) bodyText += ` · 🎯 ${session.currentInitiatorName}`;
-    bodyText += `\n\`${bar}\` ${pct}% · ${data.expiresText}`;
-
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: this.safeMrkdwn(bodyText) } });
-
-    const metaParts: string[] = [];
-    metaParts.push(`#${data.channelName}`);
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueTitle = data.issueMeta?.title ? `: ${truncate(data.issueMeta.title)}` : '';
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}${data.issueMeta.status}` : '';
-      metaParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}${issueTitle}>${issueStatus}`);
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      const prStatus = data.prMeta?.status ? ` ${prStatusEmoji}${data.prMeta.status}` : '';
-      metaParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}>${prStatus}${data.reviewChip}`);
-    }
-    if (data.permalink) metaParts.push(`<${data.permalink}|스레드 ↗>`);
-
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(metaParts.join(' · ')) }] });
-    return blocks;
-  }
-
-  // ─── Theme L: Notification (blockquote body + inline actions) ───
-  private buildCardThemeL(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
-  ): any[] {
-    const blocks: any[] = [];
-    const statusLabel = session.activityState === 'working' ? '_작업중_'
-      : session.activityState === 'waiting' ? '_대기중_' : '_유휴 상태_';
-
-    let bodyText = `${data.activityEmoji}*${session.title || '대화'}*이(가) ${statusLabel} 입니다`;
-    bodyText += `\n> 🤖 ${data.modelDisplay}`;
-    if (session.currentInitiatorName) bodyText += ` · 🎯 ${session.currentInitiatorName}`;
-    bodyText += ` · #${data.channelName}`;
-    if (session.links?.issue) {
-      const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      bodyText += `\n> 🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`;
-    }
-    if (session.links?.pr) {
-      const pr = session.links.pr;
-      const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      bodyText += ` · 🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`;
-    }
-    bodyText += `\n> 🕐 ${data.timeAgo} · ${data.expiresText}`;
-
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: this.safeMrkdwn(bodyText) } });
     return blocks;
   }
 

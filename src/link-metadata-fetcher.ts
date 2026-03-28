@@ -106,6 +106,24 @@ export async function fetchLinkTitle(link: SessionLink): Promise<string | undefi
 }
 
 /**
+ * Batch fetch metadata for multiple links in parallel.
+ * Returns enriched copies of the links with title/status filled in.
+ * Graceful: individual failures don't block others.
+ */
+export async function fetchBatchLinkMetadata(links: SessionLink[]): Promise<SessionLink[]> {
+  if (links.length === 0) return [];
+  const results = await Promise.allSettled(
+    links.map(async (link) => {
+      const meta = await fetchLinkMetadata(link);
+      return { ...link, title: meta.title ?? link.title, status: meta.status ?? link.status };
+    })
+  );
+  return results.map((r, i) =>
+    r.status === 'fulfilled' ? r.value : { ...links[i] }
+  );
+}
+
+/**
  * Fetch GitHub PR or issue metadata (title + status) from API.
  */
 async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string; status?: string }> {

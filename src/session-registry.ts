@@ -471,11 +471,24 @@ export class SessionRegistry {
   }
 
   /**
-   * Set session title (typically auto-generated from first Q&A)
+   * Set session title (typically auto-generated from first Q&A).
+   * Only sets if title is not already present.
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
     if (session && !session.title) {
+      session.title = title;
+      this.saveSessions();
+    }
+  }
+
+  /**
+   * Update session title unconditionally (e.g. when issue is linked or PR is merged).
+   * Unlike setSessionTitle, this overwrites existing title.
+   */
+  updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
+    const session = this.getSession(channelId, threadTs);
+    if (session) {
       session.title = title;
       this.saveSessions();
     }
@@ -616,7 +629,7 @@ export class SessionRegistry {
       };
     }
 
-    const applyResult = this.applySessionResourceOperations(session, request.operations);
+    const applyResult = this.applySessionResourceOperations(session, request.operations ?? []);
     if (!applyResult.ok) {
       return {
         ok: false,
