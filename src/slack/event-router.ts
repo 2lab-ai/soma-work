@@ -108,7 +108,16 @@ export class EventRouter {
         }
       }
 
-      const text = event.text.replace(/<@[^>]+>/g, '').trim();
+      // Issue #141: Strip only bot mention, preserve other user mentions in the prompt.
+      let botId: string | undefined;
+      try {
+        botId = await this.deps.slackApi.getBotUserId();
+      } catch (err) {
+        this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
+      }
+      const text = botId
+        ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim()
+        : event.text.trim(); // fallback: preserve all mentions if botId unavailable
       await this.messageHandler(
         {
           ...event,
