@@ -391,9 +391,8 @@ export class McpConfigBuilder {
     return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
   }
 
-  private cronServerCache = McpConfigBuilder.emptyCache();
   private getCronServerPath(): string {
-    return this.resolveServerPath('Cron', CRON_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'cron'), this.cronServerCache);
+    return this.getServerPath('Cron', CRON_SERVER_BASENAME, 'cron');
   }
 
   /**
