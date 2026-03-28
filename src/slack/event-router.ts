@@ -108,7 +108,11 @@ export class EventRouter {
         }
       }
 
-      const text = event.text.replace(/<@[^>]+>/g, '').trim();
+      // Issue #141: Strip only bot mention, preserve other user mentions in the prompt.
+      const botId = await this.deps.slackApi.getBotUserId();
+      const text = botId
+        ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim()
+        : event.text.replace(/<@[^>]+>/g, '').trim(); // fallback: strip all if botId unavailable
       await this.messageHandler(
         {
           ...event,
