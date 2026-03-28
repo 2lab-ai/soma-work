@@ -1020,6 +1020,7 @@ export class SessionRegistry {
     getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(err => this.logger.debug('metrics emit failed', err));
 
     this.cleanupSourceWorkingDirs(session);
+    this.clearOnIdleCallbacks(sessionKey); // Clean up any pending cron callbacks
     this.sessions.delete(sessionKey);
     this.logger.info('Session terminated', { sessionKey, ownerId: session.ownerId });
 
@@ -1052,6 +1053,7 @@ export class SessionRegistry {
             }
           }
           this.cleanupSourceWorkingDirs(session);
+          this.clearOnIdleCallbacks(key); // Clean up any pending cron callbacks
           this.sessions.delete(key);
           cleaned++;
         }

@@ -201,6 +201,12 @@ describe('isValidCronExpression', () => {
     expect(isValidCronExpression('* * * * 8')).toBe(false);    // dow > 7
     expect(isValidCronExpression('99 99 * * *')).toBe(false);  // both out of range
   });
+
+  it('rejects zero step and reversed ranges', () => {
+    expect(isValidCronExpression('*/0 * * * *')).toBe(false);  // step 0
+    expect(isValidCronExpression('5-1 * * * *')).toBe(false);  // reversed range
+    expect(isValidCronExpression('* 10-1/2 * * *')).toBe(false); // reversed range with step
+  });
 });
 
 describe('isValidCronName', () => {
