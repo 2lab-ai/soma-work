@@ -149,37 +149,37 @@ describe('Scenario 4: Security validation', () => {
 
   // Trace: Scenario 4, Section 3d — MAX_FILE_SIZE constant
   it('MAX_FILE_SIZE is 1GB', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
+    const validatorPath = path.resolve(__dirname, 'helpers', 'file-validator.ts');
+    const source = await fs.readFile(validatorPath, 'utf-8');
     expect(source).toMatch(/1[_,]?073[_,]?741[_,]?824/);
   });
 
   // Trace: Scenario 4, Section 3b — symlink check
   it('validates against symlinks', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
+    const validatorPath = path.resolve(__dirname, 'helpers', 'file-validator.ts');
+    const source = await fs.readFile(validatorPath, 'utf-8');
     expect(source).toContain('isSymbolicLink');
   });
 
   // Trace: Scenario 4, Section 3a — path traversal check
   it('validates against path traversal', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
+    const validatorPath = path.resolve(__dirname, 'helpers', 'file-validator.ts');
+    const source = await fs.readFile(validatorPath, 'utf-8');
     expect(source).toMatch(/path.traversal|\.\..*not.allowed|traversal/i);
   });
 
   // Codex review fix: allowlisted root directory
   it('has ALLOWED_UPLOAD_ROOTS restricting to /tmp', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
+    const validatorPath = path.resolve(__dirname, 'helpers', 'file-validator.ts');
+    const source = await fs.readFile(validatorPath, 'utf-8');
     expect(source).toContain('ALLOWED_UPLOAD_ROOTS');
     expect(source).toContain("'/tmp'");
   });
 
   // Codex review fix: isFile() check
   it('validates file is a regular file (not directory)', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
+    const validatorPath = path.resolve(__dirname, 'helpers', 'file-validator.ts');
+    const source = await fs.readFile(validatorPath, 'utf-8');
     expect(source).toContain('isFile()');
   });
 
@@ -220,6 +220,7 @@ describe('Scenario 5: Existing tools work after rename', () => {
   it('server version is 3.0.0', async () => {
     const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
     const source = await fs.readFile(serverPath, 'utf-8');
-    expect(source).toContain("version: '3.0.0'");
+    // After BaseMcpServer refactoring: super('slack-mcp', '3.0.0')
+    expect(source).toContain("'3.0.0'");
   });
 });
