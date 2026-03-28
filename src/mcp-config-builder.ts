@@ -357,31 +357,38 @@ export class McpConfigBuilder {
     return cache.path;
   }
 
-  private static emptyCache() { return { path: null as string | null, checked: false, triedPaths: [] as string[] }; }
+  /** Registry of server path caches — replaces 5 individual cache fields */
+  private serverPathRegistry = new Map<string, { path: string | null; checked: boolean; triedPaths: string[] }>();
 
-  private permissionServerCache = McpConfigBuilder.emptyCache();
+  /**
+   * Resolve an internal MCP server path with caching.
+   * Single entry point for all server path lookups.
+   */
+  private getServerPath(label: string, basename: string, subdir: string): string {
+    if (!this.serverPathRegistry.has(basename)) {
+      this.serverPathRegistry.set(basename, { path: null, checked: false, triedPaths: [] });
+    }
+    return this.resolveServerPath(label, basename, path.join(MCP_SERVERS_DIR, subdir), this.serverPathRegistry.get(basename)!);
+  }
+
   private getPermissionServerPath(): string {
-    return this.resolveServerPath('Permission', PERMISSION_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'permission'), this.permissionServerCache);
+    return this.getServerPath('Permission', PERMISSION_SERVER_BASENAME, 'permission');
   }
 
-  private modelCommandServerCache = McpConfigBuilder.emptyCache();
   private getModelCommandServerPath(): string {
-    return this.resolveServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'model-command'), this.modelCommandServerCache);
+    return this.getServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, 'model-command');
   }
 
-  private slackMcpServerCache = McpConfigBuilder.emptyCache();
   private getSlackMcpServerPath(): string {
-    return this.resolveServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'slack-mcp'), this.slackMcpServerCache);
+    return this.getServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, 'slack-mcp');
   }
 
-  private llmServerCache = McpConfigBuilder.emptyCache();
   private getLlmServerPath(): string {
-    return this.resolveServerPath('LLM', LLM_SERVER_BASENAME, path.join(MCP_SERVERS_DIR, 'llm'), this.llmServerCache);
+    return this.getServerPath('LLM', LLM_SERVER_BASENAME, 'llm');
   }
 
-  private serverToolsCache = McpConfigBuilder.emptyCache();
   private getServerToolsServerPath(): string {
-    return this.resolveServerPath('Server-tools', SERVER_TOOLS_BASENAME, path.join(MCP_SERVERS_DIR, 'server-tools'), this.serverToolsCache);
+    return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
   }
 
   private cronServerCache = McpConfigBuilder.emptyCache();
