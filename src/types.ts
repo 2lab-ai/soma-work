@@ -199,6 +199,7 @@ export interface ActionPanelState {
   renderKey?: string;
   lastRenderedAt?: number;
   prStatus?: ActionPanelPRStatus;
+  summaryBlocks?: any[];
 }
 
 export interface ConversationSession {
