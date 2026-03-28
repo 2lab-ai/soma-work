@@ -40,6 +40,9 @@ import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import { SummaryTimer } from '../summary-timer.js';
+import { CompletionMessageTracker } from '../completion-message-tracker.js';
+import { SummaryService } from '../summary-service';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
@@ -104,6 +107,9 @@ interface StreamExecutorDeps {
   assistantStatusManager: AssistantStatusManager;
   threadPanel?: ThreadPanel;
   turnNotifier?: TurnNotifier;
+  summaryTimer?: SummaryTimer;
+  completionMessageTracker?: CompletionMessageTracker;
+  summaryService?: SummaryService;
 }
 
 interface StreamExecuteParams {
@@ -228,6 +234,27 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       user,
       say,
     } = params;
+
+    // Cancel summary timer on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S2
+    if (this.deps.summaryTimer) {
+      this.deps.summaryTimer.cancel(params.sessionKey);
+    }
+
+    // Clear any displayed summary on new user input
+    if (this.deps.summaryService) {
+      this.deps.summaryService.clearDisplay(session as any);
+    }
+
+    // Delete tracked completion messages on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S7
+    if (this.deps.completionMessageTracker) {
+      this.deps.completionMessageTracker.deleteAll(
+        params.sessionKey,
+        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        params.channel
+      ).catch(() => {});
+    }
 
     let toolChoicePending = false;
     let toolContinuation: Continuation | undefined;
@@ -731,6 +758,31 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           });
         };
         enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+
+        // Start summary timer for non-error completions (fire-and-forget)
+        // Trace: docs/turn-summary-lifecycle/trace.md, S1
+        if (this.deps.summaryTimer && category !== 'Exception') {
+          this.deps.summaryTimer.start(sessionKey, async () => {
+            if (this.deps.summaryService) {
+              try {
+                const summaryText = await this.deps.summaryService.execute(session as any);
+                if (summaryText) {
+                  this.deps.summaryService.displayOnThread(session as any, summaryText);
+                }
+              } catch (err: any) {
+                this.logger.warn('Summary timer callback failed', { error: err?.message });
+              }
+            }
+          });
+        }
+
+        // Track completion message for auto-deletion
+        // Trace: docs/turn-summary-lifecycle/trace.md, S6
+        if (this.deps.completionMessageTracker && !hasSdkError) {
+          // Track will be called when the notification channel sends the Slack message
+          // For now, we mark the session for tracking
+          this.deps.completionMessageTracker.track(sessionKey, threadTs, determineTurnCategory({ hasPendingChoice, isError: hasSdkError }));
+        }
       }
 
       // Update bot-initiated thread root with status
