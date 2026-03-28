@@ -4,7 +4,7 @@ import { createForkExecutor } from './create-fork-executor.js';
 // Minimal mock of ClaudeHandler with dispatchOneShot
 function makeMockClaudeHandler() {
   return {
-    dispatchOneShot: vi.fn<[string, string, string?, AbortController?], Promise<string>>(),
+    dispatchOneShot: vi.fn().mockResolvedValue('') as ReturnType<typeof vi.fn>,
   };
 }
 
