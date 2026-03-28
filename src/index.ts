@@ -16,6 +16,8 @@ import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
 import { tokenManager } from './token-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { CronScheduler, SyntheticMessageEvent } from './cron-scheduler';
+import { CronStorage } from './cron-storage';
 
 const logger = new Logger('Main');
 
@@ -187,6 +189,34 @@ async function start() {
       logger.warn('Failed to start report scheduler (non-critical)', error);
     }
 
+    // Start cron scheduler (non-blocking, non-critical)
+    // Trace: docs/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
+    let cronScheduler: CronScheduler | null = null;
+    try {
+      const cronStorage = new CronStorage();
+      const noopSay = async () => ({ ts: undefined as string | undefined });
+
+      const messageInjector = async (event: SyntheticMessageEvent) => {
+        await slackHandler.handleMessage(event as any, noopSay);
+      };
+
+      const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {
+        const result = await app.client.chat.postMessage({ channel, text });
+        return result.ts as string | undefined;
+      };
+
+      cronScheduler = new CronScheduler({
+        storage: cronStorage,
+        sessionRegistry: claudeHandler.getSessionRegistry(),
+        messageInjector,
+        threadCreator,
+      });
+      cronScheduler.start();
+      timing('Cron scheduler initialized');
+    } catch (error) {
+      logger.warn('Failed to start cron scheduler (non-critical)', error);
+    }
+
     // Notify users whose sessions were interrupted by crash (non-blocking)
     slackHandler.notifyCrashRecovery().then(notified => {
       if (notified > 0) {
@@ -235,6 +265,11 @@ async function start() {
       try {
         // Stop report scheduler
         stopReportScheduler();
+
+        // Stop cron scheduler
+        if (cronScheduler) {
+          cronScheduler.stop();
+        }
 
         // Notify all active sessions about shutdown
         await slackHandler.notifyShutdown();

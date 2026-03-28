@@ -133,6 +133,12 @@ export class SessionRegistry {
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
+   * onIdle callback registry — fired when session transitions to idle.
+   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b-3c
+   */
+  private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
+
+  /**
    * Set callbacks for session expiry events
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
@@ -383,6 +389,10 @@ export class SessionRegistry {
     // Only persist on idle transition to minimize disk I/O
     if (state === 'idle') {
       this.saveSessions();
+      // Drain onIdle callbacks (e.g., pending cron jobs)
+      // Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b
+      const sessionKey = this.getSessionKey(channelId, threadTs);
+      this.drainOnIdleCallbacks(sessionKey);
     }
   }
 
@@ -399,6 +409,8 @@ export class SessionRegistry {
 
     if (state === 'idle') {
       this.saveSessions();
+      // Drain onIdle callbacks (e.g., pending cron jobs)
+      this.drainOnIdleCallbacks(sessionKey);
     }
   }
 
@@ -416,6 +428,46 @@ export class SessionRegistry {
   getActivityStateByKey(sessionKey: string): ActivityState | undefined {
     const session = this.getSessionByKey(sessionKey);
     return session?.activityState;
+  }
+
+  /**
+   * Register a callback to be fired when a session transitions to idle.
+   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3c
+   */
+  registerOnIdle(sessionKey: string, callback: () => void): void {
+    const existing = this.onIdleCallbacks.get(sessionKey) || [];
+    existing.push(callback);
+    this.onIdleCallbacks.set(sessionKey, existing);
+    this.logger.debug('Registered onIdle callback', { sessionKey, total: existing.length });
+  }
+
+  /**
+   * Drain and execute all onIdle callbacks for a session.
+   * Fire-and-forget: each callback wrapped in try/catch.
+   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b
+   */
+  private drainOnIdleCallbacks(sessionKey: string): void {
+    const callbacks = this.onIdleCallbacks.get(sessionKey);
+    if (!callbacks || callbacks.length === 0) return;
+
+    this.logger.debug('Draining onIdle callbacks', { sessionKey, count: callbacks.length });
+    this.onIdleCallbacks.delete(sessionKey);
+
+    for (const cb of callbacks) {
+      try {
+        cb();
+      } catch (error: any) {
+        this.logger.warn('onIdle callback failed', { sessionKey, error: error?.message });
+      }
+    }
+  }
+
+  /**
+   * Clear onIdle callbacks for a session (e.g., on session removal).
+   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 5
+   */
+  clearOnIdleCallbacks(sessionKey: string): void {
+    this.onIdleCallbacks.delete(sessionKey);
   }
 
   /**
