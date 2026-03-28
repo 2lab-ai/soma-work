@@ -515,9 +515,12 @@ class SlackMcpServer {
 
     // Compute approximate offset of first returned message
     const approxOffset = formatted.length > 0 ? Math.max(totalCount - before - after, 0) : 0;
-    const hasMore = before > 0
-      ? beforeMessages.length === before
-      : after > 0 ? afterMessages.length === after : false;
+    // has_more: check if there are more messages beyond the returned window.
+    // For before: compare returned count against total available (not just count === before,
+    // which gives false positives when root message is injected beyond the count limit).
+    const hasMoreBefore = before > 0 && beforeMessages.length > before;
+    const hasMore = hasMoreBefore
+      || (after > 0 && afterMessages.length === after);
 
     const result: GetThreadMessagesResult = {
       thread_ts: this.context.threadTs,
@@ -600,10 +603,13 @@ class SlackMcpServer {
 
   /**
    * Legacy: Fetch up to `count` replies ending at (and including) anchorTs.
+   * Root message is always included (even beyond count) because it may contain
+   * files/images the user referenced in the thread header.
    */
   private async fetchMessagesBefore(anchorTs: string, count: number): Promise<any[]> {
     if (count === 0) return [];
 
+    let rootMessage: any | null = null;
     const collected: any[] = [];
     let cursor: string | undefined;
 
@@ -617,8 +623,11 @@ class SlackMcpServer {
 
       const msgs = response.messages || [];
       for (const m of msgs) {
-        if (m.ts === this.context.threadTs) continue;
         if (m.ts! > anchorTs) break;
+        // Capture root message separately so it survives the slice
+        if (m.ts === this.context.threadTs) {
+          rootMessage = m;
+        }
         collected.push(m);
       }
 
@@ -627,7 +636,14 @@ class SlackMcpServer {
       if (msgs.length > 0 && msgs[msgs.length - 1].ts! > anchorTs) break;
     } while (cursor);
 
-    return collected.slice(-count);
+    const sliced = collected.slice(-count);
+
+    // Ensure root message is always present — it may contain thread header files
+    if (rootMessage && !sliced.some((m: any) => m.ts === this.context.threadTs)) {
+      sliced.unshift(rootMessage);
+    }
+
+    return sliced;
   }
 
   /**
