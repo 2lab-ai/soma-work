@@ -11,6 +11,8 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
       mimetype: 'image/png',
       isImage: true,
       isText: false,
+      isVideo: false,
+      isAudio: false,
       size: 54321,
       tempPath: '/tmp/slack-file-12345-screenshot.png',
     };
@@ -23,6 +25,8 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
       mimetype: 'text/typescript',
       isImage: false,
       isText: true,
+      isVideo: false,
+      isAudio: false,
       size: 200,
       tempPath: '/tmp/slack-file-12345-code.ts',
     };
@@ -35,6 +39,8 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
       mimetype: 'application/pdf',
       isImage: false,
       isText: false,
+      isVideo: false,
+      isAudio: false,
       size: 100000,
       tempPath: '/tmp/slack-file-12345-doc.pdf',
     };
