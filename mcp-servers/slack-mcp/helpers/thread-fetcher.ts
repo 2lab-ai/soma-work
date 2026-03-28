@@ -80,6 +80,11 @@ export async function fetchThreadSlice(
 
 /**
  * Fetch up to `count` replies ending at (and including) anchorTs.
+ * Root message is always included (even beyond count) because it may contain
+ * files/images the user referenced in the thread header.
+ *
+ * Returns { messages, rootWasInjected } so the caller can distinguish
+ * "extra because root was prepended" from "extra because unseen messages exist."
  */
 export async function fetchMessagesBefore(
   slack: WebClient,
@@ -87,9 +92,10 @@ export async function fetchMessagesBefore(
   threadTs: string,
   anchorTs: string,
   count: number
-): Promise<any[]> {
-  if (count === 0) return [];
+): Promise<{ messages: any[]; rootWasInjected: boolean }> {
+  if (count === 0) return { messages: [], rootWasInjected: false };
 
+  let rootMessage: any | null = null;
   const collected: any[] = [];
   let cursor: string | undefined;
 
@@ -103,8 +109,11 @@ export async function fetchMessagesBefore(
 
     const msgs = response.messages || [];
     for (const m of msgs) {
-      if (m.ts === threadTs) continue;
       if (m.ts! > anchorTs) break;
+      // Capture root message separately so it survives the slice
+      if (m.ts === threadTs) {
+        rootMessage = m;
+      }
       collected.push(m);
     }
 
@@ -112,7 +121,16 @@ export async function fetchMessagesBefore(
     if (msgs.length > 0 && msgs[msgs.length - 1].ts! > anchorTs) break;
   } while (cursor);
 
-  return collected.slice(-count);
+  const sliced = collected.slice(-count);
+
+  // Ensure root message is always present — it may contain thread header files
+  let rootWasInjected = false;
+  if (rootMessage && !sliced.some((m: any) => m.ts === threadTs)) {
+    sliced.unshift(rootMessage);
+    rootWasInjected = true;
+  }
+
+  return { messages: sliced, rootWasInjected };
 }
 
 /**

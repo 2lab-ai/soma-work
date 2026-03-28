@@ -645,25 +645,33 @@ describe('thread message formatting', () => {
 });
 
 describe('hasMore pagination heuristics', () => {
-  it('hasMoreBefore is true when returned count equals requested count', () => {
-    const before = 10;
-    const beforeMessages = new Array(10).fill({ ts: '1.0' });
-    const hasMoreBefore = before > 0 && beforeMessages.length === before;
-    expect(hasMoreBefore).toBe(true);
+  // Production logic: effectiveLen = rootWasInjected ? len - 1 : len;
+  // hasMore = before > 0 ? effectiveLen >= before : ...
+  function computeHasMore(before: number, msgLen: number, rootWasInjected: boolean): boolean {
+    const effectiveLen = rootWasInjected ? msgLen - 1 : msgLen;
+    return before > 0 ? effectiveLen >= before : false;
+  }
+
+  it('hasMoreBefore is true when effective count equals requested', () => {
+    expect(computeHasMore(10, 10, false)).toBe(true);
   });
 
-  it('hasMoreBefore is false when returned count is less than requested', () => {
-    const before = 10;
-    const beforeMessages = new Array(5).fill({ ts: '1.0' });
-    const hasMoreBefore = before > 0 && beforeMessages.length === before;
-    expect(hasMoreBefore).toBe(false);
+  it('hasMoreBefore is false when effective count is less than requested', () => {
+    expect(computeHasMore(10, 5, false)).toBe(false);
   });
 
   it('hasMoreBefore is false when before is 0', () => {
-    const before = 0;
-    const beforeMessages: any[] = [];
-    const hasMoreBefore = before > 0 && beforeMessages.length === before;
-    expect(hasMoreBefore).toBe(false);
+    expect(computeHasMore(0, 0, false)).toBe(false);
+  });
+
+  it('hasMoreBefore: root injection does NOT cause false positive', () => {
+    // before=2, returned 3 messages but root was injected → effective = 2
+    // effective === before → at boundary (conservative true), but NOT because of root
+    expect(computeHasMore(2, 3, true)).toBe(true); // genuinely at boundary
+    // before=3, returned 3 + injected root = 4 → effective = 3
+    expect(computeHasMore(3, 4, true)).toBe(true); // genuinely at boundary
+    // before=5, returned 3 + injected root = 4 → effective = 3 < 5
+    expect(computeHasMore(5, 4, true)).toBe(false); // correctly false
   });
 
   it('hasMoreAfter follows same pattern', () => {
