@@ -8,6 +8,7 @@ import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
+import { userSettingsStore } from '../user-settings-store';
 import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
 
 // ---------------------------------------------------------------------------
@@ -562,7 +563,8 @@ export class ThreadSurface {
    * Header blocks: title + context row.
    */
   private buildHeaderBlocks(session: ConversationSession): any[] {
-    const payload = ThreadHeaderBuilder.fromSession(session);
+    const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+    const payload = ThreadHeaderBuilder.fromSession(session, { theme });
     return payload.blocks || [];
   }
 
@@ -577,7 +579,8 @@ export class ThreadSurface {
     const blocks: any[] = [];
 
     // Header with closed flag
-    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true });
+    const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
     blocks.push(...(headerPayload.blocks || []));
 
     // Closed panel

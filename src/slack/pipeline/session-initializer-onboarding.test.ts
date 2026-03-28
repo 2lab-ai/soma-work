@@ -30,6 +30,7 @@ vi.mock('../../user-settings-store', () => ({
     getSlackJiraMapping: vi.fn().mockReturnValue({}),
     findJiraAccountBySlackId: vi.fn().mockReturnValue(undefined),
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
   AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
   DEFAULT_MODEL: 'claude-opus-4-6',

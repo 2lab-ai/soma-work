@@ -2,6 +2,7 @@
  * User choice handling facade - combines extraction and UI building
  */
 import { UserChoice, UserChoices } from '../types';
+import { SessionTheme } from '../user-settings-store';
 import { UserChoiceExtractor, ExtractedChoice } from './user-choice-extractor';
 import { ChoiceMessageBuilder, SlackMessagePayload } from './choice-message-builder';
 
@@ -24,8 +25,8 @@ export class UserChoiceHandler {
   /**
    * Build Slack attachment for single user choice
    */
-  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): SlackMessagePayload {
-    return ChoiceMessageBuilder.buildUserChoiceBlocks(choice, sessionKey);
+  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string, theme?: SessionTheme): SlackMessagePayload {
+    return ChoiceMessageBuilder.buildUserChoiceBlocks(choice, sessionKey, theme);
   }
 
   /**
