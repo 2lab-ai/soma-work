@@ -11,9 +11,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef } from './types';
+import {
+  PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef,
+  ForceRefreshResult, PluginUpdateDetail, CacheMeta,
+} from './types';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
-import { fetchPlugin } from './marketplace-fetcher';
+import { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
+import { readCacheMeta, hasCachedPlugin } from './plugin-cache';
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { Logger } from '../logger';
 import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin, isDefaultMarketplace } from './defaults';
@@ -144,48 +148,140 @@ export class PluginManager {
   }
 
   /**
-   * Force re-download all plugins by clearing cache metadata first.
+   * Smart update: check remote SHA per plugin, only re-download when changed.
    * Used by the `plugins update` admin command.
-   * Returns the number of plugins that were refreshed.
+   *
+   * Returns per-plugin detail including old/new SHA, old/new date, and status.
    */
-  async forceRefresh(): Promise<{ total: number; updated: number; errors: string[] }> {
+  async forceRefresh(): Promise<ForceRefreshResult> {
+    const details: PluginUpdateDetail[] = [];
     const errors: string[] = [];
 
-    // Clear all cache meta files so fetchPlugin treats everything as stale
-    const cacheDir = path.join(this.pluginsDir, '.cache');
-    if (fs.existsSync(cacheDir)) {
-      try {
-        const metaFiles = fs.readdirSync(cacheDir).filter(f => f.endsWith('.meta.json'));
-        for (const file of metaFiles) {
-          fs.unlinkSync(path.join(cacheDir, file));
-        }
-        logger.info('Cleared plugin cache', { metaFilesRemoved: metaFiles.length });
-      } catch (error) {
-        const msg = `Failed to clear cache: ${(error as Error).message}`;
-        logger.error(msg);
-        errors.push(msg);
-      }
-    }
-
-    // Also remove cached plugin directories so they are fully re-downloaded
     const effectiveConfig = this.mergeDefaults();
-    const pluginNames = (effectiveConfig.plugins || [])
-      .map(raw => parsePluginRef(raw))
-      .filter((ref): ref is PluginRef => ref !== null)
-      .map(ref => ref.pluginName);
+    const marketplaceMap = this.buildMarketplaceMap(effectiveConfig);
+    const refs = this.parsePluginRefs(effectiveConfig);
 
-    for (const name of pluginNames) {
-      const pluginDir = path.join(this.pluginsDir, name);
-      if (fs.existsSync(pluginDir)) {
-        try {
-          fs.rmSync(pluginDir, { recursive: true, force: true });
-        } catch (error) {
-          errors.push(`Failed to remove cached ${name}: ${(error as Error).message}`);
+    // Phase 1: Per-plugin smart update check
+    for (const ref of refs) {
+      const marketplace = marketplaceMap.get(ref.marketplaceName);
+      if (!marketplace) {
+        const msg = `Marketplace "${ref.marketplaceName}" not found for plugin "${ref.pluginName}"`;
+        errors.push(msg);
+        details.push({
+          name: `${ref.pluginName}@${ref.marketplaceName}`,
+          status: 'error',
+          oldSha: null, oldDate: null,
+          newSha: null, newDate: null,
+          error: msg,
+        });
+        continue;
+      }
+
+      const pluginDisplayName = `${ref.pluginName}@${ref.marketplaceName}`;
+      const gitRef = marketplace.ref || 'main';
+
+      // Read existing cache meta BEFORE any changes
+      const oldMeta = readCacheMeta(this.pluginsDir, ref.pluginName);
+      const hadCache = hasCachedPlugin(this.pluginsDir, ref.pluginName);
+
+      // Resolve remote SHA
+      const remoteSha = resolveRemoteSha(marketplace.repo, gitRef);
+
+      if (!remoteSha) {
+        // Can't reach remote — keep existing if available
+        if (hadCache && oldMeta) {
+          details.push({
+            name: pluginDisplayName,
+            status: 'unchanged',
+            oldSha: oldMeta.sha.slice(0, 8),
+            oldDate: oldMeta.fetchedAt,
+            newSha: oldMeta.sha.slice(0, 8),
+            newDate: oldMeta.fetchedAt,
+            error: 'Cannot reach remote, keeping cached version',
+          });
+        } else {
+          const msg = `Cannot reach remote for ${pluginDisplayName} and no cache available`;
+          errors.push(msg);
+          details.push({
+            name: pluginDisplayName,
+            status: 'error',
+            oldSha: null, oldDate: null,
+            newSha: null, newDate: null,
+            error: msg,
+          });
         }
+        continue;
+      }
+
+      // Compare SHA — if identical, skip download entirely
+      if (oldMeta?.sha === remoteSha && hadCache) {
+        logger.info('Plugin already up-to-date, skipping', {
+          pluginName: ref.pluginName,
+          sha: remoteSha.slice(0, 8),
+        });
+        details.push({
+          name: pluginDisplayName,
+          status: 'unchanged',
+          oldSha: oldMeta.sha.slice(0, 8),
+          oldDate: oldMeta.fetchedAt,
+          newSha: remoteSha.slice(0, 8),
+          newDate: oldMeta.fetchedAt,
+        });
+        continue;
+      }
+
+      // SHA differs or no cache — need to re-download
+      // Clear this plugin's cache meta and directory so fetchPlugin re-downloads
+      const pluginDir = path.join(this.pluginsDir, ref.pluginName);
+      const cacheDir = path.join(this.pluginsDir, '.cache');
+      const metaFile = path.join(cacheDir, `${ref.pluginName}.meta.json`);
+
+      try {
+        if (fs.existsSync(metaFile)) fs.unlinkSync(metaFile);
+        if (fs.existsSync(pluginDir)) fs.rmSync(pluginDir, { recursive: true, force: true });
+      } catch (err) {
+        errors.push(`Failed to clear cache for ${ref.pluginName}: ${(err as Error).message}`);
+      }
+
+      try {
+        const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
+        if (result) {
+          const newMeta = readCacheMeta(this.pluginsDir, ref.pluginName);
+          details.push({
+            name: pluginDisplayName,
+            status: oldMeta ? 'updated' : 'new',
+            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+            oldDate: oldMeta?.fetchedAt ?? null,
+            newSha: result.sha.slice(0, 8),
+            newDate: newMeta?.fetchedAt ?? new Date().toISOString(),
+          });
+        } else {
+          const msg = `fetchPlugin returned null for ${pluginDisplayName}`;
+          errors.push(msg);
+          details.push({
+            name: pluginDisplayName,
+            status: 'error',
+            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+            oldDate: oldMeta?.fetchedAt ?? null,
+            newSha: null, newDate: null,
+            error: msg,
+          });
+        }
+      } catch (error) {
+        const msg = `Failed to fetch ${pluginDisplayName}: ${(error as Error).message}`;
+        errors.push(msg);
+        details.push({
+          name: pluginDisplayName,
+          status: 'error',
+          oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+          oldDate: oldMeta?.fetchedAt ?? null,
+          newSha: null, newDate: null,
+          error: msg,
+        });
       }
     }
 
-    // Re-initialize (downloads everything fresh)
+    // Phase 2: Re-initialize to rebuild the resolved plugin list
     const previous = this.resolved;
     this.initialized = false;
     this.resolved = [];
@@ -197,10 +293,15 @@ export class PluginManager {
       throw error;
     }
 
+    const updated = details.filter(d => d.status === 'updated' || d.status === 'new').length;
+    const unchanged = details.filter(d => d.status === 'unchanged').length;
+
     return {
       total: this.resolved.length,
-      updated: this.resolved.filter(r => r.source !== 'local-override').length,
+      updated,
+      unchanged,
       errors,
+      details,
     };
   }
 
