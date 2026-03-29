@@ -181,4 +181,74 @@ describe('complexity-scorer', () => {
       expect(result.score).toBeGreaterThanOrEqual(0);
     });
   });
+
+  describe('false positive prevention', () => {
+    it('does NOT match "spec" inside "specific"', () => {
+      const result = scoreComplexity('This is a specific requirement');
+      expect(result.signals.some(s => s.name === 'test_required')).toBe(false);
+    });
+
+    it('does NOT match "error" inside "errorHandler"', () => {
+      // "error" as part of camelCase identifier — should still match
+      // because it appears as a standalone token boundary
+      const result = scoreComplexity('the errorHandler class');
+      // This is debatable, but our regex uses whitespace/punctuation boundaries
+      // so "errorHandler" won't match "error" (no boundary between error and Handler)
+      expect(result.signals.some(s => s.name === 'debug_keywords')).toBe(false);
+    });
+
+    it('matches "error" as a standalone word', () => {
+      const result = scoreComplexity('there is an error in the code');
+      expect(result.signals.some(s => s.name === 'debug_keywords')).toBe(true);
+    });
+
+    it('matches "test" at end of sentence', () => {
+      const result = scoreComplexity('please write a test');
+      expect(result.signals.some(s => s.name === 'test_required')).toBe(true);
+    });
+  });
+
+  describe('code block stripping', () => {
+    it('does not score keywords inside code blocks', () => {
+      const msg = [
+        'Fix the login page',
+        '```ts',
+        'const architecture = "microservice";',
+        'const refactor = true;',
+        'const migration = "v2";',
+        '```',
+      ].join('\n');
+      const result = scoreComplexity(msg);
+      // "architecture", "microservice", "refactor", "migration" are inside code block
+      expect(result.signals.some(s => s.name === 'architecture_keywords')).toBe(false);
+    });
+
+    it('still counts code blocks themselves', () => {
+      const msg = [
+        'Change this:',
+        '```ts',
+        'const a = 1;',
+        '```',
+        'To this:',
+        '```ts',
+        'const b = 2;',
+        '```',
+      ].join('\n');
+      const result = scoreComplexity(msg);
+      expect(result.signals.some(s => s.name === 'multiple_code_blocks')).toBe(true);
+    });
+
+    it('does not count bullet items inside code blocks as subtasks', () => {
+      const msg = [
+        'Update the README',
+        '```md',
+        '- item one',
+        '- item two',
+        '- item three',
+        '```',
+      ].join('\n');
+      const result = scoreComplexity(msg);
+      expect(result.signals.some(s => s.name === 'subtasks')).toBe(false);
+    });
+  });
 });

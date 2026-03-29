@@ -86,13 +86,41 @@ function countWords(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
+/** Check if a string contains non-ASCII (Korean/CJK) characters. */
+function hasNonAscii(s: string): boolean {
+  return /[^\x00-\x7F]/.test(s);
+}
+
+/**
+ * Count keyword matches with context-aware matching.
+ * - Multi-word or Korean/CJK keywords: substring match (Korean particles
+ *   like 도/를/은 attach directly, so word-boundary regex doesn't work).
+ * - Single ASCII keywords: word-boundary regex to prevent false positives
+ *   like "spec" in "specific" or "global" in "globalThis".
+ */
 function countMatches(text: string, keywords: string[]): number {
   const lower = text.toLowerCase();
-  return keywords.filter((kw) => lower.includes(kw.toLowerCase())).length;
+  return keywords.filter((kw) => {
+    const kwLower = kw.toLowerCase();
+    if (kwLower.includes(' ') || hasNonAscii(kwLower)) {
+      return lower.includes(kwLower);
+    }
+    const escaped = kwLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:^|[\\s,.()"'\`])${escaped}(?:$|[\\s,.()"'\`])`, 'i');
+    return re.test(lower);
+  }).length;
 }
 
 function hasAny(text: string, keywords: string[]): boolean {
   return countMatches(text, keywords) > 0;
+}
+
+/**
+ * Strip fenced code blocks from text to avoid scoring pasted diffs/code.
+ * Preserves the prose around code blocks for keyword analysis.
+ */
+function stripCodeBlocks(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, '');
 }
 
 /** Count file-path-like tokens (e.g. src/foo.ts, ./bar/baz.js) */
@@ -102,7 +130,7 @@ function countFilePaths(text: string): number {
   return matches ? matches.length : 0;
 }
 
-/** Count fenced code blocks */
+/** Count fenced code blocks (on original text, before stripping) */
 function countCodeBlocks(text: string): number {
   const matches = text.match(/```/g);
   // Each code block has opening + closing = 2 backtick fences
@@ -125,7 +153,7 @@ function countBulletItems(text: string): number {
 // Scoring
 // ---------------------------------------------------------------------------
 
-function collectLexicalSignals(text: string): ComplexitySignal[] {
+function collectLexicalSignals(text: string, originalText?: string): ComplexitySignal[] {
   const signals: ComplexitySignal[] = [];
   const wordCount = countWords(text);
 
@@ -190,8 +218,8 @@ function collectLexicalSignals(text: string): ComplexitySignal[] {
     });
   }
 
-  // Multiple code blocks
-  const codeBlocks = countCodeBlocks(text);
+  // Multiple code blocks (count on original text, before stripping)
+  const codeBlocks = countCodeBlocks(originalText ?? text);
   if (codeBlocks >= 2) {
     signals.push({
       category: 'lexical',
@@ -288,9 +316,13 @@ function tierFromScore(score: number): ComplexityTier {
  * Runs in < 1ms for typical messages.
  */
 export function scoreComplexity(text: string): ComplexityResult {
+  // Strip code blocks for keyword/structural analysis to avoid scoring
+  // pasted diffs/code. Keep original text for code block counting.
+  const prose = stripCodeBlocks(text);
+
   const signals = [
-    ...collectLexicalSignals(text),
-    ...collectStructuralSignals(text),
+    ...collectLexicalSignals(prose, text),
+    ...collectStructuralSignals(prose),
   ];
 
   const rawScore = signals.reduce((sum, s) => sum + s.points, 0);
