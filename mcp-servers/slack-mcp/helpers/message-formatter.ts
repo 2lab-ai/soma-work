@@ -20,21 +20,22 @@ export function formatSingleMessage(m: any): ThreadMessage {
       : new Date().toISOString(),
     files: (m.files || []).map((f: any) => {
       const fileIsImage = isImageFile(f.mimetype, f.name);
-      const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+      const fileIsNonVisualMedia = !fileIsImage && isMediaFile(f.mimetype, f.name || '');
       return {
         id: f.id,
         name: f.name,
         mimetype: f.mimetype,
         size: f.size,
-        ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+        // Expose download URL for non-media files AND images (Claude can read images via multimodal)
+        ...(!fileIsNonVisualMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
         ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
         ...(fileIsImage ? {
           is_image: true,
-          image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          image_note: 'Image file — download with download_thread_file, then use Read tool to view it. Claude can read images natively.',
         } : {}),
-        ...(!fileIsImage && fileIsMedia ? {
+        ...(fileIsNonVisualMedia ? {
           is_media: true,
-          media_note: 'Media file — do NOT download or Read. Reference by name only.',
+          media_note: 'Audio/video file — do NOT download or Read. Reference by name only.',
         } : {}),
       };
     }),
