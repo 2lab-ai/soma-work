@@ -96,6 +96,17 @@ interface SerializedSession {
   sourceThread?: { channel: string; threadTs: string };
   // Session-unique working directory for workspace isolation (#77)
   sessionWorkingDir?: string;
+  // Merge code change stats
+  mergeStats?: {
+    totalLinesAdded: number;
+    totalLinesDeleted: number;
+    mergedPRs: Array<{
+      prNumber: number;
+      linesAdded: number;
+      linesDeleted: number;
+      mergedAt: number;
+    }>;
+  };
 }
 
 /**
@@ -492,6 +503,34 @@ export class SessionRegistry {
       session.title = title;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Record merge code change stats (lines added/deleted) for a merged PR in this session.
+   */
+  addMergeStats(
+    channelId: string,
+    threadTs: string | undefined,
+    prNumber: number,
+    linesAdded: number,
+    linesDeleted: number,
+  ): void {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return;
+
+    if (!session.mergeStats) {
+      session.mergeStats = { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
+    }
+
+    session.mergeStats.totalLinesAdded += linesAdded;
+    session.mergeStats.totalLinesDeleted += linesDeleted;
+    session.mergeStats.mergedPRs.push({
+      prNumber,
+      linesAdded,
+      linesDeleted,
+      mergedAt: Date.now(),
+    });
+    this.saveSessions();
   }
 
   /**
@@ -1212,6 +1251,8 @@ export class SessionRegistry {
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
             sessionWorkingDir: session.sessionWorkingDir,
+            // Merge code change stats
+            mergeStats: session.mergeStats,
           });
         }
       }
@@ -1307,6 +1348,8 @@ export class SessionRegistry {
           sessionWorkingDir: serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
             ? serialized.sessionWorkingDir
             : undefined,
+          // Merge code change stats
+          mergeStats: serialized.mergeStats,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
