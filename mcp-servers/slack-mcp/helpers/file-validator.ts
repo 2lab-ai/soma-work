@@ -33,6 +33,19 @@ export function isMediaFile(mimetype?: string, filename?: string): boolean {
   return false;
 }
 
+/**
+ * Check if a file is non-visual media (audio/video only).
+ * Images are excluded because Claude can read them via multimodal Read tool.
+ */
+export function isNonVisualMedia(mimetype?: string, filename?: string): boolean {
+  if (mimetype && (mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+  if (filename) {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  }
+  return false;
+}
+
 export function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
   if (IMAGE_EXTENSIONS.has(ext)) return 'image';
   if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
