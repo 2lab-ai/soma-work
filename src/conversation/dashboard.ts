@@ -14,6 +14,7 @@ import { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { MetricsEvent, AggregatedMetrics } from '../metrics/types';
+import { getConversation } from './recorder';
 
 const logger = new Logger('Dashboard');
 
@@ -44,6 +45,13 @@ export interface KanbanSession {
   mergeStats?: {
     totalLinesAdded: number;
     totalLinesDeleted: number;
+  };
+  /** Token usage */
+  tokenUsage?: {
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCostUsd: number;
+    contextUsagePercent: number;
   };
 }
 
@@ -124,6 +132,14 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     mergeStats: s.mergeStats ? {
       totalLinesAdded: s.mergeStats.totalLinesAdded,
       totalLinesDeleted: s.mergeStats.totalLinesDeleted,
+    } : undefined,
+    tokenUsage: s.usage ? {
+      totalInputTokens: s.usage.totalInputTokens || 0,
+      totalOutputTokens: s.usage.totalOutputTokens || 0,
+      totalCostUsd: s.usage.totalCostUsd || 0,
+      contextUsagePercent: s.usage.contextWindow
+        ? ((s.usage.currentInputTokens || 0) / s.usage.contextWindow) * 100
+        : 0,
     } : undefined,
   };
 }
@@ -305,6 +321,44 @@ export async function registerDashboardRoutes(
     }
   );
 
+  // Session detail (conversation turns for slide panel)
+  server.get<{ Params: { conversationId: string } }>(
+    '/api/dashboard/session/:conversationId',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Conversation not found' });
+          return;
+        }
+        // Return lightweight turn summaries (no rawContent for assistant turns)
+        const turns = record.turns.map(t => ({
+          id: t.id,
+          role: t.role,
+          timestamp: t.timestamp,
+          userName: t.userName,
+          summaryTitle: t.summaryTitle,
+          summaryBody: t.summaryBody,
+          rawContent: t.role === 'user' ? t.rawContent : undefined,
+        }));
+        reply.send({
+          id: record.id,
+          title: record.title,
+          ownerName: record.ownerName,
+          workflow: record.workflow,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          turnCount: record.turns.length,
+          turns,
+        });
+      } catch (error) {
+        logger.error('Error fetching session detail', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
   // ── HTML Dashboard ──
 
   server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
@@ -426,11 +480,45 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .bar-labels { display: flex; gap: 4px; margin-top: 4px; }
 .bar-labels span { flex: 1; text-align: center; font-size: 0.6em; color: var(--text-muted); }
 
+/* Slide panel */
+.slide-panel { position: fixed; top: 0; right: -480px; width: 480px; height: 100vh; background: var(--surface); border-left: 1px solid var(--border); z-index: 100; transition: right 0.3s ease; display: flex; flex-direction: column; overflow: hidden; }
+.slide-panel.open { right: 0; }
+.slide-panel-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 99; display: none; }
+.slide-panel-overlay.open { display: block; }
+.panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+.panel-header h3 { flex: 1; font-size: 0.95em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-close { background: none; border: none; color: var(--text-muted); font-size: 1.2em; cursor: pointer; padding: 4px 8px; }
+.panel-close:hover { color: var(--text); }
+.panel-meta { padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 0.8em; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 12px; }
+.panel-meta .meta-item { display: flex; align-items: center; gap: 4px; }
+.panel-meta .meta-label { color: var(--text-muted); }
+.panel-meta .meta-value { color: var(--text); font-weight: 500; }
+.panel-links { padding: 8px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
+.panel-links a { font-size: 0.8em; color: var(--accent); text-decoration: none; background: var(--surface2); padding: 4px 10px; border-radius: 4px; }
+.panel-links a:hover { text-decoration: underline; }
+.panel-tokens { padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; }
+.token-badge { font-size: 0.75em; padding: 3px 8px; border-radius: 4px; background: var(--surface2); border: 1px solid var(--border); }
+.token-badge .tok-label { color: var(--text-muted); }
+.token-badge .tok-value { color: var(--accent); font-weight: 600; }
+.token-badge .tok-cost { color: var(--green); }
+.panel-turns { flex: 1; overflow-y: auto; padding: 12px 20px; }
+.turn { margin-bottom: 12px; padding: 10px; border-radius: 6px; }
+.turn.user { background: var(--surface2); border-left: 3px solid var(--accent); }
+.turn.assistant { background: transparent; border-left: 3px solid var(--purple); }
+.turn-header { font-size: 0.75em; color: var(--text-muted); margin-bottom: 4px; display: flex; justify-content: space-between; }
+.turn-content { font-size: 0.85em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.turn-summary-title { font-weight: 600; font-size: 0.85em; margin-bottom: 2px; }
+.turn-summary-body { font-size: 0.8em; color: var(--text-muted); line-height: 1.4; }
+
+.card .card-tokens { font-size: 0.65em; color: var(--text-muted); margin-top: 3px; }
+.card .card-tokens .cost { color: var(--green); }
+
 /* Responsive */
 @media (max-width: 768px) {
   .kanban { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .chart-row { flex-direction: column; }
+  .slide-panel { width: 100vw; right: -100vw; }
 }
 </style>
 </head>
@@ -461,6 +549,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div class="stat-card"><div class="label">PR 머지</div><div class="value" id="stat-merged">-</div></div>
       <div class="stat-card"><div class="label">커밋</div><div class="value" id="stat-commits">-</div></div>
       <div class="stat-card"><div class="label">머지 코드 +/-</div><div class="value" id="stat-merge-lines">-</div></div>
+      <div class="stat-card"><div class="label">토큰 사용</div><div class="value" id="stat-tokens">-</div></div>
+      <div class="stat-card"><div class="label">비용 (USD)</div><div class="value" id="stat-cost">-</div></div>
     </div>
 
     <div class="chart-row" id="chart-row"></div>
@@ -479,6 +569,21 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
         <div class="kanban-col-header"><span class="idle-dot"></span><h3>Completed / Idle</h3><span class="count" id="count-idle">0</span></div>
         <div class="cards" id="cards-idle"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- Slide Panel for Session Detail -->
+  <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
+  <div class="slide-panel" id="slide-panel">
+    <div class="panel-header">
+      <h3 id="panel-title">Session Detail</h3>
+      <button class="panel-close" onclick="closePanel()">✕</button>
+    </div>
+    <div class="panel-meta" id="panel-meta"></div>
+    <div class="panel-links" id="panel-links"></div>
+    <div class="panel-tokens" id="panel-tokens"></div>
+    <div class="panel-turns" id="panel-turns">
+      <p style="color:var(--text-muted);text-align:center;margin-top:40px">Click a session card to view details</p>
     </div>
   </div>
 </div>
@@ -530,19 +635,25 @@ function renderBoard(board) {
   }
 }
 
+// Store session data for panel access
+const _sessionCache = {};
+
 function renderCard(s) {
+  _sessionCache[s.key] = s;
   const links = [];
-  if (s.issueUrl) links.push('<a href="' + esc(s.issueUrl) + '" target="_blank">📋 ' + esc(s.issueLabel || 'Issue') + '</a>');
-  if (s.prUrl) links.push('<a href="' + esc(s.prUrl) + '" target="_blank">🔀 ' + esc(s.prLabel || 'PR') + (s.prStatus ? ' (' + esc(s.prStatus) + ')' : '') + '</a>');
+  if (s.issueUrl) links.push('<a href="' + esc(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()">📋 ' + esc(s.issueLabel || 'Issue') + '</a>');
+  if (s.prUrl) links.push('<a href="' + esc(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()">🔀 ' + esc(s.prLabel || 'PR') + (s.prStatus ? ' (' + esc(s.prStatus) + ')' : '') + '</a>');
   const mergeInfo = s.mergeStats ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>' : '';
-  const convLink = s.conversationId ? ' <a href="/conversations/' + esc(s.conversationId) + '" target="_blank">📝</a>' : '';
-  return '<div class="card">' +
+  const tokenInfo = s.tokenUsage ? '<div class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok · <span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></div>' : '';
+  const convLink = s.conversationId ? ' <a href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()">📝</a>' : '';
+  return '<div class="card" onclick="openPanel(\\'' + esc(s.key) + '\\')">' +
     '<div class="card-title">' + esc(s.title) + convLink + '</div>' +
     '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '') + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>' +
     (links.length ? '<div class="card-links">' + links.join('') + '</div>' : '') +
     (s.issueTitle ? '<div style="font-size:0.75em;color:var(--text-muted);margin-top:4px">' + esc(s.issueTitle).slice(0,60) + '</div>' : '') +
     (s.prTitle ? '<div style="font-size:0.75em;color:var(--text-muted);margin-top:2px">' + esc(s.prTitle).slice(0,60) + '</div>' : '') +
     '<div class="card-owner">' + esc(s.ownerName) + '</div>' +
+    tokenInfo +
     mergeInfo +
     '</div>';
 }
@@ -573,6 +684,9 @@ async function loadStats() {
     document.getElementById('stat-merged').textContent = data.totals.prsMerged;
     document.getElementById('stat-commits').textContent = data.totals.commitsCreated;
     document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
+
+    // Compute token totals from active sessions for this user
+    updateTokenStats();
 
     // Render charts
     renderCharts(data.days);
@@ -626,6 +740,114 @@ function connectWs() {
     } catch { /* ignore */ }
   };
 }
+
+// ── Token stats from session cache ──
+function updateTokenStats() {
+  let totalTokens = 0, totalCost = 0;
+  for (const key in _sessionCache) {
+    const s = _sessionCache[key];
+    if (currentUserId && s.ownerId !== currentUserId) continue;
+    if (s.tokenUsage) {
+      totalTokens += s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
+      totalCost += s.tokenUsage.totalCostUsd;
+    }
+  }
+  document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
+  document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
+}
+
+function formatTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+// ── Slide Panel ──
+let panelOpen = false;
+function openPanel(sessionKey) {
+  const s = _sessionCache[sessionKey];
+  if (!s) return;
+
+  // Header
+  document.getElementById('panel-title').textContent = s.title || 'Untitled';
+
+  // Meta
+  const metaEl = document.getElementById('panel-meta');
+  metaEl.innerHTML = [
+    '<span class="meta-item"><span class="meta-label">Owner:</span> <span class="meta-value">' + esc(s.ownerName) + '</span></span>',
+    '<span class="meta-item"><span class="meta-label">Workflow:</span> <span class="meta-value">' + esc(s.workflow) + '</span></span>',
+    '<span class="meta-item"><span class="meta-label">Model:</span> <span class="meta-value">' + esc(s.model) + '</span></span>',
+    '<span class="meta-item"><span class="meta-label">State:</span> <span class="meta-value">' + esc(s.activityState) + '</span></span>',
+    '<span class="meta-item"><span class="meta-label">Last:</span> <span class="meta-value">' + timeAgo(s.lastActivity) + '</span></span>',
+  ].join('');
+
+  // Links
+  const linksEl = document.getElementById('panel-links');
+  const linkHtml = [];
+  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">📋 ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' — ' + esc(s.issueTitle).slice(0,50) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">🔀 ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' — ' + esc(s.prTitle).slice(0,50) : '') + '</a>');
+  if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">📝 Full Conversation</a>');
+  linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.8em;color:var(--text-muted)">No links</span>';
+
+  // Tokens
+  const tokensEl = document.getElementById('panel-tokens');
+  if (s.tokenUsage) {
+    tokensEl.innerHTML = [
+      '<span class="token-badge"><span class="tok-label">Input:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalInputTokens) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Output:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalOutputTokens) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + s.tokenUsage.totalCostUsd.toFixed(3) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + s.tokenUsage.contextUsagePercent.toFixed(1) + '%</span></span>',
+    ].join('');
+    if (s.mergeStats) {
+      tokensEl.innerHTML += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
+    }
+  } else {
+    tokensEl.innerHTML = '<span style="font-size:0.8em;color:var(--text-muted)">No token data</span>';
+  }
+
+  // Load conversation turns
+  const turnsEl = document.getElementById('panel-turns');
+  if (s.conversationId) {
+    turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">Loading...</p>';
+    fetch('/api/dashboard/session/' + s.conversationId)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.turns || data.turns.length === 0) {
+          turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">No conversation turns</p>';
+          return;
+        }
+        turnsEl.innerHTML = data.turns.map(t => {
+          const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+          if (t.role === 'user') {
+            return '<div class="turn user"><div class="turn-header"><span>👤 ' + esc(t.userName || 'User') + '</span><span>' + time + '</span></div><div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + (t.rawContent && t.rawContent.length > 500 ? '...' : '') + '</div></div>';
+          } else {
+            const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
+            const body = t.summaryBody ? '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>' : '<div class="turn-summary-body" style="color:var(--text-muted);font-style:italic">Generating summary...</div>';
+            return '<div class="turn assistant"><div class="turn-header"><span>🤖 Assistant</span><span>' + time + '</span></div>' + title + body + '</div>';
+          }
+        }).join('');
+      })
+      .catch(() => {
+        turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">Failed to load conversation</p>';
+      });
+  } else {
+    turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">No conversation recorded</p>';
+  }
+
+  // Open panel
+  document.getElementById('slide-panel').classList.add('open');
+  document.getElementById('panel-overlay').classList.add('open');
+  panelOpen = true;
+}
+
+function closePanel() {
+  document.getElementById('slide-panel').classList.remove('open');
+  document.getElementById('panel-overlay').classList.remove('open');
+  panelOpen = false;
+}
+
+// Escape key closes panel
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && panelOpen) closePanel(); });
 
 // ── Helpers ──
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
