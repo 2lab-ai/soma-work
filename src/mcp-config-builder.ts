@@ -563,7 +563,7 @@ export class McpConfigBuilder {
         this.rawConfigCache = null;
       }
     }
-    return this.rawConfigCache;
+    return this.rawConfigCache ?? null;
   }
 
   private hasServerToolsConfig(): boolean {
