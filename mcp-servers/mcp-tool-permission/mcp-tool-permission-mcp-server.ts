@@ -204,7 +204,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     // Store pending request
     const pending: PendingApproval = {
       tool_name: 'request_permission',
-      input: { server, level, duration, expiresAt },
+      input: { server, level, duration, estimatedExpiry },
       channel: this.slackContext.channel,
       thread_ts: this.slackContext.threadTs,
       user: userId,
