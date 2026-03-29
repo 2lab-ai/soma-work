@@ -307,7 +307,62 @@ TodoWrite({
 
 ---
 
-# Phase 2C - Failure Recovery
+# Phase 2C - Gap Detection & Correction (Ouroboros Loop)
+
+### What Is a Gap?
+
+A **gap** is when implementation drifts from the original intent. Gaps are worse than bugs — bugs break code, gaps waste entire effort in the wrong direction.
+
+### 5 Gap Types
+
+| Gap Type | Signal |
+|----------|--------|
+| `assumption_injection` | Code adds things nobody requested |
+| `scope_creep` | Features beyond the original ask |
+| `direction_drift` | Overall approach diverges from intent |
+| `missing_core` | Requested functionality not implemented |
+| `over_engineering` | Abstraction disproportionate to problem |
+
+### Gap Detection Flow
+
+**After EACH implementation phase (before review):**
+
+1. **Self-check**: Compare implementation against original task
+   - Re-read the original request
+   - List every feature implemented
+   - Verify each traces back to a requirement
+2. **If gap detected by self-check or reviewer**:
+   - Log gap type and description
+   - Generate specific correction instructions
+   - Apply correction (1st attempt — autonomous)
+3. **If gap persists after 1st correction**:
+   - **ESCALATE to user** via AskUserQuestion (or document if subagent mode)
+   - Present: original intent vs current implementation vs correction attempted
+   - Wait for user direction before proceeding
+
+### Gap Correction Protocol
+
+```
+GAP DETECTED → Correction Attempt #1 (autonomous)
+  ├── Fixed → Continue to review
+  └── Still drifted → ESCALATE TO USER
+       ├── User provides direction → Apply and continue
+       └── User says stop → Halt and report
+```
+
+### Integration with Reviewer
+
+When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
+1. Extract gap type and correction instructions from review
+2. Apply corrections to implementation
+3. Re-submit to reviewer
+4. If 2nd review still returns `GAP_DETECTED` → escalate to user
+
+**Gap correction takes priority over code quality fixes.**
+
+---
+
+# Phase 2D - Failure Recovery
 
 ### After 3 Consecutive Failures
 
@@ -333,6 +388,9 @@ TodoWrite({
 - Skip Oracle after 3 failures
 - Librarian without permalinks
 - Search year 2024
+- **Ignore GAP_DETECTED** → Gap correction takes priority over ALL other fixes
+- **Skip gap self-check** → ALWAYS compare implementation against original intent before review
+- **More than 1 autonomous gap correction** → 2nd gap = ESCALATE to user
 
 ### MCP Direct Call = ONLY Review Phase
 

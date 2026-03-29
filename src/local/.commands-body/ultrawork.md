@@ -10,7 +10,7 @@ Ralph loop with multi-agent delegation for autonomous development.
 
 ---
 
-# Optional Phase 3 - AI Review
+# Optional Phase 3 - AI Review + Gap Detection
 
 Do this if the work is complex. AskUserQuestion first to gate this (takes hours).
 
@@ -28,7 +28,7 @@ mcp__llm__chat:
   model: "gemini"
 ```
 
-#### 3. Opus-4.5 Reviewer
+#### 3. Opus-4.5 Reviewer (includes Gap Detection)
 ```
 Task:
   subagent_type: "oh-my-claude:reviewer"
@@ -37,9 +37,14 @@ Task:
 ### Review Protocol
 
 1. Run all 3 reviewers in **parallel**
-2. Collect scores from each
-3. If ANY score < 9.5 → fix issues and re-review
-4. Only proceed when ALL THREE pass
+2. Collect scores AND gap analysis from each
+3. **Gap check FIRST**: If ANY reviewer returns `GAP_DETECTED`:
+   - Extract gap type and correction instructions
+   - Apply corrections (Ouroboros correction attempt #1)
+   - Re-submit to ALL reviewers
+   - If 2nd review still has gaps → **AskUserQuestion** to escalate
+4. If ANY score < 9.5 → fix issues and re-review
+5. Only proceed when ALL THREE pass AND no gaps remain
 
 ### Review Prompt Template
 
@@ -47,7 +52,7 @@ Task:
 Review this work with senior engineer standards:
 
 ## Task
-[Original task]
+[Original task — include the FULL original request/issue for gap detection]
 
 ## Changes
 [Files changed]
@@ -57,15 +62,25 @@ Review this work with senior engineer standards:
 - Tests: [pass/fail]
 - Diagnostics: [clean/issues]
 
+## Gap Detection (MANDATORY)
+Compare implementation against the original task. Check for:
+- assumption_injection: Added assumptions not in the request?
+- scope_creep: Features beyond what was asked?
+- direction_drift: Overall approach diverges from intent?
+- missing_core: Requested functionality missing?
+- over_engineering: Abstraction disproportionate to problem?
+
 ## Assessment
-1. Quality analysis
-2. Issues/improvements
-3. Score: 0.0-10.0 (9.5+ = production-ready)
+1. Gap analysis (intent alignment check)
+2. Quality analysis
+3. Issues/improvements
+4. Score: 0.0-10.0 (9.5+ = production-ready)
+5. Verdict: REJECT | CONCERNS | ACCEPTABLE | EXCELLENT | GAP_DETECTED
 ```
 
 #### Review Resolve
 
-If the review got under 9.5 from any of the reviewers, then AskUserQuestion about:
+If the review got under 9.5 from any of the reviewers OR `GAP_DETECTED`, then AskUserQuestion about:
 
 - stop here
 - fix the reviewer issues and try this review process again
@@ -91,6 +106,7 @@ If the review got under 9.5 from any of the reviewers, then AskUserQuestion abou
 - [ ] All todos marked complete
 - [ ] Code works (build passes, tests pass if applicable)
 - [ ] No broken functionality left behind
+- [ ] **Gap Detection**: No `GAP_DETECTED` verdicts from any reviewer
 - [ ] **Agent/MCP Call Report** has been output
 
 ---
