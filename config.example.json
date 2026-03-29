@@ -6,6 +6,12 @@
     }
   },
   "server-tools": {
+    "permission": {
+      "db_query": "write",
+      "logs": "read",
+      "list": "read",
+      "list_service": "read"
+    },
     "example-server": {
       "ssh": { "host": "your-server.example.com" },
       "databases": {

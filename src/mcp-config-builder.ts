@@ -9,6 +9,9 @@ import { userSettingsStore } from './user-settings-store';
 import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
 import { normalizeTmpPath, isSafePathSegment } from './path-utils';
+import { isAdminUser } from './admin-utils';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, type McpToolPermissionConfig, type PermissionLevel } from './mcp-tool-permission-config';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -18,6 +21,7 @@ const LLM_SERVER_BASENAME = 'llm-mcp-server';
 const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
 const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
 const CRON_SERVER_BASENAME = 'cron-mcp-server';
+const MCP_TOOL_PERMISSION_SERVER_BASENAME = 'mcp-tool-permission-mcp-server';
 
 /** Root of the project (one level up from src/) */
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -173,6 +177,12 @@ export class McpConfigBuilder {
     // Conditionally add server-tools when config.json has server-tools section
     if (this.hasServerToolsConfig()) {
       internalServers['server-tools'] = this.buildServerToolsServer();
+    }
+
+    // Add mcp-tool-permission server for permission request/check/revoke
+    // Trace: docs/mcp-tool-permission/trace.md, S4/S7/S8
+    if (slackContext) {
+      internalServers['mcp-tool-permission'] = this.buildMcpToolPermissionServer(slackContext);
     }
 
     // Always add permission prompt server when in Slack context
@@ -438,7 +448,10 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Build the list of allowed tools
+   * Build the list of allowed tools.
+   * Filters permission-gated MCP servers based on user's active grants.
+   * Admin users bypass all permission checks.
+   * Trace: docs/mcp-tool-permission/trace.md, S2/S3/S5
    */
   private buildAllowedTools(slackContext?: SlackContext, userBypass?: boolean): string[] {
     const allowedTools = this.mcpManager.getDefaultAllowedTools();
@@ -468,9 +481,53 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__cron');
     }
 
-    // Allow server-tools when configured
+    // Allow mcp-tool-permission tools (always available in Slack context for requesting permissions)
+    if (slackContext) {
+      allowedTools.push('mcp__mcp-tool-permission');
+    }
+
+    // Allow server-tools when configured — with per-tool permission gating
+    // Trace: docs/mcp-tool-permission/trace.md, S2 (admin bypass), S3 (non-admin blocked), S5 (per-tool)
     if (this.hasServerToolsConfig()) {
-      allowedTools.push('mcp__server-tools');
+      const userId = slackContext?.user;
+      const toolPermConfig = this.loadToolPermissions();
+      const serverToolPerms = toolPermConfig['server-tools'];
+
+      if (!serverToolPerms || !userId || isAdminUser(userId)) {
+        // No permission config, no user context, or admin → allow all server-tools
+        allowedTools.push('mcp__server-tools');
+      } else {
+        // Non-admin: reload grants from disk (cross-process safety — Fix Issue 2)
+        mcpToolGrantStore.reload();
+        const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'read');
+        const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'write');
+        const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+        if (!userLevel) {
+          this.logger.debug('Server-tools blocked — no active grant', { user: userId });
+        } else {
+          // Per-tool filtering: only allow tools whose required level is satisfied by user's grant
+          // e.g., read grant allows logs (read) but not db_query (write)
+          const allToolNames = Object.keys(serverToolPerms);
+          const ungatedTools: string[] = [];
+
+          for (const [toolName, requiredLevel] of Object.entries(serverToolPerms)) {
+            if (levelSatisfies(userLevel, requiredLevel)) {
+              allowedTools.push(`mcp__server-tools__${toolName}`);
+            }
+          }
+
+          // Allow tools not listed in permission config (unrestricted)
+          // These are covered by the blanket prefix only if no per-tool pattern exists
+          // Since we're adding specific tool patterns, the SDK will match them individually
+
+          this.logger.debug('Server-tools per-tool filtering applied', {
+            user: userId,
+            userLevel,
+            allowed: allowedTools.filter(t => t.startsWith('mcp__server-tools__')),
+          });
+        }
+      }
     }
 
     // Auto-approve plan mode tools (no terminal interaction needed)
@@ -481,17 +538,41 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Check if config.json has a server-tools section with at least one server
+   * Load tool permission config from config.json (cached per build).
    */
-  private hasServerToolsConfig(): boolean {
-    if (!CONFIG_FILE) return false;
-    try {
-      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-      const serverTools = raw?.['server-tools'];
-      return !!serverTools && typeof serverTools === 'object' && Object.keys(serverTools).length > 0;
-    } catch {
-      return false;
+  private toolPermConfigCache: McpToolPermissionConfig | null = null;
+  private loadToolPermissions(): McpToolPermissionConfig {
+    if (!this.toolPermConfigCache) {
+      this.toolPermConfigCache = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     }
+    return this.toolPermConfigCache;
+  }
+
+  /**
+   * Check if config.json has a server-tools section with at least one server.
+   * The "permission" key is reserved for tool-level permission config — not counted as a server.
+   * Uses cached raw config to avoid redundant file reads (Fix Issue 6).
+   */
+  private rawConfigCache: Record<string, any> | null | undefined = undefined;
+  private getRawConfig(): Record<string, any> | null {
+    if (this.rawConfigCache === undefined) {
+      if (!CONFIG_FILE) { this.rawConfigCache = null; return null; }
+      try {
+        this.rawConfigCache = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      } catch {
+        this.rawConfigCache = null;
+      }
+    }
+    return this.rawConfigCache ?? null;
+  }
+
+  private hasServerToolsConfig(): boolean {
+    const raw = this.getRawConfig();
+    if (!raw) return false;
+    const serverTools = raw['server-tools'];
+    if (!serverTools || typeof serverTools !== 'object') return false;
+    const serverKeys = Object.keys(serverTools).filter(k => k !== 'permission');
+    return serverKeys.length > 0;
   }
 
   /**
@@ -503,6 +584,28 @@ export class McpConfigBuilder {
       command: 'npx',
       args: ['tsx', serverPath],
       env: {
+        SOMA_CONFIG_FILE: CONFIG_FILE,
+      },
+    };
+  }
+
+  private getMcpToolPermissionServerPath(): string {
+    return this.getServerPath('Mcp-tool-permission', MCP_TOOL_PERMISSION_SERVER_BASENAME, 'mcp-tool-permission');
+  }
+
+  /**
+   * Build mcp-tool-permission MCP server configuration.
+   * Provides tools for requesting, checking, and revoking MCP tool permissions.
+   * Trace: docs/mcp-tool-permission/trace.md, S4/S7/S8
+   */
+  private buildMcpToolPermissionServer(slackContext: SlackContext): Record<string, any> {
+    const serverPath = this.getMcpToolPermissionServerPath();
+    return {
+      command: 'npx',
+      args: ['tsx', serverPath],
+      env: {
+        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
+        SLACK_CONTEXT: JSON.stringify(slackContext),
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
