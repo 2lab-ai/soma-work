@@ -14,8 +14,10 @@
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, closeSync, constants } from 'fs';
 import { join } from 'path';
+import { Logger } from './logger';
 
 const LOCK_FILENAME = 'soma-work.pid';
+const logger = new Logger('PidLock');
 
 /**
  * Check if a process with the given PID is alive.
@@ -122,7 +124,7 @@ export function acquirePidLock(dataDir: string): boolean {
 
   if (!parsed) {
     // Corrupted lock file — treat as stale
-    console.warn(`[pid-lock] Corrupted lock file (content="${existingContent.trim()}"), removing`);
+    logger.warn(`[pid-lock] Corrupted lock file (content="${existingContent.trim()}"), removing`);
     try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
     return tryAtomicCreate(lockPath, content);
   }
@@ -134,12 +136,12 @@ export function acquirePidLock(dataDir: string): boolean {
 
   if (isProcessAlive(parsed.pid)) {
     // Another instance is genuinely running
-    console.error(`[pid-lock] Another instance already running (pid=${parsed.pid}). Exiting.`);
+    logger.error(`[pid-lock] Another instance already running (pid=${parsed.pid}). Exiting.`);
     return false;
   }
 
   // Stale lock — process died without cleanup
-  console.warn(`[pid-lock] Stale PID lock detected (pid=${parsed.pid}), removing`);
+  logger.warn(`[pid-lock] Stale PID lock detected (pid=${parsed.pid}), removing`);
   try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
   return tryAtomicCreate(lockPath, content);
 }
