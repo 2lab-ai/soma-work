@@ -8,7 +8,7 @@
  * Red test strategy: if someone re-introduces Fix/Defer/Skip as a
  * recommended pattern (not in a "BAD" or "NEVER" context), these tests fail.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
@@ -53,7 +53,10 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
         /## Bad Examples[\s\S]*?## Good Example/,
       );
       expect(badSection).toBeTruthy();
-      expect(badSection![0]).toMatch(/Fix\/Defer\/Skip.*금지|절대 금지/);
+      // Must have both: the pattern name AND the prohibition keyword together
+      expect(badSection![0]).toMatch(/Fix\/Defer\/Skip.*(?:금지|절대 금지)/);
+      // Must contain the actual bad pattern to show what NOT to do
+      expect(badSection![0]).toMatch(/fix_now.*defer_to_followup|defer_to_followup.*not_a_bug/);
     });
 
     it('Good Example choices should use Option A/B pattern, not Fix/Defer/Skip', () => {
@@ -121,14 +124,22 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
       );
     });
 
-    it('should have quality checklist with 6 items', () => {
+    it('should have quality checklist with 6 specific items', () => {
       const checklist = content.match(
         /질문 품질 자체 검증 체크리스트[\s\S]*?(?=\n\n[^-])/,
       );
       expect(checklist).toBeTruthy();
-      const checkItems = checklist![0].match(/- \[ \]/g);
+      const checklistText = checklist![0];
+      const checkItems = checklistText.match(/- \[ \]/g);
       expect(checkItems).toBeTruthy();
       expect(checkItems!.length).toBeGreaterThanOrEqual(6);
+
+      // Verify specific required checklist items exist
+      expect(checklistText).toMatch(/ASK_USER_QUESTION/);
+      expect(checklistText).toMatch(/plain text 금지/);
+      expect(checklistText).toMatch(/구현 대안/);
+      expect(checklistText).toMatch(/리뷰 합의/);
+      expect(checklistText).toMatch(/tier.*N줄/);
     });
 
     it('should use Option A/B pattern in output format, not single suggestion', () => {
