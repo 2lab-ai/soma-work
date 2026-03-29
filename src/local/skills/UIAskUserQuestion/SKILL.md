@@ -118,17 +118,31 @@ interface UserChoiceGroup {
 ### USE this skill when:
 - `decision-gate`에서 switching cost >= medium으로 판정된 결정
 - Architecture decision, data model, major dependency 등
-- PR review에서 medium+ 이슈의 Fix/Defer/Skip 결정
+- PR review에서 medium+ 이슈의 **구체적 구현 방식 선택** (어떤 접근법으로 고칠 것인가)
 
 ### DO NOT use when:
 - Switching cost < small → `decision-gate` 자율 판단으로 해결
-- Context is unclear → ask plain text instead
+- Context is unclear → gather more context first or ask a structured clarifying question (PR review 컨텍스트에서는 plain text 절대 금지 — 컨텍스트가 부족하면 먼저 코드를 더 읽어서 구현 대안을 만들어라)
 - Open-ended questions like "How can I help?"
 - Guessing user intent with speculative options
+- **"고칠까요? / 나중에? / 안 고침" 류의 Fix/Defer/Skip 3택** — 이건 의사결정이 아니라 확인 요청이다. P1 이상이면 당연히 고치는 것이고, 유저에게 물어야 하는 건 "어떤 방식으로 고칠 것인가"다.
 
 ---
 
 ## Bad Examples (NEVER do these)
+
+### BAD: Fix/Defer/Skip 3택 (가장 흔한 퇴행 패턴 — 절대 금지)
+
+```
+→ 이 이슈를 이 PR에서 수정할까요? (fix_now / defer_to_followup / not_a_bug)
+```
+
+**Why this is UNACCEPTABLE:**
+
+- **의사결정이 아니라 확인 요청** — P1이면 당연히 고쳐야 한다. "고칠까요?"는 무의미
+- **구현 방식이 없다** — "고친다"와 "어떻게 고친다"는 완전히 다른 질문
+- **유저 시간 낭비** — 유저가 yes/no 누르고 끝나는 건 UIAskUserQuestion을 쓸 이유가 없다
+- **올바른 질문**: "어떤 방식으로 고칠 것인가" — Option A vs Option B (구현 대안 비교)
 
 ### BAD: Context-free code review question
 
@@ -186,45 +200,35 @@ P1-2: SoftDelete에서 entity.EffectiveTo = DateTime.UtcNow 추가
     "payload": {
       "type": "user_choice_group",
       "question": "PR #944 코드 리뷰 — P1 이슈 2건 결정 필요",
-      "context": "P0 3건 자율 수정 완료 (tiny~small, 3/3 합의), P2 5건은 별도 이슈로 분리됨.\n아래 P1 2건은 switching cost medium 이상 → 유저 결정 필요.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 P1-1: [medium ~50줄] DbUpdateException 예외 필터 누락\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n▸ 현재 코드 (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) {\n    return Result.Conflict(); // 모든 DB 예외를 잡음\n}\n```\n\n▸ 문제: 네트워크 에러, 타임아웃 등이 조용히 Conflict로 처리됨 → 데이터 유실 위험\n\n▸ 수정안:\n```csharp\ncatch (DbUpdateException ex) when (IsDuplicateKeyException(ex)) {\n    return Result.Conflict();\n}\n```\n→ UserRepo.cs 외 3개 Repository 동일 패턴 적용 (총 4파일, ~50줄)\n\n▸ 🤖 리뷰 합의 (3/3 Fix):\n  - Codex: Fix — 데이터 유실 위험 명확\n  - oracle-reviewer: Fix — catch-all 안티패턴\n  - oracle-gemini: Fix — 4파일 일괄 수정이 안전\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 P1-2: [medium ~40줄] SoftDelete에 EffectiveTo 누락\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n▸ 현재 코드 (`src/Services/EntityService.cs:112`):\n```csharp\npublic void SoftDelete(Entity entity) {\n    entity.IsDeleted = true; // EffectiveTo 안 찍힘\n    _db.SaveChanges();\n}\n```\n\n▸ 문제: 삭제 시점 추적 불가 → 감사 로그, 데이터 복구 시 언제 삭제됐는지 모름\n\n▸ 수정안:\n```csharp\npublic void SoftDelete(Entity entity) {\n    entity.IsDeleted = true;\n    entity.EffectiveTo = DateTime.UtcNow;\n    _db.SaveChanges();\n}\n```\n→ EntityService.cs + 파생 2개 서비스 (총 3파일, ~40줄)\n\n▸ 🤖 리뷰 합의 (2/3 Fix, 1/3 Defer):\n  - Codex: Fix — 1줄 추가로 감사 추적 확보\n  - oracle-reviewer: Fix — soft delete 기본 패턴\n  - oracle-gemini: Defer 가능 — 기존 데이터 마이그레이션 고려 필요",
+      "context": "P0 3건 자율 수정 완료 (tiny~small, 3/3 합의), P2 5건은 별도 이슈로 분리됨.\n아래 P1 2건은 switching cost medium 이상 → 유저 결정 필요.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 P1-1: [medium ~50줄] DbUpdateException 예외 필터 누락\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n▸ 현재 코드 (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) {\n    return Result.Conflict(); // 모든 DB 예외를 잡음\n}\n```\n\n▸ 문제: 네트워크 에러, 타임아웃 등이 조용히 Conflict로 처리됨 → 데이터 유실 위험\n\n▸ 수정안:\n```csharp\ncatch (DbUpdateException ex) when (IsDuplicateKeyException(ex)) {\n    return Result.Conflict();\n}\n```\n→ UserRepo.cs 외 3개 Repository 동일 패턴 적용 (총 4파일, ~50줄)\n\n▸ 🤖 리뷰 합의 (3/3 Option A 추천):\n  - Codex: Option A — when 필터가 가장 직관적, 변경 최소\n  - oracle-reviewer: Option A — catch-all 제거가 우선, Result<T> 전환은 과도\n  - oracle-gemini: Option A — 4파일 일괄 수정이 안전, Option B는 별도 리팩터링으로\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 P1-2: [medium ~40줄] SoftDelete에 EffectiveTo 누락\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n▸ 현재 코드 (`src/Services/EntityService.cs:112`):\n```csharp\npublic void SoftDelete(Entity entity) {\n    entity.IsDeleted = true; // EffectiveTo 안 찍힘\n    _db.SaveChanges();\n}\n```\n\n▸ 문제: 삭제 시점 추적 불가 → 감사 로그, 데이터 복구 시 언제 삭제됐는지 모름\n\n▸ 수정안:\n```csharp\npublic void SoftDelete(Entity entity) {\n    entity.IsDeleted = true;\n    entity.EffectiveTo = DateTime.UtcNow;\n    _db.SaveChanges();\n}\n```\n→ EntityService.cs + 파생 2개 서비스 (총 3파일, ~40줄)\n\n▸ 🤖 리뷰 합의 (2/3 Option A, 1/3 Option B):\n  - Codex: Option A — 1줄 추가로 감사 추적 확보, 빠르게 적용 가능\n  - oracle-reviewer: Option A — soft delete 기본 패턴으로 충분\n  - oracle-gemini: Option B — 인터셉터로 일관성 확보가 장기적으로 나음",
       "choices": [
         {
-          "question": "[medium ~50줄] P1-1: DbUpdateException 예외 필터 — 4파일 catch 패턴 수정",
+          "question": "[medium ~50줄] P1-1: DbUpdateException 예외 필터 — 구현 방식 선택",
           "options": [
             {
-              "id": "p1_1_fix",
-              "label": "이 PR에서 수정 (추천 3/3)",
-              "description": "UserRepo 외 3개 Repo catch 필터 일괄 수정 + 테스트 4개 추가"
+              "id": "p1_1_option_a",
+              "label": "Option A: when 필터 추가 (추천 3/3)",
+              "description": "catch (DbUpdateException ex) when (IsDuplicateKeyException(ex)) — 4파일 일괄 수정, 테스트 4개 추가. 간단하고 명확하나 IsDuplicateKeyException 헬퍼 필요"
             },
             {
-              "id": "p1_1_defer",
-              "label": "별도 이슈로 분리",
-              "description": "이슈 생성 + PR 코멘트. 리뷰 범위를 좁히고 싶을 때"
-            },
-            {
-              "id": "p1_1_skip",
-              "label": "Skip",
-              "description": "현재 동작 유지. 데이터 유실 리스크 감수"
+              "id": "p1_1_option_b",
+              "label": "Option B: Result<T> 패턴으로 전환",
+              "description": "Repository에서 예외를 던지지 않고 Result<T>를 반환 — 6파일, ~80줄. 더 깔끔하지만 변경 범위 넓음"
             }
           ]
         },
         {
-          "question": "[medium ~40줄] P1-2: SoftDelete EffectiveTo 누락 — 3파일 1줄 추가",
+          "question": "[medium ~40줄] P1-2: SoftDelete EffectiveTo 누락 — 구현 방식 선택",
           "options": [
             {
-              "id": "p1_2_fix",
-              "label": "이 PR에서 수정 (추천 2/3)",
-              "description": "EntityService + 파생 2개에 EffectiveTo = UtcNow 추가"
+              "id": "p1_2_option_a",
+              "label": "Option A: SoftDelete에 직접 추가 (추천 2/3)",
+              "description": "entity.EffectiveTo = DateTime.UtcNow 한 줄 추가 — 3파일, ~40줄. 빠르지만 기존 데이터 backfill 없음"
             },
             {
-              "id": "p1_2_defer",
-              "label": "별도 이슈 + 마이그레이션 포함",
-              "description": "기존 데이터 EffectiveTo backfill 마이그레이션도 같이 계획"
-            },
-            {
-              "id": "p1_2_skip",
-              "label": "Skip",
-              "description": "감사 추적 없이 현재 동작 유지"
+              "id": "p1_2_option_b",
+              "label": "Option B: ISoftDeletable 인터페이스 + 인터셉터",
+              "description": "SaveChanges 인터셉터에서 자동 EffectiveTo 설정 — 5파일, ~70줄. 향후 모든 엔티티에 자동 적용되나 EF 인터셉터 복잡도 증가"
             }
           ]
         }
