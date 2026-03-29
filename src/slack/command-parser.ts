@@ -31,7 +31,8 @@ export type MarketplaceAction =
 export type PluginsAction =
   | { action: 'list' }
   | { action: 'add'; pluginRef: string }
-  | { action: 'remove'; pluginRef: string };
+  | { action: 'remove'; pluginRef: string }
+  | { action: 'update' };
 
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
@@ -496,7 +497,9 @@ export class CommandParser {
    * Check if text is a plugins command
    */
   static isPluginsCommand(text: string): boolean {
-    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+)?$/i.test(text.trim());
+    const t = text.trim();
+    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+|\s+update)?$/i.test(t)
+      || /^\/?플러그인\s*업데이트$/i.test(t);
   }
 
   /**
@@ -504,6 +507,11 @@ export class CommandParser {
    */
   static parsePluginsCommand(text: string): PluginsAction {
     const trimmed = text.trim();
+
+    // Match: plugins update / 플러그인 업데이트
+    if (/^\/?plugins\s+update$/i.test(trimmed) || /^\/?플러그인\s*업데이트$/i.test(trimmed)) {
+      return { action: 'update' };
+    }
 
     // Match: plugins add <pluginRef>
     const addMatch = trimmed.match(/^\/?plugins\s+add\s+(\S+)$/i);
@@ -581,7 +589,7 @@ export class CommandParser {
     // Help
     'help', 'commands',
     // Marketplace & Plugins
-    'marketplace', 'plugins',
+    'marketplace', 'plugins', '플러그인',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
     // Notification
@@ -689,6 +697,7 @@ export class CommandParser {
       '• `plugins` or `/plugins` - Show installed plugins',
       '• `plugins add pluginName@marketplaceName` - Install a plugin',
       '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
+      '• `plugins update` or `플러그인 업데이트` - Force re-download all plugins (Admin only)',
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status',

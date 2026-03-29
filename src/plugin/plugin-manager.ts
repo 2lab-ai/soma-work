@@ -9,6 +9,7 @@
  * then persist to config.json via saveUnifiedConfig.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef } from './types';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
@@ -140,6 +141,67 @@ export class PluginManager {
       this.initialized = true;
       throw error;
     }
+  }
+
+  /**
+   * Force re-download all plugins by clearing cache metadata first.
+   * Used by the `plugins update` admin command.
+   * Returns the number of plugins that were refreshed.
+   */
+  async forceRefresh(): Promise<{ total: number; updated: number; errors: string[] }> {
+    const errors: string[] = [];
+
+    // Clear all cache meta files so fetchPlugin treats everything as stale
+    const cacheDir = path.join(this.pluginsDir, '.cache');
+    if (fs.existsSync(cacheDir)) {
+      try {
+        const metaFiles = fs.readdirSync(cacheDir).filter(f => f.endsWith('.meta.json'));
+        for (const file of metaFiles) {
+          fs.unlinkSync(path.join(cacheDir, file));
+        }
+        logger.info('Cleared plugin cache', { metaFilesRemoved: metaFiles.length });
+      } catch (error) {
+        const msg = `Failed to clear cache: ${(error as Error).message}`;
+        logger.error(msg);
+        errors.push(msg);
+      }
+    }
+
+    // Also remove cached plugin directories so they are fully re-downloaded
+    const effectiveConfig = this.mergeDefaults();
+    const pluginNames = (effectiveConfig.plugins || [])
+      .map(raw => parsePluginRef(raw))
+      .filter((ref): ref is PluginRef => ref !== null)
+      .map(ref => ref.pluginName);
+
+    for (const name of pluginNames) {
+      const pluginDir = path.join(this.pluginsDir, name);
+      if (fs.existsSync(pluginDir)) {
+        try {
+          fs.rmSync(pluginDir, { recursive: true, force: true });
+        } catch (error) {
+          errors.push(`Failed to remove cached ${name}: ${(error as Error).message}`);
+        }
+      }
+    }
+
+    // Re-initialize (downloads everything fresh)
+    const previous = this.resolved;
+    this.initialized = false;
+    this.resolved = [];
+    try {
+      await this.initialize();
+    } catch (error) {
+      this.resolved = previous;
+      this.initialized = true;
+      throw error;
+    }
+
+    return {
+      total: this.resolved.length,
+      updated: this.resolved.filter(r => r.source !== 'local-override').length,
+      errors,
+    };
   }
 
   /**
