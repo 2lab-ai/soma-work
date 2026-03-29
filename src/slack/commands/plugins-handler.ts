@@ -1,6 +1,7 @@
 import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { isDefaultPlugin } from '../../plugin/defaults';
+import { isAdminUser } from '../../admin-utils';
 
 /**
  * Handles `plugins` slash commands: list / add / remove.
@@ -28,6 +29,8 @@ export class PluginsHandler implements CommandHandler {
         return this.handleAdd(parsed.pluginRef, threadTs, say);
       case 'remove':
         return this.handleRemove(parsed.pluginRef, threadTs, say);
+      case 'update':
+        return this.handleUpdate(ctx.user, threadTs, say);
       default:
         return { handled: false };
     }
@@ -139,6 +142,65 @@ export class PluginsHandler implements CommandHandler {
         thread_ts: threadTs,
       });
     }
+    return { handled: true };
+  }
+
+  private async handleUpdate(
+    user: string,
+    threadTs: string,
+    say: CommandContext['say'],
+  ): Promise<CommandResult> {
+    // Admin-only gate
+    if (!isAdminUser(user)) {
+      await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const pluginManager = this.deps.mcpManager.getPluginManager();
+    if (!pluginManager) {
+      await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    await say({ text: '🔄 플러그인 전체 업데이트를 시작합니다. 캐시를 삭제하고 새로 다운로드합니다...', thread_ts: threadTs });
+
+    try {
+      const result = await pluginManager.forceRefresh();
+
+      const lines: string[] = [
+        '✅ *플러그인 업데이트 완료*',
+        '',
+        `• 총 플러그인: ${result.total}개`,
+        `• 업데이트된 플러그인: ${result.updated}개`,
+      ];
+
+      if (result.errors.length > 0) {
+        lines.push('');
+        lines.push('⚠️ *Errors:*');
+        for (const err of result.errors) {
+          lines.push(`  • ${err}`);
+        }
+      }
+
+      // Show resolved plugin list
+      const resolved = pluginManager.getResolvedPlugins();
+      if (resolved.length > 0) {
+        lines.push('');
+        lines.push('*Resolved Plugins:*');
+        for (const r of resolved) {
+          const icon = r.source === 'default' ? '🔒' : r.source === 'local-override' ? '📁' : '🔌';
+          lines.push(`${icon} *${r.name}* (${r.source})`);
+        }
+      }
+
+      await say({ text: lines.join('\n'), thread_ts: threadTs });
+    } catch (error) {
+      await say({
+        text: `❌ 플러그인 업데이트 실패: ${(error as Error).message}`,
+        thread_ts: threadTs,
+      });
+    }
+
     return { handled: true };
   }
 
