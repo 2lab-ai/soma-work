@@ -141,4 +141,15 @@ describe('parseDuration', () => {
     expect(parseDuration('24x')).toBeNull();
     expect(parseDuration('')).toBeNull();
   });
+
+  // ── Zero-value guard ──
+  it('returns null for zero duration', () => {
+    expect(parseDuration('0h')).toBeNull();
+    expect(parseDuration('0d')).toBeNull();
+    expect(parseDuration('0w')).toBeNull();
+  });
 });
+
+// saveGrants rollback is verified by code review:
+// On write failure, catch block calls this.loadGrants() to restore last-known-good state.
+// loadGrants restoration is covered by "grants survive store reload from disk" test above.
