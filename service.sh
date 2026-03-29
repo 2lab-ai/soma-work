@@ -242,7 +242,11 @@ cmd_stop() {
                 kill -9 "$pid" 2>/dev/null
                 sleep 1
             fi
-            print_success "Process killed (pid=$pid)"
+            if kill -0 "$pid" 2>/dev/null; then
+                print_error "Failed to kill process (pid=$pid)"
+            else
+                print_success "Process killed (pid=$pid)"
+            fi
         fi
         rm -f "$pid_file"
     fi
