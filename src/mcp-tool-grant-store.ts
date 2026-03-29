@@ -44,6 +44,8 @@ export function parseDuration(duration: string): number | null {
   if (!match) return null;
 
   const value = parseInt(match[1], 10);
+  if (value <= 0) return null; // zero/negative duration is meaningless
+
   const unit = match[2];
 
   switch (unit) {
@@ -104,13 +106,16 @@ export class McpToolGrantStore {
   }
 
   private saveGrants(): void {
+    const snapshot = JSON.stringify(this.grants, null, 2);
     try {
       const tmpFile = this.grantsFile + '.tmp';
-      fs.writeFileSync(tmpFile, JSON.stringify(this.grants, null, 2), 'utf-8');
+      fs.writeFileSync(tmpFile, snapshot, 'utf-8');
       fs.renameSync(tmpFile, this.grantsFile);
       logger.debug('Saved MCP tool grants');
     } catch (error) {
-      logger.error('Failed to save MCP tool grants', error);
+      logger.error('Failed to save MCP tool grants — rolling back in-memory state', error);
+      // Rollback: reload last known-good state from disk
+      this.loadGrants();
     }
   }
 
