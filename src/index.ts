@@ -6,7 +6,7 @@ import { SlackHandler } from './slack-handler';
 import { McpManager } from './mcp-manager';
 import { PluginManager } from './plugin/plugin-manager';
 import { loadUnifiedConfig } from './unified-config-loader';
-import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
+import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR, DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
@@ -18,6 +18,7 @@ import { tokenManager } from './token-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import { CronScheduler, SyntheticMessageEvent } from './cron-scheduler';
 import { CronStorage } from './cron-storage';
+import { acquirePidLock, releasePidLock } from './pid-lock';
 
 const logger = new Logger('Main');
 
@@ -32,6 +33,13 @@ async function start() {
     // Validate configuration
     validateConfig();
     timing('Config validated');
+
+    // Single instance guard — prevent duplicate processes (Issue #152)
+    if (!acquirePidLock(DATA_DIR)) {
+      logger.error('Another soma-work instance is already running. Exiting to prevent duplicate Socket Mode connections.');
+      process.exit(1);
+    }
+    timing('PID lock acquired');
 
     // Initialize token manager (before preflight — tokens may be needed for API calls)
     tokenManager.initialize();
@@ -263,6 +271,9 @@ async function start() {
       logger.info('Shutting down gracefully...');
 
       try {
+        // Release PID lock first
+        releasePidLock(DATA_DIR);
+
         // Stop report scheduler
         stopReportScheduler();
 
