@@ -95,6 +95,54 @@ describe('McpConfigBuilder tool permission integration', () => {
 
     expect(config.allowedTools).toContain('mcp__mcp-tool-permission');
   });
+
+  // ── S5: Per-tool filtering — read grant allows read tools, blocks write tools ──
+  it('readGrantAllowsReadToolsBlocksWriteTools', async () => {
+    // Write a read grant to the grants file (simulating approval)
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_READ_USER': {
+        'server-tools': {
+          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_READ_USER' });
+
+    // Should allow read-level tools individually
+    expect(config.allowedTools).toContain('mcp__server-tools__logs');
+    expect(config.allowedTools).toContain('mcp__server-tools__list');
+    expect(config.allowedTools).toContain('mcp__server-tools__list_service');
+    // Should NOT allow write-level tools
+    expect(config.allowedTools).not.toContain('mcp__server-tools__db_query');
+    // Should NOT have blanket server-tools prefix
+    expect(config.allowedTools).not.toContain('mcp__server-tools');
+  });
+
+  // ── S5: write grant allows all tools ──
+  it('writeGrantAllowsAllTools', async () => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_WRITE_USER': {
+        'server-tools': {
+          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_WRITE_USER' });
+
+    // Write grant implies read — all tools should be allowed
+    expect(config.allowedTools).toContain('mcp__server-tools__db_query');
+    expect(config.allowedTools).toContain('mcp__server-tools__logs');
+    expect(config.allowedTools).toContain('mcp__server-tools__list');
+    expect(config.allowedTools).toContain('mcp__server-tools__list_service');
+  });
 });
 
 describe('PreToolUse permission hook', () => {

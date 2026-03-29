@@ -11,10 +11,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from './logger';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
+import { type PermissionLevel } from './mcp-tool-permission-config';
 
 const logger = new Logger('McpToolGrantStore');
 
-export type PermissionLevel = 'read' | 'write';
+/** Maximum grant duration: 4 weeks (Fix Issue 8) */
+export const MAX_GRANT_DURATION_MS = 4 * 7 * 24 * 3600 * 1000;
+
+// Re-export for convenience
+export type { PermissionLevel } from './mcp-tool-permission-config';
 
 export interface GrantEntry {
   grantedAt: string;   // ISO 8601
@@ -52,6 +57,7 @@ export function parseDuration(duration: string): number | null {
 export class McpToolGrantStore {
   private grantsFile: string;
   private grants: GrantsData = {};
+  private lastMtimeMs: number = 0;
 
   constructor(dataDir?: string) {
     const dir = dataDir || ENV_DATA_DIR;
@@ -62,11 +68,31 @@ export class McpToolGrantStore {
     this.loadGrants();
   }
 
+  /**
+   * Reload grants from disk if file has been modified since last load.
+   * Solves cross-process stale cache: MCP child writes, main process reads.
+   * (Fix Issue 2)
+   */
+  reload(): void {
+    try {
+      if (!fs.existsSync(this.grantsFile)) return;
+      const stat = fs.statSync(this.grantsFile);
+      if (stat.mtimeMs > this.lastMtimeMs) {
+        this.loadGrants();
+      }
+    } catch {
+      // Non-critical — next call will retry
+    }
+  }
+
   private loadGrants(): void {
     try {
       if (fs.existsSync(this.grantsFile)) {
         const data = fs.readFileSync(this.grantsFile, 'utf-8');
         this.grants = JSON.parse(data);
+        try {
+          this.lastMtimeMs = fs.statSync(this.grantsFile).mtimeMs;
+        } catch { /* ignore */ }
         logger.debug('Loaded MCP tool grants', {
           userCount: Object.keys(this.grants).length,
         });
@@ -161,9 +187,12 @@ export class McpToolGrantStore {
 
   /**
    * Get all grants for a user (including expired, for status display).
+   * Returns a shallow copy to prevent external mutation. (Fix Issue 7)
    */
   getGrants(userId: string): Record<string, ServerGrants> | null {
-    return this.grants[userId] ?? null;
+    const userGrants = this.grants[userId];
+    if (!userGrants) return null;
+    return { ...userGrants };
   }
 
   /**

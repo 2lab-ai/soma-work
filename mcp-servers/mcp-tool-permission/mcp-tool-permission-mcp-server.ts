@@ -15,7 +15,7 @@ import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import { sharedStore, type PendingApproval, type PermissionResponse } from '../_shared/shared-store.js';
-import { McpToolGrantStore, parseDuration, type PermissionLevel } from '../../src/mcp-tool-grant-store.js';
+import { McpToolGrantStore, parseDuration, MAX_GRANT_DURATION_MS, type PermissionLevel } from '../../src/mcp-tool-grant-store.js';
 import { loadMcpToolPermissions, type McpToolPermissionConfig } from '../../src/mcp-tool-permission-config.js';
 import { isAdminUser, getAdminUsers } from '../../src/admin-utils.js';
 
@@ -154,7 +154,12 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
       throw new Error('Invalid duration format. Use format: 24h, 7d, 4w');
     }
 
-    const expiresAt = new Date(Date.now() + durationMs).toISOString();
+    // Cap at max duration (4 weeks)
+    if (durationMs > MAX_GRANT_DURATION_MS) {
+      throw new Error(`Duration exceeds maximum (4 weeks). Use 4w or less.`);
+    }
+
+    const estimatedExpiry = new Date(Date.now() + durationMs).toISOString();
     const requestId = `grant_req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Send approval request to admins
@@ -165,8 +170,11 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
       `• *Server*: \`${server}\`\n` +
       `• *Level*: \`${level}\`\n` +
       `• *Duration*: ${duration}\n` +
-      `• *Expires*: ${expiresAt}`;
+      `• *Est. Expiry*: ${estimatedExpiry}`;
 
+    // Button payload carries `duration` (not precomputed expiresAt) so the action handler
+    // recomputes expiresAt at approval time. Prevents timing drift and payload tampering.
+    // (Fix Issue 5)
     const blocks = [
       {
         type: 'section',
@@ -180,7 +188,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
             text: { type: 'plain_text', text: '✅ Approve' },
             style: 'primary',
             action_id: `mcp_tool_perm_approve_${requestId}`,
-            value: JSON.stringify({ requestId, userId, server, level, expiresAt }),
+            value: JSON.stringify({ requestId, userId, server, level, duration }),
           },
           {
             type: 'button',

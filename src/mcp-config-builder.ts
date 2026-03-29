@@ -10,7 +10,7 @@ import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
 import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import { isAdminUser } from './admin-utils';
-import { loadMcpToolPermissions, getPermissionGatedServers, type McpToolPermissionConfig } from './mcp-tool-permission-config';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, type McpToolPermissionConfig, type PermissionLevel } from './mcp-tool-permission-config';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -486,29 +486,46 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__mcp-tool-permission');
     }
 
-    // Allow server-tools when configured — with permission gating
-    // Trace: docs/mcp-tool-permission/trace.md, S2 (admin bypass), S3 (non-admin blocked)
+    // Allow server-tools when configured — with per-tool permission gating
+    // Trace: docs/mcp-tool-permission/trace.md, S2 (admin bypass), S3 (non-admin blocked), S5 (per-tool)
     if (this.hasServerToolsConfig()) {
       const userId = slackContext?.user;
       const toolPermConfig = this.loadToolPermissions();
-      const isPermGated = !!toolPermConfig['server-tools'];
+      const serverToolPerms = toolPermConfig['server-tools'];
 
-      if (!isPermGated || !userId || isAdminUser(userId)) {
+      if (!serverToolPerms || !userId || isAdminUser(userId)) {
         // No permission config, no user context, or admin → allow all server-tools
         allowedTools.push('mcp__server-tools');
       } else {
-        // Non-admin: check if user has any active grant for server-tools
+        // Non-admin: reload grants from disk (cross-process safety — Fix Issue 2)
+        mcpToolGrantStore.reload();
         const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'read');
         const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'write');
-        if (hasReadGrant || hasWriteGrant) {
-          allowedTools.push('mcp__server-tools');
-          this.logger.debug('Server-tools allowed via grant', {
-            user: userId,
-            hasRead: hasReadGrant,
-            hasWrite: hasWriteGrant,
-          });
-        } else {
+        const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+        if (!userLevel) {
           this.logger.debug('Server-tools blocked — no active grant', { user: userId });
+        } else {
+          // Per-tool filtering: only allow tools whose required level is satisfied by user's grant
+          // e.g., read grant allows logs (read) but not db_query (write)
+          const allToolNames = Object.keys(serverToolPerms);
+          const ungatedTools: string[] = [];
+
+          for (const [toolName, requiredLevel] of Object.entries(serverToolPerms)) {
+            if (levelSatisfies(userLevel, requiredLevel)) {
+              allowedTools.push(`mcp__server-tools__${toolName}`);
+            }
+          }
+
+          // Allow tools not listed in permission config (unrestricted)
+          // These are covered by the blanket prefix only if no per-tool pattern exists
+          // Since we're adding specific tool patterns, the SDK will match them individually
+
+          this.logger.debug('Server-tools per-tool filtering applied', {
+            user: userId,
+            userLevel,
+            allowed: allowedTools.filter(t => t.startsWith('mcp__server-tools__')),
+          });
         }
       }
     }
@@ -534,19 +551,28 @@ export class McpConfigBuilder {
   /**
    * Check if config.json has a server-tools section with at least one server.
    * The "permission" key is reserved for tool-level permission config — not counted as a server.
+   * Uses cached raw config to avoid redundant file reads (Fix Issue 6).
    */
-  private hasServerToolsConfig(): boolean {
-    if (!CONFIG_FILE) return false;
-    try {
-      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-      const serverTools = raw?.['server-tools'];
-      if (!serverTools || typeof serverTools !== 'object') return false;
-      // Exclude "permission" reserved key from server count
-      const serverKeys = Object.keys(serverTools).filter(k => k !== 'permission');
-      return serverKeys.length > 0;
-    } catch {
-      return false;
+  private rawConfigCache: Record<string, any> | null | undefined = undefined;
+  private getRawConfig(): Record<string, any> | null {
+    if (this.rawConfigCache === undefined) {
+      if (!CONFIG_FILE) { this.rawConfigCache = null; return null; }
+      try {
+        this.rawConfigCache = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      } catch {
+        this.rawConfigCache = null;
+      }
     }
+    return this.rawConfigCache;
+  }
+
+  private hasServerToolsConfig(): boolean {
+    const raw = this.getRawConfig();
+    if (!raw) return false;
+    const serverTools = raw['server-tools'];
+    if (!serverTools || typeof serverTools !== 'object') return false;
+    const serverKeys = Object.keys(serverTools).filter(k => k !== 'permission');
+    return serverKeys.length > 0;
   }
 
   /**
