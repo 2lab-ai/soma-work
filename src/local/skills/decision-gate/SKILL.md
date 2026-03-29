@@ -120,7 +120,7 @@ for each decision:
 
 - `UIAskUserQuestion` — 유저에게 질문을 만들기 전에 이 게이트를 통과
 - `new-task` Phase 3 — Ambiguity 결정 시 이 게이트로 자율/질문 판별
-- 코드 리뷰 — 이슈별로 Fix/Defer/Skip 결정 시 이 게이트로 판별
+- 코드 리뷰 — 이슈별 **구현 방식 선택** 시 이 게이트로 판별 (Fix/Defer/Skip이 아닌 "어떤 방식으로 고칠 것인가")
 - 일반 작업 중 — 구현 방식 선택 시 이 게이트로 판별
 
 ## NEVER
