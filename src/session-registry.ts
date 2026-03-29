@@ -150,10 +150,23 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
+   * Callback fired whenever any session's activity state changes.
+   * Used by the dashboard WebSocket to push real-time updates.
+   */
+  private onActivityStateChangeCallback?: () => void;
+
+  /**
    * Set callbacks for session expiry events
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.expiryCallbacks = callbacks;
+  }
+
+  /**
+   * Register callback for activity state changes (e.g., dashboard WebSocket broadcast)
+   */
+  setActivityStateChangeCallback(callback: () => void): void {
+    this.onActivityStateChangeCallback = callback;
   }
 
   /**
@@ -396,6 +409,9 @@ export class SessionRegistry {
       threadTs,
       state,
     });
+
+    // Notify dashboard WebSocket clients
+    try { this.onActivityStateChangeCallback?.(); } catch { /* fire-and-forget */ }
 
     // Only persist on idle transition to minimize disk I/O
     if (state === 'idle') {

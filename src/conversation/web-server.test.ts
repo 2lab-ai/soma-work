@@ -17,6 +17,7 @@ vi.mock('../config', () => ({
 
 vi.mock('../env-paths', () => ({
   IS_DEV: true,
+  DATA_DIR: '/tmp/test-data',
 }));
 
 vi.mock('./recorder', () => ({

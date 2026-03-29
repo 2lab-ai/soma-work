@@ -11,6 +11,7 @@ import { IS_DEV } from '../env-paths';
 import { getConversation, listConversations, getTurnRawContent } from './recorder';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { ConversationTurn } from './types';
+import { registerDashboardRoutes } from './dashboard';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -220,6 +221,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   );
 
+  // ---- Dashboard Routes ----
+  await registerDashboardRoutes(server, authMiddleware);
+
   // Health check
   server.get('/health', async (_request, reply) => {
     reply.send({ status: 'ok', service: 'conversation-viewer' });
@@ -227,7 +231,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // Root redirect
   server.get('/', async (_request, reply) => {
-    reply.redirect('/conversations');
+    reply.redirect('/dashboard');
   });
 
   if (options.listen === false) {

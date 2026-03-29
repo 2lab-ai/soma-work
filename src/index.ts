@@ -10,7 +10,7 @@ import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR, DATA_DIR } from './env-paths
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
-import { initRecorder, startWebServer, stopWebServer } from './conversation';
+import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, broadcastSessionUpdate } from './conversation';
 import { notifyRelease, getVersionInfo } from './release-notifier';
 import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
@@ -163,7 +163,11 @@ async function start() {
     initRecorder();
     timing('Conversation recorder initialized');
 
-    // Start conversation viewer web server
+    // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
+    setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
+    claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+
+    // Start conversation viewer web server (includes dashboard)
     try {
       await startWebServer();
       timing('Conversation viewer web server started');
