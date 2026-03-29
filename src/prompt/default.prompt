@@ -17,6 +17,7 @@
 | GitHub PR 링크 | `pr-review` |
 | PR + "수정"/"fix" | `pr-fix-and-update` |
 | `repo source -> target` 배포 요청 | `deploy` |
+| `z` + 할일/이슈링크/PR링크 | `zwork` |
 
 ## 코드 리뷰 기본 지침
 
@@ -36,3 +37,4 @@ PR 리뷰 요청이 아니더라도 코드를 볼 때:
 - stv:new-task
 - stv:debug
 - stv:think
+- local:zwork
