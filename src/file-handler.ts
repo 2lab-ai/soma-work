@@ -246,8 +246,8 @@ export class FileHandler {
       
       for (const file of files) {
         if (file.isImage) {
-          // Include path so the agent can view the image via read_media_file (returns base64).
-          // The old Read tool caused API 400, but read_media_file handles images correctly.
+          // Include path so the agent can view the image via Read tool.
+          // Claude Code's Read tool supports reading images natively (multimodal).
           prompt += `\n## Image: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;

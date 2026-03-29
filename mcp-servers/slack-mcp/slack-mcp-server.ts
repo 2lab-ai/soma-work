@@ -334,9 +334,7 @@ class SlackMcpServer extends BaseMcpServer {
         type: 'text' as const,
         text: JSON.stringify({
           path: tempPath, name: file_name, size: buffer.length,
-          hint: isImage
-            ? 'This is an image file. Do NOT use the Read tool on it — the API will reject it with "Could not process image". Reference it by name and ask the user to describe its contents.'
-            : 'Use the Read tool to examine this file.',
+          hint: 'Use the Read tool to examine this file.' + (isImage ? ' This is an image — the Read tool supports viewing images natively.' : ''),
         }),
       }],
     };
