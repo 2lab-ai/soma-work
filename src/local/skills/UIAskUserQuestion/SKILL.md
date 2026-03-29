@@ -118,17 +118,31 @@ interface UserChoiceGroup {
 ### USE this skill when:
 - `decision-gate`에서 switching cost >= medium으로 판정된 결정
 - Architecture decision, data model, major dependency 등
-- PR review에서 medium+ 이슈의 Fix/Defer/Skip 결정
+- PR review에서 medium+ 이슈의 **구체적 구현 방식 선택** (어떤 접근법으로 고칠 것인가)
 
 ### DO NOT use when:
 - Switching cost < small → `decision-gate` 자율 판단으로 해결
 - Context is unclear → ask plain text instead
 - Open-ended questions like "How can I help?"
 - Guessing user intent with speculative options
+- **"고칠까요? / 나중에? / 안 고침" 류의 Fix/Defer/Skip 3택** — 이건 의사결정이 아니라 확인 요청이다. P1 이상이면 당연히 고치는 것이고, 유저에게 물어야 하는 건 "어떤 방식으로 고칠 것인가"다.
 
 ---
 
 ## Bad Examples (NEVER do these)
+
+### BAD: Fix/Defer/Skip 3택 (가장 흔한 퇴행 패턴 — 절대 금지)
+
+```
+→ 이 이슈를 이 PR에서 수정할까요? (fix_now / defer_to_followup / not_a_bug)
+```
+
+**Why this is UNACCEPTABLE:**
+
+- **의사결정이 아니라 확인 요청** — P1이면 당연히 고쳐야 한다. "고칠까요?"는 무의미
+- **구현 방식이 없다** — "고친다"와 "어떻게 고친다"는 완전히 다른 질문
+- **유저 시간 낭비** — 유저가 yes/no 누르고 끝나는 건 UIAskUserQuestion을 쓸 이유가 없다
+- **올바른 질문**: "어떤 방식으로 고칠 것인가" — Option A vs Option B (구현 대안 비교)
 
 ### BAD: Context-free code review question
 
