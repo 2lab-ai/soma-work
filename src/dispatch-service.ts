@@ -6,6 +6,7 @@
 import { WorkflowType, SessionLinks, SessionLink } from './types';
 import { Logger } from './logger';
 import { ClaudeHandler } from './claude-handler';
+import { scoreComplexity, ComplexityResult } from './complexity-scorer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,6 +27,8 @@ export interface DispatchResult {
   workflow: WorkflowType;
   title: string;
   links?: SessionLinks;
+  /** Complexity analysis of the input message (score, tier, signals) */
+  complexity?: ComplexityResult;
 }
 
 /**
@@ -110,22 +113,27 @@ export class DispatchService {
    * @param abortSignal - Optional AbortSignal for cancellation
    */
   async dispatch(userMessage: string, abortSignal?: AbortSignal): Promise<DispatchResult> {
+    // Score complexity for every dispatch (cheap — pure function, <1ms)
+    const complexity = scoreComplexity(userMessage);
+
     // Check if service is properly configured (prompt + ClaudeHandler)
     if (!this.isConfigured || !this.dispatchPrompt) {
-      this.logger.warn(`📍 DISPATCH → [default] (unconfigured - no dispatch prompt)`);
+      this.logger.warn(`📍 DISPATCH → [default] (unconfigured - no dispatch prompt) complexity=${complexity.score}/${complexity.tier}`);
       dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
+        complexity,
       };
     }
 
     if (!this.claudeHandler) {
-      this.logger.warn(`📍 DISPATCH → [default] (no ClaudeHandler)`);
+      this.logger.warn(`📍 DISPATCH → [default] (no ClaudeHandler) complexity=${complexity.score}/${complexity.tier}`);
       dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
+        complexity,
       };
     }
 
@@ -162,10 +170,14 @@ export class DispatchService {
 
       const result = this.parseResponse(responseText, userMessage);
 
+      // Attach complexity to dispatch result
+      result.complexity = complexity;
+
       // Workflow dispatch log
-      this.logger.info(`📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms)`, {
+      this.logger.info(`📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms) complexity=${complexity.score}/${complexity.tier}`, {
         workflow: result.workflow,
         title: result.title,
+        complexity: { score: complexity.score, tier: complexity.tier },
         rawResponse: responseText.substring(0, 200),
       });
 
@@ -182,6 +194,7 @@ export class DispatchService {
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
+        complexity,
       };
     }
   }
