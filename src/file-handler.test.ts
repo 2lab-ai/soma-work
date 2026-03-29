@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FileHandler, ProcessedFile } from './file-handler';
 
-describe('FileHandler.formatFilePrompt — image path suppression', () => {
+describe('FileHandler.formatFilePrompt — image path included for viewing', () => {
   const handler = new FileHandler();
 
   function makeImageFile(name = 'screenshot.png'): ProcessedFile {
@@ -46,23 +46,22 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
     };
   }
 
-  it('does NOT include Path for image files', async () => {
+  it('includes Path for image files so agent can view them', async () => {
     const result = await handler.formatFilePrompt([makeImageFile()], '');
 
-    // Must NOT contain the temp path — this is the structural prevention
-    expect(result).not.toContain('/tmp/slack-file-12345-screenshot.png');
-    expect(result).not.toMatch(/Path:/i);
+    // Path must be present so agent can use Read tool to view the image
+    expect(result).toContain('/tmp/slack-file-12345-screenshot.png');
+    expect(result).toMatch(/Path:/i);
     // Must still contain image metadata
     expect(result).toContain('screenshot.png');
     expect(result).toContain('image/png');
     expect(result).toContain('54321');
   });
 
-  it('does NOT contain "Read tool" instruction for image files', async () => {
+  it('contains "Read tool" instruction for image files', async () => {
     const result = await handler.formatFilePrompt([makeImageFile()], '');
 
-    expect(result).not.toContain('Read tool');
-    expect(result).not.toContain('Read 도구');
+    expect(result).toContain('Read tool');
   });
 
   it('includes Path for PDF files', async () => {
@@ -86,8 +85,8 @@ describe('FileHandler.formatFilePrompt — image path suppression', () => {
       'analyze these'
     );
 
-    // Image path should be suppressed
-    expect(result).not.toContain('/tmp/slack-file-12345-screenshot.png');
+    // Image path should now be present
+    expect(result).toContain('/tmp/slack-file-12345-screenshot.png');
     // PDF path should be present
     expect(result).toContain('/tmp/slack-file-12345-doc.pdf');
     // Both file names should be present
@@ -180,7 +179,8 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     };
     const result = await handler.formatFilePrompt([imageFile], '');
 
-    expect(result).not.toContain('/tmp/slack-file-12345-screenshot.png');
+    // Image path is now included so agent can view it
+    expect(result).toContain('/tmp/slack-file-12345-screenshot.png');
     expect(result).toContain('screenshot.png');
   });
 

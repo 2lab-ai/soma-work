@@ -20,21 +20,23 @@ export function formatSingleMessage(m: any): ThreadMessage {
       : new Date().toISOString(),
     files: (m.files || []).map((f: any) => {
       const fileIsImage = isImageFile(f.mimetype, f.name);
-      const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+      const fileIsNonImageMedia = !fileIsImage && isMediaFile(f.mimetype, f.name || '');
       return {
         id: f.id,
         name: f.name,
         mimetype: f.mimetype,
         size: f.size,
-        ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+        // Images: include download URL so agent can download and view via Read tool
+        // Non-image media (video/audio): still blocked — no tool can process them
+        ...(!fileIsNonImageMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
         ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
         ...(fileIsImage ? {
           is_image: true,
-          image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          image_note: 'Image file — download with download_thread_file, then use Read tool to view it.',
         } : {}),
-        ...(!fileIsImage && fileIsMedia ? {
+        ...(fileIsNonImageMedia ? {
           is_media: true,
-          media_note: 'Media file — do NOT download or Read. Reference by name only.',
+          media_note: 'Media file (video/audio) — cannot be viewed. Reference by name only.',
         } : {}),
       };
     }),

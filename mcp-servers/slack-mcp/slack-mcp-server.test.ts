@@ -221,8 +221,10 @@ describe('isImageFile helper', () => {
   });
 });
 
-describe('download_thread_file image blocking', () => {
+describe('download_thread_file media blocking', () => {
   const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a']);
 
   function isImageFile(mimetype?: string, filename?: string): boolean {
     if (mimetype && mimetype.startsWith('image/')) return true;
@@ -233,25 +235,33 @@ describe('download_thread_file image blocking', () => {
     return false;
   }
 
-  it('blocks image file downloads and returns blocked response', () => {
+  function isNonImageMedia(filename: string): boolean {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+  }
+
+  it('allows image file downloads (images can be viewed with Read tool)', () => {
     const imageFiles = ['screenshot.png', 'photo.jpg', 'animation.gif', 'icon.webp', 'logo.svg'];
 
     for (const fileName of imageFiles) {
       expect(isImageFile(undefined, fileName)).toBe(true);
-      // Simulates the early return in handleDownloadFile
-      const response = {
-        blocked: true,
-        name: fileName,
-        reason: 'Image files cannot be downloaded and read — the API will reject them with "Could not process image".',
-      };
-      expect(response.blocked).toBe(true);
+      // Images are now allowed — agent can view them after download
+      expect(isNonImageMedia(fileName)).toBe(false);
     }
   });
 
-  it('allows non-image file downloads', () => {
-    const nonImageFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+  it('blocks video/audio file downloads', () => {
+    const mediaFiles = ['demo.mp4', 'clip.mov', 'song.mp3', 'voice.wav'];
 
-    for (const fileName of nonImageFiles) {
+    for (const fileName of mediaFiles) {
+      expect(isNonImageMedia(fileName)).toBe(true);
+    }
+  });
+
+  it('allows non-media file downloads', () => {
+    const nonMediaFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+
+    for (const fileName of nonMediaFiles) {
       expect(isImageFile(undefined, fileName)).toBe(false);
     }
   });
@@ -389,21 +399,21 @@ describe('thread message formatting', () => {
         : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
-        const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+        const fileIsNonImageMedia = !fileIsImage && isMediaFile(f.mimetype, f.name || '');
         return {
           id: f.id,
           name: f.name,
           mimetype: f.mimetype,
           size: f.size,
-          ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+          ...(!fileIsNonImageMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
           ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
           ...(fileIsImage ? {
             is_image: true,
-            image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+            image_note: 'Image file — download with download_thread_file, then use Read tool to view it.',
           } : {}),
-          ...(!fileIsImage && fileIsMedia ? {
+          ...(fileIsNonImageMedia ? {
             is_media: true,
-            media_note: 'Media file — do NOT download or Read. Reference by name only.',
+            media_note: 'Media file (video/audio) — cannot be viewed. Reference by name only.',
           } : {}),
         };
       }),
@@ -443,7 +453,7 @@ describe('thread message formatting', () => {
     expect(msg.is_bot).toBe(true);
   });
 
-  it('extracts image file attachments WITHOUT url_private_download and WITH image warning', () => {
+  it('extracts image file attachments WITH url_private_download and WITH image guidance', () => {
     const msg = formatMessage({
       ts: '1700000002.000000',
       user: 'U123',
@@ -464,10 +474,10 @@ describe('thread message formatting', () => {
     expect(msg.files[0].id).toBe('F001');
     expect(msg.files[0].name).toBe('screenshot.png');
     expect(msg.files[0].thumb_360).toBeDefined();
-    // Image files must NOT have url_private_download (prevents Claude from downloading + Reading)
-    expect(msg.files[0].url_private_download).toBeUndefined();
+    // Image files now include url_private_download so agent can download and view them
+    expect(msg.files[0].url_private_download).toBe('https://files.slack.com/files-pri/T123-F001/screenshot.png');
     expect(msg.files[0].is_image).toBe(true);
-    expect(msg.files[0].image_note).toContain('do NOT download or Read');
+    expect(msg.files[0].image_note).toContain('download with download_thread_file');
   });
 
   it('extracts non-image file attachments WITH url_private_download and WITHOUT image warning', () => {
@@ -551,7 +561,7 @@ describe('thread message formatting', () => {
     expect(msg.files[0].name).toBe('demo.mp4');
     expect(msg.files[0].url_private_download).toBeUndefined();
     expect(msg.files[0].is_media).toBe(true);
-    expect(msg.files[0].media_note).toContain('do NOT download or Read');
+    expect(msg.files[0].media_note).toContain('cannot be viewed');
   });
 
   // Trace: Scenario 3, Section 3a — audio file excludes download URL
@@ -575,7 +585,7 @@ describe('thread message formatting', () => {
     expect(msg.files[0].name).toBe('recording.mp3');
     expect(msg.files[0].url_private_download).toBeUndefined();
     expect(msg.files[0].is_media).toBe(true);
-    expect(msg.files[0].media_note).toContain('do NOT download or Read');
+    expect(msg.files[0].media_note).toContain('cannot be viewed');
   });
 
   // Trace: Scenario 3, Section 3b — media_note content for video
@@ -621,8 +631,8 @@ describe('thread message formatting', () => {
     expect(msg.files[0].is_media).toBeUndefined();
   });
 
-  // Trace: Scenario 3, Section 3a — regression: images still work
-  it('still excludes download URL for image files (regression)', () => {
+  // Images now include download URL so agent can download and view them
+  it('includes download URL for image files', () => {
     const msg = formatMessage({
       ts: '1700000014.000000',
       user: 'U123',
@@ -638,8 +648,7 @@ describe('thread message formatting', () => {
       ],
     });
 
-    expect(msg.files[0].url_private_download).toBeUndefined();
-    // Image should still have is_image (backward compat)
+    expect(msg.files[0].url_private_download).toBe('https://files.slack.com/files-pri/T123-F014/photo.jpg');
     expect(msg.files[0].is_image).toBe(true);
   });
 });
@@ -795,17 +804,17 @@ describe('formatSingleMessage — root message file metadata', () => {
 
   function formatFileMetadata(f: any) {
     const fileIsImage = isImageFile(f.mimetype, f.name);
-    const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
+    const fileIsNonImageMedia = !fileIsImage && isMediaFile(f.mimetype, f.name || '');
     return {
       id: f.id,
       name: f.name,
       mimetype: f.mimetype,
       size: f.size,
-      ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
+      ...(!fileIsNonImageMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
       ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
       ...(fileIsImage ? {
         is_image: true,
-        image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+        image_note: 'Image file — download with download_thread_file, then use Read tool to view it.',
       } : {}),
     };
   }
@@ -830,8 +839,8 @@ describe('formatSingleMessage — root message file metadata', () => {
     expect(formatted.is_image).toBe(true);
     expect(formatted.image_note).toBeDefined();
     expect(formatted.thumb_360).toBeDefined();
-    // Image files should NOT have url_private_download (prevent binary read errors)
-    expect(formatted.url_private_download).toBeUndefined();
+    // Image files now include url_private_download so agent can download and view
+    expect(formatted.url_private_download).toBe('https://files.slack.com/files-pri/T123/header-screenshot.png');
   });
 
   // Trace: S3 — non-image file retains url_private_download

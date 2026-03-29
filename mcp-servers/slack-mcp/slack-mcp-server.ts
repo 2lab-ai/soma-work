@@ -110,7 +110,7 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'download_thread_file',
-        description: 'Download a non-media file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, etc. WARNING: Do NOT use this for media files (images, videos, audio) — they cannot be read by the Read tool. For media files, just reference their name and metadata from get_thread_messages.',
+        description: 'Download a file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, images, and archives. Images can be viewed with the Read tool after downloading. WARNING: Do NOT use this for video/audio files — they cannot be processed. For video/audio, reference their name and metadata from get_thread_messages.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -289,14 +289,17 @@ class SlackMcpServer extends BaseMcpServer {
     if (!file_url) throw new Error('file_url is required');
     if (!file_name) throw new Error('file_name is required');
 
-    if (isMediaFile(undefined, file_name)) {
-      this.logger.warn('Blocked media file download to prevent API error', { name: file_name });
+    // Allow image downloads — Read tool supports images natively.
+    // Block only non-image media (video/audio) which cannot be processed.
+    const isImage = isImageFile(undefined, file_name);
+    if (!isImage && isMediaFile(undefined, file_name)) {
+      this.logger.warn('Blocked non-image media file download', { name: file_name });
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             blocked: true, name: file_name,
-            reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+            reason: 'Video/audio files cannot be downloaded and processed. Reference the file by name and metadata only.',
           }),
         }],
       };
