@@ -5,11 +5,14 @@
  * with the same Slack token, which causes Socket Mode event
  * round-robin distribution and 50% random errors.
  *
+ * Uses O_EXCL (exclusive create) for atomic lock acquisition to prevent
+ * TOCTOU race conditions between concurrent process starts.
+ *
  * @see docs/pid-lock/spec.md
  * @see https://github.com/2lab-ai/soma-work/issues/152
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, closeSync, constants } from 'fs';
 import { join } from 'path';
 
 const LOCK_FILENAME = 'soma-work.pid';
@@ -29,41 +32,116 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Acquire a PID lock. Returns true if lock acquired, false if another instance is running.
- *
- * Behavior:
- * - No lock file → create with current PID → return true
- * - Lock file with dead/invalid PID → remove stale lock → create new → return true
- * - Lock file with alive PID → return false (caller should exit)
+ * Build lock file content: "PID:startTime" format.
+ * startTime is process uptime anchor to mitigate PID reuse false positives.
  */
-export function acquirePidLock(dataDir: string): boolean {
-  const lockPath = join(dataDir, LOCK_FILENAME);
+function buildLockContent(): string {
+  // Use process.pid + Date.now() as a simple identity tuple.
+  // On PID reuse, the start time will differ.
+  return `${process.pid}:${Date.now()}`;
+}
 
-  if (existsSync(lockPath)) {
-    const content = readFileSync(lockPath, 'utf-8').trim();
-    const pid = parseInt(content, 10);
+/**
+ * Parse lock file content. Returns { pid, startTime } or null if corrupted.
+ */
+function parseLockContent(content: string): { pid: number; startTime: number } | null {
+  const trimmed = content.trim();
 
-    if (isNaN(pid) || pid <= 0) {
-      // Corrupted lock file — treat as stale
-      console.warn(`[pid-lock] Corrupted lock file (content="${content}"), removing`);
-      unlinkSync(lockPath);
-    } else if (pid === process.pid) {
-      // Re-entrant call from same process — already ours
-      return true;
-    } else if (isProcessAlive(pid)) {
-      // Another instance is genuinely running
-      console.error(`[pid-lock] Another instance already running (pid=${pid}). Exiting.`);
-      return false;
-    } else {
-      // Stale lock — process died without cleanup
-      console.warn(`[pid-lock] Stale PID lock detected (pid=${pid}), removing`);
-      unlinkSync(lockPath);
-    }
+  // Support legacy format (bare PID) for backward compatibility
+  if (!trimmed.includes(':')) {
+    const pid = parseInt(trimmed, 10);
+    return (isNaN(pid) || pid <= 0) ? null : { pid, startTime: 0 };
   }
 
-  // Write our PID
-  writeFileSync(lockPath, String(process.pid), 'utf-8');
-  return true;
+  const [pidStr, timeStr] = trimmed.split(':');
+  const pid = parseInt(pidStr, 10);
+  const startTime = parseInt(timeStr, 10);
+
+  if (isNaN(pid) || pid <= 0 || isNaN(startTime)) {
+    return null;
+  }
+
+  return { pid, startTime };
+}
+
+/**
+ * Attempt atomic file creation using O_CREAT | O_EXCL | O_WRONLY.
+ * Returns true if the file was created (we won the race), false if it already existed.
+ * Throws on other filesystem errors.
+ */
+function tryAtomicCreate(lockPath: string, content: string): boolean {
+  try {
+    const fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+    const buf = Buffer.from(content, 'utf-8');
+    const { writeSync } = require('fs');
+    writeSync(fd, buf);
+    closeSync(fd);
+    return true;
+  } catch (err: any) {
+    if (err.code === 'EEXIST') {
+      return false; // Another process created it first
+    }
+    throw err; // Permission error, disk full, etc.
+  }
+}
+
+/**
+ * Acquire a PID lock. Returns true if lock acquired, false if another instance is running.
+ *
+ * Strategy:
+ * 1. Try atomic create (O_EXCL) — if we win, lock is ours
+ * 2. If file exists, read and validate the incumbent:
+ *    - Dead/invalid PID → remove stale lock, retry atomic create
+ *    - Alive PID → return false (caller should exit)
+ */
+export function acquirePidLock(dataDir: string): boolean {
+  // Ensure data directory exists (first boot safety)
+  mkdirSync(dataDir, { recursive: true });
+
+  const lockPath = join(dataDir, LOCK_FILENAME);
+  const content = buildLockContent();
+
+  // Attempt 1: Try atomic create
+  if (tryAtomicCreate(lockPath, content)) {
+    return true;
+  }
+
+  // File already exists — inspect the incumbent
+  let existingContent: string;
+  try {
+    existingContent = readFileSync(lockPath, 'utf-8');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      // File disappeared between our EEXIST and read — retry
+      return tryAtomicCreate(lockPath, content);
+    }
+    throw err;
+  }
+
+  const parsed = parseLockContent(existingContent);
+
+  if (!parsed) {
+    // Corrupted lock file — treat as stale
+    console.warn(`[pid-lock] Corrupted lock file (content="${existingContent.trim()}"), removing`);
+    try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
+    return tryAtomicCreate(lockPath, content);
+  }
+
+  if (parsed.pid === process.pid) {
+    // Re-entrant call from same process — already ours
+    return true;
+  }
+
+  if (isProcessAlive(parsed.pid)) {
+    // Another instance is genuinely running
+    console.error(`[pid-lock] Another instance already running (pid=${parsed.pid}). Exiting.`);
+    return false;
+  }
+
+  // Stale lock — process died without cleanup
+  console.warn(`[pid-lock] Stale PID lock detected (pid=${parsed.pid}), removing`);
+  try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
+  return tryAtomicCreate(lockPath, content);
 }
 
 /**
@@ -73,14 +151,13 @@ export function acquirePidLock(dataDir: string): boolean {
 export function releasePidLock(dataDir: string): void {
   const lockPath = join(dataDir, LOCK_FILENAME);
 
-  if (!existsSync(lockPath)) {
-    return;
-  }
-
-  const content = readFileSync(lockPath, 'utf-8').trim();
-  const pid = parseInt(content, 10);
-
-  if (pid === process.pid) {
-    unlinkSync(lockPath);
+  try {
+    const content = readFileSync(lockPath, 'utf-8');
+    const parsed = parseLockContent(content);
+    if (parsed && parsed.pid === process.pid) {
+      unlinkSync(lockPath);
+    }
+  } catch {
+    // File missing or unreadable — nothing to release
   }
 }

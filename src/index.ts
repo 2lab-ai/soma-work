@@ -271,9 +271,6 @@ async function start() {
       logger.info('Shutting down gracefully...');
 
       try {
-        // Release PID lock first
-        releasePidLock(DATA_DIR);
-
         // Stop report scheduler
         stopReportScheduler();
 
@@ -309,6 +306,9 @@ async function start() {
       } catch (error) {
         logger.error('Error stopping conversation viewer:', error);
       }
+
+      // Release PID lock last — after all connections are torn down
+      releasePidLock(DATA_DIR);
 
       process.exit(0);
     };

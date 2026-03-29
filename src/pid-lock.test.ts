@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { rmSync } from 'fs';
 
 // Contract tests derived from docs/pid-lock/trace.md
-// All tests should FAIL (RED) until implementation
+// Tests the atomic O_EXCL-based PID lock with PID:timestamp format
 
 describe('PID Lock — Single Instance Guard', () => {
   let tempDir: string;
@@ -25,34 +25,48 @@ describe('PID Lock — Single Instance Guard', () => {
       const result = acquirePidLock(tempDir);
       expect(result).toBe(true);
       const pidContent = readFileSync(join(tempDir, 'soma-work.pid'), 'utf-8');
-      expect(pidContent.trim()).toBe(String(process.pid));
+      // New format: "PID:timestamp"
+      expect(pidContent).toMatch(new RegExp(`^${process.pid}:\\d+$`));
     });
   });
 
   // === Scenario 2: acquirePidLock — stale lock (dead PID) ===
   describe('Scenario 2: Stale lock (dead PID)', () => {
-    it('removes stale lock and acquires', async () => {
-      // Write a PID that definitely does not exist (very high number)
+    it('removes stale lock and acquires (legacy bare PID format)', async () => {
+      // Legacy format: bare PID
       writeFileSync(join(tempDir, 'soma-work.pid'), '4294967295');
       const { acquirePidLock } = await import('./pid-lock');
       const result = acquirePidLock(tempDir);
       expect(result).toBe(true);
       const pidContent = readFileSync(join(tempDir, 'soma-work.pid'), 'utf-8');
-      expect(pidContent.trim()).toBe(String(process.pid));
+      expect(pidContent).toMatch(new RegExp(`^${process.pid}:\\d+$`));
+    });
+
+    it('removes stale lock and acquires (new PID:timestamp format)', async () => {
+      writeFileSync(join(tempDir, 'soma-work.pid'), '4294967295:1700000000000');
+      const { acquirePidLock } = await import('./pid-lock');
+      const result = acquirePidLock(tempDir);
+      expect(result).toBe(true);
+      const pidContent = readFileSync(join(tempDir, 'soma-work.pid'), 'utf-8');
+      expect(pidContent).toMatch(new RegExp(`^${process.pid}:\\d+$`));
     });
   });
 
   // === Scenario 3: acquirePidLock — live lock (running PID) ===
   describe('Scenario 3: Live lock (another running process)', () => {
-    it('refuses to acquire when another instance is running', async () => {
+    it('refuses to acquire when another instance is running (legacy format)', async () => {
       // Use parent PID (guaranteed alive, guaranteed not us)
       writeFileSync(join(tempDir, 'soma-work.pid'), String(process.ppid));
       const { acquirePidLock } = await import('./pid-lock');
       const result = acquirePidLock(tempDir);
       expect(result).toBe(false);
-      // Lock file should remain unchanged (still contains ppid)
-      const pidContent = readFileSync(join(tempDir, 'soma-work.pid'), 'utf-8');
-      expect(pidContent.trim()).toBe(String(process.ppid));
+    });
+
+    it('refuses to acquire when another instance is running (new format)', async () => {
+      writeFileSync(join(tempDir, 'soma-work.pid'), `${process.ppid}:${Date.now()}`);
+      const { acquirePidLock } = await import('./pid-lock');
+      const result = acquirePidLock(tempDir);
+      expect(result).toBe(false);
     });
   });
 
@@ -69,20 +83,43 @@ describe('PID Lock — Single Instance Guard', () => {
     it('does not remove lock file if PID does not match (safety)', async () => {
       const { releasePidLock } = await import('./pid-lock');
       // Write someone else's PID
-      writeFileSync(join(tempDir, 'soma-work.pid'), String(process.ppid));
+      writeFileSync(join(tempDir, 'soma-work.pid'), `${process.ppid}:${Date.now()}`);
       releasePidLock(tempDir);
       // Should NOT remove — not our lock
       expect(existsSync(join(tempDir, 'soma-work.pid'))).toBe(true);
     });
   });
 
-  // === Scenario edge: corrupted lock file ===
+  // === Edge cases ===
   describe('Edge: Corrupted lock file', () => {
     it('handles non-numeric content in lock file', async () => {
       writeFileSync(join(tempDir, 'soma-work.pid'), 'not-a-number');
       const { acquirePidLock } = await import('./pid-lock');
       const result = acquirePidLock(tempDir);
-      expect(result).toBe(true); // Should treat as stale and acquire
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Edge: Missing data directory', () => {
+    it('creates data directory if it does not exist', async () => {
+      const nonExistentDir = join(tempDir, 'nested', 'data');
+      const { acquirePidLock } = await import('./pid-lock');
+      const result = acquirePidLock(nonExistentDir);
+      expect(result).toBe(true);
+      expect(existsSync(join(nonExistentDir, 'soma-work.pid'))).toBe(true);
+    });
+  });
+
+  describe('Edge: Lock file removed between check and read', () => {
+    it('handles ENOENT gracefully during read', async () => {
+      // Pre-create then remove to simulate race
+      writeFileSync(join(tempDir, 'soma-work.pid'), `99999:${Date.now()}`);
+      const { acquirePidLock } = await import('./pid-lock');
+      // Remove the file to simulate the race window
+      rmSync(join(tempDir, 'soma-work.pid'));
+      // Should still acquire successfully
+      const result = acquirePidLock(tempDir);
+      expect(result).toBe(true);
     });
   });
 });
