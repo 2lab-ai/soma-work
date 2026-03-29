@@ -27,7 +27,11 @@ type ServerToolsConfig = Record<string, ServerConfig>;
 const configCache = new ConfigCache<ServerToolsConfig>({}, {
   section: 'server-tools',
   loader: (raw: any) => {
-    if (raw && typeof raw === 'object') return raw as ServerToolsConfig;
+    if (raw && typeof raw === 'object') {
+      // Exclude "permission" reserved key — it's tool-level permission config, not a server entry
+      const { permission, ...servers } = raw;
+      return servers as ServerToolsConfig;
+    }
     return {} as ServerToolsConfig; // Section removed/invalid → clear config
   },
 });
