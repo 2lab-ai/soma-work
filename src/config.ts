@@ -45,6 +45,19 @@ export const config = {
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',
     viewerToken: process.env.CONVERSATION_VIEWER_TOKEN || '',
   },
+  oauth: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID || '',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+    },
+    microsoft: {
+      clientId: process.env.MICROSOFT_CLIENT_ID || '',
+      clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
+    },
+    jwtSecret: process.env.DASHBOARD_JWT_SECRET || '',
+    /** Seconds until dashboard JWT expires (default: 7 days) */
+    jwtExpiresIn: parseInt(process.env.DASHBOARD_JWT_EXPIRES_IN || '604800', 10),
+  },
 };
 
 export function validateConfig() {

@@ -12,45 +12,73 @@ import { getConversation, listConversations, getTurnRawContent } from './recorde
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { ConversationTurn } from './types';
 import { registerDashboardRoutes } from './dashboard';
+import { registerOAuthRoutes, getDashboardUser } from './oauth';
 
 const logger = new Logger('ConversationWebServer');
 
 /**
- * Validate Bearer token from Authorization header
+ * Validate authentication from:
+ * 1. Authorization header (Bearer token) — for API clients
+ * 2. JWT cookie — for browser sessions (OAuth or token-based login)
+ * 3. Cookie with "bearer:" prefix — for token-based browser login
  */
 function validateAuthToken(request: FastifyRequest): boolean {
   const token = config.conversation.viewerToken;
 
-  // If no token is configured, auth is disabled (allow all)
-  if (!token) {
+  // If no token is configured and no OAuth is configured, auth is disabled (allow all)
+  if (!token && !config.oauth.google.clientId && !config.oauth.microsoft.clientId && !config.oauth.jwtSecret) {
     return true;
   }
 
+  // 1. Check Authorization header (Bearer token)
   const authHeader = request.headers.authorization;
-  if (!authHeader) {
-    return false;
+  if (authHeader && token) {
+    const providedToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : authHeader;
+    if (providedToken === token) return true;
   }
 
-  // Support both "Bearer <token>" and raw token
-  const providedToken = authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : authHeader;
+  // 2. Check JWT cookie (OAuth session)
+  const dashUser = getDashboardUser(request);
+  if (dashUser) return true;
 
-  return providedToken === token;
+  // 3. Check cookie with bearer: prefix (token-based browser login)
+  const cookieHeader = request.headers.cookie || '';
+  const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
+  if (cookieMatch) {
+    const cookieVal = decodeURIComponent(cookieMatch[1]);
+    if (cookieVal.startsWith('bearer:') && token && cookieVal.slice(7) === token) {
+      return true;
+    }
+  }
+
+  // If no auth configured at all, allow
+  if (!token) return true;
+
+  return false;
 }
 
 /**
- * Auth middleware - applied to routes that require authentication
+ * Auth middleware - applied to routes that require authentication.
+ * API requests (Accept: application/json or /api/ paths) get 401 JSON.
+ * Browser requests get redirected to /login.
  */
 async function authMiddleware(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   if (!validateAuthToken(request)) {
-    reply.status(401).send({
-      error: 'Unauthorized',
-      message: 'Valid Authorization header required',
-    });
+    const isApi = request.url.startsWith('/api/') ||
+      (request.headers.accept || '').includes('application/json');
+    if (isApi) {
+      reply.status(401).send({
+        error: 'Unauthorized',
+        message: 'Valid Authorization header required',
+      });
+    } else {
+      reply.redirect('/login');
+    }
     return;
   }
 }
@@ -220,6 +248,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       }
     }
   );
+
+  // ---- OAuth Routes (public — no auth required) ----
+  await registerOAuthRoutes(server);
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware);

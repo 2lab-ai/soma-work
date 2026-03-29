@@ -5,3 +5,4 @@ export * from './recorder';
 export * from './web-server';
 export * from './viewer';
 export * from './dashboard';
+export * from './oauth';

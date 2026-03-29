@@ -10,7 +10,7 @@ import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR, DATA_DIR } from './env-paths
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
-import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, broadcastSessionUpdate } from './conversation';
+import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, broadcastSessionUpdate, setOAuthUserLookup } from './conversation';
 import { notifyRelease, getVersionInfo } from './release-notifier';
 import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
@@ -166,6 +166,21 @@ async function start() {
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+
+    // Connect OAuth: email → Slack user lookup for dashboard login
+    {
+      const { userSettingsStore } = await import('./user-settings-store');
+      setOAuthUserLookup((email: string) => {
+        const allUsers = userSettingsStore.getAllUsers();
+        const emailLower = email.toLowerCase();
+        for (const u of allUsers) {
+          if (u.email && u.email.toLowerCase() === emailLower) {
+            return { userId: u.userId, name: u.slackName || u.userId };
+          }
+        }
+        return null;
+      });
+    }
 
     // Start conversation viewer web server (includes dashboard)
     try {
