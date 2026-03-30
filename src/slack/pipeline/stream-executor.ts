@@ -972,9 +972,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           errorMessage: error.message,
         });
 
-        // Clear stale file-access error context — this is a different error class now,
-        // so the model should not receive outdated "avoid file X" guidance.
+        // Clear stale file-access state — this is a different error class now,
+        // so the model should not receive outdated "avoid file X" guidance,
+        // and the file-access retry budget should restart fresh if it recurs.
         session.lastErrorContext = undefined;
+        session.fileAccessRetryCount = 0;
 
         // Auto-rotate token on rate limit (pass query-start token for CAS safety)
         if (this.isRateLimitError(error)) {
@@ -1250,16 +1252,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /**
    * Extract the blocked resource path from a file access error message.
-   * e.g., "File access blocked: /home/user/file.png" → "/home/user/file.png"
+   * Supports both "File access blocked: /path" and "permission denied for /path" patterns.
    */
   private extractBlockedPath(error: any): string | undefined {
     const message = String(error?.message || '');
     const stderr = String(error?.stderrContent || '');
     const combined = `${message}\n${stderr}`;
 
-    // Match patterns like "File access blocked: /path/to/file"
-    const match = combined.match(/file access blocked:\s*(.+?)(?:\n|$)/i);
-    return match?.[1]?.trim();
+    // Try "File access blocked: /path/to/file" first
+    const fileAccessMatch = combined.match(/file access blocked:\s*(.+?)(?:\n|$)/i);
+    if (fileAccessMatch?.[1]?.trim()) {
+      return fileAccessMatch[1].trim();
+    }
+
+    // Fallback: "permission denied for /path" or "permission denied: /path"
+    const permissionMatch = combined.match(/permission denied[:\s]+(?:for\s+)?(\/.+?)(?:\n|$)/i);
+    return permissionMatch?.[1]?.trim();
   }
 
   /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
