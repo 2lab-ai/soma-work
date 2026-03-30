@@ -401,3 +401,84 @@ describe('Auto-Resume: CrashRecoveredSession sessionKey field', () => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 });
+
+describe('Auto-Resume: Context enrichment with title/workflow', () => {
+  it('autoResumeSession_includes_title_and_workflow_in_prompt', async () => {
+    const { handler, mockGetCrashRecoveredSessions } = createTestHandler();
+    const handlerAny = handler as any;
+
+    const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
+    handlerAny.handleMessage = handleMessageSpy;
+
+    mockGetCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C123',
+        threadTs: '1700000000.000100',
+        ownerId: 'U456',
+        ownerName: 'Zhuge',
+        activityState: 'working',
+        sessionKey: 'C123-1700000000.000100',
+        title: 'Fix login authentication bug',
+        workflow: 'jira-create-pr',
+      },
+    ]);
+
+    await handler.notifyCrashRecovery();
+
+    expect(handleMessageSpy).toHaveBeenCalledTimes(1);
+    const syntheticEvent = handleMessageSpy.mock.calls[0][0];
+    expect(syntheticEvent.text).toContain('--- 중단 시점 컨텍스트 ---');
+    expect(syntheticEvent.text).toContain('세션 제목: Fix login authentication bug');
+    expect(syntheticEvent.text).toContain('워크플로우: jira-create-pr');
+  });
+
+  it('autoResumeSession_omits_context_section_when_no_title_or_workflow', async () => {
+    const { handler, mockGetCrashRecoveredSessions } = createTestHandler();
+    const handlerAny = handler as any;
+
+    const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
+    handlerAny.handleMessage = handleMessageSpy;
+
+    mockGetCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C123',
+        threadTs: '1700000000.000100',
+        ownerId: 'U456',
+        activityState: 'working',
+        sessionKey: 'C123-1700000000.000100',
+      },
+    ]);
+
+    await handler.notifyCrashRecovery();
+
+    const syntheticEvent = handleMessageSpy.mock.calls[0][0];
+    expect(syntheticEvent.text).toBe(RESUME_PROMPT);
+    expect(syntheticEvent.text).not.toContain('--- 중단 시점 컨텍스트 ---');
+  });
+
+  it('autoResumeSession_skips_default_workflow_in_context', async () => {
+    const { handler, mockGetCrashRecoveredSessions } = createTestHandler();
+    const handlerAny = handler as any;
+
+    const handleMessageSpy = vi.fn().mockResolvedValue(undefined);
+    handlerAny.handleMessage = handleMessageSpy;
+
+    mockGetCrashRecoveredSessions.mockReturnValue([
+      {
+        channelId: 'C123',
+        threadTs: '1700000000.000100',
+        ownerId: 'U456',
+        activityState: 'working',
+        sessionKey: 'C123-1700000000.000100',
+        title: 'Some task',
+        workflow: 'default',
+      },
+    ]);
+
+    await handler.notifyCrashRecovery();
+
+    const syntheticEvent = handleMessageSpy.mock.calls[0][0];
+    expect(syntheticEvent.text).toContain('세션 제목: Some task');
+    expect(syntheticEvent.text).not.toContain('워크플로우');
+  });
+});

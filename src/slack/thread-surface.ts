@@ -480,15 +480,13 @@ export class ThreadSurface {
           isMessageNotFound,
           error: error?.message || error,
         });
-        // Clear stale reference so we don't keep retrying a deleted message
-        panelState.messageTs = undefined;
-        // For bot-initiated: if the thread root itself is gone, create a fresh
-        // surface message in the thread instead of silently giving up forever.
+        // For bot-initiated with transient errors (network, rate-limit):
+        // keep messageTs so we retry the *update* on next render, not create a duplicate.
         if (session.threadModel === 'bot-initiated' && !isMessageNotFound) {
-          // Non-404 error (e.g. network issue) — skip creation, will retry next render
           return;
         }
-        // Fall through to create a new message below
+        // 404 or user-initiated: clear stale reference and fall through to create new
+        panelState.messageTs = undefined;
       }
     }
 

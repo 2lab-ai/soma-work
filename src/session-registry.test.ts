@@ -45,8 +45,10 @@ describe('SessionRegistry persistence', () => {
     const restored = reader.getSession('C123', '171.001');
 
     expect(loaded).toBe(1);
-    // messageTs is intentionally cleared on restore to prevent stale message_not_found errors
+    // messageTs and renderKey are intentionally cleared on restore to prevent stale message_not_found errors
     expect(restored?.actionPanel?.messageTs).toBeUndefined();
+    expect(restored?.actionPanel?.renderKey).toBeUndefined();
+    // Other actionPanel fields should survive the restore
     expect(restored?.actionPanel?.choiceMessageTs).toBe('999.101');
     expect(restored?.actionPanel?.waitingForChoice).toBe(true);
     expect(restored?.actionPanel?.choiceBlocks).toHaveLength(1);
