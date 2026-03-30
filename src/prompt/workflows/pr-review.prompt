@@ -26,7 +26,46 @@ PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류�
    - PR 메타데이터, 리뷰, 코멘트, 변경 파일 모두 포함
    - 불필요한 필드 제거되어 컨텍스트 절약
 
-3. 소스 clone
+3. **이슈 연결 (필수)**
+   PR에서 연관 이슈를 다음 순서로 탐색한다. **첫 번째로 발견된 이슈를 채택**하고 나머지 단계는 건너뛴다.
+
+   a. PR body에서 closing keyword 패턴:
+      - `close(s|d)?`, `fix(es|ed)?`, `resolve(s|d)?` + `#N` → GitHub issue
+      - `close(s|d)?`, `fix(es|ed)?`, `resolve(s|d)?` + `owner/repo#N` → cross-repo GitHub issue
+      - 알려진 Jira 프로젝트 키 패턴 (예: `PTN-\d+`, `PROJ-\d+`) → Jira issue key
+        주의: `[A-Z]{2,}-\d+` 같은 범용 패턴은 `UTF-8`, `SHA-256` 등과 오탐하므로,
+        Jira URL(`atlassian.net`, `jira.`) 근처에서 발견되거나 프로젝트 키 목록과 매칭되는 경우만 채택한다.
+
+   b. PR 브랜치명에서 이슈 키:
+      - `feature/PROJ-123-xxx` → PROJ-123
+      - `fix/PROJ-456` → PROJ-456
+
+   c. PR title에서 이슈 키:
+      - `[PROJ-123] Add feature` → PROJ-123
+
+   d. 위 모두에서 이슈를 찾지 못하면:
+      → `local:UIAskUserQuestion`으로 이슈 링크 요청
+      "이 PR에 연결된 이슈를 찾을 수 없습니다. 이슈 링크(Jira 또는 GitHub)를 입력해주세요."
+      → 유저가 입력하면 세션에 연결
+      → 유저가 "없음"을 선택하면 이슈 없이 진행 (경고 로그를 PR 리뷰 본문 상단에 기재)
+        **이슈 없음 시**: 이후 "이슈 기반 검증" 단계(step 6)는 전체 스킵한다.
+
+   e. 이슈를 찾으면:
+      - Jira: `mcp__jira__getJiraIssue`로 상세 조회 / GitHub: `mcp__github__get_issue`로 조회
+      - Acceptance Criteria를 리뷰 기준에 추가
+      - 세션에 issue link 등록:
+        ```json
+        {
+          "commandId": "UPDATE_SESSION",
+          "params": {
+            "links": { "add": { "issue": "<이슈 URL>" } },
+            "title": "[ISSUE-KEY] PR 제목 요약 (60자 이내)"
+          }
+        }
+        ```
+      - 세션 타이틀에 이슈 키 반영
+
+4. 소스 clone
 현재 타임스탬프를 이용하여 항상 유니크한 작업 폴더를 생성한다. (예: '$WORKING_DIR/20260101_1532_projalpha_pr_123')
 해당 작업 폴더에 소스를 받는다.
 소스를 받은 후, 반드시 다음 JSON directive를 출력하여 세션에 작업 폴더를 등록하라 (세션 종료 시 자동 정리됨):
@@ -95,7 +134,18 @@ PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류�
 | large  | ~100   | 횡단 관심사, 스키마 변경 |
 | xlarge | ~500   | 아키텍처 전환 |
 
-### 5. Decision Gate — 자율 처리 vs 유저 질문 분류
+### 5. 이슈 기반 검증 (이슈가 연결된 경우)
+
+이슈의 Acceptance Criteria가 확인된 경우, 아래 항목을 추가로 검증하고 결과를 finding 목록에 **추가**한다:
+- PR 변경이 이슈의 Acceptance Criteria를 충족하는가? → 미충족 항목은 **P1** finding
+- 이슈에서 요구하지 않은 범위 외 변경(scope creep)이 있는가? → **P2** finding
+- 이슈의 우선순위와 PR의 변경 규모가 비례하는가?
+
+이슈가 연결되지 않은 경우("없음" 선택) 이 단계를 스킵한다.
+
+### 6. Decision Gate — 자율 처리 vs 유저 질문 분류
+
+step 3(review-pr)과 step 5(이슈 기반 검증)에서 나온 **모든 finding**을 대상으로 분류한다:
 
 ```
 for each finding:
@@ -122,12 +172,12 @@ for each finding:
 - **근거**: 단순 rename, 리스크 없음
 ```
 
-### 6. 최종 판정
+### 7. 최종 판정
 - P0 또는 P1 이슈 있음 → **REQUEST_CHANGES**
 - P0, P1 없음 → **APPROVE**
 - `general finding`만 있고 P0/P1이 없으면 **APPROVE** 가능 (요약 코멘트로 안내)
 
-### 7. GitHub에 리뷰 제출
+### 8. GitHub에 리뷰 제출
 `mcp__github__create_pull_request_review` 사용:
 - 반드시 **실제 코드 라인**을 참조하여 각 이슈별 커멘트
 - skill 결과에 라인이 없으면 직접 diff에서 라인을 찾아 보정 후 커멘트
