@@ -595,8 +595,11 @@ export class ClaudeHandler {
     }
 
     // Build system prompt with persona and workflow
+    // Use session owner for user variable resolution (Co-Authored-By attribution)
+    // Falls back to current user if no session exists yet
     const workflow = session?.workflow || 'default';
-    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+    const promptUserId = session?.ownerId || slackContext?.user;
+    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(promptUserId, workflow);
 
     // Inject channel description as additional context
     if (builtSystemPrompt && slackContext?.channelDescription) {
