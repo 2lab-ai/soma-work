@@ -291,6 +291,9 @@ export interface ConversationSession {
       mergedAt: number; // Unix ms
     }>;
   };
+  // Task list timestamps for ETA display in thread header
+  taskListStartedAt?: number;
+  taskListEstimatedEndAt?: number;
 }
 
 export interface WorkingDirectoryConfig {

@@ -3,6 +3,7 @@ import { ReactionManager } from './reaction-manager';
 import { Logger } from '../logger';
 import { shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
 import { SlackApiHelper } from './slack-api-helper';
+import { ConversationSession } from '../types';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
@@ -13,12 +14,27 @@ export interface SayFunction {
 }
 
 /**
- * Manages todo list display and updates in Slack
- * Handles creating, updating, and tracking todo messages
+ * Callback to trigger a thread header re-render after todo changes.
+ * Wired by stream-executor to ThreadPanel.updatePanel().
+ */
+export type RenderRequestCallback = (session: ConversationSession, sessionKey: string) => Promise<void>;
+
+/**
+ * Manages todo list display and updates in Slack.
+ *
+ * Task list rendering has been moved to the thread header message
+ * via TaskListBlockBuilder + ThreadSurface. This manager:
+ * 1. Stores todo state in TodoManager
+ * 2. Sets task-list timestamps on the session for ETA display
+ * 3. Triggers a header re-render via onRenderRequest callback
+ * 4. Updates task-progress reactions
  */
 export class TodoDisplayManager {
   private logger = new Logger('TodoDisplayManager');
+  /** @deprecated Kept for backward compat; new path renders in thread header */
   private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
+
+  private onRenderRequest?: RenderRequestCallback;
 
   constructor(
     private slackApi: SlackApiHelper,
@@ -27,8 +43,16 @@ export class TodoDisplayManager {
   ) {}
 
   /**
-   * Handle a todo update event from the stream
-   * Updates or creates todo message as needed
+   * Set the callback for re-rendering the thread header.
+   * Must be called after construction (circular dep break).
+   */
+  setRenderRequestCallback(cb: RenderRequestCallback): void {
+    this.onRenderRequest = cb;
+  }
+
+  /**
+   * Handle a todo update event from the stream.
+   * Updates todo state and triggers thread header re-render.
    */
   async handleTodoUpdate(
     input: TodoUpdateInput,
@@ -37,7 +61,8 @@ export class TodoDisplayManager {
     channel: string,
     threadTs: string,
     say: SayFunction,
-    logVerbosity?: number
+    logVerbosity?: number,
+    session?: ConversationSession,
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -51,32 +76,30 @@ export class TodoDisplayManager {
       // Update the todo manager
       this.todoManager.updateTodos(sessionId, newTodos);
 
-      // Format the todo list
-      const todoList = this.todoManager.formatTodoList(newTodos);
-
-      // Check if we already have a todo message for this session
-      const existingTodoMessageTs = this.todoMessages.get(sessionKey);
-
-      if (existingTodoMessageTs) {
-        await this.updateExistingMessage(
-          channel,
-          existingTodoMessageTs,
-          todoList,
-          sessionKey,
-          threadTs,
-          say
-        );
-      } else {
-        await this.createNewMessage(todoList, channel, threadTs, sessionKey, say);
+      // Set task-list start time on first todo registration
+      if (session && !session.taskListStartedAt && newTodos.length > 0) {
+        session.taskListStartedAt = Date.now();
       }
 
-      // Send status change notification if there are meaningful changes
-      const statusChange = this.todoManager.getStatusChange(oldTodos, newTodos);
-      if (statusChange) {
-        await say({
-          text: `🔄 *Task Update:*\n${statusChange}`,
-          thread_ts: threadTs,
-        });
+      // Trigger thread header re-render (new path: task list in header)
+      if (this.onRenderRequest && session) {
+        try {
+          await this.onRenderRequest(session, sessionKey);
+        } catch (error) {
+          this.logger.debug('Failed to trigger header re-render for todo update', {
+            sessionKey,
+            error: (error as Error).message,
+          });
+          // Fallback: post/update separate message (legacy behavior)
+          await this.legacyUpdateMessage(
+            newTodos, channel, threadTs, sessionKey, say
+          );
+        }
+      } else {
+        // No render callback: use legacy separate-message approach
+        await this.legacyUpdateMessage(
+          newTodos, channel, threadTs, sessionKey, say
+        );
       }
 
       // Update reaction based on overall progress
@@ -87,35 +110,38 @@ export class TodoDisplayManager {
   }
 
   /**
-   * Update existing todo message
+   * Legacy: post/update a separate message for the todo list.
+   * Used as fallback when thread-header rendering is unavailable.
    */
-  private async updateExistingMessage(
+  private async legacyUpdateMessage(
+    newTodos: Todo[],
     channel: string,
-    messageTs: string,
-    todoList: string,
-    sessionKey: string,
     threadTs: string,
-    say: SayFunction
+    sessionKey: string,
+    say: SayFunction,
   ): Promise<void> {
-    try {
-      await this.slackApi.updateMessage(channel, messageTs, todoList);
-      this.logger.debug('Updated existing todo message', { sessionKey, messageTs });
-    } catch (error) {
-      this.logger.warn('Failed to update todo message, creating new one', error);
-      // If update fails, create a new message
+    const todoList = this.todoManager.formatTodoList(newTodos);
+    const existingTodoMessageTs = this.todoMessages.get(sessionKey);
+
+    if (existingTodoMessageTs) {
+      try {
+        await this.slackApi.updateMessage(channel, existingTodoMessageTs, todoList);
+        this.logger.debug('Updated existing todo message', { sessionKey, messageTs: existingTodoMessageTs });
+      } catch (error) {
+        this.logger.warn('Failed to update todo message, creating new one', error);
+        await this.createNewMessage(todoList, channel, threadTs, sessionKey, say);
+      }
+    } else {
       await this.createNewMessage(todoList, channel, threadTs, sessionKey, say);
     }
   }
 
-  /**
-   * Create new todo message
-   */
   private async createNewMessage(
     todoList: string,
     channel: string,
     threadTs: string,
     sessionKey: string,
-    say: SayFunction
+    say: SayFunction,
   ): Promise<void> {
     const result = await say({
       text: todoList,

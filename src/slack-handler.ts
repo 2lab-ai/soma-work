@@ -124,6 +124,7 @@ export class SlackHandler {
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
+      todoManager: this.todoManager,
     });
 
     // Command routing
@@ -146,6 +147,12 @@ export class SlackHandler {
       this.slackApi,
       this.todoManager,
       this.reactionManager
+    );
+    // Wire todo updates to trigger thread header re-render
+    this.todoDisplayManager.setRenderRequestCallback(
+      async (session, sessionKey) => {
+        await this.threadPanel?.updatePanel(session, sessionKey);
+      }
     );
 
     // Native Slack AI spinner
