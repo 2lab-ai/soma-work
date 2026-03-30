@@ -564,10 +564,15 @@ export class ClaudeHandler {
         try {
           fs.mkdirSync(workingDirectory, { recursive: true });
         } catch (err) {
-          this.logger.error('Failed to re-create working directory', { workingDirectory, error: err });
+          this.logger.error('Failed to re-create working directory, omitting cwd to let SDK use process.cwd()', {
+            workingDirectory, error: err,
+          });
+          workingDirectory = undefined;
         }
       }
-      options.cwd = workingDirectory;
+      if (workingDirectory) {
+        options.cwd = workingDirectory;
+      }
     }
 
     // Resume existing session
