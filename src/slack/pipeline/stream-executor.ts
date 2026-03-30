@@ -35,6 +35,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { getChannel } from '../../channel-registry';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
@@ -364,10 +365,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.slackApi.getClient(),
         channel
       );
+      // Fetch structured repo info from channel registry (parsed from channel description)
+      const channelInfo = getChannel(channel);
       const slackContext = {
         channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
         sourceThreadTs: params.sourceThreadTs,
         sourceChannel: params.sourceChannel,
+        repos: channelInfo?.repos,
+        confluenceUrl: channelInfo?.confluenceUrl,
       };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
