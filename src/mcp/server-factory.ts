@@ -33,7 +33,7 @@ export class McpServerFactory {
             }
 
             processedServers[serverName] = updatedConfig;
-            this.logger.info('Updated GitHub MCP server to use GitHub App authentication');
+            this.logger.debug('Updated GitHub MCP server to use GitHub App authentication');
             continue;
           } catch (error) {
             this.logger.error('Failed to get GitHub App token for MCP server:', error);
@@ -95,7 +95,7 @@ export class McpServerFactory {
         };
       }
 
-      this.logger.info('Added GitHub App-authenticated MCP servers', {
+      this.logger.debug('Added GitHub App-authenticated MCP servers', {
         servers: Object.keys(servers),
         baseDirectory,
       });
@@ -129,7 +129,7 @@ export class McpServerFactory {
       };
     }
 
-    this.logger.info('Added GitHub token-authenticated MCP servers', {
+    this.logger.debug('Added GitHub token-authenticated MCP servers', {
       servers: Object.keys(servers),
       baseDirectory,
     });
@@ -145,7 +145,7 @@ export class McpServerFactory {
         command: 'npx',
         args: ['-y', '@modelcontextprotocol/server-filesystem', baseDirectory],
       };
-      this.logger.info('Added filesystem MCP server (no GitHub authentication available)');
+      this.logger.debug('Added filesystem MCP server (no GitHub authentication available)');
     }
   }
 

@@ -336,21 +336,22 @@ this is not valid json
     });
 
     it('should create blocks with question', () => {
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key', 'default');
       const blocks = getBlocks(payload);
       const questionBlock = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Which option?'));
       expect(questionBlock).toBeDefined();
     });
 
-    it('should include context block when context is provided', () => {
+    it('should not include a separate context block in default theme (context is omitted)', () => {
       const choiceWithContext: UserChoice = {
         ...sampleChoice,
         context: 'Important context',
       };
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'default');
       const blocks = getBlocks(payload);
+      // The new default theme (based on former Theme D) does not render a context block for choice.context
       const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'));
-      expect(contextBlock).toBeDefined();
+      expect(contextBlock).toBeUndefined();
     });
 
     it('should include custom input button', () => {
@@ -363,7 +364,7 @@ this is not valid json
     });
 
     it('should include descriptions in fields', () => {
-      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key');
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key', 'default');
       const blocks = getBlocks(payload);
       // New UI: options displayed as fields in section
       const fieldsSection = blocks.find((b: any) =>

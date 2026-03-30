@@ -6,19 +6,24 @@
 
 import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
+import { llmChatConfigStore } from './llm-chat-config-store';
+import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { WorkflowType } from './types';
 import * as path from 'path';
 import * as fs from 'fs';
 
 // Prompt file paths
 const PROMPT_DIR = path.join(__dirname, 'prompt');
-const SYSTEM_PROMPT_PATH = path.join(PROMPT_DIR, 'system.prompt');
+const DEFAULT_PROMPT_PATH = path.join(PROMPT_DIR, 'default.prompt');
 const WORKFLOWS_DIR = path.join(PROMPT_DIR, 'workflows');
-const LOCAL_SYSTEM_PROMPT_PATH = path.join(process.cwd(), '.system.prompt');
+const LOCAL_SYSTEM_PROMPT_PATH = SYSTEM_PROMPT_FILE;
 const PERSONA_DIR = path.join(__dirname, 'persona');
 
 // Include directive pattern: {{include:filename.prompt}}
 const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
+// Runtime variable pattern: {{variable_name}} or {{user.field}}
+// Negative lookbehind: \{{ is escaped and won't be substituted
+const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
 
 /**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
@@ -26,6 +31,7 @@ const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
 export class PromptBuilder {
   private logger = new Logger('PromptBuilder');
   private defaultSystemPrompt: string | undefined;
+  private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
   private workflowPromptCache: Map<WorkflowType, string> = new Map();
 
   constructor() {
@@ -37,21 +43,32 @@ export class PromptBuilder {
    */
   private loadDefaultPrompt(): void {
     try {
-      if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
-        this.defaultSystemPrompt = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
+      if (fs.existsSync(DEFAULT_PROMPT_PATH)) {
+        let content = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
+        // Process include directives (e.g., {{include:./common.prompt}})
+        content = this.processIncludes(content);
+        this.defaultSystemPrompt = content;
       }
 
-      // Append local system prompt if exists (not committed to source)
+      // Load local system prompt if exists (not committed to source)
+      // This is stored separately and appended to ALL workflow prompts
       if (fs.existsSync(LOCAL_SYSTEM_PROMPT_PATH)) {
-        const localPrompt = fs.readFileSync(LOCAL_SYSTEM_PROMPT_PATH, 'utf-8');
-        this.defaultSystemPrompt = this.defaultSystemPrompt
-          ? `${this.defaultSystemPrompt}\n\n${localPrompt}`
-          : localPrompt;
-        this.logger.info('Loaded local system prompt from .system.prompt');
+        this.localSystemPrompt = fs.readFileSync(LOCAL_SYSTEM_PROMPT_PATH, 'utf-8');
+        this.logger.info('Loaded local system prompt from .system.prompt (will be injected into all workflows)');
       }
     } catch (error) {
       this.logger.error('Failed to load system prompt', error);
     }
+  }
+
+  /**
+   * Append local system prompt to content if available
+   */
+  private appendLocalSystemPrompt(content: string): string {
+    if (this.localSystemPrompt) {
+      return `${content}\n\n${this.localSystemPrompt}`;
+    }
+    return content;
   }
 
   /**
@@ -138,7 +155,53 @@ export class PromptBuilder {
   }
 
   /**
+   * Process runtime variable placeholders in prompt content
+   * Replaces {{variable_name}} and {{user.*}} with runtime values
+   * Escaped variables \{{...}} are preserved as literal {{...}}
+   */
+  private processVariables(content: string, userId?: string): string {
+    const result = content.replace(VARIABLE_PATTERN, (match, varName) => {
+      if (varName === 'llm_chat_config') {
+        return llmChatConfigStore.toPromptSnippet();
+      }
+
+      // user.* variable substitution
+      if (varName.startsWith('user.') && userId) {
+        return this.resolveUserVariable(varName, userId) ?? match;
+      }
+
+      // Unknown variables are left as-is
+      return match;
+    });
+
+    // Unescape \{{ → {{ after substitution
+    return result.replace(/\\\{\{/g, '{{');
+  }
+
+  /**
+   * Resolve user.* variables from UserSettings
+   */
+  private resolveUserVariable(varName: string, userId: string): string | undefined {
+    const settings = userSettingsStore.getUserSettings(userId);
+    if (!settings) return undefined;
+
+    switch (varName) {
+      case 'user.email':
+        return settings.email || undefined; // empty sentinel → unresolved
+      case 'user.displayName':
+        return settings.slackName || undefined;
+      case 'user.slackId':
+        return settings.userId || undefined;
+      case 'user.jiraName':
+        return settings.jiraName || undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  /**
    * Load workflow-specific prompt
+   * All workflows get .system.prompt appended (if it exists)
    */
   loadWorkflowPrompt(workflow: WorkflowType): string | undefined {
     // Check cache first
@@ -146,29 +209,39 @@ export class PromptBuilder {
       return this.workflowPromptCache.get(workflow);
     }
 
+    let content: string | undefined;
+
     // For 'default' workflow, use the default system prompt
     if (workflow === 'default') {
-      return this.defaultSystemPrompt;
-    }
-
-    // Try to load workflow-specific prompt
-    const workflowPath = path.join(WORKFLOWS_DIR, `${workflow}.prompt`);
-    try {
-      if (fs.existsSync(workflowPath)) {
-        let content = fs.readFileSync(workflowPath, 'utf-8');
-        // Process include directives
-        content = this.processIncludes(content);
-        this.workflowPromptCache.set(workflow, content);
-        this.logger.debug('Loaded workflow prompt', { workflow, path: workflowPath });
-        return content;
+      content = this.defaultSystemPrompt;
+    } else {
+      // Try to load workflow-specific prompt
+      const workflowPath = path.join(WORKFLOWS_DIR, `${workflow}.prompt`);
+      try {
+        if (fs.existsSync(workflowPath)) {
+          content = fs.readFileSync(workflowPath, 'utf-8');
+          // Process include directives
+          content = this.processIncludes(content);
+        }
+      } catch (error) {
+        this.logger.error(`📋 WORKFLOW PROMPT failed: [${workflow}]`, { error });
       }
-    } catch (error) {
-      this.logger.error('Failed to load workflow prompt', { workflow, error });
+
+      // Fallback to default system prompt if workflow file not found
+      if (!content) {
+        this.logger.warn(`📋 WORKFLOW PROMPT not found: [${workflow}] → using default`);
+        content = this.defaultSystemPrompt;
+      }
     }
 
-    // Fallback to default system prompt
-    this.logger.debug('Workflow prompt not found, using default', { workflow });
-    return this.defaultSystemPrompt;
+    // Append .system.prompt to ALL workflows
+    if (content) {
+      content = this.appendLocalSystemPrompt(content);
+      this.workflowPromptCache.set(workflow, content);
+      this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`);
+    }
+
+    return content;
   }
 
   /**
@@ -243,14 +316,23 @@ export class PromptBuilder {
       }
     }
 
+    // Process runtime variables (e.g., {{llm_chat_config}}, {{user.email}})
+    // Done last so dynamic config values are always current
+    if (systemPrompt) {
+      systemPrompt = this.processVariables(systemPrompt, userId);
+    }
+
     return systemPrompt || undefined;
   }
 
   /**
-   * Get the default system prompt without persona
+   * Get the default system prompt without persona (includes .system.prompt if exists)
    */
   getDefaultPrompt(): string | undefined {
-    return this.defaultSystemPrompt;
+    if (this.defaultSystemPrompt) {
+      return this.appendLocalSystemPrompt(this.defaultSystemPrompt);
+    }
+    return this.localSystemPrompt;
   }
 }
 

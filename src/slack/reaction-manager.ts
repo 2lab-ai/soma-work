@@ -15,6 +15,10 @@ export class ReactionManager {
   private logger = new Logger('ReactionManager');
   private originalMessages: Map<string, OriginalMessage> = new Map();
   private currentReactions: Map<string, string> = new Map();
+  // Track pending MCP calls per session
+  private pendingMcpCalls: Map<string, Set<string>> = new Map();
+  // Track pre-MCP reaction to restore after MCP completes
+  private preMcpReactions: Map<string, string> = new Map();
 
   constructor(private slackApi: SlackApiHelper) {}
 
@@ -88,18 +92,16 @@ export class ReactionManager {
    * Todo 진행 상황에 따른 리액션 업데이트
    */
   async updateTaskProgressReaction(sessionKey: string, todos: Todo[]): Promise<void> {
-    if (todos.length === 0) {
-      return;
-    }
+    if (todos.length === 0) return;
 
-    const completed = todos.filter((t) => t.status === 'completed').length;
-    const inProgress = todos.filter((t) => t.status === 'in_progress').length;
-    const total = todos.length;
+    const completedCount = todos.filter((t) => t.status === 'completed').length;
+    const hasInProgress = todos.some((t) => t.status === 'in_progress');
 
+    // Determine emoji based on task progress
     let emoji: string;
-    if (completed === total) {
+    if (completedCount === todos.length) {
       emoji = 'white_check_mark'; // 모든 태스크 완료
-    } else if (inProgress > 0) {
+    } else if (hasInProgress) {
       emoji = 'arrows_counterclockwise'; // 태스크 진행 중
     } else {
       emoji = 'clipboard'; // 태스크 대기 중
@@ -109,11 +111,66 @@ export class ReactionManager {
   }
 
   /**
+   * MCP 호출 시작 시 모래시계 이모지 설정
+   */
+  async setMcpPending(sessionKey: string, callId: string): Promise<void> {
+    let pending = this.pendingMcpCalls.get(sessionKey);
+    if (!pending) {
+      pending = new Set();
+      this.pendingMcpCalls.set(sessionKey, pending);
+    }
+
+    // Save current reaction before switching to hourglass (only on first MCP)
+    if (pending.size === 0) {
+      const currentEmoji = this.currentReactions.get(sessionKey);
+      if (currentEmoji && currentEmoji !== 'hourglass_flowing_sand') {
+        this.preMcpReactions.set(sessionKey, currentEmoji);
+      }
+      // Set hourglass reaction
+      await this.updateReaction(sessionKey, 'hourglass_flowing_sand');
+      this.logger.debug('Set MCP pending reaction', { sessionKey, callId });
+    }
+
+    pending.add(callId);
+  }
+
+  /**
+   * MCP 호출 완료 시 모래시계 이모지 제거
+   */
+  async clearMcpPending(sessionKey: string, callId: string): Promise<void> {
+    const pending = this.pendingMcpCalls.get(sessionKey);
+    if (!pending) return;
+
+    pending.delete(callId);
+
+    // If no more pending MCP calls, restore previous reaction
+    if (pending.size === 0) {
+      this.pendingMcpCalls.delete(sessionKey);
+      const preMcpEmoji = this.preMcpReactions.get(sessionKey);
+      this.preMcpReactions.delete(sessionKey);
+
+      if (preMcpEmoji) {
+        await this.updateReaction(sessionKey, preMcpEmoji);
+        this.logger.debug('Restored pre-MCP reaction', { sessionKey, emoji: preMcpEmoji });
+      }
+    }
+  }
+
+  /**
+   * 세션에 대기 중인 MCP 호출이 있는지 확인
+   */
+  hasPendingMcp(sessionKey: string): boolean {
+    return (this.pendingMcpCalls.get(sessionKey)?.size ?? 0) > 0;
+  }
+
+  /**
    * 세션 정리 시 리액션 상태 제거
    */
   cleanup(sessionKey: string): void {
     this.originalMessages.delete(sessionKey);
     this.currentReactions.delete(sessionKey);
+    this.pendingMcpCalls.delete(sessionKey);
+    this.preMcpReactions.delete(sessionKey);
     this.logger.debug('Cleaned up reaction state', { sessionKey });
   }
 
@@ -122,5 +179,47 @@ export class ReactionManager {
    */
   getCurrentReaction(sessionKey: string): string | undefined {
     return this.currentReactions.get(sessionKey);
+  }
+
+  // ===== Lifecycle Emojis (independent from status reactions) =====
+  // These emojis persist alongside status emojis and are managed separately.
+
+  private static readonly LIFECYCLE_IDLE_EMOJI = 'crescent_moon';
+  private static readonly LIFECYCLE_EXPIRED_EMOJI = 'zzz';
+
+  /**
+   * Add idle emoji (crescent_moon) to thread's original message
+   */
+  async setSessionIdle(sessionKey: string): Promise<void> {
+    const msg = this.originalMessages.get(sessionKey);
+    if (!msg) return;
+    await this.slackApi.addReaction(msg.channel, msg.ts, ReactionManager.LIFECYCLE_IDLE_EMOJI);
+  }
+
+  /**
+   * Add expired/sleep emoji (zzz) and remove idle emoji
+   * Accepts fallback channel/ts for cases where originalMessage was cleaned up
+   */
+  async setSessionExpired(sessionKey: string, channel?: string, ts?: string): Promise<void> {
+    const msg = this.originalMessages.get(sessionKey);
+    const ch = msg?.channel || channel;
+    const msgTs = msg?.ts || ts;
+    if (!ch || !msgTs) return;
+
+    // Remove idle emoji if present
+    await this.slackApi.removeReaction(ch, msgTs, ReactionManager.LIFECYCLE_IDLE_EMOJI);
+    // Add expired emoji
+    await this.slackApi.addReaction(ch, msgTs, ReactionManager.LIFECYCLE_EXPIRED_EMOJI);
+  }
+
+  /**
+   * Remove all lifecycle emojis from a message
+   * Used when session is resumed/woken
+   */
+  async clearSessionLifecycleEmojis(channel: string, ts: string): Promise<void> {
+    await Promise.all([
+      this.slackApi.removeReaction(channel, ts, ReactionManager.LIFECYCLE_IDLE_EMOJI),
+      this.slackApi.removeReaction(channel, ts, ReactionManager.LIFECYCLE_EXPIRED_EMOJI),
+    ]);
   }
 }

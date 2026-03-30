@@ -10,11 +10,18 @@ export { MessageFormatter } from './message-formatter';
 
 // New modules
 export { SlackApiHelper, MessageOptions } from './slack-api-helper';
+export { ActionPanelBuilder } from './action-panel-builder';
+export { ThreadPanel } from './thread-panel';
+export { ThreadSurface } from './thread-surface';
+export { ThreadHeaderBuilder } from './thread-header-builder';
 export { ReactionManager } from './reaction-manager';
+export { ContextWindowManager } from './context-window-manager';
 export { McpStatusDisplay } from './mcp-status-tracker';
+export { McpHealthMonitor } from './mcp-health-monitor';
 export { SessionUiManager, SayFn } from './session-manager';
 export { ActionHandlers, ActionHandlerContext, MessageHandler, MessageEvent } from './action-handlers';
 export { EventRouter, EventRouterDeps } from './event-router';
+export { SlashCommandAdapter } from './slash-command-adapter';
 
 // Phase 2: Session state and concurrency
 export { RequestCoordinator } from './request-coordinator';
@@ -33,6 +40,7 @@ export {
   ToolUseEvent as StreamToolUseEvent,
   ToolResultEvent as StreamToolResultEvent,
   PendingForm,
+  UsageData,
 } from './stream-processor';
 export {
   ToolEventProcessor,
@@ -48,3 +56,14 @@ export { TodoDisplayManager, TodoUpdateInput, SayFunction as TodoSayFunction } f
 
 // Phase 9: Message formatters
 export { DirectoryFormatter } from './formatters';
+
+// Native Slack AI spinner
+export { AssistantStatusManager } from './assistant-status-manager';
+
+// Response directives (model -> bot structured callbacks)
+export {
+  SessionLinkDirectiveHandler,
+  SessionLinkExtractResult,
+  ChannelMessageDirectiveHandler,
+  ChannelMessageExtractResult,
+} from './directives';

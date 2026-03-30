@@ -5,11 +5,15 @@ import { UserChoices } from '../../types';
 import { Logger } from '../../logger';
 import { PendingFormStore } from './pending-form-store';
 import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
+import { ThreadPanel } from '../thread-panel';
+import { CompletionMessageTracker } from '../completion-message-tracker';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
+  threadPanel?: ThreadPanel;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 /**
@@ -31,35 +35,55 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
+      const fallbackThreadTs = body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
+      const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
-      // 선택 메시지 업데이트
-      if (messageTs && channel) {
-        try {
-          await this.ctx.slackApi.updateMessage(
-            channel,
-            messageTs,
-            `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-            [
-              {
-                type: 'section',
-                text: {
-                  type: 'mrkdwn',
-                  text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-                },
-              },
-            ]
-          );
-        } catch (error) {
-          this.logger.warn('Failed to update choice message', error);
+      // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
+      if (channel) {
+        const completedBlocks = [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+            },
+          },
+        ];
+        const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
+        for (const targetTs of targetTimestamps) {
+          try {
+            await this.ctx.slackApi.updateMessage(
+              channel,
+              targetTs,
+              `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+              completedBlocks,
+              [] // 기존 attachments(버튼) 제거
+            );
+          } catch (error) {
+            this.logger.warn('Failed to update choice message', { targetTs, error });
+          }
         }
       }
 
       // 세션 확인 및 메시지 처리
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       if (session) {
+        await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // Delete tracked completion messages on choice selection (S8)
+        if (channel) {
+          this.ctx.completionMessageTracker?.deleteAll(
+            sessionKey,
+            async (ch, ts) => {
+              try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
+            },
+            channel,
+          ).catch(() => {});
+        }
+        // Transition waiting→working when user responds to a choice
+        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
           { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
@@ -156,7 +180,6 @@ export class ChoiceActionHandler {
       const userId = body.user?.id;
       const channel = body.channel?.id;
       const messageTs = body.message?.ts;
-      const threadTs = body.message?.thread_ts || messageTs;
 
       this.logger.info('Form submit requested', { formId, userId });
 
@@ -183,6 +206,10 @@ export class ChoiceActionHandler {
         );
         return;
       }
+
+      const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
 
       // 제출 처리
       await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
@@ -252,18 +279,37 @@ export class ChoiceActionHandler {
       pendingForm.selections
     );
 
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '📋 선택이 필요합니다', undefined, updatedPayload.attachments);
-    } catch (error) {
-      this.logger.warn('Failed to update form UI', error);
+    const targetMessageTs = this.resolveChoiceSyncMessageTs(
+      pendingForm.sessionKey,
+      messageTs,
+      pendingForm.messageTs
+    );
+    for (const targetTs of targetMessageTs) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '📋 선택이 필요합니다',
+          undefined,
+          updatedPayload.attachments
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update form UI', { targetTs, error });
+      }
     }
+
+    await this.ctx.threadPanel?.attachChoice(
+      pendingForm.sessionKey,
+      updatedPayload,
+      pendingForm.messageTs
+    );
   }
 
   async completeMultiChoiceForm(
     pendingForm: PendingChoiceFormData,
     userId: string,
     channel: string,
-    threadTs: string,
+    threadTs: string | undefined,
     messageTs: string
   ): Promise<void> {
     this.logger.info('All multi-choice selections complete', { formId: pendingForm.formId, selections: pendingForm.selections });
@@ -279,29 +325,58 @@ export class ChoiceActionHandler {
 
     this.formStore.delete(pendingForm.formId);
 
-    // 완료 UI 업데이트
-    try {
-      const completedBlocks = [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
-          },
-        },
-      ];
+    const completionMessageTs = pendingForm.messageTs || messageTs;
 
-      await this.ctx.slackApi.updateMessage(channel, messageTs, '✅ 모든 선택 완료', completedBlocks);
-    } catch (error) {
-      this.logger.warn('Failed to update completed form', error);
+    // 완료 UI 업데이트 (모든 동기화 대상에 대해)
+    const completedBlocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
+        },
+      },
+    ];
+
+    const targetTimestamps = this.resolveChoiceSyncMessageTs(
+      pendingForm.sessionKey,
+      messageTs,
+      completionMessageTs
+    );
+    for (const targetTs of targetTimestamps) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          '✅ 모든 선택 완료',
+          completedBlocks,
+          [] // 기존 attachments(버튼 폼) 제거
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update completed form', { targetTs, error });
+      }
     }
 
     // Claude에 전송
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
+    const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
+      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
+      // Delete tracked completion messages on form submission (S8)
+      if (channel) {
+        this.ctx.completionMessageTracker?.deleteAll(
+          pendingForm.sessionKey,
+          async (ch, ts) => {
+            try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
+          },
+          channel,
+        ).catch(() => {});
+      }
+      // Transition waiting→working when user submits form
+      this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: combinedMessage },
+        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
         say
       );
     } else {
@@ -323,5 +398,34 @@ export class ChoiceActionHandler {
         attachments: msgArgs.attachments,
       });
     };
+  }
+
+  private resolveSessionThreadTs(session: any, fallbackThreadTs: string | undefined): string | undefined {
+    return session?.threadRootTs || session?.threadTs || fallbackThreadTs;
+  }
+
+  private resolveChoiceMessageTs(session: any, fallbackMessageTs: string | undefined): string | undefined {
+    return session?.actionPanel?.choiceMessageTs || fallbackMessageTs;
+  }
+
+  private resolveChoiceSyncMessageTs(
+    sessionKey: string,
+    sourceMessageTs: string | undefined,
+    threadMessageTs: string | undefined
+  ): string[] {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    const targets = new Set<string>();
+
+    if (sourceMessageTs) {
+      targets.add(sourceMessageTs);
+    }
+    if (threadMessageTs) {
+      targets.add(threadMessageTs);
+    }
+    if (session?.actionPanel?.choiceMessageTs) {
+      targets.add(session.actionPanel.choiceMessageTs);
+    }
+
+    return [...targets];
   }
 }

@@ -416,6 +416,36 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('isOnboardingCommand', () => {
+    it('should match "onboarding"', () => {
+      expect(CommandParser.isOnboardingCommand('onboarding')).toBe(true);
+    });
+
+    it('should match "/onboarding"', () => {
+      expect(CommandParser.isOnboardingCommand('/onboarding')).toBe(true);
+    });
+
+    it('should match "onboarding start now"', () => {
+      expect(CommandParser.isOnboardingCommand('onboarding start now')).toBe(true);
+    });
+
+    it('should not match "onboard"', () => {
+      expect(CommandParser.isOnboardingCommand('onboard')).toBe(false);
+    });
+  });
+
+  describe('parseOnboardingCommand', () => {
+    it('should return empty prompt for "onboarding"', () => {
+      expect(CommandParser.parseOnboardingCommand('onboarding')).toEqual({ prompt: undefined });
+    });
+
+    it('should return prompt for "/onboarding 한국어로 안내해줘"', () => {
+      expect(CommandParser.parseOnboardingCommand('/onboarding 한국어로 안내해줘')).toEqual({
+        prompt: '한국어로 안내해줘',
+      });
+    });
+  });
+
   describe('getHelpMessage', () => {
     it('should return help message containing command sections', () => {
       const help = CommandParser.getHelpMessage();
@@ -433,6 +463,322 @@ describe('CommandParser', () => {
       const help = CommandParser.getHelpMessage();
       expect(help).toContain('new');
       expect(help).toContain('Reset session context');
+    });
+
+    it('should include onboarding command in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('onboarding');
+      expect(help).toContain('Run onboarding workflow anytime');
+    });
+
+    it('should include marketplace commands in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('Marketplace');
+      expect(help).toContain('marketplace');
+      expect(help).toContain('marketplace add');
+      expect(help).toContain('marketplace remove');
+    });
+
+    it('should include plugins commands in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('Plugins');
+      expect(help).toContain('plugins');
+      expect(help).toContain('plugins add');
+      expect(help).toContain('plugins remove');
+    });
+  });
+
+  describe('isMarketplaceCommand', () => {
+    it('should match "marketplace"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace')).toBe(true);
+    });
+
+    it('should match "/marketplace"', () => {
+      expect(CommandParser.isMarketplaceCommand('/marketplace')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work --name custom"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom')).toBe(true);
+    });
+
+    it('should match "marketplace add 2lab-ai/soma-work --ref dev"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev')).toBe(true);
+    });
+
+    it('should match "marketplace remove soma-work"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplace remove soma-work')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isMarketplaceCommand('Marketplace')).toBe(true);
+      expect(CommandParser.isMarketplaceCommand('MARKETPLACE add foo/bar')).toBe(true);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isMarketplaceCommand('hello marketplace')).toBe(false);
+    });
+
+    it('should not match "marketplaces"', () => {
+      expect(CommandParser.isMarketplaceCommand('marketplaces')).toBe(false);
+    });
+  });
+
+  describe('parseMarketplaceCommand', () => {
+    it('should return list for "marketplace"', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace')).toEqual({ action: 'list' });
+    });
+
+    it('should return list for "/marketplace"', () => {
+      expect(CommandParser.parseMarketplaceCommand('/marketplace')).toEqual({ action: 'list' });
+    });
+
+    it('should parse add with repo', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+      });
+    });
+
+    it('should parse add with --name option', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+      });
+    });
+
+    it('should parse add with --ref option', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse add with both --name and --ref options', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom --ref dev')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse add with --ref before --name', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev --name custom')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/soma-work',
+        name: 'custom',
+        ref: 'dev',
+      });
+    });
+
+    it('should parse remove with name', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace remove soma-work')).toEqual({
+        action: 'remove',
+        name: 'soma-work',
+      });
+    });
+
+    it('should be case-insensitive for subcommands', () => {
+      expect(CommandParser.parseMarketplaceCommand('marketplace ADD 2lab-ai/repo')).toEqual({
+        action: 'add',
+        repo: '2lab-ai/repo',
+      });
+      expect(CommandParser.parseMarketplaceCommand('marketplace REMOVE my-market')).toEqual({
+        action: 'remove',
+        name: 'my-market',
+      });
+    });
+  });
+
+  describe('isPluginsCommand', () => {
+    it('should match "plugins"', () => {
+      expect(CommandParser.isPluginsCommand('plugins')).toBe(true);
+    });
+
+    it('should match "/plugins"', () => {
+      expect(CommandParser.isPluginsCommand('/plugins')).toBe(true);
+    });
+
+    it('should match "plugins add omc@soma-work"', () => {
+      expect(CommandParser.isPluginsCommand('plugins add omc@soma-work')).toBe(true);
+    });
+
+    it('should match "plugins remove omc@soma-work"', () => {
+      expect(CommandParser.isPluginsCommand('plugins remove omc@soma-work')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isPluginsCommand('Plugins')).toBe(true);
+      expect(CommandParser.isPluginsCommand('PLUGINS add foo@bar')).toBe(true);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isPluginsCommand('hello plugins')).toBe(false);
+    });
+
+    it('should not match "plugin" without s', () => {
+      expect(CommandParser.isPluginsCommand('plugin')).toBe(false);
+    });
+  });
+
+  describe('parsePluginsCommand', () => {
+    it('should return list for "plugins"', () => {
+      expect(CommandParser.parsePluginsCommand('plugins')).toEqual({ action: 'list' });
+    });
+
+    it('should return list for "/plugins"', () => {
+      expect(CommandParser.parsePluginsCommand('/plugins')).toEqual({ action: 'list' });
+    });
+
+    it('should parse add with pluginRef', () => {
+      expect(CommandParser.parsePluginsCommand('plugins add omc@soma-work')).toEqual({
+        action: 'add',
+        pluginRef: 'omc@soma-work',
+      });
+    });
+
+    it('should parse remove with pluginRef', () => {
+      expect(CommandParser.parsePluginsCommand('plugins remove omc@soma-work')).toEqual({
+        action: 'remove',
+        pluginRef: 'omc@soma-work',
+      });
+    });
+
+    it('should be case-insensitive for subcommands', () => {
+      expect(CommandParser.parsePluginsCommand('plugins ADD tool@market')).toEqual({
+        action: 'add',
+        pluginRef: 'tool@market',
+      });
+      expect(CommandParser.parsePluginsCommand('plugins REMOVE tool@market')).toEqual({
+        action: 'remove',
+        pluginRef: 'tool@market',
+      });
+    });
+  });
+
+  describe('isPotentialCommand recognizes marketplace and plugins', () => {
+    it('should recognize "marketplace" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('marketplace')).toEqual({ isPotential: true, keyword: 'marketplace' });
+    });
+
+    it('should recognize "plugins" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('plugins')).toEqual({ isPotential: true, keyword: 'plugins' });
+    });
+  });
+
+  describe('isRenewCommand', () => {
+    it('should match "renew"', () => {
+      expect(CommandParser.isRenewCommand('renew')).toBe(true);
+    });
+
+    it('should match "/renew"', () => {
+      expect(CommandParser.isRenewCommand('/renew')).toBe(true);
+    });
+
+    it('should match "renew some prompt"', () => {
+      expect(CommandParser.isRenewCommand('renew some prompt')).toBe(true);
+    });
+
+    it('should match "/renew https://github.com/owner/repo/pull/123"', () => {
+      expect(CommandParser.isRenewCommand('/renew https://github.com/owner/repo/pull/123')).toBe(true);
+    });
+
+    it('should match "renew" with multiline prompt', () => {
+      expect(CommandParser.isRenewCommand('renew line 1\nline 2')).toBe(true);
+    });
+
+    it('should not match "renewed" (no space)', () => {
+      expect(CommandParser.isRenewCommand('renewed')).toBe(false);
+    });
+
+    it('should not match unrelated text', () => {
+      expect(CommandParser.isRenewCommand('hello renew world')).toBe(false);
+    });
+  });
+
+  describe('isLlmChatCommand', () => {
+    it('should match "show llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('show llm_chat')).toBe(true);
+    });
+
+    it('should match "/show llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('/show llm_chat')).toBe(true);
+    });
+
+    it('should match "set llm_chat codex model gpt-5"', () => {
+      expect(CommandParser.isLlmChatCommand('set llm_chat codex model gpt-5')).toBe(true);
+    });
+
+    it('should match "reset llm_chat"', () => {
+      expect(CommandParser.isLlmChatCommand('reset llm_chat')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isLlmChatCommand('SHOW LLM_CHAT')).toBe(true);
+    });
+
+    it('should not match "show something_else"', () => {
+      expect(CommandParser.isLlmChatCommand('show something_else')).toBe(false);
+    });
+
+    it('should not match "set other_config"', () => {
+      expect(CommandParser.isLlmChatCommand('set other_config')).toBe(false);
+    });
+  });
+
+  describe('parseLlmChatCommand', () => {
+    it('should parse "show llm_chat" as show action', () => {
+      expect(CommandParser.parseLlmChatCommand('show llm_chat')).toEqual({ action: 'show' });
+    });
+
+    it('should parse "reset llm_chat" as reset action', () => {
+      expect(CommandParser.parseLlmChatCommand('reset llm_chat')).toEqual({ action: 'reset' });
+    });
+
+    it('should parse "set llm_chat codex model gpt-5.4" correctly', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat codex model gpt-5.4');
+      expect(result).toEqual({
+        action: 'set',
+        provider: 'codex',
+        key: 'model',
+        value: 'gpt-5.4',
+      });
+    });
+
+    it('should lowercase provider and key', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat CODEX Model gpt-5.4');
+      expect(result).toEqual({
+        action: 'set',
+        provider: 'codex',
+        key: 'model',
+        value: 'gpt-5.4',
+      });
+    });
+
+    it('should return error for "set llm_chat" without args', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for "set llm_chat codex" (missing key/value)', () => {
+      const result = CommandParser.parseLlmChatCommand('set llm_chat codex');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for malformed commands like "reset llm_chat now"', () => {
+      const result = CommandParser.parseLlmChatCommand('reset llm_chat now');
+      expect(result.action).toBe('error');
+    });
+
+    it('should return error for "show llm_chat extra"', () => {
+      const result = CommandParser.parseLlmChatCommand('show llm_chat extra');
+      expect(result.action).toBe('error');
     });
   });
 });
