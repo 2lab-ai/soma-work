@@ -549,6 +549,12 @@ export class ClaudeHandler {
       builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
     }
 
+    // Inject structured repository context from channel registry
+    // This provides explicit repo identification so the model doesn't have to guess from raw description
+    if (builtSystemPrompt && slackContext?.repos && slackContext.repos.length > 0) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext.repos, slackContext.confluenceUrl)}`;
+    }
+
     // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt").
     // Always overwrite to avoid showing a stale prompt from a previous turn.
     if (session) {
@@ -562,6 +568,7 @@ export class ClaudeHandler {
         model: options.model,
         promptLength: builtSystemPrompt.length,
         hasChannelDescription: !!slackContext?.channelDescription,
+        repos: slackContext?.repos || [],
       });
     } else {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
@@ -648,4 +655,18 @@ export class ClaudeHandler {
       sessionTitle: session?.title,
     };
   }
+}
+
+/**
+ * Build a structured repository context block for system prompt injection.
+ * Exported for unit testing.
+ */
+export function buildRepoContextBlock(repos: string[], confluenceUrl?: string): string {
+  const repoLines = repos.map(r => `- https://github.com/${r}`).join('\n');
+  let block = `<channel-repository>\nThis channel is mapped to the following repository(ies):\n${repoLines}`;
+  if (confluenceUrl) {
+    block += `\nProject wiki: ${confluenceUrl}`;
+  }
+  block += '\n</channel-repository>';
+  return block;
 }
