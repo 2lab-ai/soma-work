@@ -181,6 +181,8 @@ export interface StreamCallbacks {
     context: StreamContext,
     sourceMessageTs?: string
   ) => Promise<void>;
+  /** Called when SDK emits compact_boundary (context was auto-compacted) */
+  onCompactBoundary?: (metadata?: Record<string, unknown>) => void;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (
     params: FinalResponseFooterParams
@@ -927,6 +929,8 @@ export class StreamProcessor {
         preTokens: metadata?.pre_tokens,
         hasPreservedSegment: !!metadata?.preserved_segment,
       });
+      // #196: notify executor so compaction context can be injected on next prompt
+      this.callbacks.onCompactBoundary?.(metadata);
       await this.callbacks.onStatusUpdate?.('working');
     } else if (subtype === 'status') {
       const status = message.status as string | null;

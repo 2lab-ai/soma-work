@@ -263,6 +263,9 @@ export interface ConversationSession {
   sessionWorkingDir?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
+  // Compaction-Aware Context Preservation (#196):
+  // Set to true when SDK emits compact_boundary; cleared after context is injected into next prompt
+  compactionOccurred?: boolean;
   // For bot-initiated threads created from mid-thread mentions:
   // references the original thread where the bot was mentioned
   sourceThread?: {
