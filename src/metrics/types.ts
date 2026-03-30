@@ -33,6 +33,7 @@ export interface AggregatedMetrics {
   prsCreated: number;
   commitsCreated: number;
   codeLinesAdded: number;
+  codeLinesDeleted: number;
   prsMerged: number;
   mergeLinesAdded: number;
   turnsUsed: number;
@@ -57,6 +58,94 @@ export interface UserRanking {
   userName: string;
   metrics: AggregatedMetrics;
   rank: number;
+}
+
+// === Enriched Report Types ===
+
+/**
+ * Derived metrics computed from raw AggregatedMetrics.
+ */
+export interface DerivedMetrics {
+  productivityScore: number;       // Weighted composite score
+  prMergeRate: number;             // prsMerged / prsCreated * 100 (%)
+  avgCodePerPr: number;            // codeLinesAdded / prsCreated
+  avgCodePerCommit: number;        // codeLinesAdded / commitsCreated
+  avgTurnsPerSession: number;      // turnsUsed / sessionsCreated
+  sessionCompletionRate: number;   // sessionsClosed / sessionsCreated * 100 (%)
+}
+
+/**
+ * Trend comparison vs previous period.
+ */
+export interface TrendComparison {
+  sessionsCreatedDelta: number;    // % change
+  turnsUsedDelta: number;
+  prsCreatedDelta: number;
+  commitsCreatedDelta: number;
+  codeLinesAddedDelta: number;
+  prsMergedDelta: number;
+  productivityScoreDelta: number;
+}
+
+/**
+ * Per-day breakdown for weekly heatmap.
+ */
+export interface DailyBreakdown {
+  date: string;           // YYYY-MM-DD
+  dayLabel: string;       // 월,화,수,목,금,토,일
+  totalEvents: number;
+  metrics: AggregatedMetrics;
+}
+
+/**
+ * Hourly distribution for peak hour analysis.
+ */
+export interface HourlyDistribution {
+  hour: number;           // 0-23
+  eventCount: number;
+}
+
+/**
+ * Achievement badge.
+ */
+export interface Achievement {
+  icon: string;           // Emoji
+  title: string;
+  description: string;
+}
+
+/**
+ * Fun fact / highlight.
+ */
+export interface FunFact {
+  icon: string;
+  text: string;
+}
+
+/**
+ * Enriched daily report with derived metrics and trends.
+ */
+export interface EnrichedDailyReport extends DailyReport {
+  derived: DerivedMetrics;
+  trend: TrendComparison | null;   // null if no previous data
+  hourlyDistribution: HourlyDistribution[];
+  peakHour: number | null;
+  achievements: Achievement[];
+  funFacts: FunFact[];
+}
+
+/**
+ * Enriched weekly report with derived metrics, heatmap, trends, achievements.
+ */
+export interface EnrichedWeeklyReport extends WeeklyReport {
+  derived: DerivedMetrics;
+  trend: TrendComparison | null;
+  dailyBreakdown: DailyBreakdown[];
+  hourlyDistribution: HourlyDistribution[];
+  peakHour: number | null;
+  activeDays: number;
+  achievements: Achievement[];
+  funFacts: FunFact[];
 }
 
 export interface ScheduleState {

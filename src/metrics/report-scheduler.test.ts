@@ -19,10 +19,22 @@ describe('ReportScheduler', () => {
       aggregateWeekly: vi.fn().mockResolvedValue({
         weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly', metrics: {}, rankings: [],
       }),
+      aggregateEnrichedDaily: vi.fn().mockResolvedValue({
+        date: '2026-03-25', period: 'daily', metrics: {},
+        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0 },
+        trend: null, hourlyDistribution: [], peakHour: null, achievements: [], funFacts: [],
+      }),
+      aggregateEnrichedWeekly: vi.fn().mockResolvedValue({
+        weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly', metrics: {}, rankings: [],
+        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0 },
+        trend: null, dailyBreakdown: [], hourlyDistribution: [], peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+      }),
     };
     mockFormatter = {
       formatDaily: vi.fn().mockReturnValue({ blocks: [], text: 'daily report' }),
       formatWeekly: vi.fn().mockReturnValue({ blocks: [], text: 'weekly report' }),
+      formatEnrichedDaily: vi.fn().mockReturnValue({ blocks: [], text: 'enriched daily report' }),
+      formatEnrichedWeekly: vi.fn().mockReturnValue({ blocks: [], text: 'enriched weekly report' }),
     };
     mockPublisher = {
       publish: vi.fn().mockResolvedValue({ ts: '123.456' }),
@@ -47,7 +59,7 @@ describe('ReportScheduler', () => {
 
     await scheduler.checkAndRun();
 
-    expect(mockAggregator.aggregateDaily).toHaveBeenCalledWith('2026-03-25');
+    expect(mockAggregator.aggregateEnrichedDaily).toHaveBeenCalledWith('2026-03-25');
     expect(mockPublisher.publish).toHaveBeenCalled();
   });
 
@@ -58,7 +70,7 @@ describe('ReportScheduler', () => {
 
     await scheduler.checkAndRun();
 
-    expect(mockAggregator.aggregateWeekly).toHaveBeenCalled();
+    expect(mockAggregator.aggregateEnrichedWeekly).toHaveBeenCalled();
     expect(mockPublisher.publish).toHaveBeenCalled();
   });
 
@@ -70,7 +82,7 @@ describe('ReportScheduler', () => {
     await scheduler.checkAndRun(); // Second run same minute
 
     // Should only trigger once
-    expect(mockAggregator.aggregateDaily).toHaveBeenCalledTimes(1);
+    expect(mockAggregator.aggregateEnrichedDaily).toHaveBeenCalledTimes(1);
   });
 
   // Trace: Scenario 6, Section 5 — corrupted state resets gracefully

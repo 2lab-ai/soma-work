@@ -12,6 +12,14 @@ import {
   DailyReport,
   WeeklyReport,
   UserRanking,
+  DerivedMetrics,
+  TrendComparison,
+  DailyBreakdown,
+  HourlyDistribution,
+  Achievement,
+  FunFact,
+  EnrichedDailyReport,
+  EnrichedWeeklyReport,
 } from './types';
 
 const logger = new Logger('ReportAggregator');
@@ -37,6 +45,7 @@ function emptyMetrics(): AggregatedMetrics {
     prsCreated: 0,
     commitsCreated: 0,
     codeLinesAdded: 0,
+    codeLinesDeleted: 0,
     prsMerged: 0,
     mergeLinesAdded: 0,
     turnsUsed: 0,
@@ -61,6 +70,7 @@ function aggregateEvents(events: MetricsEvent[]): AggregatedMetrics {
       case 'turn_used':        m.turnsUsed++; break;
       case 'code_lines_added':
         m.codeLinesAdded += (e.metadata?.linesAdded as number) || 0;
+        m.codeLinesDeleted += (e.metadata?.linesDeleted as number) || 0;
         break;
       case 'merge_lines_added':
         m.mergeLinesAdded += (e.metadata?.linesAdded as number) || 0;
@@ -160,4 +170,283 @@ export class ReportAggregator {
       rankings: userRankings,
     };
   }
+
+  // === Enriched Aggregation Methods ===
+
+  /**
+   * Enriched daily report with derived metrics, trends, hourly dist, achievements, fun facts.
+   */
+  async aggregateEnrichedDaily(date: string): Promise<EnrichedDailyReport> {
+    const base = await this.aggregateDaily(date);
+    const events = await this.store.readRange(date, date);
+
+    // Previous day for trend comparison
+    const prevDate = addDays(date, -1);
+    const prevEvents = await this.store.readRange(prevDate, prevDate);
+    const prevMetrics = aggregateEvents(prevEvents);
+
+    const derived = computeDerivedMetrics(base.metrics);
+    const trend = computeTrend(base.metrics, prevMetrics);
+    const hourlyDistribution = computeHourlyDistribution(events);
+    const peakHour = findPeakHour(hourlyDistribution);
+    const achievements = computeAchievements(base.metrics, derived, null, 1);
+    const funFacts = computeFunFacts(base.metrics, derived, events, hourlyDistribution, peakHour);
+
+    return {
+      ...base,
+      derived,
+      trend,
+      hourlyDistribution,
+      peakHour,
+      achievements,
+      funFacts,
+    };
+  }
+
+  /**
+   * Enriched weekly report with derived metrics, daily breakdown, trends, achievements, fun facts.
+   */
+  async aggregateEnrichedWeekly(weekStart: string): Promise<EnrichedWeeklyReport> {
+    const base = await this.aggregateWeekly(weekStart);
+    const weekEnd = addDays(weekStart, 6);
+    const events = await this.store.readRange(weekStart, weekEnd);
+
+    // Previous week for trend comparison
+    const prevWeekStart = addDays(weekStart, -7);
+    const prevWeekEnd = addDays(prevWeekStart, 6);
+    const prevEvents = await this.store.readRange(prevWeekStart, prevWeekEnd);
+    const prevMetrics = aggregateEvents(prevEvents);
+
+    const derived = computeDerivedMetrics(base.metrics);
+    const trend = computeTrend(base.metrics, prevMetrics);
+    const dailyBreakdown = computeDailyBreakdown(events, weekStart);
+    const hourlyDistribution = computeHourlyDistribution(events);
+    const peakHour = findPeakHour(hourlyDistribution);
+    const activeDays = dailyBreakdown.filter(d => d.totalEvents > 0).length;
+    const achievements = computeAchievements(base.metrics, derived, dailyBreakdown, activeDays);
+    const funFacts = computeFunFacts(base.metrics, derived, events, hourlyDistribution, peakHour);
+
+    return {
+      ...base,
+      derived,
+      trend,
+      dailyBreakdown,
+      hourlyDistribution,
+      peakHour,
+      activeDays,
+      achievements,
+      funFacts,
+    };
+  }
+}
+
+// === Enriched Computation Helpers ===
+
+const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
+
+const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+export function computeDerivedMetrics(m: AggregatedMetrics): DerivedMetrics {
+  return {
+    productivityScore: weightedScore(m),
+    prMergeRate: m.prsCreated > 0 ? Math.round((m.prsMerged / m.prsCreated) * 1000) / 10 : 0,
+    avgCodePerPr: m.prsCreated > 0 ? Math.round(m.codeLinesAdded / m.prsCreated) : 0,
+    avgCodePerCommit: m.commitsCreated > 0 ? Math.round(m.codeLinesAdded / m.commitsCreated) : 0,
+    avgTurnsPerSession: m.sessionsCreated > 0 ? Math.round((m.turnsUsed / m.sessionsCreated) * 10) / 10 : 0,
+    sessionCompletionRate: m.sessionsCreated > 0 ? Math.round((m.sessionsClosed / m.sessionsCreated) * 1000) / 10 : 0,
+  };
+}
+
+export function computeTrend(current: AggregatedMetrics, previous: AggregatedMetrics): TrendComparison | null {
+  // If previous period has zero activity, no meaningful trend
+  const prevTotal = previous.sessionsCreated + previous.turnsUsed + previous.prsCreated + previous.commitsCreated;
+  if (prevTotal === 0) return null;
+
+  const pctChange = (curr: number, prev: number): number => {
+    if (prev === 0) return curr > 0 ? 100 : 0;
+    return Math.round(((curr - prev) / prev) * 1000) / 10;
+  };
+
+  return {
+    sessionsCreatedDelta: pctChange(current.sessionsCreated, previous.sessionsCreated),
+    turnsUsedDelta: pctChange(current.turnsUsed, previous.turnsUsed),
+    prsCreatedDelta: pctChange(current.prsCreated, previous.prsCreated),
+    commitsCreatedDelta: pctChange(current.commitsCreated, previous.commitsCreated),
+    codeLinesAddedDelta: pctChange(current.codeLinesAdded, previous.codeLinesAdded),
+    prsMergedDelta: pctChange(current.prsMerged, previous.prsMerged),
+    productivityScoreDelta: pctChange(weightedScore(current), weightedScore(previous)),
+  };
+}
+
+export function computeDailyBreakdown(events: MetricsEvent[], weekStart: string): DailyBreakdown[] {
+  const breakdown: DailyBreakdown[] = [];
+
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(weekStart, i);
+    const d = new Date(date + 'T00:00:00Z');
+    const dayOfWeek = d.getUTCDay();
+    const dayLabel = DAY_LABELS[dayOfWeek];
+
+    const dayEvents = events.filter(e => {
+      const eventDate = timestampToDateInTz(e.timestamp);
+      return eventDate === date;
+    });
+
+    breakdown.push({
+      date,
+      dayLabel,
+      totalEvents: dayEvents.length,
+      metrics: aggregateEvents(dayEvents),
+    });
+  }
+
+  return breakdown;
+}
+
+export function computeHourlyDistribution(events: MetricsEvent[]): HourlyDistribution[] {
+  const hours = new Array(24).fill(0);
+
+  for (const e of events) {
+    const hour = getHourInTz(e.timestamp);
+    hours[hour]++;
+  }
+
+  return hours.map((count, hour) => ({ hour, eventCount: count }));
+}
+
+export function findPeakHour(distribution: HourlyDistribution[]): number | null {
+  if (distribution.length === 0) return null;
+  const max = distribution.reduce((best, curr) =>
+    curr.eventCount > best.eventCount ? curr : best
+  );
+  return max.eventCount > 0 ? max.hour : null;
+}
+
+export function computeAchievements(
+  m: AggregatedMetrics,
+  d: DerivedMetrics,
+  dailyBreakdown: DailyBreakdown[] | null,
+  activeDays: number,
+): Achievement[] {
+  const achievements: Achievement[] = [];
+
+  // Streak achievements
+  if (activeDays >= 7) {
+    achievements.push({ icon: '🔥', title: '풀 스트릭', description: '7일 연속 활동!' });
+  } else if (activeDays >= 5) {
+    achievements.push({ icon: '⚡', title: '워크위크 마스터', description: `${activeDays}일 활동` });
+  }
+
+  // Commit milestones
+  if (m.commitsCreated >= 100) {
+    achievements.push({ icon: '💯', title: '커밋 센추리온', description: `커밋 ${m.commitsCreated}개 돌파!` });
+  } else if (m.commitsCreated >= 50) {
+    achievements.push({ icon: '🎯', title: '커밋 마라토너', description: `커밋 ${m.commitsCreated}개` });
+  }
+
+  // Code volume
+  if (m.codeLinesAdded >= 10000) {
+    achievements.push({ icon: '🚀', title: '코드 로켓', description: `+${m.codeLinesAdded.toLocaleString()}줄` });
+  }
+
+  // PR merge rate
+  if (d.prMergeRate >= 80 && m.prsMerged >= 5) {
+    achievements.push({ icon: '✅', title: '머지 마스터', description: `머지율 ${d.prMergeRate}%` });
+  }
+
+  // Session efficiency
+  if (d.avgTurnsPerSession >= 5) {
+    achievements.push({ icon: '💬', title: '딥 다이버', description: `세션당 ${d.avgTurnsPerSession}턴` });
+  }
+
+  // PR count
+  if (m.prsCreated >= 20) {
+    achievements.push({ icon: '📦', title: 'PR 머신', description: `PR ${m.prsCreated}개 생성` });
+  }
+
+  // Issues
+  if (m.issuesCreated >= 10) {
+    achievements.push({ icon: '📋', title: '이슈 헌터', description: `이슈 ${m.issuesCreated}개 생성` });
+  }
+
+  return achievements.slice(0, 5); // Max 5
+}
+
+export function computeFunFacts(
+  m: AggregatedMetrics,
+  d: DerivedMetrics,
+  events: MetricsEvent[],
+  hourlyDist: HourlyDistribution[],
+  peakHour: number | null,
+): FunFact[] {
+  const facts: FunFact[] = [];
+
+  // Peak hour
+  if (peakHour !== null) {
+    const peakCount = hourlyDist[peakHour]?.eventCount || 0;
+    const ampm = peakHour < 12 ? '오전' : '오후';
+    const displayHour = peakHour === 0 ? 12 : peakHour > 12 ? peakHour - 12 : peakHour;
+    facts.push({ icon: '⏰', text: `가장 활발한 시간: ${ampm} ${displayHour}시 (${peakCount}개 이벤트)` });
+  }
+
+  // Avg PR size
+  if (d.avgCodePerPr > 0) {
+    facts.push({ icon: '📐', text: `평균 PR 크기: ${d.avgCodePerPr.toLocaleString()}줄` });
+  }
+
+  // Avg code per commit
+  if (d.avgCodePerCommit > 0) {
+    facts.push({ icon: '📝', text: `커밋당 평균: ${d.avgCodePerCommit.toLocaleString()}줄` });
+  }
+
+  // Session efficiency
+  if (d.avgTurnsPerSession > 0) {
+    facts.push({ icon: '💬', text: `세션당 평균 대화: ${d.avgTurnsPerSession}턴` });
+  }
+
+  // Code churn (net lines)
+  if (m.codeLinesDeleted > 0) {
+    const net = m.codeLinesAdded - m.codeLinesDeleted;
+    const netSign = net >= 0 ? '+' : '';
+    facts.push({ icon: '🔄', text: `코드 변동: +${m.codeLinesAdded.toLocaleString()} / -${m.codeLinesDeleted.toLocaleString()} (순 ${netSign}${net.toLocaleString()})` });
+  }
+
+  // Total events count
+  facts.push({ icon: '📊', text: `총 이벤트: ${events.length.toLocaleString()}건 기록` });
+
+  // Night owl / Early bird
+  const nightEvents = hourlyDist.filter(h => h.hour >= 22 || h.hour < 6).reduce((s, h) => s + h.eventCount, 0);
+  const morningEvents = hourlyDist.filter(h => h.hour >= 6 && h.hour < 12).reduce((s, h) => s + h.eventCount, 0);
+  if (nightEvents > morningEvents && nightEvents > 10) {
+    facts.push({ icon: '🦉', text: `야행성 모드: 심야 활동 ${nightEvents}건` });
+  } else if (morningEvents > nightEvents && morningEvents > 10) {
+    facts.push({ icon: '🐦', text: `얼리버드 모드: 오전 활동 ${morningEvents}건` });
+  }
+
+  return facts.slice(0, 5); // Max 5
+}
+
+/**
+ * Convert timestamp to date string in report timezone.
+ */
+function timestampToDateInTz(timestamp: number): string {
+  const d = new Date(timestamp);
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  return formatter.format(d);
+}
+
+/**
+ * Get hour (0-23) in report timezone.
+ */
+function getHourInTz(timestamp: number): number {
+  const d = new Date(timestamp);
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: REPORT_TIMEZONE,
+    hour: 'numeric', hour12: false,
+  });
+  const hourStr = formatter.format(d);
+  return parseInt(hourStr, 10) % 24;
 }
