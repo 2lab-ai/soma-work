@@ -228,6 +228,35 @@ export class SessionInitializer {
       }
     }
 
+    // Guard: re-create session dir if it was cleaned up (macOS /tmp cleanup, reboot, etc.)
+    if (session.sessionWorkingDir && !fs.existsSync(session.sessionWorkingDir)) {
+      this.logger.warn('Session working directory disappeared, re-creating', {
+        sessionKey,
+        original: session.sessionWorkingDir,
+      });
+      try {
+        fs.mkdirSync(session.sessionWorkingDir, { recursive: true });
+        this.logger.info('Re-created session working directory', {
+          sessionKey,
+          directory: session.sessionWorkingDir,
+        });
+      } catch (mkdirErr) {
+        this.logger.error('Failed to re-create session working directory, resetting session for clean start', {
+          sessionKey,
+          directory: session.sessionWorkingDir,
+          error: mkdirErr,
+        });
+        session.sessionWorkingDir = undefined;
+        if (session.sessionId) {
+          this.logger.warn('Clearing stale sessionId after cwd loss', {
+            sessionKey,
+            sessionId: session.sessionId,
+          });
+          session.sessionId = undefined;
+        }
+      }
+    }
+
     // Determine effective working directory: prefer session-unique dir over fixed user dir
     const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
 
