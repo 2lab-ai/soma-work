@@ -246,13 +246,13 @@ export class FileHandler {
       
       for (const file of files) {
         if (file.isImage) {
-          // CRITICAL: Do NOT include Path for images. If Claude sees a path,
-          // it WILL try to Read it, causing API 400 "Could not process image".
-          // Omitting the path is the only structural prevention — warnings are ignored.
+          // Include path so the agent can view the image via Read tool.
+          // Claude Code's Read tool supports reading images natively (multimodal).
           prompt += `\n## Image: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;
-          prompt += `Note: This is an image file. The image path is intentionally withheld to prevent API errors. Acknowledge the image by name and ask the user to describe its contents if analysis is needed.\n`;
+          prompt += `Path: ${file.path}\n`;
+          prompt += `Note: This is an image file. Use the Read tool to view it (Claude Code supports reading images natively).\n`;
         } else if (file.isVideo || file.isAudio) {
           // Same structural prevention as images: omit path to prevent AI from attempting Read on binary media.
           const mediaCategory = file.isVideo ? 'video' : 'audio';
