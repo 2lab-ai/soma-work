@@ -246,12 +246,21 @@ export class SessionInitializer {
           directory: session.sessionWorkingDir,
         });
       } catch (mkdirErr) {
-        this.logger.error('Failed to re-create session working directory, falling back to user dir', {
+        this.logger.error('Failed to re-create session working directory, resetting session for clean start', {
           sessionKey,
           directory: session.sessionWorkingDir,
           error: mkdirErr,
         });
         session.sessionWorkingDir = undefined;
+        // Clear sessionId so SDK starts fresh instead of resuming in a different cwd
+        // (resuming with a mismatched cwd causes "No conversation found" errors)
+        if (session.sessionId) {
+          this.logger.warn('Clearing sessionId due to unrecoverable cwd loss', {
+            sessionKey,
+            previousSessionId: session.sessionId,
+          });
+          this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        }
       }
     }
     const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
