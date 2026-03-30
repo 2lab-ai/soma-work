@@ -244,14 +244,14 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     if (response.behavior === 'allow') {
       // Parse the grant info from updatedInput if available
-      const grantInfo = response.updatedInput || { expiresAt, grantedBy: 'admin' };
-      this.grantStore.setGrant(userId, server, level, grantInfo.expiresAt || expiresAt, grantInfo.grantedBy || 'admin');
+      const grantInfo = response.updatedInput || { expiresAt: estimatedExpiry, grantedBy: 'admin' };
+      this.grantStore.setGrant(userId, server, level, grantInfo.expiresAt || estimatedExpiry, grantInfo.grantedBy || 'admin');
 
       return this.textResult(JSON.stringify({
         status: 'approved',
         server,
         level,
-        expiresAt: grantInfo.expiresAt || expiresAt,
+        expiresAt: grantInfo.expiresAt || estimatedExpiry,
         grantedBy: grantInfo.grantedBy || 'admin',
       }));
     }
