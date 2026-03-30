@@ -95,3 +95,26 @@ export function levelSatisfies(userLevel: PermissionLevel, requiredLevel: Permis
 export function getPermissionGatedServers(config: McpToolPermissionConfig): string[] {
   return Object.keys(config);
 }
+
+/**
+ * Resolve a tool name (e.g. mcp__server-tools__db_query) into its server and function parts,
+ * using the known list of gated server names to avoid `__` delimiter ambiguity.
+ * Returns null if the tool doesn't belong to any gated server.
+ */
+export function resolveGatedTool(
+  toolName: string,
+  gatedServerNames: string[],
+): { serverName: string; toolFunction: string } | null {
+  if (!toolName.startsWith('mcp__')) return null;
+
+  for (const name of gatedServerNames) {
+    const prefix = `mcp__${name}__`;
+    if (toolName.startsWith(prefix)) {
+      const toolFunction = toolName.slice(prefix.length);
+      if (toolFunction) return { serverName: name, toolFunction };
+      return null; // prefix match but empty tool name
+    }
+  }
+
+  return null;
+}
