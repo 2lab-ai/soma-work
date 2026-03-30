@@ -7,6 +7,8 @@ export interface MessageEvent {
   thread_ts?: string;
   ts: string;
   text?: string;
+  /** True for auto-resume, auto-retry, and other system-generated messages (not real user input) */
+  synthetic?: boolean;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;

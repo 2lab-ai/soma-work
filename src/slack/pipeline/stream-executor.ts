@@ -36,6 +36,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { getChannel } from '../../channel-registry';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
@@ -130,6 +131,8 @@ interface StreamExecuteParams {
   sourceThreadTs?: string;
   /** Original channel before channel routing */
   sourceChannel?: string;
+  /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
+  isUserInput?: boolean;
 }
 
 interface FinalFooterData {
@@ -308,6 +311,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         recordUserTurn(session.conversationId, text, userName, user);
       }
 
+      // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
+      // followUpInstructions is capped to prevent unbounded memory growth.
+      const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
+      if (session && text && params.isUserInput !== false) {
+        if (!session.initialInstruction) {
+          session.initialInstruction = text;
+        } else {
+          // Always record subsequent turns as follow-ups (even if text matches initial).
+          // The first turn is not duplicated because session-initializer sets initialInstruction
+          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
+          if (!session.followUpInstructions) {
+            session.followUpInstructions = [];
+          }
+          if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
+            session.followUpInstructions.shift();
+          }
+          session.followUpInstructions.push({
+            timestamp: Date.now(),
+            text,
+            speaker: userName,
+          });
+        }
+      }
+
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
         sessionId: session.sessionId,
@@ -349,10 +376,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.slackApi.getClient(),
         channel
       );
+      // Fetch structured repo info from channel registry (parsed from channel description)
+      const channelInfo = getChannel(channel);
       const slackContext = {
         channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
         sourceThreadTs: params.sourceThreadTs,
         sourceChannel: params.sourceChannel,
+        repos: channelInfo?.repos,
+        confluenceUrl: channelInfo?.confluenceUrl,
       };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
@@ -483,7 +514,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onTodoUpdate: async (input, ctx) => {
-          if (!isOutputEnabled(OutputFlag.TODO_UPDATE)) return;
+          // Task list is part of thread header — always update regardless of verbosity.
+          // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
@@ -491,7 +523,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.channel,
             ctx.threadTs,
             ctx.say,
-            getVerbosity()
+            getVerbosity(),
+            session,
           );
         },
         onPendingFormCreate: (formId, form) => {
@@ -783,27 +816,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Start summary timer for non-error completions (fire-and-forget)
         // Trace: docs/turn-summary-lifecycle/trace.md, S1
         if (this.deps.summaryTimer && category !== 'Exception') {
-          this.deps.summaryTimer.start(sessionKey, async () => {
-            if (this.deps.summaryService) {
-              try {
-                const summaryText = await this.deps.summaryService.execute(session as any);
-                if (summaryText) {
-                  this.deps.summaryService.displayOnThread(session as any, summaryText);
-                }
-              } catch (err: any) {
-                this.logger.warn('Summary timer callback failed', { error: err?.message });
-              }
-            }
-          });
+          this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
         }
 
-        // Track completion message for auto-deletion
-        // Trace: docs/turn-summary-lifecycle/trace.md, S6
-        if (this.deps.completionMessageTracker && !hasSdkError) {
-          // Track will be called when the notification channel sends the Slack message
-          // For now, we mark the session for tracking
-          this.deps.completionMessageTracker.track(sessionKey, threadTs, determineTurnCategory({ hasPendingChoice, isError: hasSdkError }));
-        }
+        // Completion message tracking moved to SlackBlockKitChannel.send()
+        // which tracks the actual posted notification message ts.
+        // Previously tracked threadTs here, which for bot-initiated threads
+        // is the surface/header message — causing header deletion on next input.
       }
 
       // Update bot-initiated thread root with status
@@ -1288,6 +1307,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
   private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
+
+  /**
+   * Summary timer callback — executes fork query and renders result to thread panel.
+   * Extracted as a named method so it can be tested independently.
+   */
+  private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
+    if (!this.deps.summaryService) return;
+    try {
+      const summaryText = await this.deps.summaryService.execute(session as any);
+      if (summaryText) {
+        this.deps.summaryService.displayOnThread(session as any, summaryText);
+        // Trigger re-render so the summary blocks appear in the Slack thread header.
+        // Without this, summaryBlocks sit in memory but the message is never updated.
+        await this.deps.threadPanel?.updatePanel(session, sessionKey);
+      }
+    } catch (err: any) {
+      this.logger.warn('Summary timer callback failed', { error: err?.message });
+    }
+  }
 
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
@@ -2118,6 +2156,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Resolve relative paths against session working directory
         const sessionDir = session.sessionWorkingDir || session.workingDirectory;
         let resolvedPath = savePath!;
+
+        // If path is relative and no sessionDir to resolve against, reject it
+        if (!pathModule.isAbsolute(resolvedPath) && !sessionDir) {
+          this.logger.warn('Cannot resolve relative save path without session directory', { savePath });
+          await say({
+            text: '⚠️ Cannot resolve save path (no session directory). Renew cancelled.',
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+
         if (!pathModule.isAbsolute(resolvedPath) && sessionDir) {
           resolvedPath = pathModule.join(sessionDir, resolvedPath);
           this.logger.info('Resolved relative save path', { original: savePath, resolved: resolvedPath, sessionDir });

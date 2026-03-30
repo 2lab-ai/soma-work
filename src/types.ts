@@ -283,6 +283,9 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
+  // Not serialized to disk (runtime-only).
+  pendingRetryTimer?: ReturnType<typeof setTimeout>;
   // Merge code change stats — accumulated from merged PRs in this session
   mergeStats?: {
     totalLinesAdded: number;
@@ -294,6 +297,17 @@ export interface ConversationSession {
       mergedAt: number; // Unix ms
     }>;
   };
+  // Task list timestamps for display in thread header
+  taskListStartedAt?: number;
+  /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
+  taskListCompletedAt?: number;
+  // System prompt snapshot: the fully-built system prompt used for this session's current query.
+  // Stored for admin debugging via "show prompt" command. NOT persisted to disk.
+  systemPrompt?: string;
+  // User instruction SSOT: stores the original user instruction and follow-ups.
+  // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
+  initialInstruction?: string;
+  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
 }
 
 export interface WorkingDirectoryConfig {

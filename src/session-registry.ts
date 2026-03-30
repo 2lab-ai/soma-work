@@ -918,6 +918,13 @@ export class SessionRegistry {
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
       session.lastErrorContext = undefined;
+      // Cancel any pending file-access retry timer (Issue #215)
+      if (session.pendingRetryTimer) {
+        clearTimeout(session.pendingRetryTimer);
+        session.pendingRetryTimer = undefined;
+      }
+      // Persist to disk so restart doesn't resurrect stale state (Issue #214)
+      this.saveSessions();
     }
   }
 
@@ -963,6 +970,11 @@ export class SessionRegistry {
     // Clear usage data to reset context percentage
     session.usage = undefined;
 
+    // Clear in-memory debugging fields (system prompt snapshot, user instruction SSOT)
+    session.systemPrompt = undefined;
+    session.initialInstruction = undefined;
+    session.followUpInstructions = undefined;
+
     // Reset activity state
     session.activityState = 'idle';
 
@@ -970,6 +982,11 @@ export class SessionRegistry {
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
     session.lastErrorContext = undefined;
+    // Cancel any pending file-access retry timer (Issue #215)
+    if (session.pendingRetryTimer) {
+      clearTimeout(session.pendingRetryTimer);
+      session.pendingRetryTimer = undefined;
+    }
 
     this.saveSessions();
     return true;

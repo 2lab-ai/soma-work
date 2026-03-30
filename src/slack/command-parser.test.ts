@@ -781,4 +781,70 @@ describe('CommandParser', () => {
       expect(result.action).toBe('error');
     });
   });
+
+  describe('isShowPromptCommand', () => {
+    it('should match "show prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('show prompt')).toBe(true);
+    });
+
+    it('should match "/show prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('/show prompt')).toBe(true);
+    });
+
+    it('should match "show_prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('show_prompt')).toBe(true);
+    });
+
+    it('should match "/show_prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('/show_prompt')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isShowPromptCommand('Show Prompt')).toBe(true);
+      expect(CommandParser.isShowPromptCommand('SHOW PROMPT')).toBe(true);
+    });
+
+    it('should not match "show"', () => {
+      expect(CommandParser.isShowPromptCommand('show')).toBe(false);
+    });
+
+    it('should not match "show prompt extra"', () => {
+      expect(CommandParser.isShowPromptCommand('show prompt extra')).toBe(false);
+    });
+
+    it('should not match "show llm_chat"', () => {
+      expect(CommandParser.isShowPromptCommand('show llm_chat')).toBe(false);
+    });
+  });
+
+  describe('isShowInstructionsCommand', () => {
+    it('should match "show instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show instructions')).toBe(true);
+    });
+
+    it('should match "/show instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('/show instructions')).toBe(true);
+    });
+
+    it('should match "show_instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show_instructions')).toBe(true);
+    });
+
+    it('should match "/show_instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('/show_instructions')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isShowInstructionsCommand('Show Instructions')).toBe(true);
+      expect(CommandParser.isShowInstructionsCommand('SHOW INSTRUCTIONS')).toBe(true);
+    });
+
+    it('should not match "show"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show')).toBe(false);
+    });
+
+    it('should not match "show instructions extra"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show instructions extra')).toBe(false);
+    });
+  });
 });
