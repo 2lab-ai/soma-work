@@ -558,6 +558,8 @@ export class ClaudeHandler {
 
     // Set working directory — ensure it exists to prevent SDK ENOENT masquerade
     // (SDK misreports missing cwd as "Claude Code executable not found")
+    let cwdCleared = false;
+    const originalCwd = workingDirectory;
     if (workingDirectory) {
       if (!fs.existsSync(workingDirectory)) {
         this.logger.warn('Working directory missing, re-creating', { workingDirectory });
@@ -568,11 +570,21 @@ export class ClaudeHandler {
             workingDirectory, error: err,
           });
           workingDirectory = undefined;
+          cwdCleared = true;
         }
       }
       if (workingDirectory) {
         options.cwd = workingDirectory;
       }
+    }
+
+    // If cwd was forcibly cleared, also clear sessionId to prevent resuming
+    // into a stale working directory (session file references become invalid)
+    if (cwdCleared && session?.sessionId) {
+      this.logger.warn('Clearing sessionId after cwd loss to prevent stale resume', {
+        sessionId: session.sessionId, originalCwd,
+      });
+      session.sessionId = undefined;
     }
 
     // Resume existing session
