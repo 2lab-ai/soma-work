@@ -27,6 +27,7 @@ import {
   UserChoiceHandler,
 } from '../index';
 import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
+import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ThreadPanel } from '../thread-panel';
@@ -290,7 +291,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+      let finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+
+      // #196: Inject compaction context if SDK auto-compacted during previous turn
+      if (session.compactionOccurred) {
+        const compactionCtx = buildCompactionContext(snapshotFromSession(session));
+        if (compactionCtx) {
+          finalPrompt = `${compactionCtx}\n\n${finalPrompt}`;
+          this.logger.info('Injected compaction preservation context', { sessionKey });
+        }
+        session.compactionOccurred = false;
+      }
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
@@ -574,6 +585,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
+        },
+        // #196: Compaction-Aware Context Preservation
+        onCompactBoundary: () => {
+          session.compactionOccurred = true;
+          this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'working') {
