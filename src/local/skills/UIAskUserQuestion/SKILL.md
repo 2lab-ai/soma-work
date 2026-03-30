@@ -79,7 +79,7 @@ interface UserChoice {
 
 interface UserChoiceOption {
   id: string;           // "1", "2", etc.
-  label: string;        // Concrete action + review consensus (e.g., "Fix (추천 2/3)")
+  label: string;        // Concrete action + review consensus (e.g., "Option A: when 필터 추가 (추천 2/3)")
   description?: string; // Tradeoffs of this choice
 }
 
