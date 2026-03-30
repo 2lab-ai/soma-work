@@ -4,6 +4,7 @@ import { ThreadHeaderBuilder } from './thread-header-builder';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 import { ContextWindowManager } from './context-window-manager';
 import { RequestCoordinator } from './request-coordinator';
+import { CompletionMessageTracker } from './completion-message-tracker';
 import { ClaudeHandler } from '../claude-handler';
 import { TodoManager } from '../todo-manager';
 import { ConversationSession } from '../types';
@@ -22,6 +23,7 @@ interface ThreadSurfaceDeps {
   claudeHandler: ClaudeHandler;
   requestCoordinator: RequestCoordinator;
   todoManager: TodoManager;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 interface PRCacheEntry {
@@ -122,6 +124,8 @@ export class ThreadSurface {
       if (!session.actionPanel.messageTs) {
         session.actionPanel.messageTs = session.threadRootTs;
       }
+      // Defense-in-depth: protect thread root from accidental deletion
+      this.deps.completionMessageTracker?.protect(sessionKey, session.threadRootTs);
     }
 
     // Render initial state (force to ensure message is created)
@@ -423,6 +427,7 @@ export class ThreadSurface {
       rs.prCache = null;
     }
     this.sessions.delete(sessionKey);
+    this.deps.completionMessageTracker?.clearProtection(sessionKey);
   }
 
   // =========================================================================
