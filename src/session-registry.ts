@@ -96,6 +96,17 @@ interface SerializedSession {
   sourceThread?: { channel: string; threadTs: string };
   // Session-unique working directory for workspace isolation (#77)
   sessionWorkingDir?: string;
+  // Merge code change stats
+  mergeStats?: {
+    totalLinesAdded: number;
+    totalLinesDeleted: number;
+    mergedPRs: Array<{
+      prNumber: number;
+      linesAdded: number;
+      linesDeleted: number;
+      mergedAt: number;
+    }>;
+  };
 }
 
 /**
@@ -139,10 +150,23 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
+   * Callback fired whenever any session's activity state changes.
+   * Used by the dashboard WebSocket to push real-time updates.
+   */
+  private onActivityStateChangeCallback?: () => void;
+
+  /**
    * Set callbacks for session expiry events
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.expiryCallbacks = callbacks;
+  }
+
+  /**
+   * Register callback for activity state changes (e.g., dashboard WebSocket broadcast)
+   */
+  setActivityStateChangeCallback(callback: () => void): void {
+    this.onActivityStateChangeCallback = callback;
   }
 
   /**
@@ -386,6 +410,9 @@ export class SessionRegistry {
       state,
     });
 
+    // Notify dashboard WebSocket clients
+    try { this.onActivityStateChangeCallback?.(); } catch { /* fire-and-forget */ }
+
     // Only persist on idle transition to minimize disk I/O
     if (state === 'idle') {
       this.saveSessions();
@@ -492,6 +519,34 @@ export class SessionRegistry {
       session.title = title;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Record merge code change stats (lines added/deleted) for a merged PR in this session.
+   */
+  addMergeStats(
+    channelId: string,
+    threadTs: string | undefined,
+    prNumber: number,
+    linesAdded: number,
+    linesDeleted: number,
+  ): void {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return;
+
+    if (!session.mergeStats) {
+      session.mergeStats = { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
+    }
+
+    session.mergeStats.totalLinesAdded += linesAdded;
+    session.mergeStats.totalLinesDeleted += linesDeleted;
+    session.mergeStats.mergedPRs.push({
+      prNumber,
+      linesAdded,
+      linesDeleted,
+      mergedAt: Date.now(),
+    });
+    this.saveSessions();
   }
 
   /**
@@ -859,6 +914,10 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
+      // Clear error retry state so fresh session doesn't inherit exhausted budgets
+      session.errorRetryCount = 0;
+      session.fileAccessRetryCount = 0;
+      session.lastErrorContext = undefined;
     }
   }
 
@@ -906,6 +965,11 @@ export class SessionRegistry {
 
     // Reset activity state
     session.activityState = 'idle';
+
+    // Clear error retry state (including file-access-specific counters)
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+    session.lastErrorContext = undefined;
 
     this.saveSessions();
     return true;
@@ -1212,6 +1276,8 @@ export class SessionRegistry {
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
             sessionWorkingDir: session.sessionWorkingDir,
+            // Merge code change stats
+            mergeStats: session.mergeStats,
           });
         }
       }
@@ -1307,6 +1373,8 @@ export class SessionRegistry {
           sessionWorkingDir: serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
             ? serialized.sessionWorkingDir
             : undefined,
+          // Merge code change stats
+          mergeStats: serialized.mergeStats,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
