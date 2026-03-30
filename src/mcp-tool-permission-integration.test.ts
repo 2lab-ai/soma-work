@@ -145,6 +145,126 @@ describe('McpConfigBuilder tool permission integration', () => {
   });
 });
 
+// ── Generic permission gating: works for any MCP server with permission config ──
+describe('Generic permission gating', () => {
+  function createMockMcpManager() {
+    return {
+      getServerConfiguration: vi.fn().mockResolvedValue({}),
+      getDefaultAllowedTools: vi.fn().mockReturnValue([]),
+    } as any;
+  }
+
+  afterEach(() => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    if (fs.existsSync(grantFile)) fs.unlinkSync(grantFile);
+  });
+
+  it('gates multiple MCP servers independently', async () => {
+    // Config with TWO permission-gated servers
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+      'server-tools': {
+        permission: { db_query: 'write', logs: 'read' },
+        dev2: { ssh: { host: 'example.com' } },
+      },
+      'database-mcp': {
+        permission: { execute: 'write', query: 'read' },
+        conn: { host: 'db.example.com' },
+      },
+    }));
+
+    // User has read grant on server-tools only
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_MULTI_USER': {
+        'server-tools': {
+          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_MULTI_USER' });
+
+    // server-tools: read grant → read tools allowed, write tools blocked
+    expect(config.allowedTools).toContain('mcp__server-tools__logs');
+    expect(config.allowedTools).not.toContain('mcp__server-tools__db_query');
+
+    // database-mcp: no grant → entirely blocked
+    const dbMcpAllowed = config.allowedTools?.some(t => t.startsWith('mcp__database-mcp'));
+    expect(dbMcpAllowed).toBe(false);
+  });
+
+  it('admin bypasses all gated servers', async () => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+      'server-tools': {
+        permission: { db_query: 'write', logs: 'read' },
+        dev2: { ssh: { host: 'example.com' } },
+      },
+      'database-mcp': {
+        permission: { execute: 'write', query: 'read' },
+        conn: { host: 'db.example.com' },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_ADMIN' });
+
+    // Admin gets blanket access to both servers
+    expect(config.allowedTools).toContain('mcp__server-tools');
+    expect(config.allowedTools).toContain('mcp__database-mcp');
+  });
+
+  it('write grant on second server allows all its tools', async () => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+      'server-tools': {
+        permission: { db_query: 'write', logs: 'read' },
+        dev2: { ssh: { host: 'example.com' } },
+      },
+      'database-mcp': {
+        permission: { execute: 'write', query: 'read' },
+        conn: { host: 'db.example.com' },
+      },
+    }));
+
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_DB_WRITER': {
+        'database-mcp': {
+          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_DB_WRITER' });
+
+    // database-mcp: write grant → all tools
+    expect(config.allowedTools).toContain('mcp__database-mcp__execute');
+    expect(config.allowedTools).toContain('mcp__database-mcp__query');
+
+    // server-tools: no grant → blocked
+    const serverToolsAllowed = config.allowedTools?.some(t => t.startsWith('mcp__server-tools'));
+    expect(serverToolsAllowed).toBe(false);
+  });
+
+  it('no permission config → server-tools allowed with blanket prefix (backward compat)', async () => {
+    // Config WITHOUT permission section
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+      'server-tools': {
+        dev2: { ssh: { host: 'example.com' } },
+      },
+    }));
+
+    const builder = new McpConfigBuilder(createMockMcpManager());
+    const config = await builder.buildConfig({ channel: 'C1', user: 'U_REGULAR' });
+
+    // No permission gating → blanket allow
+    expect(config.allowedTools).toContain('mcp__server-tools');
+  });
+});
+
 describe('PreToolUse permission hook', () => {
   // ── S3: preToolUseHookDeniesUngrantedTool ──
   it('preToolUseHookDeniesUngrantedTool — denies non-admin without grant', () => {
