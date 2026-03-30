@@ -120,11 +120,13 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
+    const completionMessageTracker = new CompletionMessageTracker();
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
       todoManager: this.todoManager,
+      completionMessageTracker,
     });
 
     // Command routing
@@ -168,8 +170,6 @@ export class SlackHandler {
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
-
-    const completionMessageTracker = new CompletionMessageTracker();
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {

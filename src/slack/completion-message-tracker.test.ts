@@ -145,6 +145,65 @@ describe('CompletionMessageTracker', () => {
     });
   });
 
+  // Defense-in-depth: Protected timestamps (thread root / header)
+  describe('Protected timestamps — thread root defense', () => {
+    it('protect() prevents track() from adding the timestamp', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      tracker.track('session-1', '1000.SAFE', 'WorkflowComplete');
+
+      expect(tracker.count('session-1')).toBe(1); // only SAFE tracked
+      expect(tracker.has('session-1')).toBe(true);
+    });
+
+    it('deleteAll() skips protected timestamps even if somehow tracked', async () => {
+      const tracker = new CompletionMessageTracker();
+      // Track first, then protect (simulates race or legacy tracking)
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      tracker.track('session-1', '1000.SAFE', 'WorkflowComplete');
+      tracker.protect('session-1', '1000.ROOT');
+
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>().mockResolvedValue(undefined);
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
+      // Only SAFE should be deleted, ROOT is protected
+      expect(deleteMessage).toHaveBeenCalledTimes(1);
+      expect(deleteMessage).toHaveBeenCalledWith('C-CHANNEL', '1000.SAFE');
+    });
+
+    it('isProtected() returns correct state', () => {
+      const tracker = new CompletionMessageTracker();
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(false);
+
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
+      expect(tracker.isProtected('session-1', '1000.OTHER')).toBe(false);
+    });
+
+    it('clearProtection() removes protection for session', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
+
+      tracker.clearProtection('session-1');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(false);
+
+      // Can now track the timestamp
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      expect(tracker.count('session-1')).toBe(1);
+    });
+
+    it('protect() is idempotent', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+      tracker.protect('session-1', '1000.ROOT');
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
+    });
+  });
+
   // S9: Error Messages Persist
   describe('S9 — Error Messages Persist', () => {
     // Trace: S9, Section 3a
