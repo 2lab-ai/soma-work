@@ -153,3 +153,83 @@ describe('parseDuration', () => {
 // saveGrants rollback is verified by code review:
 // On write failure, catch block calls this.loadGrants() to restore last-known-good state.
 // loadGrants restoration is covered by "grants survive store reload from disk" test above.
+
+describe('Grant expiry boundary conditions', () => {
+  let dir: string;
+  let store: McpToolGrantStore;
+
+  beforeEach(() => {
+    dir = makeTempDir();
+    store = new McpToolGrantStore(dir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('grant expired at exactly now is treated as expired (strict > comparison)', () => {
+    // Set grant that expires at Date.now() — should be expired
+    const exactNow = new Date().toISOString();
+    store.setGrant('U_BOUNDARY', 'server-tools', 'read', exactNow, 'U_ADMIN');
+
+    // Give 1ms to ensure we're past the boundary
+    const result = store.hasActiveGrant('U_BOUNDARY', 'server-tools', 'read');
+    expect(result).toBe(false);
+  });
+
+  it('grant expired 1ms ago is expired', () => {
+    const justPast = new Date(Date.now() - 1).toISOString();
+    store.setGrant('U_PAST', 'server-tools', 'read', justPast, 'U_ADMIN');
+
+    expect(store.hasActiveGrant('U_PAST', 'server-tools', 'read')).toBe(false);
+  });
+
+  it('grant expiring in 1 second is still active', () => {
+    const nearFuture = new Date(Date.now() + 1000).toISOString();
+    store.setGrant('U_FUTURE', 'server-tools', 'read', nearFuture, 'U_ADMIN');
+
+    expect(store.hasActiveGrant('U_FUTURE', 'server-tools', 'read')).toBe(true);
+  });
+});
+
+describe('Corrupted grant file handling', () => {
+  let dir: string;
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('corrupted JSON resets grants to empty', () => {
+    dir = makeTempDir();
+    const grantFile = path.join(dir, 'mcp-tool-grants.json');
+
+    // Write a valid grant first
+    const store1 = new McpToolGrantStore(dir);
+    store1.setGrant('U_TEST', 'server-tools', 'read', new Date(Date.now() + 86400000).toISOString(), 'U_ADMIN');
+    expect(store1.hasActiveGrant('U_TEST', 'server-tools', 'read')).toBe(true);
+
+    // Corrupt the file
+    fs.writeFileSync(grantFile, '{ corrupted json !!!');
+
+    // New store should load gracefully with empty grants
+    const store2 = new McpToolGrantStore(dir);
+    expect(store2.hasActiveGrant('U_TEST', 'server-tools', 'read')).toBe(false);
+  });
+
+  it('missing grant file results in no grants', () => {
+    dir = makeTempDir();
+    const store = new McpToolGrantStore(dir);
+    expect(store.hasActiveGrant('U_NOBODY', 'server-tools', 'read')).toBe(false);
+    expect(store.getGrants('U_NOBODY')).toBeNull();
+  });
+
+  it('valid JSON but wrong shape is handled gracefully', () => {
+    dir = makeTempDir();
+    const grantFile = path.join(dir, 'mcp-tool-grants.json');
+    fs.writeFileSync(grantFile, JSON.stringify("not-an-object"));
+
+    const store = new McpToolGrantStore(dir);
+    // Should not crash — string won't have expected properties
+    expect(store.hasActiveGrant('U_ANY', 'server-tools', 'read')).toBe(false);
+  });
+});

@@ -1,6 +1,8 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { RequestCoordinator } from './request-coordinator';
+import { CompletionMessageTracker } from './completion-message-tracker';
 import { ClaudeHandler } from '../claude-handler';
+import { TodoManager } from '../todo-manager';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
@@ -11,6 +13,8 @@ interface ThreadPanelDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   requestCoordinator: RequestCoordinator;
+  todoManager: TodoManager;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 /**

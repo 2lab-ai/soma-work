@@ -263,6 +263,9 @@ export interface ConversationSession {
   sessionWorkingDir?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
+  // Compaction-Aware Context Preservation (#196):
+  // Set to true when SDK emits compact_boundary; cleared after context is injected into next prompt
+  compactionOccurred?: boolean;
   // For bot-initiated threads created from mid-thread mentions:
   // references the original thread where the bot was mentioned
   sourceThread?: {
@@ -280,6 +283,31 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
+  // Not serialized to disk (runtime-only).
+  pendingRetryTimer?: ReturnType<typeof setTimeout>;
+  // Merge code change stats — accumulated from merged PRs in this session
+  mergeStats?: {
+    totalLinesAdded: number;
+    totalLinesDeleted: number;
+    mergedPRs: Array<{
+      prNumber: number;
+      linesAdded: number;
+      linesDeleted: number;
+      mergedAt: number; // Unix ms
+    }>;
+  };
+  // Task list timestamps for display in thread header
+  taskListStartedAt?: number;
+  /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
+  taskListCompletedAt?: number;
+  // System prompt snapshot: the fully-built system prompt used for this session's current query.
+  // Stored for admin debugging via "show prompt" command. NOT persisted to disk.
+  systemPrompt?: string;
+  // User instruction SSOT: stores the original user instruction and follow-ups.
+  // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
+  initialInstruction?: string;
+  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
 }
 
 export interface WorkingDirectoryConfig {

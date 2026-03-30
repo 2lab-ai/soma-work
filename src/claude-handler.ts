@@ -4,7 +4,11 @@
  */
 
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import { isDangerousCommand } from './dangerous-command-filter';
+import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import { isAdminUser } from './admin-utils';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers, resolveGatedTool } from './mcp-tool-permission-config';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+import { CONFIG_FILE } from './env-paths';
 import * as path from 'path';
 import type { SdkPluginPath } from './plugin/types';
 import {
@@ -132,6 +136,13 @@ export class ClaudeHandler {
 
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     this.sessionRegistry.updateSessionTitle(channelId, threadTs, title);
+  }
+
+  /**
+   * Record merge code change stats for a PR in this session.
+   */
+  addMergeStats(channelId: string, threadTs: string | undefined, prNumber: number, linesAdded: number, linesDeleted: number): void {
+    this.sessionRegistry.addMergeStats(channelId, threadTs, prNumber, linesAdded, linesDeleted);
   }
 
   /**
@@ -278,7 +289,9 @@ export class ClaudeHandler {
     userMessage: string,
     dispatchPrompt: string,
     model?: string,
-    abortController?: AbortController
+    abortController?: AbortController,
+    resumeSessionId?: string,
+    cwd?: string,
   ): Promise<string> {
     // Validate credentials before making the query
     const credentialResult = await ensureValidCredentials();
@@ -320,9 +333,22 @@ export class ClaudeHandler {
       options.abortController = abortController;
     }
 
+    // Fork existing session to access conversation history for context-aware summaries.
+    // resume + forkSession: copies history into a new session without mutating the original.
+    // Without this, the fork has no knowledge of what happened in the session.
+    if (resumeSessionId) {
+      options.resume = resumeSessionId;
+      options.forkSession = true;
+    }
+
+    if (cwd) {
+      options.cwd = cwd;
+    }
+
     const startTime = Date.now();
     this.logger.info('🚀 DISPATCH: Starting one-shot query', {
       model: options.model,
+      resumeSession: !!resumeSessionId,
       messageLength: userMessage.length,
       messagePreview: userMessage.substring(0, 100),
     });
@@ -482,6 +508,34 @@ export class ClaudeHandler {
         });
       }
 
+      // SSH command restriction: only admin users may execute SSH commands via Bash.
+      // Non-admin users must use the server-tools MCP (which has its own permission gating).
+      if (!isAdminUser(slackContext.user)) {
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+            if (isSshCommand(command)) {
+              this.logger.warn('SSH command denied for non-admin user', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+
+            return { continue: true };
+          }],
+        });
+      }
+
       // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
@@ -509,6 +563,41 @@ export class ClaudeHandler {
         });
       }
 
+      // MCP tool permission enforcement: deny calls to permission-gated MCP tools
+      // when the user lacks an active grant. Catches mid-session grant expiry that
+      // allowedTools (computed once at query start) cannot detect.
+      // Trace: docs/mcp-tool-permission/trace.md, S3/S5
+      if (!isAdminUser(slackContext.user)) {
+        // Cache permission config once per query — it's static deployment config,
+        // unlike grants which must be re-checked from disk each call.
+        const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
+        const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
+
+        if (gatedServerNames.length > 0) {
+          preToolUseHooks.push({
+            matcher: 'mcp__',
+            hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+              const toolName = (input as { tool_name?: string }).tool_name || '';
+              const denied = this.checkMcpToolPermission(toolName, slackContext.user, cachedPermConfig, gatedServerNames);
+              if (denied) {
+                this.logger.warn('MCP tool permission denied by PreToolUse hook', {
+                  tool: toolName,
+                  user: slackContext.user,
+                  reason: denied,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+              return { continue: true };
+            }],
+          });
+        }
+      }
+
       if (preToolUseHooks.length > 0) {
         options.hooks = {
           ...options.hooks,
@@ -534,14 +623,30 @@ export class ClaudeHandler {
     }
 
     // Build system prompt with persona and workflow
+    // Use session owner for user variable resolution (Co-Authored-By attribution)
+    // Falls back to current user if no session exists yet
     const workflow = session?.workflow || 'default';
-    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(slackContext?.user, workflow);
+    const promptUserId = session?.ownerId || slackContext?.user;
+    let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(promptUserId, workflow);
 
     // Inject channel description as additional context
     if (builtSystemPrompt && slackContext?.channelDescription) {
       builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
     }
 
+    // Inject structured repository context from channel registry
+    // This provides explicit repo identification so the model doesn't have to guess from raw description
+    const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
+    const hasConfluence = !!slackContext?.confluenceUrl;
+    if (builtSystemPrompt && (hasRepos || hasConfluence)) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+    }
+
+    // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt").
+    // Always overwrite to avoid showing a stale prompt from a previous turn.
+    if (session) {
+      session.systemPrompt = builtSystemPrompt || undefined;
+    }
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
       this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
@@ -550,6 +655,7 @@ export class ClaudeHandler {
         model: options.model,
         promptLength: builtSystemPrompt.length,
         hasChannelDescription: !!slackContext?.channelDescription,
+        repos: slackContext?.repos || [],
       });
     } else {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
@@ -615,6 +721,46 @@ export class ClaudeHandler {
     }
   }
 
+  /**
+   * Check if a MCP tool call should be denied based on permission config and active grants.
+   * Returns a denial reason string, or null if the tool is allowed.
+   * Used by PreToolUse hook for runtime enforcement (catches mid-session grant expiry).
+   *
+   * Uses known gated server names to resolve the `__` delimiter ambiguity:
+   * matches `mcp__{knownServer}__` prefix instead of naive split.
+   */
+  private checkMcpToolPermission(
+    toolName: string,
+    userId: string,
+    permConfig: ReturnType<typeof loadMcpToolPermissions>,
+    gatedServerNames: string[],
+  ): string | null {
+    const resolved = resolveGatedTool(toolName, gatedServerNames);
+    if (!resolved) return null;
+
+    const { serverName, toolFunction } = resolved;
+    const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
+
+    // Tool not in permission config → unrestricted
+    if (!requiredLevel) return null;
+
+    // Check active grants (reload from disk for cross-process safety)
+    mcpToolGrantStore.reload();
+    const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'write');
+    const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'read');
+    const userLevel = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+    if (!userLevel) {
+      return `No active grant for ${serverName}. Required: ${requiredLevel}. Use mcp__mcp-tool-permission__request_permission to request access.`;
+    }
+
+    if (!levelSatisfies(userLevel, requiredLevel)) {
+      return `Insufficient grant level for ${serverName}/${toolFunction}. Have: ${userLevel}, required: ${requiredLevel}.`;
+    }
+
+    return null;
+  }
+
   private buildModelCommandContext(
     session: ConversationSession | undefined,
     slackContext: SlackContext | undefined
@@ -636,4 +782,24 @@ export class ClaudeHandler {
       sessionTitle: session?.title,
     };
   }
+}
+
+/**
+ * Build a structured repository context block for system prompt injection.
+ * Exported for unit testing.
+ */
+export function buildRepoContextBlock(repos: string[], confluenceUrl?: string): string {
+  const parts: string[] = [];
+  if (repos.length > 0) {
+    const repoLines = repos.map(r => {
+      // Guard against pre-prefixed URLs or malformed entries
+      const url = r.startsWith('http') ? r : `https://github.com/${r}`;
+      return `- ${url}`;
+    }).join('\n');
+    parts.push(`This channel is mapped to the following repository(ies):\n${repoLines}`);
+  }
+  if (confluenceUrl) {
+    parts.push(`Project wiki: ${confluenceUrl}`);
+  }
+  return `<channel-repository>\n${parts.join('\n')}\n</channel-repository>`;
 }

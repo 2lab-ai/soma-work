@@ -120,10 +120,13 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
+    const completionMessageTracker = new CompletionMessageTracker();
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
+      todoManager: this.todoManager,
+      completionMessageTracker,
     });
 
     // Command routing
@@ -147,6 +150,12 @@ export class SlackHandler {
       this.todoManager,
       this.reactionManager
     );
+    // Wire todo updates to trigger thread header re-render
+    this.todoDisplayManager.setRenderRequestCallback(
+      async (session, sessionKey) => {
+        await this.threadPanel?.updatePanel(session, sessionKey);
+      }
+    );
 
     // Native Slack AI spinner
     this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
@@ -161,8 +170,6 @@ export class SlackHandler {
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
-
-    const completionMessageTracker = new CompletionMessageTracker();
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -197,7 +204,7 @@ export class SlackHandler {
 
     // Wire turn completion notification channels
     const turnNotifier = new TurnNotifier([
-      new SlackBlockKitChannel(this.slackApi),
+      new SlackBlockKitChannel(this.slackApi, completionMessageTracker),
       new SlackDmChannel(this.slackApi, userSettingsStore),
       new WebhookChannel(userSettingsStore),
       new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
@@ -380,6 +387,7 @@ export class SlackHandler {
       mentionTs: ts,
       sourceThreadTs,
       sourceChannel,
+      synthetic: event.synthetic,
     });
 
     const continuationHandler: ContinuationHandler = {
@@ -416,11 +424,21 @@ export class SlackHandler {
           delayMs: retryAfterMs,
         });
 
-        // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
-        // If the session has error context (e.g., file access blocked), pass it to
-        // the retry prompt so the model can adapt its approach.
+        // Schedule retry after delay using autoResumeSession pattern.
+        // Store timer handle so session reset can cancel it (Issue #215).
         const errorContext = currentSession?.lastErrorContext;
-        setTimeout(() => {
+        const sessionIdAtSchedule = currentSession?.sessionId;
+        const timer = setTimeout(() => {
+          // Verify session hasn't been reset since retry was scheduled (Issue #215)
+          const freshSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+          if (!freshSession || freshSession.sessionId !== sessionIdAtSchedule) {
+            this.logger.info('Skipping stale auto-retry — session was reset', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+            });
+            return;
+          }
+          freshSession.pendingRetryTimer = undefined;
           this.autoResumeSession(
             { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
             undefined,
@@ -438,6 +456,10 @@ export class SlackHandler {
             });
           });
         }, retryAfterMs);
+        // Store handle for cancellation on session reset
+        if (currentSession) {
+          currentSession.pendingRetryTimer = timer;
+        }
         return; // Retry scheduled — don't re-throw
       }
       throw error; // Non-recoverable error — propagate
@@ -457,6 +479,7 @@ export class SlackHandler {
       mentionTs: string;
       sourceThreadTs?: string;
       sourceChannel?: string;
+      synthetic?: boolean;
     },
   ): V1QueryAdapter {
     // TurnRunnerSurface adapter: ThreadPanel → TurnRunnerSurface
@@ -489,6 +512,7 @@ export class SlackHandler {
       mentionTs: context.mentionTs,
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
+      isUserInput: !context.synthetic,
     };
 
     return new V1QueryAdapter({
@@ -675,7 +699,12 @@ export class SlackHandler {
    */
   /** Resume prompt sent to model for auto-resuming interrupted sessions */
   private static readonly AUTO_RESUME_PROMPT =
-    'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+    '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+    '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
+    '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
+    '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
+    '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
+    '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.';
 
   /** Delay between processing crash-recovered sessions (ms) */
   private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
@@ -762,17 +791,21 @@ export class SlackHandler {
    * through the existing handleMessage pipeline.
    */
   private async autoResumeSession(
-    session: { channelId: string; threadTs?: string; ownerId: string },
+    session: { channelId: string; threadTs?: string; ownerId: string; title?: string; workflow?: string },
     notificationTs?: string,
     errorContext?: string,
   ): Promise<void> {
     // Use the notification message's ts so that handleMessage's reaction calls
     // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
 
-    // When error context is available (e.g., file access blocked), inject it into
-    // the resume prompt so the model knows what went wrong and can adapt.
-    const resumePrompt = errorContext
-      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n⚠️ 이전 시도 중 오류 발생: ${errorContext}`
+    // Build context-rich prompt so the model knows WHAT it was doing, not just HOW to resume.
+    const contextParts: string[] = [];
+    if (session.title) contextParts.push(`세션 제목: ${session.title}`);
+    if (session.workflow && session.workflow !== 'default') contextParts.push(`워크플로우: ${session.workflow}`);
+    if (errorContext) contextParts.push(`⚠️ 이전 시도 중 오류 발생: ${errorContext}`);
+
+    const resumePrompt = contextParts.length > 0
+      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n${contextParts.join('\n')}`
       : SlackHandler.AUTO_RESUME_PROMPT;
 
     const syntheticEvent: MessageEvent = {
@@ -781,6 +814,7 @@ export class SlackHandler {
       thread_ts: session.threadTs,
       ts: notificationTs || `${Date.now() / 1000}`,
       text: resumePrompt,
+      synthetic: true,
     };
 
     const noopSay = async () => ({ ts: undefined as string | undefined });

@@ -6,6 +6,7 @@
  */
 
 import { NotificationChannel, TurnCompletionEvent, getCategoryColor, getCategoryEmoji, getCategoryLabel } from '../turn-notifier.js';
+import { CompletionMessageTracker } from '../slack/completion-message-tracker.js';
 import { Logger } from '../logger.js';
 import { SessionTheme, userSettingsStore } from '../user-settings-store.js';
 
@@ -16,6 +17,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
   constructor(
     private slackApi: { postMessage: (channel: string, text: string, options?: any) => Promise<any> },
+    private completionMessageTracker?: CompletionMessageTracker,
   ) {}
 
   async isEnabled(_userId: string): Promise<boolean> {
@@ -32,10 +34,20 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const blocks = this.buildBlocksForTheme(theme, event, emoji, label);
 
     try {
-      await this.slackApi.postMessage(event.channel, text, {
+      const result = await this.slackApi.postMessage(event.channel, text, {
         threadTs: event.threadTs,
         attachments: [{ color, blocks }],
       });
+
+      // Track the actual posted notification message ts for auto-deletion.
+      // Previously tracked in stream-executor using threadTs (thread root),
+      // which for bot-initiated threads IS the surface/header message —
+      // causing header deletion on next user input.
+      // Trace: docs/turn-summary-lifecycle/trace.md, S6
+      if (this.completionMessageTracker && result?.ts && event.category !== 'Exception') {
+        const sessionKey = `${event.channel}-${event.threadTs}`;
+        this.completionMessageTracker.track(sessionKey, result.ts, event.category);
+      }
     } catch (error: any) {
       logger.warn('Failed to post Block Kit notification', {
         channel: event.channel,

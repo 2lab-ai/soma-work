@@ -27,6 +27,7 @@ import {
   UserChoiceHandler,
 } from '../index';
 import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
+import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ThreadPanel } from '../thread-panel';
@@ -35,6 +36,7 @@ import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usag
 import { SayFn, MessageEvent } from './types';
 import { recordUserTurn, recordAssistantTurn } from '../../conversation';
 import { getChannelDescription } from '../../channel-description-cache';
+import { getChannel } from '../../channel-registry';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
@@ -129,6 +131,8 @@ interface StreamExecuteParams {
   sourceThreadTs?: string;
   /** Original channel before channel routing */
   sourceChannel?: string;
+  /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
+  isUserInput?: boolean;
 }
 
 interface FinalFooterData {
@@ -249,9 +253,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Delete tracked completion messages on new user input
     // Trace: docs/turn-summary-lifecycle/trace.md, S7
     if (this.deps.completionMessageTracker) {
+      const threadRootTs = session.threadRootTs;
       this.deps.completionMessageTracker.deleteAll(
         params.sessionKey,
-        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        async (ch, ts) => {
+          // Defense-in-depth: never delete the thread root message (header)
+          if (threadRootTs && ts === threadRootTs) {
+            this.logger.error('BLOCKED: attempted to delete thread root via completion tracker', {
+              sessionKey: params.sessionKey, ts, threadRootTs,
+            });
+            return;
+          }
+          try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {}
+        },
         params.channel
       ).catch(() => {});
     }
@@ -290,11 +304,45 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+      let finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+
+      // #196: Inject compaction context if SDK auto-compacted during previous turn
+      if (session.compactionOccurred) {
+        const compactionCtx = buildCompactionContext(snapshotFromSession(session));
+        if (compactionCtx) {
+          finalPrompt = `${compactionCtx}\n\n${finalPrompt}`;
+          this.logger.info('Injected compaction preservation context', { sessionKey });
+        }
+        session.compactionOccurred = false;
+      }
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
         recordUserTurn(session.conversationId, text, userName, user);
+      }
+
+      // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
+      // followUpInstructions is capped to prevent unbounded memory growth.
+      const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
+      if (session && text && params.isUserInput !== false) {
+        if (!session.initialInstruction) {
+          session.initialInstruction = text;
+        } else {
+          // Always record subsequent turns as follow-ups (even if text matches initial).
+          // The first turn is not duplicated because session-initializer sets initialInstruction
+          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
+          if (!session.followUpInstructions) {
+            session.followUpInstructions = [];
+          }
+          if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
+            session.followUpInstructions.shift();
+          }
+          session.followUpInstructions.push({
+            timestamp: Date.now(),
+            text,
+            speaker: userName,
+          });
+        }
       }
 
       this.logger.info('Sending query to Claude Code SDK', {
@@ -338,10 +386,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.slackApi.getClient(),
         channel
       );
+      // Fetch structured repo info from channel registry (parsed from channel description)
+      const channelInfo = getChannel(channel);
       const slackContext = {
         channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
         sourceThreadTs: params.sourceThreadTs,
         sourceChannel: params.sourceChannel,
+        repos: channelInfo?.repos,
+        confluenceUrl: channelInfo?.confluenceUrl,
       };
 
       // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
@@ -439,7 +491,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             logVerbosity: getVerbosity(),
           });
           // Metrics: detect git/gh commands in Bash output (fire-and-forget)
-          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey);
+          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey,
+            // Callback to record merge stats into session
+            (_sessionKey, prNumber, linesAdded, linesDeleted) => {
+              this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+            },
+          );
           const commandResult = await this.handleModelCommandToolResults(
             toolResults,
             session,
@@ -467,7 +524,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onTodoUpdate: async (input, ctx) => {
-          if (!isOutputEnabled(OutputFlag.TODO_UPDATE)) return;
+          // Task list is part of thread header — always update regardless of verbosity.
+          // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
@@ -475,7 +533,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.channel,
             ctx.threadTs,
             ctx.say,
-            getVerbosity()
+            getVerbosity(),
+            session,
           );
         },
         onPendingFormCreate: (formId, form) => {
@@ -569,6 +628,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
+        },
+        // #196: Compaction-Aware Context Preservation
+        onCompactBoundary: () => {
+          session.compactionOccurred = true;
+          this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'working') {
@@ -762,27 +826,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Start summary timer for non-error completions (fire-and-forget)
         // Trace: docs/turn-summary-lifecycle/trace.md, S1
         if (this.deps.summaryTimer && category !== 'Exception') {
-          this.deps.summaryTimer.start(sessionKey, async () => {
-            if (this.deps.summaryService) {
-              try {
-                const summaryText = await this.deps.summaryService.execute(session as any);
-                if (summaryText) {
-                  this.deps.summaryService.displayOnThread(session as any, summaryText);
-                }
-              } catch (err: any) {
-                this.logger.warn('Summary timer callback failed', { error: err?.message });
-              }
-            }
-          });
+          this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
         }
 
-        // Track completion message for auto-deletion
-        // Trace: docs/turn-summary-lifecycle/trace.md, S6
-        if (this.deps.completionMessageTracker && !hasSdkError) {
-          // Track will be called when the notification channel sends the Slack message
-          // For now, we mark the session for tracking
-          this.deps.completionMessageTracker.track(sessionKey, threadTs, determineTurnCategory({ hasPendingChoice, isError: hasSdkError }));
-        }
+        // Completion message tracking moved to SlackBlockKitChannel.send()
+        // which tracks the actual posted notification message ts.
+        // Previously tracked threadTs here, which for bot-initiated threads
+        // is the surface/header message — causing header deletion on next input.
       }
 
       // Update bot-initiated thread root with status
@@ -967,9 +1017,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           errorMessage: error.message,
         });
 
-        // Clear stale file-access error context — this is a different error class now,
-        // so the model should not receive outdated "avoid file X" guidance.
+        // Clear stale file-access state — this is a different error class now,
+        // so the model should not receive outdated "avoid file X" guidance,
+        // and the file-access retry budget should restart fresh if it recurs.
         session.lastErrorContext = undefined;
+        session.fileAccessRetryCount = 0;
 
         // Auto-rotate token on rate limit (pass query-start token for CAS safety)
         if (this.isRateLimitError(error)) {
@@ -1245,20 +1297,45 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /**
    * Extract the blocked resource path from a file access error message.
-   * e.g., "File access blocked: /home/user/file.png" → "/home/user/file.png"
+   * Supports both "File access blocked: /path" and "permission denied for /path" patterns.
    */
   private extractBlockedPath(error: any): string | undefined {
     const message = String(error?.message || '');
     const stderr = String(error?.stderrContent || '');
     const combined = `${message}\n${stderr}`;
 
-    // Match patterns like "File access blocked: /path/to/file"
-    const match = combined.match(/file access blocked:\s*(.+?)(?:\n|$)/i);
-    return match?.[1]?.trim();
+    // Try "File access blocked: /path/to/file" first
+    const fileAccessMatch = combined.match(/file access blocked:\s*(.+?)(?:\n|$)/i);
+    if (fileAccessMatch?.[1]?.trim()) {
+      return fileAccessMatch[1].trim();
+    }
+
+    // Fallback: "permission denied for /path" or "permission denied: /path"
+    const permissionMatch = combined.match(/permission denied[:\s]+(?:for\s+)?(\/.+?)(?:\n|$)/i);
+    return permissionMatch?.[1]?.trim();
   }
 
   /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
   private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
+
+  /**
+   * Summary timer callback — executes fork query and renders result to thread panel.
+   * Extracted as a named method so it can be tested independently.
+   */
+  private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
+    if (!this.deps.summaryService) return;
+    try {
+      const summaryText = await this.deps.summaryService.execute(session as any);
+      if (summaryText) {
+        this.deps.summaryService.displayOnThread(session as any, summaryText);
+        // Trigger re-render so the summary blocks appear in the Slack thread header.
+        // Without this, summaryBlocks sit in memory but the message is never updated.
+        await this.deps.threadPanel?.updatePanel(session, sessionKey);
+      }
+    } catch (err: any) {
+      this.logger.warn('Summary timer callback failed', { error: err?.message });
+    }
+  }
 
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
@@ -2089,15 +2166,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Resolve relative paths against session working directory
         const sessionDir = session.sessionWorkingDir || session.workingDirectory;
         let resolvedPath = savePath!;
+
+        // If path is relative and no sessionDir to resolve against, reject it
+        if (!pathModule.isAbsolute(resolvedPath) && !sessionDir) {
+          this.logger.warn('Cannot resolve relative save path without session directory', { savePath });
+          await say({
+            text: '⚠️ Cannot resolve save path (no session directory). Renew cancelled.',
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+
         if (!pathModule.isAbsolute(resolvedPath) && sessionDir) {
           resolvedPath = pathModule.join(sessionDir, resolvedPath);
           this.logger.info('Resolved relative save path', { original: savePath, resolved: resolvedPath, sessionDir });
         }
 
+        // Security: ensure resolved path stays within session directory (prevent path traversal)
+        const canonicalPath = pathModule.resolve(resolvedPath);
+        if (sessionDir && !canonicalPath.startsWith(pathModule.resolve(sessionDir))) {
+          this.logger.warn('Save path traversal blocked', { resolvedPath: canonicalPath, sessionDir });
+          await say({
+            text: '⚠️ Save path is outside session directory. Renew cancelled.',
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+
         // Try to read context.md from the save directory
-        const contextPath = resolvedPath.endsWith('.md')
-          ? resolvedPath
-          : pathModule.join(resolvedPath, 'context.md');
+        const contextPath = canonicalPath.endsWith('.md')
+          ? canonicalPath
+          : pathModule.join(canonicalPath, 'context.md');
 
         if (fs.existsSync(contextPath)) {
           const content = fs.readFileSync(contextPath, 'utf-8');
@@ -2124,7 +2225,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     } else {
       // Last resort: scan session's .claude/omc/tasks/save/ for the most recent save
       const sessionDir = session.sessionWorkingDir || session.workingDirectory;
-      const scannedContent = sessionDir ? this.scanForLatestSave(sessionDir) : null;
+      const scannedContent = sessionDir ? this.scanForLatestSave(sessionDir, id) : null;
 
       if (scannedContent) {
         this.logger.info('Renew: found save via directory scan', { sessionDir, id });
@@ -2263,10 +2364,12 @@ ${userInstruction}`;
   }
 
   /**
-   * Scan session's .claude/omc/tasks/save/ directory for the most recent save.
+   * Scan session's .claude/omc/tasks/save/ directory for a save.
+   * If saveId is provided, only matches that exact directory.
+   * Otherwise falls back to most recent (newest timestamp-based ID).
    * Returns formatted content string or null if nothing found.
    */
-  private scanForLatestSave(sessionDir: string): string | null {
+  private scanForLatestSave(sessionDir: string, saveId?: string): string | null {
     try {
       const fs = require('fs') as typeof import('fs');
       const pathModule = require('path') as typeof import('path');
@@ -2276,7 +2379,18 @@ ${userInstruction}`;
         return null;
       }
 
-      // List save directories sorted descending (newest first, timestamp-based IDs)
+      // If we have a specific save ID, try that first (and only)
+      if (saveId) {
+        const contextPath = pathModule.join(saveRoot, saveId, 'context.md');
+        if (fs.existsSync(contextPath)) {
+          const content = fs.readFileSync(contextPath, 'utf-8');
+          this.logger.info('scanForLatestSave: found exact save by id', { saveId, contextPath });
+          return `--- context.md ---\n${content}`;
+        }
+        this.logger.warn('scanForLatestSave: save id not found, trying newest', { saveId });
+      }
+
+      // Fallback: list save directories sorted descending (newest first)
       const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
         .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
         .map((d: { name: string }) => d.name)

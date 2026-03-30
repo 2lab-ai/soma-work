@@ -23,7 +23,7 @@ describe('SessionRegistry persistence', () => {
     }
   });
 
-  it('restores action panel state including existing panel message ts', () => {
+  it('restores action panel state but clears stale messageTs/renderKey on reload', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.001');
     session.sessionId = 'session-1';
@@ -45,7 +45,10 @@ describe('SessionRegistry persistence', () => {
     const restored = reader.getSession('C123', '171.001');
 
     expect(loaded).toBe(1);
-    expect(restored?.actionPanel?.messageTs).toBe('999.100');
+    // messageTs and renderKey are intentionally cleared on restore to prevent stale message_not_found errors
+    expect(restored?.actionPanel?.messageTs).toBeUndefined();
+    expect(restored?.actionPanel?.renderKey).toBeUndefined();
+    // Other actionPanel fields should survive the restore
     expect(restored?.actionPanel?.choiceMessageTs).toBe('999.101');
     expect(restored?.actionPanel?.waitingForChoice).toBe(true);
     expect(restored?.actionPanel?.choiceBlocks).toHaveLength(1);
@@ -336,5 +339,77 @@ describe('SessionRegistry persistence', () => {
 
     expect(restored).toBeDefined();
     expect(restored!.sessionWorkingDir).toBeUndefined(); // dropped by validation
+  });
+
+  it('clearSessionId resets file-access retry state', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA1');
+    session.sessionId = 'session-fa';
+    session.fileAccessRetryCount = 2;
+    session.lastErrorContext = '파일 접근이 차단되었습니다: /tmp/blocked.png';
+    session.errorRetryCount = 1;
+
+    registry.clearSessionId('C_FA', '171.FA1');
+
+    expect(session.sessionId).toBeUndefined();
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+    expect(session.errorRetryCount).toBe(0);
+  });
+
+  it('resetSessionContext clears file-access retry state', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA2');
+    session.sessionId = 'session-fa2';
+    session.fileAccessRetryCount = 3;
+    session.lastErrorContext = '차단된 파일';
+
+    const result = registry.resetSessionContext('C_FA', '171.FA2');
+
+    expect(result).toBe(true);
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  // === Issue #214: clearSessionId persists retry state cleanup to disk ===
+
+  it('clearSessionId calls saveSessions to persist cleanup', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_PERSIST', '171.P1');
+    session.sessionId = 'session-persist';
+    session.fileAccessRetryCount = 2;
+    session.errorRetryCount = 1;
+
+    const saveSpy = vi.spyOn(registry as any, 'saveSessions');
+    registry.clearSessionId('C_PERSIST', '171.P1');
+
+    expect(saveSpy).toHaveBeenCalled();
+    saveSpy.mockRestore();
+  });
+
+  // === Issue #215: clearSessionId cancels pending retry timer ===
+
+  it('clearSessionId cancels pendingRetryTimer', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_TIMER', '171.T1');
+    session.sessionId = 'session-timer';
+    const callback = vi.fn();
+    session.pendingRetryTimer = setTimeout(callback, 60_000);
+
+    registry.clearSessionId('C_TIMER', '171.T1');
+
+    expect(session.pendingRetryTimer).toBeUndefined();
+  });
+
+  it('resetSessionContext cancels pendingRetryTimer', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_TIMER', '171.T2');
+    session.sessionId = 'session-timer2';
+    const callback = vi.fn();
+    session.pendingRetryTimer = setTimeout(callback, 60_000);
+
+    registry.resetSessionContext('C_TIMER', '171.T2');
+
+    expect(session.pendingRetryTimer).toBeUndefined();
   });
 });

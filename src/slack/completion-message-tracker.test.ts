@@ -67,7 +67,7 @@ describe('CompletionMessageTracker', () => {
     });
 
     // Trace: S7, Section 5 row 2
-    it('deleteAll() tolerates individual delete failures', async () => {
+    it('deleteAll() tolerates individual delete failures and re-tracks them', async () => {
       const tracker = new CompletionMessageTracker();
       tracker.track('session-1', '1000.0001', 'WorkflowComplete');
       tracker.track('session-1', '1000.0002', 'UIUserAskQuestion');
@@ -85,8 +85,122 @@ describe('CompletionMessageTracker', () => {
       // Both deletes were attempted
       expect(deleteMessage).toHaveBeenCalledTimes(2);
 
-      // Session is still cleaned up
+      // Failed timestamp is re-tracked for retry; successful one is gone
+      expect(tracker.has('session-1')).toBe(true);
+      expect(tracker.count('session-1')).toBe(1);
+    });
+  });
+
+  // Race condition: track() during deleteAll()
+  describe('Race safety — track during deleteAll', () => {
+    it('track() during deleteAll() is NOT lost', async () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+
+      // deleteMessage is async — we'll sneak in a track() while it resolves
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(
+        async (_ch, _ts) => {
+          // Simulate concurrent track() call mid-delete
+          tracker.track('session-1', '2000.0001', 'WorkflowComplete');
+        }
+      );
+
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
+      // The newly tracked timestamp should survive
+      expect(tracker.has('session-1')).toBe(true);
+      expect(tracker.count('session-1')).toBe(1);
+    });
+  });
+
+  // Failure re-tracking: failed deletes get re-added
+  describe('deleteAll failure re-tracking', () => {
+    it('re-tracks timestamps whose deletion failed', async () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+      tracker.track('session-1', '1000.0002', 'WorkflowComplete');
+      tracker.track('session-1', '1000.0003', 'WorkflowComplete');
+
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(
+        async (_ch, ts) => {
+          if (ts === '1000.0002') throw new Error('message_not_found');
+        }
+      );
+
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
+      // 0001 and 0003 succeeded — removed. 0002 failed — re-tracked.
+      expect(tracker.has('session-1')).toBe(true);
+      expect(tracker.count('session-1')).toBe(1);
+    });
+
+    it('session is clean when all deletes succeed', async () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.track('session-1', '1000.0001', 'WorkflowComplete');
+
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>().mockResolvedValue(undefined);
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
       expect(tracker.has('session-1')).toBe(false);
+    });
+  });
+
+  // Defense-in-depth: Protected timestamps (thread root / header)
+  describe('Protected timestamps — thread root defense', () => {
+    it('protect() prevents track() from adding the timestamp', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      tracker.track('session-1', '1000.SAFE', 'WorkflowComplete');
+
+      expect(tracker.count('session-1')).toBe(1); // only SAFE tracked
+      expect(tracker.has('session-1')).toBe(true);
+    });
+
+    it('deleteAll() skips protected timestamps even if somehow tracked', async () => {
+      const tracker = new CompletionMessageTracker();
+      // Track first, then protect (simulates race or legacy tracking)
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      tracker.track('session-1', '1000.SAFE', 'WorkflowComplete');
+      tracker.protect('session-1', '1000.ROOT');
+
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>().mockResolvedValue(undefined);
+      await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
+
+      // Only SAFE should be deleted, ROOT is protected
+      expect(deleteMessage).toHaveBeenCalledTimes(1);
+      expect(deleteMessage).toHaveBeenCalledWith('C-CHANNEL', '1000.SAFE');
+    });
+
+    it('isProtected() returns correct state', () => {
+      const tracker = new CompletionMessageTracker();
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(false);
+
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
+      expect(tracker.isProtected('session-1', '1000.OTHER')).toBe(false);
+    });
+
+    it('clearProtection() removes protection for session', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
+
+      tracker.clearProtection('session-1');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(false);
+
+      // Can now track the timestamp
+      tracker.track('session-1', '1000.ROOT', 'WorkflowComplete');
+      expect(tracker.count('session-1')).toBe(1);
+    });
+
+    it('protect() is idempotent', () => {
+      const tracker = new CompletionMessageTracker();
+      tracker.protect('session-1', '1000.ROOT');
+      tracker.protect('session-1', '1000.ROOT');
+      tracker.protect('session-1', '1000.ROOT');
+      expect(tracker.isProtected('session-1', '1000.ROOT')).toBe(true);
     });
   });
 

@@ -1257,6 +1257,34 @@ describe('model-command integration', () => {
     }
   });
 
+  it('buildRenewContinuation blocks path traversal outside session dir', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = 'pending_save';
+    session.sessionWorkingDir = '/tmp/safe-session';
+    session.renewSaveResult = {
+      success: true,
+      id: 'traversal',
+      dir: '../../etc',
+      // No files — triggers path-based fallback with traversal
+    };
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    const continuation = await (executor as any).buildRenewContinuation(
+      session,
+      '',
+      '171.100',
+      say
+    );
+
+    expect(continuation).toBeUndefined();
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('outside session directory'),
+    }));
+    expect(session.renewState).toBeNull();
+  });
+
   it('parseSaveResult parses "Saved to:" text output from save skill', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
@@ -1783,6 +1811,38 @@ describe('File access blocked error recovery', () => {
     expect(payload.text).toContain('재시도 횟수를 초과');
     expect(payload.text).not.toContain('자동 재시도합니다');
   });
+
+  // ── Codex P2: fileAccessRetryCount reset on different error class ──
+
+  it('resets fileAccessRetryCount when a non-file-access recoverable error occurs', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { fileAccessRetryCount: 2 } as any;
+    // Generic recoverable error
+    const error = new Error('overloaded');
+    (error as any).name = 'NormalizedProviderError';
+
+    await (executor as any).handleError(error, session, 'K', 'C', 't', [], say);
+
+    // File-access retry counter should be reset to 0
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  // ── Codex P3: extractBlockedPath for permission denied pattern ──
+
+  it('extracts path from "permission denied for /path"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: permission denied for /etc/shadow');
+    expect((executor as any).extractBlockedPath(error)).toBe('/etc/shadow');
+  });
+
+  it('extracts path from "permission denied: /path"', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('NormalizedProviderError: permission denied: /var/secret/key.pem');
+    expect((executor as any).extractBlockedPath(error)).toBe('/var/secret/key.pem');
+  });
 });
 
 // ── Trace: docs/fix-thread-header-files/trace.md ──
@@ -1805,5 +1865,149 @@ describe('getThreadContextHint — array mode guidance', () => {
     if (legacyModeIndex >= 0) {
       expect(arrayModeIndex).toBeLessThan(legacyModeIndex);
     }
+  });
+});
+
+// Issue #225 — AC③: summary timer callback calls updatePanel after displayOnThread
+describe('onSummaryTimerFire — render trigger after summary display', () => {
+  it('calls displayOnThread then updatePanel when summary text is returned', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Executive summary text'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+    const sessionKey = 'C123:t456';
+
+    await (executor as any).onSummaryTimerFire(session, sessionKey);
+
+    expect(mockSummaryService.execute).toHaveBeenCalledWith(session);
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Executive summary text');
+    expect(mockThreadPanel.updatePanel).toHaveBeenCalledWith(session, sessionKey);
+
+    // Verify ordering: displayOnThread before updatePanel
+    const displayOrder = mockSummaryService.displayOnThread.mock.invocationCallOrder[0];
+    const updateOrder = mockThreadPanel.updatePanel.mock.invocationCallOrder[0];
+    expect(displayOrder).toBeLessThan(updateOrder);
+  });
+
+  it('skips displayOnThread and updatePanel when summary returns null', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue(null),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await (executor as any).onSummaryTimerFire(session, 'C123:t456');
+
+    expect(mockSummaryService.execute).toHaveBeenCalled();
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+    expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
+  });
+
+  it('catches errors from summaryService without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockRejectedValue(new Error('LLM timeout')),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    // Should not throw
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when summaryService is not configured', async () => {
+    const executor = new StreamExecutor({} as any);
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    // Should not throw even without summaryService
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+  });
+
+  it('still displays summary when threadPanel is absent', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Summary without panel'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      // threadPanel intentionally omitted
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await (executor as any).onSummaryTimerFire(session, 'C123:t456');
+
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Summary without panel');
+  });
+
+  it('catches updatePanel rejection without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Some summary'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn().mockRejectedValue(new Error('Slack API rate limited')),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalled();
+  });
+
+  it('catches displayOnThread error without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Summary text'),
+      displayOnThread: vi.fn().mockImplementation(() => { throw new Error('Block kit error'); }),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
   });
 });

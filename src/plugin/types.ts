@@ -142,6 +142,40 @@ export interface CacheMeta {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin update detail (per-plugin result from forceRefresh)
+// ---------------------------------------------------------------------------
+
+/** Status of a single plugin during forceRefresh. */
+export type PluginUpdateStatus = 'updated' | 'unchanged' | 'new' | 'error';
+
+/** Detailed result for a single plugin update check. */
+export interface PluginUpdateDetail {
+  /** Plugin display name, e.g. "stv@oh-my-claude" */
+  name: string;
+  /** Status of this plugin's update */
+  status: PluginUpdateStatus;
+  /** Previous commit SHA (short), null if newly installed */
+  oldSha: string | null;
+  /** Previous fetch timestamp (ISO), null if newly installed */
+  oldDate: string | null;
+  /** New commit SHA (short), null if error */
+  newSha: string | null;
+  /** New fetch timestamp (ISO), null if error */
+  newDate: string | null;
+  /** Error message if status is 'error' */
+  error?: string;
+}
+
+/** Aggregate result from forceRefresh. */
+export interface ForceRefreshResult {
+  total: number;
+  updated: number;
+  unchanged: number;
+  errors: string[];
+  details: PluginUpdateDetail[];
+}
+
+// ---------------------------------------------------------------------------
 // SDK plugin format
 // ---------------------------------------------------------------------------
 

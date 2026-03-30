@@ -1,9 +1,12 @@
 import { SlackApiHelper } from './slack-api-helper';
 import { ActionPanelBuilder, PRStatusInfo } from './action-panel-builder';
 import { ThreadHeaderBuilder } from './thread-header-builder';
+import { TaskListBlockBuilder } from './task-list-block-builder';
 import { ContextWindowManager } from './context-window-manager';
 import { RequestCoordinator } from './request-coordinator';
+import { CompletionMessageTracker } from './completion-message-tracker';
 import { ClaudeHandler } from '../claude-handler';
+import { TodoManager } from '../todo-manager';
 import { ConversationSession } from '../types';
 import { Logger } from '../logger';
 import { SlackMessagePayload } from './user-choice-handler';
@@ -19,6 +22,8 @@ interface ThreadSurfaceDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   requestCoordinator: RequestCoordinator;
+  todoManager: TodoManager;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 interface PRCacheEntry {
@@ -72,11 +77,14 @@ interface SessionRenderState {
  */
 export class ThreadSurface {
   private logger = new Logger('ThreadSurface');
+  private taskListBuilder: TaskListBlockBuilder;
 
   // Per-session render state keyed by sessionKey
   private sessions = new Map<string, SessionRenderState>();
 
-  constructor(private deps: ThreadSurfaceDeps) {}
+  constructor(private deps: ThreadSurfaceDeps) {
+    this.taskListBuilder = new TaskListBlockBuilder(deps.todoManager);
+  }
 
   private getState(sessionKey: string): SessionRenderState {
     let state = this.sessions.get(sessionKey);
@@ -116,6 +124,8 @@ export class ThreadSurface {
       if (!session.actionPanel.messageTs) {
         session.actionPanel.messageTs = session.threadRootTs;
       }
+      // Defense-in-depth: protect thread root from accidental deletion
+      this.deps.completionMessageTracker?.protect(sessionKey, session.threadRootTs);
     }
 
     // Render initial state (force to ensure message is created)
@@ -417,6 +427,7 @@ export class ThreadSurface {
       rs.prCache = null;
     }
     this.sessions.delete(sessionKey);
+    this.deps.completionMessageTracker?.clearProtection(sessionKey);
   }
 
   // =========================================================================
@@ -466,17 +477,25 @@ export class ThreadSurface {
           { unfurlLinks: false, unfurlMedia: false },
         );
         rendered = true;
-      } catch (error) {
-        this.logger.warn('Failed to update surface message', { sessionKey, error });
-        // If this was the thread root (bot-initiated), don't try to create a new one
-        if (session.threadModel === 'bot-initiated' && panelState.messageTs === session.threadRootTs) {
+      } catch (error: any) {
+        const isMessageNotFound = error?.data?.error === 'message_not_found'
+          || error?.message?.includes('message_not_found');
+        this.logger.warn('Failed to update surface message', {
+          sessionKey,
+          isMessageNotFound,
+          error: error?.message || error,
+        });
+        // For bot-initiated with transient errors (network, rate-limit):
+        // keep messageTs so we retry the *update* on next render, not create a duplicate.
+        if (session.threadModel === 'bot-initiated' && !isMessageNotFound) {
           return;
         }
+        // 404 or user-initiated: clear stale reference and fall through to create new
         panelState.messageTs = undefined;
       }
     }
 
-    // Create new message if needed (user-initiated only)
+    // Create new message if needed (any model — including bot-initiated after message_not_found)
     if (!panelState.messageTs) {
       try {
         const threadTs = session.threadRootTs || session.threadTs;
@@ -556,10 +575,38 @@ export class ThreadSurface {
     // ActionPanelBuilder.build() returns full blocks — use them after header
     blocks.push(...panelPayload.blocks);
 
+    // ── 3. Task list section (at bottom of header area) ──
+    // Slack enforces a 50-block maximum per message. Reserve room for summary.
+    const SLACK_MAX_BLOCKS = 50;
+    const summaryBlocks = (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks))
+      ? session.actionPanel.summaryBlocks
+      : [];
+    const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
+
+    const todos = session.sessionId
+      ? this.deps.todoManager.getTodos(session.sessionId)
+      : [];
+    if (todos.length > 0 && budgetForTaskList >= 4) {
+      const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
+        startedAt: session.taskListStartedAt,
+        completedAt: session.taskListCompletedAt,
+      });
+      // Only append if it fits within the block budget
+      if (taskListBlocks.length <= budgetForTaskList) {
+        blocks.push(...taskListBlocks);
+      } else {
+        this.logger.debug('Skipping task list blocks (would exceed 50-block limit)', {
+          current: blocks.length,
+          taskListBlocks: taskListBlocks.length,
+          summaryBlocks: summaryBlocks.length,
+        });
+      }
+    }
+
     // Append executive summary blocks if present
     // Trace: docs/turn-summary-lifecycle/trace.md, S3
-    if (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)) {
-      blocks.push(...session.actionPanel.summaryBlocks);
+    if (summaryBlocks.length > 0) {
+      blocks.push(...summaryBlocks);
     }
 
     return blocks;

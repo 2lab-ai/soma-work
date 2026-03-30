@@ -96,6 +96,17 @@ interface SerializedSession {
   sourceThread?: { channel: string; threadTs: string };
   // Session-unique working directory for workspace isolation (#77)
   sessionWorkingDir?: string;
+  // Merge code change stats
+  mergeStats?: {
+    totalLinesAdded: number;
+    totalLinesDeleted: number;
+    mergedPRs: Array<{
+      prNumber: number;
+      linesAdded: number;
+      linesDeleted: number;
+      mergedAt: number;
+    }>;
+  };
 }
 
 /**
@@ -124,6 +135,10 @@ export interface CrashRecoveredSession {
   ownerName?: string;
   activityState: string;
   sessionKey: string;
+  /** Session title at the time of crash — gives the model context about what was happening */
+  title?: string;
+  /** Workflow type (default, jira-create-pr, pr-review, etc.) */
+  workflow?: string;
 }
 
 export class SessionRegistry {
@@ -139,10 +154,23 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
+   * Callback fired whenever any session's activity state changes.
+   * Used by the dashboard WebSocket to push real-time updates.
+   */
+  private onActivityStateChangeCallback?: () => void;
+
+  /**
    * Set callbacks for session expiry events
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.expiryCallbacks = callbacks;
+  }
+
+  /**
+   * Register callback for activity state changes (e.g., dashboard WebSocket broadcast)
+   */
+  setActivityStateChangeCallback(callback: () => void): void {
+    this.onActivityStateChangeCallback = callback;
   }
 
   /**
@@ -386,6 +414,9 @@ export class SessionRegistry {
       state,
     });
 
+    // Notify dashboard WebSocket clients
+    try { this.onActivityStateChangeCallback?.(); } catch { /* fire-and-forget */ }
+
     // Only persist on idle transition to minimize disk I/O
     if (state === 'idle') {
       this.saveSessions();
@@ -492,6 +523,34 @@ export class SessionRegistry {
       session.title = title;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Record merge code change stats (lines added/deleted) for a merged PR in this session.
+   */
+  addMergeStats(
+    channelId: string,
+    threadTs: string | undefined,
+    prNumber: number,
+    linesAdded: number,
+    linesDeleted: number,
+  ): void {
+    const session = this.getSession(channelId, threadTs);
+    if (!session) return;
+
+    if (!session.mergeStats) {
+      session.mergeStats = { totalLinesAdded: 0, totalLinesDeleted: 0, mergedPRs: [] };
+    }
+
+    session.mergeStats.totalLinesAdded += linesAdded;
+    session.mergeStats.totalLinesDeleted += linesDeleted;
+    session.mergeStats.mergedPRs.push({
+      prNumber,
+      linesAdded,
+      linesDeleted,
+      mergedAt: Date.now(),
+    });
+    this.saveSessions();
   }
 
   /**
@@ -859,6 +918,17 @@ export class SessionRegistry {
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
+      // Clear error retry state so fresh session doesn't inherit exhausted budgets
+      session.errorRetryCount = 0;
+      session.fileAccessRetryCount = 0;
+      session.lastErrorContext = undefined;
+      // Cancel any pending file-access retry timer (Issue #215)
+      if (session.pendingRetryTimer) {
+        clearTimeout(session.pendingRetryTimer);
+        session.pendingRetryTimer = undefined;
+      }
+      // Persist to disk so restart doesn't resurrect stale state (Issue #214)
+      this.saveSessions();
     }
   }
 
@@ -904,8 +974,23 @@ export class SessionRegistry {
     // Clear usage data to reset context percentage
     session.usage = undefined;
 
+    // Clear in-memory debugging fields (system prompt snapshot, user instruction SSOT)
+    session.systemPrompt = undefined;
+    session.initialInstruction = undefined;
+    session.followUpInstructions = undefined;
+
     // Reset activity state
     session.activityState = 'idle';
+
+    // Clear error retry state (including file-access-specific counters)
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+    session.lastErrorContext = undefined;
+    // Cancel any pending file-access retry timer (Issue #215)
+    if (session.pendingRetryTimer) {
+      clearTimeout(session.pendingRetryTimer);
+      session.pendingRetryTimer = undefined;
+    }
 
     this.saveSessions();
     return true;
@@ -1212,6 +1297,8 @@ export class SessionRegistry {
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
             sessionWorkingDir: session.sessionWorkingDir,
+            // Merge code change stats
+            mergeStats: session.mergeStats,
           });
         }
       }
@@ -1286,7 +1373,17 @@ export class SessionRegistry {
           activityState: 'idle', // Always idle on restore (no active streams after restart)
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
-          actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
+          // Clear stale messageTs/renderKey on restore — the Slack message may have been
+          // deleted while the service was down, causing endless `message_not_found` errors
+          // when ThreadSurface tries to chat.update a ghost message.
+          actionPanel: serialized.actionPanel
+            ? {
+                ...serialized.actionPanel,
+                messageTs: undefined,
+                renderKey: undefined,
+                lastRenderedAt: undefined,
+              }
+            : undefined,
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
@@ -1307,6 +1404,8 @@ export class SessionRegistry {
           sessionWorkingDir: serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
             ? serialized.sessionWorkingDir
             : undefined,
+          // Merge code change stats
+          mergeStats: serialized.mergeStats,
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
@@ -1321,6 +1420,8 @@ export class SessionRegistry {
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
             sessionKey: serialized.key,
+            title: serialized.title,
+            workflow: serialized.workflow,
           });
         }
       }
