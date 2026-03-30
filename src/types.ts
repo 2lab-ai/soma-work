@@ -307,6 +307,20 @@ export interface ConversationSession {
   followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
 }
 
+/**
+ * Configuration for a sub-agent (independent Slack Bot).
+ * Trace: docs/multi-agent/trace.md, Scenario 1
+ */
+export interface AgentConfig {
+  slackBotToken: string;
+  slackAppToken: string;
+  signingSecret: string;
+  promptDir?: string;      // default: src/prompt/{agentName}
+  persona?: string;        // default: 'default'
+  description?: string;
+  model?: string;          // default: inherit from main bot
+}
+
 export interface WorkingDirectoryConfig {
   channelId: string;
   threadTs?: string;

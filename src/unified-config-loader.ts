@@ -13,6 +13,7 @@ import { Logger } from './logger';
 import { PluginConfig } from './plugin/types';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { McpServerConfig } from './mcp/config-loader';
+import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');
 
@@ -26,6 +27,62 @@ export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
   llmChat?: Record<string, LlmBackendConfigJson>;
+  agents?: Record<string, AgentConfig>;
+}
+
+/**
+ * Parse and validate the agents section from raw config JSON.
+ * Invalid agents are skipped with a warning (not fatal).
+ * Trace: docs/multi-agent/trace.md, Scenario 1
+ */
+export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
+  const result: Record<string, AgentConfig> = {};
+
+  if (!raw?.agents || typeof raw.agents !== 'object') {
+    return result;
+  }
+
+  for (const [name, entry] of Object.entries(raw.agents)) {
+    const agent = entry as any;
+
+    // Validate required tokens
+    if (!agent?.slackBotToken || typeof agent.slackBotToken !== 'string') {
+      logger.warn(`Skipping agent '${name}': missing or invalid slackBotToken`);
+      continue;
+    }
+    if (!agent.slackBotToken.startsWith('xoxb-')) {
+      logger.warn(`Skipping agent '${name}': slackBotToken must start with 'xoxb-'`);
+      continue;
+    }
+    if (!agent?.slackAppToken || typeof agent.slackAppToken !== 'string') {
+      logger.warn(`Skipping agent '${name}': missing or invalid slackAppToken`);
+      continue;
+    }
+    if (!agent.slackAppToken.startsWith('xapp-')) {
+      logger.warn(`Skipping agent '${name}': slackAppToken must start with 'xapp-'`);
+      continue;
+    }
+    if (!agent?.signingSecret || typeof agent.signingSecret !== 'string' || agent.signingSecret.length < 20) {
+      logger.warn(`Skipping agent '${name}': missing or invalid signingSecret (min 20 chars)`);
+      continue;
+    }
+
+    result[name] = {
+      slackBotToken: agent.slackBotToken,
+      slackAppToken: agent.slackAppToken,
+      signingSecret: agent.signingSecret,
+      promptDir: agent.promptDir || `src/prompt/${name}`,
+      persona: agent.persona || 'default',
+      description: agent.description,
+      model: agent.model,
+    };
+  }
+
+  if (Object.keys(result).length > 0) {
+    logger.info(`Loaded ${Object.keys(result).length} agent configurations: [${Object.keys(result).join(', ')}]`);
+  }
+
+  return result;
 }
 
 /**
@@ -54,11 +111,18 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.llmChat = raw.llmChat;
       }
 
+      // Parse agents section (Trace: docs/multi-agent/trace.md, S1)
+      const agents = parseAgentsConfig(raw);
+      if (Object.keys(agents).length > 0) {
+        result.agents = agents;
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
         hasLlmChat: !!result.llmChat,
+        agents: result.agents ? Object.keys(result.agents).length : 0,
       });
 
       return result;
