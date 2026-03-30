@@ -15,3 +15,10 @@ export { readCacheMeta, writeCacheMeta, hasCachedPlugin, removeCachedPlugin } fr
 export { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
 export { PluginManager } from './plugin-manager';
 export { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin, isDefaultMarketplace } from './defaults';
+export {
+  scanPluginDirectory,
+  scanMcpServerConfig,
+  formatScanReport,
+  formatMcpScanReport,
+} from './security-scanner';
+export type { ScanResult, McpServerScanResult, SecurityFinding, RiskSeverity } from './security-scanner';
