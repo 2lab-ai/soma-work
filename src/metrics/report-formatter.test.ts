@@ -330,6 +330,76 @@ describe('ReportFormatter', () => {
     expect(allText).not.toContain('Fun Facts');
   });
 
+  it('enrichedWeekly_blockCountNeverExceeds50', () => {
+    // Stress test: 10 users, all sections active
+    const manyRankings: UserRanking[] = Array.from({ length: 10 }, (_, i) => ({
+      userId: `U${i}`, userName: `User${i}`, metrics: makeMetrics(), rank: i + 1,
+    }));
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport({ rankings: manyRankings }),
+      derived: {
+        productivityScore: 999, prMergeRate: 80, avgCodePerPr: 500, avgCodePerCommit: 100,
+        avgTurnsPerSession: 8, sessionCompletionRate: 90,
+        netLines: 4500, churnRatio: 15, avgChangedLinesPerPr: 600, commitPerActiveDay: 12, prPerActiveDay: 3,
+      },
+      trend: {
+        sessionsCreatedDelta: 20, turnsUsedDelta: 15, prsCreatedDelta: 30,
+        commitsCreatedDelta: 25, codeLinesAddedDelta: 40, prsMergedDelta: 50,
+        productivityScoreDelta: 35, baselineZero: false,
+      },
+      dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+        date: `2026-03-${23 + i}`, dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 100 + i * 20, metrics: makeMetrics(),
+      })),
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 + h })),
+      peakHour: 14, activeDays: 7,
+      achievements: [
+        { icon: '🔥', title: 'A1', description: 'd1' },
+        { icon: '⚡', title: 'A2', description: 'd2' },
+        { icon: '🎯', title: 'A3', description: 'd3' },
+      ],
+      funFacts: [
+        { icon: '⏰', text: 'f1' },
+        { icon: '📐', text: 'f2' },
+        { icon: '📝', text: 'f3' },
+      ],
+    });
+
+    expect(result.blocks.length).toBeLessThanOrEqual(50);
+    // With 10 users we expect around 25-30 blocks — well within limits
+    expect(result.blocks.length).toBeGreaterThan(15);
+  });
+
+  it('enrichedWeekly_longUserName_truncated', () => {
+    const longName = 'A'.repeat(300);
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport({
+        rankings: [
+          { userId: 'U1', userName: longName, metrics: makeMetrics(), rank: 1 },
+          { userId: 'U2', userName: 'Short', metrics: makeMetrics(), rank: 2 },
+        ],
+      }),
+      derived: {
+        productivityScore: 100, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
+        avgTurnsPerSession: 0, sessionCompletionRate: 0,
+        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+      },
+      trend: null, dailyBreakdown: [],
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+      peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+    });
+
+    // All text blocks should be within 3000 char limit
+    for (const block of result.blocks) {
+      if (block.text?.text) {
+        expect(block.text.text.length).toBeLessThanOrEqual(3000);
+      }
+      if (block.text?.text && block.type === 'header') {
+        expect(block.text.text.length).toBeLessThanOrEqual(150);
+      }
+    }
+  });
+
   it('enrichedDaily_fallbackText_includesTrend', () => {
     const result = formatter.formatEnrichedDaily({
       ...makeDailyReport(),

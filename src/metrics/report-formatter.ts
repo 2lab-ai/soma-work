@@ -398,8 +398,8 @@ function buildInsights(
     !trend.baselineZero &&
     Math.abs(prMergeDelta) >= 10
   ) {
-    const direction = prMergeDelta < 0 ? '하락' : '상승';
-    bullets.push(`:twisted_rightwards_arrows: 머지율이 전기간 대비 \`${Math.abs(prMergeDelta)}%\` ${direction}`);
+    const direction = prMergeDelta < 0 ? '감소' : '증가';
+    bullets.push(`:twisted_rightwards_arrows: 머지 건수 전기간 대비 \`${Math.abs(prMergeDelta)}%\` ${direction}`);
   }
 
   // Peak hour insight

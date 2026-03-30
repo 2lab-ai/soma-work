@@ -278,7 +278,8 @@ export function computeDerivedMetrics(m: AggregatedMetrics, activeDays: number =
 export function computeTrend(current: AggregatedMetrics, previous: AggregatedMetrics): TrendComparison | null {
   // If previous period has zero activity, return a baseline-zero trend instead of null.
   // All deltas are set to the current values (treat as +100% for non-zero, 0% for zero).
-  const prevTotal = previous.sessionsCreated + previous.turnsUsed + previous.prsCreated + previous.commitsCreated;
+  const prevTotal = previous.sessionsCreated + previous.turnsUsed + previous.prsCreated +
+    previous.commitsCreated + previous.issuesCreated + previous.prsMerged + previous.codeLinesAdded;
   if (prevTotal === 0) {
     const baselinePctChange = (curr: number): number => curr > 0 ? 100 : 0;
     return {
@@ -516,27 +517,28 @@ export function computeFunFacts(
   return facts.slice(0, 5); // Max 5
 }
 
+// Cache Intl.DateTimeFormat instances — these are expensive to construct.
+const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: REPORT_TIMEZONE,
+  year: 'numeric', month: '2-digit', day: '2-digit',
+});
+
+const hourFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: REPORT_TIMEZONE,
+  hour: 'numeric', hour12: false,
+});
+
 /**
  * Convert timestamp to date string in report timezone.
  */
 function timestampToDateInTz(timestamp: number): string {
-  const d = new Date(timestamp);
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: REPORT_TIMEZONE,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  });
-  return formatter.format(d);
+  return dateFormatter.format(new Date(timestamp));
 }
 
 /**
  * Get hour (0-23) in report timezone.
  */
 function getHourInTz(timestamp: number): number {
-  const d = new Date(timestamp);
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: REPORT_TIMEZONE,
-    hour: 'numeric', hour12: false,
-  });
-  const hourStr = formatter.format(d);
+  const hourStr = hourFormatter.format(new Date(timestamp));
   return parseInt(hourStr, 10) % 24;
 }

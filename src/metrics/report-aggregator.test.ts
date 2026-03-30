@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { ReportAggregator } from './report-aggregator';
+import { ReportAggregator, computeDerivedMetrics, computeTrend } from './report-aggregator';
 import { MetricsEventStore } from './event-store';
-import { MetricsEvent, MetricsEventType } from './types';
+import { MetricsEvent, MetricsEventType, AggregatedMetrics } from './types';
 
 // Contract tests — Scenario 4: ReportAggregator
 // Trace: docs/daily-weekly-report/trace.md
@@ -191,6 +191,56 @@ describe('ReportAggregator', () => {
     expect(report.hourlyDistribution).toHaveLength(24);
     expect(report.achievements).toBeDefined();
     expect(report.funFacts).toBeDefined();
+  });
+
+  // === Unit tests for computeDerivedMetrics and computeTrend ===
+
+  it('computeDerivedMetrics_zeroActiveDays_noDivisionError', () => {
+    const m: AggregatedMetrics = {
+      sessionsCreated: 5, sessionsSlept: 1, sessionsClosed: 3,
+      issuesCreated: 2, prsCreated: 3, commitsCreated: 10,
+      codeLinesAdded: 500, codeLinesDeleted: 50, prsMerged: 2,
+      mergeLinesAdded: 300, turnsUsed: 20,
+    };
+
+    // activeDays = 0 should NOT throw, should use safeActiveDays = 1
+    const d = computeDerivedMetrics(m, 0);
+    expect(d.commitPerActiveDay).toBe(10); // 10 / max(0,1)=1
+    expect(d.prPerActiveDay).toBe(3);
+    expect(Number.isFinite(d.productivityScore)).toBe(true);
+    expect(Number.isFinite(d.prMergeRate)).toBe(true);
+  });
+
+  it('computeTrend_prevHasOnlyIssuesAndMerges_notBaselineZero', () => {
+    const current: AggregatedMetrics = {
+      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
+      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
+      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
+      mergeLinesAdded: 0, turnsUsed: 0,
+    };
+    const previous: AggregatedMetrics = {
+      ...current,
+      issuesCreated: 5, // Only issues — old code would miss this
+      prsMerged: 3,     // Only merges — old code would miss this
+    };
+
+    const trend = computeTrend(current, previous);
+    // previous had activity (issues+merges), so baselineZero must be false
+    expect(trend).not.toBeNull();
+    expect(trend!.baselineZero).toBe(false);
+  });
+
+  it('computeTrend_prevHasOnlyCodeLines_notBaselineZero', () => {
+    const zero: AggregatedMetrics = {
+      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
+      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
+      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
+      mergeLinesAdded: 0, turnsUsed: 0,
+    };
+    const previous: AggregatedMetrics = { ...zero, codeLinesAdded: 1000 };
+
+    const trend = computeTrend(zero, previous);
+    expect(trend!.baselineZero).toBe(false);
   });
 
   it('enrichedWeekly_computesTrendVsPreviousWeek', async () => {
