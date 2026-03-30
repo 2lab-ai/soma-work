@@ -67,7 +67,22 @@ describe('SummaryService', () => {
       const session = makeSession({ model: 'claude-sonnet-4-20250514' });
       await service.execute(session);
 
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514');
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514', undefined, undefined);
+    });
+
+    it('execute() passes sessionId and workingDirectory to forkExecutor for context-aware summary', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('context-aware summary');
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession({
+        model: 'claude-opus-4-6',
+        sessionId: 'sdk-session-abc123',
+        workingDirectory: '/tmp/workdir',
+      });
+      const result = await service.execute(session);
+
+      expect(result).toBe('context-aware summary');
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-opus-4-6', 'sdk-session-abc123', '/tmp/workdir');
     });
 
     // Trace: S3, Section 3c
@@ -79,6 +94,37 @@ describe('SummaryService', () => {
       expect(session.actionPanel!.summaryBlocks).toBeDefined();
       expect(Array.isArray(session.actionPanel!.summaryBlocks)).toBe(true);
       expect(session.actionPanel!.summaryBlocks!.length).toBeGreaterThan(0);
+    });
+
+    it('displayOnThread() produces valid Block Kit structure with divider + section', () => {
+      const service = new SummaryService();
+      const session = makeSession();
+      service.displayOnThread(session, 'Test summary');
+
+      const blocks = session.actionPanel!.summaryBlocks!;
+      expect(blocks[0]).toEqual({ type: 'divider' });
+      expect(blocks[1]).toMatchObject({
+        type: 'section',
+        text: { type: 'mrkdwn', text: expect.stringContaining('Executive Summary') },
+      });
+      expect(blocks[1].text.text).toContain('Test summary');
+    });
+
+    it('displayOnThread() splits long text into multiple blocks (Slack 3000 char limit)', () => {
+      const service = new SummaryService();
+      const session = makeSession();
+      // Generate text that exceeds 3000 chars
+      const longText = 'A'.repeat(4000);
+      service.displayOnThread(session, longText);
+
+      const blocks = session.actionPanel!.summaryBlocks!;
+      // divider + at least 2 section blocks
+      expect(blocks.length).toBeGreaterThanOrEqual(3);
+      expect(blocks[0]).toEqual({ type: 'divider' });
+      // Each section block text should be ≤ 3000 chars
+      for (let i = 1; i < blocks.length; i++) {
+        expect(blocks[i].text.text.length).toBeLessThanOrEqual(3000);
+      }
     });
 
     // Trace: S3, Section 3a→3b — Contract

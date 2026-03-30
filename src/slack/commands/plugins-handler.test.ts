@@ -31,7 +31,14 @@ function createMockPluginManager(overrides: Record<string, any> = {}) {
     addPlugin: vi.fn().mockReturnValue({ success: true }),
     removePlugin: vi.fn().mockReturnValue({ success: true }),
     refresh: vi.fn().mockResolvedValue(undefined),
-    forceRefresh: vi.fn().mockResolvedValue({ total: 3, updated: 3, errors: [] }),
+    forceRefresh: vi.fn().mockResolvedValue({
+      total: 3, updated: 3, unchanged: 0, errors: [],
+      details: [
+        { name: 'superpowers@soma-work', status: 'updated', oldSha: 'abc12345', oldDate: '2026-03-01T00:00:00.000Z', newSha: 'def67890', newDate: '2026-03-29T00:00:00.000Z' },
+        { name: 'stv@soma-work', status: 'updated', oldSha: '11112222', oldDate: '2026-03-01T00:00:00.000Z', newSha: '33334444', newDate: '2026-03-29T00:00:00.000Z' },
+        { name: 'omc@soma-work', status: 'updated', oldSha: '55556666', oldDate: '2026-03-01T00:00:00.000Z', newSha: '77778888', newDate: '2026-03-29T00:00:00.000Z' },
+      ],
+    }),
     ...overrides,
   };
 }
@@ -330,8 +337,13 @@ describe('PluginsHandler', () => {
       vi.mocked(isAdminUser).mockReturnValue(true);
       mockPluginManager.forceRefresh.mockResolvedValue({
         total: 2,
-        updated: 2,
+        updated: 1,
+        unchanged: 0,
         errors: ['Failed to clear cache: permission denied'],
+        details: [
+          { name: 'p1@mp', status: 'updated', oldSha: 'aaa', oldDate: '2026-03-01T00:00:00.000Z', newSha: 'bbb', newDate: '2026-03-29T00:00:00.000Z' },
+          { name: 'p2@mp', status: 'error', oldSha: null, oldDate: null, newSha: null, newDate: null, error: 'Failed to clear cache: permission denied' },
+        ],
       });
       mockPluginManager.getResolvedPlugins.mockReturnValue([]);
 

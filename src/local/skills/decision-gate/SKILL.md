@@ -69,10 +69,10 @@ for each decision:
 질문에 3명 리뷰 결과를 포함한다:
 
 ```markdown
-▸ 🤖 리뷰 합의 (2/3 Fix 추천):
-  - Codex: Fix — [이유]
-  - oracle-reviewer: Fix — [이유]
-  - oracle-gemini: Defer — [이유]
+▸ 🤖 리뷰 합의 (2/3 Option A 추천):
+  - Codex: Option A — [이유]
+  - oracle-reviewer: Option A — [이유]
+  - oracle-gemini: Option B — [이유]
 ```
 
 ## 유저 질문 시 필수 포함 사항

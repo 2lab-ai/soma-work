@@ -5,6 +5,10 @@ export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
   priority: 'high' | 'medium' | 'low';
+  /** IDs of tasks that must complete before this one can start */
+  dependencies?: string[];
+  /** Present-continuous form shown during execution (e.g. "Running tests") */
+  activeForm?: string;
 }
 
 export class TodoManager {
@@ -96,10 +100,14 @@ export class TodoManager {
       return true;
     }
 
-    // Check if any task status changed
+    // Check if any task status, activeForm, content, or dependencies changed
     for (const newTodo of newTodos) {
       const oldTodo = oldTodos.find(t => t.id === newTodo.id);
-      if (!oldTodo || oldTodo.status !== newTodo.status) {
+      if (!oldTodo
+        || oldTodo.status !== newTodo.status
+        || oldTodo.activeForm !== newTodo.activeForm
+        || oldTodo.content !== newTodo.content
+        || JSON.stringify(oldTodo.dependencies) !== JSON.stringify(newTodo.dependencies)) {
         return true;
       }
     }
@@ -137,6 +145,31 @@ export class TodoManager {
     }
 
     return changes.length > 0 ? changes.join('\n') : null;
+  }
+
+  /**
+   * Check if a task is blocked by incomplete dependencies.
+   * A missing dependency (dangling ref) is treated as blocking (safe default).
+   */
+  isBlocked(todo: Todo, allTodos: Todo[]): boolean {
+    if (!todo.dependencies || todo.dependencies.length === 0) return false;
+    return todo.dependencies.some(depId => {
+      const dep = allTodos.find(t => t.id === depId);
+      // Missing dep → treat as blocking (dangling ref should not unblock)
+      if (!dep) return true;
+      return dep.status !== 'completed';
+    });
+  }
+
+  /**
+   * Get the effective display status of a task (accounts for dependencies).
+   * Returns 'blocked' if task is pending but has incomplete dependencies.
+   */
+  getEffectiveStatus(todo: Todo, allTodos: Todo[]): 'completed' | 'in_progress' | 'pending' | 'blocked' {
+    if (todo.status === 'completed') return 'completed';
+    if (todo.status === 'in_progress') return 'in_progress';
+    if (this.isBlocked(todo, allTodos)) return 'blocked';
+    return 'pending';
   }
 
   cleanupSession(sessionId: string): void {

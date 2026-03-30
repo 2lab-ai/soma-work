@@ -135,6 +135,10 @@ export interface CrashRecoveredSession {
   ownerName?: string;
   activityState: string;
   sessionKey: string;
+  /** Session title at the time of crash — gives the model context about what was happening */
+  title?: string;
+  /** Workflow type (default, jira-create-pr, pr-review, etc.) */
+  workflow?: string;
 }
 
 export class SessionRegistry {
@@ -918,6 +922,13 @@ export class SessionRegistry {
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
       session.lastErrorContext = undefined;
+      // Cancel any pending file-access retry timer (Issue #215)
+      if (session.pendingRetryTimer) {
+        clearTimeout(session.pendingRetryTimer);
+        session.pendingRetryTimer = undefined;
+      }
+      // Persist to disk so restart doesn't resurrect stale state (Issue #214)
+      this.saveSessions();
     }
   }
 
@@ -963,6 +974,11 @@ export class SessionRegistry {
     // Clear usage data to reset context percentage
     session.usage = undefined;
 
+    // Clear in-memory debugging fields (system prompt snapshot, user instruction SSOT)
+    session.systemPrompt = undefined;
+    session.initialInstruction = undefined;
+    session.followUpInstructions = undefined;
+
     // Reset activity state
     session.activityState = 'idle';
 
@@ -970,6 +986,11 @@ export class SessionRegistry {
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
     session.lastErrorContext = undefined;
+    // Cancel any pending file-access retry timer (Issue #215)
+    if (session.pendingRetryTimer) {
+      clearTimeout(session.pendingRetryTimer);
+      session.pendingRetryTimer = undefined;
+    }
 
     this.saveSessions();
     return true;
@@ -1352,7 +1373,17 @@ export class SessionRegistry {
           activityState: 'idle', // Always idle on restore (no active streams after restart)
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
-          actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
+          // Clear stale messageTs/renderKey on restore — the Slack message may have been
+          // deleted while the service was down, causing endless `message_not_found` errors
+          // when ThreadSurface tries to chat.update a ghost message.
+          actionPanel: serialized.actionPanel
+            ? {
+                ...serialized.actionPanel,
+                messageTs: undefined,
+                renderKey: undefined,
+                lastRenderedAt: undefined,
+              }
+            : undefined,
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
@@ -1389,6 +1420,8 @@ export class SessionRegistry {
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
             sessionKey: serialized.key,
+            title: serialized.title,
+            workflow: serialized.workflow,
           });
         }
       }
