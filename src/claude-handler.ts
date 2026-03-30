@@ -6,7 +6,7 @@
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 import { isAdminUser } from './admin-utils';
-import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers } from './mcp-tool-permission-config';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers, resolveGatedTool } from './mcp-tool-permission-config';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import { CONFIG_FILE } from './env-paths';
 import * as path from 'path';
@@ -735,25 +735,10 @@ export class ClaudeHandler {
     permConfig: ReturnType<typeof loadMcpToolPermissions>,
     gatedServerNames: string[],
   ): string | null {
-    if (!toolName.startsWith('mcp__')) return null;
+    const resolved = resolveGatedTool(toolName, gatedServerNames);
+    if (!resolved) return null;
 
-    // Match against known gated server names to avoid __-delimiter ambiguity.
-    // e.g., for server "server-tools", match prefix "mcp__server-tools__"
-    let serverName: string | null = null;
-    let toolFunction: string | null = null;
-
-    for (const name of gatedServerNames) {
-      const prefix = `mcp__${name}__`;
-      if (toolName.startsWith(prefix)) {
-        serverName = name;
-        toolFunction = toolName.slice(prefix.length);
-        break;
-      }
-    }
-
-    // Not a gated server tool → unrestricted
-    if (!serverName || !toolFunction) return null;
-
+    const { serverName, toolFunction } = resolved;
     const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
 
     // Tool not in permission config → unrestricted
