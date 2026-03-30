@@ -2129,6 +2129,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Resolve relative paths against session working directory
         const sessionDir = session.sessionWorkingDir || session.workingDirectory;
         let resolvedPath = savePath!;
+
+        // If path is relative and no sessionDir to resolve against, reject it
+        if (!pathModule.isAbsolute(resolvedPath) && !sessionDir) {
+          this.logger.warn('Cannot resolve relative save path without session directory', { savePath });
+          await say({
+            text: '⚠️ Cannot resolve save path (no session directory). Renew cancelled.',
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+
         if (!pathModule.isAbsolute(resolvedPath) && sessionDir) {
           resolvedPath = pathModule.join(sessionDir, resolvedPath);
           this.logger.info('Resolved relative save path', { original: savePath, resolved: resolvedPath, sessionDir });
