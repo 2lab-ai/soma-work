@@ -79,6 +79,38 @@ describe('S1 — Agent Config Parsing', () => {
     expect(result.gwanu.promptDir).toContain('gwanu');
     expect(result.gwanu.persona).toBe('default');
   });
+
+  // Codex review: boundary — signingSecret exactly 20 chars accepted, 19 rejected
+  it('AgentConfig_Parse_SigningSecretBoundary — 20 chars accepted, 19 rejected', async () => {
+    const { parseAgentsConfig } = await import('./unified-config-loader');
+
+    const raw = {
+      agents: {
+        ok: { slackBotToken: 'xoxb-ok', slackAppToken: 'xapp-ok', signingSecret: '12345678901234567890' },
+        bad: { slackBotToken: 'xoxb-bad', slackAppToken: 'xapp-bad', signingSecret: '1234567890123456789' },
+      },
+    };
+
+    const result = parseAgentsConfig(raw);
+    expect(result.ok).toBeDefined();
+    expect(result.bad).toBeUndefined();
+  });
+
+  // Codex review: mixed valid + invalid agents — valid passes, invalid skipped
+  it('AgentConfig_Parse_MixedValidInvalid — valid agents survive alongside invalid', async () => {
+    const { parseAgentsConfig } = await import('./unified-config-loader');
+
+    const raw = {
+      agents: {
+        good: { slackBotToken: 'xoxb-good', slackAppToken: 'xapp-good', signingSecret: 'secret-at-least-20-chars-long' },
+        badToken: { slackBotToken: 'invalid', slackAppToken: 'xapp-bad', signingSecret: 'secret-at-least-20-chars-long' },
+        badApp: { slackBotToken: 'xoxb-ok', slackAppToken: 'invalid', signingSecret: 'secret-at-least-20-chars-long' },
+      },
+    };
+
+    const result = parseAgentsConfig(raw);
+    expect(Object.keys(result)).toEqual(['good']);
+  });
 });
 
 // ─── S2: Agent Startup Lifecycle ────────────────────────────────────────────
@@ -182,6 +214,7 @@ describe('S7 — Agent Graceful Shutdown', () => {
   // Trace: S7, Section 5 — partial failure continues
   it('AgentShutdown_PartialFailure_Continues — continues stopping on failure', async () => {
     const { AgentManager } = await import('./agent-manager');
+    const { AgentInstance } = await import('./agent-instance');
 
     const agents = {
       a: { slackBotToken: 'xoxb-a', slackAppToken: 'xapp-a', signingSecret: 'secret-20-chars-long!!' },
@@ -189,6 +222,58 @@ describe('S7 — Agent Graceful Shutdown', () => {
     };
 
     const manager = new AgentManager(agents, {} as any);
+
+    // Force agent 'a' to throw on stop
+    const agentA = manager.getAgent('a');
+    if (agentA) {
+      vi.spyOn(agentA, 'stop').mockRejectedValueOnce(new Error('connection lost'));
+    }
+
+    // stopAll should NOT throw even though agent 'a' fails
     await expect(manager.stopAll()).resolves.not.toThrow();
+  });
+});
+
+// ─── S2+: Agent Startup Error Isolation ──────────────────────────────────────
+
+describe('S2+ — Agent Startup Error Isolation', () => {
+  // Codex review finding: startAll() error-isolation branch untested
+  it('AgentStartup_FailureIsolation — failed agents removed from map', async () => {
+    const { AgentManager } = await import('./agent-manager');
+    const { AgentInstance } = await import('./agent-instance');
+
+    const agents = {
+      good: { slackBotToken: 'xoxb-good', slackAppToken: 'xapp-good', signingSecret: 'secret-20-chars-long!!' },
+      bad: { slackBotToken: 'xoxb-bad', slackAppToken: 'xapp-bad', signingSecret: 'secret-20-chars-long!!' },
+    };
+
+    const manager = new AgentManager(agents, {} as any);
+
+    // Mock: 'good' succeeds, 'bad' throws
+    const goodAgent = manager.getAgent('good');
+    const badAgent = manager.getAgent('bad');
+    if (goodAgent) vi.spyOn(goodAgent, 'start').mockResolvedValueOnce(undefined);
+    if (badAgent) vi.spyOn(badAgent, 'start').mockRejectedValueOnce(new Error('invalid token'));
+
+    await manager.startAll();
+
+    expect(manager.hasAgent('good')).toBe(true);
+    expect(manager.hasAgent('bad')).toBe(false);
+    expect(manager.listAgents()).toHaveLength(1);
+  });
+
+  // Codex review finding: getAgentConfig/getAllAgentConfigs untested
+  it('AgentManager_ConfigAccessors — getAgentConfig and getAllAgentConfigs work', async () => {
+    const { AgentManager } = await import('./agent-manager');
+
+    const agents = {
+      jangbi: { slackBotToken: 'xoxb-j', slackAppToken: 'xapp-j', signingSecret: 'secret-20-chars-long!!' },
+    };
+
+    const manager = new AgentManager(agents, {} as any);
+    expect(manager.getAgentConfig('jangbi')).toBeDefined();
+    expect(manager.getAgentConfig('jangbi')?.slackBotToken).toBe('xoxb-j');
+    expect(manager.getAgentConfig('nonexistent')).toBeUndefined();
+    expect(Object.keys(manager.getAllAgentConfigs())).toEqual(['jangbi']);
   });
 });

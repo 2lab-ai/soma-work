@@ -151,15 +151,73 @@ describe('S5 — agent_reply MCP Tool', () => {
     });
     const sid = JSON.parse(chat.content[0].text).sessionId;
 
-    // Reply should use same or updated sessionId
+    // Reply MUST preserve the same sessionId
     const reply = await server.handleTool('chat-reply', {
       sessionId: sid,
       prompt: 'second',
     });
     const replySid = JSON.parse(reply.content[0].text).sessionId;
 
-    expect(replySid).toBeDefined();
-    expect(typeof replySid).toBe('string');
+    expect(replySid).toBe(sid);
+  });
+
+  // Codex review: empty/whitespace prompt on chat-reply
+  it('AgentReply_EmptyPrompt — throws error for empty prompt', async () => {
+    const chatResult = await server.handleTool('chat', {
+      agent: 'jangbi',
+      prompt: 'initial',
+    });
+    const sid = JSON.parse(chatResult.content[0].text).sessionId;
+
+    await expect(
+      server.handleTool('chat-reply', { sessionId: sid, prompt: '   ' })
+    ).rejects.toThrow(/prompt.*required/i);
+  });
+});
+
+// ─── Edge Cases (from codex review) ─────────────────────────────────────────
+
+describe('Agent MCP Server — Edge Cases', () => {
+  let server: AgentMCPServer;
+
+  beforeEach(() => {
+    server = new AgentMCPServer();
+  });
+
+  // Codex review: unknown tool name
+  it('UnknownTool — throws for unregistered tool name', async () => {
+    await expect(
+      server.handleTool('nonexistent', { prompt: 'hello' })
+    ).rejects.toThrow(/unknown tool/i);
+  });
+
+  // Codex review: whitespace-only prompt on chat
+  it('AgentChat_WhitespacePrompt — rejects whitespace-only prompt', async () => {
+    await expect(
+      server.handleTool('chat', { agent: 'jangbi', prompt: '   \t\n  ' })
+    ).rejects.toThrow(/prompt.*required/i);
+  });
+
+  // Codex review: default model fallback
+  it('AgentChat_DefaultModel — uses default model when agent has no model', async () => {
+    const result = await server.handleTool('chat', {
+      agent: 'gwanu',
+      prompt: 'test default model',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  // Codex review: multi-session uniqueness
+  it('AgentChat_UniqueSessionIds — parallel chats create distinct sessions', async () => {
+    const [r1, r2, r3] = await Promise.all([
+      server.handleTool('chat', { agent: 'jangbi', prompt: 'a' }),
+      server.handleTool('chat', { agent: 'jangbi', prompt: 'b' }),
+      server.handleTool('chat', { agent: 'gwanu', prompt: 'c' }),
+    ]);
+    const ids = [r1, r2, r3].map(r => JSON.parse(r.content[0].text).sessionId);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(3);
   });
 });
 
