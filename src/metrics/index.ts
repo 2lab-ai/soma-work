@@ -18,6 +18,14 @@ export type {
   UserRanking,
   ScheduleState,
   ReportConfig,
+  DerivedMetrics,
+  TrendComparison,
+  DailyBreakdown,
+  HourlyDistribution,
+  Achievement,
+  FunFact,
+  EnrichedDailyReport,
+  EnrichedWeeklyReport,
 } from './types';
 
 import { Logger } from '../logger';
