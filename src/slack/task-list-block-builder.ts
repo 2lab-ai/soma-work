@@ -26,7 +26,6 @@ export class TaskListBlockBuilder {
     todos: Todo[],
     options?: {
       startedAt?: number;
-      estimatedEndAt?: number;
       completedAt?: number;
     },
   ): any[] {
@@ -38,7 +37,7 @@ export class TaskListBlockBuilder {
     blocks.push({ type: 'divider' });
 
     // ── Time context ──
-    const timeText = this.buildTimeText(options?.startedAt, options?.estimatedEndAt, options?.completedAt, todos);
+    const timeText = this.buildTimeText(options?.startedAt, options?.completedAt, todos);
     if (timeText) {
       blocks.push({
         type: 'context',
@@ -93,14 +92,13 @@ export class TaskListBlockBuilder {
     for (let i = 0; i < todos.length; i++) {
       const todo = todos[i];
       const effectiveStatus = this.todoManager.getEffectiveStatus(todo, todos);
-      const flowsFromPrev = this.todoManager.flowsFromCompleted(todo, i, todos);
       const num = i + 1;
       const content = this.truncateContent(todo.content);
 
       let line = '';
 
-      // Arrow prefix for tasks flowing from completed predecessor
-      const arrow = flowsFromPrev ? '→ ' : '';
+      // Arrow prefix: show when an in-progress task has all dependencies completed
+      const arrow = this.flowsFromDeps(todo, todos) ? '→ ' : '';
 
       switch (effectiveStatus) {
         case 'completed':
@@ -140,6 +138,28 @@ export class TaskListBlockBuilder {
     return `🔒  ${num}  ${content}  \`deps:${depLabels}\``;
   }
 
+  /**
+   * Check if an in-progress task flows from completed dependencies.
+   * Shows arrow (→) when the task has explicit deps and all are completed,
+   * OR when the previous task in the list is completed (sequential flow).
+   */
+  private flowsFromDeps(todo: Todo, allTodos: Todo[]): boolean {
+    if (todo.status !== 'in_progress') return false;
+    // Explicit dependencies: all completed → show arrow
+    if (todo.dependencies && todo.dependencies.length > 0) {
+      return todo.dependencies.every(depId => {
+        const dep = allTodos.find(t => t.id === depId);
+        return dep?.status === 'completed';
+      });
+    }
+    // Implicit: previous task in list is completed (sequential fallback)
+    const idx = allTodos.indexOf(todo);
+    if (idx > 0) {
+      return allTodos[idx - 1].status === 'completed';
+    }
+    return false;
+  }
+
   /** Truncate task content to prevent overflow */
   private truncateContent(text: string): string {
     if (text.length <= MAX_TASK_CONTENT_LENGTH) return text;
@@ -163,22 +183,16 @@ export class TaskListBlockBuilder {
 
   private buildTimeText(
     startedAt?: number,
-    estimatedEndAt?: number,
     completedAt?: number,
     todos?: Todo[],
   ): string | null {
     if (!startedAt) return null;
 
     const startStr = this.formatTime(startedAt);
+    const allDone = todos?.every(t => t.status === 'completed');
 
-    if (estimatedEndAt) {
-      const allDone = todos?.every(t => t.status === 'completed');
-      if (allDone) {
-        // Use stored completedAt timestamp to prevent drift on re-render
-        const finishedTs = completedAt || Date.now();
-        return `:clock1: Start: ${startStr} — Finished: ${this.formatTime(finishedTs)}`;
-      }
-      return `:clock1: Start: ${startStr} — Estimated: ${this.formatTime(estimatedEndAt)}`;
+    if (allDone && completedAt) {
+      return `:clock1: Start: ${startStr} — Finished: ${this.formatTime(completedAt)}`;
     }
 
     return `:clock1: Start: ${startStr}`;
@@ -189,28 +203,16 @@ export class TaskListBlockBuilder {
     completed: number,
     total: number,
     pct: number,
-    options?: { startedAt?: number; estimatedEndAt?: number; completedAt?: number },
+    options?: { startedAt?: number; completedAt?: number },
   ): string {
     if (pct === 100) {
-      // Use stored completedAt to prevent drift on re-render
-      const finishedAt = options?.completedAt || Date.now();
-      const elapsed = options?.startedAt
-        ? this.formatDuration(finishedAt - options.startedAt)
+      const elapsed = (options?.startedAt && options?.completedAt)
+        ? this.formatDuration(options.completedAt - options.startedAt)
         : '';
       return `:white_check_mark: *All ${total} tasks completed*${elapsed ? ` in ${elapsed}` : ''}`;
     }
 
-    let footer = `*Progress:* ${completed}/${total} tasks completed (${pct}%)`;
-
-    // Add remaining time estimate
-    if (options?.estimatedEndAt) {
-      const remaining = options.estimatedEndAt - Date.now();
-      if (remaining > 0) {
-        footer += `  |  :hourglass_flowing_sand: ~${this.formatDuration(remaining)} 남음`;
-      }
-    }
-
-    return footer;
+    return `*Progress:* ${completed}/${total} tasks completed (${pct}%)`;
   }
 
   // ---------------------------------------------------------------------------
@@ -224,7 +226,7 @@ export class TaskListBlockBuilder {
 
   private formatDuration(ms: number): string {
     const totalMinutes = Math.round(ms / 60_000);
-    if (totalMinutes < 60) return `${totalMinutes}분`;
+    if (totalMinutes < 60) return `${totalMinutes}m`;
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;

@@ -100,10 +100,13 @@ export class TodoManager {
       return true;
     }
 
-    // Check if any task status changed
+    // Check if any task status, activeForm, or content changed
     for (const newTodo of newTodos) {
       const oldTodo = oldTodos.find(t => t.id === newTodo.id);
-      if (!oldTodo || oldTodo.status !== newTodo.status) {
+      if (!oldTodo
+        || oldTodo.status !== newTodo.status
+        || oldTodo.activeForm !== newTodo.activeForm
+        || oldTodo.content !== newTodo.content) {
         return true;
       }
     }
@@ -166,16 +169,6 @@ export class TodoManager {
     if (todo.status === 'in_progress') return 'in_progress';
     if (this.isBlocked(todo, allTodos)) return 'blocked';
     return 'pending';
-  }
-
-  /**
-   * Check if a task flows from a completed predecessor (for arrow display).
-   * A task "flows from" if its predecessor in the list (by index) is completed.
-   */
-  flowsFromCompleted(todo: Todo, index: number, allTodos: Todo[]): boolean {
-    if (index === 0) return false;
-    const prev = allTodos[index - 1];
-    return prev.status === 'completed' && todo.status === 'in_progress';
   }
 
   cleanupSession(sessionId: string): void {
