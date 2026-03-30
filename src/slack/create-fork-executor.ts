@@ -71,10 +71,16 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
 
       return trimmed;
     } catch (error) {
-      logger.error('Fork executor: failed to generate summary', {
-        error: error instanceof Error ? error.message : String(error),
-        model: model ?? 'default',
-      });
+      // Distinguish abort (expected cancellation) from real errors to avoid noisy telemetry
+      const isAbort = (error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted;
+      if (isAbort) {
+        logger.info('Fork executor: summary query aborted', { model: model ?? 'default' });
+      } else {
+        logger.error('Fork executor: failed to generate summary', {
+          error: error instanceof Error ? error.message : String(error),
+          model: model ?? 'default',
+        });
+      }
       return null;
     }
   };

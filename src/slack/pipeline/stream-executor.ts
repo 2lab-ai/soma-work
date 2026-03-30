@@ -1346,8 +1346,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     try {
       const summaryText = await this.deps.summaryService.execute(session as any, abortController.signal);
 
-      // Clean up controller reference after completion
-      this.summaryAbortControllers.delete(sessionKey);
+      // CAS cleanup: only remove if this controller is still the active one for this session.
+      // Prevents a slow summary A from deleting a newer summary B's controller.
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
 
       if (summaryText) {
         this.deps.summaryService.displayOnThread(session as any, summaryText);
@@ -1356,7 +1359,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
       }
     } catch (err: any) {
-      this.summaryAbortControllers.delete(sessionKey);
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
       if (abortController.signal.aborted) {
         this.logger.info('Summary fork aborted by new user input', { sessionKey });
         return;
