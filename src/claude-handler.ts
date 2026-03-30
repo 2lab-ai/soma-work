@@ -728,6 +728,7 @@ export class ClaudeHandler {
    *
    * Uses known gated server names to resolve the `__` delimiter ambiguity:
    * matches `mcp__{knownServer}__` prefix instead of naive split.
+   * SYNC: This logic is duplicated in mcp-tool-permission-integration.test.ts for direct testing.
    */
   private checkMcpToolPermission(
     toolName: string,
@@ -741,8 +742,10 @@ export class ClaudeHandler {
     const { serverName, toolFunction } = resolved;
     const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
 
-    // Tool not in permission config → unrestricted
-    if (!requiredLevel) return null;
+    // Tool not in permission config but on a gated server → deny-by-default (defense-in-depth)
+    if (!requiredLevel) {
+      return `Tool ${toolFunction} on gated server ${serverName} is not listed in permission config. Access denied by default.`;
+    }
 
     // Check active grants (reload from disk for cross-process safety)
     mcpToolGrantStore.reload();
