@@ -1938,7 +1938,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     const session = { isActive: true, actionPanel: {} } as any;
 
     // Should not throw
-    await expect(executor.onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
     expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
   });
 
