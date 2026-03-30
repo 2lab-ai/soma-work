@@ -296,6 +296,9 @@ export interface ConversationSession {
   taskListEstimatedEndAt?: number;
   /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
   taskListCompletedAt?: number;
+  // System prompt snapshot: the fully-built system prompt used for this session's current query.
+  // Stored for admin debugging via "show prompt" command. NOT persisted to disk.
+  systemPrompt?: string;
 }
 
 export interface WorkingDirectoryConfig {

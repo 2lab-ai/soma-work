@@ -257,6 +257,14 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a "show prompt" command (admin only)
+   * Matches: "show prompt", "/show prompt", "show_prompt", "/show_prompt"
+   */
+  static isShowPromptCommand(text: string): boolean {
+    return /^\/?show[_ ]prompt$/i.test(text.trim());
+  }
+
+  /**
    * Check if text is a help command
    */
   static isHelpCommand(text: string): boolean {
@@ -592,6 +600,8 @@ export class CommandParser {
     'marketplace', 'plugins', '플러그인',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
+    // Admin: show prompt
+    'show',
     // Notification
     'notify', 'webhook',
   ]);
@@ -698,6 +708,9 @@ export class CommandParser {
       '• `plugins add pluginName@marketplaceName` - Install a plugin',
       '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
       '• `plugins update` or `플러그인 업데이트` - Force re-download all plugins (Admin only)',
+      '',
+      '*Prompt (Admin):*',
+      '• `show prompt` - Show the system prompt used in this session',
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status',

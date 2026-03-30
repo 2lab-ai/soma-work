@@ -781,4 +781,39 @@ describe('CommandParser', () => {
       expect(result.action).toBe('error');
     });
   });
+
+  describe('isShowPromptCommand', () => {
+    it('should match "show prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('show prompt')).toBe(true);
+    });
+
+    it('should match "/show prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('/show prompt')).toBe(true);
+    });
+
+    it('should match "show_prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('show_prompt')).toBe(true);
+    });
+
+    it('should match "/show_prompt"', () => {
+      expect(CommandParser.isShowPromptCommand('/show_prompt')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isShowPromptCommand('Show Prompt')).toBe(true);
+      expect(CommandParser.isShowPromptCommand('SHOW PROMPT')).toBe(true);
+    });
+
+    it('should not match "show"', () => {
+      expect(CommandParser.isShowPromptCommand('show')).toBe(false);
+    });
+
+    it('should not match "show prompt extra"', () => {
+      expect(CommandParser.isShowPromptCommand('show prompt extra')).toBe(false);
+    });
+
+    it('should not match "show llm_chat"', () => {
+      expect(CommandParser.isShowPromptCommand('show llm_chat')).toBe(false);
+    });
+  });
 });
