@@ -21,7 +21,23 @@ export class SummaryTimer {
     const timerId = setTimeout(() => {
       this.timers.delete(sessionKey);
       logger.info('Timer fired', { sessionKey });
-      callback();
+      try {
+        const result = callback();
+        // If callback returns a promise, catch async rejections
+        if (result && typeof (result as any).catch === 'function') {
+          (result as any).catch((err: any) => {
+            logger.error('Summary timer async callback failed', {
+              sessionKey,
+              error: err?.message || String(err),
+            });
+          });
+        }
+      } catch (err: any) {
+        logger.error('Summary timer callback threw', {
+          sessionKey,
+          error: err?.message || String(err),
+        });
+      }
     }, SummaryTimer.DELAY_MS);
     this.timers.set(sessionKey, timerId);
     logger.info('Timer started', { sessionKey, delayMs: SummaryTimer.DELAY_MS });
