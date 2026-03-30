@@ -25,7 +25,7 @@ const FORK_SYSTEM_PROMPT =
  * @returns A ForkExecutor function compatible with SummaryService
  */
 export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
-  return async (prompt: string, model?: string, sessionId?: string, cwd?: string): Promise<string | null> => {
+  return async (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal): Promise<string | null> => {
     try {
       logger.info('Fork executor: starting summary query', {
         promptLength: prompt.length,
@@ -34,11 +34,26 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
         cwd: cwd ?? 'none',
       });
 
+      // Thread AbortSignal → AbortController for dispatchOneShot compatibility.
+      // If caller provided a signal, wrap it; otherwise pass undefined.
+      let abortController: AbortController | undefined;
+      if (abortSignal) {
+        abortController = new AbortController();
+        // Forward external abort to our controller
+        if (abortSignal.aborted) {
+          abortController.abort(abortSignal.reason);
+        } else {
+          abortSignal.addEventListener('abort', () => {
+            abortController!.abort(abortSignal.reason);
+          }, { once: true });
+        }
+      }
+
       const response = await claudeHandler.dispatchOneShot(
         prompt,
         FORK_SYSTEM_PROMPT,
         model,
-        undefined, // abortController
+        abortController,
         sessionId, // fork session for conversation context
         cwd,       // working directory for forked session
       );

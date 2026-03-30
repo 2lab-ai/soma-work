@@ -67,7 +67,7 @@ describe('SummaryService', () => {
       const session = makeSession({ model: 'claude-sonnet-4-20250514' });
       await service.execute(session);
 
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514', undefined, undefined);
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514', undefined, undefined, undefined);
     });
 
     it('execute() passes sessionId and workingDirectory to forkExecutor for context-aware summary', async () => {
@@ -82,7 +82,57 @@ describe('SummaryService', () => {
       const result = await service.execute(session);
 
       expect(result).toBe('context-aware summary');
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-opus-4-6', 'sdk-session-abc123', '/tmp/workdir');
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-opus-4-6', 'sdk-session-abc123', '/tmp/workdir', undefined);
+    });
+
+    it('execute() passes abortSignal to forkExecutor', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
+      const service = new SummaryService(mockFork);
+      const ac = new AbortController();
+
+      const session = makeSession();
+      await service.execute(session, ac.signal);
+
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), expect.anything(), undefined, undefined, ac.signal);
+    });
+
+    it('execute() returns null immediately if abortSignal already aborted', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('should not reach');
+      const service = new SummaryService(mockFork);
+      const ac = new AbortController();
+      ac.abort();
+
+      const session = makeSession();
+      const result = await service.execute(session, ac.signal);
+
+      expect(result).toBeNull();
+      expect(mockFork).not.toHaveBeenCalled();
+    });
+
+    it('execute() discards result if aborted during fork execution', async () => {
+      const ac = new AbortController();
+      const mockFork: ForkExecutor = vi.fn().mockImplementation(async () => {
+        // Simulate abort happening mid-flight
+        ac.abort();
+        return 'stale summary';
+      });
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession();
+      const result = await service.execute(session, ac.signal);
+
+      expect(result).toBeNull(); // discarded because signal is aborted after await
+    });
+
+    it('execute() handles AbortError from forkExecutor gracefully', async () => {
+      const abortError = new DOMException('The operation was aborted', 'AbortError');
+      const mockFork: ForkExecutor = vi.fn().mockRejectedValue(abortError);
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession();
+      const result = await service.execute(session);
+
+      expect(result).toBeNull();
     });
 
     // Trace: S3, Section 3c

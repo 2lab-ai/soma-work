@@ -2013,7 +2013,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
     await (executor as any).onSummaryTimerFire(session, sessionKey);
 
-    expect(mockSummaryService.execute).toHaveBeenCalledWith(session);
+    expect(mockSummaryService.execute).toHaveBeenCalledWith(session, expect.any(AbortSignal));
     expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Executive summary text');
     expect(mockThreadPanel.updatePanel).toHaveBeenCalledWith(session, sessionKey);
 
