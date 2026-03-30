@@ -4,7 +4,7 @@ import {
   buildModelCommandRunResponse,
   parseModelCommandContext,
 } from './model-command-mcp-server';
-import { validateModelCommandRunArgs } from '../../src/model-commands/validator';
+import { validateModelCommandRunArgs } from '../_shared/model-commands/validator.js';
 
 describe('model-command MCP server helpers', () => {
   it('returns safe defaults when SOMA_COMMAND_CONTEXT is invalid', () => {

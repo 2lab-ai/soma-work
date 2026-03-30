@@ -40,6 +40,9 @@ import { tokenManager, parseCooldownTime } from '../../token-manager';
 import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
 import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import { SummaryTimer } from '../summary-timer.js';
+import { CompletionMessageTracker } from '../completion-message-tracker.js';
+import { SummaryService } from '../summary-service';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 
@@ -104,6 +107,9 @@ interface StreamExecutorDeps {
   assistantStatusManager: AssistantStatusManager;
   threadPanel?: ThreadPanel;
   turnNotifier?: TurnNotifier;
+  summaryTimer?: SummaryTimer;
+  completionMessageTracker?: CompletionMessageTracker;
+  summaryService?: SummaryService;
 }
 
 interface StreamExecuteParams {
@@ -204,10 +210,10 @@ export class StreamExecutor {
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
 특히 root message(offset 0)에 첨부된 파일이나 이미지가 있는지 반드시 확인하세요 — 유저가 참조하는 핵심 자료가 thread 시작 메시지에 있는 경우가 많습니다.
 긴 스레드의 경우, 멘션 근처 컨텍스트는 before/after 파라미터로 효율적으로 조회할 수 있습니다.
-Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
+Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시지가 있으면 download_thread_file로 다운로드한 후 Read 도구로 내용을 확인하세요.
 
-중요: 이미지 파일(jpg, png, gif, webp, svg 등)은 Read 도구로 직접 읽지 마세요. API에서 "Could not process image" 에러가 발생할 수 있습니다.
-이미지는 파일 이름과 메타데이터(mimetype, size)만 참조하고, 유저에게 이미지 내용을 설명해달라고 요청하세요.
+이미지 파일(jpg, png, gif, webp 등)도 download_thread_file로 다운로드한 후 Read 도구로 직접 볼 수 있습니다. Claude는 이미지를 네이티브로 읽을 수 있습니다.
+오디오/비디오 파일만 다운로드가 차단됩니다 — 파일 이름과 메타데이터만 참조하세요.
 </thread-awareness>`;
   }
 
@@ -228,6 +234,27 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
       user,
       say,
     } = params;
+
+    // Cancel summary timer on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S2
+    if (this.deps.summaryTimer) {
+      this.deps.summaryTimer.cancel(params.sessionKey);
+    }
+
+    // Clear any displayed summary on new user input
+    if (this.deps.summaryService) {
+      this.deps.summaryService.clearDisplay(session as any);
+    }
+
+    // Delete tracked completion messages on new user input
+    // Trace: docs/turn-summary-lifecycle/trace.md, S7
+    if (this.deps.completionMessageTracker) {
+      this.deps.completionMessageTracker.deleteAll(
+        params.sessionKey,
+        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        params.channel
+      ).catch(() => {});
+    }
 
     let toolChoicePending = false;
     let toolContinuation: Continuation | undefined;
@@ -731,6 +758,31 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
           });
         };
         enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+
+        // Start summary timer for non-error completions (fire-and-forget)
+        // Trace: docs/turn-summary-lifecycle/trace.md, S1
+        if (this.deps.summaryTimer && category !== 'Exception') {
+          this.deps.summaryTimer.start(sessionKey, async () => {
+            if (this.deps.summaryService) {
+              try {
+                const summaryText = await this.deps.summaryService.execute(session as any);
+                if (summaryText) {
+                  this.deps.summaryService.displayOnThread(session as any, summaryText);
+                }
+              } catch (err: any) {
+                this.logger.warn('Summary timer callback failed', { error: err?.message });
+              }
+            }
+          });
+        }
+
+        // Track completion message for auto-deletion
+        // Trace: docs/turn-summary-lifecycle/trace.md, S6
+        if (this.deps.completionMessageTracker && !hasSdkError) {
+          // Track will be called when the notification channel sends the Slack message
+          // For now, we mark the session for tracking
+          this.deps.completionMessageTracker.track(sessionKey, threadTs, determineTurnCategory({ hasPendingChoice, isError: hasSdkError }));
+        }
       }
 
       // Update bot-initiated thread root with status
@@ -2042,10 +2094,18 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         const fs = await import('fs');
         const pathModule = await import('path');
 
+        // Resolve relative paths against session working directory
+        const sessionDir = session.sessionWorkingDir || session.workingDirectory;
+        let resolvedPath = savePath!;
+        if (!pathModule.isAbsolute(resolvedPath) && sessionDir) {
+          resolvedPath = pathModule.join(sessionDir, resolvedPath);
+          this.logger.info('Resolved relative save path', { original: savePath, resolved: resolvedPath, sessionDir });
+        }
+
         // Try to read context.md from the save directory
-        const contextPath = savePath!.endsWith('.md')
-          ? savePath!
-          : pathModule.join(savePath!, 'context.md');
+        const contextPath = resolvedPath.endsWith('.md')
+          ? resolvedPath
+          : pathModule.join(resolvedPath, 'context.md');
 
         if (fs.existsSync(contextPath)) {
           const content = fs.readFileSync(contextPath, 'utf-8');
@@ -2070,14 +2130,23 @@ Read 가능한 파일(텍스트, 코드, PDF 등)이 첨부된 메시지가 있�
         return undefined;
       }
     } else {
-      // No files and no path - can't proceed
-      this.logger.warn('Save succeeded but no files or path returned', { saveResult });
-      await say({
-        text: '⚠️ Save succeeded but no file content or path was returned.',
-        thread_ts: threadTs,
-      });
-      session.renewState = null;
-      return undefined;
+      // Last resort: scan session's .claude/omc/tasks/save/ for the most recent save
+      const sessionDir = session.sessionWorkingDir || session.workingDirectory;
+      const scannedContent = sessionDir ? this.scanForLatestSave(sessionDir) : null;
+
+      if (scannedContent) {
+        this.logger.info('Renew: found save via directory scan', { sessionDir, id });
+        saveContent = scannedContent;
+      } else {
+        // No files, no path, no scannable save - can't proceed
+        this.logger.warn('Save succeeded but no files or path returned and directory scan failed', { saveResult, sessionDir });
+        await say({
+          text: '⚠️ Save succeeded but no file content or path was returned.',
+          thread_ts: threadTs,
+        });
+        session.renewState = null;
+        return undefined;
+      }
     }
 
     // Get user message if provided with /renew command
@@ -2135,20 +2204,42 @@ ${userInstruction}`;
     files?: Array<{ name: string; content: string }>;
     error?: string;
   } | null {
-    // Look for {"save_result": ...} pattern - handle nested JSON with files array
+    // Strategy 1: Look for {"save_result": ...} JSON pattern
     const jsonMatch = text.match(/\{"save_result"\s*:\s*(\{.*\})\}/s);
-    if (!jsonMatch) {
-      return null;
+    if (jsonMatch) {
+      try {
+        const fullJson = `{"save_result":${jsonMatch[1]}}`;
+        const parsed = JSON.parse(fullJson);
+        return this.normalizeSaveResultPayload(parsed.save_result);
+      } catch (error) {
+        this.logger.warn('Failed to parse save_result JSON', { error });
+      }
     }
 
-    try {
-      const fullJson = `{"save_result":${jsonMatch[1]}}`;
-      const parsed = JSON.parse(fullJson);
-      return this.normalizeSaveResultPayload(parsed.save_result);
-    } catch (error) {
-      this.logger.warn('Failed to parse save_result JSON', { error });
-      return null;
+    // Strategy 2: Parse natural "Saved to: <path>" output from save skill
+    // Matches patterns like:
+    //   Saved to: .claude/omc/tasks/save/20260329_180000/context.md
+    //   Save with: /load 20260329_180000
+    const savedToMatch = text.match(/Saved to:\s*(\S+)/i);
+    if (savedToMatch) {
+      const savedPath = savedToMatch[1];
+      // Extract ID from path (timestamp-based directory name)
+      const idMatch = savedPath.match(/save\/(\d{8}_\d{6})/);
+      const id = idMatch ? idMatch[1] : undefined;
+      // Determine dir from path (strip filename if it ends with .md)
+      const pathModule = require('path') as typeof import('path');
+      const dir = savedPath.endsWith('.md') ? pathModule.dirname(savedPath) : savedPath;
+
+      this.logger.info('Parsed save result from text output', { savedPath, id, dir });
+      return {
+        success: true,
+        id,
+        dir,
+        path: savedPath,
+      };
     }
+
+    return null;
   }
 
   private normalizeSaveResultPayload(raw: SaveContextResultPayload | undefined): {
@@ -2177,6 +2268,43 @@ ${userInstruction}`;
       files: raw.files,
       error: raw.error,
     };
+  }
+
+  /**
+   * Scan session's .claude/omc/tasks/save/ directory for the most recent save.
+   * Returns formatted content string or null if nothing found.
+   */
+  private scanForLatestSave(sessionDir: string): string | null {
+    try {
+      const fs = require('fs') as typeof import('fs');
+      const pathModule = require('path') as typeof import('path');
+
+      const saveRoot = pathModule.join(sessionDir, '.claude', 'omc', 'tasks', 'save');
+      if (!fs.existsSync(saveRoot)) {
+        return null;
+      }
+
+      // List save directories sorted descending (newest first, timestamp-based IDs)
+      const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
+        .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
+        .map((d: { name: string }) => d.name)
+        .sort()
+        .reverse();
+
+      for (const entry of entries) {
+        const contextPath = pathModule.join(saveRoot, entry, 'context.md');
+        if (fs.existsSync(contextPath)) {
+          const content = fs.readFileSync(contextPath, 'utf-8');
+          this.logger.info('scanForLatestSave: found save', { entry, contextPath });
+          return `--- context.md ---\n${content}`;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.warn('scanForLatestSave failed', { sessionDir, error });
+      return null;
+    }
   }
 
   /**

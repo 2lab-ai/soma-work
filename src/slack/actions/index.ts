@@ -8,6 +8,7 @@ import { PRActionHandler } from './pr-action-handler';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { SlackApiHelper } from '../slack-api-helper';
@@ -33,6 +34,7 @@ export class ActionHandlers {
   private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
   private userAcceptanceHandler: UserAcceptanceActionHandler;
+  private mcpToolPermissionHandler: McpToolPermissionActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -54,6 +56,7 @@ export class ActionHandlers {
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler,
         threadPanel: ctx.threadPanel,
+        completionMessageTracker: ctx.completionMessageTracker,
       },
       this.formStore
     );
@@ -97,6 +100,8 @@ export class ActionHandlers {
     this.userAcceptanceHandler = new UserAcceptanceActionHandler({
       slackApi: ctx.slackApi,
     });
+
+    this.mcpToolPermissionHandler = new McpToolPermissionActionHandler();
   }
 
   /**
@@ -218,6 +223,18 @@ export class ActionHandlers {
     app.action('deny_user', async ({ ack, body, respond }) => {
       await ack();
       await this.userAcceptanceHandler.handleDeny(body, respond);
+    });
+
+    // MCP tool permission actions (approve/deny grant requests)
+    // Trace: docs/mcp-tool-permission/trace.md, S4
+    app.action(/^mcp_tool_perm_approve_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.mcpToolPermissionHandler.handleApprove(body, respond);
+    });
+
+    app.action(/^mcp_tool_perm_deny_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.mcpToolPermissionHandler.handleDeny(body, respond);
     });
 
     // Channel routing actions (move to correct channel / stop)

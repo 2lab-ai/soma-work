@@ -215,18 +215,40 @@ cmd_stop() {
     print_status "Stopping $SERVICE_NAME..."
 
     if ! is_running; then
-        print_warning "Service is not running"
-        return 0
+        print_warning "Service is not running (LaunchAgent)"
+    else
+        launchctl unload "$PLIST_PATH"
+        sleep 2
+
+        if ! is_running; then
+            print_success "Service stopped (LaunchAgent)"
+        else
+            print_error "Failed to stop service via LaunchAgent"
+        fi
     fi
 
-    launchctl unload "$PLIST_PATH"
-    sleep 2
-
-    if ! is_running; then
-        print_success "Service stopped"
-    else
-        print_error "Failed to stop service"
-        return 1
+    # Fallback: kill any process tracked by PID lock file (Issue #152)
+    # Catches processes started outside LaunchAgent (e.g., manual node execution)
+    local pid_file="$PROJECT_DIR/data/soma-work.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            print_status "Found running process via PID file (pid=$pid), sending SIGTERM..."
+            kill "$pid" 2>/dev/null
+            sleep 2
+            if kill -0 "$pid" 2>/dev/null; then
+                print_warning "Process still alive, sending SIGKILL..."
+                kill -9 "$pid" 2>/dev/null
+                sleep 1
+            fi
+            if kill -0 "$pid" 2>/dev/null; then
+                print_error "Failed to kill process (pid=$pid)"
+            else
+                print_success "Process killed (pid=$pid)"
+            fi
+        fi
+        rm -f "$pid_file"
     fi
 }
 

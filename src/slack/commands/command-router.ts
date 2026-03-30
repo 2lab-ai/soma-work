@@ -24,6 +24,7 @@ import { LlmChatHandler } from './llm-chat-handler';
 import { NotifyHandler } from './notify-handler';
 import { WebhookHandler } from './webhook-handler';
 import { ReportHandler } from './report-handler';
+import { EsHandler } from './es-handler';
 import { getReportDeps } from '../../metrics';
 import { CommandParser } from '../command-parser';
 
@@ -60,6 +61,7 @@ export class CommandRouter {
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),
+      new EsHandler(),
       new HelpHandler(),
       new SessionHandler(deps),
     ];

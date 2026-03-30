@@ -8,14 +8,14 @@ import {
   listModelCommands,
   normalizeSessionSnapshot,
   runModelCommand,
-} from '../../src/model-commands/catalog.js';
-import { validateModelCommandRunArgs } from '../../src/model-commands/validator.js';
+} from '../_shared/model-commands/catalog.js';
+import { validateModelCommandRunArgs } from '../_shared/model-commands/validator.js';
 import {
   ModelCommandContext,
   ModelCommandListResponse,
   ModelCommandRunResponse,
-} from '../../src/model-commands/types.js';
-import { WorkflowType } from '../../src/types.js';
+} from '../_shared/model-commands/types.js';
+import { WorkflowType } from '../_shared/types.js';
 
 const logger = new StderrLogger('ModelCommandMCP');
 

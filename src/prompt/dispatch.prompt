@@ -7,6 +7,7 @@
 
 | 패턴 | 워크플로우 |
 |------|------------|
+| `z`로 시작 + 할일/이슈링크/PR링크 (예: `z 로그인 버그 수정`, `z https://github.com/org/repo/issues/123`, `z https://github.com/org/repo/pull/456`) | `zwork` |
 | 배포 트리거 패턴 (예: `repo source -> target`, `deploy repo source -> target`, `repo1,repo2 source -> target`) | `deploy` |
 | "plan" + Jira 이슈 링크 | `jira-planning` |
 | "fix" 또는 "work" + Jira 이슈 링크 | `jira-create-pr` |
@@ -64,6 +65,15 @@
 
 - 입력: "Redis 캐시 구현 방법 알려줘"
   출력: {"workflow": "default", "title": "Redis 캐시 구현"}
+
+- 입력: "z 로그인 타임아웃 버그 수정해줘"
+  출력: {"workflow": "zwork", "title": "로그인 타임아웃 버그 수정"}
+
+- 입력: "z https://github.com/org/repo/issues/123"
+  출력: {"workflow": "zwork", "title": "Issue #123 작업", "links": {"issue": "https://github.com/org/repo/issues/123"}}
+
+- 입력: "z https://github.com/org/repo/pull/456"
+  출력: {"workflow": "zwork", "title": "PR #456 작업", "links": {"pr": "https://github.com/org/repo/pull/456"}}
 
 - 입력: "Gucci develop -> dev2"
   출력: {"workflow": "deploy", "title": "Gucci develop -> dev2 배포"}

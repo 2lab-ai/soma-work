@@ -25,7 +25,7 @@ import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import type { SlackMcpContext, GetThreadMessagesResult } from './types.js';
-import { validateFilePath, isImageFile, isMediaFile, getMediaType, ALLOWED_MEDIA_EXTENSIONS } from './helpers/file-validator.js';
+import { validateFilePath, isImageFile, isMediaFile, isNonVisualMedia, getMediaType, ALLOWED_MEDIA_EXTENSIONS } from './helpers/file-validator.js';
 import { formatSingleMessage } from './helpers/message-formatter.js';
 import { getTotalCount, fetchThreadSlice, fetchMessagesBefore, fetchMessagesAfter } from './helpers/thread-fetcher.js';
 
@@ -110,7 +110,7 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'download_thread_file',
-        description: 'Download a non-media file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, etc. WARNING: Do NOT use this for media files (images, videos, audio) — they cannot be read by the Read tool. For media files, just reference their name and metadata from get_thread_messages.',
+        description: 'Download a file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, AND images (png, jpg, gif, webp, etc — Claude can read images natively). WARNING: Do NOT use this for audio/video files — they cannot be read by the Read tool.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -289,14 +289,15 @@ class SlackMcpServer extends BaseMcpServer {
     if (!file_url) throw new Error('file_url is required');
     if (!file_name) throw new Error('file_name is required');
 
-    if (isMediaFile(undefined, file_name)) {
-      this.logger.warn('Blocked media file download to prevent API error', { name: file_name });
+    // Block audio/video downloads (can't be read), but ALLOW images (Claude reads them natively)
+    if (isNonVisualMedia(undefined, file_name)) {
+      this.logger.warn('Blocked non-visual media file download', { name: file_name });
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             blocked: true, name: file_name,
-            reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+            reason: 'Audio/video files cannot be read. Reference by name and metadata only. (Images ARE allowed — use download_thread_file for those.)',
           }),
         }],
       };
@@ -323,17 +324,12 @@ class SlackMcpServer extends BaseMcpServer {
 
     this.logger.info('Downloaded file', { name: file_name, path: tempPath, size: buffer.length });
 
-    const contentType = response.headers.get('content-type') || '';
-    const isImage = isImageFile(contentType, file_name);
-
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
           path: tempPath, name: file_name, size: buffer.length,
-          hint: isImage
-            ? 'This is an image file. Do NOT use the Read tool on it — the API will reject it with "Could not process image". Reference it by name and ask the user to describe its contents.'
-            : 'Use the Read tool to examine this file.',
+          hint: 'Use the Read tool to examine this file. Claude can read both text files and images natively.',
         }),
       }],
     };

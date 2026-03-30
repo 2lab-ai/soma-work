@@ -41,6 +41,10 @@ import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { userSettingsStore } from './user-settings-store';
+import { SummaryTimer } from './slack/summary-timer';
+import { CompletionMessageTracker } from './slack/completion-message-tracker';
+import { SummaryService } from './slack/summary-service';
+import { createForkExecutor } from './slack/create-fork-executor';
 import { V1QueryAdapter, TurnRunner } from './agent-session';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 
@@ -158,6 +162,8 @@ export class SlackHandler {
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
 
+    const completionMessageTracker = new CompletionMessageTracker();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -167,6 +173,7 @@ export class SlackHandler {
       reactionManager: this.reactionManager,
       threadPanel: this.threadPanel,
       requestCoordinator: this.requestCoordinator,
+      completionMessageTracker,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -196,6 +203,10 @@ export class SlackHandler {
       new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
     ]);
 
+    const summaryTimer = new SummaryTimer();
+    const forkExecutor = createForkExecutor(this.claudeHandler);
+    const summaryService = new SummaryService(forkExecutor);
+
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
       fileHandler: this.fileHandler,
@@ -211,6 +222,9 @@ export class SlackHandler {
       assistantStatusManager: this.assistantStatusManager,
       threadPanel: this.threadPanel,
       turnNotifier,
+      summaryTimer,
+      completionMessageTracker,
+      summaryService,
     });
 
     // EventRouter for event handling

@@ -412,6 +412,32 @@ describe('CronScheduler — No Session New Thread', () => {
   });
 });
 
+// --- B2 test: start() should tick immediately ---
+describe('CronScheduler — Immediate tick on start', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-b2-${Date.now()}.json`);
+  });
+
+  it('B2: start() invokes tick() synchronously before returning', () => {
+    const storage = new CronStorage(tmpFile);
+    const { deps } = createMockDeps(storage);
+
+    const scheduler = new CronScheduler(deps);
+    // Spy on tick to verify it's called during start()
+    const tickSpy = vi.spyOn(scheduler, 'tick').mockResolvedValue(undefined);
+
+    scheduler.start();
+
+    // tick() should have been called exactly once — synchronously during start()
+    expect(tickSpy).toHaveBeenCalledTimes(1);
+
+    scheduler.stop();
+    tickSpy.mockRestore();
+  });
+});
+
 // --- Hardening tests (Codex review findings) ---
 
 describe('CronScheduler — Hardening', () => {
