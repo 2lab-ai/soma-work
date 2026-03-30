@@ -25,6 +25,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     const session: ConversationSession = {
@@ -88,6 +89,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     const session: ConversationSession = {
@@ -140,6 +142,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     const session: ConversationSession = {
@@ -192,6 +195,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     const session: ConversationSession = {
@@ -228,6 +232,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     const session: ConversationSession = {
@@ -308,6 +313,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     await panel.attachChoice(
@@ -346,6 +352,7 @@ describe('ThreadPanel', () => {
       slackApi: slackApi as any,
       claudeHandler: claudeHandler as any,
       requestCoordinator: requestCoordinator as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
     // In combined surface mode, bot-initiated threads use threadRootTs as the single surface message

@@ -53,6 +53,7 @@ export {
 export { MessageValidator, ValidationResult, InterruptCheckResult } from './message-validator';
 export { StatusReporter, StatusType, StatusMessage } from './status-reporter';
 export { TodoDisplayManager, TodoUpdateInput, SayFunction as TodoSayFunction } from './todo-display-manager';
+export { TaskListBlockBuilder } from './task-list-block-builder';
 
 // Phase 9: Message formatters
 export { DirectoryFormatter } from './formatters';
