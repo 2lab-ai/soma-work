@@ -221,8 +221,66 @@ describe('isImageFile helper', () => {
   });
 });
 
-describe('download_thread_file image blocking', () => {
+describe('isNonVisualMedia helper', () => {
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+
+  function isNonVisualMedia(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+    }
+    return false;
+  }
+
+  it('returns true for audio mimetypes', () => {
+    expect(isNonVisualMedia('audio/mp3')).toBe(true);
+    expect(isNonVisualMedia('audio/wav')).toBe(true);
+  });
+
+  it('returns true for video mimetypes', () => {
+    expect(isNonVisualMedia('video/mp4')).toBe(true);
+    expect(isNonVisualMedia('video/quicktime')).toBe(true);
+  });
+
+  it('returns false for image mimetypes', () => {
+    expect(isNonVisualMedia('image/png')).toBe(false);
+    expect(isNonVisualMedia('image/jpeg')).toBe(false);
+  });
+
+  it('returns true for audio extensions', () => {
+    expect(isNonVisualMedia(undefined, 'song.mp3')).toBe(true);
+    expect(isNonVisualMedia(undefined, 'recording.wav')).toBe(true);
+    expect(isNonVisualMedia(undefined, 'track.flac')).toBe(true);
+  });
+
+  it('returns true for video extensions', () => {
+    expect(isNonVisualMedia(undefined, 'video.mp4')).toBe(true);
+    expect(isNonVisualMedia(undefined, 'movie.mov')).toBe(true);
+    expect(isNonVisualMedia(undefined, 'clip.webm')).toBe(true);
+  });
+
+  it('returns false for image extensions', () => {
+    expect(isNonVisualMedia(undefined, 'photo.jpg')).toBe(false);
+    expect(isNonVisualMedia(undefined, 'icon.png')).toBe(false);
+  });
+
+  it('returns false for non-media files', () => {
+    expect(isNonVisualMedia(undefined, 'document.pdf')).toBe(false);
+    expect(isNonVisualMedia(undefined, 'code.ts')).toBe(false);
+  });
+
+  it('handles edge cases', () => {
+    expect(isNonVisualMedia(undefined, undefined)).toBe(false);
+    expect(isNonVisualMedia('', '')).toBe(false);
+  });
+});
+
+describe('download_thread_file allows images, blocks non-visual media', () => {
   const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
   function isImageFile(mimetype?: string, filename?: string): boolean {
     if (mimetype && mimetype.startsWith('image/')) return true;
@@ -233,26 +291,59 @@ describe('download_thread_file image blocking', () => {
     return false;
   }
 
-  it('blocks image file downloads and returns blocked response', () => {
+  function isNonVisualMedia(mimetype?: string, filename?: string): boolean {
+    if (mimetype && (mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (filename) {
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      return VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+    }
+    return false;
+  }
+
+  it('allows image file downloads (images are no longer blocked)', () => {
     const imageFiles = ['screenshot.png', 'photo.jpg', 'animation.gif', 'icon.webp', 'logo.svg'];
 
     for (const fileName of imageFiles) {
       expect(isImageFile(undefined, fileName)).toBe(true);
-      // Simulates the early return in handleDownloadFile
+      // Images are now ALLOWED for download — isNonVisualMedia returns false for images
+      expect(isNonVisualMedia(undefined, fileName)).toBe(false);
+    }
+  });
+
+  it('blocks audio file downloads via isNonVisualMedia', () => {
+    const audioFiles = ['song.mp3', 'recording.wav', 'podcast.ogg'];
+
+    for (const fileName of audioFiles) {
+      expect(isNonVisualMedia(undefined, fileName)).toBe(true);
       const response = {
         blocked: true,
         name: fileName,
-        reason: 'Image files cannot be downloaded and read — the API will reject them with "Could not process image".',
+        reason: 'Audio/video files cannot be downloaded and read. Reference the file by name and metadata only.',
       };
       expect(response.blocked).toBe(true);
     }
   });
 
-  it('allows non-image file downloads', () => {
-    const nonImageFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+  it('blocks video file downloads via isNonVisualMedia', () => {
+    const videoFiles = ['demo.mp4', 'clip.mov', 'screen.webm'];
 
-    for (const fileName of nonImageFiles) {
+    for (const fileName of videoFiles) {
+      expect(isNonVisualMedia(undefined, fileName)).toBe(true);
+      const response = {
+        blocked: true,
+        name: fileName,
+        reason: 'Audio/video files cannot be downloaded and read. Reference the file by name and metadata only.',
+      };
+      expect(response.blocked).toBe(true);
+    }
+  });
+
+  it('allows non-media file downloads', () => {
+    const nonMediaFiles = ['document.pdf', 'script.ts', 'data.json', 'readme.md', 'archive.zip'];
+
+    for (const fileName of nonMediaFiles) {
       expect(isImageFile(undefined, fileName)).toBe(false);
+      expect(isNonVisualMedia(undefined, fileName)).toBe(false);
     }
   });
 });
