@@ -11,7 +11,6 @@
 
 import { App } from '@slack/bolt';
 import type { AgentConfig } from './types';
-import { ClaudeHandler } from './claude-handler';
 import { McpManager } from './mcp-manager';
 import { PromptBuilder } from './prompt-builder';
 import { SessionRegistry } from './session-registry';
@@ -27,7 +26,6 @@ export interface AgentInfo {
 export class AgentInstance {
   private logger: Logger;
   private app: App | null = null;
-  private claudeHandler: ClaudeHandler | null = null;
   private sessionRegistry: SessionRegistry;
   private promptBuilder: PromptBuilder;
   private _running = false;

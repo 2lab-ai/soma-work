@@ -41,7 +41,8 @@ function loadAgentConfigs(): Record<string, AgentConfigEntry> {
   if (!raw) return {};
   try {
     return JSON.parse(raw);
-  } catch {
+  } catch (error) {
+    console.error('[agent-mcp-server] Failed to parse SOMA_AGENT_CONFIGS:', error instanceof Error ? error.message : String(error));
     return {};
   }
 }

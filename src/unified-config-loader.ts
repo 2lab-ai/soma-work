@@ -43,10 +43,14 @@ export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
   }
 
   for (const [name, entry] of Object.entries(raw.agents)) {
-    const agent = entry as any;
+    const agent = entry as Record<string, unknown>;
+    if (!agent || typeof agent !== 'object') {
+      logger.warn(`Skipping agent '${name}': invalid entry (not an object)`);
+      continue;
+    }
 
     // Validate required tokens
-    if (!agent?.slackBotToken || typeof agent.slackBotToken !== 'string') {
+    if (!agent.slackBotToken || typeof agent.slackBotToken !== 'string') {
       logger.warn(`Skipping agent '${name}': missing or invalid slackBotToken`);
       continue;
     }
@@ -68,13 +72,13 @@ export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
     }
 
     result[name] = {
-      slackBotToken: agent.slackBotToken,
-      slackAppToken: agent.slackAppToken,
-      signingSecret: agent.signingSecret,
-      promptDir: agent.promptDir || `src/prompt/${name}`,
-      persona: agent.persona || 'default',
-      description: agent.description,
-      model: agent.model,
+      slackBotToken: agent.slackBotToken as string,
+      slackAppToken: agent.slackAppToken as string,
+      signingSecret: agent.signingSecret as string,
+      promptDir: (typeof agent.promptDir === 'string' ? agent.promptDir : undefined) || `src/prompt/${name}`,
+      persona: (typeof agent.persona === 'string' ? agent.persona : undefined) || 'default',
+      description: typeof agent.description === 'string' ? agent.description : undefined,
+      model: typeof agent.model === 'string' ? agent.model : undefined,
     };
   }
 
