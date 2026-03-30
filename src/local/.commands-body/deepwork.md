@@ -10,9 +10,9 @@ Ralph loop with triple AI review gate. All 3 reviewers must score ≥9.5.
 
 ---
 
-# Phase 3 - AI Review (Triple Gate) - MANDATORY
+# Phase 3 - AI Review (Triple Gate + Gap Detection) - MANDATORY
 
-### ALL THREE reviewers must pass (≥9.5)
+### ALL THREE reviewers must pass (≥9.5) AND no gaps detected
 
 #### 1. Codex Reviewer
 ```
@@ -26,7 +26,7 @@ mcp__llm__chat:
   model: "gemini"
 ```
 
-#### 3. Opus-4.5 Reviewer
+#### 3. Opus-4.5 Reviewer (includes Gap Detection)
 ```
 Task:
   subagent_type: "oh-my-claude:reviewer"
@@ -35,9 +35,14 @@ Task:
 ### Review Protocol
 
 1. Run all 3 reviewers in **parallel**
-2. Collect scores from each
-3. If ANY score < 9.5 → fix issues and re-review
-4. Only proceed when ALL THREE pass
+2. Collect scores AND gap analysis from each
+3. **Gap check FIRST**: If ANY reviewer returns `GAP_DETECTED`:
+   - Extract gap type and correction instructions
+   - Apply corrections (Ouroboros correction attempt #1)
+   - Re-submit to ALL reviewers
+   - If 2nd review still has gaps → **AskUserQuestion** to escalate
+4. If ANY score < 9.5 → fix issues and re-review
+5. Only proceed when ALL THREE pass AND no gaps remain
 
 ### Review Prompt Template
 
@@ -45,7 +50,7 @@ Task:
 Review this work with senior engineer standards:
 
 ## Task
-[Original task]
+[Original task — include the FULL original request/issue for gap detection]
 
 ## Changes
 [Files changed]
@@ -55,10 +60,20 @@ Review this work with senior engineer standards:
 - Tests: [pass/fail]
 - Diagnostics: [clean/issues]
 
+## Gap Detection (MANDATORY)
+Compare implementation against the original task. Check for:
+- assumption_injection: Added assumptions not in the request?
+- scope_creep: Features beyond what was asked?
+- direction_drift: Overall approach diverges from intent?
+- missing_core: Requested functionality missing?
+- over_engineering: Abstraction disproportionate to problem?
+
 ## Assessment
-1. Quality analysis
-2. Issues/improvements
-3. Score: 0.0-10.0 (9.5+ = production-ready)
+1. Gap analysis (intent alignment check)
+2. Quality analysis
+3. Issues/improvements
+4. Score: 0.0-10.0 (9.5+ = production-ready)
+5. Verdict: REJECT | CONCERNS | ACCEPTABLE | EXCELLENT | GAP_DETECTED
 ```
 
 ---
@@ -83,6 +98,7 @@ Review this work with senior engineer standards:
 - [ ] All todos marked complete
 - [ ] Code works (build passes, tests pass if applicable)
 - [ ] No broken functionality left behind
+- [ ] **Gap Detection**: No `GAP_DETECTED` verdicts from any reviewer
 - [ ] gpt-5.2-xhigh reviewer score ≥ 9.5/10
 - [ ] gemini-3-pro-preview reviewer score ≥ 9.5/10
 - [ ] opus-4.5 reviewer score ≥ 9.5/10
