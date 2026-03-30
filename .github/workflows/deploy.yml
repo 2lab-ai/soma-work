@@ -1,0 +1,189 @@
+name: Deploy
+
+on:
+  push:
+    branches: [deploy/dev, deploy/prod]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, oudwood-512]
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+
+    steps:
+      - name: Validate manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ inputs.confirm }}" != "deploy" ]]; then
+            echo "::error::Confirmation required. Pass confirm='deploy' to proceed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine deployment target
+        id: target
+        run: |
+          case "${{ github.ref_name }}" in
+            main|deploy/dev)
+              echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
+              ;;
+            deploy/prod)
+              echo "deploy_env=main" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported branch: ${{ github.ref_name }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Build target matrix
+        id: targets
+        run: |
+          echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "deploy/dev" ]]; then
+            cat >> "$GITHUB_OUTPUT" <<'EOF'
+          {"include":[
+            {
+              "name":"mac-mini-dev",
+              "runner_label":"soma-work",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
+            },
+            {
+              "name":"oudwood-dev",
+              "runner_label":"oudwood-512",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
+            }
+          ]}
+          EOF
+          else
+            cat >> "$GITHUB_OUTPUT" <<'EOF'
+          {"include":[
+            {
+              "name":"mac-mini-main",
+              "runner_label":"soma-work",
+              "github_env":"production",
+              "deploy_env":"main",
+              "target_dir":"/opt/soma-work/main"
+            }
+          ]}
+          EOF
+          fi
+
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Version bump & release notes
+        run: |
+          REF="${{ github.ref_name }}"
+          # Normalize deploy branch names to their target refs
+          case "$REF" in
+            deploy/dev) REF="main" ;;
+            deploy/prod) REF="deploy/prod" ;;
+          esac
+          ./scripts/version-bump.sh "$REF"
+
+      - name: Pack deploy bundle
+        run: |
+          tar -czf deploy-bundle.tar.gz \
+            dist \
+            mcp-servers \
+            node_modules \
+            package.json \
+            service.sh
+
+      - name: Upload deploy bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-bundle
+          path: deploy-bundle.tar.gz
+
+  deploy:
+    name: Deploy ${{ matrix.name }}
+    needs: prepare
+    runs-on: [self-hosted, "${{ matrix.runner_label }}"]
+    timeout-minutes: 10
+    environment: ${{ matrix.github_env }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Download deploy bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-bundle
+          path: bundle
+
+      - name: Extract deploy bundle
+        run: |
+          tar -xzf bundle/deploy-bundle.tar.gz
+
+      - name: Deploy
+        env:
+          ENV: ${{ matrix.deploy_env }}
+          TARGET: ${{ matrix.target_dir }}
+        run: |
+          echo "Deploying ${{ matrix.name }} to $TARGET..."
+
+          if [[ "$ENV" == "main" ]]; then
+            DEV_SOURCE="/opt/soma-work/dev" \
+            LEGACY_ROOT="/Users/dd/app.claude-code-slack-bot" \
+            TARGET="$TARGET" \
+            node dist/deploy/main-env-bootstrap.js
+          fi
+
+          bash service.sh "$ENV" stop || true
+
+          rsync -a --delete \
+            --exclude='.env' \
+            --exclude='.system.prompt' \
+            --exclude='mcp-servers.json' \
+            --exclude='config.json' \
+            --exclude='data/' \
+            --exclude='logs/' \
+            --exclude='.claude/' \
+            dist/ "$TARGET/dist/"
+
+          rsync -a --delete node_modules/ "$TARGET/node_modules/"
+          rsync -a --delete mcp-servers/ "$TARGET/mcp-servers/"
+          rsync -a \
+            package.json \
+            service.sh \
+            "$TARGET/"
+
+          bash service.sh "$ENV" install
+
+      - name: Verify
+        env:
+          ENV: ${{ matrix.deploy_env }}
+        run: |
+          sleep 3
+          bash service.sh "$ENV" status

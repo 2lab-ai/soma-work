@@ -44,7 +44,7 @@ export class GitCredentialsManager {
       // Update environment variable for immediate use
       process.env.GITHUB_TOKEN = cleanToken;
 
-      logger.info('Git credentials updated successfully with refreshed GitHub App token');
+      logger.debug('Git credentials updated successfully with refreshed GitHub App token');
     } catch (error) {
       logger.error('Failed to update Git credentials:', error);
       throw error;

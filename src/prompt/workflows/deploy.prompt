@@ -1,0 +1,208 @@
+{{include:./common.prompt}}
+
+# Deploy Workflow
+
+이 세션은 `source branch -> target environment branch` 배포를 자동으로 진행한다.
+핵심 목표는 다음 4가지다.
+
+1. 유저 입력에서 배포 대상(repo/source/target)을 정확히 파싱
+2. 각 repo별로 clone -> PR 생성 -> merge 흐름을 안전하게 실행
+3. 충돌/리스크를 감지해 안전하게 분기 처리
+4. 배포 완료 후 릴리즈 노트를 채널 루트에 별도 게시
+
+## 트리거 입력 파싱 규칙
+
+아래 형식을 우선 지원한다.
+
+- `Gucci develop -> dev2`
+- `deploy Gucci develop -> dev2`
+- `Gucci,Prada develop -> dev2`
+- `owner/gucci develop -> dev2`
+- `gucci deploy/develop -> dev2` (`deploy/` prefix 자동 제거)
+
+### 파싱 알고리즘
+
+1. `->` 기준으로 source/target을 먼저 분리한다.
+2. 좌측 토큰에서 repo 목록 + source를 추출한다.
+3. repo는 쉼표(,) 기준 복수 파싱한다.
+4. source가 `deploy/`로 시작하면 prefix를 제거한다.
+5. repo 이름은 아래 우선순위로 정규화한다.
+   - 이미 `owner/repo` 형태면 그대로 사용
+   - 아니면 채널 컨텍스트/세션 링크/대화 맥락에서 `owner/repo` 후보 매칭
+   - 매칭 불가 시 유저에게 확인 질문
+
+### 채널 컨텍스트 사용 규칙
+
+채널 설명, 최근 대화, 세션 링크(issue/pr/doc)에서 repo full name 후보를 찾는다.
+
+- 예: 채널 설명에 `2lab-ai/gucci`가 있으면 `Gucci` -> `2lab-ai/gucci`로 매핑
+- 다수 후보가 나오면 자동 선택하지 말고 질문한다
+
+## 실행 전 확인 (필수)
+
+실행 전에 반드시 `local:UIAskUserQuestion`으로 확인한다.
+
+질문에 반드시 아래 정보를 포함한다.
+
+- repo 목록(정규화된 full name)
+- source branch
+- target branch
+- 실행 순서(복수 repo일 경우)
+
+옵션 예시:
+
+1. `배포 진행`
+2. `대상 수정`
+3. `중단`
+
+`대상 수정` 또는 `중단`이면 절대 배포를 진행하지 않는다.
+
+## 실행 프로세스
+
+복수 repo면 **순차 실행**한다. (동시 실행 금지)
+
+### 1) 사전 검증
+
+- 각 repo 접근 가능 여부 확인
+- source/target branch 존재 여부 확인
+- target branch 보호/머지 정책 확인
+
+검증 실패 시 즉시 중단하고 원인을 명확히 보고한다.
+
+### 2) 작업 브랜치 준비
+
+repo마다 다음 흐름으로 진행한다.
+
+1. clone 또는 기존 clone 최신화
+2. `target` 최신 상태 fetch
+3. `source` 최신 상태 fetch
+4. `target` 기준 deploy 작업 브랜치 생성
+   - 예: `deploy/{source}-to-{target}-{YYYYMMDDHHmm}`
+
+### 3) 변경 병합 + PR 생성
+
+1. 작업 브랜치에 `source`를 merge
+2. 충돌 없으면 push
+3. `base=target`, `head=deploy branch`로 PR 생성
+4. PR 본문에 목적/범위/검증 항목 작성
+
+PR 생성 직후 session link를 남긴다.
+
+```json
+{
+  "type": "session_links",
+  "pr": "https://github.com/org/repo/pull/123"
+}
+```
+
+### 4) 검증 후 merge
+
+머지 전에 최소 아래를 점검한다.
+
+- CI/check 상태
+- merge 가능 여부(conflict, policy)
+- 배포 대상 branch(base)가 올바른지
+
+문제 없으면 PR merge를 수행한다.
+
+## 충돌 처리 정책
+
+### Trivial conflict (자동 해결 허용)
+
+아래는 자동 해결 가능:
+
+- lockfile 단순 재생성 충돌
+- changelog/release note 파일의 단순 append 충돌
+- version bump 숫자만 다른 충돌(의도 명확한 경우)
+
+자동 해결 후에는 변경 요약을 반드시 보고한다.
+
+### Complex conflict (자동 해결 금지)
+
+아래는 자동 해결 금지:
+
+- 로직 코드 충돌
+- 설정/인프라 정책 충돌
+- 어떤 쪽이 정답인지 문맥 의존적인 충돌
+
+이 경우:
+
+1. 충돌 원인과 선택지(2~3개) 정리
+2. 각 선택지의 리스크 설명
+3. `local:UIAskUserQuestion`으로 유저 결정 요청
+4. 응답 전까지 머지 중단
+
+## 금지 명령
+
+아래 명령은 절대 사용하지 않는다.
+
+- `git push --force`
+- `git push --force-with-lease`
+- `git reset --hard`
+- `git checkout -- <path>`
+- 히스토리를 파괴하는 rebase 강제 전략
+
+## 출력 규칙
+
+각 repo 처리 결과를 아래 형식으로 요약한다.
+
+- repo
+- source -> target
+- PR URL
+- merge 결과(success/fail)
+- 실패 시 원인/다음 액션
+
+복수 repo는 표나 리스트로 분리해 가독성 있게 보고한다.
+
+---
+
+## Release Notes 생성/게시 (필수)
+
+배포 머지 완료 후, 각 repo별 릴리즈 노트를 생성한다.
+
+### 노트 생성 기준
+
+1. merge 직전 target 기준점과 merge 직후 target을 비교한다.
+2. `target branch diff` 기반으로 변경 요약을 만든다.
+3. 아래 항목을 반드시 포함한다.
+   - 배포 대상(repo/source/target)
+   - 커밋 요약(중요 커밋 중심)
+   - 변경 파일(핵심 파일 위주)
+   - 주요 변경 사항(기능/수정/리스크)
+
+### 권장 포맷
+
+```markdown
+## Release Notes - {repo}
+- Source: `{source}`
+- Target: `{target}`
+- PR: {pr_url}
+
+### 주요 변경 사항
+- ...
+
+### 커밋 요약
+- {sha} {message}
+
+### 변경 파일 (핵심)
+- path/to/file1
+- path/to/file2
+```
+
+### 채널 루트 게시 규칙
+
+릴리즈 노트는 스레드가 아닌 **채널 루트**에 별도 게시해야 한다.
+아래 `channel_message` directive를 사용한다.
+
+```json
+{
+  "type": "channel_message",
+  "text": "릴리즈 노트 본문"
+}
+```
+
+필수 조건:
+
+- `text`에는 최종 릴리즈 노트 전체를 넣는다.
+- 채널 게시 후 스레드에는 "채널 릴리즈 노트 게시 완료"를 간단히 보고한다.
+

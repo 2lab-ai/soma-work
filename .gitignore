@@ -1,15 +1,26 @@
 # Dependencies
 node_modules/
 .claude/
+!.claude/skills/
+!.claude/rules/
 
 # Environment variables
 .env
+.env.dev
 .env.local
 .env.*.local
 
 # Local config (not committed)
 mcp-servers.json
+mcp-servers.dev.json
+config.json
+config.dev.json
 .system.prompt
+.system.prompt.dev
+.setup-state
+.setup-secrets.tmp
+.new-deploy-state
+.github-private-key.pem
 
 # Build output
 dist/
@@ -30,8 +41,12 @@ logs/
 *.log
 nohup.out
 
+# Plugin marketplace cache
+plugins/
+
 # User data
 data/
+data.dev/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -45,3 +60,12 @@ coverage/
 
 usercontent/
 .system.prompt
+
+# bd (beads)
+.beads/daemon-error
+
+# Git worktrees
+.worktree/
+
+# bv (beads viewer) local config and caches
+.bv/

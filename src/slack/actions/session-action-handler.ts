@@ -1,22 +1,238 @@
 import { SlackApiHelper } from '../slack-api-helper';
 import { SessionUiManager } from '../session-manager';
+import { ReactionManager } from '../reaction-manager';
+import { RequestCoordinator } from '../request-coordinator';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import { ActionPanelBuilder } from '../action-panel-builder';
+import { ContextWindowManager } from '../context-window-manager';
+import { ThreadPanel } from '../thread-panel';
 import { ClaudeHandler } from '../../claude-handler';
+import { ConversationSession } from '../../types';
+import { postSourceThreadSummary } from '../source-thread-summary';
 import { Logger } from '../../logger';
 import { RespondFn } from './types';
+import { userSettingsStore } from '../../user-settings-store';
 
 interface SessionActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
   sessionManager: SessionUiManager;
+  reactionManager?: ReactionManager;
+  requestCoordinator?: RequestCoordinator;
+  threadPanel?: ThreadPanel;
 }
 
 /**
- * 세션 종료 액션 핸들러
+ * 세션 종료 및 유휴 관련 액션 핸들러
  */
 export class SessionActionHandler {
   private logger = new Logger('SessionActionHandler');
 
   constructor(private ctx: SessionActionContext) {}
+
+  /**
+   * Handle close session confirm button (from /close command)
+   */
+  async handleCloseConfirm(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+      const userId = body.user?.id;
+
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (!session) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션을 찾을 수 없습니다. 이미 종료되었을 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      if (session.ownerId !== userId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 소유자만 종료할 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      // Add zzz emoji before termination (while session still has data)
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+      }
+
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Fire-and-forget: must not block session termination sequence
+      postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch((err) =>
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+      );
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+      const success = this.ctx.claudeHandler.terminateSession(sessionKey);
+      if (success) {
+        await respond({
+          text: '✅ 세션이 종료되었습니다.',
+          replace_original: true,
+        });
+      } else {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료에 실패했습니다.',
+          replace_original: false,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Error processing close confirm', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: '❌ 세션 종료 중 오류가 발생했습니다.',
+        replace_original: false,
+      });
+    }
+  }
+
+  /**
+   * Handle close session cancel button
+   */
+  async handleCloseCancel(_body: any, respond: RespondFn): Promise<void> {
+    try {
+      await respond({
+        text: '취소되었습니다.',
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to respond to close cancel', error);
+    }
+  }
+
+  /**
+   * Handle idle close session button (from 12h idle check)
+   */
+  async handleIdleClose(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+      const userId = body.user?.id;
+
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (!session) {
+        await respond({
+          text: '✅ 세션이 이미 종료되었습니다.',
+          replace_original: true,
+        });
+        return;
+      }
+
+      if (session.ownerId !== userId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 소유자만 종료할 수 있습니다.',
+          replace_original: false,
+        });
+        return;
+      }
+
+      // Add zzz emoji before termination
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+      }
+
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+      const success = this.ctx.claudeHandler.terminateSession(sessionKey);
+      if (success) {
+        await respond({
+          text: '✅ 세션이 종료되었습니다.',
+          replace_original: true,
+        });
+      } else {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료에 실패했습니다.',
+          replace_original: false,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Error processing idle close', error);
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 종료 중 오류가 발생했습니다. 다시 시도해주세요.',
+          replace_original: false,
+        });
+      } catch (respondError) {
+        this.logger.error('Failed to send error response for idle close', respondError);
+      }
+    }
+  }
+
+  /**
+   * Handle idle keep session button (from 12h idle check)
+   * Refreshes the session's lastActivity to prevent auto-close
+   */
+  async handleIdleKeep(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const sessionKey = body.actions[0].value;
+
+      // Clear lifecycle emojis (idle moon)
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      if (session?.threadTs) {
+        await this.ctx.reactionManager?.clearSessionLifecycleEmojis(session.channelId, session.threadTs);
+      }
+
+      const refreshed = this.ctx.claudeHandler.refreshSessionActivityByKey(sessionKey);
+      if (!refreshed) {
+        await respond({
+          text: '세션이 이미 종료되었습니다.',
+          replace_original: true,
+        });
+        return;
+      }
+
+      await respond({
+        text: '🔄 세션이 유지됩니다. 타이머가 리셋되었습니다.',
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.error('Error processing idle keep', error);
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          text: '❌ 세션 유지 처리 중 오류가 발생했습니다. 스레드에 메시지를 보내 활동을 갱신해주세요.',
+          replace_original: false,
+        });
+      } catch (respondError) {
+        this.logger.error('Failed to send error response for idle keep', respondError);
+      }
+    }
+  }
+
+  /**
+   * Handle refresh sessions button
+   */
+  async handleRefreshSessions(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const userId = body.user?.id;
+      if (!userId) return;
+
+      const { text, blocks } = await this.ctx.sessionManager.formatUserSessionsBlocks(userId, { showControls: true });
+      await respond({
+        text,
+        blocks,
+        replace_original: true,
+      });
+    } catch (error) {
+      this.logger.error('Error refreshing sessions', error);
+    }
+  }
 
   async handleTerminateSession(body: any, respond: RespondFn): Promise<void> {
     try {
@@ -45,6 +261,17 @@ export class SessionActionHandler {
         });
         return;
       }
+
+      // Add zzz emoji before termination
+      if (session.threadTs) {
+        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+      }
+
+      // Update UI to closed state before terminating
+      await this.updateSessionUiAsClosed(session);
+
+      // Abort active AI request before deleting session
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
@@ -89,5 +316,61 @@ export class SessionActionHandler {
         replace_original: false,
       });
     }
+  }
+
+  /**
+   * Update thread surface to show closed state.
+   * Delegates to ThreadPanel (→ ThreadSurface) for single-writer rendering.
+   * Falls back to direct update if threadPanel is unavailable.
+   */
+  private async updateSessionUiAsClosed(session: ConversationSession): Promise<void> {
+    const threadTs = session.threadRootTs || session.threadTs;
+    const sessionKey = threadTs
+      ? this.ctx.claudeHandler.getSessionKey(session.channelId, threadTs)
+      : '';
+
+    if (this.ctx.threadPanel && sessionKey) {
+      try {
+        await this.ctx.threadPanel.close(session, sessionKey);
+        return;
+      } catch (error) {
+        this.logger.warn('ThreadPanel.close() failed, falling back to direct update', { error });
+      }
+    }
+
+    // Fallback: direct update (legacy path)
+    // In combined surface mode, the message contains header + panel blocks,
+    // so we must include both to avoid losing the header section.
+    const channelId = session.channelId;
+    if (session.actionPanel?.messageTs) {
+      try {
+        const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
+        const panelPayload = ActionPanelBuilder.build({
+          sessionKey,
+          workflow: session.workflow,
+          closed: true,
+          contextRemainingPercent: this.getContextRemainingPercent(session),
+        });
+        const combinedBlocks = [
+          ...(headerPayload.blocks || []),
+          ...panelPayload.blocks,
+        ];
+        await this.ctx.slackApi.updateMessage(
+          channelId,
+          session.actionPanel.messageTs,
+          panelPayload.text,
+          combinedBlocks
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update action panel as closed', { error });
+      }
+    }
+  }
+
+  private getContextRemainingPercent(session: ConversationSession): number | undefined {
+    const usage = session.usage;
+    if (!usage || usage.contextWindow <= 0) return undefined;
+    return Number(ContextWindowManager.computeRemainingPercent(usage).toFixed(1));
   }
 }

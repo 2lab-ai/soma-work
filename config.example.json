@@ -1,0 +1,41 @@
+{
+  "mcpServers": {
+    "jira": {
+      "type": "sse",
+      "url": "https://mcp.atlassian.com/v1/sse"
+    }
+  },
+  "server-tools": {
+    "permission": {
+      "db_query": "write",
+      "logs": "read",
+      "list": "read",
+      "list_service": "read"
+    },
+    "example-server": {
+      "ssh": { "host": "your-server.example.com" },
+      "databases": {
+        "main": {
+          "type": "mysql",
+          "host": "127.0.0.1",
+          "port": 3306,
+          "user": "readonly_user",
+          "password": "your_password"
+        }
+      }
+    }
+  },
+  "plugin": {
+    "marketplace": [
+      {
+        "name": "soma-work",
+        "repo": "2lab-ai/soma-work",
+        "ref": "main"
+      }
+    ],
+    "plugins": [
+      "omc@soma-work"
+    ],
+    "localOverrides": []
+  }
+}

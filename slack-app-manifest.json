@@ -14,11 +14,32 @@
     "bot_user": {
       "display_name": "DEV Claude Code",
       "always_online": true
-    }
+    },
+    "slash_commands": [
+      {
+        "command": "/soma",
+        "description": "Claude Code Bot commands (help, model, persona, etc.)",
+        "usage_hint": "[help|model|persona|sessions|bypass|mcp|plugins|...]",
+        "should_escape": false
+      },
+      {
+        "command": "/session",
+        "description": "View and manage your bot sessions",
+        "usage_hint": "",
+        "should_escape": false
+      },
+      {
+        "command": "/new",
+        "description": "Reset session and start fresh conversation",
+        "usage_hint": "[optional prompt]",
+        "should_escape": false
+      }
+    ]
   },
   "oauth_config": {
     "scopes": {
       "bot": [
+        "assistant:write",
         "app_mentions:read",
         "channels:history",
         "groups:history",
@@ -26,7 +47,7 @@
         "chat:write",
         "chat:write.public",
         "commands",
-        "files:read",        
+        "files:read",
         "files:write",
         "groups:read",
         "im:history",

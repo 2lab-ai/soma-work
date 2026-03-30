@@ -1,9 +1,9 @@
 # Session Management Specification
 
 ## Version
-- Document Version: 1.0
-- Source File: `src/claude-handler.ts`
-- Last Updated: 2025-12-13
+- Document Version: 1.1
+- Source File: `src/session-registry.ts`
+- Last Updated: 2026-03-06
 
 ## 1. Overview
 

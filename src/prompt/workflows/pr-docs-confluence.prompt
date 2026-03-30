@@ -1,0 +1,149 @@
+{{include:./common.prompt}}
+
+# PR Documentation to Confluence Workflow
+
+PR 변경 사항을 Confluence에 문서화하는 워크플로우. 다양한 이해관계자를 위한 맞춤형 문서를 생성한다.
+
+## 트리거 패턴
+```
+<Confluence_Parent_URL> <PR_URL>
+```
+
+예시:
+```
+https://example.atlassian.net/wiki/spaces/TEAM/pages/123456/ChangeLogs https://github.com/org/repo/pull/123
+```
+
+## 자동 수행 사항
+
+### 1. 입력 파싱
+- PR URL에서 owner, repo, pull_number 추출
+- Confluence URL에서 cloudId, spaceId, parentPageId 추출
+
+### 2. PR 정보 수집
+```
+/github-pr <PR_URL>  # PR 메타데이터, 리뷰, 코멘트, 변경 파일 포함 (토큰 효율적)
+gh pr diff <PR_NUM>  # 상세 diff (코드 레벨 분석용)
+```
+
+### 3. 이해관계자 분류
+UIAskUserQuestion으로 문서화 대상 이해관계자 그룹을 확인:
+- **API Consumer**: API 사용자 (외부 개발자, 프론트엔드팀 등)
+- **Implementation**: 구현 담당자 (백엔드팀, 코드 리뷰어 등)
+- **Business**: 비즈니스 이해관계자 (PM, 기획자 등)
+- **Operations**: 운영팀 (DevOps, SRE 등)
+
+### 4. 문서 구조 생성
+각 이해관계자 그룹별로 섹션을 나눠 Confluence 페이지 생성:
+
+```markdown
+# [PR #{number}] {PR Title}
+
+## 개요
+- **PR**: {PR URL}
+- **작성일**: {date}
+- **작성자**: {author}
+
+---
+
+## Part 1: {Stakeholder Group 1 Name}
+
+{해당 그룹에 필요한 내용만 포함}
+
+---
+
+## Part 2: {Stakeholder Group 2 Name}
+
+{해당 그룹에 필요한 내용만 포함}
+```
+
+### 5. Confluence 페이지 생성
+```
+mcp__jira__createConfluencePage
+- cloudId: {extracted from URL}
+- spaceId: {extracted from parent page}
+- parentId: {parent page ID}
+- title: "[PR #{number}] {title}"
+- body: {generated content}
+- contentFormat: "markdown"
+```
+
+## 문서 템플릿 가이드
+
+### API Consumer용 템플릿
+```markdown
+## API 변경 사항
+
+### 새로운 API
+| Endpoint | Method | 설명 |
+|----------|--------|------|
+| /api/v1/xxx | POST | 설명 |
+
+### 요청/응답 예시
+```json
+// Request
+{ ... }
+
+// Response
+{ ... }
+```
+
+### Breaking Changes
+- 없음 / 있음 (상세 설명)
+
+### Migration Guide
+1. 단계 1
+2. 단계 2
+```
+
+### Implementation용 템플릿
+```markdown
+## 구현 상세
+
+### 변경된 파일
+| 파일 | 변경 유형 | 요약 |
+|------|----------|------|
+| path/to/file | Added/Modified | 설명 |
+
+### 아키텍처 변경
+- 새로운 컴포넌트/서비스 추가
+- 의존성 변경
+
+### 주요 로직 변경
+1. 변경 포인트 1
+2. 변경 포인트 2
+
+### 테스트
+- 단위 테스트: O/X
+- 통합 테스트: O/X
+```
+
+## 출력 형식
+
+### 📄 문서 생성 완료
+
+**Confluence 페이지**: {생성된 페이지 URL}
+
+#### 문서 구조
+- Part 1: {그룹명} - {요약}
+- Part 2: {그룹명} - {요약}
+
+#### 다음 단계
+UIAskUserQuestion으로 추가 작업 확인:
+- 문서 수정 필요
+- 다른 이해관계자 그룹 추가
+- 완료
+
+---
+
+## 예제 문서 포맷
+
+```
+{{include:./workflows/examples/PTN-1978-summary.md}}
+```
+
+## 🔄 다음 단계 안내
+
+문서 작성 완료 후:
+- 문서 링크를 세션에 연결: "`link doc <url>` 명령으로 Confluence 문서를 세션에 연결할 수 있습니다."
+- 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."

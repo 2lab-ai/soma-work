@@ -9,6 +9,7 @@ const createMockApp = () => ({
     },
     conversations: {
       info: vi.fn(),
+      history: vi.fn(),
     },
     chat: {
       getPermalink: vi.fn(),
@@ -66,6 +67,59 @@ describe('SlackApiHelper', () => {
     });
   });
 
+  describe('getUserProfile', () => {
+    // Trace: S1, Section 3b — SlackApiHelper fetch
+
+    it('should return displayName and email from Slack profile', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: 'Zhuge', email: 'z@insightquest.io' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge');
+      expect(result.email).toBe('z@insightquest.io');
+    });
+
+    it('should fallback to real_name when display_name is empty', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: '', email: 'z@insightquest.io' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge Liang');
+    });
+
+    it('should return undefined email when scope missing', async () => {
+      mockApp.client.users.info.mockResolvedValue({
+        user: {
+          real_name: 'Zhuge Liang',
+          name: 'zhuge',
+          profile: { display_name: 'Zhuge' },
+        },
+      });
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('Zhuge');
+      expect(result.email).toBeUndefined();
+    });
+
+    it('should fallback to userId on API failure', async () => {
+      mockApp.client.users.info.mockRejectedValue(new Error('API error'));
+
+      const result = await helper.getUserProfile('U123');
+      expect(result.displayName).toBe('U123');
+      expect(result.email).toBeUndefined();
+    });
+  });
+
   describe('getChannelName', () => {
     it('should return "DM" for DM channels', async () => {
       const result = await helper.getChannelName('D123ABC');
@@ -104,6 +158,30 @@ describe('SlackApiHelper', () => {
       mockApp.client.chat.getPermalink.mockRejectedValue(new Error('API error'));
 
       const result = await helper.getPermalink('C123', '123.456');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getMessage', () => {
+    it('should return matching message when found', async () => {
+      mockApp.client.conversations.history.mockResolvedValue({
+        messages: [{ ts: '123.456', user: 'B123', text: 'hello' }],
+      });
+
+      const result = await helper.getMessage('C123', '123.456');
+      expect(result).toEqual({ ts: '123.456', user: 'B123', text: 'hello' });
+      expect(mockApp.client.conversations.history).toHaveBeenCalledWith({
+        channel: 'C123',
+        latest: '123.456',
+        oldest: '123.456',
+        inclusive: true,
+        limit: 1,
+      });
+    });
+
+    it('should return null when message is missing', async () => {
+      mockApp.client.conversations.history.mockResolvedValue({ messages: [] });
+      const result = await helper.getMessage('C123', '123.456');
       expect(result).toBeNull();
     });
   });
@@ -164,6 +242,28 @@ describe('SlackApiHelper', () => {
       });
     });
 
+    it('should disable unfurl when requested', async () => {
+      mockApp.client.chat.postMessage.mockResolvedValue({
+        ts: '123.456',
+        channel: 'C123',
+      });
+
+      await helper.postMessage('C123', 'Hello', {
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+
+      expect(mockApp.client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C123',
+        text: 'Hello',
+        thread_ts: undefined,
+        blocks: undefined,
+        attachments: undefined,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+    });
+
     it('should throw on error', async () => {
       mockApp.client.chat.postMessage.mockRejectedValue(new Error('API error'));
 
@@ -199,13 +299,36 @@ describe('SlackApiHelper', () => {
         attachments: undefined,
       });
     });
+
+    it('should disable unfurl when requested', async () => {
+      mockApp.client.chat.update.mockResolvedValue({});
+
+      await helper.updateMessage(
+        'C123',
+        '123.456',
+        'Updated',
+        [{ type: 'section' }],
+        undefined,
+        { unfurlLinks: false, unfurlMedia: false }
+      );
+
+      expect(mockApp.client.chat.update).toHaveBeenCalledWith({
+        channel: 'C123',
+        ts: '123.456',
+        text: 'Updated',
+        blocks: [{ type: 'section' }],
+        attachments: undefined,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+    });
   });
 
   describe('postEphemeral', () => {
     it('should post ephemeral message', async () => {
-      mockApp.client.chat.postEphemeral.mockResolvedValue({});
+      mockApp.client.chat.postEphemeral.mockResolvedValue({ message_ts: '123.456' });
 
-      await helper.postEphemeral('C123', 'U456', 'Only you can see this');
+      const result = await helper.postEphemeral('C123', 'U456', 'Only you can see this');
 
       expect(mockApp.client.chat.postEphemeral).toHaveBeenCalledWith({
         channel: 'C123',
@@ -213,12 +336,13 @@ describe('SlackApiHelper', () => {
         text: 'Only you can see this',
         thread_ts: undefined,
       });
+      expect(result).toEqual({ ts: '123.456' });
     });
 
     it('should include threadTs when provided', async () => {
-      mockApp.client.chat.postEphemeral.mockResolvedValue({});
+      mockApp.client.chat.postEphemeral.mockResolvedValue({ message_ts: '789.101' });
 
-      await helper.postEphemeral('C123', 'U456', 'Hello', '111.222');
+      const result = await helper.postEphemeral('C123', 'U456', 'Hello', '111.222');
 
       expect(mockApp.client.chat.postEphemeral).toHaveBeenCalledWith({
         channel: 'C123',
@@ -226,6 +350,7 @@ describe('SlackApiHelper', () => {
         text: 'Hello',
         thread_ts: '111.222',
       });
+      expect(result).toEqual({ ts: '789.101' });
     });
   });
 
@@ -281,6 +406,43 @@ describe('SlackApiHelper', () => {
       });
 
       await expect(helper.removeReaction('C123', '123.456', 'thumbsup')).resolves.not.toThrow();
+    });
+  });
+
+  describe('queue overflow protection', () => {
+    it('should drop oldest item when queue exceeds maxQueueSize', async () => {
+      // Create helper with maxQueueSize=1: queue can hold at most 1 pending item
+      const smallHelper = new SlackApiHelper(mockApp as any, { maxQueueSize: 1 });
+
+      // Make the first call block by never resolving until we say so
+      let resolveFirst: ((v: any) => void) | null = null;
+      mockApp.client.chat.postMessage
+        .mockImplementationOnce(() => new Promise<any>(resolve => { resolveFirst = resolve; }))
+        .mockResolvedValue({ ts: '2', channel: 'C2' });
+
+      // p1 starts processing immediately (pops from queue, blocks on execution)
+      const p1 = smallHelper.postMessage('C1', 'msg1');
+      // p2 queues up (queue length = 1 = maxQueueSize)
+      const p2 = smallHelper.postMessage('C2', 'msg2');
+      // p3 tries to queue — queue length (1) >= maxQueueSize (1) → drops p2
+      const p3 = smallHelper.postMessage('C3', 'msg3');
+
+      // Unblock first call
+      resolveFirst!({ ts: '1', channel: 'C1' });
+      await p1;
+
+      // p2 should have been dropped
+      await expect(p2).rejects.toThrow('Queue overflow');
+
+      // p3 should resolve normally
+      const result3 = await p3;
+      expect(result3).toEqual({ ts: '2', channel: 'C2' });
+    });
+
+    it('should report queue status correctly', () => {
+      const status = helper.getQueueStatus();
+      expect(status).toHaveProperty('queueLength');
+      expect(status).toHaveProperty('tokens');
     });
   });
 });

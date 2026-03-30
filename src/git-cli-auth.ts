@@ -15,7 +15,7 @@ export async function getGitEnvironmentVariables(): Promise<GitEnvironmentVariab
     const githubToken = await getGitHubTokenForCLI();
     if (githubToken) {
       env.GITHUB_TOKEN = githubToken;
-      logger.info('GitHub token configured for Git CLI operations');
+      logger.debug('GitHub token configured for Git CLI operations');
     } else {
       logger.warn('No GitHub token available for Git CLI operations');
     }
