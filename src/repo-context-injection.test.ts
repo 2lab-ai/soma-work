@@ -55,4 +55,35 @@ describe('buildRepoContextBlock', () => {
     // soma-work block should contain soma-work
     expect(somaWorkBlock).toContain('https://github.com/2lab-ai/soma-work');
   });
+
+  // --- Edge cases from Codex review ---
+
+  it('builds block with confluenceUrl only (no repos)', () => {
+    const result = buildRepoContextBlock(
+      [],
+      'https://2lab.atlassian.net/wiki/spaces/DEV/overview'
+    );
+
+    expect(result).toContain('<channel-repository>');
+    expect(result).toContain('</channel-repository>');
+    expect(result).toContain('Project wiki: https://2lab.atlassian.net/wiki/spaces/DEV/overview');
+    expect(result).not.toContain('mapped to the following repository');
+  });
+
+  it('handles pre-prefixed full GitHub URL gracefully', () => {
+    const result = buildRepoContextBlock(['https://github.com/2lab-ai/soma-work']);
+
+    // Should NOT double-prefix with https://github.com/
+    expect(result).toContain('- https://github.com/2lab-ai/soma-work');
+    expect(result).not.toContain('https://github.com/https://');
+  });
+
+  it('returns valid block with empty repos and no confluenceUrl', () => {
+    const result = buildRepoContextBlock([]);
+
+    expect(result).toContain('<channel-repository>');
+    expect(result).toContain('</channel-repository>');
+    expect(result).not.toContain('mapped to the following repository');
+    expect(result).not.toContain('Project wiki');
+  });
 });

@@ -551,8 +551,10 @@ export class ClaudeHandler {
 
     // Inject structured repository context from channel registry
     // This provides explicit repo identification so the model doesn't have to guess from raw description
-    if (builtSystemPrompt && slackContext?.repos && slackContext.repos.length > 0) {
-      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext.repos, slackContext.confluenceUrl)}`;
+    const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
+    const hasConfluence = !!slackContext?.confluenceUrl;
+    if (builtSystemPrompt && (hasRepos || hasConfluence)) {
+      builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
     }
 
     // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt").
@@ -662,11 +664,17 @@ export class ClaudeHandler {
  * Exported for unit testing.
  */
 export function buildRepoContextBlock(repos: string[], confluenceUrl?: string): string {
-  const repoLines = repos.map(r => `- https://github.com/${r}`).join('\n');
-  let block = `<channel-repository>\nThis channel is mapped to the following repository(ies):\n${repoLines}`;
-  if (confluenceUrl) {
-    block += `\nProject wiki: ${confluenceUrl}`;
+  const parts: string[] = [];
+  if (repos.length > 0) {
+    const repoLines = repos.map(r => {
+      // Guard against pre-prefixed URLs or malformed entries
+      const url = r.startsWith('http') ? r : `https://github.com/${r}`;
+      return `- ${url}`;
+    }).join('\n');
+    parts.push(`This channel is mapped to the following repository(ies):\n${repoLines}`);
   }
-  block += '\n</channel-repository>';
-  return block;
+  if (confluenceUrl) {
+    parts.push(`Project wiki: ${confluenceUrl}`);
+  }
+  return `<channel-repository>\n${parts.join('\n')}\n</channel-repository>`;
 }
