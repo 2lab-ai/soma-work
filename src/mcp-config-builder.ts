@@ -100,6 +100,10 @@ export interface SlackContext {
   sourceChannel?: string;
   user: string;
   channelDescription?: string;
+  /** Structured repo names parsed from channel description (e.g., ["2lab-ai/soma-work"]) */
+  repos?: string[];
+  /** Confluence wiki URL from channel description */
+  confluenceUrl?: string;
 }
 
 /**
