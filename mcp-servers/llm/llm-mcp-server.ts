@@ -22,7 +22,7 @@ const HARDCODED_DEFAULTS: LlmChatFileConfig = {
   codex: {
     backend: 'codex',
     model: 'gpt-5.4',
-    configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
+    configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true', service_tier: 'fast' },
   },
   gemini: {
     backend: 'gemini',

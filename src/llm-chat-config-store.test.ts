@@ -43,6 +43,16 @@ describe('LlmChatConfigStore', () => {
       const cfg = store.getBackendConfig('codex');
       expect(cfg.configOverride?.model_reasoning_effort).toBe('xhigh');
     });
+
+    it('should have codex service_tier as fast by default', () => {
+      const cfg = store.getBackendConfig('codex');
+      expect(cfg.configOverride?.service_tier).toBe('fast');
+    });
+
+    it('should have codex features.fast_mode enabled by default', () => {
+      const cfg = store.getBackendConfig('codex');
+      expect(cfg.configOverride?.['features.fast_mode']).toBe('true');
+    });
   });
 
   describe('set()', () => {
@@ -94,6 +104,18 @@ describe('LlmChatConfigStore', () => {
 
     it('should accept values with colons', () => {
       expect(store.set('codex', 'model', 'org:model-v1')).toBeUndefined();
+    });
+
+    it('should allow setting service_tier', () => {
+      const err = store.set('codex', 'service_tier', 'flex');
+      expect(err).toBeUndefined();
+      expect(store.getBackendConfig('codex').configOverride?.service_tier).toBe('flex');
+    });
+
+    it('should allow toggling service_tier back to fast', () => {
+      store.set('codex', 'service_tier', 'flex');
+      store.set('codex', 'service_tier', 'fast');
+      expect(store.getBackendConfig('codex').configOverride?.service_tier).toBe('fast');
     });
   });
 
