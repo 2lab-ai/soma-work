@@ -129,6 +129,8 @@ interface StreamExecuteParams {
   sourceThreadTs?: string;
   /** Original channel before channel routing */
   sourceChannel?: string;
+  /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
+  isUserInput?: boolean;
 }
 
 interface FinalFooterData {
@@ -295,6 +297,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
         recordUserTurn(session.conversationId, text, userName, user);
+      }
+
+      // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
+      // followUpInstructions is capped to prevent unbounded memory growth.
+      const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
+      if (session && text && params.isUserInput !== false) {
+        if (!session.initialInstruction) {
+          session.initialInstruction = text;
+        } else {
+          // Always record subsequent turns as follow-ups (even if text matches initial).
+          // The first turn is not duplicated because session-initializer sets initialInstruction
+          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
+          if (!session.followUpInstructions) {
+            session.followUpInstructions = [];
+          }
+          if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
+            session.followUpInstructions.shift();
+          }
+          session.followUpInstructions.push({
+            timestamp: Date.now(),
+            text,
+            speaker: userName,
+          });
+        }
       }
 
       this.logger.info('Sending query to Claude Code SDK', {
