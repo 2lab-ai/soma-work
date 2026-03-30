@@ -563,21 +563,37 @@ export class ThreadSurface {
     blocks.push(...panelPayload.blocks);
 
     // ── 3. Task list section (at bottom of header area) ──
+    // Slack enforces a 50-block maximum per message. Reserve room for summary.
+    const SLACK_MAX_BLOCKS = 50;
+    const summaryBlocks = (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks))
+      ? session.actionPanel.summaryBlocks
+      : [];
+    const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
+
     const todos = session.sessionId
       ? this.deps.todoManager.getTodos(session.sessionId)
       : [];
-    if (todos.length > 0) {
+    if (todos.length > 0 && budgetForTaskList >= 4) {
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
         startedAt: session.taskListStartedAt,
         completedAt: session.taskListCompletedAt,
       });
-      blocks.push(...taskListBlocks);
+      // Only append if it fits within the block budget
+      if (taskListBlocks.length <= budgetForTaskList) {
+        blocks.push(...taskListBlocks);
+      } else {
+        this.logger.debug('Skipping task list blocks (would exceed 50-block limit)', {
+          current: blocks.length,
+          taskListBlocks: taskListBlocks.length,
+          summaryBlocks: summaryBlocks.length,
+        });
+      }
     }
 
     // Append executive summary blocks if present
     // Trace: docs/turn-summary-lifecycle/trace.md, S3
-    if (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)) {
-      blocks.push(...session.actionPanel.summaryBlocks);
+    if (summaryBlocks.length > 0) {
+      blocks.push(...summaryBlocks);
     }
 
     return blocks;

@@ -4,6 +4,24 @@ import { Todo, TodoManager } from '../todo-manager';
 const MAX_SECTION_TEXT_LENGTH = 2800;
 /** Max content length per task before truncation */
 const MAX_TASK_CONTENT_LENGTH = 80;
+/** Slack messages can have at most 50 blocks */
+const MAX_TASK_LIST_BLOCKS = 5;
+
+/**
+ * Escape user-supplied text for safe embedding in Slack mrkdwn.
+ * Neutralizes formatting chars, mentions, links, and newlines.
+ */
+function escapeMrkdwn(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\*/g, '∗')   // fullwidth asterisk
+    .replace(/~/g, '∼')    // tilde operator
+    .replace(/_/g, 'ˍ')    // modifier letter low macron
+    .replace(/`/g, 'ʼ')    // modifier letter apostrophe
+    .replace(/\n/g, ' ');   // flatten newlines
+}
 
 /**
  * Renders a task list as Slack Block Kit blocks for embedding in the thread header.
@@ -160,10 +178,11 @@ export class TaskListBlockBuilder {
     return false;
   }
 
-  /** Truncate task content to prevent overflow */
+  /** Truncate and escape task content for safe mrkdwn embedding */
   private truncateContent(text: string): string {
-    if (text.length <= MAX_TASK_CONTENT_LENGTH) return text;
-    return text.slice(0, MAX_TASK_CONTENT_LENGTH - 1) + '…';
+    const escaped = escapeMrkdwn(text);
+    if (escaped.length <= MAX_TASK_CONTENT_LENGTH) return escaped;
+    return escaped.slice(0, MAX_TASK_CONTENT_LENGTH - 1) + '…';
   }
 
   // ---------------------------------------------------------------------------
@@ -219,9 +238,17 @@ export class TaskListBlockBuilder {
   // Formatting helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Format timestamp as Slack date token so each viewer sees their local time.
+   * Falls back to UTC HH:MM if timestamp is invalid.
+   */
   private formatTime(ts: number): string {
-    const d = new Date(ts);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+    const epoch = Math.floor(ts / 1000);
+    if (!Number.isFinite(epoch) || epoch <= 0) {
+      const d = new Date(ts);
+      return `${d.getUTCHours().toString().padStart(2, '0')}:${d.getUTCMinutes().toString().padStart(2, '0')}`;
+    }
+    return `<!date^${epoch}^{time}|${new Date(ts).toISOString().slice(11, 16)}>`;
   }
 
   private formatDuration(ms: number): string {
