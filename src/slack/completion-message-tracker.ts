@@ -42,14 +42,47 @@ export class CompletionMessageTracker {
     const set = this.tracked.get(sessionKey);
     if (!set || set.size === 0) return;
 
+    // Snapshot and remove only the timestamps we're about to delete.
+    // Any track() call that races during the await will create a new Set
+    // and NOT be lost — we only remove the snapshotted items, not the key.
     const timestamps = [...set];
+    for (const ts of timestamps) {
+      set.delete(ts);
+    }
+    // If the set is now empty, remove the key; otherwise keep the set
+    // (new timestamps may have been added by a concurrent track() call).
+    if (set.size === 0) {
+      this.tracked.delete(sessionKey);
+    }
+
     logger.info('Deleting completion messages', { sessionKey, count: timestamps.length });
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       timestamps.map(ts => deleteMessage(channel, ts))
     );
 
-    this.tracked.delete(sessionKey);
+    // Re-track any timestamps whose deletion failed so they can be retried.
+    const failed: string[] = [];
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        failed.push(timestamps[i]);
+      }
+    });
+
+    if (failed.length > 0) {
+      logger.warn('Some completion messages failed to delete — re-tracking', {
+        sessionKey,
+        failedCount: failed.length,
+      });
+      let rSet = this.tracked.get(sessionKey);
+      if (!rSet) {
+        rSet = new Set();
+        this.tracked.set(sessionKey, rSet);
+      }
+      for (const ts of failed) {
+        rSet.add(ts);
+      }
+    }
   }
 
   /** Check if there are tracked messages for a session */
