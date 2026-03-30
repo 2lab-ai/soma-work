@@ -19,6 +19,8 @@ export interface SummarySessionInfo {
   isActive: boolean;
   model?: string;
   workingDirectory?: string;
+  /** Claude SDK session ID — used to resume conversation for context-aware summaries. */
+  sessionId?: string;
   links?: {
     issue?: { url: string; label?: string; title?: string };
     pr?: { url: string; label?: string; title?: string };
@@ -36,9 +38,11 @@ export interface SummarySessionInfo {
  *
  * @param prompt - The full summary prompt to execute
  * @param model - Model to use (from session)
+ * @param sessionId - Claude SDK session ID for forking conversation context
+ * @param cwd - Working directory for the forked session
  * @returns The LLM's response text, or null on failure
  */
-export type ForkExecutor = (prompt: string, model?: string) => Promise<string | null>;
+export type ForkExecutor = (prompt: string, model?: string, sessionId?: string, cwd?: string) => Promise<string | null>;
 
 /**
  * Handles executive summary generation and display.
@@ -93,12 +97,13 @@ export class SummaryService {
       model: session.model,
       hasIssue: !!session.links?.issue,
       hasPR: !!session.links?.pr,
+      hasSessionId: !!session.sessionId,
     });
 
     const fullPrompt = this.buildPrompt(session);
 
     try {
-      const response = await this.forkExecutor(fullPrompt, session.model);
+      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, session.workingDirectory);
       logger.info('Summary fork completed', {
         hasResponse: !!response,
         responseLength: response?.length ?? 0,

@@ -67,7 +67,22 @@ describe('SummaryService', () => {
       const session = makeSession({ model: 'claude-sonnet-4-20250514' });
       await service.execute(session);
 
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514');
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514', undefined, undefined);
+    });
+
+    it('execute() passes sessionId and workingDirectory to forkExecutor for context-aware summary', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('context-aware summary');
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession({
+        model: 'claude-opus-4-6',
+        sessionId: 'sdk-session-abc123',
+        workingDirectory: '/tmp/workdir',
+      });
+      const result = await service.execute(session);
+
+      expect(result).toBe('context-aware summary');
+      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-opus-4-6', 'sdk-session-abc123', '/tmp/workdir');
     });
 
     // Trace: S3, Section 3c
