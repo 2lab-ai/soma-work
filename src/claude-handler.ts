@@ -5,6 +5,10 @@
 
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { isDangerousCommand } from './dangerous-command-filter';
+import { isAdminUser } from './admin-utils';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers } from './mcp-tool-permission-config';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+import { CONFIG_FILE } from './env-paths';
 import * as path from 'path';
 import type { SdkPluginPath } from './plugin/types';
 import {
@@ -531,6 +535,41 @@ export class ClaudeHandler {
         });
       }
 
+      // MCP tool permission enforcement: deny calls to permission-gated MCP tools
+      // when the user lacks an active grant. Catches mid-session grant expiry that
+      // allowedTools (computed once at query start) cannot detect.
+      // Trace: docs/mcp-tool-permission/trace.md, S3/S5
+      if (!isAdminUser(slackContext.user)) {
+        // Cache permission config once per query — it's static deployment config,
+        // unlike grants which must be re-checked from disk each call.
+        const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
+        const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
+
+        if (gatedServerNames.length > 0) {
+          preToolUseHooks.push({
+            matcher: 'mcp__',
+            hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+              const toolName = (input as { tool_name?: string }).tool_name || '';
+              const denied = this.checkMcpToolPermission(toolName, slackContext.user, cachedPermConfig, gatedServerNames);
+              if (denied) {
+                this.logger.warn('MCP tool permission denied by PreToolUse hook', {
+                  tool: toolName,
+                  user: slackContext.user,
+                  reason: denied,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+              return { continue: true };
+            }],
+          });
+        }
+      }
+
       if (preToolUseHooks.length > 0) {
         options.hooks = {
           ...options.hooks,
@@ -649,6 +688,61 @@ export class ClaudeHandler {
       this.logger.error('Error in Claude query', error);
       throw error;
     }
+  }
+
+  /**
+   * Check if a MCP tool call should be denied based on permission config and active grants.
+   * Returns a denial reason string, or null if the tool is allowed.
+   * Used by PreToolUse hook for runtime enforcement (catches mid-session grant expiry).
+   *
+   * Uses known gated server names to resolve the `__` delimiter ambiguity:
+   * matches `mcp__{knownServer}__` prefix instead of naive split.
+   */
+  private checkMcpToolPermission(
+    toolName: string,
+    userId: string,
+    permConfig: ReturnType<typeof loadMcpToolPermissions>,
+    gatedServerNames: string[],
+  ): string | null {
+    if (!toolName.startsWith('mcp__')) return null;
+
+    // Match against known gated server names to avoid __-delimiter ambiguity.
+    // e.g., for server "server-tools", match prefix "mcp__server-tools__"
+    let serverName: string | null = null;
+    let toolFunction: string | null = null;
+
+    for (const name of gatedServerNames) {
+      const prefix = `mcp__${name}__`;
+      if (toolName.startsWith(prefix)) {
+        serverName = name;
+        toolFunction = toolName.slice(prefix.length);
+        break;
+      }
+    }
+
+    // Not a gated server tool → unrestricted
+    if (!serverName || !toolFunction) return null;
+
+    const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
+
+    // Tool not in permission config → unrestricted
+    if (!requiredLevel) return null;
+
+    // Check active grants (reload from disk for cross-process safety)
+    mcpToolGrantStore.reload();
+    const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'write');
+    const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'read');
+    const userLevel = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+    if (!userLevel) {
+      return `No active grant for ${serverName}. Required: ${requiredLevel}. Use mcp__mcp-tool-permission__request_permission to request access.`;
+    }
+
+    if (!levelSatisfies(userLevel, requiredLevel)) {
+      return `Insufficient grant level for ${serverName}/${toolFunction}. Have: ${userLevel}, required: ${requiredLevel}.`;
+    }
+
+    return null;
   }
 
   private buildModelCommandContext(

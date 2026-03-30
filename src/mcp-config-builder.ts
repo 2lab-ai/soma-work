@@ -10,7 +10,7 @@ import { ModelCommandContext } from './model-commands/types';
 import { CONFIG_FILE } from './env-paths';
 import { normalizeTmpPath, isSafePathSegment } from './path-utils';
 import { isAdminUser } from './admin-utils';
-import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, type McpToolPermissionConfig, type PermissionLevel } from './mcp-tool-permission-config';
+import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers, type McpToolPermissionConfig, type PermissionLevel } from './mcp-tool-permission-config';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -490,55 +490,85 @@ export class McpConfigBuilder {
       allowedTools.push('mcp__mcp-tool-permission');
     }
 
-    // Allow server-tools when configured — with per-tool permission gating
-    // Trace: docs/mcp-tool-permission/trace.md, S2 (admin bypass), S3 (non-admin blocked), S5 (per-tool)
-    if (this.hasServerToolsConfig()) {
-      const userId = slackContext?.user;
-      const toolPermConfig = this.loadToolPermissions();
-      const serverToolPerms = toolPermConfig['server-tools'];
-
-      if (!serverToolPerms || !userId || isAdminUser(userId)) {
-        // No permission config, no user context, or admin → allow all server-tools
-        allowedTools.push('mcp__server-tools');
-      } else {
-        // Non-admin: reload grants from disk (cross-process safety — Fix Issue 2)
-        mcpToolGrantStore.reload();
-        const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'read');
-        const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, 'server-tools', 'write');
-        const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
-
-        if (!userLevel) {
-          this.logger.debug('Server-tools blocked — no active grant', { user: userId });
-        } else {
-          // Per-tool filtering: only allow tools whose required level is satisfied by user's grant
-          // e.g., read grant allows logs (read) but not db_query (write)
-          const allToolNames = Object.keys(serverToolPerms);
-          const ungatedTools: string[] = [];
-
-          for (const [toolName, requiredLevel] of Object.entries(serverToolPerms)) {
-            if (levelSatisfies(userLevel, requiredLevel)) {
-              allowedTools.push(`mcp__server-tools__${toolName}`);
-            }
-          }
-
-          // Allow tools not listed in permission config (unrestricted)
-          // These are covered by the blanket prefix only if no per-tool pattern exists
-          // Since we're adding specific tool patterns, the SDK will match them individually
-
-          this.logger.debug('Server-tools per-tool filtering applied', {
-            user: userId,
-            userLevel,
-            allowed: allowedTools.filter(t => t.startsWith('mcp__server-tools__')),
-          });
-        }
-      }
-    }
+    // Generic per-tool permission gating for ALL MCP servers with a `permission` key in config.json.
+    // Iterates every gated server (not just server-tools) and applies the same logic:
+    //   admin → blanket allow | non-admin with grant → per-tool filter | no grant → blocked
+    // Trace: docs/mcp-tool-permission/trace.md, S2/S3/S5
+    this.applyPermissionGating(allowedTools, slackContext);
 
     // Auto-approve plan mode tools (no terminal interaction needed)
     allowedTools.push('EnterPlanMode');
     allowedTools.push('ExitPlanMode');
 
     return allowedTools;
+  }
+
+  /**
+   * Apply per-tool permission gating for ALL MCP servers that have a `permission` key in config.json.
+   * For each gated server:
+   *  - Admin or no user context → blanket allow (mcp__{serverName})
+   *  - Non-admin with matching grant → per-tool filtering based on level
+   *  - Non-admin without grant → server entirely blocked
+   */
+  private applyPermissionGating(allowedTools: string[], slackContext?: SlackContext): void {
+    const toolPermConfig = this.loadToolPermissions();
+    const gatedServers = getPermissionGatedServers(toolPermConfig);
+
+    if (gatedServers.length === 0) {
+      // No gated servers — allow server-tools blanket if config exists (backward compat)
+      if (this.hasServerToolsConfig()) {
+        allowedTools.push('mcp__server-tools');
+      }
+      return;
+    }
+
+    const userId = slackContext?.user;
+
+    for (const serverName of gatedServers) {
+      const serverPerms = toolPermConfig[serverName];
+      const mcpPrefix = `mcp__${serverName}`;
+
+      // Ensure this server's MCP config actually exists in the build
+      // (server-tools has its own hasServerToolsConfig check; other servers checked via raw config)
+      if (serverName === 'server-tools' && !this.hasServerToolsConfig()) continue;
+
+      if (!userId || isAdminUser(userId)) {
+        // Admin or no user context → full access
+        allowedTools.push(mcpPrefix);
+        continue;
+      }
+
+      // Non-admin: check grants
+      mcpToolGrantStore.reload();
+      const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'write');
+      const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'read');
+      const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+      if (!userLevel) {
+        this.logger.debug('Permission-gated server blocked — no active grant', {
+          user: userId,
+          server: serverName,
+        });
+        continue;
+      }
+
+      // Per-tool filtering: allow tools whose required level is satisfied by user's grant
+      const allowedForServer: string[] = [];
+      for (const [toolName, requiredLevel] of Object.entries(serverPerms)) {
+        if (levelSatisfies(userLevel, requiredLevel)) {
+          const fullToolName = `${mcpPrefix}__${toolName}`;
+          allowedTools.push(fullToolName);
+          allowedForServer.push(fullToolName);
+        }
+      }
+
+      this.logger.debug('Permission-gated server per-tool filtering applied', {
+        user: userId,
+        server: serverName,
+        userLevel,
+        allowed: allowedForServer,
+      });
+    }
   }
 
   /**
