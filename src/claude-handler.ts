@@ -549,12 +549,13 @@ export class ClaudeHandler {
       builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
     }
 
+    // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt").
+    // Always overwrite to avoid showing a stale prompt from a previous turn.
+    if (session) {
+      session.systemPrompt = builtSystemPrompt || undefined;
+    }
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
-      // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt")
-      if (session) {
-        session.systemPrompt = builtSystemPrompt;
-      }
       this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
         workflow,
         sessionId: session?.sessionId,
