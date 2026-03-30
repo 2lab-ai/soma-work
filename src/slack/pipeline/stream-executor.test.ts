@@ -1867,3 +1867,86 @@ describe('getThreadContextHint — array mode guidance', () => {
     }
   });
 });
+
+// Issue #225 — AC③: summary timer callback calls updatePanel after displayOnThread
+describe('onSummaryTimerFire — render trigger after summary display', () => {
+  it('calls displayOnThread then updatePanel when summary text is returned', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Executive summary text'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+    const sessionKey = 'C123:t456';
+
+    await executor.onSummaryTimerFire(session, sessionKey);
+
+    expect(mockSummaryService.execute).toHaveBeenCalledWith(session);
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Executive summary text');
+    expect(mockThreadPanel.updatePanel).toHaveBeenCalledWith(session, sessionKey);
+
+    // Verify ordering: displayOnThread before updatePanel
+    const displayOrder = mockSummaryService.displayOnThread.mock.invocationCallOrder[0];
+    const updateOrder = mockThreadPanel.updatePanel.mock.invocationCallOrder[0];
+    expect(displayOrder).toBeLessThan(updateOrder);
+  });
+
+  it('skips displayOnThread and updatePanel when summary returns null', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue(null),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await executor.onSummaryTimerFire(session, 'C123:t456');
+
+    expect(mockSummaryService.execute).toHaveBeenCalled();
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+    expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
+  });
+
+  it('catches errors from summaryService without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockRejectedValue(new Error('LLM timeout')),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    // Should not throw
+    await expect(executor.onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when summaryService is not configured', async () => {
+    const executor = new StreamExecutor({} as any);
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    // Should not throw even without summaryService
+    await expect(executor.onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+  });
+});
