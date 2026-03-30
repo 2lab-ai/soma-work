@@ -298,14 +298,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Store user instruction for SSOT tracking
-      // initialInstruction is set once (may already be set by session-initializer).
+      // initialInstruction may already be set by session-initializer for the first turn.
       // followUpInstructions is capped to prevent unbounded memory growth.
       const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
       if (session && text) {
         if (!session.initialInstruction) {
           session.initialInstruction = text;
-        } else if (session.initialInstruction !== text) {
-          // Only record as follow-up if it differs from the initial instruction
+        } else {
+          // Always record subsequent turns as follow-ups (even if text matches initial).
+          // The first turn is not duplicated because session-initializer sets initialInstruction
+          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
           if (!session.followUpInstructions) {
             session.followUpInstructions = [];
           }

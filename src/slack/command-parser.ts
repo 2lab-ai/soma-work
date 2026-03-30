@@ -608,8 +608,8 @@ export class CommandParser {
     'marketplace', 'plugins', '플러그인',
     // Future: save/load (oh-my-claude skills)
     'save', 'load',
-    // Admin: show prompt
-    'show',
+    // Admin: show prompt / show instructions (exact two-word forms)
+    'show_prompt', 'show_instructions',
     // Notification
     'notify', 'webhook',
   ]);
@@ -632,9 +632,18 @@ export class CommandParser {
       return { isPotential: true, keyword: firstWord.slice(1) };
     }
 
-    // Check against known command keywords
+    // Check against known command keywords (single word)
     if (this.COMMAND_KEYWORDS.has(firstWord)) {
       return { isPotential: true, keyword: firstWord };
+    }
+
+    // Check two-word command forms (e.g., "show prompt", "show instructions")
+    const words = trimmed.split(/\s+/);
+    if (words.length >= 2) {
+      const twoWord = `${words[0]}_${words[1]}`;
+      if (this.COMMAND_KEYWORDS.has(twoWord)) {
+        return { isPotential: true, keyword: twoWord };
+      }
     }
 
     return { isPotential: false };
