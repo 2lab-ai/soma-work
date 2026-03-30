@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { ReportAggregator } from './report-aggregator';
+import { ReportAggregator, computeDerivedMetrics, computeTrend } from './report-aggregator';
 import { MetricsEventStore } from './event-store';
-import { MetricsEvent, MetricsEventType } from './types';
+import { MetricsEvent, MetricsEventType, AggregatedMetrics } from './types';
 
 // Contract tests — Scenario 4: ReportAggregator
 // Trace: docs/daily-weekly-report/trace.md
@@ -131,5 +131,147 @@ describe('ReportAggregator', () => {
     const report = await aggregator.aggregateDaily('2026-03-25');
 
     expect(report.metrics.codeLinesAdded).toBe(300);
+    expect(report.metrics.codeLinesDeleted).toBe(40);
+  });
+
+  // === Enriched Aggregation Tests ===
+
+  it('enrichedDaily_includesDerivedMetrics', async () => {
+    mockStore.readRange.mockResolvedValue([
+      makeEvent('session_created'),
+      makeEvent('session_closed'),
+      makeEvent('turn_used'),
+      makeEvent('turn_used'),
+      makeEvent('pr_created'),
+      makeEvent('pr_merged'),
+      makeEvent('commit_created'),
+      makeEvent('code_lines_added', 'U123', 'User1', { linesAdded: 200, linesDeleted: 30 }),
+    ]);
+
+    const report = await aggregator.aggregateEnrichedDaily('2026-03-25');
+
+    expect(report.derived).toBeDefined();
+    expect(report.derived.productivityScore).toBeGreaterThan(0);
+    expect(report.derived.prMergeRate).toBe(100); // 1 merged / 1 created
+    expect(report.derived.avgCodePerPr).toBe(200);
+    expect(report.derived.sessionCompletionRate).toBe(100); // 1 closed / 1 created
+    expect(report.hourlyDistribution).toHaveLength(24);
+    expect(report.achievements).toBeDefined();
+    expect(report.funFacts).toBeDefined();
+  });
+
+  it('enrichedDaily_trendHasBaselineZeroWhenNoPreviousData', async () => {
+    mockStore.readRange.mockResolvedValue([]);
+
+    const report = await aggregator.aggregateEnrichedDaily('2026-03-25');
+
+    // With no previous data AND no current data, trend should still indicate baselineZero
+    // When both periods are empty, computeTrend returns baselineZero: true
+    if (report.trend) {
+      expect(report.trend.baselineZero).toBe(true);
+    } else {
+      // If both current and previous are zero, null is also acceptable
+      expect(report.trend).toBeNull();
+    }
+  });
+
+  it('enrichedWeekly_includesDailyBreakdown', async () => {
+    const baseTime = new Date('2026-03-23T10:00:00Z').getTime(); // Monday 19:00 KST
+    mockStore.readRange.mockResolvedValue([
+      { ...makeEvent('session_created'), timestamp: baseTime },
+      { ...makeEvent('turn_used'), timestamp: baseTime + 86400000 }, // +1 day
+      { ...makeEvent('commit_created'), timestamp: baseTime + 86400000 * 2 }, // +2 days
+    ]);
+
+    const report = await aggregator.aggregateEnrichedWeekly('2026-03-23');
+
+    expect(report.dailyBreakdown).toHaveLength(7);
+    expect(report.activeDays).toBeGreaterThan(0);
+    expect(report.derived).toBeDefined();
+    expect(report.hourlyDistribution).toHaveLength(24);
+    expect(report.achievements).toBeDefined();
+    expect(report.funFacts).toBeDefined();
+  });
+
+  // === Unit tests for computeDerivedMetrics and computeTrend ===
+
+  it('computeDerivedMetrics_zeroActiveDays_noDivisionError', () => {
+    const m: AggregatedMetrics = {
+      sessionsCreated: 5, sessionsSlept: 1, sessionsClosed: 3,
+      issuesCreated: 2, prsCreated: 3, commitsCreated: 10,
+      codeLinesAdded: 500, codeLinesDeleted: 50, prsMerged: 2,
+      mergeLinesAdded: 300, turnsUsed: 20,
+    };
+
+    // activeDays = 0 should NOT throw, should use safeActiveDays = 1
+    const d = computeDerivedMetrics(m, 0);
+    expect(d.commitPerActiveDay).toBe(10); // 10 / max(0,1)=1
+    expect(d.prPerActiveDay).toBe(3);
+    expect(Number.isFinite(d.productivityScore)).toBe(true);
+    expect(Number.isFinite(d.prMergeRate)).toBe(true);
+  });
+
+  it('computeTrend_prevHasOnlyIssuesAndMerges_notBaselineZero', () => {
+    const current: AggregatedMetrics = {
+      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
+      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
+      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
+      mergeLinesAdded: 0, turnsUsed: 0,
+    };
+    const previous: AggregatedMetrics = {
+      ...current,
+      issuesCreated: 5, // Only issues — old code would miss this
+      prsMerged: 3,     // Only merges — old code would miss this
+    };
+
+    const trend = computeTrend(current, previous);
+    // previous had activity (issues+merges), so baselineZero must be false
+    expect(trend).not.toBeNull();
+    expect(trend!.baselineZero).toBe(false);
+  });
+
+  it('computeTrend_prevHasOnlyCodeLines_notBaselineZero', () => {
+    const zero: AggregatedMetrics = {
+      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
+      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
+      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
+      mergeLinesAdded: 0, turnsUsed: 0,
+    };
+    const previous: AggregatedMetrics = { ...zero, codeLinesAdded: 1000 };
+
+    const trend = computeTrend(zero, previous);
+    expect(trend!.baselineZero).toBe(false);
+  });
+
+  it('enrichedWeekly_computesTrendVsPreviousWeek', async () => {
+    // First call: current week events
+    // Second call: previous week events
+    let callCount = 0;
+    mockStore.readRange.mockImplementation(async () => {
+      callCount++;
+      if (callCount <= 2) {
+        // Current week (first two calls: weekly + enriched)
+        return [
+          makeEvent('session_created'),
+          makeEvent('turn_used'),
+          makeEvent('pr_created'),
+          makeEvent('commit_created'),
+        ];
+      }
+      // Previous week
+      return [
+        makeEvent('session_created'),
+        makeEvent('turn_used'),
+      ];
+    });
+
+    const report = await aggregator.aggregateEnrichedWeekly('2026-03-23');
+
+    // Should have a trend since previous week had data
+    expect(report.trend).not.toBeNull();
+    if (report.trend) {
+      expect(typeof report.trend.sessionsCreatedDelta).toBe('number');
+      expect(typeof report.trend.productivityScoreDelta).toBe('number');
+    }
   });
 });

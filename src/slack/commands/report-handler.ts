@@ -19,11 +19,15 @@ const logger = new Logger('ReportHandler');
 interface AggregatorLike {
   aggregateDaily(date: string): Promise<any>;
   aggregateWeekly(weekStart: string): Promise<any>;
+  aggregateEnrichedDaily?(date: string): Promise<any>;
+  aggregateEnrichedWeekly?(weekStart: string): Promise<any>;
 }
 
 interface FormatterLike {
   formatDaily(report: any): { blocks: any[]; text: string };
   formatWeekly(report: any): { blocks: any[]; text: string };
+  formatEnrichedDaily?(report: any): { blocks: any[]; text: string };
+  formatEnrichedWeekly?(report: any): { blocks: any[]; text: string };
 }
 
 interface ReportDeps {
@@ -109,18 +113,38 @@ export class ReportHandler implements CommandHandler {
     try {
       let formatted: { blocks: any[]; text: string };
 
+      const useEnriched = !!this.deps.aggregator.aggregateEnrichedDaily && !!this.deps.formatter.formatEnrichedDaily;
+
       if (subcommand === 'today') {
-        formatted = this.deps.formatter.formatDaily(
-          await this.deps.aggregator.aggregateDaily(getTodayInTimezone()),
-        );
+        if (useEnriched) {
+          formatted = this.deps.formatter.formatEnrichedDaily!(
+            await this.deps.aggregator.aggregateEnrichedDaily!(getTodayInTimezone()),
+          );
+        } else {
+          formatted = this.deps.formatter.formatDaily(
+            await this.deps.aggregator.aggregateDaily(getTodayInTimezone()),
+          );
+        }
       } else if (subcommand === 'daily') {
-        formatted = this.deps.formatter.formatDaily(
-          await this.deps.aggregator.aggregateDaily(getYesterdayDateStr()),
-        );
+        if (useEnriched) {
+          formatted = this.deps.formatter.formatEnrichedDaily!(
+            await this.deps.aggregator.aggregateEnrichedDaily!(getYesterdayDateStr()),
+          );
+        } else {
+          formatted = this.deps.formatter.formatDaily(
+            await this.deps.aggregator.aggregateDaily(getYesterdayDateStr()),
+          );
+        }
       } else {
-        formatted = this.deps.formatter.formatWeekly(
-          await this.deps.aggregator.aggregateWeekly(getLastMondayDateStr()),
-        );
+        if (useEnriched && this.deps.aggregator.aggregateEnrichedWeekly && this.deps.formatter.formatEnrichedWeekly) {
+          formatted = this.deps.formatter.formatEnrichedWeekly(
+            await this.deps.aggregator.aggregateEnrichedWeekly(getLastMondayDateStr()),
+          );
+        } else {
+          formatted = this.deps.formatter.formatWeekly(
+            await this.deps.aggregator.aggregateWeekly(getLastMondayDateStr()),
+          );
+        }
       }
 
       await say({ text: formatted.text, blocks: formatted.blocks, thread_ts: threadTs });
