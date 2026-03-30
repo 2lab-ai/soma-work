@@ -387,6 +387,7 @@ export class SlackHandler {
       mentionTs: ts,
       sourceThreadTs,
       sourceChannel,
+      synthetic: event.synthetic,
     });
 
     const continuationHandler: ContinuationHandler = {
@@ -464,6 +465,7 @@ export class SlackHandler {
       mentionTs: string;
       sourceThreadTs?: string;
       sourceChannel?: string;
+      synthetic?: boolean;
     },
   ): V1QueryAdapter {
     // TurnRunnerSurface adapter: ThreadPanel → TurnRunnerSurface
@@ -496,6 +498,7 @@ export class SlackHandler {
       mentionTs: context.mentionTs,
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
+      isUserInput: !context.synthetic,
     };
 
     return new V1QueryAdapter({
@@ -788,6 +791,7 @@ export class SlackHandler {
       thread_ts: session.threadTs,
       ts: notificationTs || `${Date.now() / 1000}`,
       text: resumePrompt,
+      synthetic: true,
     };
 
     const noopSay = async () => ({ ts: undefined as string | undefined });

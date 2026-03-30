@@ -162,6 +162,8 @@ export class V1QueryAdapter implements IAgentSession {
         ...this.baseParams,
         text,
         abortController: currentController,
+        // Only the first turn (turn 0) is real user input; subsequent turns are continuations.
+        isUserInput: this.turnCount === 0 ? (this.baseParams as any).isUserInput : false,
       };
 
       const executeResult = await this.executor.execute(params);
