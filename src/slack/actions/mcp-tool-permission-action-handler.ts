@@ -58,9 +58,18 @@ export class McpToolPermissionActionHandler {
 
       // Recompute expiresAt at approval time (Fix Issue 5)
       const durationMs = parseDuration(duration);
-      const effectiveDurationMs = durationMs
-        ? Math.min(durationMs, MAX_GRANT_DURATION_MS)
-        : 24 * 3600 * 1000; // fallback 24h
+      if (!durationMs) {
+        this.logger.error('Invalid duration in approval payload — possible tampering', {
+          requestId, duration,
+        });
+        await respond({
+          response_type: 'ephemeral',
+          text: `❌ Invalid duration "${duration}" in request payload. Cannot approve.`,
+          replace_original: false,
+        });
+        return;
+      }
+      const effectiveDurationMs = Math.min(durationMs, MAX_GRANT_DURATION_MS);
       const expiresAt = new Date(Date.now() + effectiveDurationMs).toISOString();
 
       // Write grant in main process (Fix Issue 2) — no stale cache
