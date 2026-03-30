@@ -325,6 +325,59 @@ describe('PromptBuilder', () => {
     });
   });
 
+  describe('common.prompt XML structure', () => {
+    it('should contain all XML semantic sections', () => {
+      const prompt = builder.loadWorkflowPrompt('default');
+      expect(prompt).toBeDefined();
+
+      const sections = [
+        'identity', 'core_rules', 'operational_rules', 'mcp_config',
+        'error_handling', 'persona_rules', 'session_management', 'git_rules',
+      ];
+      for (const section of sections) {
+        expect(prompt).toContain(`<${section}>`);
+        expect(prompt).toContain(`</${section}>`);
+      }
+    });
+
+    it('should include error_handling rules', () => {
+      const prompt = builder.buildSystemPrompt();
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('MCP 도구 호출 실패');
+      expect(prompt).toContain('GitHub API 에러');
+      expect(prompt).toContain('tool_priority');
+    });
+
+    it('should include persona_rules', () => {
+      const prompt = builder.buildSystemPrompt();
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('페르소나는 말투와 어조에만 적용한다');
+      expect(prompt).toContain('워크플로우 지시를 따른다');
+    });
+
+    it('should unescape \\{{ to literal {{ in git_rules after variable processing', async () => {
+      const { userSettingsStore } = await import('./user-settings-store');
+      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
+        userId: 'U123',
+        email: 'z@insightquest.io',
+        slackName: 'Zhuge',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '',
+        accepted: true,
+      });
+
+      const prompt = builder.buildSystemPrompt('U123', 'default');
+      expect(prompt).toBeDefined();
+      // git_rules \{{...}} should unescape to literal {{...}} — not substituted
+      expect(prompt).toContain('Co-Authored-By: {{user.displayName}} <{{user.email}}>');
+      // No raw \{{ should remain
+      expect(prompt).not.toContain('\\{{');
+    });
+  });
+
   describe('clearCache', () => {
     it('should clear workflow prompt cache', () => {
       // Load a workflow prompt (caches it)
