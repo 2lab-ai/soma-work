@@ -280,6 +280,9 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // System prompt snapshot: the fully-built system prompt used for this session's current query.
+  // Stored for admin debugging via "show prompt" command. NOT persisted to disk.
+  systemPrompt?: string;
 }
 
 export interface WorkingDirectoryConfig {

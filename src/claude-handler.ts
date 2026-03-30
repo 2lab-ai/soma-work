@@ -544,6 +544,10 @@ export class ClaudeHandler {
 
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
+      // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt")
+      if (session) {
+        session.systemPrompt = builtSystemPrompt;
+      }
       this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
         workflow,
         sessionId: session?.sessionId,

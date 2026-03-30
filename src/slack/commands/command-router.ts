@@ -25,6 +25,7 @@ import { NotifyHandler } from './notify-handler';
 import { WebhookHandler } from './webhook-handler';
 import { ReportHandler } from './report-handler';
 import { EsHandler } from './es-handler';
+import { PromptHandler } from './prompt-handler';
 import { getReportDeps } from '../../metrics';
 import { CommandParser } from '../command-parser';
 
@@ -41,6 +42,7 @@ export class CommandRouter {
     this.handlers = [
       new LlmChatHandler(),
       new AdminHandler(),
+      new PromptHandler(deps),
       new CctHandler(),
       new CwdHandler(deps),
       new McpHandler(deps),
