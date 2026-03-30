@@ -10,6 +10,7 @@ import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermission
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import { CONFIG_FILE } from './env-paths';
 import * as path from 'path';
+import * as fs from 'fs';
 import type { SdkPluginPath } from './plugin/types';
 import {
   ConversationSession,
@@ -661,9 +662,27 @@ export class ClaudeHandler {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
     }
 
-    // Set working directory
+    // Set working directory — ensure it exists to prevent SDK ENOENT masquerade
+    // (Node.js spawn throws ENOENT for missing cwd, which SDK misreports as "executable not found")
+    let cwdCleared = false;
+    const originalCwd = workingDirectory;
     if (workingDirectory) {
-      options.cwd = workingDirectory;
+      if (!fs.existsSync(workingDirectory)) {
+        this.logger.warn('Working directory missing, re-creating', { workingDirectory });
+        try {
+          fs.mkdirSync(workingDirectory, { recursive: true });
+        } catch (err) {
+          this.logger.error('Failed to re-create working directory, omitting cwd to let SDK use process.cwd()', {
+            workingDirectory,
+            error: err,
+          });
+          workingDirectory = undefined;
+          cwdCleared = true;
+        }
+      }
+      if (workingDirectory) {
+        options.cwd = workingDirectory;
+      }
     }
 
     // Resume existing session
@@ -672,6 +691,18 @@ export class ClaudeHandler {
       this.logger.debug('Resuming session', { sessionId: session.sessionId });
     } else {
       this.logger.debug('Starting new Claude conversation');
+    }
+
+    // If cwd was forcibly cleared, also clear sessionId to prevent resuming
+    // into a stale working directory (session file references become invalid)
+    if (cwdCleared && session?.sessionId) {
+      this.logger.warn('Clearing sessionId after cwd loss to prevent stale resume', {
+        sessionId: session.sessionId,
+        originalCwd,
+      });
+      session.sessionId = undefined;
+      // Also clear options.resume since it was already set above
+      delete options.resume;
     }
 
     // Enable 1M context window beta (applies to supported models).
