@@ -16,7 +16,7 @@ export class SummaryTimer {
    * Start a timer for the given session. Resets any existing timer.
    * Trace: S1, Section 3b
    */
-  start(sessionKey: string, callback: () => void): void {
+  start(sessionKey: string, callback: () => void | Promise<void>): void {
     this.cancel(sessionKey);
     const timerId = setTimeout(() => {
       this.timers.delete(sessionKey);
@@ -24,8 +24,8 @@ export class SummaryTimer {
       try {
         const result = callback();
         // If callback returns a promise, catch async rejections
-        if (result && typeof (result as any).catch === 'function') {
-          (result as any).catch((err: any) => {
+        if (result && typeof result.catch === 'function') {
+          result.catch((err: any) => {
             logger.error('Summary timer async callback failed', {
               sessionKey,
               error: err?.message || String(err),
