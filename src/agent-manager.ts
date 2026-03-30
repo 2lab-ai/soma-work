@@ -52,6 +52,7 @@ export class AgentManager {
 
     let started = 0;
     const errors: string[] = [];
+    const failedNames: string[] = [];
 
     for (const [name, instance] of this.agents) {
       try {
@@ -59,11 +60,15 @@ export class AgentManager {
         started++;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
+        failedNames.push(name);
         errors.push(`${name}: ${msg}`);
         this.logger.error(`Agent '${name}' failed to start: ${msg}`);
-        // Remove failed agent from active map
-        this.agents.delete(name);
       }
+    }
+
+    // Remove failed agents after iteration (never mutate Map during for...of)
+    for (const name of failedNames) {
+      this.agents.delete(name);
     }
 
     this.logger.info(`AgentManager: ${started}/${total} agents started successfully`);

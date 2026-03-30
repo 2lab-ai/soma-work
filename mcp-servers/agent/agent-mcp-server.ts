@@ -46,14 +46,11 @@ function loadAgentConfigs(): Record<string, AgentConfigEntry> {
   }
 }
 
-// ── Session Tracking ───────────────────────────────────────
-
-const sessions = new Map<string, AgentSession>();
-
 // ── Server ─────────────────────────────────────────────────
 
 export class AgentMCPServer extends BaseMcpServer {
   private agentConfigs: Record<string, AgentConfigEntry>;
+  private sessions = new Map<string, AgentSession>();
 
   constructor() {
     super('agent-mcp-server');
@@ -155,7 +152,7 @@ export class AgentMCPServer extends BaseMcpServer {
       sessionId,
       model,
     };
-    sessions.set(sessionId, session);
+    this.sessions.set(sessionId, session);
 
     this.logger.info(`agent_chat: query complete`, { sessionId, agentName });
 
@@ -181,7 +178,7 @@ export class AgentMCPServer extends BaseMcpServer {
     const prompt = args.prompt as string;
 
     // Validate session exists
-    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const session = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!session) {
       throw new Error(`Unknown session: '${sessionId}'. Use 'chat' first to start a session.`);
     }

@@ -98,10 +98,9 @@ export class AgentInstance {
 
     this.app.event('message', async ({ event, say }) => {
       // Handle DMs to this agent
-      const msg = event as any;
-      if (msg.channel_type === 'im') {
+      if ('channel_type' in event && event.channel_type === 'im') {
         this.logger.info(`Agent '${this.name}' received DM`, {
-          user: msg.user,
+          user: 'user' in event ? event.user : 'unknown',
         });
       }
     });
