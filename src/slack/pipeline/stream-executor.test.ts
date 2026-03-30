@@ -1257,6 +1257,34 @@ describe('model-command integration', () => {
     }
   });
 
+  it('buildRenewContinuation blocks path traversal outside session dir', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = 'pending_save';
+    session.sessionWorkingDir = '/tmp/safe-session';
+    session.renewSaveResult = {
+      success: true,
+      id: 'traversal',
+      dir: '../../etc',
+      // No files — triggers path-based fallback with traversal
+    };
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    const continuation = await (executor as any).buildRenewContinuation(
+      session,
+      '',
+      '171.100',
+      say
+    );
+
+    expect(continuation).toBeUndefined();
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('outside session directory'),
+    }));
+    expect(session.renewState).toBeNull();
+  });
+
   it('parseSaveResult parses "Saved to:" text output from save skill', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
