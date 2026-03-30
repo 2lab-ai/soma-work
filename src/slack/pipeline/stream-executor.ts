@@ -498,7 +498,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onTodoUpdate: async (input, ctx) => {
-          if (!isOutputEnabled(OutputFlag.TODO_UPDATE)) return;
+          // Task list is part of thread header — always update regardless of verbosity.
+          // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
