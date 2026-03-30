@@ -66,6 +66,36 @@ export function parseGhPrMergeResult(output: string): { prNumber?: number } | nu
 }
 
 /**
+ * Parse gh pr view --json additions,deletions output.
+ * Example: {"additions":150,"deletions":30}
+ */
+export function parseGhPrViewStats(output: string): { additions: number; deletions: number } | null {
+  try {
+    // Look for JSON with additions/deletions fields
+    const jsonMatch = output.match(/\{[^}]*"additions"\s*:\s*\d+[^}]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (typeof parsed.additions === 'number' && typeof parsed.deletions === 'number') {
+        return { additions: parsed.additions, deletions: parsed.deletions };
+      }
+    }
+  } catch {
+    // Not valid JSON, ignore
+  }
+  return null;
+}
+
+/**
+ * Callback for recording merge stats into the session.
+ */
+export type MergeStatsCallback = (
+  sessionKey: string,
+  prNumber: number,
+  linesAdded: number,
+  linesDeleted: number,
+) => void;
+
+/**
  * Inspect tool results for git/gh commands and emit metrics events.
  * Fire-and-forget — must never block the main pipeline.
  *
@@ -73,12 +103,14 @@ export function parseGhPrMergeResult(output: string): { prNumber?: number } | nu
  * @param userId Slack user ID of the session owner
  * @param userName Slack display name
  * @param sessionKey Session key for context
+ * @param onMergeStats Optional callback to record merge line stats into session
  */
 export function interceptToolResults(
   toolResults: ToolResultLike[],
   userId: string,
   userName: string,
   sessionKey: string,
+  onMergeStats?: MergeStatsCallback,
 ): void {
   for (const tr of toolResults) {
     // Only inspect Bash tool results that succeeded
@@ -129,6 +161,28 @@ export function interceptToolResults(
         }).catch(err => logger.error('Failed to emit pr_merged', err));
 
         logger.debug(`Detected PR merge: #${mergeInfo.prNumber}`);
+      }
+
+      // Detect gh pr view --json additions,deletions (for merge stats)
+      const prViewStats = parseGhPrViewStats(output);
+      if (prViewStats && onMergeStats) {
+        // Try to find the PR number from the same output or recent context
+        // gh pr view output often includes the PR number in the JSON
+        let prNum: number | undefined;
+        try {
+          const jsonMatch = output.match(/\{[^}]*"number"\s*:\s*(\d+)[^}]*\}/);
+          if (jsonMatch) prNum = parseInt(jsonMatch[1], 10);
+        } catch { /* ignore */ }
+
+        if (prNum) {
+          onMergeStats(sessionKey, prNum, prViewStats.additions, prViewStats.deletions);
+          emitter.emitGitHubEvent('merge_lines_added', userId, userName, sessionKey, {
+            prNumber: prNum,
+            linesAdded: prViewStats.additions,
+            linesDeleted: prViewStats.deletions,
+          }).catch(err => logger.error('Failed to emit merge_lines_added', err));
+          logger.debug(`Recorded merge stats: PR #${prNum} +${prViewStats.additions}/-${prViewStats.deletions}`);
+        }
       }
     } catch (error) {
       // Fire-and-forget: never block
