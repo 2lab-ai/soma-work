@@ -114,7 +114,6 @@ describe('TaskListBlockBuilder', () => {
 
     const blocks = builder.buildBlocks(todos, {
       startedAt: new Date('2025-01-01T12:01:00').getTime(),
-      estimatedEndAt: new Date('2025-01-01T13:17:00').getTime(),
     });
 
     const timeCtx = blocks.find(
@@ -122,7 +121,6 @@ describe('TaskListBlockBuilder', () => {
     );
     expect(timeCtx).toBeDefined();
     expect(timeCtx.elements[0].text).toContain('12:01');
-    expect(timeCtx.elements[0].text).toContain('13:17');
   });
 
   it('does not show time context when startedAt is not provided', () => {
@@ -189,19 +187,104 @@ describe('TodoManager dependency methods', () => {
     ];
     expect(manager.getEffectiveStatus(todos[0], todos)).toBe('pending');
   });
+});
 
-  it('flowsFromCompleted returns true for in_progress after completed', () => {
-    const todos: Todo[] = [
-      { id: '1', content: 'done', status: 'completed', priority: 'medium' },
-      { id: '2', content: 'active', status: 'in_progress', priority: 'medium' },
-    ];
-    expect(manager.flowsFromCompleted(todos[1], 1, todos)).toBe(true);
+describe('TaskListBlockBuilder.flowsFromDeps (arrow logic)', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
   });
 
-  it('flowsFromCompleted returns false for first item', () => {
+  it('shows arrow for in_progress task when explicit deps are all completed', () => {
     const todos: Todo[] = [
-      { id: '1', content: 'first', status: 'in_progress', priority: 'medium' },
+      { id: '1', content: 'setup', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'build', status: 'in_progress', priority: 'medium', dependencies: ['1'] },
     ];
-    expect(manager.flowsFromCompleted(todos[0], 0, todos)).toBe(false);
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('🟢'),
+    );
+    expect(taskSection).toBeDefined();
+    // Arrow prefix '→' should appear before the in-progress task
+    expect(taskSection.text.text).toContain('→');
+  });
+
+  it('shows arrow for in_progress task when previous task is completed (implicit sequential)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'first', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'second', status: 'in_progress', priority: 'medium' },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('🟢'),
+    );
+    expect(taskSection.text.text).toContain('→');
+  });
+
+  it('does not show arrow for first in_progress task with no deps', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'only task', status: 'in_progress', priority: 'medium' },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('🟢'),
+    );
+    expect(taskSection.text.text).not.toContain('→');
+  });
+
+  it('does not show arrow when explicit deps are not all completed', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'dep1', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'dep2', status: 'in_progress', priority: 'medium' },
+      { id: '3', content: 'blocked', status: 'in_progress', priority: 'medium', dependencies: ['1', '2'] },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskText = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('blocked'),
+    )?.text?.text || '';
+    // Task 3 line should NOT have arrow since dep '2' is not completed
+    const task3Line = taskText.split('\n').find((l: string) => l.includes('blocked'));
+    expect(task3Line).not.toContain('→');
+  });
+});
+
+describe('TodoManager.hasSignificantChange', () => {
+  let manager: TodoManager;
+
+  beforeEach(() => {
+    manager = new TodoManager();
+  });
+
+  it('detects activeForm change', () => {
+    const old: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'Running tests' },
+    ];
+    const updated: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'Deploying' },
+    ];
+    expect(manager.hasSignificantChange(old, updated)).toBe(true);
+  });
+
+  it('detects content change', () => {
+    const old: Todo[] = [
+      { id: '1', content: 'old content', status: 'pending', priority: 'medium' },
+    ];
+    const updated: Todo[] = [
+      { id: '1', content: 'new content', status: 'pending', priority: 'medium' },
+    ];
+    expect(manager.hasSignificantChange(old, updated)).toBe(true);
+  });
+
+  it('returns false when nothing changed', () => {
+    const old: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'Running' },
+    ];
+    const same: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'Running' },
+    ];
+    expect(manager.hasSignificantChange(old, same)).toBe(false);
   });
 });
