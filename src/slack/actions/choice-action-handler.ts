@@ -74,9 +74,17 @@ export class ChoiceActionHandler {
         await this.ctx.threadPanel?.clearChoice(sessionKey);
         // Delete tracked completion messages on choice selection (S8)
         if (channel) {
+          const threadRootTs = session.threadRootTs;
           this.ctx.completionMessageTracker?.deleteAll(
             sessionKey,
             async (ch, ts) => {
+              // Defense-in-depth: never delete the thread root message (header)
+              if (threadRootTs && ts === threadRootTs) {
+                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (choice)', {
+                  sessionKey, ts, threadRootTs,
+                });
+                return;
+              }
               try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
             },
             channel,
@@ -364,9 +372,17 @@ export class ChoiceActionHandler {
       await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
       // Delete tracked completion messages on form submission (S8)
       if (channel) {
+        const formThreadRootTs = session.threadRootTs;
         this.ctx.completionMessageTracker?.deleteAll(
           pendingForm.sessionKey,
           async (ch, ts) => {
+            // Defense-in-depth: never delete the thread root message (header)
+            if (formThreadRootTs && ts === formThreadRootTs) {
+              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (form)', {
+                sessionKey: pendingForm.sessionKey, ts, threadRootTs: formThreadRootTs,
+              });
+              return;
+            }
             try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
           },
           channel,
