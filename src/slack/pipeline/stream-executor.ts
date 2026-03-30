@@ -298,13 +298,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Store user instruction for SSOT tracking
+      // initialInstruction is set once (may already be set by session-initializer).
+      // followUpInstructions is capped to prevent unbounded memory growth.
+      const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
       if (session && text) {
         if (!session.initialInstruction) {
-          // First message in session (e.g., session was created without dispatch text)
           session.initialInstruction = text;
-        } else {
+        } else if (session.initialInstruction !== text) {
+          // Only record as follow-up if it differs from the initial instruction
           if (!session.followUpInstructions) {
             session.followUpInstructions = [];
+          }
+          if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
+            session.followUpInstructions.shift();
           }
           session.followUpInstructions.push({
             timestamp: Date.now(),

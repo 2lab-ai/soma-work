@@ -81,8 +81,10 @@ describe('PromptHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('Admin only') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('Admin only'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -95,8 +97,10 @@ describe('PromptHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('No active session') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No active session'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -118,8 +122,10 @@ describe('PromptHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('No system prompt captured') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No system prompt captured'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -142,10 +148,10 @@ describe('PromptHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      const callArg = (ctx.say as any).mock.calls[0][0];
-      expect(callArg.text).toContain('System Prompt Snapshot');
-      expect(callArg.text).toContain('You are a helpful assistant');
-      expect(callArg.text).toContain('default');
+      const callArg = (deps.slackApi.postSystemMessage as any).mock.calls[0][1];
+      expect(callArg).toContain('System Prompt Snapshot');
+      expect(callArg).toContain('You are a helpful assistant');
+      expect(callArg).toContain('default');
     });
 
     it('truncates very long prompts', async () => {
@@ -168,9 +174,9 @@ describe('PromptHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      const callArg = (ctx.say as any).mock.calls[0][0];
-      expect(callArg.text).toContain('truncated');
-      expect(callArg.text).toContain('5,000 chars');
+      const callArg = (deps.slackApi.postSystemMessage as any).mock.calls[0][1];
+      expect(callArg).toContain('truncated');
+      expect(callArg).toContain('5,000 chars');
     });
   });
 });

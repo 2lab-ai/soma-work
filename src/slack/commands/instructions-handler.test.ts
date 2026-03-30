@@ -73,8 +73,10 @@ describe('InstructionsHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('Admin only') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('Admin only'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -87,8 +89,10 @@ describe('InstructionsHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('No active session') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No active session'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -110,8 +114,10 @@ describe('InstructionsHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('No instructions captured') })
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No instructions captured'),
+        expect.objectContaining({ threadTs: 'thread123' })
       );
     });
 
@@ -134,11 +140,11 @@ describe('InstructionsHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      const callArg = (ctx.say as any).mock.calls[0][0];
-      expect(callArg.text).toContain('User Instructions');
-      expect(callArg.text).toContain('Initial Instruction');
-      expect(callArg.text).toContain('Please review my PR');
-      expect(callArg.text).toContain('default');
+      const callArg = (deps.slackApi.postSystemMessage as any).mock.calls[0][1];
+      expect(callArg).toContain('User Instructions');
+      expect(callArg).toContain('Initial Instruction');
+      expect(callArg).toContain('Please review my PR');
+      expect(callArg).toContain('default');
     });
 
     it('displays both initial and follow-up instructions', async () => {
@@ -164,15 +170,15 @@ describe('InstructionsHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      const callArg = (ctx.say as any).mock.calls[0][0];
-      expect(callArg.text).toContain('User Instructions');
-      expect(callArg.text).toContain('Initial Instruction');
-      expect(callArg.text).toContain('Create a PR for JIRA-123');
-      expect(callArg.text).toContain('Follow-up Instructions (2)');
-      expect(callArg.text).toContain('Also fix the lint errors');
-      expect(callArg.text).toContain('Add unit tests too');
-      expect(callArg.text).toContain('jira-create-pr');
-      expect(callArg.text).toContain('Total instructions: 3');
+      const callArg = (deps.slackApi.postSystemMessage as any).mock.calls[0][1];
+      expect(callArg).toContain('User Instructions');
+      expect(callArg).toContain('Initial Instruction');
+      expect(callArg).toContain('Create a PR for JIRA-123');
+      expect(callArg).toContain('Follow-up Instructions (2)');
+      expect(callArg).toContain('Also fix the lint errors');
+      expect(callArg).toContain('Add unit tests too');
+      expect(callArg).toContain('jira-create-pr');
+      expect(callArg).toContain('Total instructions: 3');
     });
   });
 });

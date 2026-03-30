@@ -13,25 +13,25 @@ export class InstructionsHandler implements CommandHandler {
     const { user, channel, threadTs } = ctx;
 
     if (!isAdminUser(user)) {
-      await ctx.say({ text: '⛔ Admin only command', thread_ts: threadTs });
+      await this.deps.slackApi.postSystemMessage(channel, '⛔ Admin only command', { threadTs });
       return { handled: true };
     }
 
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     if (!session) {
-      await ctx.say({
-        text: '💡 No active session in this thread. Start a conversation first!',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '💡 No active session in this thread. Start a conversation first!',
+        { threadTs }
+      );
       return { handled: true };
     }
 
     if (!session.initialInstruction && (!session.followUpInstructions || session.followUpInstructions.length === 0)) {
-      await ctx.say({
-        text: '📋 *User Instructions*\n\nNo instructions captured yet. Send a message first.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '📋 *User Instructions*\n\nNo instructions captured yet. Send a message first.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
@@ -56,14 +56,11 @@ export class InstructionsHandler implements CommandHandler {
     }
 
     const workflow = session.workflow || 'default';
-    const totalCount = 1 + (session.followUpInstructions?.length || 0);
+    const totalCount = (session.initialInstruction ? 1 : 0) + (session.followUpInstructions?.length || 0);
     lines.push('');
     lines.push(`_Workflow: \`${workflow}\` | Total instructions: ${totalCount}_`);
 
-    await ctx.say({
-      text: lines.join('\n'),
-      thread_ts: threadTs,
-    });
+    await this.deps.slackApi.postSystemMessage(channel, lines.join('\n'), { threadTs });
 
     return { handled: true };
   }

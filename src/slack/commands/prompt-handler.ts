@@ -21,25 +21,25 @@ export class PromptHandler implements CommandHandler {
 
     // Admin gate
     if (!isAdminUser(user)) {
-      await ctx.say({ text: '⛔ Admin only command', thread_ts: threadTs });
+      await this.deps.slackApi.postSystemMessage(channel, '⛔ Admin only command', { threadTs });
       return { handled: true };
     }
 
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     if (!session) {
-      await ctx.say({
-        text: '💡 No active session in this thread. Start a conversation first!',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '💡 No active session in this thread. Start a conversation first!',
+        { threadTs }
+      );
       return { handled: true };
     }
 
     if (!session.systemPrompt) {
-      await ctx.say({
-        text: '📋 *System Prompt*\n\nNo system prompt captured yet. Send a message first so the prompt is built.',
-        thread_ts: threadTs,
-      });
+      await this.deps.slackApi.postSystemMessage(channel,
+        '📋 *System Prompt*\n\nNo system prompt captured yet. Send a message first so the prompt is built.',
+        { threadTs }
+      );
       return { handled: true };
     }
 
@@ -61,10 +61,10 @@ export class PromptHandler implements CommandHandler {
       truncated ? `⚠️ Prompt exceeds display limit. Showing first ${MAX_DISPLAY.toLocaleString()} chars.` : '',
     ].filter(Boolean).join('\n');
 
-    await ctx.say({
-      text: `${header}\n\n\`\`\`\n${displayPrompt}\n\`\`\``,
-      thread_ts: threadTs,
-    });
+    await this.deps.slackApi.postSystemMessage(channel,
+      `${header}\n\n\`\`\`\n${displayPrompt}\n\`\`\``,
+      { threadTs }
+    );
 
     return { handled: true };
   }
