@@ -140,21 +140,57 @@ export class SummaryService {
     logger.info('Summary cleared from thread');
   }
 
+  /** Slack section block text limit (mrkdwn) */
+  private static readonly SLACK_SECTION_TEXT_LIMIT = 3000;
+
   /**
    * Convert summary text to Slack Block Kit blocks.
+   * Long text is split across multiple section blocks to respect Slack's 3000-char limit.
    */
   private buildSummaryBlocks(summaryText: string): any[] {
-    return [
-      {
-        type: 'divider',
-      },
-      {
+    const blocks: any[] = [{ type: 'divider' }];
+    const header = '*Executive Summary*\n';
+    const maxChunkSize = SummaryService.SLACK_SECTION_TEXT_LIMIT - header.length;
+
+    if (summaryText.length <= maxChunkSize) {
+      blocks.push({
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Executive Summary*\n${summaryText}`,
-        },
-      },
-    ];
+        text: { type: 'mrkdwn', text: `${header}${summaryText}` },
+      });
+    } else {
+      // Split on newline boundaries to avoid mid-word breaks
+      const chunks = this.chunkText(summaryText, maxChunkSize);
+      chunks.forEach((chunk, i) => {
+        const prefix = i === 0 ? header : '';
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: `${prefix}${chunk}` },
+        });
+      });
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Split text into chunks ≤ maxLen, preferring newline boundaries.
+   */
+  private chunkText(text: string, maxLen: number): string[] {
+    const chunks: string[] = [];
+    let remaining = text;
+
+    while (remaining.length > maxLen) {
+      let splitAt = remaining.lastIndexOf('\n', maxLen);
+      if (splitAt <= 0) {
+        // No newline found; hard-split at maxLen
+        splitAt = maxLen;
+      }
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).replace(/^\n/, '');
+    }
+    if (remaining.length > 0) {
+      chunks.push(remaining);
+    }
+    return chunks;
   }
 }
