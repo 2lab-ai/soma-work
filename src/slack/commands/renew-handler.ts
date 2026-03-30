@@ -67,19 +67,27 @@ export class RenewHandler implements CommandHandler {
     const savePrompt = `Follow this exact sequence:
 
 1. Invoke Skill tool: skill="local:save"
-2. If save succeeds, invoke model-command tool:
+2. After save succeeds, READ the saved context.md file (the path is in the save output).
+3. Invoke model-command tool with the file content included:
    - tool: mcp__model-command__run
    - args: {
        "commandId": "SAVE_CONTEXT_RESULT",
-       "params": { "result": <save-result-payload> }
+       "params": {
+         "result": {
+           "success": true,
+           "id": "<save-id from output>",
+           "dir": "<full absolute path to save directory>",
+           "files": [{"name": "context.md", "content": "<file content you just read>"}]
+         }
+       }
      }
-   - <save-result-payload> means the INNER object only
-     (example: {"success": true, "id": "...", "dir": "..."}).
-     Do NOT wrap it as {"save_result": ...} inside params.result.
-3. If model-command tool is unavailable, output fallback JSON:
-   {"save_result": <save-result-payload>}
+   IMPORTANT: "dir" must be an ABSOLUTE path (e.g., "/tmp/U123/session_xxx/.claude/omc/tasks/save/20260101_120000").
+   IMPORTANT: "files" array MUST contain the actual content of context.md.
+   Do NOT wrap it as {"save_result": ...} inside params.result.
+4. If model-command tool is unavailable, output fallback JSON:
+   {"save_result": {"success": true, "id": "...", "dir": "...", "files": [{"name": "context.md", "content": "..."}]}}
 
-Do not skip step 2 when model-command tool is available.`;
+Do not skip step 3 when model-command tool is available.`;
 
     return { handled: true, continueWithPrompt: savePrompt };
   }

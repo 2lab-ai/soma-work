@@ -1217,6 +1217,59 @@ describe('model-command integration', () => {
     expect(session.renewUserMessage).toBeUndefined();
   });
 
+  it('buildRenewContinuation resolves relative dir against session working directory', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    // Create a real temp directory with a context.md file
+    const tmpDir = path.join('/tmp', `renew-test-${Date.now()}`);
+    const saveDir = path.join(tmpDir, '.claude', 'omc', 'tasks', 'save', 'save_002');
+    fs.mkdirSync(saveDir, { recursive: true });
+    fs.writeFileSync(path.join(saveDir, 'context.md'), '# Saved context from file');
+
+    try {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      session.renewState = 'pending_save';
+      session.sessionWorkingDir = tmpDir;
+      session.renewSaveResult = {
+        success: true,
+        id: 'save_002',
+        dir: '.claude/omc/tasks/save/save_002',
+        // No files array — triggers path-based fallback
+      };
+      const say = vi.fn().mockResolvedValue(undefined);
+
+      const continuation = await (executor as any).buildRenewContinuation(
+        session,
+        '',
+        '171.100',
+        say
+      );
+
+      expect(continuation).toBeDefined();
+      expect(continuation?.resetSession).toBe(true);
+      expect(continuation?.prompt).toContain('local:load');
+      expect(continuation?.prompt).toContain('Saved context from file');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parseSaveResult parses "Saved to:" text output from save skill', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const text = 'Save completed!\nSaved to: .claude/omc/tasks/save/20260329_180000/context.md\nLoad with: /load 20260329_180000';
+    const result = (executor as any).parseSaveResult(text);
+
+    expect(result).toBeDefined();
+    expect(result?.success).toBe(true);
+    expect(result?.id).toBe('20260329_180000');
+    expect(result?.path).toBe('.claude/omc/tasks/save/20260329_180000/context.md');
+  });
+
   it('surfaces warning when UPDATE_SESSION host apply fails', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({

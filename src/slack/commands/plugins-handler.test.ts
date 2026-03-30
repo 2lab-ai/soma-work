@@ -18,6 +18,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PluginsHandler } from './plugins-handler';
 import type { CommandDependencies, CommandContext, SayFn } from './types';
 
+// Mock admin-utils so we can control admin checks
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: vi.fn().mockReturnValue(false),
+}));
+import { isAdminUser } from '../../admin-utils';
+
 function createMockPluginManager(overrides: Record<string, any> = {}) {
   return {
     getInstalledPlugins: vi.fn().mockReturnValue([]),
@@ -25,6 +31,7 @@ function createMockPluginManager(overrides: Record<string, any> = {}) {
     addPlugin: vi.fn().mockReturnValue({ success: true }),
     removePlugin: vi.fn().mockReturnValue({ success: true }),
     refresh: vi.fn().mockResolvedValue(undefined),
+    forceRefresh: vi.fn().mockResolvedValue({ total: 3, updated: 3, errors: [] }),
     ...overrides,
   };
 }
@@ -248,6 +255,113 @@ describe('PluginsHandler', () => {
       const noPmHandler = new PluginsHandler(noPmDeps);
 
       const { ctx, say } = createContext('plugins remove omc@soma-work');
+      await noPmHandler.execute(ctx);
+
+      const message = say.mock.calls[0][0].text;
+      expect(message).toContain('not available');
+    });
+  });
+
+  // =========================================================================
+  // update (admin-only, force re-download all plugins)
+  // =========================================================================
+
+  describe('update', () => {
+    it('should handle "plugins update" command', () => {
+      expect(handler.canHandle('plugins update')).toBe(true);
+    });
+
+    it('should handle "/plugins update" command', () => {
+      expect(handler.canHandle('/plugins update')).toBe(true);
+    });
+
+    it('should handle Korean "플러그인 업데이트" command', () => {
+      expect(handler.canHandle('플러그인 업데이트')).toBe(true);
+    });
+
+    it('should handle Korean "/플러그인 업데이트" command', () => {
+      expect(handler.canHandle('/플러그인 업데이트')).toBe(true);
+    });
+
+    it('should reject non-admin users', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(false);
+
+      const { ctx, say } = createContext('plugins update');
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      const message = say.mock.calls[0][0].text;
+      expect(message).toContain('Admin only');
+      expect(mockPluginManager.forceRefresh).not.toHaveBeenCalled();
+    });
+
+    it('should force refresh all plugins for admin users', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      mockPluginManager.getResolvedPlugins.mockReturnValue([
+        { name: 'superpowers@soma-work', localPath: '/p/superpowers', source: 'default' },
+        { name: 'stv@soma-work', localPath: '/p/stv', source: 'default' },
+        { name: 'omc@soma-work', localPath: '/p/omc', source: 'marketplace' },
+      ]);
+
+      const { ctx, say } = createContext('plugins update');
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(mockPluginManager.forceRefresh).toHaveBeenCalledTimes(1);
+      // First say is the "starting update" message, second is the result
+      expect(say).toHaveBeenCalledTimes(2);
+      const resultMessage = say.mock.calls[1][0].text;
+      expect(resultMessage).toContain('업데이트 완료');
+      expect(resultMessage).toContain('3');
+    });
+
+    it('should work with Korean command for admin users', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      mockPluginManager.getResolvedPlugins.mockReturnValue([]);
+
+      const { ctx, say } = createContext('플러그인 업데이트');
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(mockPluginManager.forceRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('should show errors from forceRefresh', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      mockPluginManager.forceRefresh.mockResolvedValue({
+        total: 2,
+        updated: 2,
+        errors: ['Failed to clear cache: permission denied'],
+      });
+      mockPluginManager.getResolvedPlugins.mockReturnValue([]);
+
+      const { ctx, say } = createContext('plugins update');
+      await handler.execute(ctx);
+
+      const resultMessage = say.mock.calls[1][0].text;
+      expect(resultMessage).toContain('Errors');
+      expect(resultMessage).toContain('permission denied');
+    });
+
+    it('should handle forceRefresh failure gracefully', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      mockPluginManager.forceRefresh.mockRejectedValue(new Error('Network failure'));
+
+      const { ctx, say } = createContext('plugins update');
+      await handler.execute(ctx);
+
+      const resultMessage = say.mock.calls[1][0].text;
+      expect(resultMessage).toContain('실패');
+      expect(resultMessage).toContain('Network failure');
+    });
+
+    it('should handle missing PluginManager for update', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(true);
+      const noPmDeps = createDeps(undefined as any);
+      (noPmDeps.mcpManager.getPluginManager as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+      const noPmHandler = new PluginsHandler(noPmDeps);
+
+      const { ctx, say } = createContext('plugins update');
       await noPmHandler.execute(ctx);
 
       const message = say.mock.calls[0][0].text;

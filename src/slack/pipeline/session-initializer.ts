@@ -585,9 +585,11 @@ export class SessionInitializer {
       const result = await dispatchService.dispatch(text, abortController.signal);
 
       const elapsed = Date.now() - startTime;
-      this.logger.info(`✅ Session workflow set: [${result.workflow}] "${result.title}" (${elapsed}ms)`, {
+      const complexityTag = result.complexity ? ` complexity=${result.complexity.score}/${result.complexity.tier}` : '';
+      this.logger.info(`✅ Session workflow set: [${result.workflow}] "${result.title}" (${elapsed}ms)${complexityTag}`, {
         channel,
         threadTs,
+        complexity: result.complexity ? { score: result.complexity.score, tier: result.complexity.tier } : undefined,
       });
 
       // Remove dispatching reaction
