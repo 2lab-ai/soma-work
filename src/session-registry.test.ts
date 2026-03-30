@@ -337,4 +337,34 @@ describe('SessionRegistry persistence', () => {
     expect(restored).toBeDefined();
     expect(restored!.sessionWorkingDir).toBeUndefined(); // dropped by validation
   });
+
+  it('clearSessionId resets file-access retry state', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA1');
+    session.sessionId = 'session-fa';
+    session.fileAccessRetryCount = 2;
+    session.lastErrorContext = '파일 접근이 차단되었습니다: /tmp/blocked.png';
+    session.errorRetryCount = 1;
+
+    registry.clearSessionId('C_FA', '171.FA1');
+
+    expect(session.sessionId).toBeUndefined();
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+    expect(session.errorRetryCount).toBe(0);
+  });
+
+  it('resetSessionContext clears file-access retry state', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_FA', '171.FA2');
+    session.sessionId = 'session-fa2';
+    session.fileAccessRetryCount = 3;
+    session.lastErrorContext = '차단된 파일';
+
+    const result = registry.resetSessionContext('C_FA', '171.FA2');
+
+    expect(result).toBe(true);
+    expect(session.fileAccessRetryCount).toBe(0);
+    expect(session.lastErrorContext).toBeUndefined();
+  });
 });
