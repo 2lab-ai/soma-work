@@ -135,6 +135,10 @@ export interface CrashRecoveredSession {
   ownerName?: string;
   activityState: string;
   sessionKey: string;
+  /** Session title at the time of crash — gives the model context about what was happening */
+  title?: string;
+  /** Workflow type (default, jira-create-pr, pr-review, etc.) */
+  workflow?: string;
 }
 
 export class SessionRegistry {
@@ -1369,7 +1373,17 @@ export class SessionRegistry {
           activityState: 'idle', // Always idle on restore (no active streams after restart)
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
-          actionPanel: serialized.actionPanel ? { ...serialized.actionPanel } : undefined,
+          // Clear stale messageTs/renderKey on restore — the Slack message may have been
+          // deleted while the service was down, causing endless `message_not_found` errors
+          // when ThreadSurface tries to chat.update a ghost message.
+          actionPanel: serialized.actionPanel
+            ? {
+                ...serialized.actionPanel,
+                messageTs: undefined,
+                renderKey: undefined,
+                lastRenderedAt: undefined,
+              }
+            : undefined,
           threadModel: serialized.threadModel,
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
@@ -1406,6 +1420,8 @@ export class SessionRegistry {
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
             sessionKey: serialized.key,
+            title: serialized.title,
+            workflow: serialized.workflow,
           });
         }
       }
