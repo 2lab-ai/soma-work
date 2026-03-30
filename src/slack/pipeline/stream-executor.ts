@@ -798,13 +798,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
         }
 
-        // Track completion message for auto-deletion
-        // Trace: docs/turn-summary-lifecycle/trace.md, S6
-        if (this.deps.completionMessageTracker && !hasSdkError) {
-          // Track will be called when the notification channel sends the Slack message
-          // For now, we mark the session for tracking
-          this.deps.completionMessageTracker.track(sessionKey, threadTs, determineTurnCategory({ hasPendingChoice, isError: hasSdkError }));
-        }
+        // Completion message tracking moved to SlackBlockKitChannel.send()
+        // which tracks the actual posted notification message ts.
+        // Previously tracked threadTs here, which for bot-initiated threads
+        // is the surface/header message — causing header deletion on next input.
       }
 
       // Update bot-initiated thread root with status
