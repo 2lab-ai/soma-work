@@ -424,11 +424,21 @@ export class SlackHandler {
           delayMs: retryAfterMs,
         });
 
-        // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
-        // If the session has error context (e.g., file access blocked), pass it to
-        // the retry prompt so the model can adapt its approach.
+        // Schedule retry after delay using autoResumeSession pattern.
+        // Store timer handle so session reset can cancel it (Issue #215).
         const errorContext = currentSession?.lastErrorContext;
-        setTimeout(() => {
+        const sessionIdAtSchedule = currentSession?.sessionId;
+        const timer = setTimeout(() => {
+          // Verify session hasn't been reset since retry was scheduled (Issue #215)
+          const freshSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+          if (!freshSession || freshSession.sessionId !== sessionIdAtSchedule) {
+            this.logger.info('Skipping stale auto-retry — session was reset', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+            });
+            return;
+          }
+          freshSession.pendingRetryTimer = undefined;
           this.autoResumeSession(
             { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
             undefined,
@@ -446,6 +456,10 @@ export class SlackHandler {
             });
           });
         }, retryAfterMs);
+        // Store handle for cancellation on session reset
+        if (currentSession) {
+          currentSession.pendingRetryTimer = timer;
+        }
         return; // Retry scheduled — don't re-throw
       }
       throw error; // Non-recoverable error — propagate

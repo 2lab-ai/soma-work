@@ -918,6 +918,13 @@ export class SessionRegistry {
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
       session.lastErrorContext = undefined;
+      // Cancel any pending file-access retry timer (Issue #215)
+      if (session.pendingRetryTimer) {
+        clearTimeout(session.pendingRetryTimer);
+        session.pendingRetryTimer = undefined;
+      }
+      // Persist to disk so restart doesn't resurrect stale state (Issue #214)
+      this.saveSessions();
     }
   }
 
@@ -975,6 +982,11 @@ export class SessionRegistry {
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
     session.lastErrorContext = undefined;
+    // Cancel any pending file-access retry timer (Issue #215)
+    if (session.pendingRetryTimer) {
+      clearTimeout(session.pendingRetryTimer);
+      session.pendingRetryTimer = undefined;
+    }
 
     this.saveSessions();
     return true;

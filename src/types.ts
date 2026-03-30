@@ -280,6 +280,9 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
+  // Not serialized to disk (runtime-only).
+  pendingRetryTimer?: ReturnType<typeof setTimeout>;
   // Merge code change stats — accumulated from merged PRs in this session
   mergeStats?: {
     totalLinesAdded: number;
