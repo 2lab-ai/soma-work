@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../logger';
 import { MCP_CONFIG_FILE } from '../env-paths';
+import { scanMcpServerConfig, formatMcpScanReport } from '../plugin/security-scanner';
 
 export type McpStdioServerConfig = {
   type?: 'stdio'; // Optional for backwards compatibility
@@ -69,6 +70,17 @@ export class McpConfigLoader {
         if (!this.validateServerConfig(serverName, serverConfig as McpServerConfig)) {
           this.logger.warn('Invalid server configuration, skipping', { serverName });
           delete parsedConfig.mcpServers[serverName];
+          continue;
+        }
+
+        // Security scan MCP server config
+        const scanResult = scanMcpServerConfig(serverName, serverConfig as McpServerConfig);
+        if (scanResult.blocked) {
+          this.logger.error('MCP server BLOCKED by security scan', { serverName, riskLevel: scanResult.riskLevel });
+          this.logger.warn(formatMcpScanReport(scanResult));
+          delete parsedConfig.mcpServers[serverName];
+        } else if (scanResult.findings.length > 0) {
+          this.logger.warn(formatMcpScanReport(scanResult));
         }
       }
 
@@ -128,11 +140,23 @@ export class McpConfigLoader {
     // Validate each server
     const validated: Record<string, McpServerConfig> = {};
     for (const [name, config] of Object.entries(servers)) {
-      if (loader.validateServerConfig(name, config)) {
-        validated[name] = config;
-      } else {
+      if (!loader.validateServerConfig(name, config)) {
         validationLogger.warn('Invalid server configuration from unified config, skipping', { serverName: name });
+        continue;
       }
+
+      // Security scan MCP server config
+      const scanResult = scanMcpServerConfig(name, config);
+      if (scanResult.blocked) {
+        validationLogger.error('MCP server BLOCKED by security scan', { serverName: name, riskLevel: scanResult.riskLevel });
+        validationLogger.warn(formatMcpScanReport(scanResult));
+        continue;
+      }
+      if (scanResult.findings.length > 0) {
+        validationLogger.warn(formatMcpScanReport(scanResult));
+      }
+
+      validated[name] = config;
     }
 
     loader.config = { mcpServers: validated };
