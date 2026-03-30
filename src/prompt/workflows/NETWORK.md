@@ -20,11 +20,11 @@
          │                   │ planning │      │
          │                   └────┬─────┘      │
          │                   ┌────▼─────┐      │
-         │                   │create-pr │──────┤
+         │                   │create-pr │·····┤ (수동 안내)
          │                   └──────────┘      │
-         │                                ┌────▼──────────┐
-         └───────────────────────────────►│pr-fix-update  │
-                                          └───┬───────────┘
+         │                                ┌────▼──────────────┐
+         └───────────────────────────────►│pr-fix-and-update  │
+                                          └───┬───────────────┘
                                               │ CONTINUE_SESSION
                                               ▼
                                          ┌─────────┐
@@ -44,6 +44,8 @@
 | `pr-review` | GitHub PR 링크 | PR 리뷰. switching cost 분류 + 자율/유저 결정 분리 |
 | `pr-fix-and-update` | PR + "fix" | 리뷰 피드백 반영. 자율 수정 + 유저 확인 |
 | `deploy` | `repo source -> target` | 브랜치 배포. clone→PR→merge→릴리즈노트 |
+| `onboarding` | 신규 유저 첫 메시지 | 초기 설정 및 사용 가이드 |
+| `pr-docs-confluence` | PR + Confluence 링크 | PR 변경 기반 Confluence 문서 작성 |
 
 ## 핵심 흐름 3가지
 
@@ -118,9 +120,9 @@ zwork → stv:new-task → stv:do-work → stv:verify → github-pr → pr-fix-u
 "새 세션에서 ~를 입력하세요" 텍스트 안내. 흐름이 끊기므로 최소화해야 한다.
 
 사용하는 곳:
-- `jira-executive-summary` → 특정 이슈 분석
-- `jira-planning` → PR 생성
-- `jira-create-pr` → PR 리뷰
+- `jira-executive-summary` → `jira-brainstorming` (특정 이슈 분석)
+- `jira-planning` → `jira-create-pr` (PR 생성)
+- `jira-create-pr` → `pr-review` (PR 리뷰 요청)
 
 ## 공통 인프라 (common.prompt)
 
@@ -142,10 +144,12 @@ zwork:
   - local:github-pr, local:decision-gate
 
 pr-review:
+  - local:github-pr (PR 데이터 수집)
   - local:review-pr (실행기)
   - local:oracle-reviewer, local:oracle-gemini-reviewer (3명 투표)
   - local:UIAskUserQuestion (유저 질문)
   - local:decision-gate (자율/유저 분류)
+  - mcp__jira__getJiraIssue / mcp__github__get_issue (이슈 조회)
 
 pr-fix-and-update:
   - local:github-pr (PR 데이터 수집)
