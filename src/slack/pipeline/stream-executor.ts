@@ -129,6 +129,8 @@ interface StreamExecuteParams {
   sourceThreadTs?: string;
   /** Original channel before channel routing */
   sourceChannel?: string;
+  /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
+  isUserInput?: boolean;
 }
 
 interface FinalFooterData {
@@ -297,11 +299,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         recordUserTurn(session.conversationId, text, userName, user);
       }
 
-      // Store user instruction for SSOT tracking
-      // initialInstruction may already be set by session-initializer for the first turn.
+      // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
       // followUpInstructions is capped to prevent unbounded memory growth.
       const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
-      if (session && text) {
+      if (session && text && params.isUserInput !== false) {
         if (!session.initialInstruction) {
           session.initialInstruction = text;
         } else {
