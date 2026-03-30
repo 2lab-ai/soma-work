@@ -4,7 +4,7 @@
  */
 
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import { isDangerousCommand } from './dangerous-command-filter';
+import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 import { isAdminUser } from './admin-utils';
 import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers } from './mcp-tool-permission-config';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -503,6 +503,34 @@ export class ClaudeHandler {
                 },
               };
             }
+            return { continue: true };
+          }],
+        });
+      }
+
+      // SSH command restriction: only admin users may execute SSH commands via Bash.
+      // Non-admin users must use the server-tools MCP (which has its own permission gating).
+      if (!isAdminUser(slackContext.user)) {
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+            if (isSshCommand(command)) {
+              this.logger.warn('SSH command denied for non-admin user', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+
             return { continue: true };
           }],
         });

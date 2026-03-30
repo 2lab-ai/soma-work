@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDangerousCommand, checkDangerousCommand } from './dangerous-command-filter';
+import { isDangerousCommand, checkDangerousCommand, isSshCommand } from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {
@@ -46,6 +46,48 @@ describe('isDangerousCommand', () => {
       ['dd --version', 'dd version (no if=)'],
     ])('allows: %s (%s)', (command) => {
       expect(isDangerousCommand(command)).toBe(false);
+    });
+  });
+});
+
+describe('isSshCommand', () => {
+  describe('detects SSH patterns', () => {
+    it.each([
+      ['ssh dev2 docker ps', 'ssh command'],
+      ['ssh user@host ls', 'ssh with user@host'],
+      ['ssh -i key.pem host', 'ssh with identity file'],
+      ['sudo ssh dev2 docker pull nginx', 'sudo ssh'],
+      ['scp file.txt user@host:/tmp/', 'scp upload'],
+      ['scp user@host:/tmp/file.txt .', 'scp download'],
+      ['sftp user@host', 'sftp connection'],
+      ['rsync -avz -e ssh ./dir user@host:/tmp/', 'rsync over ssh'],
+      ['rsync -e "ssh -i key" src dest', 'rsync with ssh key'],
+    ])('detects: %s (%s)', (command) => {
+      expect(isSshCommand(command)).toBe(true);
+    });
+  });
+
+  describe('allows non-SSH patterns', () => {
+    it.each([
+      ['git status', 'git status'],
+      ['npm install', 'npm install'],
+      ['ls -la', 'ls'],
+      ['cat ssh_config', 'cat ssh_config file (ssh_ is not word boundary)'],
+      ['docker ps', 'docker ps'],
+      ['rsync -avz ./dir /tmp/', 'rsync without ssh'],
+      ['grep sshd /var/log/syslog', 'grep sshd (not standalone ssh)'],
+    ])('allows: %s (%s)', (command) => {
+      expect(isSshCommand(command)).toBe(false);
+    });
+  });
+
+  describe('conservative match — contains standalone ssh word', () => {
+    it.each([
+      ['echo "ssh is cool"', 'echo with ssh word'],
+      ['cat ~/.ssh/config', 'path with /ssh/'],
+    ])('matches: %s (%s)', (command) => {
+      // \bssh\b matches standalone "ssh" even in strings — this is intentional
+      expect(isSshCommand(command)).toBe(true);
     });
   });
 });
