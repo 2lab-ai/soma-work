@@ -2107,10 +2107,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.info('Resolved relative save path', { original: savePath, resolved: resolvedPath, sessionDir });
         }
 
+        // Security: ensure resolved path stays within session directory (prevent path traversal)
+        const canonicalPath = pathModule.resolve(resolvedPath);
+        if (sessionDir && !canonicalPath.startsWith(pathModule.resolve(sessionDir))) {
+          this.logger.warn('Save path traversal blocked', { resolvedPath: canonicalPath, sessionDir });
+          await say({
+            text: '⚠️ Save path is outside session directory. Renew cancelled.',
+            thread_ts: threadTs,
+          });
+          session.renewState = null;
+          return undefined;
+        }
+
         // Try to read context.md from the save directory
-        const contextPath = resolvedPath.endsWith('.md')
-          ? resolvedPath
-          : pathModule.join(resolvedPath, 'context.md');
+        const contextPath = canonicalPath.endsWith('.md')
+          ? canonicalPath
+          : pathModule.join(canonicalPath, 'context.md');
 
         if (fs.existsSync(contextPath)) {
           const content = fs.readFileSync(contextPath, 'utf-8');
@@ -2137,7 +2149,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     } else {
       // Last resort: scan session's .claude/omc/tasks/save/ for the most recent save
       const sessionDir = session.sessionWorkingDir || session.workingDirectory;
-      const scannedContent = sessionDir ? this.scanForLatestSave(sessionDir) : null;
+      const scannedContent = sessionDir ? this.scanForLatestSave(sessionDir, id) : null;
 
       if (scannedContent) {
         this.logger.info('Renew: found save via directory scan', { sessionDir, id });
@@ -2276,10 +2288,12 @@ ${userInstruction}`;
   }
 
   /**
-   * Scan session's .claude/omc/tasks/save/ directory for the most recent save.
+   * Scan session's .claude/omc/tasks/save/ directory for a save.
+   * If saveId is provided, only matches that exact directory.
+   * Otherwise falls back to most recent (newest timestamp-based ID).
    * Returns formatted content string or null if nothing found.
    */
-  private scanForLatestSave(sessionDir: string): string | null {
+  private scanForLatestSave(sessionDir: string, saveId?: string): string | null {
     try {
       const fs = require('fs') as typeof import('fs');
       const pathModule = require('path') as typeof import('path');
@@ -2289,7 +2303,18 @@ ${userInstruction}`;
         return null;
       }
 
-      // List save directories sorted descending (newest first, timestamp-based IDs)
+      // If we have a specific save ID, try that first (and only)
+      if (saveId) {
+        const contextPath = pathModule.join(saveRoot, saveId, 'context.md');
+        if (fs.existsSync(contextPath)) {
+          const content = fs.readFileSync(contextPath, 'utf-8');
+          this.logger.info('scanForLatestSave: found exact save by id', { saveId, contextPath });
+          return `--- context.md ---\n${content}`;
+        }
+        this.logger.warn('scanForLatestSave: save id not found, trying newest', { saveId });
+      }
+
+      // Fallback: list save directories sorted descending (newest first)
       const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
         .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
         .map((d: { name: string }) => d.name)
