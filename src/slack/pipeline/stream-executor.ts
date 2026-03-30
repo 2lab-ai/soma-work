@@ -2184,8 +2184,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
 
         // Security: ensure resolved path stays within session directory (prevent path traversal)
+        // Append path.sep to prevent sibling-prefix bypass (e.g., /tmp/session vs /tmp/session-evil)
         const canonicalPath = pathModule.resolve(resolvedPath);
-        if (sessionDir && !canonicalPath.startsWith(pathModule.resolve(sessionDir))) {
+        const resolvedSessionDir = pathModule.resolve(sessionDir!);
+        if (sessionDir && canonicalPath !== resolvedSessionDir
+            && !canonicalPath.startsWith(resolvedSessionDir + pathModule.sep)) {
           this.logger.warn('Save path traversal blocked', { resolvedPath: canonicalPath, sessionDir });
           await say({
             text: '⚠️ Save path is outside session directory. Renew cancelled.',
@@ -2245,15 +2248,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Get user message if provided with /renew command
     const userMessage = session.renewUserMessage;
 
-    // Notify in current thread
-    await say({
-      text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
-        `🔄 *Session Reset & Re-dispatch*\n` +
-        `• 이전 세션 컨텍스트 초기화됨\n` +
-        `• 워크플로우 재분류 후 load 실행...` +
-        (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
-      thread_ts: threadTs,
-    });
+    // Clear renew state BEFORE any notification I/O to prevent stuck state if say() rejects
+    session.renewState = null;
+    session.renewUserMessage = undefined;
+
+    // Notify in current thread (non-critical — state already cleaned up)
+    try {
+      await say({
+        text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
+          `🔄 *Session Reset & Re-dispatch*\n` +
+          `• 이전 세션 컨텍스트 초기화됨\n` +
+          `• 워크플로우 재분류 후 load 실행...` +
+          (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
+        thread_ts: threadTs,
+      });
+    } catch (notifyError) {
+      this.logger.warn('Renew: notification failed (non-blocking)', { notifyError });
+    }
 
     // Generate the load prompt with optional user instruction
     const userInstruction = userMessage
@@ -2265,10 +2276,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 ${saveContent}
 </save>
 ${userInstruction}`;
-
-    // Clear renew state and user message
-    session.renewState = null;
-    session.renewUserMessage = undefined;
 
     this.logger.info('Renew: returning continuation for load', { id, hasUserMessage: !!userMessage });
 
@@ -2387,10 +2394,12 @@ ${userInstruction}`;
           this.logger.info('scanForLatestSave: found exact save by id', { saveId, contextPath });
           return `--- context.md ---\n${content}`;
         }
-        this.logger.warn('scanForLatestSave: save id not found, trying newest', { saveId });
+        // Fail closed: explicit saveId was given but not found — do not fall back to newest
+        this.logger.warn('scanForLatestSave: explicit save id not found, failing closed', { saveId });
+        return null;
       }
 
-      // Fallback: list save directories sorted descending (newest first)
+      // Fallback (no saveId): list save directories sorted descending (newest first)
       const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
         .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
         .map((d: { name: string }) => d.name)
