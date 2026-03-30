@@ -4,29 +4,46 @@
 
 이 세션은 `z` 명령으로 트리거된 **자율 작업 실행** 워크플로우다.
 
+## 에이전트 전략
+
+zwork는 컨트롤러 역할만 하고, 실제 구현은 subagent에 위임한다.
+
+- **`superpowers:subagent-driven-development`**: 태스크별 fresh subagent 디스패치 + 2단계 리뷰 (spec → quality)
+- **`superpowers:dispatching-parallel-agents`**: 3+ 독립 태스크 동시 디스패치
+
+| 상황 | 전략 |
+|------|------|
+| 순차 의존성 있는 태스크 | subagent-driven (순차) |
+| 3+ 독립 태스크 | dispatching-parallel |
+| 혼합 | 독립→병렬, 의존→순차 |
+
 ## 작업 프로세스
 
 다음을 순서대로 처리한다. *작업 재개 중이면 진행 중이던 일 파악 후 이어서 처리.*
 
-> **즉시실행**: 받은 지시를 네 입으로 한번 출력해라. 그리고 다시 읽고. Task에 작업을 분해해서 등록하고 최대한 subagent로 병렬 처리.
+> **즉시실행**: 받은 지시를 네 입으로 한번 출력해라. 그리고 다시 읽고. TodoWrite에 작업 분해 등록. 독립 태스크 식별 후 병렬 디스패치.
 >
 > **phase0** (BUG인 경우): `stv:debug` → `stv:new-task`로 issue 생성
 >
-> **phase1** (구현):
+> **phase1** (구현) — subagent-driven-development 적용:
 > 1. `stv:new-task`로 issue 생성 (없으면)
-> 2. RED 테스트 추가
-> 3. `stv:do-work`로 구현
+> 2. 플랜에서 모든 태스크 텍스트 + 컨텍스트 추출
+> 3. **태스크별 루프** (독립 태스크는 병렬 디스패치):
+>    a. Implementer subagent 디스패치 (태스크 전체 텍스트 + 컨텍스트 + RED 테스트)
+>    b. Spec compliance reviewer subagent 디스패치 (❌면 수정 → 재리뷰)
+>    c. Code quality reviewer subagent 디스패치 (spec 통과 후에만, ❌면 수정 → 재리뷰)
+>    d. TodoWrite 태스크 완료 표시
 > 4. PR 올리기
-> 5. `stv:verify` → 통과할 때까지 `stv:do-work` 반복
-> 6. `local:github-pr` 리뷰
-> 7. `pr-fix-and-update.prompt`로 수정
+> 5. `stv:verify` → 통과할 때까지 반복
+> 6. `local:github-pr` 최종 리뷰
+> 7. `pr-fix-and-update.prompt`로 수정 (필요시)
 > 8. 문제없으면 머지 or goto 5
 >
 > **phase2** (작업 완료 후):
 > 1. 작업 내역 출력 + issue/PR 링크 제공
 > 2. issue/PR 각각 as-is/to-be 리포트 + `stv:verify` + executive summary
 > 3. 레드/그린 테스트 검증
-> 4. `llm_chat`으로 codex/gemini에게 코드+테스트 커버리지 리뷰 (병렬 4개)
+> 4. `llm_chat`으로 codex/gemini에게 코드+테스트 커버리지 리뷰 (`dispatching-parallel-agents` 패턴으로 병렬 4개)
 > 5. 리뷰 기반 수정 → `stv:debug` → issue 업데이트 → PR update → `stv:verify` 루프 → 머지 or goto 4
 
 ## 스킬 활용
@@ -37,4 +54,6 @@
 - stv:verify
 - local:github-pr
 - local:decision-gate
-- superpower:using-superpower
+- superpowers:using-superpowers
+- superpowers:subagent-driven-development
+- superpowers:dispatching-parallel-agents
