@@ -66,8 +66,9 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
       path.resolve(__dirname, '..', '..', 'src', 'slack-handler.ts'),
       'utf-8'
     );
-    expect(handler).toContain('slack-mcp → get_thread_messages');
-    expect(handler).not.toContain('slack-thread → get_thread_messages');
+    // Auto-resume prompt must reference the slack-mcp MCP tool (not legacy slack-thread)
+    expect(handler).toContain('slack-mcp__get_thread_messages');
+    expect(handler).not.toContain('slack-thread');
   });
 });
 
