@@ -287,6 +287,7 @@ export class ClaudeHandler {
     model?: string,
     abortController?: AbortController,
     resumeSessionId?: string,
+    cwd?: string,
   ): Promise<string> {
     // Validate credentials before making the query
     const credentialResult = await ensureValidCredentials();
@@ -328,10 +329,16 @@ export class ClaudeHandler {
       options.abortController = abortController;
     }
 
-    // Resume existing session to access conversation history for context-aware summaries.
+    // Fork existing session to access conversation history for context-aware summaries.
+    // resume + forkSession: copies history into a new session without mutating the original.
     // Without this, the fork has no knowledge of what happened in the session.
     if (resumeSessionId) {
       options.resume = resumeSessionId;
+      options.forkSession = true;
+    }
+
+    if (cwd) {
+      options.cwd = cwd;
     }
 
     const startTime = Date.now();
