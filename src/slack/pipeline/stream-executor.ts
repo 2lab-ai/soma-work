@@ -297,6 +297,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         recordUserTurn(session.conversationId, text, userName, user);
       }
 
+      // Store user instruction for SSOT tracking
+      if (session && text) {
+        if (!session.initialInstruction) {
+          // First message in session (e.g., session was created without dispatch text)
+          session.initialInstruction = text;
+        } else {
+          if (!session.followUpInstructions) {
+            session.followUpInstructions = [];
+          }
+          session.followUpInstructions.push({
+            timestamp: Date.now(),
+            text,
+            speaker: userName,
+          });
+        }
+      }
+
       this.logger.info('Sending query to Claude Code SDK', {
         prompt: finalPrompt.substring(0, 200) + (finalPrompt.length > 200 ? '...' : ''),
         sessionId: session.sessionId,

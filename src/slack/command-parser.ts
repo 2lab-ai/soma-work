@@ -265,6 +265,14 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a "show instructions" command (admin only)
+   * Matches: "show instructions", "/show instructions", "show_instructions", "/show_instructions"
+   */
+  static isShowInstructionsCommand(text: string): boolean {
+    return /^\/?show[_ ]instructions$/i.test(text.trim());
+  }
+
+  /**
    * Check if text is a help command
    */
   static isHelpCommand(text: string): boolean {
@@ -709,8 +717,9 @@ export class CommandParser {
       '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
       '• `plugins update` or `플러그인 업데이트` - Force re-download all plugins (Admin only)',
       '',
-      '*Prompt (Admin):*',
+      '*Prompt & Instructions (Admin):*',
       '• `show prompt` - Show the system prompt used in this session',
+      '• `show instructions` - Show user instructions stored in this session',
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status',

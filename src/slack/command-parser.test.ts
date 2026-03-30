@@ -816,4 +816,35 @@ describe('CommandParser', () => {
       expect(CommandParser.isShowPromptCommand('show llm_chat')).toBe(false);
     });
   });
+
+  describe('isShowInstructionsCommand', () => {
+    it('should match "show instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show instructions')).toBe(true);
+    });
+
+    it('should match "/show instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('/show instructions')).toBe(true);
+    });
+
+    it('should match "show_instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show_instructions')).toBe(true);
+    });
+
+    it('should match "/show_instructions"', () => {
+      expect(CommandParser.isShowInstructionsCommand('/show_instructions')).toBe(true);
+    });
+
+    it('should be case-insensitive', () => {
+      expect(CommandParser.isShowInstructionsCommand('Show Instructions')).toBe(true);
+      expect(CommandParser.isShowInstructionsCommand('SHOW INSTRUCTIONS')).toBe(true);
+    });
+
+    it('should not match "show"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show')).toBe(false);
+    });
+
+    it('should not match "show instructions extra"', () => {
+      expect(CommandParser.isShowInstructionsCommand('show instructions extra')).toBe(false);
+    });
+  });
 });

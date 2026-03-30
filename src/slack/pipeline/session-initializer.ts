@@ -159,6 +159,10 @@ export class SessionInitializer {
       ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs)
       : existingSession;
 
+    if (isNewSession && dispatchText) {
+      session.initialInstruction = dispatchText;
+    }
+
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
