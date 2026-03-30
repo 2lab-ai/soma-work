@@ -82,8 +82,8 @@ export class McpToolGrantStore {
       if (stat.mtimeMs > this.lastMtimeMs) {
         this.loadGrants();
       }
-    } catch {
-      // Non-critical — next call will retry
+    } catch (error) {
+      logger.warn('Failed to reload grants from disk — using cached state', error);
     }
   }
 
@@ -94,7 +94,9 @@ export class McpToolGrantStore {
         this.grants = JSON.parse(data);
         try {
           this.lastMtimeMs = fs.statSync(this.grantsFile).mtimeMs;
-        } catch { /* ignore */ }
+        } catch (statErr) {
+          logger.debug('Could not stat grants file for mtime tracking', statErr);
+        }
         logger.debug('Loaded MCP tool grants', {
           userCount: Object.keys(this.grants).length,
         });
@@ -106,6 +108,8 @@ export class McpToolGrantStore {
   }
 
   private saveGrants(): void {
+    // Snapshot pre-mutation state for safe rollback (avoids loadGrants wiping to {} on disk failure)
+    const preMutationGrants = JSON.parse(JSON.stringify(this.grants));
     const snapshot = JSON.stringify(this.grants, null, 2);
     try {
       const tmpFile = this.grantsFile + '.tmp';
@@ -113,9 +117,9 @@ export class McpToolGrantStore {
       fs.renameSync(tmpFile, this.grantsFile);
       logger.debug('Saved MCP tool grants');
     } catch (error) {
-      logger.error('Failed to save MCP tool grants — rolling back in-memory state', error);
-      // Rollback: reload last known-good state from disk
-      this.loadGrants();
+      logger.error('Failed to save MCP tool grants — restoring pre-mutation state', error);
+      // Restore from pre-mutation snapshot (not from disk, which may also be unavailable)
+      this.grants = preMutationGrants;
     }
   }
 
