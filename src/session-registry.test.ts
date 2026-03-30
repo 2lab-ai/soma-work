@@ -367,4 +367,46 @@ describe('SessionRegistry persistence', () => {
     expect(session.fileAccessRetryCount).toBe(0);
     expect(session.lastErrorContext).toBeUndefined();
   });
+
+  // === Issue #214: clearSessionId persists retry state cleanup to disk ===
+
+  it('clearSessionId calls saveSessions to persist cleanup', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_PERSIST', '171.P1');
+    session.sessionId = 'session-persist';
+    session.fileAccessRetryCount = 2;
+    session.errorRetryCount = 1;
+
+    const saveSpy = vi.spyOn(registry as any, 'saveSessions');
+    registry.clearSessionId('C_PERSIST', '171.P1');
+
+    expect(saveSpy).toHaveBeenCalled();
+    saveSpy.mockRestore();
+  });
+
+  // === Issue #215: clearSessionId cancels pending retry timer ===
+
+  it('clearSessionId cancels pendingRetryTimer', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_TIMER', '171.T1');
+    session.sessionId = 'session-timer';
+    const callback = vi.fn();
+    session.pendingRetryTimer = setTimeout(callback, 60_000);
+
+    registry.clearSessionId('C_TIMER', '171.T1');
+
+    expect(session.pendingRetryTimer).toBeUndefined();
+  });
+
+  it('resetSessionContext cancels pendingRetryTimer', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_TIMER', '171.T2');
+    session.sessionId = 'session-timer2';
+    const callback = vi.fn();
+    session.pendingRetryTimer = setTimeout(callback, 60_000);
+
+    registry.resetSessionContext('C_TIMER', '171.T2');
+
+    expect(session.pendingRetryTimer).toBeUndefined();
+  });
 });
