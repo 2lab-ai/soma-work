@@ -168,6 +168,13 @@ describe('TodoManager dependency methods', () => {
     expect(manager.isBlocked(todos[0], todos)).toBe(false);
   });
 
+  it('isBlocked returns true for dangling/missing dependency ref', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium', dependencies: ['nonexistent'] },
+    ];
+    expect(manager.isBlocked(todos[0], todos)).toBe(true);
+  });
+
   it('getEffectiveStatus returns blocked for pending with incomplete deps', () => {
     const todos: Todo[] = [
       { id: '1', content: 'first', status: 'in_progress', priority: 'medium' },

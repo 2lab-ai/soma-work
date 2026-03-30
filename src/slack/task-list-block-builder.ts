@@ -1,5 +1,10 @@
 import { Todo, TodoManager } from '../todo-manager';
 
+/** Slack section text limit is 3000 chars; leave margin for mrkdwn overhead */
+const MAX_SECTION_TEXT_LENGTH = 2800;
+/** Max content length per task before truncation */
+const MAX_TASK_CONTENT_LENGTH = 80;
+
 /**
  * Renders a task list as Slack Block Kit blocks for embedding in the thread header.
  *
@@ -22,6 +27,7 @@ export class TaskListBlockBuilder {
     options?: {
       startedAt?: number;
       estimatedEndAt?: number;
+      completedAt?: number;
     },
   ): any[] {
     if (!todos || todos.length === 0) return [];
@@ -32,7 +38,7 @@ export class TaskListBlockBuilder {
     blocks.push({ type: 'divider' });
 
     // ── Time context ──
-    const timeText = this.buildTimeText(options?.startedAt, options?.estimatedEndAt, todos);
+    const timeText = this.buildTimeText(options?.startedAt, options?.estimatedEndAt, options?.completedAt, todos);
     if (timeText) {
       blocks.push({
         type: 'context',
@@ -57,9 +63,14 @@ export class TaskListBlockBuilder {
 
     // ── Task items ──
     const taskLines = this.buildTaskLines(todos);
+    // Guard against Slack's 3000-char section text limit
+    const truncatedLines = taskLines.length > MAX_SECTION_TEXT_LENGTH
+      ? taskLines.slice(0, MAX_SECTION_TEXT_LENGTH - 20) + '\n_…truncated_'
+      : taskLines;
+
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: taskLines },
+      text: { type: 'mrkdwn', text: truncatedLines },
     });
 
     // ── Progress footer ──
@@ -84,6 +95,7 @@ export class TaskListBlockBuilder {
       const effectiveStatus = this.todoManager.getEffectiveStatus(todo, todos);
       const flowsFromPrev = this.todoManager.flowsFromCompleted(todo, i, todos);
       const num = i + 1;
+      const content = this.truncateContent(todo.content);
 
       let line = '';
 
@@ -92,17 +104,17 @@ export class TaskListBlockBuilder {
 
       switch (effectiveStatus) {
         case 'completed':
-          line = `⚫  ${num}  ~${todo.content}~`;
+          line = `⚫  ${num}  ~${content}~`;
           break;
         case 'in_progress':
-          line = `${arrow}🟢  *${num}*  ${todo.content}`;
+          line = `${arrow}🟢  *${num}*  ${content}`;
           break;
         case 'blocked':
-          line = this.buildBlockedLine(todo, num, todos);
+          line = this.buildBlockedLine(todo, num, todos, content);
           break;
         case 'pending':
         default:
-          line = `⚪  ${num}  ${todo.content}`;
+          line = `⚪  ${num}  ${content}`;
           break;
       }
 
@@ -110,21 +122,28 @@ export class TaskListBlockBuilder {
 
       // Sub-status line for in-progress tasks
       if (effectiveStatus === 'in_progress' && todo.activeForm) {
-        lines.push(`      • _${todo.activeForm}_`);
+        const activeContent = this.truncateContent(todo.activeForm);
+        lines.push(`      • _${activeContent}_`);
       }
     }
 
     return lines.join('\n');
   }
 
-  private buildBlockedLine(todo: Todo, num: number, allTodos: Todo[]): string {
+  private buildBlockedLine(todo: Todo, num: number, allTodos: Todo[], content: string): string {
     const depLabels = (todo.dependencies || [])
       .map(depId => {
         const idx = allTodos.findIndex(t => t.id === depId);
         return idx >= 0 ? `#${idx + 1}` : `#${depId}`;
       })
       .join(',');
-    return `🔒  ${num}  ${todo.content}  \`deps:${depLabels}\``;
+    return `🔒  ${num}  ${content}  \`deps:${depLabels}\``;
+  }
+
+  /** Truncate task content to prevent overflow */
+  private truncateContent(text: string): string {
+    if (text.length <= MAX_TASK_CONTENT_LENGTH) return text;
+    return text.slice(0, MAX_TASK_CONTENT_LENGTH - 1) + '…';
   }
 
   // ---------------------------------------------------------------------------
@@ -145,6 +164,7 @@ export class TaskListBlockBuilder {
   private buildTimeText(
     startedAt?: number,
     estimatedEndAt?: number,
+    completedAt?: number,
     todos?: Todo[],
   ): string | null {
     if (!startedAt) return null;
@@ -154,7 +174,9 @@ export class TaskListBlockBuilder {
     if (estimatedEndAt) {
       const allDone = todos?.every(t => t.status === 'completed');
       if (allDone) {
-        return `:clock1: Start: ${startStr} — Finished: ${this.formatTime(Date.now())}`;
+        // Use stored completedAt timestamp to prevent drift on re-render
+        const finishedTs = completedAt || Date.now();
+        return `:clock1: Start: ${startStr} — Finished: ${this.formatTime(finishedTs)}`;
       }
       return `:clock1: Start: ${startStr} — Estimated: ${this.formatTime(estimatedEndAt)}`;
     }
@@ -167,11 +189,13 @@ export class TaskListBlockBuilder {
     completed: number,
     total: number,
     pct: number,
-    options?: { startedAt?: number; estimatedEndAt?: number },
+    options?: { startedAt?: number; estimatedEndAt?: number; completedAt?: number },
   ): string {
     if (pct === 100) {
+      // Use stored completedAt to prevent drift on re-render
+      const finishedAt = options?.completedAt || Date.now();
       const elapsed = options?.startedAt
-        ? this.formatDuration(Date.now() - options.startedAt)
+        ? this.formatDuration(finishedAt - options.startedAt)
         : '';
       return `:white_check_mark: *All ${total} tasks completed*${elapsed ? ` in ${elapsed}` : ''}`;
     }

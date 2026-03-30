@@ -76,15 +76,34 @@ export class TodoDisplayManager {
       // Update the todo manager
       this.todoManager.updateTodos(sessionId, newTodos);
 
-      // Set task-list start time on first todo registration
-      if (session && !session.taskListStartedAt && newTodos.length > 0) {
-        session.taskListStartedAt = Date.now();
+      // Manage task-list timing on session
+      if (session) {
+        if (newTodos.length === 0) {
+          // Tasks cleared — reset all timing so a new plan starts fresh
+          session.taskListStartedAt = undefined;
+          session.taskListEstimatedEndAt = undefined;
+          session.taskListCompletedAt = undefined;
+        } else if (!session.taskListStartedAt) {
+          // First todo registration — record start time
+          session.taskListStartedAt = Date.now();
+        }
+
+        // Freeze completion timestamp when all tasks done (prevents drift on re-render)
+        const allDone = newTodos.length > 0 && newTodos.every(t => t.status === 'completed');
+        if (allDone && !session.taskListCompletedAt) {
+          session.taskListCompletedAt = Date.now();
+        } else if (!allDone) {
+          // Reset if tasks become active again (e.g. new tasks added after completion)
+          session.taskListCompletedAt = undefined;
+        }
       }
 
       // Trigger thread header re-render (new path: task list in header)
       if (this.onRenderRequest && session) {
         try {
           await this.onRenderRequest(session, sessionKey);
+          // Clean up legacy standalone message if header render succeeds
+          this.todoMessages.delete(sessionKey);
         } catch (error) {
           this.logger.debug('Failed to trigger header re-render for todo update', {
             sessionKey,

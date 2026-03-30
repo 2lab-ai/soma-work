@@ -570,6 +570,7 @@ export class ThreadSurface {
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
         startedAt: session.taskListStartedAt,
         estimatedEndAt: session.taskListEstimatedEndAt,
+        completedAt: session.taskListCompletedAt,
       });
       blocks.push(...taskListBlocks);
     }

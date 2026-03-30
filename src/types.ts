@@ -294,6 +294,8 @@ export interface ConversationSession {
   // Task list timestamps for ETA display in thread header
   taskListStartedAt?: number;
   taskListEstimatedEndAt?: number;
+  /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
+  taskListCompletedAt?: number;
 }
 
 export interface WorkingDirectoryConfig {

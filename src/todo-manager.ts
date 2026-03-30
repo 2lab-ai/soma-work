@@ -145,12 +145,15 @@ export class TodoManager {
 
   /**
    * Check if a task is blocked by incomplete dependencies.
+   * A missing dependency (dangling ref) is treated as blocking (safe default).
    */
   isBlocked(todo: Todo, allTodos: Todo[]): boolean {
     if (!todo.dependencies || todo.dependencies.length === 0) return false;
     return todo.dependencies.some(depId => {
       const dep = allTodos.find(t => t.id === depId);
-      return dep && dep.status !== 'completed';
+      // Missing dep → treat as blocking (dangling ref should not unblock)
+      if (!dep) return true;
+      return dep.status !== 'completed';
     });
   }
 
