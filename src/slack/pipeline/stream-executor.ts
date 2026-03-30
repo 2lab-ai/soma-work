@@ -795,21 +795,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Start summary timer for non-error completions (fire-and-forget)
         // Trace: docs/turn-summary-lifecycle/trace.md, S1
         if (this.deps.summaryTimer && category !== 'Exception') {
-          this.deps.summaryTimer.start(sessionKey, async () => {
-            if (this.deps.summaryService) {
-              try {
-                const summaryText = await this.deps.summaryService.execute(session as any);
-                if (summaryText) {
-                  this.deps.summaryService.displayOnThread(session as any, summaryText);
-                  // Trigger re-render so the summary blocks appear in the Slack thread header.
-                  // Without this, summaryBlocks sit in memory but the message is never updated.
-                  await this.deps.threadPanel?.updatePanel(session, sessionKey);
-                }
-              } catch (err: any) {
-                this.logger.warn('Summary timer callback failed', { error: err?.message });
-              }
-            }
-          });
+          this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
         }
 
         // Track completion message for auto-deletion
@@ -1303,6 +1289,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
   private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
+
+  /**
+   * Summary timer callback — executes fork query and renders result to thread panel.
+   * Extracted as a named method so it can be tested independently.
+   */
+  private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
+    if (!this.deps.summaryService) return;
+    try {
+      const summaryText = await this.deps.summaryService.execute(session as any);
+      if (summaryText) {
+        this.deps.summaryService.displayOnThread(session as any, summaryText);
+        // Trigger re-render so the summary blocks appear in the Slack thread header.
+        // Without this, summaryBlocks sit in memory but the message is never updated.
+        await this.deps.threadPanel?.updatePanel(session, sessionKey);
+      }
+    } catch (err: any) {
+      this.logger.warn('Summary timer callback failed', { error: err?.message });
+    }
+  }
 
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
