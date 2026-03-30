@@ -2,6 +2,7 @@ import { CommandHandler, CommandContext, CommandResult, CommandDependencies } fr
 import { CommandParser } from '../command-parser';
 import { isDefaultPlugin } from '../../plugin/defaults';
 import { isAdminUser } from '../../admin-utils';
+import { PluginUpdateDetail } from '../../plugin/types';
 
 /**
  * Handles `plugins` slash commands: list / add / remove.
@@ -171,25 +172,25 @@ export class PluginsHandler implements CommandHandler {
         '✅ *플러그인 업데이트 완료*',
         '',
         `• 총 플러그인: ${result.total}개`,
-        `• 업데이트된 플러그인: ${result.updated}개`,
+        `• 업데이트: ${result.updated}개`,
+        `• 변경없음: ${result.unchanged}개`,
       ];
+
+      // Per-plugin version details
+      if (result.details.length > 0) {
+        lines.push('');
+        lines.push('*플러그인 상세:*');
+
+        for (const d of result.details) {
+          lines.push(this.formatPluginDetail(d));
+        }
+      }
 
       if (result.errors.length > 0) {
         lines.push('');
         lines.push('⚠️ *Errors:*');
         for (const err of result.errors) {
           lines.push(`  • ${err}`);
-        }
-      }
-
-      // Show resolved plugin list
-      const resolved = pluginManager.getResolvedPlugins();
-      if (resolved.length > 0) {
-        lines.push('');
-        lines.push('*Resolved Plugins:*');
-        for (const r of resolved) {
-          const icon = r.source === 'default' ? '🔒' : r.source === 'local-override' ? '📁' : '🔌';
-          lines.push(`${icon} *${r.name}* (${r.source})`);
         }
       }
 
@@ -211,5 +212,40 @@ export class PluginsHandler implements CommandHandler {
   /** Returns true when pluginRef refers to the hardcoded built-in local plugin. */
   private isBuiltInLocal(pluginRef: string): boolean {
     return pluginRef === 'local' || pluginRef.startsWith('local@');
+  }
+
+  /** Format a single plugin update detail for Slack display. */
+  private formatPluginDetail(d: PluginUpdateDetail): string {
+    const formatDate = (iso: string | null): string => {
+      if (!iso) return '-';
+      try {
+        const date = new Date(iso);
+        // YYYY-MM-DD HH:mm (UTC)
+        return date.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      } catch {
+        return iso;
+      }
+    };
+
+    switch (d.status) {
+      case 'unchanged':
+        return `⏸️ *${d.name}*  — 변경없음 \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`;
+
+      case 'updated':
+        return [
+          `🔄 *${d.name}*  — *업데이트됨*`,
+          `    기존: \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`,
+          `    최신: \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`,
+        ].join('\n');
+
+      case 'new':
+        return `🆕 *${d.name}*  — 신규설치 \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`;
+
+      case 'error':
+        return `❌ *${d.name}*  — 오류: ${d.error ?? 'Unknown error'}`;
+
+      default:
+        return `❓ *${d.name}*`;
+    }
   }
 }
