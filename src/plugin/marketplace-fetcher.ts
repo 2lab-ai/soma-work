@@ -19,6 +19,29 @@ import { Logger } from '../logger';
 
 const logger = new Logger('MarketplaceFetcher');
 
+/**
+ * Run security scan on an installed plugin and enforce the gate policy.
+ * Returns true if the plugin passed (safe to proceed), false if blocked.
+ * When blocked, removes the installed plugin directory.
+ */
+function enforceSecurityGate(installedPath: string, pluginName: string): boolean {
+  const scanResult = scanPluginDirectory(installedPath, pluginName);
+  if (scanResult.blocked) {
+    logger.error('Plugin BLOCKED by security scan', {
+      pluginName,
+      riskLevel: scanResult.riskLevel,
+      findings: scanResult.findings.length,
+    });
+    logger.warn(formatScanReport(scanResult));
+    try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    return false;
+  }
+  if (scanResult.findings.length > 0) {
+    logger.warn(formatScanReport(scanResult));
+  }
+  return true;
+}
+
 export interface FetchResult {
   /** Absolute path to the extracted plugin directory */
   pluginPath: string;
@@ -405,22 +428,8 @@ export async function fetchPlugin(
     const installedPath = installPlugin(extractedRoot, pluginEntry.path, pluginsDir, pluginName);
     if (!installedPath) return null;
 
-    // Security scan — block CRITICAL risk plugins
-    const scanResult = scanPluginDirectory(installedPath, pluginName);
-    if (scanResult.blocked) {
-      logger.error('Plugin BLOCKED by security scan', {
-        pluginName,
-        riskLevel: scanResult.riskLevel,
-        findings: scanResult.findings.length,
-      });
-      logger.warn(formatScanReport(scanResult));
-      // Remove the installed plugin
-      try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
-      return null;
-    }
-    if (scanResult.findings.length > 0) {
-      logger.warn(formatScanReport(scanResult));
-    }
+    // Security gate — block CRITICAL risk plugins
+    if (!enforceSecurityGate(installedPath, pluginName)) return null;
 
     // Write cache metadata
     const sha = remoteSha || 'unknown';
@@ -519,21 +528,8 @@ async function fetchExternalPlugin(
     const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
     if (!installedPath) return null;
 
-    // Security scan — block CRITICAL risk external plugins
-    const scanResult = scanPluginDirectory(installedPath, pluginName);
-    if (scanResult.blocked) {
-      logger.error('External plugin BLOCKED by security scan', {
-        pluginName,
-        riskLevel: scanResult.riskLevel,
-        findings: scanResult.findings.length,
-      });
-      logger.warn(formatScanReport(scanResult));
-      try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
-      return null;
-    }
-    if (scanResult.findings.length > 0) {
-      logger.warn(formatScanReport(scanResult));
-    }
+    // Security gate — block CRITICAL risk external plugins
+    if (!enforceSecurityGate(installedPath, pluginName)) return null;
 
     const sha = remoteSha || 'unknown';
     writeCacheMeta(pluginsDir, pluginName, {
