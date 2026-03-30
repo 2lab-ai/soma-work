@@ -204,7 +204,7 @@ export class SlackHandler {
 
     // Wire turn completion notification channels
     const turnNotifier = new TurnNotifier([
-      new SlackBlockKitChannel(this.slackApi),
+      new SlackBlockKitChannel(this.slackApi, completionMessageTracker),
       new SlackDmChannel(this.slackApi, userSettingsStore),
       new WebhookChannel(userSettingsStore),
       new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
