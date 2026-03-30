@@ -91,7 +91,7 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   },
   {
     rule: 'EXEC_CHILD_PROCESS',
-    pattern: /(?:require\s*\(\s*['"]child_process['"]|from\s+['"]child_process['"])/g,
+    pattern: /(?:require\s*\(\s*['"](?:node:)?child_process['"]|from\s+['"](?:node:)?child_process['"])/g,
     description: 'Import of child_process module — shell command execution',
     severity: 'CRITICAL',
   },
@@ -205,10 +205,11 @@ const SENSITIVE_ENV_PATTERNS = [
 // ---------------------------------------------------------------------------
 
 const SCANNABLE_EXTENSIONS = new Set([
-  '.ts', '.js', '.mts', '.mjs', '.cjs', '.cts',
+  '.ts', '.js', '.tsx', '.jsx', '.mts', '.mjs', '.cjs', '.cts',
   '.json', '.yaml', '.yml', '.toml',
   '.sh', '.bash', '.zsh',
   '.py', '.rb', '.pl',
+  '.node', '.wasm',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -340,7 +341,11 @@ export function scanMcpServerConfig(
 
   // Check URL for non-HTTPS
   if (config.url) {
-    if (config.url.startsWith('http://') && !config.url.includes('localhost') && !config.url.includes('127.0.0.1')) {
+    const urlHost = (() => {
+      try { return new URL(config.url).hostname; } catch { return ''; }
+    })();
+    const isLocal = urlHost === 'localhost' || urlHost === '127.0.0.1' || urlHost === '::1';
+    if (config.url.startsWith('http://') && !isLocal) {
       findings.push({
         rule: 'MCP_INSECURE_URL',
         description: 'MCP server uses non-HTTPS URL (potential MitM)',
@@ -542,6 +547,18 @@ function scanManifest(pluginDir: string): SecurityFinding[] {
 function scanStructure(pluginDir: string): SecurityFinding[] {
   const findings: SecurityFinding[] = [];
 
+  // Check for symlinks (can escape plugin sandbox to access host files)
+  const symlinks = collectSymlinks(pluginDir, 3);
+  for (const link of symlinks) {
+    const target = (() => { try { return fs.readlinkSync(link); } catch { return 'unknown'; } })();
+    findings.push({
+      rule: 'STRUCTURE_SYMLINK',
+      description: `Symlink found pointing to: ${target}`,
+      severity: 'CRITICAL',
+      file: path.relative(pluginDir, link),
+    });
+  }
+
   // Check for binary/compiled files that might be obfuscated
   const suspiciousExtensions = ['.exe', '.dll', '.so', '.dylib', '.bin', '.dat'];
   const files = collectAllFiles(pluginDir, 2);
@@ -570,6 +587,36 @@ function scanStructure(pluginDir: string): SecurityFinding[] {
   }
 
   return findings;
+}
+
+/**
+ * Collect all symlinks in a directory tree.
+ */
+function collectSymlinks(dir: string, maxDepth: number): string[] {
+  const links: string[] = [];
+
+  function walk(currentDir: string, depth: number): void {
+    if (depth > maxDepth) return;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        links.push(fullPath);
+      } else if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git') {
+        walk(fullPath, depth + 1);
+      }
+    }
+  }
+
+  walk(dir, 0);
+  return links;
 }
 
 /**

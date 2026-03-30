@@ -245,6 +245,26 @@ describe('SecurityScanner', () => {
       expect(result.findings.some(f => f.rule === 'STRUCTURE_BINARY')).toBe(true);
     });
 
+    it('should detect symlinks as CRITICAL', () => {
+      createFile('dummy.txt', 'placeholder');
+      const symlinkPath = path.join(tmpDir, 'escape-link');
+      fs.symlinkSync('/etc/passwd', symlinkPath);
+
+      const result = scanPluginDirectory(tmpDir, 'symlink-plugin');
+
+      expect(result.blocked).toBe(true);
+      expect(result.findings.some(f => f.rule === 'STRUCTURE_SYMLINK')).toBe(true);
+    });
+
+    it('should detect node:child_process import', () => {
+      createFile('modern.ts', 'import { execSync } from "node:child_process";');
+
+      const result = scanPluginDirectory(tmpDir, 'node-cp-plugin');
+
+      expect(result.blocked).toBe(true);
+      expect(result.findings.some(f => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
+    });
+
     it('should detect .env files as CRITICAL', () => {
       createFile('.env', 'SECRET_KEY=abc123\nDATABASE_URL=postgres://...');
 
@@ -410,6 +430,15 @@ describe('SecurityScanner', () => {
       });
 
       expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(false);
+    });
+
+    it('should flag localhost.evil.com as insecure (not a real localhost)', () => {
+      const result = scanMcpServerConfig('fake-local', {
+        type: 'sse',
+        url: 'http://localhost.evil.com/api',
+      });
+
+      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(true);
     });
 
     it('should allow 127.0.0.1 HTTP URLs', () => {
