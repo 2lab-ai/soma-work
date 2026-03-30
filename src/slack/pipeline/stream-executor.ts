@@ -439,7 +439,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             logVerbosity: getVerbosity(),
           });
           // Metrics: detect git/gh commands in Bash output (fire-and-forget)
-          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey);
+          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey,
+            // Callback to record merge stats into session
+            (_sessionKey, prNumber, linesAdded, linesDeleted) => {
+              this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+            },
+          );
           const commandResult = await this.handleModelCommandToolResults(
             toolResults,
             session,

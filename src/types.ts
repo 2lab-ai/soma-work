@@ -280,6 +280,17 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // Merge code change stats — accumulated from merged PRs in this session
+  mergeStats?: {
+    totalLinesAdded: number;
+    totalLinesDeleted: number;
+    mergedPRs: Array<{
+      prNumber: number;
+      linesAdded: number;
+      linesDeleted: number;
+      mergedAt: number; // Unix ms
+    }>;
+  };
 }
 
 export interface WorkingDirectoryConfig {
