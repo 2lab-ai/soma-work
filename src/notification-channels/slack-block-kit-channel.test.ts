@@ -7,6 +7,7 @@ vi.mock('../user-settings-store', () => ({
 }));
 
 import { SlackBlockKitChannel } from './slack-block-kit-channel';
+import { CompletionMessageTracker } from '../slack/completion-message-tracker';
 import { TurnCompletionEvent } from '../turn-notifier';
 
 // Contract tests — Rich Turn Notification
@@ -260,6 +261,63 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(event.sevenDayUsage).toBe(55);
       expect(event.sevenDayDelta).toBe(2);
       expect(event.toolStats).toBeDefined();
+    });
+  });
+
+  // Bug fix: tracks actual posted message ts, not threadTs (thread root)
+  describe('CompletionMessageTracker integration', () => {
+    it('tracks the posted notification message ts, not threadTs', async () => {
+      const postedTs = '999.888';
+      const api = { postMessage: vi.fn().mockResolvedValue({ ts: postedTs }) };
+      const tracker = new CompletionMessageTracker();
+      const channel = new SlackBlockKitChannel(api, tracker);
+
+      await channel.send(makeEvent({ channel: 'C-TEST', threadTs: '111.222' }));
+
+      // The tracker should contain the POSTED message ts, not the threadTs
+      const sessionKey = 'C-TEST-111.222';
+      expect(tracker.has(sessionKey)).toBe(true);
+      expect(tracker.count(sessionKey)).toBe(1);
+
+      // Verify by deleteAll — only the posted ts should be deleted
+      const deletedTimestamps: string[] = [];
+      await tracker.deleteAll(
+        sessionKey,
+        async (_ch, ts) => { deletedTimestamps.push(ts); },
+        'C-TEST',
+      );
+      expect(deletedTimestamps).toEqual([postedTs]);
+      // threadTs (111.222) must NOT be in the deleted list
+      expect(deletedTimestamps).not.toContain('111.222');
+    });
+
+    it('does NOT track Exception category messages', async () => {
+      const api = { postMessage: vi.fn().mockResolvedValue({ ts: '999.888' }) };
+      const tracker = new CompletionMessageTracker();
+      const channel = new SlackBlockKitChannel(api, tracker);
+
+      await channel.send(makeEvent({ category: 'Exception', channel: 'C-X', threadTs: '111.222' }));
+
+      expect(tracker.has('C-X-111.222')).toBe(false);
+    });
+
+    it('does NOT track when postMessage returns no ts', async () => {
+      const api = { postMessage: vi.fn().mockResolvedValue(undefined) };
+      const tracker = new CompletionMessageTracker();
+      const channel = new SlackBlockKitChannel(api, tracker);
+
+      await channel.send(makeEvent({ channel: 'C-X', threadTs: '111.222' }));
+
+      expect(tracker.has('C-X-111.222')).toBe(false);
+    });
+
+    it('works without tracker (backward compatibility)', async () => {
+      const api = { postMessage: vi.fn().mockResolvedValue({ ts: '999.888' }) };
+      const channel = new SlackBlockKitChannel(api); // no tracker
+
+      // Should not throw
+      await channel.send(makeEvent());
+      expect(api.postMessage).toHaveBeenCalled();
     });
   });
 
