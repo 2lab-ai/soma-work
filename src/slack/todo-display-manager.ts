@@ -81,7 +81,6 @@ export class TodoDisplayManager {
         if (newTodos.length === 0) {
           // Tasks cleared — reset all timing so a new plan starts fresh
           session.taskListStartedAt = undefined;
-          session.taskListEstimatedEndAt = undefined;
           session.taskListCompletedAt = undefined;
         } else if (!session.taskListStartedAt) {
           // First todo registration — record start time

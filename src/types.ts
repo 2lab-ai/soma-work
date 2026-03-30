@@ -291,9 +291,8 @@ export interface ConversationSession {
       mergedAt: number; // Unix ms
     }>;
   };
-  // Task list timestamps for ETA display in thread header
+  // Task list timestamps for display in thread header
   taskListStartedAt?: number;
-  taskListEstimatedEndAt?: number;
   /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
   taskListCompletedAt?: number;
   // System prompt snapshot: the fully-built system prompt used for this session's current query.
