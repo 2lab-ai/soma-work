@@ -472,17 +472,27 @@ export class ThreadSurface {
           { unfurlLinks: false, unfurlMedia: false },
         );
         rendered = true;
-      } catch (error) {
-        this.logger.warn('Failed to update surface message', { sessionKey, error });
-        // If this was the thread root (bot-initiated), don't try to create a new one
-        if (session.threadModel === 'bot-initiated' && panelState.messageTs === session.threadRootTs) {
+      } catch (error: any) {
+        const isMessageNotFound = error?.data?.error === 'message_not_found'
+          || error?.message?.includes('message_not_found');
+        this.logger.warn('Failed to update surface message', {
+          sessionKey,
+          isMessageNotFound,
+          error: error?.message || error,
+        });
+        // Clear stale reference so we don't keep retrying a deleted message
+        panelState.messageTs = undefined;
+        // For bot-initiated: if the thread root itself is gone, create a fresh
+        // surface message in the thread instead of silently giving up forever.
+        if (session.threadModel === 'bot-initiated' && !isMessageNotFound) {
+          // Non-404 error (e.g. network issue) — skip creation, will retry next render
           return;
         }
-        panelState.messageTs = undefined;
+        // Fall through to create a new message below
       }
     }
 
-    // Create new message if needed (user-initiated only)
+    // Create new message if needed (any model — including bot-initiated after message_not_found)
     if (!panelState.messageTs) {
       try {
         const threadTs = session.threadRootTs || session.threadTs;

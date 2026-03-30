@@ -23,7 +23,7 @@ describe('SessionRegistry persistence', () => {
     }
   });
 
-  it('restores action panel state including existing panel message ts', () => {
+  it('restores action panel state but clears stale messageTs/renderKey on reload', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.001');
     session.sessionId = 'session-1';
@@ -45,7 +45,8 @@ describe('SessionRegistry persistence', () => {
     const restored = reader.getSession('C123', '171.001');
 
     expect(loaded).toBe(1);
-    expect(restored?.actionPanel?.messageTs).toBe('999.100');
+    // messageTs is intentionally cleared on restore to prevent stale message_not_found errors
+    expect(restored?.actionPanel?.messageTs).toBeUndefined();
     expect(restored?.actionPanel?.choiceMessageTs).toBe('999.101');
     expect(restored?.actionPanel?.waitingForChoice).toBe(true);
     expect(restored?.actionPanel?.choiceBlocks).toHaveLength(1);

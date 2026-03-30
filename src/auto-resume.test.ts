@@ -49,7 +49,13 @@ function createTestHandler() {
   };
 }
 
-const RESUME_PROMPT = 'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+const RESUME_PROMPT =
+  '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+  '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
+  '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
+  '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
+  '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
+  '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.';
 
 describe('Auto-Resume: S1 — Working session auto-resumes after restart', () => {
   // Trace: S1, Section 3b-3c — notifyCrashRecovery calls handleMessage for working sessions
