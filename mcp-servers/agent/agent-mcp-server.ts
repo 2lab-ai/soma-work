@@ -120,8 +120,8 @@ export class AgentMCPServer extends BaseMcpServer {
    * Trace: docs/multi-agent/trace.md, Scenario 4
    */
   private async handleChat(args: Record<string, unknown>): Promise<ToolResult> {
-    const agentName = args.agent as string;
-    const prompt = args.prompt as string;
+    const agentName = typeof args.agent === 'string' ? args.agent : '';
+    const prompt = typeof args.prompt === 'string' ? args.prompt : '';
 
     // Validate agent exists
     if (!agentName || !this.agentConfigs[agentName]) {
@@ -175,8 +175,8 @@ export class AgentMCPServer extends BaseMcpServer {
    * Trace: docs/multi-agent/trace.md, Scenario 5
    */
   private async handleChatReply(args: Record<string, unknown>): Promise<ToolResult> {
-    const sessionId = args.sessionId as string;
-    const prompt = args.prompt as string;
+    const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
+    const prompt = typeof args.prompt === 'string' ? args.prompt : '';
 
     // Validate session exists
     const session = sessionId ? this.sessions.get(sessionId) : undefined;

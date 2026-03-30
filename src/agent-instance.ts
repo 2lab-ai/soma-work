@@ -75,9 +75,14 @@ export class AgentInstance {
    * Trace: docs/multi-agent/trace.md, Scenario 2, Section 3b
    */
   async start(): Promise<void> {
+    if (this._running) {
+      this.logger.warn(`Agent '${this.name}' is already running — skipping start`);
+      return;
+    }
+
     this.logger.info(`Starting agent '${this.name}'...`);
 
-    this.app = new App({
+    const app = new App({
       token: this.config.slackBotToken,
       signingSecret: this.config.signingSecret,
       socketMode: true,
@@ -86,7 +91,7 @@ export class AgentInstance {
 
     // TODO: Wire up SlackHandler for this agent's App instance
     // For now, set up a basic message handler
-    this.app.event('app_mention', async ({ event, say }) => {
+    app.event('app_mention', async ({ event, say }) => {
       this.logger.info(`Agent '${this.name}' received mention`, {
         user: event.user,
         channel: event.channel,
@@ -94,7 +99,7 @@ export class AgentInstance {
       // Full SlackHandler integration will be wired in Phase 2
     });
 
-    this.app.event('message', async ({ event, say }) => {
+    app.event('message', async ({ event, say }) => {
       // Handle DMs to this agent
       if ('channel_type' in event && event.channel_type === 'im') {
         this.logger.info(`Agent '${this.name}' received DM`, {
@@ -103,7 +108,15 @@ export class AgentInstance {
       }
     });
 
-    await this.app.start();
+    try {
+      await app.start();
+    } catch (error) {
+      // Clean up partially created App to prevent resource leak
+      await app.stop().catch(() => {});
+      throw error;
+    }
+
+    this.app = app;
     this._running = true;
     this.logger.info(`Agent '${this.name}' started`);
   }

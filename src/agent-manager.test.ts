@@ -234,6 +234,95 @@ describe('S7 — Agent Graceful Shutdown', () => {
   });
 });
 
+// ─── S2++: Agent Startup Behavioral Verification ─────────────────────────────
+
+describe('S2++ — Agent Startup Behavioral Verification', () => {
+  // Codex review: startAll happy path never verifies start() is actually called
+  it('AgentStartup_HappyPath_CallsStart — start() called on each agent', async () => {
+    const { AgentManager } = await import('./agent-manager');
+
+    const agents = {
+      a: { slackBotToken: 'xoxb-a', slackAppToken: 'xapp-a', signingSecret: 'secret-20-chars-long!!' },
+      b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
+    };
+
+    const manager = new AgentManager(agents, {} as any);
+    const agentA = manager.getAgent('a')!;
+    const agentB = manager.getAgent('b')!;
+    const spyA = vi.spyOn(agentA, 'start').mockResolvedValueOnce(undefined);
+    const spyB = vi.spyOn(agentB, 'start').mockResolvedValueOnce(undefined);
+
+    await manager.startAll();
+
+    expect(spyA).toHaveBeenCalledOnce();
+    expect(spyB).toHaveBeenCalledOnce();
+  });
+
+  // Codex review: stopAll with populated manager — verify every stop() called
+  it('AgentShutdown_HappyPath_CallsStop — stop() called on each agent', async () => {
+    const { AgentManager } = await import('./agent-manager');
+
+    const agents = {
+      a: { slackBotToken: 'xoxb-a', slackAppToken: 'xapp-a', signingSecret: 'secret-20-chars-long!!' },
+      b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
+    };
+
+    const manager = new AgentManager(agents, {} as any);
+    const spyA = vi.spyOn(manager.getAgent('a')!, 'stop').mockResolvedValueOnce(undefined);
+    const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
+
+    await manager.stopAll();
+
+    expect(spyA).toHaveBeenCalledOnce();
+    expect(spyB).toHaveBeenCalledOnce();
+  });
+
+  // Codex review: stopAll continuation — b.stop() still called when a.stop() fails
+  it('AgentShutdown_Continuation — later agents still stopped after earlier failure', async () => {
+    const { AgentManager } = await import('./agent-manager');
+
+    const agents = {
+      a: { slackBotToken: 'xoxb-a', slackAppToken: 'xapp-a', signingSecret: 'secret-20-chars-long!!' },
+      b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
+    };
+
+    const manager = new AgentManager(agents, {} as any);
+    vi.spyOn(manager.getAgent('a')!, 'stop').mockRejectedValueOnce(new Error('crash'));
+    const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
+
+    await manager.stopAll();
+
+    expect(spyB).toHaveBeenCalledOnce();
+  });
+
+  // Codex review: start() idempotency guard
+  it('AgentInstance_Start_Idempotent — second start() is no-op', async () => {
+    const { AgentInstance } = await import('./agent-instance');
+
+    const config = {
+      slackBotToken: 'xoxb-test',
+      slackAppToken: 'xapp-test',
+      signingSecret: 'secret-20-chars-long!!',
+    };
+
+    const instance = new AgentInstance('test', config, {} as any);
+
+    // Mock start to succeed
+    const { App } = await import('@slack/bolt');
+    vi.spyOn(App.prototype, 'start').mockResolvedValue(undefined as any);
+    vi.spyOn(App.prototype, 'event').mockImplementation(() => {});
+
+    await instance.start();
+    expect(instance.running).toBe(true);
+
+    // Second call should be no-op (not throw)
+    await instance.start();
+    expect(instance.running).toBe(true);
+
+    vi.restoreAllMocks();
+  });
+});
+
 // ─── S2+: Agent Startup Error Isolation ──────────────────────────────────────
 
 describe('S2+ — Agent Startup Error Isolation', () => {

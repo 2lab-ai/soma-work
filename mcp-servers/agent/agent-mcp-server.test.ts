@@ -68,8 +68,8 @@ describe('S4 — agent_chat MCP Tool', () => {
     ).rejects.toThrow(/prompt.*required/i);
   });
 
-  // Trace: S4, Section 4 — session creation
-  it('AgentChat_SessionCreated — stores session after successful chat', async () => {
+  // Trace: S4, Section 4 — session creation (verified via chat-reply)
+  it('AgentChat_SessionCreated — stored session is reachable via chat-reply', async () => {
     const result = await server.handleTool('chat', {
       agent: 'jangbi',
       prompt: 'test prompt',
@@ -78,6 +78,13 @@ describe('S4 — agent_chat MCP Tool', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.sessionId).toBeTruthy();
     expect(typeof parsed.sessionId).toBe('string');
+
+    // Prove session was actually stored by successfully replying to it
+    const reply = await server.handleTool('chat-reply', {
+      sessionId: parsed.sessionId,
+      prompt: 'follow up',
+    });
+    expect(reply).toBeDefined();
   });
 
   // Trace: S4, Section 6 — response format contract
