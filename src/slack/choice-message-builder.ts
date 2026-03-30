@@ -1,4 +1,5 @@
 import { UserChoice, UserChoices } from '../types';
+import { SessionTheme } from '../user-settings-store';
 
 export interface SlackMessagePayload {
   blocks?: any[];
@@ -14,8 +15,76 @@ const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
 export class ChoiceMessageBuilder {
   /**
    * Build Slack attachment for single user choice (Jira-style card UI)
+   * Dispatches to themed layout builders based on theme parameter.
    */
-  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string, theme?: SessionTheme): SlackMessagePayload {
+    const resolvedTheme = theme ?? 'default';
+
+    switch (resolvedTheme) {
+      case 'compact': return this.buildThemeCompact(choice, sessionKey);
+      case 'minimal': return this.buildThemeMinimal(choice, sessionKey);
+      case 'default':
+      default: return this.buildThemeDefault(choice, sessionKey);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helper: build standard action buttons (shared across themes)
+  // ---------------------------------------------------------------------------
+
+  private static buildOptionButtons(choice: UserChoice, sessionKey: string): any[] {
+    const options = choice.choices.slice(0, 4);
+    return options.map((opt, idx) => ({
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
+        emoji: true,
+      },
+      value: JSON.stringify({
+        sessionKey,
+        choiceId: opt.id,
+        label: opt.label,
+        question: choice.question,
+      }),
+      action_id: `user_choice_${opt.id}`,
+    }));
+  }
+
+  private static buildCustomInputButton(sessionKey: string, question: string): any {
+    return {
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: '✏️ 직접 입력',
+        emoji: true,
+      },
+      value: JSON.stringify({
+        sessionKey,
+        question,
+        type: 'single',
+      }),
+      action_id: 'custom_input_single',
+    };
+  }
+
+  private static wrapAttachment(blocks: any[]): SlackMessagePayload {
+    return {
+      attachments: [
+        {
+          color: '#0052CC',
+          blocks,
+        },
+      ],
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Theme: default (Classic) — section + divider + fields 2-col + actions
+  // Based on former Theme D
+  // ---------------------------------------------------------------------------
+
+  private static buildThemeDefault(choice: UserChoice, sessionKey: string): SlackMessagePayload {
     const attachmentBlocks: any[] = [];
 
     // Title with emoji
@@ -27,18 +96,7 @@ export class ChoiceMessageBuilder {
       },
     });
 
-    // Context if provided
-    if (choice.context) {
-      attachmentBlocks.push({
-        type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            text: `💡 ${choice.context}`,
-          },
-        ],
-      });
-    }
+    attachmentBlocks.push({ type: 'divider' });
 
     // Build fields for horizontal layout (2 columns) with number emojis
     const options = choice.choices.slice(0, 4);
@@ -110,6 +168,66 @@ export class ChoiceMessageBuilder {
       ],
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // Theme: compact — section question + actions with labeled buttons
+  // Based on former Theme C
+  // ---------------------------------------------------------------------------
+
+  private static buildThemeCompact(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+    const blocks: any[] = [];
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `❓ *${choice.question}*`,
+      },
+    });
+
+    const buttons = this.buildOptionButtons(choice, sessionKey);
+    buttons.push(this.buildCustomInputButton(sessionKey, choice.question));
+
+    blocks.push({
+      type: 'actions',
+      elements: buttons,
+    });
+
+    return this.wrapAttachment(blocks);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Theme: minimal — context question + buttons only
+  // Based on former Theme A
+  // ---------------------------------------------------------------------------
+
+  private static buildThemeMinimal(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+    const blocks: any[] = [];
+
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `❓ ${choice.question}`,
+        },
+      ],
+    });
+
+    const buttons = this.buildOptionButtons(choice, sessionKey);
+    buttons.push(this.buildCustomInputButton(sessionKey, choice.question));
+
+    blocks.push({
+      type: 'actions',
+      elements: buttons,
+    });
+
+    return this.wrapAttachment(blocks);
+  }
+
+  // ===========================================================================
+  // Multi-choice form (unchanged)
+  // ===========================================================================
 
   /**
    * Build Slack attachment for multi-question choice form (Jira-style card UI)

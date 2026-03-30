@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  claude-code-slack-bot:
+  soma-work:
     build: .
     ports:
       - "${PORT:-3000}:${PORT:-3000}"

@@ -86,7 +86,7 @@ export class TokenRefreshScheduler {
    */
   private async refreshInBackground(): Promise<void> {
     try {
-      logger.info('Background refresh of GitHub App installation token starting');
+      logger.debug('Background refresh of GitHub App installation token starting');
 
       // Clear the cache to force a fresh token
       this.tokenCache = null;
@@ -94,7 +94,7 @@ export class TokenRefreshScheduler {
       // Get a new token
       const newToken = await this.getToken();
 
-      logger.info('GitHub App installation token refreshed successfully in background');
+      logger.debug('GitHub App installation token refreshed successfully in background');
 
       // Update environment variable for child processes
       process.env.GITHUB_TOKEN = newToken;
@@ -104,7 +104,7 @@ export class TokenRefreshScheduler {
       // If refresh fails but we still have some time on the old token, schedule a retry
       if (this.tokenCache && this.tokenCache.expiresAt > new Date()) {
         const retryIn = 2 * 60 * 1000; // Retry in 2 minutes
-        logger.info(`Retrying token refresh in ${retryIn / 1000} seconds`);
+        logger.debug(`Retrying token refresh in ${retryIn / 1000} seconds`);
         this.refreshTimer = setTimeout(() => {
           this.refreshInBackground();
         }, retryIn);
@@ -127,7 +127,7 @@ export class TokenRefreshScheduler {
    * Invalidate token cache
    */
   invalidateCache(): void {
-    logger.info('Invalidating GitHub App installation token cache');
+    logger.debug('Invalidating GitHub App installation token cache');
     this.tokenCache = null;
     this.clearRefreshTimer();
   }
@@ -138,7 +138,7 @@ export class TokenRefreshScheduler {
   async startAutoRefresh(): Promise<void> {
     try {
       await this.getToken();
-      logger.info('GitHub App auto-refresh started successfully');
+      logger.debug('GitHub App auto-refresh started successfully');
     } catch (error) {
       logger.error('Failed to start GitHub App auto-refresh:', error);
       throw error;
@@ -150,6 +150,6 @@ export class TokenRefreshScheduler {
    */
   stopAutoRefresh(): void {
     this.clearRefreshTimer();
-    logger.info('GitHub App auto-refresh stopped');
+    logger.debug('GitHub App auto-refresh stopped');
   }
 }

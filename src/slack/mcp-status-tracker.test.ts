@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { McpStatusDisplay } from './mcp-status-tracker';
+import { McpStatusDisplay, StatusUpdateConfig } from './mcp-status-tracker';
 import { SlackApiHelper } from './slack-api-helper';
 import { McpCallTracker } from '../mcp-call-tracker';
 
@@ -14,6 +14,26 @@ const createMockMcpCallTracker = () => ({
   getElapsedTime: vi.fn().mockReturnValue(5000),
   getPredictedDuration: vi.fn().mockReturnValue(null),
 });
+
+// Helper to create config
+function mcpConfig(serverName: string, toolName: string, paramsSummary?: string): StatusUpdateConfig {
+  return {
+    displayType: 'MCP',
+    displayLabel: `${serverName} → ${toolName}`,
+    initialDelay: 0,
+    predictKey: { serverName, toolName },
+    paramsSummary,
+  };
+}
+
+function subagentConfig(label: string): StatusUpdateConfig {
+  return {
+    displayType: 'Subagent',
+    displayLabel: label,
+    initialDelay: 0,
+    predictKey: { serverName: '_subagent', toolName: label },
+  };
+}
 
 describe('McpStatusDisplay', () => {
   let mockSlackApi: ReturnType<typeof createMockSlackApi>;
@@ -34,154 +54,335 @@ describe('McpStatusDisplay', () => {
     vi.useRealTimers();
   });
 
-  describe('startStatusUpdate', () => {
-    describe('for codex server', () => {
-      it('should create status message immediately', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+  describe('registerCall', () => {
+    it('should register a call and start a session tick', () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-        expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-          'C123',
-          expect.stringContaining('MCP 실행 중: codex → search'),
-          { threadTs: '111.222' }
-        );
-      });
-
-      it('should update message every 30 seconds', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
-        mockSlackApi.postMessage.mockClear();
-
-        // Advance 30 seconds
-        await vi.advanceTimersByTimeAsync(30000);
-
-        expect(mockSlackApi.updateMessage).toHaveBeenCalled();
-      });
-
-      it('should stop updating when elapsed returns null', async () => {
-        await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
-
-        mockMcpCallTracker.getElapsedTime.mockReturnValue(null);
-        await vi.advanceTimersByTimeAsync(30000);
-
-        expect(display.getActiveCount()).toBe(0);
-      });
+      expect(display.getActiveCount()).toBe(1);
     });
 
-    describe('for other servers', () => {
-      it('should not create status message immediately', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+    it('should register multiple calls in the same session', () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
 
-        expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
-      });
+      expect(display.getActiveCount()).toBe(2);
+    });
 
-      it('should create status message after 10 seconds', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+    it('should reuse session tick for same session', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
 
-        await vi.advanceTimersByTimeAsync(10000);
+      // First tick should post a single consolidated message
+      await vi.advanceTimersByTimeAsync(10_000);
 
-        expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-          'C123',
-          expect.stringContaining('MCP 실행 중: jira → search'),
-          { threadTs: '111.222' }
-        );
-      });
+      // Only 1 postMessage (consolidated), not 2 separate ones
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+    });
 
-      it('should not create message if call completes before 10 seconds', async () => {
-        await display.startStatusUpdate('call1', 'jira', 'search', 'C123', '111.222');
+    it('should create separate ticks for different sessions', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session2', 'call2', mcpConfig('jira', 'search'), 'C456', '222.333');
 
-        mockMcpCallTracker.getElapsedTime.mockReturnValue(null);
-        await vi.advanceTimersByTimeAsync(10000);
+      await vi.advanceTimersByTimeAsync(10_000);
 
-        expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
-      });
+      // Each session gets its own message
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('should post initial message on first tick', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('codex → search'),
+        { threadTs: '111.222' }
+      );
+    });
+
+    it('should update message on subsequent ticks', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      // First tick: post
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+
+      // Second tick: update
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe('completeCall', () => {
+    it('should mark a call as completed', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.completeCall('call1', 5000);
+
+      // Should still be in active count until tick renders and cleans up
+      // After tick, all completed → tick stops
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Completion text should include green indicator
+      const postText = mockSlackApi.postMessage.mock.calls[0]?.[1] ?? '';
+      expect(postText).toContain('🟢');
+    });
+
+    it('should be no-op for unknown callId', () => {
+      // Should not throw
+      expect(() => display.completeCall('unknown', 5000)).not.toThrow();
+    });
+
+    it('should stop tick when all calls complete', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      display.completeCall('call1', 3000);
+      display.completeCall('call2', 5000);
+
+      // First tick renders final state
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Reset mocks to check no more ticks
+      mockSlackApi.postMessage.mockClear();
+      mockSlackApi.updateMessage.mockClear();
+
+      // Advance more time — should have no more API calls
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('should render mixed state (some complete, some running)', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      display.completeCall('call1', 3000);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('🟢'); // completed call
+      expect(postText).toContain('⏳'); // running call
+      expect(postText).toContain('1/2 완료');
+    });
+  });
+
+  describe('cleanupSession', () => {
+    it('should remove all calls and stop tick for a session', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      display.cleanupSession('session1');
+
+      expect(display.getActiveCount()).toBe(0);
+
+      // No ticks should fire
+      mockSlackApi.postMessage.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('should not affect other sessions', () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session2', 'call2', mcpConfig('jira', 'search'), 'C456', '222.333');
+
+      display.cleanupSession('session1');
+
+      expect(display.getActiveCount()).toBe(1);
+    });
+
+    it('should be no-op for unknown session', () => {
+      expect(() => display.cleanupSession('unknown')).not.toThrow();
+    });
+  });
+
+  describe('adaptive interval', () => {
+    it('should use 10s interval for calls < 1 minute old', async () => {
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(30_000); // 30s
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      // First tick at 10s
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+
+      // Second tick at 20s
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.updateMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use 30s interval for calls 1-10 minutes old', async () => {
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(120_000); // 2 min
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      // First tick at 10s (initial interval)
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+
+      // After interval adjustment to 30s, no update at 20s
+      mockSlackApi.updateMessage.mockClear();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+
+      // Update at 30s from adjustment
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe('2-hour hard timeout', () => {
+    it('should mark calls as timed_out after 2 hours', async () => {
+      // Set elapsed to just over 2 hours
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(7_200_001);
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0]?.[1] ?? '';
+      expect(postText).toContain('타임아웃');
+    });
+
+    it('should stop tick after all calls timeout', async () => {
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(7_200_001);
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      mockSlackApi.postMessage.mockClear();
+      mockSlackApi.updateMessage.mockClear();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('consolidated rendering', () => {
+    it('should render all-completed state', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', subagentConfig('Explorer'), 'C123', '111.222');
+
+      display.completeCall('call1', 3000);
+      display.completeCall('call2', 5000);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('2개 작업 완료');
+      expect(postText).toContain('🟢');
+    });
+
+    it('should render mixed running/completed state', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', subagentConfig('Explorer'), 'C123', '111.222');
+
+      display.completeCall('call1', 3000);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('2개 작업 실행 중');
+      expect(postText).toContain('1/2 완료');
+      expect(postText).toContain('⏳ Explorer');
+      expect(postText).toContain('🟢 codex → search');
+    });
+
+    it('should show timed_out entries', async () => {
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(7_200_001);
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('⏱️');
+      expect(postText).toContain('타임아웃');
+    });
+
+    it('should include paramsSummary in rendered text', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search', '(query: hello)'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('(query: hello)');
     });
 
     it('should include progress bar when prediction is available', async () => {
       mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000);
       mockMcpCallTracker.getElapsedTime.mockReturnValue(30000);
 
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-        'C123',
-        expect.stringContaining('진행률: 50%'),
-        expect.any(Object)
-      );
-      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-        'C123',
-        expect.stringContaining('██████████░░░░░░░░░░'),
-        expect.any(Object)
-      );
-    });
-  });
+      await vi.advanceTimersByTimeAsync(10_000);
 
-  describe('stopStatusUpdate', () => {
-    it('should clear interval and update message to completed', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
-      mockSlackApi.updateMessage.mockClear();
-
-      await display.stopStatusUpdate('call1', 5000);
-
-      expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
-        'C123',
-        '123.456',
-        expect.stringContaining('MCP 완료: codex → search')
-      );
-      expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
-        'C123',
-        '123.456',
-        expect.stringContaining('5.0s')
-      );
-      expect(display.getActiveCount()).toBe(0);
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('█');
+      expect(postText).toContain('░');
     });
 
-    it('should not throw if no status message exists', async () => {
-      await expect(display.stopStatusUpdate('unknown', 5000)).resolves.not.toThrow();
+    it('should show duration for completed calls', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.completeCall('call1', 5000);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('5.0s');
     });
 
-    it('should handle undefined duration', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
-      mockSlackApi.updateMessage.mockClear();
+    it('should only make 1 API call per tick', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call3', subagentConfig('Explorer'), 'C123', '111.222');
 
-      await display.stopStatusUpdate('call1');
+      await vi.advanceTimersByTimeAsync(10_000);
 
-      expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
-        'C123',
-        '123.456',
-        '✅ *MCP 완료: codex → search*'
-      );
-    });
-  });
-
-  describe('getStatusMessageInfo', () => {
-    it('should return status message info', async () => {
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
-
-      const info = display.getStatusMessageInfo('call1');
-      expect(info).toEqual({
-        ts: '123.456',
-        channel: 'C123',
-        serverName: 'codex',
-        toolName: 'search',
-      });
-    });
-
-    it('should return undefined for unknown call', () => {
-      expect(display.getStatusMessageInfo('unknown')).toBeUndefined();
+      // Only 1 postMessage for all 3 calls
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('getActiveCount', () => {
-    it('should return number of active status updates', async () => {
+    it('should return number of running calls', () => {
       expect(display.getActiveCount()).toBe(0);
 
-      await display.startStatusUpdate('call1', 'codex', 'search', 'C123', '111.222');
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       expect(display.getActiveCount()).toBe(1);
 
-      await display.startStatusUpdate('call2', 'codex', 'search', 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
       expect(display.getActiveCount()).toBe(2);
 
-      await display.stopStatusUpdate('call1');
+      display.completeCall('call1', 1000);
+      // Completed calls are still counted until tick cleanup
+      // They should not be counted in active
       expect(display.getActiveCount()).toBe(1);
+    });
+  });
+
+  describe('adaptive prediction rendering', () => {
+    it('should show adaptive indicator when elapsed exceeds predicted', async () => {
+      mockMcpCallTracker.getPredictedDuration.mockReturnValue(34800); // 34.8s
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(40000); // 40s elapsed
+
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('🐢');
+      expect(postText).toContain('→');
+    });
+
+    it('should not adapt when elapsed is within predicted time', async () => {
+      mockMcpCallTracker.getPredictedDuration.mockReturnValue(60000); // 60s
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(30000); // 30s
+
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).not.toContain('🐢');
     });
   });
 });

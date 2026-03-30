@@ -3,22 +3,6 @@
     "jira": {
       "type": "sse",
       "url": "https://mcp.atlassian.com/v1/sse"
-    },
-    "codex": {
-      "type": "stdio",
-      "command": "codex",
-      "args": [
-        "mcp-server"
-      ],
-      "env": {}
-    },
-    "gemini": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "@2lab.ai/gemini-mcp-server"
-      ],
-      "env": {}
-    } 
+    }
   }
 }

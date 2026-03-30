@@ -1,7 +1,8 @@
-import { WebClient } from '@slack/web-api';
 import { TodoManager, Todo } from '../todo-manager';
 import { ReactionManager } from './reaction-manager';
 import { Logger } from '../logger';
+import { shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
+import { SlackApiHelper } from './slack-api-helper';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
@@ -20,7 +21,7 @@ export class TodoDisplayManager {
   private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
 
   constructor(
-    private client: WebClient,
+    private slackApi: SlackApiHelper,
     private todoManager: TodoManager,
     private reactionManager: ReactionManager
   ) {}
@@ -35,7 +36,8 @@ export class TodoDisplayManager {
     sessionId: string | undefined,
     channel: string,
     threadTs: string,
-    say: SayFunction
+    say: SayFunction,
+    logVerbosity?: number
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -78,7 +80,9 @@ export class TodoDisplayManager {
       }
 
       // Update reaction based on overall progress
-      await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
+      if (shouldOutput(OutputFlag.TODO_REACTION, logVerbosity ?? LOG_DETAIL)) {
+        await this.reactionManager.updateTaskProgressReaction(sessionKey, newTodos);
+      }
     }
   }
 
@@ -94,11 +98,7 @@ export class TodoDisplayManager {
     say: SayFunction
   ): Promise<void> {
     try {
-      await this.client.chat.update({
-        channel,
-        ts: messageTs,
-        text: todoList,
-      });
+      await this.slackApi.updateMessage(channel, messageTs, todoList);
       this.logger.debug('Updated existing todo message', { sessionKey, messageTs });
     } catch (error) {
       this.logger.warn('Failed to update todo message, creating new one', error);

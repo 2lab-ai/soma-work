@@ -9,13 +9,16 @@ import { mcpCallTracker } from './mcp-call-tracker';
 import {
   SlackApiHelper,
   ReactionManager,
+  ContextWindowManager,
   McpStatusDisplay,
+  McpHealthMonitor,
   SessionUiManager,
   ActionHandlers,
   ActionHandlerContext,
   EventRouter,
   EventRouterDeps,
   RequestCoordinator,
+  ThreadPanel,
   ToolTracker,
   CommandRouter,
   CommandDependencies,
@@ -24,6 +27,7 @@ import {
   MessageValidator,
   StatusReporter,
   TodoDisplayManager,
+  AssistantStatusManager,
 } from './slack';
 import {
   InputProcessor,
@@ -31,6 +35,29 @@ import {
   StreamExecutor,
   MessageEvent,
 } from './slack/pipeline';
+import { TurnNotifier } from './turn-notifier';
+import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-channel';
+import { SlackDmChannel } from './notification-channels/slack-dm-channel';
+import { WebhookChannel } from './notification-channels/webhook-channel';
+import { TelegramChannel } from './notification-channels/telegram-channel';
+import { userSettingsStore } from './user-settings-store';
+import { SummaryTimer } from './slack/summary-timer';
+import { CompletionMessageTracker } from './slack/completion-message-tracker';
+import { SummaryService } from './slack/summary-service';
+import { createForkExecutor } from './slack/create-fork-executor';
+import { V1QueryAdapter, TurnRunner } from './agent-session';
+import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
+
+interface SlackPermalinkTarget {
+  channelId: string;
+  messageTs: string;
+}
+
+interface ManagedDeleteActionValue {
+  requesterId: string;
+  targetChannel: string;
+  targetTs: string;
+}
 
 export class SlackHandler {
   private app: App;
@@ -44,10 +71,13 @@ export class SlackHandler {
   // Modular helpers
   private slackApi: SlackApiHelper;
   private reactionManager: ReactionManager;
+  private contextWindowManager: ContextWindowManager;
   private mcpStatusDisplay: McpStatusDisplay;
+  private mcpHealthMonitor: McpHealthMonitor;
   private sessionUiManager: SessionUiManager;
   private actionHandlers: ActionHandlers;
   private eventRouter: EventRouter;
+  private threadPanel: ThreadPanel;
 
   // Concurrency and tracking
   private requestCoordinator: RequestCoordinator;
@@ -63,6 +93,9 @@ export class SlackHandler {
   private messageValidator: MessageValidator;
   private statusReporter: StatusReporter;
   private todoDisplayManager: TodoDisplayManager;
+
+  // Native Slack AI spinner
+  private assistantStatusManager: AssistantStatusManager;
 
   // Pipeline components
   private inputProcessor: InputProcessor;
@@ -82,8 +115,16 @@ export class SlackHandler {
     this.requestCoordinator = new RequestCoordinator();
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
+    this.contextWindowManager = new ContextWindowManager(this.slackApi);
     this.mcpStatusDisplay = new McpStatusDisplay(this.slackApi, mcpCallTracker);
+    this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
+    this.sessionUiManager.setReactionManager(this.reactionManager);
+    this.threadPanel = new ThreadPanel({
+      slackApi: this.slackApi,
+      claudeHandler: this.claudeHandler,
+      requestCoordinator: this.requestCoordinator,
+    });
 
     // Command routing
     const commandDeps: CommandDependencies = {
@@ -92,20 +133,36 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionUiManager: this.sessionUiManager,
       requestCoordinator: this.requestCoordinator,
+      slackApi: this.slackApi,
+      reactionManager: this.reactionManager,
+      contextWindowManager: this.contextWindowManager,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
     // Message validation, status reporting, and todo display
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
-    this.statusReporter = new StatusReporter(app.client);
-    this.todoDisplayManager = new TodoDisplayManager(app.client, this.todoManager, this.reactionManager);
+    this.statusReporter = new StatusReporter(this.slackApi);
+    this.todoDisplayManager = new TodoDisplayManager(
+      this.slackApi,
+      this.todoManager,
+      this.reactionManager
+    );
+
+    // Native Slack AI spinner
+    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
 
     // Tool processing
     this.toolEventProcessor = new ToolEventProcessor(
       this.toolTracker,
       this.mcpStatusDisplay,
-      mcpCallTracker
+      mcpCallTracker,
+      this.assistantStatusManager,
+      this.mcpHealthMonitor
     );
+    // Set reaction manager for MCP pending tracking (hourglass emoji)
+    this.toolEventProcessor.setReactionManager(this.reactionManager);
+
+    const completionMessageTracker = new CompletionMessageTracker();
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -113,6 +170,10 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionManager: this.sessionUiManager,
       messageHandler: this.handleMessage.bind(this),
+      reactionManager: this.reactionManager,
+      threadPanel: this.threadPanel,
+      requestCoordinator: this.requestCoordinator,
+      completionMessageTracker,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -126,9 +187,25 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       slackApi: this.slackApi,
       messageValidator: this.messageValidator,
+      workingDirManager: this.workingDirManager,
       reactionManager: this.reactionManager,
       requestCoordinator: this.requestCoordinator,
+      contextWindowManager: this.contextWindowManager,
+      assistantStatusManager: this.assistantStatusManager,
+      threadPanel: this.threadPanel,
     });
+
+    // Wire turn completion notification channels
+    const turnNotifier = new TurnNotifier([
+      new SlackBlockKitChannel(this.slackApi),
+      new SlackDmChannel(this.slackApi, userSettingsStore),
+      new WebhookChannel(userSettingsStore),
+      new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),
+    ]);
+
+    const summaryTimer = new SummaryTimer();
+    const forkExecutor = createForkExecutor(this.claudeHandler);
+    const summaryService = new SummaryService(forkExecutor);
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
@@ -136,10 +213,18 @@ export class SlackHandler {
       toolEventProcessor: this.toolEventProcessor,
       statusReporter: this.statusReporter,
       reactionManager: this.reactionManager,
+      contextWindowManager: this.contextWindowManager,
       toolTracker: this.toolTracker,
       todoDisplayManager: this.todoDisplayManager,
       actionHandlers: this.actionHandlers,
       requestCoordinator: this.requestCoordinator,
+      slackApi: this.slackApi,
+      assistantStatusManager: this.assistantStatusManager,
+      threadPanel: this.threadPanel,
+      turnNotifier,
+      summaryTimer,
+      completionMessageTracker,
+      summaryService,
     });
 
     // EventRouter for event handling
@@ -148,6 +233,7 @@ export class SlackHandler {
       claudeHandler: this.claudeHandler,
       sessionManager: this.sessionUiManager,
       actionHandlers: this.actionHandlers,
+      commandDeps,
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
   }
@@ -157,7 +243,48 @@ export class SlackHandler {
    */
   async handleMessage(event: MessageEvent, say: any): Promise<void> {
     const { channel, thread_ts, ts } = event;
-    const threadTs = thread_ts || ts;
+    const originalThreadTs = thread_ts || ts;
+
+    if (channel.startsWith('D')) {
+      const handledCleanupRequest = await this.handleDmCleanupRequest(event, say);
+      if (handledCleanupRequest) {
+        return;
+      }
+    }
+
+    // Immediately acknowledge the message with eyes emoji
+    await this.slackApi.addReaction(channel, ts, 'eyes');
+
+    // Check for abort command: "!" or "!{prompt}"
+    const trimmedText = (event.text || '').trim();
+    if (trimmedText.startsWith('!')) {
+      const sessionKey = this.claudeHandler.getSessionKey(channel, originalThreadTs);
+      const aborted = this.requestCoordinator.abortSession(sessionKey);
+      const followUpPrompt = trimmedText.slice(1).trim();
+
+      if (followUpPrompt) {
+        // "!{prompt}" — abort current request, continue pipeline with new prompt
+        if (aborted) {
+          this.logger.info('Aborted active request, continuing with new prompt', {
+            sessionKey,
+            user: event.user,
+            prompt: followUpPrompt.substring(0, 100),
+          });
+        }
+        event.text = followUpPrompt;
+      } else {
+        // "!" only — abort and stop pipeline
+        await this.slackApi.removeReaction(channel, ts, 'eyes');
+        if (aborted) {
+          await this.slackApi.addReaction(channel, ts, 'octagonal_sign');
+          this.logger.info('Request aborted by user', { sessionKey, user: event.user });
+        } else {
+          await this.slackApi.addReaction(channel, ts, 'heavy_multiplication_x');
+          this.logger.debug('Abort requested but no active request', { sessionKey, user: event.user });
+        }
+        return;
+      }
+    }
 
     // Wrap say function
     const wrappedSay = async (args: any) => {
@@ -172,7 +299,11 @@ export class SlackHandler {
 
     // Step 1: Process files and check for content
     const { files: processedFiles, shouldContinue } = await this.inputProcessor.processFiles(event, wrappedSay);
-    if (!shouldContinue) return;
+    if (!shouldContinue) {
+      // Remove eyes emoji if nothing to process
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      return;
+    }
 
     this.logger.debug('Received message from Slack', {
       user: event.user,
@@ -184,33 +315,337 @@ export class SlackHandler {
     });
 
     // Step 2: Route commands
-    const { handled, continueWithPrompt } = await this.inputProcessor.routeCommand(event, wrappedSay);
-    if (handled && !continueWithPrompt) return;
+    const { handled, continueWithPrompt, forceWorkflow } = await this.inputProcessor.routeCommand(event, wrappedSay);
+    if (handled && !continueWithPrompt) {
+      // Command was handled - replace eyes with zap emoji
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      await this.slackApi.addReaction(channel, ts, 'zap');
+      return;
+    }
 
     // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead
     const effectiveText = continueWithPrompt || event.text;
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
-    if (!cwdResult.valid) return;
+    if (!cwdResult.valid) {
+      // CWD validation failed - replace eyes with warning emoji
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      await this.slackApi.addReaction(channel, ts, 'warning');
+      return;
+    }
 
-    // Step 4: Initialize session
-    const sessionResult = await this.sessionInitializer.initialize(event, cwdResult.workingDirectory!);
+    // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
+    const sessionResult = await this.sessionInitializer.initialize(
+      event,
+      cwdResult.workingDirectory!,
+      effectiveText,
+      forceWorkflow
+    );
 
-    // Step 5: Execute stream
-    await this.streamExecutor.execute({
+    // Channel routing check: if session was halted due to wrong channel, stop processing
+    if (sessionResult.halted) {
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      return;
+    }
+
+    const activeChannel = sessionResult.session.channelId || channel;
+    const activeThreadTs =
+      sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+
+    const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
+    if (hasPendingChoice) {
+      await this.threadPanel?.clearChoice(sessionResult.sessionKey);
+      // Treat direct user message as completing manual input from choice UI.
+      this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+    }
+
+    await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
+
+    // Replace eyes with brain emoji - message is being sent to model
+    // Skip for first message (creates thread) - model adds emoji via reactionManager
+    await this.slackApi.removeReaction(channel, ts, 'eyes');
+    if (thread_ts) {
+      await this.slackApi.addReaction(channel, ts, 'brain');
+    }
+
+    // Step 5: Execute via AgentSession (Phase 3c — Issue #87)
+    const sourceThreadTs = activeThreadTs !== originalThreadTs ? originalThreadTs : undefined;
+    const sourceChannel = activeChannel !== channel ? channel : undefined;
+
+    const agentSession = this.createAgentSession(sessionResult, wrappedSay, {
+      channel: activeChannel,
+      threadTs: activeThreadTs,
+      user: event.user,
+      mentionTs: ts,
+      sourceThreadTs,
+      sourceChannel,
+    });
+
+    const continuationHandler: ContinuationHandler = {
+      shouldContinue: (result) => {
+        const cont = result.continuation as any;
+        if (!cont) return { continue: false };
+        return { continue: true, prompt: cont.prompt };
+      },
+      onResetSession: async (continuation: any) => {
+        this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
+        const dispatchText = continuation.dispatchText || continuation.prompt;
+        await this.sessionInitializer.runDispatch(
+          activeChannel,
+          activeThreadTs,
+          dispatchText,
+          continuation.forceWorkflow,
+        );
+      },
+      refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
+    };
+
+    try {
+      await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
+    } catch (error) {
+      // Auto-retry on recoverable errors (merged from main — auto-retry on error)
+      const retryAfterMs = agentSession.getRetryAfterMs();
+      if (retryAfterMs) {
+        const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+        const retryCount = currentSession?.errorRetryCount ?? 0;
+        this.logger.info('Scheduling auto-retry after recoverable error', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          retryCount,
+          delayMs: retryAfterMs,
+        });
+
+        // Fire-and-forget: schedule retry after delay using autoResumeSession pattern
+        // If the session has error context (e.g., file access blocked), pass it to
+        // the retry prompt so the model can adapt its approach.
+        const errorContext = currentSession?.lastErrorContext;
+        setTimeout(() => {
+          this.autoResumeSession(
+            { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+            undefined,
+            errorContext,
+          ).then(() => {
+            this.logger.info('Error auto-retry completed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+            });
+          }).catch((retryError) => {
+            this.logger.error('Error auto-retry failed', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+              error: (retryError as Error).message,
+            });
+          });
+        }, retryAfterMs);
+        return; // Retry scheduled — don't re-throw
+      }
+      throw error; // Non-recoverable error — propagate
+    }
+  }
+
+  /**
+   * AgentSession factory — V1QueryAdapter를 세션 컨텍스트로 조립 (Issue #87, Phase 3c)
+   */
+  private createAgentSession(
+    sessionResult: any,
+    say: any,
+    context: {
+      channel: string;
+      threadTs: string;
+      user: string;
+      mentionTs: string;
+      sourceThreadTs?: string;
+      sourceChannel?: string;
+    },
+  ): V1QueryAdapter {
+    // TurnRunnerSurface adapter: ThreadPanel → TurnRunnerSurface
+    const turnRunnerSurface: TurnRunnerSurface = {
+      setStatus: async (session, sessionKey, patch) => {
+        await this.threadPanel?.setStatus(session, sessionKey, patch);
+      },
+      finalizeOnEndTurn: async (session, sessionKey, endTurnInfo, hasPendingChoice) => {
+        await this.threadPanel?.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
+      },
+    };
+
+    const turnRunner = new TurnRunner({
+      threadSurface: turnRunnerSurface,
+      session: sessionResult.session,
+      sessionKey: sessionResult.sessionKey,
+    });
+
+    const executeParams = {
       session: sessionResult.session,
       sessionKey: sessionResult.sessionKey,
       userName: sessionResult.userName,
       workingDirectory: sessionResult.workingDirectory,
       abortController: sessionResult.abortController,
-      processedFiles,
-      text: effectiveText,
-      channel,
-      threadTs,
-      user: event.user,
-      say: wrappedSay,
+      processedFiles: [],
+      channel: context.channel,
+      threadTs: context.threadTs,
+      user: context.user,
+      say,
+      mentionTs: context.mentionTs,
+      sourceThreadTs: context.sourceThreadTs,
+      sourceChannel: context.sourceChannel,
+    };
+
+    return new V1QueryAdapter({
+      streamExecutor: this.streamExecutor,
+      executeParams,
+      turnRunner,
     });
+  }
+
+  private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {
+    const target = this.extractSlackPermalinkTarget(event);
+    if (!target) {
+      return false;
+    }
+
+    const targetMessage = await this.slackApi.getMessage(target.channelId, target.messageTs);
+    if (!targetMessage) {
+      this.logger.info('DM cleanup target not found', target);
+      return true;
+    }
+
+    const botUserId = await this.slackApi.getBotUserId();
+    const isBotMessage = targetMessage.user === botUserId || !!targetMessage.bot_id;
+    if (!isBotMessage) {
+      return false;
+    }
+
+    const isManaged = this.isManagedBotMessage(
+      target.channelId,
+      target.messageTs,
+      targetMessage.thread_ts
+    );
+
+    if (isManaged) {
+      const value: ManagedDeleteActionValue = {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      };
+
+      await say({
+        text: '봇 관리 메시지 삭제 확인',
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '이 메시지는 봇이 관리하는 세션 메시지입니다. 정말 삭제하시겠습니까?',
+            },
+          },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                action_id: 'managed_message_delete_cancel',
+                text: { type: 'plain_text', text: '취소', emoji: true },
+                value: JSON.stringify(value),
+              },
+              {
+                type: 'button',
+                action_id: 'managed_message_delete_confirm',
+                text: { type: 'plain_text', text: '삭제', emoji: true },
+                style: 'danger',
+                value: JSON.stringify(value),
+              },
+            ],
+          },
+        ],
+      });
+
+      this.logger.info('DM cleanup requires confirmation for managed bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      });
+      return true;
+    }
+
+    try {
+      await this.slackApi.deleteMessage(target.channelId, target.messageTs);
+      this.logger.info('DM cleanup removed unmanaged bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+      });
+    } catch (error) {
+      this.logger.warn('DM cleanup failed to delete unmanaged bot message', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        error,
+      });
+    }
+
+    return true;
+  }
+
+  private isManagedBotMessage(channelId: string, messageTs: string, messageThreadTs?: string): boolean {
+    const threadTs = messageThreadTs || messageTs;
+
+    const sessionKey = this.claudeHandler.getSessionKey(channelId, threadTs);
+    if (this.claudeHandler.getSessionByKey(sessionKey)) {
+      return true;
+    }
+
+    for (const session of this.claudeHandler.getAllSessions().values()) {
+      if (session.channelId !== channelId) {
+        continue;
+      }
+      if (session.threadRootTs === messageTs) {
+        return true;
+      }
+      if (session.actionPanel?.messageTs === messageTs) {
+        return true;
+      }
+      if (session.threadTs === threadTs) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private extractSlackPermalinkTarget(event: MessageEvent): SlackPermalinkTarget | null {
+    const sources: string[] = [];
+    if (event.text) {
+      sources.push(event.text);
+    }
+
+    const rawBlocks = (event as any).blocks;
+    if (rawBlocks) {
+      sources.push(JSON.stringify(rawBlocks));
+    }
+
+    const rawAttachments = (event as any).attachments;
+    if (rawAttachments) {
+      sources.push(JSON.stringify(rawAttachments));
+    }
+
+    for (const source of sources) {
+      const match = source.match(/https?:\/\/[^\s>|]*slack\.com\/archives\/([A-Z0-9]+)\/p(\d{10,})/i);
+      if (!match) {
+        continue;
+      }
+
+      const channelId = match[1];
+      const rawTs = match[2];
+      if (rawTs.length <= 6) {
+        continue;
+      }
+
+      const messageTs = `${rawTs.slice(0, rawTs.length - 6)}.${rawTs.slice(-6)}`;
+      return { channelId, messageTs };
+    }
+
+    return null;
   }
 
   /**
@@ -235,9 +670,142 @@ export class SlackHandler {
   }
 
   /**
+   * Notify users whose sessions were interrupted by a crash/restart.
+   * Should be called after loadSavedSessions() and after Slack app starts.
+   */
+  /** Resume prompt sent to model for auto-resuming interrupted sessions */
+  private static readonly AUTO_RESUME_PROMPT =
+    'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+
+  /** Delay between processing crash-recovered sessions (ms) */
+  private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
+
+  async notifyCrashRecovery(): Promise<number> {
+    const recovered = this.claudeHandler.getCrashRecoveredSessions();
+    if (recovered.length === 0) return 0;
+
+    let notified = 0;
+    let autoResumed = 0;
+    for (let i = 0; i < recovered.length; i++) {
+      const session = recovered[i];
+      const isWorking = session.activityState === 'working';
+
+      // Post notification message and capture its ts for use as synthetic event anchor
+      let notificationTs: string | undefined;
+      try {
+        const notificationText = isWorking
+          ? `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 자동으로 재개합니다...`
+          : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
+
+        const result = await this.app.client.chat.postMessage({
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: notificationText,
+        });
+        notificationTs = result.ts as string | undefined;
+        notified++;
+      } catch (error) {
+        this.logger.warn('Failed to send crash recovery notification', {
+          channel: session.channelId,
+          threadTs: session.threadTs,
+          error: (error as Error).message,
+        });
+        // Skip auto-resume if notification failed — channel is likely inaccessible
+        if (i < recovered.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+        }
+        continue;
+      }
+
+      // Auto-resume sessions that were actively working (model mid-execution)
+      // IMPORTANT: Fire-and-forget — do NOT await handleMessage.
+      // handleMessage triggers Claude SDK streaming which takes minutes.
+      // Awaiting would block the loop and prevent other sessions from resuming.
+      if (isWorking) {
+        this.logger.info('Auto-resuming working session', {
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+          ownerId: session.ownerId,
+        });
+        this.autoResumeSession(session, notificationTs)
+          .then(() => {
+            this.logger.info('Auto-resume completed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+            });
+          })
+          .catch((error) => {
+            this.logger.error('Auto-resume failed', {
+              channelId: session.channelId,
+              threadTs: session.threadTs,
+              error: (error as Error).message,
+            });
+          });
+        autoResumed++;
+      }
+
+      // Delay between sessions to avoid overwhelming the system
+      if (i < recovered.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+      }
+    }
+
+    this.claudeHandler.clearCrashRecoveredSessions();
+    this.logger.info(
+      `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
+    );
+    return notified;
+  }
+
+  /**
+   * Auto-resume an interrupted session by sending a synthetic message
+   * through the existing handleMessage pipeline.
+   */
+  private async autoResumeSession(
+    session: { channelId: string; threadTs?: string; ownerId: string },
+    notificationTs?: string,
+    errorContext?: string,
+  ): Promise<void> {
+    // Use the notification message's ts so that handleMessage's reaction calls
+    // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
+
+    // When error context is available (e.g., file access blocked), inject it into
+    // the resume prompt so the model knows what went wrong and can adapt.
+    const resumePrompt = errorContext
+      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n⚠️ 이전 시도 중 오류 발생: ${errorContext}`
+      : SlackHandler.AUTO_RESUME_PROMPT;
+
+    const syntheticEvent: MessageEvent = {
+      user: session.ownerId,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: notificationTs || `${Date.now() / 1000}`,
+      text: resumePrompt,
+    };
+
+    const noopSay = async () => ({ ts: undefined as string | undefined });
+
+    await this.handleMessage(syntheticEvent, noopSay);
+  }
+
+  /**
    * Save sessions to file before shutdown
    */
   saveSessions(): void {
     this.claudeHandler.saveSessions();
+  }
+
+  /**
+   * Load pending forms from file
+   */
+  loadPendingForms(): number {
+    return this.actionHandlers.loadPendingForms();
+  }
+
+  /**
+   * Save pending forms to file before shutdown
+   */
+  savePendingForms(): void {
+    this.actionHandlers.savePendingForms();
   }
 }

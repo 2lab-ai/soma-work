@@ -12,10 +12,12 @@ const createMockSlackApi = () => ({
   postMessage: vi.fn().mockResolvedValue({ ts: '123.456', channel: 'C123' }),
   updateMessage: vi.fn().mockResolvedValue(undefined),
   postEphemeral: vi.fn().mockResolvedValue(undefined),
+  deleteMessage: vi.fn().mockResolvedValue(undefined),
 });
 
 const createMockClaudeHandler = () => ({
   getSessionByKey: vi.fn().mockReturnValue(null),
+  getSessionKey: vi.fn().mockImplementation((ch: string, ts?: string) => `${ch}:${ts ?? ''}`),
   terminateSession: vi.fn().mockReturnValue(true),
 });
 
@@ -73,6 +75,9 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith('terminate_session', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_choice_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^multi_choice_/, expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith(/^panel_/, expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_cancel', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_confirm', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('custom_input_single', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^custom_input_multi_/, expect.any(Function));
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));
@@ -176,6 +181,82 @@ describe('ActionHandlers', () => {
       expect(mockRespond).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('권한이 없습니다'),
+        })
+      );
+    });
+
+    it('should delete managed message on confirm action from requester', async () => {
+      const mockApp = {
+        action: vi.fn(),
+        view: vi.fn(),
+      };
+
+      handlers.registerHandlers(mockApp as any);
+
+      const confirmCall = mockApp.action.mock.calls.find(
+        (call) => call[0] === 'managed_message_delete_confirm'
+      );
+      const handler = confirmCall![1];
+
+      const mockAck = vi.fn();
+      const mockRespond = vi.fn();
+      const mockBody = {
+        actions: [{
+          value: JSON.stringify({
+            requesterId: 'U123',
+            targetChannel: 'C123',
+            targetTs: '111.222',
+          }),
+        }],
+        user: { id: 'U123' },
+      };
+
+      await handler({ ack: mockAck, body: mockBody, respond: mockRespond });
+
+      expect(mockAck).toHaveBeenCalled();
+      expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', '111.222');
+      expect(mockRespond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('삭제'),
+          replace_original: true,
+        })
+      );
+    });
+
+    it('should reject managed delete confirm from non-requester', async () => {
+      const mockApp = {
+        action: vi.fn(),
+        view: vi.fn(),
+      };
+
+      handlers.registerHandlers(mockApp as any);
+
+      const confirmCall = mockApp.action.mock.calls.find(
+        (call) => call[0] === 'managed_message_delete_confirm'
+      );
+      const handler = confirmCall![1];
+
+      const mockAck = vi.fn();
+      const mockRespond = vi.fn();
+      const mockBody = {
+        actions: [{
+          value: JSON.stringify({
+            requesterId: 'U123',
+            targetChannel: 'C123',
+            targetTs: '111.222',
+          }),
+        }],
+        user: { id: 'U999' },
+      };
+
+      await handler({ ack: mockAck, body: mockBody, respond: mockRespond });
+
+      expect(mockAck).toHaveBeenCalled();
+      expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+      expect(mockRespond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          response_type: 'ephemeral',
+          replace_original: false,
         })
       );
     });

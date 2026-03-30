@@ -80,7 +80,7 @@ export function copyBackupCredentials(): boolean {
 
     // Copy the file
     fs.copyFileSync(BACKUP_CREDENTIALS_PATH, CREDENTIALS_PATH);
-    logger.info('Successfully copied backup credentials', {
+    logger.debug('Successfully copied backup credentials', {
       from: BACKUP_CREDENTIALS_PATH,
       to: CREDENTIALS_PATH,
     });
@@ -128,14 +128,14 @@ export async function ensureValidCredentials(): Promise<CredentialValidationResu
 
   // Check if automatic restore is enabled
   if (isAutoRestoreEnabled()) {
-    logger.info('Automatic credential restore is enabled, attempting to restore...');
+    logger.debug('Automatic credential restore is enabled, attempting to restore...');
 
     // Try to copy from backup
     const copied = copyBackupCredentials();
     if (copied) {
       // Verify the copy was successful
       if (hasClaudeAiOauth()) {
-        logger.info('Successfully restored credentials from backup');
+        logger.debug('Successfully restored credentials from backup');
         return { valid: true, restored: true };
       } else {
         logger.error('Backup credentials also missing claudeAiOauth');
