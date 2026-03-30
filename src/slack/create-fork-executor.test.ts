@@ -27,6 +27,9 @@ describe('createForkExecutor', () => {
       'Generate a summary',
       expect.stringContaining('executive summaries'),
       'claude-sonnet-4-20250514',
+      undefined, // abortController
+      undefined, // sessionId
+      undefined, // cwd
     );
   });
 
@@ -40,6 +43,26 @@ describe('createForkExecutor', () => {
       'prompt text',
       expect.any(String),
       undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+  });
+
+  it('passes sessionId and cwd for context-aware fork', async () => {
+    mockHandler.dispatchOneShot.mockResolvedValue('Context-aware summary');
+    const executor = createForkExecutor(mockHandler as any);
+
+    const result = await executor('prompt', 'claude-opus-4-6', 'session-abc', '/tmp/work');
+
+    expect(result).toBe('Context-aware summary');
+    expect(mockHandler.dispatchOneShot).toHaveBeenCalledWith(
+      'prompt',
+      expect.stringContaining('executive summaries'),
+      'claude-opus-4-6',
+      undefined,      // abortController
+      'session-abc',  // sessionId for fork
+      '/tmp/work',    // cwd
     );
   });
 
