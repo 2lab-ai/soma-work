@@ -9,6 +9,12 @@ const mockConfig = {
     viewerUrl: '',
     viewerToken: '',
   },
+  oauth: {
+    google: { clientId: '', clientSecret: '' },
+    microsoft: { clientId: '', clientSecret: '' },
+    jwtSecret: '',
+    jwtExpiresIn: 604800,
+  },
 };
 
 vi.mock('../config', () => ({
@@ -17,6 +23,7 @@ vi.mock('../config', () => ({
 
 vi.mock('../env-paths', () => ({
   IS_DEV: true,
+  DATA_DIR: '/tmp/test-data',
 }));
 
 vi.mock('./recorder', () => ({
@@ -172,12 +179,13 @@ describe('ConversationWebServer Authentication', () => {
       await startWebServer({ listen: false });
       server = true;
 
-      // Without token
+      // Without token — HTML routes redirect to /login
       const noAuthResponse = await injectWebServer({
         method: 'GET',
         url: '/conversations',
       });
-      expect(noAuthResponse.statusCode).toBe(401);
+      expect(noAuthResponse.statusCode).toBe(302);
+      expect(noAuthResponse.headers.location).toBe('/login');
 
       // With token
       const authResponse = await injectWebServer({

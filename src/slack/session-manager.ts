@@ -16,6 +16,7 @@ import {
   GitHubPRDetails,
 } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
+import { getConversationUrl } from '../conversation';
 
 export interface FormatSessionsOptions {
   showControls?: boolean; // Show kill buttons (default: true)
@@ -233,7 +234,12 @@ export class SessionUiManager {
       ? `💤 ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
       : MessageFormatter.formatExpiresIn(session.lastActivity);
 
-    return { channelName, timeAgo, modelDisplay, permalink, activityEmoji, issueMeta, prMeta, reviewChip, isSleeping, expiresText, expiresShort };
+    // Conversation viewer URL (if conversation was recorded)
+    const conversationUrl = session.conversationId
+      ? getConversationUrl(session.conversationId)
+      : null;
+
+    return { channelName, timeAgo, modelDisplay, permalink, activityEmoji, issueMeta, prMeta, reviewChip, isSleeping, expiresText, expiresShort, conversationUrl };
   }
 
   /**
@@ -331,42 +337,68 @@ export class SessionUiManager {
     return parts.join('  ·  ');
   }
 
-  // ─── Default: Rich Card (section.text with title+activityEmoji, section.fields, context with linkHistory, actions [열기, ✕]) ───
+  // ─── Default: Rich Card — title with issue/PR titles, workflow badge, conversation link ───
   private buildCardDefault(
     index: number, sessionKey: string, session: ConversationSession,
     showControls: boolean, data: any, truncate: (s: string, max?: number) => string
   ): any[] {
     const blocks: any[] = [];
 
-    // Section with title + activityEmoji
-    const titleText = `${data.activityEmoji}*${session.title || '대화'}*`;
+    // Build rich title: session title + issue/PR titles when available
+    const titleParts: string[] = [];
+    titleParts.push(`${data.activityEmoji}*${session.title || '대화'}*`);
+
+    // Show active issue title if different from session title
+    if (session.links?.issue?.title && session.links.issue.title !== session.title) {
+      const issueLabel = session.links.issue.label || 'Issue';
+      titleParts.push(`📋 <${session.links.issue.url}|${issueLabel}>: ${truncate(session.links.issue.title, 60)}`);
+    }
+    // Show active PR title if different from session title
+    if (session.links?.pr?.title && session.links.pr.title !== session.title) {
+      const prLabel = session.links.pr.label || 'PR';
+      const prStatus = session.links.pr.status ? ` ${getStatusEmoji(session.links.pr.status, 'pr')}` : '';
+      titleParts.push(`🔀 <${session.links.pr.url}|${prLabel}>: ${truncate(session.links.pr.title, 60)}${prStatus}`);
+    }
 
     const sectionBlock: any = {
       type: 'section',
-      text: { type: 'mrkdwn', text: titleText },
-      fields: [
-        { type: 'mrkdwn', text: `*모델*\n${data.modelDisplay}` },
-        { type: 'mrkdwn', text: `*시간*\n${data.timeAgo}` },
-        { type: 'mrkdwn', text: `*채널*\n#${data.channelName}` },
-        { type: 'mrkdwn', text: `*소유자*\n${session.ownerName || session.ownerId}` },
-      ],
+      text: { type: 'mrkdwn', text: this.safeMrkdwn(titleParts.join('\n')) },
     };
     blocks.push(sectionBlock);
 
-    // Context with all links from linkHistory (max 5 each type, +N more)
+    // Meta row: workflow + model + channel + time + expires
+    const workflow = session.workflow || 'default';
+    const metaParts: string[] = [
+      `\`${workflow}\``,
+      `\`${data.modelDisplay}\``,
+      `#${data.channelName}`,
+      data.timeAgo,
+      data.expiresShort,
+    ];
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: metaParts.join('  ·  ') }] });
+
+    // Link history context (all tracked issues/PRs/docs with status)
     const linkContext = this.formatLinkHistoryContext(session.linkHistory, 5);
     if (linkContext) {
       blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(linkContext) }] });
     }
 
-    // Actions: 열기 + ✕
+    // Actions: 💬 스레드 + 📝 대화 기록 + ✕ 종료
     const actionElements: any[] = [];
     if (data.permalink) {
       actionElements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '열기', emoji: true },
+        text: { type: 'plain_text', text: '💬 스레드', emoji: true },
         url: data.permalink,
         action_id: `open_thread_${sessionKey.substring(0, 8)}`,
+      });
+    }
+    if (data.conversationUrl) {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '📝 대화 기록', emoji: true },
+        url: data.conversationUrl,
+        action_id: `open_conv_${sessionKey.substring(0, 8)}`,
       });
     }
     if (showControls) {
@@ -379,7 +411,7 @@ export class SessionUiManager {
     return blocks;
   }
 
-  // ─── Compact: section.text with activityEmoji+title+model+timeAgo, context with active issue/pr label, actions [열기, ✕] ───
+  // ─── Compact: title + issue/PR titles, meta context, actions with conversation link ───
   private buildCardCompact(
     index: number, sessionKey: string, session: ConversationSession,
     showControls: boolean, data: any, truncate: (s: string, max?: number) => string
@@ -387,33 +419,43 @@ export class SessionUiManager {
     const blocks: any[] = [];
 
     // Section text: activityEmoji + title + model + timeAgo
-    const titleText = `${data.activityEmoji}*${session.title || '대화'}* · ${data.modelDisplay} · ${data.timeAgo}`;
+    const titleText = `${data.activityEmoji}*${session.title || '대화'}* · \`${data.modelDisplay}\` · ${data.timeAgo}`;
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: titleText } });
 
-    // Context with active issue/pr label
+    // Context with active issue/pr label + title
     const contextParts: string[] = [];
     if (session.links?.issue) {
       const issue = session.links.issue;
       const issueStatus = data.issueMeta?.status ? ` ${getStatusEmoji(data.issueMeta.status)}` : '';
-      contextParts.push(`🎫 <${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
+      const issueTitle = issue.title ? `: ${truncate(issue.title, 40)}` : '';
+      contextParts.push(`📋 <${issue.url}|${issue.label || '이슈'}>${issueTitle}${issueStatus}`);
     }
     if (session.links?.pr) {
       const pr = session.links.pr;
       const prStatusEmoji = getStatusEmoji(data.prMeta?.status, 'pr');
-      contextParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}> ${prStatusEmoji}${data.reviewChip}`);
+      const prTitle = pr.title ? `: ${truncate(pr.title, 40)}` : '';
+      contextParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}>${prTitle} ${prStatusEmoji}${data.reviewChip}`);
     }
     if (contextParts.length > 0) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(contextParts.join(' · ')) }] });
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(contextParts.join('  ·  ')) }] });
     }
 
-    // Actions: 열기 + ✕
+    // Actions: 💬 스레드 + 📝 대화 기록 + ✕
     const actionElements: any[] = [];
     if (data.permalink) {
       actionElements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '열기', emoji: true },
+        text: { type: 'plain_text', text: '💬 스레드', emoji: true },
         url: data.permalink,
         action_id: `open_thread_${sessionKey.substring(0, 8)}`,
+      });
+    }
+    if (data.conversationUrl) {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '📝 기록', emoji: true },
+        url: data.conversationUrl,
+        action_id: `open_conv_${sessionKey.substring(0, 8)}`,
       });
     }
     if (showControls) {

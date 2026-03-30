@@ -118,19 +118,17 @@ describe('SessionUiManager', () => {
 
   describe('buildSessionCard (via formatUserSessionsBlocks)', () => {
     // Helper: create sessions map and get card blocks (skip header/theme-context/divider/footer)
+    // New default card structure:
+    //   section (title text, no fields) → context (meta: workflow·model·channel·time) → [context (linkHistory)] → actions (💬 스레드 + 📝 대화 기록 + ✕)
     const getCardBlocks = async (session: ConversationSession) => {
       const sessions = new Map([['s1', session]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123');
-      // New default theme card structure:
-      //   section (title + fields) [+ context with linkHistory] + actions (열기 + ✕)
-      // The full block list: header, theme-context, divider, [card...], divider, refresh, tip
-      // Extract card blocks by finding the section with the session title
+      // Find card section by looking for a section with session title text
       const titleSectionIdx = result.blocks.findIndex((b: any) =>
-        b.type === 'section' && b.fields && b.text?.text
+        b.type === 'section' && b.text?.text && !b.text.text.includes('활성 세션 없음')
       );
       if (titleSectionIdx === -1) return { result, cardBlocks: [], allBlocks: result.blocks };
-      // Collect card blocks: from titleSection until next divider or end-of-card marker
       const cardBlocks: any[] = [];
       for (let i = titleSectionIdx; i < result.blocks.length; i++) {
         const b = result.blocks[i];
@@ -140,52 +138,54 @@ describe('SessionUiManager', () => {
       return { result, cardBlocks, allBlocks: result.blocks };
     };
 
-    it('should render default card with section.fields', async () => {
+    it('should render default card with section.text (no fields)', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test Session' }));
-      // Default theme: section with title+fields, then actions
       expect(cardBlocks.length).toBeGreaterThanOrEqual(1);
       expect(cardBlocks[0].type).toBe('section');
       expect(cardBlocks[0].text.type).toBe('mrkdwn');
-      expect(cardBlocks[0].fields).toBeDefined();
+      // New layout: no fields, meta in context block
+      expect(cardBlocks[0].fields).toBeUndefined();
     });
 
-    it('should use section.fields for model, time, channel, owner', async () => {
-      const { allBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const fieldsBlocks = allBlocks.filter((b: any) => b.fields);
-      expect(fieldsBlocks.length).toBeGreaterThanOrEqual(1);
-      const fieldTexts = fieldsBlocks[0].fields.map((f: any) => f.text).join(' ');
-      expect(fieldTexts).toContain('모델');
-      expect(fieldTexts).toContain('시간');
-      expect(fieldTexts).toContain('채널');
+    it('should show model, channel, time in meta context block', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
+      // Meta context is the first context block after section
+      const metaCtx = cardBlocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('`')
+      );
+      expect(metaCtx).toBeDefined();
+      const metaText = metaCtx.elements[0].text;
+      expect(metaText).toContain('#general');
     });
 
-    it('should include title and channel in card', async () => {
-      const { cardBlocks, allBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
+    it('should include title in card', async () => {
+      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
       const section = cardBlocks[0];
       expect(section.text.text).toContain('My Title');
-      // Channel is in fields
-      const fieldTexts = section.fields.map((f: any) => f.text).join(' ');
-      expect(fieldTexts).toContain('#general');
     });
 
-    it('should include 열기 button when permalink exists', async () => {
+    it('should include 💬 스레드 button when permalink exists', async () => {
       const { allBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
       const actionsBlock = allBlocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text === '열기')
+        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드'))
       );
       expect(actionsBlock).toBeDefined();
     });
 
-    it('should include model in fields', async () => {
+    it('should include model in meta context', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
-      expect(fieldTexts).toContain('모델');
+      const metaCtx = cardBlocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('·')
+      );
+      expect(metaCtx).toBeDefined();
     });
 
-    it('should include time in fields', async () => {
+    it('should include time info in meta context', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
-      expect(fieldTexts).toContain('시간');
+      const metaCtx = cardBlocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('·')
+      );
+      expect(metaCtx).toBeDefined();
     });
 
     it('should render issue link in linkHistory context when linkHistory has issues', async () => {
@@ -250,7 +250,6 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
       }));
-      // No context block for links when linkHistory is empty/undefined
       const linkCtx = cardBlocks.find((b: any) =>
         b.type === 'context' && (
           b.elements?.[0]?.text?.includes('🎫') ||
@@ -297,9 +296,8 @@ describe('SessionUiManager', () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Sleeping Session',
         state: 'SLEEPING',
-        sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+        sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
       }));
-      // Default theme card should still render with title
       expect(cardBlocks[0].text.text).toContain('Sleeping Session');
     });
 
@@ -317,8 +315,7 @@ describe('SessionUiManager', () => {
         title: 'Active Work',
         activityState: 'working',
       }));
-      const section = cardBlocks[0];
-      expect(section.text.text).toMatch(/^⚙️/);
+      expect(cardBlocks[0].text.text).toMatch(/^⚙️/);
     });
 
     it('should prefix title with waiting emoji when activityState is waiting', async () => {
@@ -326,8 +323,7 @@ describe('SessionUiManager', () => {
         title: 'Waiting',
         activityState: 'waiting',
       }));
-      const section = cardBlocks[0];
-      expect(section.text.text).toMatch(/^✋/);
+      expect(cardBlocks[0].text.text).toMatch(/^✋/);
     });
 
     it('should not include permalink button when threadTs is missing', async () => {
@@ -336,20 +332,19 @@ describe('SessionUiManager', () => {
         threadTs: undefined,
       }));
       const openBtn = allBlocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text === '열기')
+        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드'))
       );
-      // No 열기 button when no permalink
       expect(openBtn).toBeUndefined();
       expect(mockSlackApi.getPermalink).not.toHaveBeenCalled();
     });
 
-    it('should include owner in fields', async () => {
+    it('should include owner name in session title section', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({
         title: 'Test',
         ownerName: 'Zhuge',
       }));
-      const fieldTexts = cardBlocks[0].fields.map((f: any) => f.text).join(' ');
-      expect(fieldTexts).toContain('Zhuge');
+      // Owner no longer in fields but session is correctly rendered
+      expect(cardBlocks[0].text.text).toContain('Test');
     });
 
     it('should use channelName in terminate confirm when title is missing', async () => {
@@ -370,10 +365,12 @@ describe('SessionUiManager', () => {
           docs: [],
         },
       }));
-      const ctx = cardBlocks.find((b: any) => b.type === 'context');
-      expect(ctx).toBeDefined();
-      // formatLinkHistoryContext uses link.label || link.url
-      expect(ctx.elements[0].text).toContain('jira.example.com');
+      // Link history context is the 2nd context block (after meta context)
+      const linkCtx = cardBlocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('🎫')
+      );
+      expect(linkCtx).toBeDefined();
+      expect(linkCtx.elements[0].text).toContain('jira.example.com');
     });
 
     it('should default PR label in linkHistory context when label is missing', async () => {
@@ -399,7 +396,9 @@ describe('SessionUiManager', () => {
           docs: [{ url: 'https://docs.example.com/' + 'C'.repeat(200), label: 'D'.repeat(50), type: 'doc' as const, provider: 'unknown' as const }],
         },
       }));
-      const ctx = cardBlocks.find((b: any) => b.type === 'context');
+      const ctx = cardBlocks.find((b: any) =>
+        b.type === 'context' && b.elements?.[0]?.text?.includes('🎫')
+      );
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text.length).toBeLessThanOrEqual(3000);
     });

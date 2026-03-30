@@ -191,13 +191,11 @@ export class SessionInitializer {
         const conversationId = createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Send conversation URL to the thread (gated by SYSTEM verbosity)
+        // Always show conversation URL — it's essential for session review
         const conversationUrl = getConversationUrl(conversationId);
-        if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
-          await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|View conversation history>`, {
-            threadTs,
-          });
-        }
+        await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
+          threadTs,
+        });
         this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
