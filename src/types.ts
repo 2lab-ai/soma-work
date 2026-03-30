@@ -280,6 +280,9 @@ export interface ConversationSession {
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
+  // Compaction context preservation (#196): set to true when SDK auto-compacts.
+  // On next user message, preserved context is injected and flag is cleared.
+  compactionOccurred?: boolean;
 }
 
 export interface WorkingDirectoryConfig {

@@ -1,6 +1,7 @@
 import { ClaudeHandler } from '../../claude-handler';
 import { FileHandler, ProcessedFile } from '../../file-handler';
 import { userSettingsStore } from '../../user-settings-store';
+import { buildCompactionContext } from '../../session/compaction-context-builder';
 import {
   ConversationSession,
   SessionResourceUpdateRequest,
@@ -290,7 +291,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+      let finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+
+      // #196: Inject preserved context after compaction
+      if (session.compactionOccurred) {
+        const compactionContext = buildCompactionContext({
+          sessionTitle: session.title,
+          workflow: session.workflow,
+          links: session.links,
+          linkHistory: session.linkHistory,
+          persona: userSettingsStore.getUserPersona(user),
+          effort: session.effort,
+        });
+        if (compactionContext) {
+          finalPrompt = `${compactionContext}\n\n${finalPrompt}`;
+          this.logger.info('Injected compaction-preserved context', {
+            sessionKey,
+            contextLength: compactionContext.length,
+          });
+        }
+        session.compactionOccurred = false;
+      }
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
@@ -582,6 +603,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               await this.deps.assistantStatusManager.setStatus(channel, threadTs, '컨텍스트 압축 중...');
             }
           }
+        },
+        // #196: When SDK auto-compacts, flag the session so next prompt gets preserved context
+        onCompactBoundary: async (metadata) => {
+          session.compactionOccurred = true;
+          this.logger.info('Session compaction detected — context will be injected on next prompt', {
+            sessionKey,
+            trigger: metadata.trigger,
+            preTokens: metadata.preTokens,
+          });
         },
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;

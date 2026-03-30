@@ -185,6 +185,8 @@ export interface StreamCallbacks {
   buildFinalResponseFooter?: (
     params: FinalResponseFooterParams
   ) => Promise<string | undefined> | string | undefined;
+  /** Called when SDK auto-compacts the session (#196) */
+  onCompactBoundary?: (metadata: { trigger: string; preTokens: number }) => Promise<void>;
 }
 
 /**
@@ -926,6 +928,11 @@ export class StreamProcessor {
         trigger: metadata?.trigger,
         preTokens: metadata?.pre_tokens,
         hasPreservedSegment: !!metadata?.preserved_segment,
+      });
+      // #196: Notify caller so session state can be preserved for next prompt
+      await this.callbacks.onCompactBoundary?.({
+        trigger: metadata?.trigger || 'auto',
+        preTokens: metadata?.pre_tokens || 0,
       });
       await this.callbacks.onStatusUpdate?.('working');
     } else if (subtype === 'status') {
