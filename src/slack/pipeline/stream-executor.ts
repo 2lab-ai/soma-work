@@ -1294,7 +1294,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Summary timer callback — executes fork query and renders result to thread panel.
    * Extracted as a named method so it can be tested independently.
    */
-  async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
+  private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!this.deps.summaryService) return;
     try {
       const summaryText = await this.deps.summaryService.execute(session as any);

@@ -1888,7 +1888,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     const session = { isActive: true, actionPanel: {} } as any;
     const sessionKey = 'C123:t456';
 
-    await executor.onSummaryTimerFire(session, sessionKey);
+    await (executor as any).onSummaryTimerFire(session, sessionKey);
 
     expect(mockSummaryService.execute).toHaveBeenCalledWith(session);
     expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Executive summary text');
@@ -1917,7 +1917,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
     const session = { isActive: true, actionPanel: {} } as any;
 
-    await executor.onSummaryTimerFire(session, 'C123:t456');
+    await (executor as any).onSummaryTimerFire(session, 'C123:t456');
 
     expect(mockSummaryService.execute).toHaveBeenCalled();
     expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
@@ -1947,6 +1947,67 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
     const session = { isActive: true, actionPanel: {} } as any;
 
     // Should not throw even without summaryService
-    await expect(executor.onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+  });
+
+  it('still displays summary when threadPanel is absent', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Summary without panel'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      // threadPanel intentionally omitted
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await (executor as any).onSummaryTimerFire(session, 'C123:t456');
+
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Summary without panel');
+  });
+
+  it('catches updatePanel rejection without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Some summary'),
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn().mockRejectedValue(new Error('Slack API rate limited')),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockSummaryService.displayOnThread).toHaveBeenCalled();
+  });
+
+  it('catches displayOnThread error without propagating', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue('Summary text'),
+      displayOnThread: vi.fn().mockImplementation(() => { throw new Error('Block kit error'); }),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = {
+      updatePanel: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+
+    await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
+    expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
   });
 });
