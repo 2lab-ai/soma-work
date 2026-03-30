@@ -25,17 +25,20 @@ const FORK_SYSTEM_PROMPT =
  * @returns A ForkExecutor function compatible with SummaryService
  */
 export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
-  return async (prompt: string, model?: string): Promise<string | null> => {
+  return async (prompt: string, model?: string, sessionId?: string): Promise<string | null> => {
     try {
-      logger.info('Fork executor: starting one-shot summary query', {
+      logger.info('Fork executor: starting summary query', {
         promptLength: prompt.length,
         model: model ?? 'default',
+        hasSessionContext: !!sessionId,
       });
 
       const response = await claudeHandler.dispatchOneShot(
         prompt,
         FORK_SYSTEM_PROMPT,
         model,
+        undefined, // abortController
+        sessionId, // resume session for conversation context
       );
 
       const trimmed = response.trim();

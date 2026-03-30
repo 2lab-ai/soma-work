@@ -285,7 +285,8 @@ export class ClaudeHandler {
     userMessage: string,
     dispatchPrompt: string,
     model?: string,
-    abortController?: AbortController
+    abortController?: AbortController,
+    resumeSessionId?: string,
   ): Promise<string> {
     // Validate credentials before making the query
     const credentialResult = await ensureValidCredentials();
@@ -327,9 +328,16 @@ export class ClaudeHandler {
       options.abortController = abortController;
     }
 
+    // Resume existing session to access conversation history for context-aware summaries.
+    // Without this, the fork has no knowledge of what happened in the session.
+    if (resumeSessionId) {
+      options.resume = resumeSessionId;
+    }
+
     const startTime = Date.now();
     this.logger.info('🚀 DISPATCH: Starting one-shot query', {
       model: options.model,
+      resumeSession: !!resumeSessionId,
       messageLength: userMessage.length,
       messagePreview: userMessage.substring(0, 100),
     });
