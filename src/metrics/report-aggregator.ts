@@ -185,11 +185,11 @@ export class ReportAggregator {
     const prevEvents = await this.store.readRange(prevDate, prevDate);
     const prevMetrics = aggregateEvents(prevEvents);
 
-    const derived = computeDerivedMetrics(base.metrics);
+    const derived = computeDerivedMetrics(base.metrics, 1);
     const trend = computeTrend(base.metrics, prevMetrics);
     const hourlyDistribution = computeHourlyDistribution(events);
     const peakHour = findPeakHour(hourlyDistribution);
-    const achievements = computeAchievements(base.metrics, derived, null, 1);
+    const achievements = computeAchievements(base.metrics, derived, null, 1, trend);
     const funFacts = computeFunFacts(base.metrics, derived, events, hourlyDistribution, peakHour);
 
     return {
@@ -217,14 +217,14 @@ export class ReportAggregator {
     const prevEvents = await this.store.readRange(prevWeekStart, prevWeekEnd);
     const prevMetrics = aggregateEvents(prevEvents);
 
-    const derived = computeDerivedMetrics(base.metrics);
-    const trend = computeTrend(base.metrics, prevMetrics);
     const dailyBreakdown = computeDailyBreakdown(events, weekStart);
+    const activeDays = dailyBreakdown.filter(d => d.totalEvents > 0).length;
+    const derived = computeDerivedMetrics(base.metrics, activeDays);
+    const trend = computeTrend(base.metrics, prevMetrics);
     const hourlyDistribution = computeHourlyDistribution(events);
     const peakHour = findPeakHour(hourlyDistribution);
-    const activeDays = dailyBreakdown.filter(d => d.totalEvents > 0).length;
-    const achievements = computeAchievements(base.metrics, derived, dailyBreakdown, activeDays);
-    const funFacts = computeFunFacts(base.metrics, derived, events, hourlyDistribution, peakHour);
+    const achievements = computeAchievements(base.metrics, derived, dailyBreakdown, activeDays, trend);
+    const funFacts = computeFunFacts(base.metrics, derived, events, hourlyDistribution, peakHour, dailyBreakdown);
 
     return {
       ...base,
@@ -246,7 +246,20 @@ const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 
 const DAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 
-export function computeDerivedMetrics(m: AggregatedMetrics): DerivedMetrics {
+/**
+ * Compute derived metrics from raw aggregated metrics.
+ *
+ * @param m - Raw aggregated metrics for the period.
+ * @param activeDays - Number of days with activity in the period (default 1 for daily reports).
+ *
+ * Note on `prMergeRate`: this is in-period throughput, not cohort conversion.
+ * A PR created in a previous period but merged in the current one will inflate
+ * `prsMerged` without a corresponding `prsCreated` entry, and vice-versa.
+ */
+export function computeDerivedMetrics(m: AggregatedMetrics, activeDays: number = 1): DerivedMetrics {
+  const totalChangedLines = m.codeLinesAdded + m.codeLinesDeleted;
+  const safeActiveDays = activeDays > 0 ? activeDays : 1;
+
   return {
     productivityScore: weightedScore(m),
     prMergeRate: m.prsCreated > 0 ? Math.round((m.prsMerged / m.prsCreated) * 1000) / 10 : 0,
@@ -254,13 +267,31 @@ export function computeDerivedMetrics(m: AggregatedMetrics): DerivedMetrics {
     avgCodePerCommit: m.commitsCreated > 0 ? Math.round(m.codeLinesAdded / m.commitsCreated) : 0,
     avgTurnsPerSession: m.sessionsCreated > 0 ? Math.round((m.turnsUsed / m.sessionsCreated) * 10) / 10 : 0,
     sessionCompletionRate: m.sessionsCreated > 0 ? Math.round((m.sessionsClosed / m.sessionsCreated) * 1000) / 10 : 0,
+    netLines: m.codeLinesAdded - m.codeLinesDeleted,
+    churnRatio: totalChangedLines > 0 ? Math.round((m.codeLinesDeleted / totalChangedLines) * 1000) / 10 : 0,
+    avgChangedLinesPerPr: m.prsCreated > 0 ? Math.round(totalChangedLines / m.prsCreated) : 0,
+    commitPerActiveDay: Math.round((m.commitsCreated / safeActiveDays) * 10) / 10,
+    prPerActiveDay: Math.round((m.prsCreated / safeActiveDays) * 10) / 10,
   };
 }
 
 export function computeTrend(current: AggregatedMetrics, previous: AggregatedMetrics): TrendComparison | null {
-  // If previous period has zero activity, no meaningful trend
+  // If previous period has zero activity, return a baseline-zero trend instead of null.
+  // All deltas are set to the current values (treat as +100% for non-zero, 0% for zero).
   const prevTotal = previous.sessionsCreated + previous.turnsUsed + previous.prsCreated + previous.commitsCreated;
-  if (prevTotal === 0) return null;
+  if (prevTotal === 0) {
+    const baselinePctChange = (curr: number): number => curr > 0 ? 100 : 0;
+    return {
+      sessionsCreatedDelta: baselinePctChange(current.sessionsCreated),
+      turnsUsedDelta: baselinePctChange(current.turnsUsed),
+      prsCreatedDelta: baselinePctChange(current.prsCreated),
+      commitsCreatedDelta: baselinePctChange(current.commitsCreated),
+      codeLinesAddedDelta: baselinePctChange(current.codeLinesAdded),
+      prsMergedDelta: baselinePctChange(current.prsMerged),
+      productivityScoreDelta: baselinePctChange(weightedScore(current)),
+      baselineZero: true,
+    };
+  }
 
   const pctChange = (curr: number, prev: number): number => {
     if (prev === 0) return curr > 0 ? 100 : 0;
@@ -275,6 +306,7 @@ export function computeTrend(current: AggregatedMetrics, previous: AggregatedMet
     codeLinesAddedDelta: pctChange(current.codeLinesAdded, previous.codeLinesAdded),
     prsMergedDelta: pctChange(current.prsMerged, previous.prsMerged),
     productivityScoreDelta: pctChange(weightedScore(current), weightedScore(previous)),
+    baselineZero: false,
   };
 }
 
@@ -327,6 +359,7 @@ export function computeAchievements(
   d: DerivedMetrics,
   dailyBreakdown: DailyBreakdown[] | null,
   activeDays: number,
+  trend?: TrendComparison | null,
 ): Achievement[] {
   const achievements: Achievement[] = [];
 
@@ -369,6 +402,28 @@ export function computeAchievements(
     achievements.push({ icon: '📋', title: '이슈 헌터', description: `이슈 ${m.issuesCreated}개 생성` });
   }
 
+  // --- Adaptive / personal-best achievements ---
+
+  // Personal best: >50% improvement in productivity score vs previous period
+  if (trend && !trend.baselineZero && trend.productivityScoreDelta > 50) {
+    achievements.push({ icon: '🏆', title: '퍼스널 베스트', description: `생산성 +${trend.productivityScoreDelta}% 향상!` });
+  }
+
+  // Consistency badge: session completion rate > 80%
+  if (d.sessionCompletionRate > 80) {
+    achievements.push({ icon: '🎖️', title: '일관성 챔피언', description: `세션 완료율 ${d.sessionCompletionRate}%` });
+  }
+
+  // Code surgeon: heavy refactoring (churn > 30%)
+  if (d.churnRatio > 30) {
+    achievements.push({ icon: '🔬', title: '코드 서전', description: `코드 정제율 ${d.churnRatio}% (리팩토링 고수!)` });
+  }
+
+  // Laser focus: deep engagement per session
+  if (d.avgTurnsPerSession > 10) {
+    achievements.push({ icon: '🎯', title: '레이저 포커스', description: `세션당 ${d.avgTurnsPerSession}턴 — 집중력 MAX` });
+  }
+
   return achievements.slice(0, 5); // Max 5
 }
 
@@ -378,6 +433,7 @@ export function computeFunFacts(
   events: MetricsEvent[],
   hourlyDist: HourlyDistribution[],
   peakHour: number | null,
+  dailyBreakdown?: DailyBreakdown[],
 ): FunFact[] {
   const facts: FunFact[] = [];
 
@@ -421,6 +477,40 @@ export function computeFunFacts(
     facts.push({ icon: '🦉', text: `야행성 모드: 심야 활동 ${nightEvents}건` });
   } else if (morningEvents > nightEvents && morningEvents > 10) {
     facts.push({ icon: '🐦', text: `얼리버드 모드: 오전 활동 ${morningEvents}건` });
+  }
+
+  // --- New fun facts ---
+
+  // Busiest day (from dailyBreakdown if available)
+  if (dailyBreakdown && dailyBreakdown.length > 0) {
+    const busiestDay = dailyBreakdown.reduce((best, curr) =>
+      curr.totalEvents > best.totalEvents ? curr : best
+    );
+    if (busiestDay.totalEvents > 0) {
+      facts.push({ icon: '📅', text: `가장 바쁜 날: ${busiestDay.dayLabel} (${busiestDay.date}, 이벤트 ${busiestDay.totalEvents}건)` });
+    }
+
+    // Weekend warrior: any weekend day (토=6, 일=0) with activity
+    const weekendActivity = dailyBreakdown
+      .filter(day => {
+        const dayOfWeek = new Date(day.date + 'T00:00:00Z').getUTCDay();
+        return (dayOfWeek === 0 || dayOfWeek === 6) && day.totalEvents > 0;
+      })
+      .reduce((sum, day) => sum + day.totalEvents, 0);
+    if (weekendActivity > 0) {
+      facts.push({ icon: '🏄', text: `주말 전사: 주말에도 이벤트 ${weekendActivity}건 활동!` });
+    }
+  }
+
+  // Commit velocity (commits per active day)
+  if (d.commitPerActiveDay > 0) {
+    facts.push({ icon: '⚡', text: `커밋 속도: 하루 평균 ${d.commitPerActiveDay}개 커밋` });
+  }
+
+  // "If you wrote a book..." (codeLinesAdded / 250 = pages)
+  if (m.codeLinesAdded >= 250) {
+    const pages = Math.round(m.codeLinesAdded / 250);
+    facts.push({ icon: '📚', text: `코드를 책으로 쓰면? ${pages.toLocaleString()}페이지짜리 소설!` });
   }
 
   return facts.slice(0, 5); // Max 5

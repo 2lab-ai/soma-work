@@ -21,12 +21,12 @@ describe('ReportScheduler', () => {
       }),
       aggregateEnrichedDaily: vi.fn().mockResolvedValue({
         date: '2026-03-25', period: 'daily', metrics: {},
-        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0 },
+        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0, netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0 },
         trend: null, hourlyDistribution: [], peakHour: null, achievements: [], funFacts: [],
       }),
       aggregateEnrichedWeekly: vi.fn().mockResolvedValue({
         weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly', metrics: {}, rankings: [],
-        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0 },
+        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0, netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0 },
         trend: null, dailyBreakdown: [], hourlyDistribution: [], peakHour: null, activeDays: 0, achievements: [], funFacts: [],
       }),
     };

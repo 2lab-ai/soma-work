@@ -23,6 +23,40 @@ import {
 
 const MAX_RANKINGS_IN_BLOCKS = 10;
 
+// === Block Kit Safety Layer ===
+
+const MAX_BLOCKS = 50;
+const MAX_FIELDS = 10;
+const MAX_TEXT_LENGTH = 3000;
+const MAX_HEADER_LENGTH = 150;
+
+const MAX_FIELD_TEXT_LENGTH = 2000;
+
+function truncateText(text: string, max = MAX_TEXT_LENGTH): string {
+  return text.length > max ? text.slice(0, max - 3) + '...' : text;
+}
+
+function truncateFieldText(text: string): string {
+  return truncateText(text, MAX_FIELD_TEXT_LENGTH);
+}
+
+function truncateHeader(text: string): string {
+  return text.length > MAX_HEADER_LENGTH ? text.slice(0, MAX_HEADER_LENGTH - 1) + '…' : text;
+}
+
+function safeFields(fields: any[]): any[] {
+  return fields.slice(0, MAX_FIELDS);
+}
+
+function safeBlocks(blocks: any[]): any[] {
+  // Priority-based: always keep header (first) and footer (last)
+  if (blocks.length <= MAX_BLOCKS) return blocks;
+  const header = blocks[0];
+  const footer = blocks[blocks.length - 1];
+  const middle = blocks.slice(1, -1).slice(0, MAX_BLOCKS - 2);
+  return [header, ...middle, footer];
+}
+
 interface FormattedReport {
   blocks: any[];
   text: string;  // Fallback plain text
@@ -31,9 +65,9 @@ interface FormattedReport {
 // === Visual Helpers ===
 
 function progressBar(value: number, max: number, width = 8): string {
-  if (max <= 0) return '░'.repeat(width);
-  const filled = Math.round((value / max) * width);
-  return '▓'.repeat(Math.min(filled, width)) + '░'.repeat(Math.max(width - filled, 0));
+  const ratio = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+  const filled = Math.round(ratio * width);
+  return `${'█'.repeat(filled)}${'·'.repeat(width - filled)} ${Math.round(ratio * 100)}%`;
 }
 
 function trendArrow(delta: number | undefined): string {
@@ -50,8 +84,18 @@ function trendText(delta: number | undefined): string {
   return '0%';
 }
 
-function trendInline(delta: number | undefined): string {
+/**
+ * Returns trend inline text, gated by:
+ * - baselineZero must be false (meaningful comparison)
+ * - abs(delta) >= 5 (filter noise)
+ * When baselineZero is true, returns "🆕 첫 기록".
+ */
+function trendInline(delta: number | undefined, trend: TrendComparison | null): string {
   if (delta === undefined || delta === null) return '';
+  if (trend?.baselineZero === true) {
+    return ' 🆕 첫 기록';
+  }
+  if (Math.abs(delta) < 5) return '';
   return ` ${trendArrow(delta)}\`${trendText(delta)}\``;
 }
 
@@ -74,13 +118,22 @@ function hourLabel(hour: number): string {
   return `${ampm} ${h}시`;
 }
 
-function codeChangeText(added: number, deleted: number): string {
-  const net = added - deleted;
+function codeChangeText(added: number, deleted: number, netLines?: number): string {
+  const net = netLines !== undefined ? netLines : (added - deleted);
   const netSign = net >= 0 ? '+' : '';
   if (deleted > 0) {
     return `\`+${fmt(added)}\` / \`-${fmt(deleted)}\` (순 \`${netSign}${fmt(net)}\`)`;
   }
   return `\`+${fmt(added)}\`줄`;
+}
+
+/** shouldRender checks */
+function hasAnyEvents(breakdown: DailyBreakdown[]): boolean {
+  return breakdown.some(d => d.totalEvents > 0);
+}
+
+function hasAnyHours(dist: HourlyDistribution[]): boolean {
+  return dist.some(h => h.eventCount > 0);
 }
 
 /** Generate a one-line weekly summary based on data. */
@@ -176,15 +229,27 @@ function buildExecutiveSummary(
   d: DerivedMetrics,
   trend: TrendComparison | null,
 ): any {
-  const scoreTrend = trend ? trendInline(trend.productivityScoreDelta) : '';
+  const scoreDelta = trend?.productivityScoreDelta;
+  const scoreTrend = trend ? trendInline(scoreDelta, trend) : '';
+
+  const codeText = codeChangeText(m.codeLinesAdded, m.codeLinesDeleted, d.netLines);
+  const churnText = d.churnRatio > 0
+    ? ` · 정리 비율 \`${Math.round(d.churnRatio)}%\``
+    : '';
+
+  // Headline KPI count
+  const kpiCount = m.sessionsCreated + m.prsCreated + m.commitsCreated;
+
   return {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*📊 생산성 스코어  \`${fmt(d.productivityScore)}\`점*${scoreTrend}\n\n` +
+      text: truncateText(
+        `*📊 생산성 스코어  \`${fmt(d.productivityScore)}\`점*${scoreTrend}\n\n` +
         `:computer: 세션 \`${fmt(m.sessionsCreated)}\` · :speech_balloon: 턴 \`${fmt(m.turnsUsed)}\` · ` +
         `:octocat: PR \`${fmt(m.prsCreated)}\` · 커밋 \`${fmt(m.commitsCreated)}\` · ` +
-        `코드 ${codeChangeText(m.codeLinesAdded, m.codeLinesDeleted)}`,
+        `코드 ${codeText}${churnText} · 총 \`${fmt(kpiCount)}\`건`
+      ),
     },
   };
 }
@@ -196,51 +261,72 @@ function buildMetricsWithTrends(
   prevMetricsText?: { sessions?: number; turns?: number; code?: number },
 ): any[] {
   const t = trend;
-  const prev = prevMetricsText;
+
+  // Gate trend display: show only if not baselineZero and abs(delta) >= 5
+  function gatedTrendText(delta: number | undefined): string {
+    if (delta === undefined || delta === null) return '';
+    if (t?.baselineZero === true) return ' 🆕 첫 기록';
+    if (Math.abs(delta) < 5) return '';
+    return `\n전기간 ${trendArrow(delta)}\`${trendText(delta)}\``;
+  }
+
+  // Surface avgChangedLinesPerPr and prPerActiveDay
+  const avgChangedText = d.avgChangedLinesPerPr > 0 ? ` · 변경 \`${fmt(d.avgChangedLinesPerPr)}\`줄/PR` : '';
+  const velocityText = d.prPerActiveDay > 0 ? ` · 일 \`${d.prPerActiveDay}\`PR` : '';
 
   return [
     {
       type: 'section',
-      fields: [
+      fields: safeFields([
         {
           type: 'mrkdwn',
-          text: `*:computer: 세션*\n` +
+          text: truncateFieldText(
+            `*:computer: 세션*\n` +
             `\`${fmt(m.sessionsCreated)}\` 생성 · \`${m.sessionsClosed}\` 닫기 · \`${m.sessionsSlept}\` 슬립\n` +
             `완료율 \`${d.sessionCompletionRate}%\`` +
-            (t ? `\n전기간 ${trendArrow(t.sessionsCreatedDelta)}\`${trendText(t.sessionsCreatedDelta)}\`` : ''),
+            (t ? gatedTrendText(t.sessionsCreatedDelta) : '')
+          ),
         },
         {
           type: 'mrkdwn',
-          text: `*:speech_balloon: AI 대화*\n` +
+          text: truncateFieldText(
+            `*:speech_balloon: AI 대화*\n` +
             `\`${fmt(m.turnsUsed)}\` 턴 · 세션당 \`${d.avgTurnsPerSession}\`턴` +
-            (t ? `\n전기간 ${trendArrow(t.turnsUsedDelta)}\`${trendText(t.turnsUsedDelta)}\`` : ''),
+            (t ? gatedTrendText(t.turnsUsedDelta) : '')
+          ),
         },
-      ],
+      ]),
     },
     {
       type: 'section',
-      fields: [
+      fields: safeFields([
         {
           type: 'mrkdwn',
-          text: `*:octocat: GitHub 활동*\n` +
+          text: truncateFieldText(
+            `*:octocat: GitHub 활동*\n` +
             `이슈 \`${m.issuesCreated}\` · PR \`${fmt(m.prsCreated)}\` · 커밋 \`${fmt(m.commitsCreated)}\`\n` +
             `코드 ${codeChangeText(m.codeLinesAdded, m.codeLinesDeleted)}` +
-            (t ? ` ${trendArrow(t.codeLinesAddedDelta)}\`${trendText(t.codeLinesAddedDelta)}\`` : ''),
+            (t ? ` ${gatedTrendText(t.codeLinesAddedDelta).trim()}` : '')
+          ),
         },
         {
           type: 'mrkdwn',
-          text: `*:white_check_mark: PR 파이프라인*\n` +
+          text: truncateFieldText(
+            `*:white_check_mark: PR 파이프라인*\n` +
             `생성 \`${m.prsCreated}\` ──→ 머지 \`${m.prsMerged}\`\n` +
-            `머지율 \`${d.prMergeRate}%\` · 평균 \`${fmt(d.avgCodePerPr)}\`줄/PR\n` +
-            `\`${progressBar(m.prsMerged, m.prsCreated, 20)}\``,
+            `머지율 \`${d.prMergeRate}%\`${avgChangedText}${velocityText}\n` +
+            `\`${progressBar(m.prsMerged, m.prsCreated, 12)}\``
+          ),
         },
-      ],
+      ]),
     },
   ];
 }
 
 function buildDailyHeatmap(breakdown: DailyBreakdown[]): any {
   if (breakdown.length === 0) return null;
+  // Conditional rendering: skip when all days have 0 events
+  if (!hasAnyEvents(breakdown)) return null;
 
   const maxEvents = Math.max(...breakdown.map(d => d.totalEvents), 1);
   const peakDay = breakdown.reduce((best, curr) =>
@@ -259,7 +345,7 @@ function buildDailyHeatmap(breakdown: DailyBreakdown[]): any {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*:calendar: 일별 활동*\n${lines.join('\n')}`,
+      text: truncateText(`*:calendar: 일별 활동*\n${lines.join('\n')}`),
     },
   };
 }
@@ -288,32 +374,70 @@ function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | nu
 
   return {
     type: 'mrkdwn',
-    text: `*:clock3: 시간대 분포*\n${lines.join('\n')}${peakText}`,
+    text: truncateFieldText(`*:clock3: 시간대 분포*\n${lines.join('\n')}${peakText}`),
   };
 }
 
-function buildEfficiencyMetrics(d: DerivedMetrics, peakHour: number | null): any {
-  const peakText = peakHour !== null ? `\n:zap: 피크: *${hourLabel(peakHour)}*` : '';
+/**
+ * buildInsights — narrative-style bullets replacing the old buildEfficiencyMetrics.
+ * Shows contextual insights rather than duplicating numbers from executive summary.
+ */
+function buildInsights(
+  d: DerivedMetrics,
+  peakHour: number | null,
+  trend: TrendComparison | null,
+): any {
+  const bullets: string[] = [];
+
+  // Merge rate trend — only if trend exists, not baselineZero, and abs(delta) >= 10
+  const prMergeDelta = trend?.prsMergedDelta;
+  if (
+    prMergeDelta !== undefined &&
+    prMergeDelta !== null &&
+    trend &&
+    !trend.baselineZero &&
+    Math.abs(prMergeDelta) >= 10
+  ) {
+    const direction = prMergeDelta < 0 ? '하락' : '상승';
+    bullets.push(`:twisted_rightwards_arrows: 머지율이 전기간 대비 \`${Math.abs(prMergeDelta)}%\` ${direction}`);
+  }
+
+  // Peak hour insight
+  if (peakHour !== null) {
+    bullets.push(`:clock3: 활동이 *${hourLabel(peakHour)}*에 집중`);
+  }
+
+  // Churn ratio — only if > 0
+  if (d.churnRatio > 0) {
+    bullets.push(`:broom: 코드 정리 비율 \`${Math.round(d.churnRatio)}%\``);
+  }
+
+  // Deep work insight — only if avgTurnsPerSession >= 5
+  if (d.avgTurnsPerSession >= 5) {
+    bullets.push(`:brain: 세션당 평균 \`${d.avgTurnsPerSession}\`턴으로 심층 작업`);
+  }
+
+  const bodyText = bullets.length > 0
+    ? bullets.join('\n')
+    : ':white_check_mark: 효율 양호';
+
   return {
     type: 'mrkdwn',
-    text: `*:mag: 효율 지표*\n` +
-      `세션 완료율 \`${d.sessionCompletionRate}%\`\n` +
-      `PR 머지율 \`${d.prMergeRate}%\`\n` +
-      `생산성 점수 \`${fmt(d.productivityScore)}\`` +
-      peakText,
+    text: truncateFieldText(`*:mag: 인사이트*\n${bodyText}`),
   };
 }
 
 function buildRankings(rankings: UserRanking[]): any[] {
   const blocks: any[] = [];
-  const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
+  // Conditional rendering: skip rankings section when fewer than 2 users
+  if (rankings.length < 2) return blocks;
 
-  if (displayRankings.length === 0) return blocks;
+  const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   blocks.push({ type: 'divider' });
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: '🏅 사용자 랭킹', emoji: true },
+    text: { type: 'plain_text', text: truncateHeader('🏅 사용자 랭킹'), emoji: true },
   });
 
   for (const r of displayRankings) {
@@ -322,19 +446,22 @@ function buildRankings(rankings: UserRanking[]): any[] {
       r.metrics.issuesCreated * 2 + r.metrics.commitsCreated * 3 +
       r.metrics.prsCreated * 5 + r.metrics.prsMerged * 10;
 
-    const userBar = progressBar(userScore, displayRankings[0] ?
-      (displayRankings[0].metrics.turnsUsed * 1 + displayRankings[0].metrics.sessionsCreated * 1 +
-        displayRankings[0].metrics.issuesCreated * 2 + displayRankings[0].metrics.commitsCreated * 3 +
-        displayRankings[0].metrics.prsCreated * 5 + displayRankings[0].metrics.prsMerged * 10) : 1, 20);
+    const topScore = displayRankings[0]
+      ? (displayRankings[0].metrics.turnsUsed + displayRankings[0].metrics.sessionsCreated +
+         displayRankings[0].metrics.issuesCreated * 2 + displayRankings[0].metrics.commitsCreated * 3 +
+         displayRankings[0].metrics.prsCreated * 5 + displayRankings[0].metrics.prsMerged * 10) : 1;
+    const userBar = progressBar(userScore, topScore, 12);
 
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${medal} *${r.userName}*  \`${fmt(userScore)}점\`\n` +
+        text: truncateText(
+          `${medal} *${r.userName}*  \`${fmt(userScore)}점\`\n` +
           `\`${userBar}\` ` +
           `턴 \`${r.metrics.turnsUsed}\` · PR \`${r.metrics.prsCreated}\` · 머지 \`${r.metrics.prsMerged}\` · ` +
-          `커밋 \`${r.metrics.commitsCreated}\` · \`+${fmt(r.metrics.codeLinesAdded)}\`줄`,
+          `커밋 \`${r.metrics.commitsCreated}\` · \`+${fmt(r.metrics.codeLinesAdded)}\`줄`
+        ),
       },
     });
   }
@@ -343,6 +470,9 @@ function buildRankings(rankings: UserRanking[]): any[] {
 }
 
 function buildAchievementsAndFunFacts(achievements: Achievement[], funFacts: FunFact[]): any | null {
+  // Conditional rendering: skip when both arrays are empty
+  if (achievements.length === 0 && funFacts.length === 0) return null;
+
   const parts: string[] = [];
 
   if (achievements.length > 0) {
@@ -360,11 +490,9 @@ function buildAchievementsAndFunFacts(achievements: Achievement[], funFacts: Fun
     }
   }
 
-  if (parts.length === 0) return null;
-
   return {
     type: 'section',
-    text: { type: 'mrkdwn', text: parts.join('\n') },
+    text: { type: 'mrkdwn', text: truncateText(parts.join('\n')) },
   };
 }
 
@@ -444,7 +572,7 @@ export class ReportFormatter {
       // Header with day-of-week
       {
         type: 'header',
-        text: { type: 'plain_text', text: `📊 일간 리포트 — ${report.date} (${dayLabel})`, emoji: true },
+        text: { type: 'plain_text', text: truncateHeader(`📊 일간 리포트 — ${report.date} (${dayLabel})`), emoji: true },
       },
       // One-line summary
       {
@@ -456,25 +584,35 @@ export class ReportFormatter {
       { type: 'divider' },
       // Metrics with trends
       ...buildMetricsWithTrends(m, d, trend),
-      { type: 'divider' },
-      // Time distribution + Efficiency (side by side)
-      {
+    ];
+
+    // Time distribution + Insights (side by side) — skip time distribution when all hours are 0
+    if (hasAnyHours(hourlyDistribution)) {
+      blocks.push({ type: 'divider' });
+      blocks.push({
         type: 'section',
         fields: [
           buildTimeDistribution(hourlyDistribution, peakHour),
-          buildEfficiencyMetrics(d, null),
+          buildInsights(d, peakHour, trend),
         ],
-      },
-    ];
+      });
+    } else {
+      // Still show insights even without time distribution
+      blocks.push({ type: 'divider' });
+      blocks.push({
+        type: 'section',
+        text: buildInsights(d, peakHour, trend),
+      });
+    }
 
-    // Achievements + Fun Facts
+    // Achievements + Fun Facts (skips if both empty)
     const afBlock = buildAchievementsAndFunFacts(achievements, funFacts);
     if (afBlock) {
       blocks.push({ type: 'divider' });
       blocks.push(afBlock);
     }
 
-    // Footer
+    // Footer — daily: just timestamp
     blocks.push({
       type: 'context',
       elements: [
@@ -482,8 +620,11 @@ export class ReportFormatter {
       ],
     });
 
-    const text = `일간 리포트 — ${report.date} (${dayLabel})\n생산성 ${d.productivityScore}점\n${metricsToPlainText(m)}`;
-    return { blocks, text };
+    const trendLine = trend && !trend.baselineZero
+      ? `전일 대비 생산성 ${trend.productivityScoreDelta > 0 ? '+' : ''}${trend.productivityScoreDelta}%`
+      : (trend?.baselineZero ? '첫 기록' : '');
+    const text = `일간 리포트 — ${report.date} (${dayLabel})\n생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m)}`;
+    return { blocks: safeBlocks(blocks), text };
   }
 
   /**
@@ -500,7 +641,7 @@ export class ReportFormatter {
       // Header
       {
         type: 'header',
-        text: { type: 'plain_text', text: `🏆 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}`, emoji: true },
+        text: { type: 'plain_text', text: truncateHeader(`🏆 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}`), emoji: true },
       },
       // One-line summary
       {
@@ -515,46 +656,60 @@ export class ReportFormatter {
       { type: 'divider' },
     ];
 
-    // Daily heatmap
+    // Daily heatmap — skip when all days have 0 events
     const heatmap = buildDailyHeatmap(dailyBreakdown);
     if (heatmap) {
       blocks.push(heatmap);
     }
 
-    // Time distribution + Efficiency (side by side)
-    blocks.push({
-      type: 'section',
-      fields: [
-        buildTimeDistribution(hourlyDistribution, peakHour),
-        buildEfficiencyMetrics(d, peakHour),
-      ],
-    });
+    // Time distribution + Insights (side by side) — skip time distribution when all hours are 0
+    if (hasAnyHours(hourlyDistribution)) {
+      blocks.push({
+        type: 'section',
+        fields: [
+          buildTimeDistribution(hourlyDistribution, peakHour),
+          buildInsights(d, peakHour, trend),
+        ],
+      });
+    } else {
+      blocks.push({
+        type: 'section',
+        text: buildInsights(d, peakHour, trend),
+      });
+    }
 
-    // Rankings
+    // Rankings — skip when fewer than 2 users
     blocks.push(...buildRankings(rankings));
 
-    // Achievements + Fun Facts
+    // Achievements + Fun Facts (skips if both empty)
     const afBlock = buildAchievementsAndFunFacts(achievements, funFacts);
     if (afBlock) {
       blocks.push({ type: 'divider' });
       blocks.push(afBlock);
     }
 
-    // Footer
+    // Footer — weekly: active days count + trend summary
+    const trendSummary = trend && !trend.baselineZero
+      ? (Math.abs(trend.productivityScoreDelta ?? 0) >= 5
+          ? ` · 전주 대비 생산성 ${trendArrow(trend.productivityScoreDelta)}\`${trendText(trend.productivityScoreDelta)}\``
+          : '')
+      : (trend?.baselineZero ? ' · 🆕 첫 기록' : '');
+
     blocks.push({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: `🤖 soma-work · 활동일 \`${activeDays}/7\`일` +
-            (trend ? ` · 전주 대비 생산성 ${trendArrow(trend.productivityScoreDelta)}\`${trendText(trend.productivityScoreDelta)}\`` : '') +
-            ` · 생성: ${new Date().toISOString().slice(0, 19)}Z`,
+          text: `🤖 soma-work · 활동일 \`${activeDays}/7\`일${trendSummary} · 생성: ${new Date().toISOString().slice(0, 19)}Z`,
         },
       ],
     });
 
+    const weeklyTrendLine = trend && !trend.baselineZero
+      ? `전주 대비 생산성 ${trend.productivityScoreDelta > 0 ? '+' : ''}${trend.productivityScoreDelta}%`
+      : (trend?.baselineZero ? '첫 기록' : '');
     const text = `주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}\n` +
-      `생산성 ${d.productivityScore}점\n${metricsToPlainText(m)}`;
-    return { blocks, text };
+      `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m)}`;
+    return { blocks: safeBlocks(blocks), text };
   }
 }

@@ -67,11 +67,21 @@ export interface UserRanking {
  */
 export interface DerivedMetrics {
   productivityScore: number;       // Weighted composite score
-  prMergeRate: number;             // prsMerged / prsCreated * 100 (%)
+  /**
+   * prsMerged / prsCreated * 100 (%).
+   * Note: this is in-period throughput, not cohort conversion — a PR created
+   * and merged in different periods will be counted in separate buckets.
+   */
+  prMergeRate: number;
   avgCodePerPr: number;            // codeLinesAdded / prsCreated
   avgCodePerCommit: number;        // codeLinesAdded / commitsCreated
   avgTurnsPerSession: number;      // turnsUsed / sessionsCreated
   sessionCompletionRate: number;   // sessionsClosed / sessionsCreated * 100 (%)
+  netLines: number;                // codeLinesAdded - codeLinesDeleted
+  churnRatio: number;              // codeLinesDeleted / (codeLinesAdded + codeLinesDeleted) * 100, or 0
+  avgChangedLinesPerPr: number;    // (codeLinesAdded + codeLinesDeleted) / prsCreated
+  commitPerActiveDay: number;      // commitsCreated / activeDays
+  prPerActiveDay: number;          // prsCreated / activeDays
 }
 
 /**
@@ -85,6 +95,7 @@ export interface TrendComparison {
   codeLinesAddedDelta: number;
   prsMergedDelta: number;
   productivityScoreDelta: number;
+  baselineZero: boolean;           // true if previous period had no activity
 }
 
 /**

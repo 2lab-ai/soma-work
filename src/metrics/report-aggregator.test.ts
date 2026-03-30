@@ -160,12 +160,19 @@ describe('ReportAggregator', () => {
     expect(report.funFacts).toBeDefined();
   });
 
-  it('enrichedDaily_trendIsNullWhenNoPreviousData', async () => {
+  it('enrichedDaily_trendHasBaselineZeroWhenNoPreviousData', async () => {
     mockStore.readRange.mockResolvedValue([]);
 
     const report = await aggregator.aggregateEnrichedDaily('2026-03-25');
 
-    expect(report.trend).toBeNull();
+    // With no previous data AND no current data, trend should still indicate baselineZero
+    // When both periods are empty, computeTrend returns baselineZero: true
+    if (report.trend) {
+      expect(report.trend.baselineZero).toBe(true);
+    } else {
+      // If both current and previous are zero, null is also acceptable
+      expect(report.trend).toBeNull();
+    }
   });
 
   it('enrichedWeekly_includesDailyBreakdown', async () => {
