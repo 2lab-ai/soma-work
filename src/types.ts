@@ -296,6 +296,13 @@ export interface ConversationSession {
   taskListEstimatedEndAt?: number;
   /** Frozen timestamp when all tasks completed (prevents drift on re-render) */
   taskListCompletedAt?: number;
+  // System prompt snapshot: the fully-built system prompt used for this session's current query.
+  // Stored for admin debugging via "show prompt" command. NOT persisted to disk.
+  systemPrompt?: string;
+  // User instruction SSOT: stores the original user instruction and follow-ups.
+  // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
+  initialInstruction?: string;
+  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
 }
 
 export interface WorkingDirectoryConfig {

@@ -963,6 +963,11 @@ export class SessionRegistry {
     // Clear usage data to reset context percentage
     session.usage = undefined;
 
+    // Clear in-memory debugging fields (system prompt snapshot, user instruction SSOT)
+    session.systemPrompt = undefined;
+    session.initialInstruction = undefined;
+    session.followUpInstructions = undefined;
+
     // Reset activity state
     session.activityState = 'idle';
 
