@@ -253,9 +253,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Delete tracked completion messages on new user input
     // Trace: docs/turn-summary-lifecycle/trace.md, S7
     if (this.deps.completionMessageTracker) {
+      const threadRootTs = session.threadRootTs;
       this.deps.completionMessageTracker.deleteAll(
         params.sessionKey,
-        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        async (ch, ts) => {
+          // Defense-in-depth: never delete the thread root message (header)
+          if (threadRootTs && ts === threadRootTs) {
+            this.logger.error('BLOCKED: attempted to delete thread root via completion tracker', {
+              sessionKey: params.sessionKey, ts, threadRootTs,
+            });
+            return;
+          }
+          try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {}
+        },
         params.channel
       ).catch(() => {});
     }
