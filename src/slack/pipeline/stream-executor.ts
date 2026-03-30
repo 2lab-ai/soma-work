@@ -800,6 +800,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 const summaryText = await this.deps.summaryService.execute(session as any);
                 if (summaryText) {
                   this.deps.summaryService.displayOnThread(session as any, summaryText);
+                  // Trigger re-render so the summary blocks appear in the Slack thread header.
+                  // Without this, summaryBlocks sit in memory but the message is never updated.
+                  await this.deps.threadPanel?.updatePanel(session, sessionKey);
                 }
               } catch (err: any) {
                 this.logger.warn('Summary timer callback failed', { error: err?.message });
