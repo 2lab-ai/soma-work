@@ -14,6 +14,7 @@ import {
   EXTERNAL_PLUGIN_PATH,
 } from './types';
 import { readCacheMeta, writeCacheMeta, hasCachedPlugin } from './plugin-cache';
+import { scanPluginDirectory, formatScanReport } from './security-scanner';
 import { Logger } from '../logger';
 
 const logger = new Logger('MarketplaceFetcher');
@@ -404,6 +405,23 @@ export async function fetchPlugin(
     const installedPath = installPlugin(extractedRoot, pluginEntry.path, pluginsDir, pluginName);
     if (!installedPath) return null;
 
+    // Security scan — block CRITICAL risk plugins
+    const scanResult = scanPluginDirectory(installedPath, pluginName);
+    if (scanResult.blocked) {
+      logger.error('Plugin BLOCKED by security scan', {
+        pluginName,
+        riskLevel: scanResult.riskLevel,
+        findings: scanResult.findings.length,
+      });
+      logger.warn(formatScanReport(scanResult));
+      // Remove the installed plugin
+      try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
+      return null;
+    }
+    if (scanResult.findings.length > 0) {
+      logger.warn(formatScanReport(scanResult));
+    }
+
     // Write cache metadata
     const sha = remoteSha || 'unknown';
     const meta: CacheMeta = {
@@ -500,6 +518,22 @@ async function fetchExternalPlugin(
     // Reuse installPlugin for atomic copy-and-swap (includes tmp cleanup on error)
     const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
     if (!installedPath) return null;
+
+    // Security scan — block CRITICAL risk external plugins
+    const scanResult = scanPluginDirectory(installedPath, pluginName);
+    if (scanResult.blocked) {
+      logger.error('External plugin BLOCKED by security scan', {
+        pluginName,
+        riskLevel: scanResult.riskLevel,
+        findings: scanResult.findings.length,
+      });
+      logger.warn(formatScanReport(scanResult));
+      try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
+      return null;
+    }
+    if (scanResult.findings.length > 0) {
+      logger.warn(formatScanReport(scanResult));
+    }
 
     const sha = remoteSha || 'unknown';
     writeCacheMeta(pluginsDir, pluginName, {
