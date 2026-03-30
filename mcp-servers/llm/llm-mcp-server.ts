@@ -216,7 +216,8 @@ class LlmMCPServer extends BaseMcpServer {
       }
     }
 
-    const toolName = route.backend === 'codex' ? 'codex' : 'gemini';
+    // codex MCP exposes 'codex' tool, gemini MCP exposes 'chat' tool
+    const toolName = route.backend === 'codex' ? 'codex' : 'chat';
     const result = await client.callTool(toolName, backendArgs, 600_000);
 
     const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
@@ -255,7 +256,8 @@ class LlmMCPServer extends BaseMcpServer {
       backendArgs.sessionId = session.backendSessionId;
     }
 
-    const toolName = session.backend === 'codex' ? 'codex-reply' : 'gemini-reply';
+    // codex MCP exposes 'codex-reply' tool, gemini MCP exposes 'chat-reply' tool
+    const toolName = session.backend === 'codex' ? 'codex-reply' : 'chat-reply';
     const result = await client.callTool(toolName, backendArgs, 600_000);
 
     const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
