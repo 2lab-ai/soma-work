@@ -46,8 +46,8 @@ describe('TaskListBlockBuilder', () => {
     expect(text).toContain('🟢');
     expect(text).toContain('types.ts 수정');
 
-    // Active form shown as sub-status
-    expect(text).toContain('llm_chat(codex) 진행중');
+    // Active form shown as sub-status (underscores escaped to ˍ)
+    expect(text).toContain('llmˍchat(codex) 진행중');
 
     // Pending task: ⚪
     expect(text).toContain('⚪');
@@ -120,7 +120,8 @@ describe('TaskListBlockBuilder', () => {
       (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Start:')
     );
     expect(timeCtx).toBeDefined();
-    expect(timeCtx.elements[0].text).toContain('12:01');
+    // Now uses Slack date tokens
+    expect(timeCtx.elements[0].text).toContain('<!date^');
   });
 
   it('does not show time context when startedAt is not provided', () => {
@@ -286,5 +287,104 @@ describe('TodoManager.hasSignificantChange', () => {
       { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'Running' },
     ];
     expect(manager.hasSignificantChange(old, same)).toBe(false);
+  });
+
+  it('detects dependency change', () => {
+    const old: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium', dependencies: ['a'] },
+    ];
+    const updated: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium', dependencies: ['a', 'b'] },
+    ];
+    expect(manager.hasSignificantChange(old, updated)).toBe(true);
+  });
+
+  it('detects dependency removal', () => {
+    const old: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium', dependencies: ['a'] },
+    ];
+    const updated: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium' },
+    ];
+    expect(manager.hasSignificantChange(old, updated)).toBe(true);
+  });
+});
+
+describe('mrkdwn escaping in task content', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
+  });
+
+  it('escapes mrkdwn formatting characters in content', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'Fix *bold* and _italic_ and ~strike~', status: 'in_progress', priority: 'medium' },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('🟢'),
+    );
+    const text = taskSection.text.text;
+    // Should NOT contain raw mrkdwn chars
+    expect(text).not.toContain('*bold*');
+    expect(text).not.toContain('_italic_');
+    expect(text).not.toContain('~strike~');
+  });
+
+  it('escapes angle brackets and ampersands to prevent mention/link injection', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'Check <!channel> and <@U123> and <http://evil.com|click>', status: 'pending', priority: 'medium' },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('⚪'),
+    );
+    const text = taskSection.text.text;
+    // Angle brackets should be escaped
+    expect(text).not.toContain('<!channel>');
+    expect(text).not.toContain('<@U123>');
+    expect(text).not.toContain('<http://');
+    expect(text).toContain('&lt;');
+  });
+
+  it('flattens newlines in content to prevent layout break', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'line1\nline2\nline3', status: 'pending', priority: 'medium' },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find(
+      (b: any) => b.type === 'section' && b.text?.text?.includes('⚪'),
+    );
+    // The task content line should not contain raw newlines from content
+    const taskLine = taskSection.text.text.split('\n').find((l: string) => l.includes('line1'));
+    expect(taskLine).toContain('line1 line2 line3');
+  });
+});
+
+describe('Slack date token in time display', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
+  });
+
+  it('uses Slack date token format for startedAt', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium' },
+    ];
+    const ts = new Date('2025-06-15T14:30:00Z').getTime();
+    const blocks = builder.buildBlocks(todos, { startedAt: ts });
+    const timeCtx = blocks.find(
+      (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Start:'),
+    );
+    expect(timeCtx).toBeDefined();
+    // Should contain Slack date token format <!date^epoch^{time}|fallback>
+    expect(timeCtx.elements[0].text).toContain('<!date^');
+    expect(timeCtx.elements[0].text).toContain('^{time}|');
   });
 });

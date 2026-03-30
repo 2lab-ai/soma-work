@@ -100,13 +100,14 @@ export class TodoManager {
       return true;
     }
 
-    // Check if any task status, activeForm, or content changed
+    // Check if any task status, activeForm, content, or dependencies changed
     for (const newTodo of newTodos) {
       const oldTodo = oldTodos.find(t => t.id === newTodo.id);
       if (!oldTodo
         || oldTodo.status !== newTodo.status
         || oldTodo.activeForm !== newTodo.activeForm
-        || oldTodo.content !== newTodo.content) {
+        || oldTodo.content !== newTodo.content
+        || JSON.stringify(oldTodo.dependencies) !== JSON.stringify(newTodo.dependencies)) {
         return true;
       }
     }
