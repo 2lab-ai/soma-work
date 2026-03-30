@@ -6,6 +6,7 @@
 import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { isDangerousCommand } from './dangerous-command-filter';
 import * as path from 'path';
+import * as fs from 'fs';
 import type { SdkPluginPath } from './plugin/types';
 import {
   ConversationSession,
@@ -555,8 +556,17 @@ export class ClaudeHandler {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
     }
 
-    // Set working directory
+    // Set working directory — ensure it exists to prevent SDK ENOENT masquerade
+    // (SDK misreports missing cwd as "Claude Code executable not found")
     if (workingDirectory) {
+      if (!fs.existsSync(workingDirectory)) {
+        this.logger.warn('Working directory missing, re-creating', { workingDirectory });
+        try {
+          fs.mkdirSync(workingDirectory, { recursive: true });
+        } catch (err) {
+          this.logger.error('Failed to re-create working directory', { workingDirectory, error: err });
+        }
+      }
       options.cwd = workingDirectory;
     }
 
