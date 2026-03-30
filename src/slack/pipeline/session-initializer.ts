@@ -231,6 +231,29 @@ export class SessionInitializer {
     }
 
     // Determine effective working directory: prefer session-unique dir over fixed user dir
+    // Guard: re-create session dir if it was cleaned up (macOS /tmp cleanup, reboot, etc.)
+    // Without this, the SDK spawn() gets ENOENT on the missing cwd and misreports
+    // "Claude Code executable not found" (Issue: cwd ENOENT masquerade)
+    if (session.sessionWorkingDir && !fs.existsSync(session.sessionWorkingDir)) {
+      this.logger.warn('Session working directory disappeared, re-creating', {
+        sessionKey,
+        original: session.sessionWorkingDir,
+      });
+      try {
+        fs.mkdirSync(session.sessionWorkingDir, { recursive: true });
+        this.logger.info('Re-created session working directory', {
+          sessionKey,
+          directory: session.sessionWorkingDir,
+        });
+      } catch (mkdirErr) {
+        this.logger.error('Failed to re-create session working directory, falling back to user dir', {
+          sessionKey,
+          directory: session.sessionWorkingDir,
+          error: mkdirErr,
+        });
+        session.sessionWorkingDir = undefined;
+      }
+    }
     const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
