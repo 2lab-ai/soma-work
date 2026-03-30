@@ -17,7 +17,7 @@ describe('ReportHandler', () => {
           date: '2026-03-25', period: 'daily', metrics: {
             sessionsCreated: 1, sessionsSlept: 0, sessionsClosed: 0,
             issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
-            codeLinesAdded: 0, prsMerged: 0, mergeLinesAdded: 0, turnsUsed: 5,
+            codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0, mergeLinesAdded: 0, turnsUsed: 5,
           },
         }),
         aggregateWeekly: vi.fn().mockResolvedValue({
@@ -25,7 +25,7 @@ describe('ReportHandler', () => {
           metrics: {
             sessionsCreated: 5, sessionsSlept: 1, sessionsClosed: 2,
             issuesCreated: 3, prsCreated: 2, commitsCreated: 8,
-            codeLinesAdded: 400, prsMerged: 1, mergeLinesAdded: 200, turnsUsed: 30,
+            codeLinesAdded: 400, codeLinesDeleted: 40, prsMerged: 1, mergeLinesAdded: 200, turnsUsed: 30,
           },
           rankings: [],
         }),
