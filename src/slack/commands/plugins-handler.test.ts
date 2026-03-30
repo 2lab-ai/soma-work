@@ -337,7 +337,7 @@ describe('PluginsHandler', () => {
       vi.mocked(isAdminUser).mockReturnValue(true);
       mockPluginManager.forceRefresh.mockResolvedValue({
         total: 2,
-        updated: 2,
+        updated: 1,
         unchanged: 0,
         errors: ['Failed to clear cache: permission denied'],
         details: [

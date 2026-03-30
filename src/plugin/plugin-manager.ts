@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef,
-  ForceRefreshResult, PluginUpdateDetail, CacheMeta,
+  ForceRefreshResult, PluginUpdateDetail,
 } from './types';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
@@ -231,32 +231,49 @@ export class PluginManager {
       }
 
       // SHA differs or no cache — need to re-download
-      // Clear this plugin's cache meta and directory so fetchPlugin re-downloads
+      // Backup existing cache so we can restore on failure
       const pluginDir = path.join(this.pluginsDir, ref.pluginName);
+      const backupDir = `${pluginDir}.bak.${Date.now()}`;
       const cacheDir = path.join(this.pluginsDir, '.cache');
       const metaFile = path.join(cacheDir, `${ref.pluginName}.meta.json`);
+      const metaBackup = `${metaFile}.bak`;
+      let backedUp = false;
 
       try {
-        if (fs.existsSync(metaFile)) fs.unlinkSync(metaFile);
-        if (fs.existsSync(pluginDir)) fs.rmSync(pluginDir, { recursive: true, force: true });
+        // Backup plugin dir and meta file before clearing
+        if (fs.existsSync(pluginDir)) {
+          fs.renameSync(pluginDir, backupDir);
+          backedUp = true;
+        }
+        if (fs.existsSync(metaFile)) {
+          fs.copyFileSync(metaFile, metaBackup);
+          fs.unlinkSync(metaFile);
+        }
       } catch (err) {
-        errors.push(`Failed to clear cache for ${ref.pluginName}: ${(err as Error).message}`);
+        errors.push(`Failed to prepare cache for ${ref.pluginName}: ${(err as Error).message}`);
       }
 
       try {
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
         if (result) {
-          const newMeta = readCacheMeta(this.pluginsDir, ref.pluginName);
+          // Success — remove backup
+          if (backedUp) {
+            try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch { /* ignore */ }
+          }
+          try { if (fs.existsSync(metaBackup)) fs.unlinkSync(metaBackup); } catch { /* ignore */ }
+
           details.push({
             name: pluginDisplayName,
             status: oldMeta ? 'updated' : 'new',
             oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
             oldDate: oldMeta?.fetchedAt ?? null,
             newSha: result.sha.slice(0, 8),
-            newDate: newMeta?.fetchedAt ?? new Date().toISOString(),
+            newDate: new Date().toISOString(),
           });
         } else {
-          const msg = `fetchPlugin returned null for ${pluginDisplayName}`;
+          // fetchPlugin returned null — restore backup
+          this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
+          const msg = `fetchPlugin returned null for ${pluginDisplayName}, restored previous version`;
           errors.push(msg);
           details.push({
             name: pluginDisplayName,
@@ -268,6 +285,8 @@ export class PluginManager {
           });
         }
       } catch (error) {
+        // Fetch threw — restore backup
+        this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
         const msg = `Failed to fetch ${pluginDisplayName}: ${(error as Error).message}`;
         errors.push(msg);
         details.push({
@@ -467,6 +486,26 @@ export class PluginManager {
       map.set(entry.name, entry);
     }
     return map;
+  }
+
+  /** Restore backed-up plugin directory and meta file on fetch failure. */
+  private restoreBackup(
+    backupDir: string, pluginDir: string,
+    metaBackup: string, metaFile: string,
+    backedUp: boolean,
+  ): void {
+    try {
+      if (backedUp && fs.existsSync(backupDir)) {
+        if (fs.existsSync(pluginDir)) fs.rmSync(pluginDir, { recursive: true, force: true });
+        fs.renameSync(backupDir, pluginDir);
+      }
+      if (fs.existsSync(metaBackup)) {
+        fs.copyFileSync(metaBackup, metaFile);
+        fs.unlinkSync(metaBackup);
+      }
+    } catch (err) {
+      logger.error('Failed to restore plugin backup', { backupDir, error: (err as Error).message });
+    }
   }
 
   private parsePluginRefs(config: PluginConfig): PluginRef[] {
