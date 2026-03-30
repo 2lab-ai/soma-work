@@ -213,7 +213,8 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     };
     await sharedStore.storePendingApproval(requestId, pending);
 
-    // DM each admin
+    // DM each admin — track delivery count to fail fast if none reached
+    let deliveredCount = 0;
     for (const adminId of adminUsers) {
       try {
         await this.slack.chat.postMessage({
@@ -221,9 +222,17 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
           text: `Permission request from <@${userId}> for ${server} (${level})`,
           blocks,
         });
+        deliveredCount++;
       } catch (error) {
         this.logger.warn('Failed to DM admin for permission request', { adminId, error });
       }
+    }
+
+    if (deliveredCount === 0) {
+      throw new Error(
+        'Could not deliver permission request to any admin. ' +
+        'Please contact an admin directly or check the Slack bot configuration.'
+      );
     }
 
     // Also post in thread if available
@@ -234,8 +243,8 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
           thread_ts: this.slackContext.threadTs,
           text: `⏳ Permission request sent to admins: \`${server}\` (${level}, ${duration})`,
         });
-      } catch {
-        // Non-critical
+      } catch (error) {
+        this.logger.debug('Failed to post thread notification for permission request', { error });
       }
     }
 
