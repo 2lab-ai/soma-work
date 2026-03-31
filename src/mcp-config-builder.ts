@@ -22,6 +22,7 @@ const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
 const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
 const CRON_SERVER_BASENAME = 'cron-mcp-server';
 const MCP_TOOL_PERMISSION_SERVER_BASENAME = 'mcp-tool-permission-mcp-server';
+const AGENT_SERVER_BASENAME = 'agent-mcp-server';
 
 /** Root of the project (one level up from src/) */
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -130,9 +131,19 @@ export interface McpConfig {
 export class McpConfigBuilder {
   private logger = new Logger('McpConfigBuilder');
   private mcpManager: McpManager;
+  /** Agent configs for agent MCP server (Trace: docs/multi-agent/trace.md, S4) */
+  private agentConfigs?: Record<string, any>;
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
+  }
+
+  /**
+   * Set agent configurations (called from index.ts after loading config).
+   * Trace: docs/multi-agent/trace.md, Scenario 4
+   */
+  setAgentConfigs(configs: Record<string, any>): void {
+    this.agentConfigs = configs;
   }
 
   /**
@@ -159,6 +170,11 @@ export class McpConfigBuilder {
 
     // Always add LLM aggregate server (wraps codex + gemini)
     internalServers['llm'] = this.buildLlmServer();
+
+    // Add agent MCP server when agents are configured (Trace: docs/multi-agent/trace.md, S4)
+    if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
+      internalServers['agent'] = this.buildAgentServer();
+    }
 
     if (slackContext) {
       internalServers['model-command'] = this.buildModelCommandServer(
@@ -452,6 +468,38 @@ export class McpConfigBuilder {
   }
 
   /**
+   * Build agent MCP server configuration.
+   * Passes agent configs via env so the MCP server can validate agent names.
+   * Trace: docs/multi-agent/trace.md, Scenario 4
+   */
+  private buildAgentServer(): Record<string, any> {
+    const agentServerPath = this.getAgentServerPath();
+    // Strip sensitive tokens — only pass metadata needed for MCP tool validation
+    const safeConfigs: Record<string, any> = {};
+    if (this.agentConfigs) {
+      for (const [name, config] of Object.entries(this.agentConfigs)) {
+        safeConfigs[name] = {
+          promptDir: config.promptDir,
+          persona: config.persona,
+          description: config.description,
+          model: config.model,
+        };
+      }
+    }
+    return {
+      command: 'npx',
+      args: ['tsx', agentServerPath],
+      env: {
+        SOMA_AGENT_CONFIGS: JSON.stringify(safeConfigs),
+      },
+    };
+  }
+
+  private getAgentServerPath(): string {
+    return this.getServerPath('Agent', AGENT_SERVER_BASENAME, 'agent');
+  }
+
+  /**
    * Build the list of allowed tools.
    * Filters permission-gated MCP servers based on user's active grants.
    * Admin users bypass all permission checks.
@@ -465,6 +513,11 @@ export class McpConfigBuilder {
 
     // Always allow LLM aggregate tools
     allowedTools.push('mcp__llm');
+
+    // Allow agent tools when agents are configured
+    if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
+      allowedTools.push('mcp__agent');
+    }
 
     if (slackContext) {
       allowedTools.push('mcp__model-command');

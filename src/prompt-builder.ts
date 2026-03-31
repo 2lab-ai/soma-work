@@ -26,6 +26,17 @@ const INCLUDE_PATTERN = /\{\{include:([^}]+)\}\}/g;
 const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
 
 /**
+ * Options for constructing a PromptBuilder.
+ * When agentName is set, prompts are loaded from the agent-specific directory
+ * with fallback to the main prompt directory.
+ * Trace: docs/multi-agent/trace.md, Scenario 6
+ */
+export interface PromptBuilderOptions {
+  agentName?: string;
+  promptDir?: string;  // explicit override, takes precedence over agentName
+}
+
+/**
  * PromptBuilder handles system prompt, workflow prompts, and persona loading
  */
 export class PromptBuilder {
@@ -34,18 +45,72 @@ export class PromptBuilder {
   private localSystemPrompt: string | undefined; // .system.prompt content (injected into ALL workflows)
   private workflowPromptCache: Map<WorkflowType, string> = new Map();
 
-  constructor() {
+  /** Resolved prompt directory for this builder instance */
+  private promptDir: string;
+  /** Fallback prompt directory (main) when agent-specific prompt is missing */
+  private fallbackPromptDir: string;
+  /** Agent name (undefined for main bot) */
+  private agentName: string | undefined;
+
+  constructor(options?: PromptBuilderOptions) {
+    this.fallbackPromptDir = PROMPT_DIR;
+    this.agentName = options?.agentName;
+
+    if (options?.promptDir) {
+      // Explicit prompt dir override
+      this.promptDir = path.isAbsolute(options.promptDir)
+        ? options.promptDir
+        : path.join(PROMPT_DIR, '..', options.promptDir);
+    } else if (options?.agentName) {
+      // Agent-specific: src/prompt/{agentName}/
+      this.promptDir = path.join(PROMPT_DIR, options.agentName);
+    } else {
+      // Main bot: src/prompt/
+      this.promptDir = PROMPT_DIR;
+    }
+
     this.loadDefaultPrompt();
   }
 
   /**
-   * Load the default system prompt from files
+   * Get the resolved prompt directory (for testing)
+   */
+  getPromptDir(): string {
+    return this.promptDir;
+  }
+
+  /**
+   * Get the default system prompt content (for testing)
+   */
+  getDefaultSystemPrompt(): string | undefined {
+    return this.defaultSystemPrompt;
+  }
+
+  /**
+   * Load the default system prompt from files.
+   * For agents: tries agent dir first, falls back to main dir.
+   * Trace: docs/multi-agent/trace.md, Scenario 6, Section 3a
    */
   private loadDefaultPrompt(): void {
     try {
-      if (fs.existsSync(DEFAULT_PROMPT_PATH)) {
-        let content = fs.readFileSync(DEFAULT_PROMPT_PATH, 'utf-8');
-        // Process include directives (e.g., {{include:./common.prompt}})
+      const agentDefaultPath = path.join(this.promptDir, 'default.prompt');
+      const mainDefaultPath = DEFAULT_PROMPT_PATH;
+
+      if (fs.existsSync(agentDefaultPath)) {
+        let content = fs.readFileSync(agentDefaultPath, 'utf-8');
+        content = this.processIncludes(content);
+        this.defaultSystemPrompt = content;
+        if (this.agentName) {
+          this.logger.info(`PromptBuilder: loaded agent prompt from ${this.promptDir}`);
+        }
+      } else if (this.agentName && fs.existsSync(mainDefaultPath)) {
+        // Fallback to main prompt for agents without their own
+        let content = fs.readFileSync(mainDefaultPath, 'utf-8');
+        content = this.processIncludes(content);
+        this.defaultSystemPrompt = content;
+        this.logger.warn(`PromptBuilder: agent '${this.agentName}' using main prompt (no agent-specific prompt found)`);
+      } else if (fs.existsSync(mainDefaultPath)) {
+        let content = fs.readFileSync(mainDefaultPath, 'utf-8');
         content = this.processIncludes(content);
         this.defaultSystemPrompt = content;
       }
@@ -83,7 +148,8 @@ export class PromptBuilder {
       return content;
     }
 
-    const resolvedPromptDir = path.resolve(PROMPT_DIR);
+    const resolvedPromptDir = path.resolve(this.promptDir);
+    const resolvedFallbackDir = path.resolve(this.fallbackPromptDir);
 
     return content.replace(INCLUDE_PATTERN, (match, filename) => {
       const trimmedFilename = filename.trim();
@@ -94,10 +160,17 @@ export class PromptBuilder {
         return `<!-- Include blocked: ${trimmedFilename} -->`;
       }
 
-      const includePath = path.resolve(PROMPT_DIR, trimmedFilename);
+      // Try agent dir first, then fallback to main dir
+      // Trace: docs/multi-agent/trace.md, Scenario 6, Section 3b
+      let includePath = path.resolve(this.promptDir, trimmedFilename);
+      if (!fs.existsSync(includePath) && this.promptDir !== this.fallbackPromptDir) {
+        includePath = path.resolve(this.fallbackPromptDir, trimmedFilename);
+      }
 
-      // Verify path stays within PROMPT_DIR (prevent directory traversal)
-      if (!includePath.startsWith(resolvedPromptDir + path.sep) && includePath !== resolvedPromptDir) {
+      // Verify path stays within prompt dirs (prevent directory traversal)
+      const inPromptDir = includePath.startsWith(resolvedPromptDir + path.sep) || includePath === resolvedPromptDir;
+      const inFallbackDir = includePath.startsWith(resolvedFallbackDir + path.sep) || includePath === resolvedFallbackDir;
+      if (!inPromptDir && !inFallbackDir) {
         this.logger.warn('Include blocked: path traversal detected', { filename: trimmedFilename });
         return `<!-- Include blocked: ${trimmedFilename} -->`;
       }
