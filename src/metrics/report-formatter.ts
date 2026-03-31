@@ -8,18 +8,18 @@
  */
 
 import {
-  AggregatedMetrics,
-  DailyReport,
-  WeeklyReport,
-  EnrichedDailyReport,
-  EnrichedWeeklyReport,
-  TrendComparison,
-  DailyBreakdown,
-  HourlyDistribution,
   Achievement,
+  type AggregatedMetrics,
+  type DailyBreakdown,
+  type DailyReport,
+  type DerivedMetrics,
+  type EnrichedDailyReport,
+  type EnrichedWeeklyReport,
   FunFact,
-  DerivedMetrics,
-  UserRanking,
+  type HourlyDistribution,
+  type TrendComparison,
+  type UserRanking,
+  type WeeklyReport,
 } from './types';
 
 const MAX_RANKINGS_IN_BLOCKS = 5;
