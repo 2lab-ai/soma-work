@@ -44,6 +44,38 @@ const configCache = new ConfigCache<LlmChatFileConfig>(HARDCODED_DEFAULTS, {
   },
 });
 
+// ── Config Expansion ──────────────────────────────────────
+
+/**
+ * Expand flat dot-notation config keys into nested objects and coerce types.
+ * e.g. { "features.fast_mode": "true" } → { features: { fast_mode: true } }
+ *
+ * Stored config uses flat string keys (Record<string, string>) for simplicity,
+ * but codex backend expects nested objects with proper types.
+ */
+function expandConfigForCodex(flat: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flat)) {
+    // Coerce boolean strings to actual booleans
+    const coerced = value === 'true' ? true : value === 'false' ? false : value;
+
+    if (key.includes('.')) {
+      const parts = key.split('.');
+      let target: Record<string, unknown> = result;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in target) || typeof target[parts[i]] !== 'object' || target[parts[i]] === null) {
+          target[parts[i]] = {};
+        }
+        target = target[parts[i]] as Record<string, unknown>;
+      }
+      target[parts[parts.length - 1]] = coerced;
+    } else {
+      result[key] = coerced;
+    }
+  }
+  return result;
+}
+
 // ── Model Routing ──────────────────────────────────────────
 
 function routeModel(model: string): BackendConfig {
@@ -210,7 +242,10 @@ class LlmMCPServer extends BaseMcpServer {
 
     if (route.backend === 'codex') {
       if (cwd) backendArgs.cwd = cwd;
-      const mergedConfig = { ...route.configOverride, ...config };
+      // Expand flat dot-notation defaults into nested objects with proper types,
+      // then let user-provided config (already in correct format) override.
+      const expandedDefaults = expandConfigForCodex(route.configOverride || {});
+      const mergedConfig = { ...expandedDefaults, ...(config || {}) };
       if (Object.keys(mergedConfig).length > 0) {
         backendArgs.config = mergedConfig;
       }
