@@ -142,7 +142,7 @@ describe('ReportFormatter', () => {
     expect(result.text).toContain('150');
 
     // Should contain day-of-week
-    const headerText = result.blocks[0].text.text;
+    const headerText = result.blocks[0]?.text?.text ?? '';
     expect(headerText).toMatch(/\([월화수목금토일]\)/);
   });
 

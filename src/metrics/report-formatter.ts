@@ -28,6 +28,22 @@ const MAX_RANKINGS_IN_BLOCKS = 5;
 const V5_MAX_WEEKLY_BLOCKS = 12;
 const V5_MAX_DAILY_BLOCKS = 10;
 
+// === Slack Block Kit Type Definitions ===
+
+interface SlackTextObject {
+  type: 'plain_text' | 'mrkdwn';
+  text: string;
+  emoji?: boolean;
+}
+
+interface SlackBlock {
+  type: 'header' | 'section' | 'divider' | 'context' | 'actions' | 'image';
+  text?: SlackTextObject;
+  fields?: SlackTextObject[];
+  elements?: SlackTextObject[];
+  block_id?: string;
+}
+
 // === Block Kit Safety Layer ===
 
 const MAX_BLOCKS = 50;
@@ -48,11 +64,11 @@ function truncateHeader(text: string): string {
   return text.length > MAX_HEADER_LENGTH ? text.slice(0, MAX_HEADER_LENGTH - 1) + '…' : text;
 }
 
-function safeFields(fields: any[]): any[] {
+function safeFields(fields: SlackTextObject[]): SlackTextObject[] {
   return fields.slice(0, MAX_FIELDS);
 }
 
-function safeBlocks(blocks: any[]): any[] {
+function safeBlocks(blocks: SlackBlock[]): SlackBlock[] {
   if (blocks.length <= MAX_BLOCKS) return blocks;
   const header = blocks[0];
   const footer = blocks[blocks.length - 1];
@@ -61,7 +77,7 @@ function safeBlocks(blocks: any[]): any[] {
 }
 
 interface FormattedReport {
-  blocks: any[];
+  blocks: SlackBlock[];
   text: string;
 }
 
@@ -149,7 +165,7 @@ function metricsToPlainText(m: AggregatedMetrics, d?: DerivedMetrics): string {
 
 // === Basic Formatters (backward compatible) ===
 
-function metricsToSections(m: AggregatedMetrics): any[] {
+function metricsToSections(m: AggregatedMetrics): SlackBlock[] {
   return [
     {
       type: 'section',
@@ -199,8 +215,8 @@ function buildPipelineFlow(
   d: DerivedMetrics,
   activeDays?: number,
   dailyBreakdown?: DailyBreakdown[],
-): any {
-  const unmerged = m.prsCreated - m.prsMerged;
+): SlackBlock {
+  const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
   const netSign = d.netLines >= 0 ? '+' : '';
   const churnQuality = d.churnRatio <= 20 ? '양호' : d.churnRatio <= 35 ? '주의' : '높음';
 
@@ -215,7 +231,7 @@ function buildPipelineFlow(
   }
 
   const activityText = activeDays !== undefined
-    ? `*활동*\n\`${activeDays}/7\`일 (목표 3+)\n${peakDayLabel || '활동 분포 균등'}`
+    ? `*활동*\n\`${activeDays}/7\`일 (목표 5+)\n${peakDayLabel || '활동 분포 균등'}`
     : `*활동*\n이벤트 ${fmt(m.sessionsCreated + m.prsCreated + m.commitsCreated)}건\n${peakDayLabel || ''}`;
 
   return {
@@ -230,7 +246,7 @@ function buildPipelineFlow(
       {
         type: 'mrkdwn',
         text: truncateFieldText(
-          `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 15%) · 미머지 ${unmerged}건`
+          `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 60%) · 미머지 ${unmerged}건`
         ),
       },
       {
@@ -250,8 +266,8 @@ function buildPipelineFlow(
 /**
  * v5: Efficiency + throughput — 2-field section.
  */
-function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays?: number): any {
-  const unmerged = m.prsCreated - m.prsMerged;
+function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays?: number): SlackBlock {
+  const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
   const commitPerPR = m.prsCreated > 0 ? Math.round((m.commitsCreated / m.prsCreated) * 100) / 100 : 0;
 
   return {
@@ -284,8 +300,8 @@ function buildActionAlerts(
   peakHour: number | null,
   hourlyDistribution: HourlyDistribution[],
   activeDays?: number,
-): any | null {
-  const fields: Array<{ type: string; text: string }> = [];
+): SlackBlock | null {
+  const fields: SlackTextObject[] = [];
 
   // Merge rate — P1: critical (<30%), immediate target 50%. P2: needs work (30-49%), target 60%.
   if (m.prsCreated >= 3 && d.prMergeRate < 50) {
@@ -360,7 +376,7 @@ function buildActionAlerts(
 /**
  * v5: Daily cadence strip — context elements, one per day, peak day bolded.
  */
-function buildDailyCadence(breakdown: DailyBreakdown[]): any | null {
+function buildDailyCadence(breakdown: DailyBreakdown[]): SlackBlock | null {
   if (breakdown.length === 0 || !hasAnyEvents(breakdown)) return null;
 
   const peakDay = breakdown.reduce((best, curr) =>
@@ -376,11 +392,11 @@ function buildDailyCadence(breakdown: DailyBreakdown[]): any | null {
     } else {
       label = `${d.dayLabel} ${d.totalEvents}`;
     }
-    return { type: 'mrkdwn', text: truncateText(label) };
+    return { type: 'mrkdwn' as const, text: truncateText(label) };
   });
 
   return {
-    type: 'context',
+    type: 'context' as const,
     elements,
   };
 }
@@ -389,8 +405,8 @@ function buildDailyCadence(breakdown: DailyBreakdown[]): any | null {
  * v5: Rankings — top 1 gets full detail, rest compressed to single line.
  * Shows scoring formula as context element.
  */
-function buildRankings(rankings: UserRanking[]): any[] {
-  const blocks: any[] = [];
+function buildRankings(rankings: UserRanking[]): SlackBlock[] {
+  const blocks: SlackBlock[] = [];
   if (rankings.length < 2) return blocks;
 
   const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
@@ -430,7 +446,7 @@ function buildRankings(rankings: UserRanking[]): any[] {
 /**
  * v5: Time distribution — context elements, 4 time blocks.
  */
-function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | null): any[] {
+function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | null): SlackTextObject[] {
   const timeBlocks = [
     { label: '새벽', hours: [0,1,2,3,4,5] },
     { label: '오전', hours: [6,7,8,9,10,11] },
@@ -449,11 +465,11 @@ function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | nu
   const elements = blockCounts.map(b => {
     const isPeak = peakHour !== null && b.hours.includes(peakHour);
     const label = isPeak ? `*${b.label} ${b.count}*` : `${b.label} ${b.count}`;
-    return { type: 'mrkdwn', text: truncateText(label) };
+    return { type: 'mrkdwn' as const, text: truncateText(label) };
   });
 
   if (peakHour !== null) {
-    elements.push({ type: 'mrkdwn', text: `피크 ${hourLabel(peakHour)}` });
+    elements.push({ type: 'mrkdwn' as const, text: `피크 ${hourLabel(peakHour)}` });
   }
 
   return elements;
@@ -463,7 +479,7 @@ function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | nu
  * v5: Highlights — removed (no decorative content in v5).
  * Kept as stub returning null to avoid breaking call sites.
  */
-function buildHighlights(_achievements: Achievement[], _funFacts: FunFact[]): any | null {
+function buildHighlights(_achievements: Achievement[], _funFacts: FunFact[]): SlackBlock | null {
   return null;
 }
 
@@ -483,7 +499,7 @@ function generateNarrative(
   }
   // High volume coding but review bottleneck
   if (m.prsCreated >= 10 && d.prMergeRate < 20) {
-    const unmerged = m.prsCreated - m.prsMerged;
+    const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
     return `코딩 볼륨은 컸으나 리뷰가 따라가지 못했다. ${fmt(m.prsCreated)}건 PR 중 ${m.prsMerged}건 머지, ${unmerged}건 미처리.`;
   }
   // Good merge rate + low churn
@@ -492,7 +508,7 @@ function generateNarrative(
   }
   // Review bottleneck with many PRs
   if (d.prMergeRate < 40 && m.prsCreated >= 5) {
-    const unmerged = m.prsCreated - m.prsMerged;
+    const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
     return `리뷰 병목: ${m.prsCreated}건 PR 생성, ${m.prsMerged}건 머지(${d.prMergeRate}%). ${unmerged}건 미처리 — PR 크기 축소와 당일 리뷰 문화 필요.`;
   }
   // High churn
@@ -579,7 +595,7 @@ export class ReportFormatter {
    * Format a basic daily report (backward compatible).
    */
   formatDaily(report: DailyReport): FormattedReport {
-    const blocks: any[] = [
+    const blocks: SlackBlock[] = [
       {
         type: 'header',
         text: { type: 'plain_text', text: `:bar_chart: 일간 리포트 — ${report.date}`, emoji: true },
@@ -600,7 +616,7 @@ export class ReportFormatter {
    * Format a basic weekly report (backward compatible).
    */
   formatWeekly(report: WeeklyReport): FormattedReport {
-    const blocks: any[] = [
+    const blocks: SlackBlock[] = [
       {
         type: 'header',
         text: { type: 'plain_text', text: `:trophy: 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}`, emoji: true },
@@ -647,7 +663,7 @@ export class ReportFormatter {
     const grade = computeGrade(d);
     const reportTitle = `일간 리포트 — ${report.date} (${dayLabel})`;
 
-    const blocks: any[] = [];
+    const blocks: SlackBlock[] = [];
 
     // Block 1: Header with grade
     blocks.push({
@@ -678,7 +694,7 @@ export class ReportFormatter {
     blocks.push({ type: 'divider' });
 
     // Block 5: KPI grid — sessions, PR, code, conversations (4 fields)
-    const unmerged = m.prsCreated - m.prsMerged;
+    const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
     const netSign = d.netLines >= 0 ? '+' : '';
     const churnQuality = d.churnRatio <= 20 ? '양호' : d.churnRatio <= 35 ? '주의' : '높음';
     blocks.push({
@@ -693,7 +709,7 @@ export class ReportFormatter {
         {
           type: 'mrkdwn',
           text: truncateFieldText(
-            `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 15%) · 미머지 ${unmerged}건`
+            `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 60%) · 미머지 ${unmerged}건`
           ),
         },
         {
@@ -773,7 +789,7 @@ export class ReportFormatter {
     const weekEnd = report.weekEnd.slice(5); // "MM-DD" portion
     const reportTitle = `주간 리포트 — ${report.weekStart} ~ ${weekEnd}`;
 
-    const blocks: any[] = [];
+    const blocks: SlackBlock[] = [];
 
     // Block 1: Header with grade
     blocks.push({
