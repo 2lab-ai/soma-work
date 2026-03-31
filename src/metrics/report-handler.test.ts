@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportHandler } from '../slack/commands/report-handler';
 
 // Contract tests — Scenario 6: ReportHandler (slash command)
@@ -14,18 +14,38 @@ describe('ReportHandler', () => {
     mockDeps = {
       aggregator: {
         aggregateDaily: vi.fn().mockResolvedValue({
-          date: '2026-03-25', period: 'daily', metrics: {
-            sessionsCreated: 1, sessionsSlept: 0, sessionsClosed: 0,
-            issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
-            codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0, mergeLinesAdded: 0, turnsUsed: 5,
+          date: '2026-03-25',
+          period: 'daily',
+          metrics: {
+            sessionsCreated: 1,
+            sessionsSlept: 0,
+            sessionsClosed: 0,
+            issuesCreated: 0,
+            prsCreated: 0,
+            commitsCreated: 0,
+            codeLinesAdded: 0,
+            codeLinesDeleted: 0,
+            prsMerged: 0,
+            mergeLinesAdded: 0,
+            turnsUsed: 5,
           },
         }),
         aggregateWeekly: vi.fn().mockResolvedValue({
-          weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly',
+          weekStart: '2026-03-23',
+          weekEnd: '2026-03-29',
+          period: 'weekly',
           metrics: {
-            sessionsCreated: 5, sessionsSlept: 1, sessionsClosed: 2,
-            issuesCreated: 3, prsCreated: 2, commitsCreated: 8,
-            codeLinesAdded: 400, codeLinesDeleted: 40, prsMerged: 1, mergeLinesAdded: 200, turnsUsed: 30,
+            sessionsCreated: 5,
+            sessionsSlept: 1,
+            sessionsClosed: 2,
+            issuesCreated: 3,
+            prsCreated: 2,
+            commitsCreated: 8,
+            codeLinesAdded: 400,
+            codeLinesDeleted: 40,
+            prsMerged: 1,
+            mergeLinesAdded: 200,
+            turnsUsed: 30,
           },
           rankings: [],
         }),
@@ -51,8 +71,11 @@ describe('ReportHandler', () => {
   // Default: `report` shows today's realtime data
   it('reportNoArgs_showsTodayRealtime', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
@@ -64,8 +87,11 @@ describe('ReportHandler', () => {
   // `report today` also shows today's data
   it('reportToday_showsTodayRealtime', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report today', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report today',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
@@ -77,8 +103,11 @@ describe('ReportHandler', () => {
   // Trace: Scenario 6, Section 3a — daily report triggers aggregation
   it('reportDaily_triggersAggregationAndFormats', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report daily', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report daily',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
@@ -90,8 +119,11 @@ describe('ReportHandler', () => {
   // Trace: Scenario 6, Section 3a — weekly report triggers aggregation
   it('reportWeekly_triggersAggregationAndFormats', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report weekly', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report weekly',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
@@ -103,8 +135,11 @@ describe('ReportHandler', () => {
   // `report help` shows help text
   it('reportHelp_showsHelp', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report help', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report help',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);
@@ -119,8 +154,11 @@ describe('ReportHandler', () => {
   // Trace: Scenario 6, Section 5 — handler works when no REPORT_CHANNEL_ID is set
   it('missingChannelConfig_showsError', async () => {
     const result = await handler.execute({
-      user: 'U123', channel: 'C456', threadTs: '123.456',
-      text: 'report daily', say: mockSay as any,
+      user: 'U123',
+      channel: 'C456',
+      threadTs: '123.456',
+      text: 'report daily',
+      say: mockSay as any,
     });
 
     expect(result.handled).toBe(true);

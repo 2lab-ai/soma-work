@@ -1,11 +1,11 @@
-import { SlackApiHelper } from './slack-api-helper';
-import { McpCallTracker } from '../mcp-call-tracker';
 import { Logger } from '../logger';
+import { McpCallTracker } from '../mcp-call-tracker';
+import type { SlackApiHelper } from './slack-api-helper';
 
 export interface StatusUpdateConfig {
-  displayType: string;   // "MCP", "Subagent", etc.
-  displayLabel: string;  // "codex → query", "General Purpose", etc.
-  initialDelay: number;  // ignored in session-tick model (kept for API compat)
+  displayType: string; // "MCP", "Subagent", etc.
+  displayLabel: string; // "codex → query", "General Purpose", etc.
+  initialDelay: number; // ignored in session-tick model (kept for API compat)
   predictKey: { serverName: string; toolName: string };
   paramsSummary?: string; // compact params e.g. "(prompt: hello world)"
 }
@@ -53,7 +53,7 @@ export class McpStatusDisplay {
 
   constructor(
     private slackApi: SlackApiHelper,
-    private mcpCallTracker: McpCallTracker
+    private mcpCallTracker: McpCallTracker,
   ) {}
 
   /**
@@ -64,11 +64,11 @@ export class McpStatusDisplay {
     callId: string,
     config: StatusUpdateConfig,
     channel: string,
-    threadTs: string
+    threadTs: string,
   ): void {
     const predicted = this.mcpCallTracker.getPredictedDuration(
       config.predictKey.serverName,
-      config.predictKey.toolName
+      config.predictKey.toolName,
     );
 
     this.activeCalls.set(callId, {
@@ -168,7 +168,7 @@ export class McpStatusDisplay {
     for (const call of calls) {
       if (call.status !== 'running') continue;
       const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
-      const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+      const elapsedMs = elapsed ?? Date.now() - call.startTime;
       if (elapsedMs >= MCP_TIMEOUT_MS) {
         this.activeCalls.set(call.callId, { ...call, status: 'timed_out' });
         this.logger.warn('MCP call timed out', { callId: call.callId, elapsed: elapsedMs });
@@ -177,7 +177,7 @@ export class McpStatusDisplay {
 
     // Re-fetch after timeout mutations
     const updatedCalls = this.getSessionCalls(tick.sessionKey);
-    const allDone = updatedCalls.every(c => c.status !== 'running');
+    const allDone = updatedCalls.every((c) => c.status !== 'running');
 
     // Compute adaptive interval from running calls
     if (!allDone) {
@@ -236,7 +236,7 @@ export class McpStatusDisplay {
     for (const call of calls) {
       if (call.status !== 'running') continue;
       const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
-      const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+      const elapsedMs = elapsed ?? Date.now() - call.startTime;
       const interval = getAdaptiveInterval(elapsedMs);
       if (interval < minInterval) {
         minInterval = interval;
@@ -249,15 +249,13 @@ export class McpStatusDisplay {
 
   private buildConsolidatedText(calls: ActiveCallEntry[]): string {
     const total = calls.length;
-    const completed = calls.filter(c => c.status === 'completed').length;
-    const timedOut = calls.filter(c => c.status === 'timed_out').length;
+    const completed = calls.filter((c) => c.status === 'completed').length;
+    const timedOut = calls.filter((c) => c.status === 'timed_out').length;
     const allDone = completed + timedOut === total;
 
     let header: string;
     if (allDone && timedOut === 0) {
-      header = total === 1
-        ? `🟢 작업 완료`
-        : `🟢 ${total}개 작업 완료`;
+      header = total === 1 ? `🟢 작업 완료` : `🟢 ${total}개 작업 완료`;
     } else if (allDone) {
       header = `📊 ${total}개 작업 종료 (${completed} 완료, ${timedOut} 타임아웃)`;
     } else {
@@ -270,7 +268,7 @@ export class McpStatusDisplay {
       return this.renderSingleCallText(call);
     }
 
-    const lines = calls.map(call => this.renderCallLine(call));
+    const lines = calls.map((call) => this.renderCallLine(call));
 
     return `${header}\n\n${lines.join('\n')}`;
   }
@@ -292,7 +290,7 @@ export class McpStatusDisplay {
 
     // Running
     const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
-    const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+    const elapsedMs = elapsed ?? Date.now() - call.startTime;
     return this.buildRunningText(call, elapsedMs);
   }
 
@@ -313,7 +311,7 @@ export class McpStatusDisplay {
 
     // Running
     const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
-    const elapsedMs = elapsed ?? (Date.now() - call.startTime);
+    const elapsedMs = elapsed ?? Date.now() - call.startTime;
     let line = `⏳ ${call.config.displayLabel}${params} — ${McpCallTracker.formatDuration(elapsedMs)}`;
 
     if (call.predicted !== null && call.predicted > 0) {

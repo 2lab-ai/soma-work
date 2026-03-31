@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { UserChoice, UserChoices } from '../types';
 import { UserChoiceHandler } from './user-choice-handler';
-import { UserChoice, UserChoices } from '../types';
 
 describe('UserChoiceHandler', () => {
   describe('extractUserChoice', () => {
@@ -350,7 +350,9 @@ this is not valid json
       const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'default');
       const blocks = getBlocks(payload);
       // The new default theme (based on former Theme D) does not render a context block for choice.context
-      const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'));
+      const contextBlock = blocks.find(
+        (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'),
+      );
       expect(contextBlock).toBeUndefined();
     });
 
@@ -367,8 +369,8 @@ this is not valid json
       const payload = UserChoiceHandler.buildUserChoiceBlocks(sampleChoice, 'session-key', 'default');
       const blocks = getBlocks(payload);
       // New UI: options displayed as fields in section
-      const fieldsSection = blocks.find((b: any) =>
-        b.type === 'section' && b.fields?.some((f: any) => f.text?.includes('Option A'))
+      const fieldsSection = blocks.find(
+        (b: any) => b.type === 'section' && b.fields?.some((f: any) => f.text?.includes('Option A')),
       );
       expect(fieldsSection).toBeDefined();
     });
@@ -410,12 +412,18 @@ this is not valid json
         {
           id: 'q1',
           question: 'First question?',
-          choices: [{ id: '1', label: 'Yes' }, { id: '2', label: 'No' }],
+          choices: [
+            { id: '1', label: 'Yes' },
+            { id: '2', label: 'No' },
+          ],
         },
         {
           id: 'q2',
           question: 'Second question?',
-          choices: [{ id: 'a', label: 'Option A' }, { id: 'b', label: 'Option B' }],
+          choices: [
+            { id: 'a', label: 'Option A' },
+            { id: 'b', label: 'Option B' },
+          ],
           context: 'This is important',
         },
       ],
@@ -452,8 +460,9 @@ this is not valid json
     it('should include description in context when provided', () => {
       const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(sampleChoices, 'form-1', 'session-key');
       const blocks = getBlocks(payload);
-      const descBlock = blocks.find((b: any) =>
-        b.type === 'context' && b.elements?.some((e: any) => e.text?.includes('Please answer these questions'))
+      const descBlock = blocks.find(
+        (b: any) =>
+          b.type === 'context' && b.elements?.some((e: any) => e.text?.includes('Please answer these questions')),
       );
       expect(descBlock).toBeDefined();
     });
@@ -471,8 +480,8 @@ this is not valid json
       const blocks = getBlocks(payload);
 
       // First question should show with checkmark and edit button (accessory)
-      const q1Section = blocks.find((b: any) =>
-        b.type === 'section' && b.text?.text?.includes('First question') && b.accessory
+      const q1Section = blocks.find(
+        (b: any) => b.type === 'section' && b.text?.text?.includes('First question') && b.accessory,
       );
       expect(q1Section).toBeDefined();
 
@@ -487,8 +496,8 @@ this is not valid json
       const blocks = getBlocks(payload);
 
       // Context for q2 should not be shown since it's selected
-      const contextBlocks = blocks.filter((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('This is important')
+      const contextBlocks = blocks.filter(
+        (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('This is important'),
       );
       expect(contextBlocks).toHaveLength(0);
     });
@@ -499,9 +508,7 @@ this is not valid json
       const blocks = getBlocks(payload);
 
       // Progress bar with dots (●○) and count
-      const progressBlock = blocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('1/2')
-      );
+      const progressBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('1/2'));
       expect(progressBlock).toBeDefined();
     });
 
@@ -514,14 +521,14 @@ this is not valid json
       const blocks = getBlocks(payload);
 
       // Now shows completion section with submit/reset buttons
-      const completionBlock = blocks.find((b: any) =>
-        b.type === 'section' && b.text?.text?.includes('모든 선택이 완료')
+      const completionBlock = blocks.find(
+        (b: any) => b.type === 'section' && b.text?.text?.includes('모든 선택이 완료'),
       );
       expect(completionBlock).toBeDefined();
 
       // Should have submit and reset buttons
-      const submitActions = blocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('submit_form_'))
+      const submitActions = blocks.find(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('submit_form_')),
       );
       expect(submitActions).toBeDefined();
     });
@@ -550,9 +557,7 @@ this is not valid json
       const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
 
       for (const actionBlock of actionBlocks) {
-        const customButton = actionBlock.elements.find((e: any) =>
-          e.action_id.startsWith('custom_input_multi_')
-        );
+        const customButton = actionBlock.elements.find((e: any) => e.action_id.startsWith('custom_input_multi_'));
         expect(customButton).toBeDefined();
       }
     });

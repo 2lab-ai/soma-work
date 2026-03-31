@@ -7,9 +7,9 @@
  * via file-based IPC with mtime-based change detection.
  */
 
-import { Logger } from './logger';
-import { CONFIG_FILE } from './env-paths';
 import * as fs from 'fs';
+import { CONFIG_FILE } from './env-paths';
+import { Logger } from './logger';
 
 export type LlmBackend = 'codex' | 'gemini';
 
@@ -78,7 +78,9 @@ export class LlmChatConfigStore {
         const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
         return !!raw?.llmChat;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return false;
   }
 
@@ -111,7 +113,7 @@ export class LlmChatConfigStore {
       this.config[backend].model = value;
       this.logger.info('Model updated', { backend, oldModel: oldBackendConfig.model, newModel: value });
     } else {
-      const overrides = this.config[backend].configOverride ??= {};
+      const overrides = (this.config[backend].configOverride ??= {});
       const oldValue = overrides[key];
       overrides[key] = value;
       this.logger.info('Config override updated', { backend, key, oldValue, newValue: value });
@@ -162,15 +164,16 @@ export class LlmChatConfigStore {
   /** Generate prompt snippet for system prompt injection (replaces hardcoded models in common.prompt) */
   toPromptSnippet(): string {
     const formatBackend = (cfg: LlmBackendConfig): string => {
-      const configStr = cfg.configOverride && Object.keys(cfg.configOverride).length > 0
-        ? `, config: { ${Object.entries(cfg.configOverride).map(([k, v]) => `"${k}":"${v}"`).join(', ')} }`
-        : '';
+      const configStr =
+        cfg.configOverride && Object.keys(cfg.configOverride).length > 0
+          ? `, config: { ${Object.entries(cfg.configOverride)
+              .map(([k, v]) => `"${k}":"${v}"`)
+              .join(', ')} }`
+          : '';
       return `    - ${cfg.backend}: <parameters>model: "${cfg.model}"${configStr}</parameters>`;
     };
 
-    return (Object.keys(this.config) as LlmBackend[])
-      .map((key) => formatBackend(this.config[key]))
-      .join('\n');
+    return (Object.keys(this.config) as LlmBackend[]).map((key) => formatBackend(this.config[key])).join('\n');
   }
 
   /**

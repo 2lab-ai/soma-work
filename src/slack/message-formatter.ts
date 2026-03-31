@@ -9,7 +9,7 @@ export class MessageFormatter {
    */
   static formatMessage(text: string, _isFinal: boolean): string {
     // Convert markdown code blocks to Slack format
-    let formatted = text
+    const formatted = text
       .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, _lang, code) => {
         return '```' + code + '```';
       })
@@ -117,7 +117,7 @@ export class MessageFormatter {
     }
 
     // If too short or just special chars, use default
-    if (title.length < 3 || /^[\[\]\s\.\,]+$/.test(title)) {
+    if (title.length < 3 || /^[[\]\s.,]+$/.test(title)) {
       return '새 대화';
     }
 

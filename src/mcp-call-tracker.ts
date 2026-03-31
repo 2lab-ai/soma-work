@@ -1,7 +1,7 @@
-import { Logger } from './logger';
-import { DATA_DIR } from './env-paths';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DATA_DIR } from './env-paths';
+import { Logger } from './logger';
 
 interface McpCallRecord {
   serverName: string;
@@ -145,13 +145,13 @@ export class McpCallTracker {
    */
   static computeAdaptivePrediction(
     elapsed: number,
-    originalPredicted: number
+    originalPredicted: number,
   ): { predicted: number; wasAdjusted: boolean; originalPredicted: number } {
     if (originalPredicted <= 0) {
       return { predicted: originalPredicted, wasAdjusted: false, originalPredicted };
     }
     const doublings = Math.max(0, Math.ceil(Math.log2(elapsed / originalPredicted)));
-    const predicted = originalPredicted * Math.pow(2, doublings);
+    const predicted = originalPredicted * 2 ** doublings;
     return {
       predicted,
       wasAdjusted: doublings > 0,

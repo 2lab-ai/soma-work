@@ -10,8 +10,8 @@
  * Trace: docs/daily-weekly-report/trace.md, Scenario 6
  */
 
-import { CommandHandler, CommandContext, CommandResult } from './types';
 import { Logger } from '../../logger';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 const logger = new Logger('ReportHandler');
 
@@ -45,7 +45,9 @@ const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 function getTodayInTimezone(): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: REPORT_TIMEZONE,
-    year: 'numeric', month: '2-digit', day: '2-digit',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
   });
   return formatter.format(new Date());
 }
@@ -121,9 +123,7 @@ export class ReportHandler implements CommandHandler {
             await this.deps.aggregator.aggregateEnrichedDaily!(getTodayInTimezone()),
           );
         } else {
-          formatted = this.deps.formatter.formatDaily(
-            await this.deps.aggregator.aggregateDaily(getTodayInTimezone()),
-          );
+          formatted = this.deps.formatter.formatDaily(await this.deps.aggregator.aggregateDaily(getTodayInTimezone()));
         }
       } else if (subcommand === 'daily') {
         if (useEnriched) {
@@ -131,9 +131,7 @@ export class ReportHandler implements CommandHandler {
             await this.deps.aggregator.aggregateEnrichedDaily!(getYesterdayDateStr()),
           );
         } else {
-          formatted = this.deps.formatter.formatDaily(
-            await this.deps.aggregator.aggregateDaily(getYesterdayDateStr()),
-          );
+          formatted = this.deps.formatter.formatDaily(await this.deps.aggregator.aggregateDaily(getYesterdayDateStr()));
         }
       } else {
         if (useEnriched && this.deps.aggregator.aggregateEnrichedWeekly && this.deps.formatter.formatEnrichedWeekly) {

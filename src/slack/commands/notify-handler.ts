@@ -10,12 +10,11 @@
  *   notify telegram off    — Remove Telegram chat ID
  */
 
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
-const NOTIFY_USAGE =
-  `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`;
+const NOTIFY_USAGE = `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`;
 
 export class NotifyHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -44,7 +43,7 @@ export class NotifyHandler implements CommandHandler {
 
     switch (parsed.action) {
       case 'on':
-        if (!await saveSetting({ slackDm: true })) break;
+        if (!(await saveSetting({ slackDm: true }))) break;
         await say({
           text: `✅ Slack DM 알림이 활성화되었습니다.\n\nAI 턴 종료 시 DM으로 알림을 받습니다.`,
           thread_ts: threadTs,
@@ -52,7 +51,7 @@ export class NotifyHandler implements CommandHandler {
         break;
 
       case 'off':
-        if (!await saveSetting({ slackDm: false })) break;
+        if (!(await saveSetting({ slackDm: false }))) break;
         await say({
           text: `✅ Slack DM 알림이 비활성화되었습니다.`,
           thread_ts: threadTs,
@@ -90,7 +89,7 @@ export class NotifyHandler implements CommandHandler {
           });
           break;
         }
-        if (!await saveSetting({ telegramChatId: value })) break;
+        if (!(await saveSetting({ telegramChatId: value }))) break;
         await say({
           text: `✅ 텔레그램 알림이 등록되었습니다. Chat ID: ${value}`,
           thread_ts: threadTs,
@@ -99,7 +98,7 @@ export class NotifyHandler implements CommandHandler {
       }
 
       case 'telegram_off':
-        if (!await saveSetting({ telegramChatId: undefined })) break;
+        if (!(await saveSetting({ telegramChatId: undefined }))) break;
         await say({
           text: `✅ 텔레그램 알림이 해제되었습니다.`,
           thread_ts: threadTs,

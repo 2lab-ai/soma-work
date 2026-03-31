@@ -1,34 +1,34 @@
 import { Logger } from '../../logger';
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CwdHandler } from './cwd-handler';
-import { McpHandler } from './mcp-handler';
-import { BypassHandler } from './bypass-handler';
-import { PersonaHandler } from './persona-handler';
-import { ModelHandler } from './model-handler';
-import { HelpHandler } from './help-handler';
-import { SessionHandler } from './session-handler';
-import { RestoreHandler } from './restore-handler';
-import { NewHandler } from './new-handler';
-import { OnboardingHandler } from './onboarding-handler';
-import { ContextHandler } from './context-handler';
-import { RenewHandler } from './renew-handler';
-import { LinkHandler } from './link-handler';
-import { CloseHandler } from './close-handler';
-import { VerbosityHandler } from './verbosity-handler';
-import { SessionCommandHandler } from './session-command-handler';
-import { MarketplaceHandler } from './marketplace-handler';
-import { PluginsHandler } from './plugins-handler';
-import { CctHandler } from './cct-handler';
-import { AdminHandler } from './admin-handler';
-import { LlmChatHandler } from './llm-chat-handler';
-import { NotifyHandler } from './notify-handler';
-import { WebhookHandler } from './webhook-handler';
-import { ReportHandler } from './report-handler';
-import { EsHandler } from './es-handler';
-import { PromptHandler } from './prompt-handler';
-import { InstructionsHandler } from './instructions-handler';
 import { getReportDeps } from '../../metrics';
 import { CommandParser } from '../command-parser';
+import { AdminHandler } from './admin-handler';
+import { BypassHandler } from './bypass-handler';
+import { CctHandler } from './cct-handler';
+import { CloseHandler } from './close-handler';
+import { ContextHandler } from './context-handler';
+import { CwdHandler } from './cwd-handler';
+import { EsHandler } from './es-handler';
+import { HelpHandler } from './help-handler';
+import { InstructionsHandler } from './instructions-handler';
+import { LinkHandler } from './link-handler';
+import { LlmChatHandler } from './llm-chat-handler';
+import { MarketplaceHandler } from './marketplace-handler';
+import { McpHandler } from './mcp-handler';
+import { ModelHandler } from './model-handler';
+import { NewHandler } from './new-handler';
+import { NotifyHandler } from './notify-handler';
+import { OnboardingHandler } from './onboarding-handler';
+import { PersonaHandler } from './persona-handler';
+import { PluginsHandler } from './plugins-handler';
+import { PromptHandler } from './prompt-handler';
+import { RenewHandler } from './renew-handler';
+import { ReportHandler } from './report-handler';
+import { RestoreHandler } from './restore-handler';
+import { SessionCommandHandler } from './session-command-handler';
+import { SessionHandler } from './session-handler';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+import { VerbosityHandler } from './verbosity-handler';
+import { WebhookHandler } from './webhook-handler';
 
 /**
  * Routes commands to appropriate handlers
@@ -50,7 +50,7 @@ export class CommandRouter {
       new McpHandler(deps),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
-      new SessionCommandHandler(deps),  // $ prefix — must come before Model/Verbosity
+      new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new PersonaHandler(),
       new ModelHandler(deps),
@@ -123,6 +123,6 @@ export class CommandRouter {
    */
   isCommand(text: string): boolean {
     if (!text) return false;
-    return this.handlers.some(handler => handler.canHandle(text));
+    return this.handlers.some((handler) => handler.canHandle(text));
   }
 }

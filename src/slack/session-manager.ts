@@ -1,27 +1,26 @@
-import { SlackApiHelper } from './slack-api-helper';
-import { MessageFormatter } from './message-formatter';
-import { ReactionManager } from './reaction-manager';
-import { ConversationSession, SessionLinks, SessionLinkHistory, ActivityState } from '../types';
-import { ClaudeHandler } from '../claude-handler';
-import { userSettingsStore, THEME_NAMES, type SessionTheme } from '../user-settings-store';
+import type { ClaudeHandler } from '../claude-handler';
+import { getConversationUrl } from '../conversation';
 import {
-  fetchLinkMetadata,
-  getStatusEmoji,
-  fetchJiraTransitions,
+  extractJiraKey,
   fetchGitHubPRDetails,
   fetchGitHubPRReviewStatus,
+  fetchJiraTransitions,
+  fetchLinkMetadata,
+  type GitHubPRDetails,
+  getStatusEmoji,
   isPRMergeable,
-  extractJiraKey,
-  JiraTransition,
-  GitHubPRDetails,
+  type JiraTransition,
 } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
-import { getConversationUrl } from '../conversation';
+import { type ActivityState, type ConversationSession, type SessionLinkHistory, SessionLinks } from '../types';
+import { type SessionTheme, THEME_NAMES, userSettingsStore } from '../user-settings-store';
+import { MessageFormatter } from './message-formatter';
+import type { ReactionManager } from './reaction-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 export interface FormatSessionsOptions {
   showControls?: boolean; // Show kill buttons (default: true)
 }
-
 
 export type SayFn = (args: any) => Promise<any>;
 
@@ -35,7 +34,7 @@ export class SessionUiManager {
 
   constructor(
     private claudeHandler: ClaudeHandler,
-    private slackApi: SlackApiHelper
+    private slackApi: SlackApiHelper,
   ) {}
 
   /**
@@ -59,7 +58,7 @@ export class SessionUiManager {
    */
   async formatUserSessionsBlocks(
     userId: string,
-    options: FormatSessionsOptions = {}
+    options: FormatSessionsOptions = {},
   ): Promise<{ text: string; blocks: any[] }> {
     const { showControls = true } = options;
     const allSessions = this.claudeHandler.getAllSessions();
@@ -145,9 +144,7 @@ export class SessionUiManager {
       for (const { key, session } of groupSessions) {
         sessionIndex++;
 
-        const cardBlocks = await this.buildSessionCard(
-          sessionIndex, key, session, showControls, theme
-        );
+        const cardBlocks = await this.buildSessionCard(sessionIndex, key, session, showControls, theme);
         blocks.push(...cardBlocks);
       }
     }
@@ -194,12 +191,8 @@ export class SessionUiManager {
   private async fetchCardData(session: ConversationSession, theme: SessionTheme = 'default') {
     const channelName = await this.slackApi.getChannelName(session.channelId);
     const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-    const modelDisplay = session.model
-      ? userSettingsStore.getModelDisplayName(session.model as any)
-      : 'Sonnet 4';
-    const permalink = session.threadTs
-      ? await this.slackApi.getPermalink(session.channelId, session.threadTs)
-      : null;
+    const modelDisplay = session.model ? userSettingsStore.getModelDisplayName(session.model as any) : 'Sonnet 4';
+    const permalink = session.threadTs ? await this.slackApi.getPermalink(session.channelId, session.threadTs) : null;
     const activityEmoji = this.formatActivityEmoji(session.activityState);
 
     // Default theme uses formatLinkHistoryContext() which gets metadata from linkHistory directly,
@@ -235,11 +228,22 @@ export class SessionUiManager {
       : MessageFormatter.formatExpiresIn(session.lastActivity);
 
     // Conversation viewer URL (if conversation was recorded)
-    const conversationUrl = session.conversationId
-      ? getConversationUrl(session.conversationId)
-      : null;
+    const conversationUrl = session.conversationId ? getConversationUrl(session.conversationId) : null;
 
-    return { channelName, timeAgo, modelDisplay, permalink, activityEmoji, issueMeta, prMeta, reviewChip, isSleeping, expiresText, expiresShort, conversationUrl };
+    return {
+      channelName,
+      timeAgo,
+      modelDisplay,
+      permalink,
+      activityEmoji,
+      issueMeta,
+      prMeta,
+      reviewChip,
+      isSleeping,
+      expiresText,
+      expiresShort,
+      conversationUrl,
+    };
   }
 
   /**
@@ -251,10 +255,10 @@ export class SessionUiManager {
     sessionKey: string,
     session: ConversationSession,
     showControls: boolean,
-    theme: SessionTheme = 'default'
+    theme: SessionTheme = 'default',
   ): Promise<any[]> {
     const data = await this.fetchCardData(session, theme);
-    const truncate = (s: string, max = 120) => s.length > max ? s.slice(0, max) + '…' : s;
+    const truncate = (s: string, max = 120) => (s.length > max ? s.slice(0, max) + '…' : s);
 
     const args = [index, sessionKey, session, showControls, data, truncate] as const;
     let blocks: any[];
@@ -285,7 +289,12 @@ export class SessionUiManager {
   /**
    * Build terminate button accessory
    */
-  private buildTerminateAccessory(sessionKey: string, session: ConversationSession, channelName: string, buttonText = '🗑️ 종료'): any {
+  private buildTerminateAccessory(
+    sessionKey: string,
+    session: ConversationSession,
+    channelName: string,
+    buttonText = '🗑️ 종료',
+  ): any {
     return {
       type: 'button',
       text: { type: 'plain_text', text: buttonText, emoji: true },
@@ -312,14 +321,15 @@ export class SessionUiManager {
    * Format linkHistory entries into context text.
    * Shows up to maxPerType links per type (issue/pr/doc), with "+N more" overflow.
    */
-  private formatLinkHistoryContext(
-    linkHistory: SessionLinkHistory | undefined,
-    maxPerType = 5
-  ): string {
+  private formatLinkHistoryContext(linkHistory: SessionLinkHistory | undefined, maxPerType = 5): string {
     if (!linkHistory) return '';
     const parts: string[] = [];
 
-    const formatLinks = (links: Array<{ url: string; label?: string; status?: string }>, emoji: string, type: 'issue' | 'pr' | 'doc') => {
+    const formatLinks = (
+      links: Array<{ url: string; label?: string; status?: string }>,
+      emoji: string,
+      type: 'issue' | 'pr' | 'doc',
+    ) => {
       if (links.length === 0) return;
       const shown = links.slice(-maxPerType);
       const overflow = links.length - shown.length;
@@ -339,8 +349,12 @@ export class SessionUiManager {
 
   // ─── Default: Rich Card — title with issue/PR titles, workflow badge, conversation link ───
   private buildCardDefault(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
+    index: number,
+    sessionKey: string,
+    session: ConversationSession,
+    showControls: boolean,
+    data: any,
+    truncate: (s: string, max?: number) => string,
   ): any[] {
     const blocks: any[] = [];
 
@@ -413,8 +427,12 @@ export class SessionUiManager {
 
   // ─── Compact: title + issue/PR titles, meta context, actions with conversation link ───
   private buildCardCompact(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
+    index: number,
+    sessionKey: string,
+    session: ConversationSession,
+    showControls: boolean,
+    data: any,
+    truncate: (s: string, max?: number) => string,
   ): any[] {
     const blocks: any[] = [];
 
@@ -437,7 +455,10 @@ export class SessionUiManager {
       contextParts.push(`🔀 <${pr.url}|${pr.label || 'PR'}>${prTitle} ${prStatusEmoji}${data.reviewChip}`);
     }
     if (contextParts.length > 0) {
-      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(contextParts.join('  ·  ')) }] });
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: this.safeMrkdwn(contextParts.join('  ·  ')) }],
+      });
     }
 
     // Actions: 💬 스레드 + 📝 대화 기록 + ✕
@@ -470,8 +491,12 @@ export class SessionUiManager {
 
   // ─── Minimal: context with activityEmoji+title+timeAgo+active link, actions [✕] ───
   private buildCardMinimal(
-    index: number, sessionKey: string, session: ConversationSession,
-    showControls: boolean, data: any, truncate: (s: string, max?: number) => string
+    index: number,
+    sessionKey: string,
+    session: ConversationSession,
+    showControls: boolean,
+    data: any,
+    truncate: (s: string, max?: number) => string,
   ): any[] {
     const blocks: any[] = [];
 
@@ -521,10 +546,7 @@ export class SessionUiManager {
       return '📭 *활성 세션 없음*\n\n현재 진행 중인 세션이 없습니다.';
     }
 
-    const lines: string[] = [
-      `🌐 *전체 세션 현황* (${activeSessions.length}개)`,
-      '',
-    ];
+    const lines: string[] = [`🌐 *전체 세션 현황* (${activeSessions.length}개)`, ''];
 
     // 최근 활동 순 정렬
     activeSessions.sort((a, b) => b.session.lastActivity.getTime() - a.session.lastActivity.getTime());
@@ -540,18 +562,21 @@ export class SessionUiManager {
     }
 
     for (const [ownerId, sessions] of sessionsByOwner.entries()) {
-      const ownerName = sessions[0].session.ownerName || await this.slackApi.getUserName(ownerId);
+      const ownerName = sessions[0].session.ownerName || (await this.slackApi.getUserName(ownerId));
       lines.push(`👤 *${ownerName}* (${sessions.length}개 세션)`);
 
       for (const { session } of sessions) {
         const channelName = await this.slackApi.getChannelName(session.channelId);
         const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
         const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
-        const initiator = session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
-          ? ` | 🎯 ${session.currentInitiatorName}`
-          : '';
+        const initiator =
+          session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
+            ? ` | 🎯 ${session.currentInitiatorName}`
+            : '';
 
-        lines.push(`   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`);
+        lines.push(
+          `   • ${channelName}${session.threadTs ? ' (thread)' : ''} | 🕐 ${timeAgo}${initiator} | ⏳ ${expiresIn}`,
+        );
       }
       lines.push('');
     }
@@ -567,7 +592,7 @@ export class SessionUiManager {
     userId: string,
     channel: string,
     threadTs: string,
-    say: SayFn
+    say: SayFn,
   ): Promise<void> {
     const session = this.claudeHandler.getSessionByKey(sessionKey);
 
@@ -602,7 +627,7 @@ export class SessionUiManager {
           await this.slackApi.postMessage(
             session.channelId,
             `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
-            { threadTs: session.threadTs }
+            { threadTs: session.threadTs },
           );
         } catch (error) {
           this.logger.warn('Failed to notify original thread about session termination', error);
@@ -649,7 +674,7 @@ export class SessionUiManager {
   async handleSessionWarning(
     session: ConversationSession,
     timeRemaining: number,
-    existingMessageTs?: string
+    existingMessageTs?: string,
   ): Promise<string | undefined> {
     const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${MessageFormatter.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
     const threadTs = session.threadTs;
@@ -701,10 +726,7 @@ export class SessionUiManager {
    * Fetches Jira transitions and GitHub PR details in parallel.
    * Returns empty array if no actions are available.
    */
-  private async buildSessionActionButtons(
-    sessionKey: string,
-    session: ConversationSession
-  ): Promise<any[]> {
+  private async buildSessionActionButtons(sessionKey: string, session: ConversationSession): Promise<any[]> {
     const elements: any[] = [];
     const keyPrefix = sessionKey.substring(0, 8);
 
@@ -717,9 +739,7 @@ export class SessionUiManager {
 
       // Jira transition buttons (max 3 to leave room for merge button)
       if (jiraTransitions.length > 0) {
-        const issueKey = session.links?.issue?.label
-          || extractJiraKey(session.links?.issue?.url || '')
-          || '';
+        const issueKey = session.links?.issue?.label || extractJiraKey(session.links?.issue?.url || '') || '';
         const maxTransitions = prDetails && isPRMergeable(prDetails) ? 3 : 4;
 
         for (const transition of jiraTransitions.slice(0, maxTransitions)) {
@@ -811,9 +831,12 @@ export class SessionUiManager {
    */
   private formatActivityEmoji(state?: ActivityState): string {
     switch (state) {
-      case 'working': return '⚙️ ';
-      case 'waiting': return '✋ ';
-      default: return '';
+      case 'working':
+        return '⚙️ ';
+      case 'waiting':
+        return '✋ ';
+      default:
+        return '';
     }
   }
 
@@ -845,7 +868,7 @@ export class SessionUiManager {
   async handleIdleCheck(
     session: ConversationSession,
     timeRemaining: number,
-    existingMessageTs?: string
+    existingMessageTs?: string,
   ): Promise<string | undefined> {
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
     const threadTs = session.threadTs;
@@ -940,10 +963,7 @@ export class SessionUiManager {
 
     if (notifyPromises.length > 0) {
       this.logger.info(`Sending shutdown notifications to ${notifyPromises.length} sessions`);
-      await Promise.race([
-        Promise.all(notifyPromises),
-        new Promise((resolve) => setTimeout(resolve, 5000)),
-      ]);
+      await Promise.race([Promise.all(notifyPromises), new Promise((resolve) => setTimeout(resolve, 5000))]);
     }
   }
 }

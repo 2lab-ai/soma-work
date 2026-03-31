@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as jwt from 'jsonwebtoken';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockConfig = {
   conversation: {

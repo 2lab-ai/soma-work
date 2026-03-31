@@ -1,4 +1,4 @@
-import { WebClient } from '@slack/web-api';
+import type { WebClient } from '@slack/web-api';
 import { StderrLogger } from '../stderr-logger';
 
 const logger = new StderrLogger('SlackPermissionMessenger');
@@ -23,12 +23,7 @@ export class SlackPermissionMessenger {
   /**
    * Build permission request blocks for Slack message
    */
-  buildRequestBlocks(
-    toolName: string,
-    input: any,
-    approvalId: string,
-    user?: string
-  ): any[] {
+  buildRequestBlocks(toolName: string, input: any, approvalId: string, user?: string): any[] {
     const userMention = user ? `<@${user}>` : 'Unknown';
 
     return [
@@ -89,7 +84,7 @@ export class SlackPermissionMessenger {
   async sendPermissionRequest(
     context: PermissionMessageContext,
     blocks: any[],
-    toolName: string
+    toolName: string,
   ): Promise<PermissionMessageResult> {
     try {
       const result = await this.slack.chat.postMessage({
@@ -108,5 +103,4 @@ export class SlackPermissionMessenger {
       throw error;
     }
   }
-
 }

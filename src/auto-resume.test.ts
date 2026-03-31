@@ -5,7 +5,7 @@
  * These tests verify the auto-resume behavior after server restart.
  * All tests should be RED (failing) until implementation is complete.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock(import('./env-paths'), async (importOriginal) => {
   const actual = await importOriginal();
@@ -210,7 +210,8 @@ describe('Auto-Resume: S3 — Auto-resume failure is isolated', () => {
     const handlerAny = handler as any;
 
     // First call fails, second succeeds
-    handlerAny.handleMessage = vi.fn()
+    handlerAny.handleMessage = vi
+      .fn()
       .mockRejectedValueOnce(new Error('SDK connection failed'))
       .mockResolvedValueOnce(undefined);
 
@@ -304,9 +305,7 @@ describe('Auto-Resume: S4 — Multiple sessions with delay', () => {
     const handlerAny = handler as any;
 
     // Simulate a handleMessage that takes 30 seconds (like real Claude streaming)
-    handlerAny.handleMessage = vi.fn().mockImplementation(
-      () => new Promise(resolve => setTimeout(resolve, 30_000)),
-    );
+    handlerAny.handleMessage = vi.fn().mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 30_000)));
 
     mockGetCrashRecoveredSessions.mockReturnValue([
       { channelId: 'C1', threadTs: 't1', ownerId: 'U1', activityState: 'working', sessionKey: 'C1-t1' },
@@ -346,9 +345,7 @@ describe('Auto-Resume: S4 — Multiple sessions with delay', () => {
     expect(handlerAny.handleMessage).toHaveBeenCalledTimes(2);
 
     // Verify correct sessions were resumed
-    const resumedChannels = handlerAny.handleMessage.mock.calls.map(
-      (call: any[]) => call[0].channel,
-    );
+    const resumedChannels = handlerAny.handleMessage.mock.calls.map((call: any[]) => call[0].channel);
     expect(resumedChannels).toContain('C1');
     expect(resumedChannels).toContain('C3');
     expect(resumedChannels).not.toContain('C2');
@@ -384,10 +381,7 @@ describe('Auto-Resume: CrashRecoveredSession sessionKey field', () => {
         state: 'MAIN',
       },
     ];
-    fs.writeFileSync(
-      path.join(TEST_DIR, 'sessions.json'),
-      JSON.stringify(sessionsData),
-    );
+    fs.writeFileSync(path.join(TEST_DIR, 'sessions.json'), JSON.stringify(sessionsData));
 
     const { SessionRegistry } = await import('./session-registry');
     const registry = new SessionRegistry();

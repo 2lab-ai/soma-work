@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SummaryTimer } from './summary-timer.js';
 
 describe('SummaryTimer', () => {
@@ -88,7 +88,9 @@ describe('SummaryTimer', () => {
 
   describe('callback error handling', () => {
     it('catches sync callback errors without unhandled exception', () => {
-      const callback = vi.fn(() => { throw new Error('sync kaboom'); });
+      const callback = vi.fn(() => {
+        throw new Error('sync kaboom');
+      });
       timer.start('session-err', callback);
 
       // Should not throw
@@ -97,7 +99,9 @@ describe('SummaryTimer', () => {
     });
 
     it('catches async callback rejections without unhandled rejection', () => {
-      const callback = vi.fn(async () => { throw new Error('async kaboom'); });
+      const callback = vi.fn(async () => {
+        throw new Error('async kaboom');
+      });
       timer.start('session-err-async', callback);
 
       // Should not throw

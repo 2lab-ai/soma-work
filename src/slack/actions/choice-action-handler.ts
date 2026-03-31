@@ -1,12 +1,12 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { UserChoiceHandler } from '../user-choice-handler';
-import { ClaudeHandler } from '../../claude-handler';
-import { UserChoices } from '../../types';
+import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
-import { PendingFormStore } from './pending-form-store';
-import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
-import { ThreadPanel } from '../thread-panel';
-import { CompletionMessageTracker } from '../completion-message-tracker';
+import type { UserChoices } from '../../types';
+import type { CompletionMessageTracker } from '../completion-message-tracker';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { ThreadPanel } from '../thread-panel';
+import { UserChoiceHandler } from '../user-choice-handler';
+import type { PendingFormStore } from './pending-form-store';
+import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
@@ -24,7 +24,7 @@ export class ChoiceActionHandler {
 
   constructor(
     private ctx: ChoiceActionContext,
-    private formStore: PendingFormStore
+    private formStore: PendingFormStore,
   ) {}
 
   async handleUserChoice(body: any): Promise<void> {
@@ -61,7 +61,7 @@ export class ChoiceActionHandler {
               targetTs,
               `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
               completedBlocks,
-              [] // 기존 attachments(버튼) 제거
+              [], // 기존 attachments(버튼) 제거
             );
           } catch (error) {
             this.logger.warn('Failed to update choice message', { targetTs, error });
@@ -75,34 +75,40 @@ export class ChoiceActionHandler {
         // Delete tracked completion messages on choice selection (S8)
         if (channel) {
           const threadRootTs = session.threadRootTs;
-          this.ctx.completionMessageTracker?.deleteAll(
-            sessionKey,
-            async (ch, ts) => {
-              // Defense-in-depth: never delete the thread root message (header)
-              if (threadRootTs && ts === threadRootTs) {
-                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (choice)', {
-                  sessionKey, ts, threadRootTs,
-                });
-                return;
-              }
-              try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
-            },
-            channel,
-          ).catch(() => {});
+          this.ctx.completionMessageTracker
+            ?.deleteAll(
+              sessionKey,
+              async (ch, ts) => {
+                // Defense-in-depth: never delete the thread root message (header)
+                if (threadRootTs && ts === threadRootTs) {
+                  this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (choice)', {
+                    sessionKey,
+                    ts,
+                    threadRootTs,
+                  });
+                  return;
+                }
+                try {
+                  await this.ctx.slackApi.deleteMessage(ch, ts);
+                } catch {}
+              },
+              channel,
+            )
+            .catch(() => {});
         }
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
         const say = this.createSayFn(channel);
         await this.ctx.messageHandler(
           { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
-          say
+          say,
         );
       } else {
         this.logger.warn('Session not found for user choice', { sessionKey });
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.'
+          '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
         );
       }
     } catch (error) {
@@ -127,7 +133,7 @@ export class ChoiceActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
         );
         return;
       }
@@ -162,7 +168,7 @@ export class ChoiceActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
         );
         return;
       }
@@ -197,7 +203,7 @@ export class ChoiceActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
         );
         return;
       }
@@ -210,7 +216,7 @@ export class ChoiceActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          `❌ 아직 ${totalQuestions - answeredCount}개의 질문에 답변하지 않았습니다.`
+          `❌ 아직 ${totalQuestions - answeredCount}개의 질문에 답변하지 않았습니다.`,
         );
         return;
       }
@@ -246,7 +252,7 @@ export class ChoiceActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.'
+          '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
         );
         return;
       }
@@ -257,11 +263,7 @@ export class ChoiceActionHandler {
       // UI 업데이트
       await this.updateFormUI(pendingForm, channel, messageTs);
 
-      await this.ctx.slackApi.postEphemeral(
-        channel,
-        userId,
-        '🗑️ 모든 선택이 초기화되었습니다.'
-      );
+      await this.ctx.slackApi.postEphemeral(channel, userId, '🗑️ 모든 선택이 초기화되었습니다.');
     } catch (error) {
       this.logger.error('Error processing form reset', error);
     }
@@ -270,11 +272,7 @@ export class ChoiceActionHandler {
   /**
    * Update form UI with current selections
    */
-  private async updateFormUI(
-    pendingForm: PendingChoiceFormData,
-    channel: string,
-    messageTs: string
-  ): Promise<void> {
+  private async updateFormUI(pendingForm: PendingChoiceFormData, channel: string, messageTs: string): Promise<void> {
     const choicesData: UserChoices = {
       type: 'user_choices',
       questions: pendingForm.questions,
@@ -284,14 +282,10 @@ export class ChoiceActionHandler {
       choicesData,
       pendingForm.formId,
       pendingForm.sessionKey,
-      pendingForm.selections
+      pendingForm.selections,
     );
 
-    const targetMessageTs = this.resolveChoiceSyncMessageTs(
-      pendingForm.sessionKey,
-      messageTs,
-      pendingForm.messageTs
-    );
+    const targetMessageTs = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, pendingForm.messageTs);
     for (const targetTs of targetMessageTs) {
       try {
         await this.ctx.slackApi.updateMessage(
@@ -299,18 +293,14 @@ export class ChoiceActionHandler {
           targetTs,
           '📋 선택이 필요합니다',
           undefined,
-          updatedPayload.attachments
+          updatedPayload.attachments,
         );
       } catch (error) {
         this.logger.warn('Failed to update form UI', { targetTs, error });
       }
     }
 
-    await this.ctx.threadPanel?.attachChoice(
-      pendingForm.sessionKey,
-      updatedPayload,
-      pendingForm.messageTs
-    );
+    await this.ctx.threadPanel?.attachChoice(pendingForm.sessionKey, updatedPayload, pendingForm.messageTs);
   }
 
   async completeMultiChoiceForm(
@@ -318,9 +308,12 @@ export class ChoiceActionHandler {
     userId: string,
     channel: string,
     threadTs: string | undefined,
-    messageTs: string
+    messageTs: string,
   ): Promise<void> {
-    this.logger.info('All multi-choice selections complete', { formId: pendingForm.formId, selections: pendingForm.selections });
+    this.logger.info('All multi-choice selections complete', {
+      formId: pendingForm.formId,
+      selections: pendingForm.selections,
+    });
 
     const responses = pendingForm.questions.map((q) => {
       const sel = pendingForm.selections[q.id];
@@ -346,11 +339,7 @@ export class ChoiceActionHandler {
       },
     ];
 
-    const targetTimestamps = this.resolveChoiceSyncMessageTs(
-      pendingForm.sessionKey,
-      messageTs,
-      completionMessageTs
-    );
+    const targetTimestamps = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, completionMessageTs);
     for (const targetTs of targetTimestamps) {
       try {
         await this.ctx.slackApi.updateMessage(
@@ -358,7 +347,7 @@ export class ChoiceActionHandler {
           targetTs,
           '✅ 모든 선택 완료',
           completedBlocks,
-          [] // 기존 attachments(버튼 폼) 제거
+          [], // 기존 attachments(버튼 폼) 제거
         );
       } catch (error) {
         this.logger.warn('Failed to update completed form', { targetTs, error });
@@ -373,34 +362,40 @@ export class ChoiceActionHandler {
       // Delete tracked completion messages on form submission (S8)
       if (channel) {
         const formThreadRootTs = session.threadRootTs;
-        this.ctx.completionMessageTracker?.deleteAll(
-          pendingForm.sessionKey,
-          async (ch, ts) => {
-            // Defense-in-depth: never delete the thread root message (header)
-            if (formThreadRootTs && ts === formThreadRootTs) {
-              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (form)', {
-                sessionKey: pendingForm.sessionKey, ts, threadRootTs: formThreadRootTs,
-              });
-              return;
-            }
-            try { await this.ctx.slackApi.deleteMessage(ch, ts); } catch {}
-          },
-          channel,
-        ).catch(() => {});
+        this.ctx.completionMessageTracker
+          ?.deleteAll(
+            pendingForm.sessionKey,
+            async (ch, ts) => {
+              // Defense-in-depth: never delete the thread root message (header)
+              if (formThreadRootTs && ts === formThreadRootTs) {
+                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (form)', {
+                  sessionKey: pendingForm.sessionKey,
+                  ts,
+                  threadRootTs: formThreadRootTs,
+                });
+                return;
+              }
+              try {
+                await this.ctx.slackApi.deleteMessage(ch, ts);
+              } catch {}
+            },
+            channel,
+          )
+          .catch(() => {});
       }
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
       const say = this.createSayFn(channel);
       await this.ctx.messageHandler(
         { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
-        say
+        say,
       );
     } else {
       this.logger.warn('Session not found for multi-choice completion', { sessionKey: pendingForm.sessionKey });
       await this.ctx.slackApi.postEphemeral(
         channel,
         userId,
-        '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.'
+        '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
       );
     }
   }
@@ -427,7 +422,7 @@ export class ChoiceActionHandler {
   private resolveChoiceSyncMessageTs(
     sessionKey: string,
     sourceMessageTs: string | undefined,
-    threadMessageTs: string | undefined
+    threadMessageTs: string | undefined,
   ): string[] {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const targets = new Set<string>();

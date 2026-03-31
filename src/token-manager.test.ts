@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Contract tests derived from docs/cct-token-rotation/trace.md
 // All tests should FAIL (RED) until implementation
@@ -113,7 +113,7 @@ describe('TokenManager', () => {
 
       // Manual switch should clear cooldown
       tokenManager.setActiveToken('cct1');
-      const token = tokenManager.getAllTokens().find(t => t.name === 'cct1');
+      const token = tokenManager.getAllTokens().find((t) => t.name === 'cct1');
       expect(token?.cooldownUntil).toBeNull();
     });
 
@@ -205,7 +205,7 @@ describe('TokenManager', () => {
       tokenManager.initialize();
 
       const earlyRecovery = new Date(Date.now() + 1800000); // 30min
-      const lateRecovery = new Date(Date.now() + 3600000);  // 1hr
+      const lateRecovery = new Date(Date.now() + 3600000); // 1hr
 
       // Rotate A → B, set A cooldown to late
       tokenManager.rotateOnRateLimit('tokenA', lateRecovery);
@@ -250,7 +250,9 @@ describe('TokenManager', () => {
   describe('maskToken', () => {
     it('should mask token with first 10 and last 10 chars', async () => {
       const { TokenManager } = await import('./token-manager');
-      expect(TokenManager.maskToken('sk-ant-oat01-eEUA4SSw6DknUGozq_TlsXccM9')).toBe('sk-ant-oat01-eEUA4SS...q_TlsXccM9');
+      expect(TokenManager.maskToken('sk-ant-oat01-eEUA4SSw6DknUGozq_TlsXccM9')).toBe(
+        'sk-ant-oat01-eEUA4SS...q_TlsXccM9',
+      );
     });
 
     it('should handle short tokens without masking', async () => {
@@ -374,7 +376,7 @@ describe('TokenManager', () => {
 
     it('should parse AM times', async () => {
       const { parseCooldownTime } = await import('./token-manager');
-      const result = parseCooldownTime("resets 11am");
+      const result = parseCooldownTime('resets 11am');
       expect(result).toBeInstanceOf(Date);
       expect(result!.getHours()).toBe(11);
     });

@@ -12,15 +12,19 @@
  * Trace: docs/mcp-tool-permission/trace.md, S4
  */
 
-import { sharedStore, type PermissionResponse } from '../../shared-store';
-import { isAdminUser } from '../../admin-utils';
-import { mcpToolGrantStore } from '../../mcp-tool-grant-store';
-import { parseDuration, MAX_GRANT_DURATION_MS, type PermissionLevel } from '../../mcp-tool-grant-store';
-import { Logger } from '../../logger';
-import { RespondFn } from './types';
-import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
+import { isAdminUser } from '../../admin-utils';
+import { Logger } from '../../logger';
+import {
+  MAX_GRANT_DURATION_MS,
+  mcpToolGrantStore,
+  type PermissionLevel,
+  parseDuration,
+} from '../../mcp-tool-grant-store';
+import { type PermissionResponse, sharedStore } from '../../shared-store';
+import type { RespondFn } from './types';
 
 /** Check if a response file already exists for this request (race condition guard) */
 function hasExistingResponse(requestId: string): boolean {
@@ -60,7 +64,8 @@ export class McpToolPermissionActionHandler {
       const durationMs = parseDuration(duration);
       if (!durationMs) {
         this.logger.error('Invalid duration in approval payload — possible tampering', {
-          requestId, duration,
+          requestId,
+          duration,
         });
         await respond({
           response_type: 'ephemeral',
@@ -76,7 +81,13 @@ export class McpToolPermissionActionHandler {
       mcpToolGrantStore.setGrant(userId, server, level as PermissionLevel, expiresAt, adminId);
 
       this.logger.info('MCP tool permission approved', {
-        requestId, userId, server, level, duration, expiresAt, approvedBy: adminId,
+        requestId,
+        userId,
+        server,
+        level,
+        duration,
+        expiresAt,
+        approvedBy: adminId,
       });
 
       const response: PermissionResponse = {
@@ -126,7 +137,11 @@ export class McpToolPermissionActionHandler {
       }
 
       this.logger.info('MCP tool permission denied', {
-        requestId, userId, server, level, deniedBy: adminId,
+        requestId,
+        userId,
+        server,
+        level,
+        deniedBy: adminId,
       });
 
       const response: PermissionResponse = {

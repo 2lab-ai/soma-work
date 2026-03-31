@@ -5,8 +5,8 @@
  * Retry: up to 3 attempts with exponential backoff for 5xx/network errors.
  */
 
-import { NotificationChannel, TurnCompletionEvent, maskUrl } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
+import { maskUrl, type NotificationChannel, type TurnCompletionEvent } from '../turn-notifier.js';
 import { validateWebhookUrlWithDns } from '../webhook-url-validator.js';
 
 const logger = new Logger('WebhookChannel');
@@ -85,14 +85,18 @@ export class WebhookChannel implements NotificationChannel {
         }
 
         // 5xx = transient failure, retry
-        logger.warn('WebhookChannel 5xx, will retry', { url: maskUrl(url), attempt: attempt + 1, status: response.status });
+        logger.warn('WebhookChannel 5xx, will retry', {
+          url: maskUrl(url),
+          attempt: attempt + 1,
+          status: response.status,
+        });
       } catch (error: any) {
         logger.warn('WebhookChannel network error', { url: maskUrl(url), attempt: attempt + 1, error: error.message });
       }
 
       // Backoff before next attempt (skip for last attempt)
       if (attempt < MAX_ATTEMPTS - 1) {
-        const delayMs = 1000 * Math.pow(2, attempt);
+        const delayMs = 1000 * 2 ** attempt;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }

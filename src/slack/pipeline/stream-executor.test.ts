@@ -2,16 +2,16 @@
  * StreamExecutor tests - focusing on continuation pattern
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
 }));
-import { Continuation } from '../../types';
-import { ExecuteResult } from './stream-executor';
-import { StreamExecutor } from './stream-executor';
+
+import type { Continuation } from '../../types';
+import { type ExecuteResult, StreamExecutor } from './stream-executor';
 
 describe('Continuation type', () => {
   it('should have correct shape with prompt and resetSession', () => {
@@ -190,9 +190,11 @@ describe('buildRenewContinuation result format', () => {
     };
 
     // Build expected prompt (matching buildRenewContinuation logic)
-    const saveContent = saveResult.files.map((file) => {
-      return `--- ${file.name} ---\n${file.content}`;
-    }).join('\n\n');
+    const saveContent = saveResult.files
+      .map((file) => {
+        return `--- ${file.name} ---\n${file.content}`;
+      })
+      .join('\n\n');
 
     const expectedPrompt = `Use 'local:load' skill with this saved context:
 <save>
@@ -239,11 +241,7 @@ describe('updateToolCallMessage', () => {
 
     await (executor as any).updateToolCallMessage('C123', '111.222', 'tool update');
 
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'C123',
-      '111.222',
-      'tool update'
-    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', 'tool update');
   });
 
   it('swallows helper failures after debug logging', async () => {
@@ -253,9 +251,7 @@ describe('updateToolCallMessage', () => {
     const executor = new StreamExecutor({ slackApi } as any);
     const debugSpy = vi.spyOn((executor as any).logger, 'debug');
 
-    await expect(
-      (executor as any).updateToolCallMessage('C123', '111.222', 'tool update')
-    ).resolves.toBeUndefined();
+    await expect((executor as any).updateToolCallMessage('C123', '111.222', 'tool update')).resolves.toBeUndefined();
 
     expect(debugSpy).toHaveBeenCalledWith('Failed to update tool call message', {
       ts: '111.222',
@@ -303,15 +299,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Claude Code process aborted by user');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).not.toHaveBeenCalled();
@@ -323,15 +311,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
@@ -345,15 +325,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Claude Code process exited with code 143');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
@@ -367,15 +339,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Prompt is too long: maximum context length exceeded');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -387,17 +351,11 @@ describe('Abort handling', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
-    const error = new Error('API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"}}');
-
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
+    const error = new Error(
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"}}',
     );
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -411,15 +369,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Invalid image format in request');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -433,15 +383,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Image too large to process in conversation');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -456,15 +398,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Unsupported image format: image/tiff');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -478,15 +412,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('invalid image content: base64 data is malformed');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -502,15 +428,7 @@ describe('Abort handling', () => {
     // now clear session as safe default (Issue #118)
     const error = new Error('invalid image_url field in API request');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     // Issue #118: Unknown errors now clear session (safe default)
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
@@ -526,15 +444,7 @@ describe('Abort handling', () => {
     // This error matches BOTH "timed out" (recoverable) and "could not process image" (image error)
     const error = new Error('Request timed out while processing: Could not process image');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     // Image processing error should take priority over recoverable — session MUST be cleared
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
@@ -551,15 +461,7 @@ describe('Abort handling', () => {
     const error = new Error('process exited with code 1');
     (error as any).stderrContent = 'Error: Image too large to process';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -576,15 +478,7 @@ describe('Abort handling', () => {
     const error = new Error('process exited with code 1');
     (error as any).stderrContent = 'Error: Could not process image in conversation context';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -600,15 +494,7 @@ describe('Abort handling', () => {
     const error = new Error('process exited with code 1');
     (error as any).stderrContent = 'Error: prompt is too long\nRetrying with shorter context...';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('SDK Details:');
@@ -622,15 +508,7 @@ describe('Abort handling', () => {
     const error = new Error('auth failed');
     (error as any).stderrContent = 'Using key sk-ant-api03-ABCDEF1234567890 for request';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('[REDACTED]');
@@ -644,15 +522,7 @@ describe('Abort handling', () => {
     const error = new Error('connection error');
     (error as any).stderrContent = 'token: xoxb-1234-5678-abcdef leaked';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('[REDACTED]');
@@ -666,15 +536,7 @@ describe('Abort handling', () => {
     const error = new Error('error');
     (error as any).stderrContent = 'x'.repeat(1000);
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     // Should contain the truncation indicator and be within reasonable length
@@ -689,9 +551,7 @@ describe('Abort handling', () => {
     const error = new Error('auth error');
     (error as any).stderrContent = 'Authorization: Bearer sk-proj-abc123def456';
 
-    await (executor as any).handleError(
-      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('[REDACTED]');
@@ -706,9 +566,7 @@ describe('Abort handling', () => {
     const error = new Error('git error');
     (error as any).stderrContent = 'Using github_pat_22A4BCDEF_abcdefghijklmn for auth';
 
-    await (executor as any).handleError(
-      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('[REDACTED]');
@@ -722,9 +580,7 @@ describe('Abort handling', () => {
     const error = new Error('error');
     (error as any).stderrContent = '\x1B[31mError:\x1B[0m something failed\x1B]0;title\x07';
 
-    await (executor as any).handleError(
-      error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Error:');
@@ -740,15 +596,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('No conversation found with session ID: 5f232806-df17-47a3-9eb0-8bc76a2bac99');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -763,15 +611,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Some completely unexpected error from SDK v99');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -792,15 +632,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error(msg);
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
@@ -820,15 +652,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error(msg);
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -844,15 +668,7 @@ describe('Abort handling', () => {
     const error = new Error('process exited with code 1');
     (error as any).stderrContent = 'Error: No conversation found with session ID: abc-123';
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     // Invalid resume (stderr) takes precedence over recoverable (message)
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
@@ -869,15 +685,7 @@ describe('Abort handling', () => {
     const error = new Error('process exited with code 1');
     (error as any).stderrContent = "You've hit your limit · resets 8pm";
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
@@ -911,15 +719,7 @@ describe('Abort handling', () => {
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Conversation not found: cannot resume this session');
 
-    await (executor as any).handleError(
-      error,
-      {} as any,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(say).toHaveBeenCalledTimes(1);
@@ -1037,7 +837,7 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     expect(commandResult).toMatchObject({ hasPendingChoice: false, continuation: undefined });
@@ -1046,7 +846,7 @@ describe('model-command integration', () => {
       '171.100',
       expect.objectContaining({
         operations: expect.any(Array),
-      })
+      }),
     );
   });
 
@@ -1084,15 +884,17 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     expect(commandResult.hasPendingChoice).toBe(true);
     expect(commandResult.continuation).toBeUndefined();
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: '진행할 방법을 선택해주세요',
-      thread_ts: '171.100',
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '진행할 방법을 선택해주세요',
+        thread_ts: '171.100',
+      }),
+    );
     expect(deps.threadPanel.attachChoice).toHaveBeenCalled();
     expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
   });
@@ -1124,26 +926,25 @@ describe('model-command integration', () => {
     });
 
     const commandResult = await (executor as any).handleModelCommandToolResults(
-      [
-        makeAskResult('tool_q1', '첫 번째 질문'),
-        makeAskResult('tool_q2', '두 번째 질문'),
-      ],
+      [makeAskResult('tool_q1', '첫 번째 질문'), makeAskResult('tool_q2', '두 번째 질문')],
       session,
       {
         channel: 'C1',
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     expect(commandResult.hasPendingChoice).toBe(true);
     // Only the LAST question should be rendered (say called once)
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: '두 번째 질문',
-      thread_ts: '171.100',
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '두 번째 질문',
+        thread_ts: '171.100',
+      }),
+    );
     expect(deps.threadPanel.attachChoice).toHaveBeenCalledTimes(1);
     expect(deps.claudeHandler.setActivityState).toHaveBeenCalledWith('C1', '171.100', 'waiting');
   });
@@ -1168,9 +969,7 @@ describe('model-command integration', () => {
               question: {
                 type: 'user_choice',
                 question: '테스트 질문',
-                choices: [
-                  { id: '1', label: 'A' },
-                ],
+                choices: [{ id: '1', label: 'A' }],
               },
             },
           }),
@@ -1182,7 +981,7 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     // Even when rendering fails, should still mark as pending choice
@@ -1203,12 +1002,7 @@ describe('model-command integration', () => {
     };
     const say = vi.fn().mockResolvedValue(undefined);
 
-    const continuation = await (executor as any).buildRenewContinuation(
-      session,
-      '',
-      '171.100',
-      say
-    );
+    const continuation = await (executor as any).buildRenewContinuation(session, '', '171.100', say);
 
     expect(continuation).toBeDefined();
     expect(continuation?.resetSession).toBe(true);
@@ -1241,12 +1035,7 @@ describe('model-command integration', () => {
       };
       const say = vi.fn().mockResolvedValue(undefined);
 
-      const continuation = await (executor as any).buildRenewContinuation(
-        session,
-        '',
-        '171.100',
-        say
-      );
+      const continuation = await (executor as any).buildRenewContinuation(session, '', '171.100', say);
 
       expect(continuation).toBeDefined();
       expect(continuation?.resetSession).toBe(true);
@@ -1271,17 +1060,14 @@ describe('model-command integration', () => {
     };
     const say = vi.fn().mockResolvedValue(undefined);
 
-    const continuation = await (executor as any).buildRenewContinuation(
-      session,
-      '',
-      '171.100',
-      say
-    );
+    const continuation = await (executor as any).buildRenewContinuation(session, '', '171.100', say);
 
     expect(continuation).toBeUndefined();
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('outside session directory'),
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('outside session directory'),
+      }),
+    );
     expect(session.renewState).toBeNull();
   });
 
@@ -1289,7 +1075,8 @@ describe('model-command integration', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
 
-    const text = 'Save completed!\nSaved to: .claude/omc/tasks/save/20260329_180000/context.md\nLoad with: /load 20260329_180000';
+    const text =
+      'Save completed!\nSaved to: .claude/omc/tasks/save/20260329_180000/context.md\nLoad with: /load 20260329_180000';
     const result = (executor as any).parseSaveResult(text);
 
     expect(result).toBeDefined();
@@ -1314,14 +1101,14 @@ describe('model-command integration', () => {
     };
     const say = vi.fn().mockResolvedValue(undefined);
 
-    const continuation = await (executor as any).buildRenewContinuation(
-      session, '', '171.100', say
-    );
+    const continuation = await (executor as any).buildRenewContinuation(session, '', '171.100', say);
 
     expect(continuation).toBeUndefined();
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('outside session directory'),
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('outside session directory'),
+      }),
+    );
     expect(session.renewState).toBeNull();
   });
 
@@ -1377,7 +1164,8 @@ describe('model-command integration', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
 
-    const text = 'Here is the result: {"save_result": {"success": true, "id": "20260330_100000", "dir": "/tmp/session/.claude/omc/tasks/save/20260330_100000"}}';
+    const text =
+      'Here is the result: {"save_result": {"success": true, "id": "20260330_100000", "dir": "/tmp/session/.claude/omc/tasks/save/20260330_100000"}}';
     const result = (executor as any).parseSaveResult(text);
 
     expect(result).toBeDefined();
@@ -1411,14 +1199,14 @@ describe('model-command integration', () => {
     };
     const say = vi.fn().mockResolvedValue(undefined);
 
-    const continuation = await (executor as any).buildRenewContinuation(
-      session, '', '171.100', say
-    );
+    const continuation = await (executor as any).buildRenewContinuation(session, '', '171.100', say);
 
     expect(continuation).toBeUndefined();
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('no session directory'),
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('no session directory'),
+      }),
+    );
   });
 
   it('surfaces warning when UPDATE_SESSION host apply fails', async () => {
@@ -1463,12 +1251,14 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
-    expect(say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('Session update could not be applied'),
-    }));
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('Session update could not be applied'),
+      }),
+    );
   });
 
   it('ignores SAVE_CONTEXT_RESULT when renew is not pending_save', async () => {
@@ -1506,7 +1296,7 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     expect(session.renewSaveResult?.id).toBe('save_old');
@@ -1544,7 +1334,7 @@ describe('model-command integration', () => {
         threadTs: '171.100',
         sessionKey: 'C1-171.100',
         say,
-      }
+      },
     );
 
     expect(commandResult.hasPendingChoice).toBe(false);
@@ -1560,40 +1350,40 @@ describe('model-command integration', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const session = createSession();
-    const say = vi.fn()
-      .mockRejectedValueOnce(new Error('invalid_blocks'))
-      .mockResolvedValue({ ts: 'fallback_ts' });
+    const say = vi.fn().mockRejectedValueOnce(new Error('invalid_blocks')).mockResolvedValue({ ts: 'fallback_ts' });
 
-    await expect((executor as any).handleModelCommandToolResults(
-      [
-        {
-          toolUseId: 'tool_choice_single',
-          toolName: 'mcp__model-command__run',
-          result: JSON.stringify({
-            type: 'model_command_result',
-            commandId: 'ASK_USER_QUESTION',
-            ok: true,
-            payload: {
-              question: {
-                type: 'user_choice',
-                question: '하나를 선택하세요',
-                choices: [
-                  { id: '1', label: '옵션 A' },
-                  { id: '2', label: '옵션 B' },
-                ],
+    await expect(
+      (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_choice_single',
+            toolName: 'mcp__model-command__run',
+            result: JSON.stringify({
+              type: 'model_command_result',
+              commandId: 'ASK_USER_QUESTION',
+              ok: true,
+              payload: {
+                question: {
+                  type: 'user_choice',
+                  question: '하나를 선택하세요',
+                  choices: [
+                    { id: '1', label: '옵션 A' },
+                    { id: '2', label: '옵션 B' },
+                  ],
+                },
               },
-            },
-          }),
+            }),
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
         },
-      ],
-      session,
-      {
-        channel: 'C1',
-        threadTs: '171.100',
-        sessionKey: 'C1-171.100',
-        say,
-      }
-    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
+      ),
+    ).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
@@ -1603,46 +1393,49 @@ describe('model-command integration', () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const session = createSession();
-    const say = vi.fn()
+    const say = vi
+      .fn()
       .mockRejectedValueOnce(new Error('invalid_blocks'))
       .mockResolvedValue({ ts: 'fallback_multi_ts' });
 
-    await expect((executor as any).handleModelCommandToolResults(
-      [
-        {
-          toolUseId: 'tool_choice_multi',
-          toolName: 'mcp__model-command__run',
-          result: JSON.stringify({
-            type: 'model_command_result',
-            commandId: 'ASK_USER_QUESTION',
-            ok: true,
-            payload: {
-              question: {
-                type: 'user_choices',
-                title: '멀티 질문',
-                questions: [
-                  {
-                    id: 'q1',
-                    question: 'Q1',
-                    choices: [
-                      { id: '1', label: 'A' },
-                      { id: '2', label: 'B' },
-                    ],
-                  },
-                ],
+    await expect(
+      (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_choice_multi',
+            toolName: 'mcp__model-command__run',
+            result: JSON.stringify({
+              type: 'model_command_result',
+              commandId: 'ASK_USER_QUESTION',
+              ok: true,
+              payload: {
+                question: {
+                  type: 'user_choices',
+                  title: '멀티 질문',
+                  questions: [
+                    {
+                      id: 'q1',
+                      question: 'Q1',
+                      choices: [
+                        { id: '1', label: 'A' },
+                        { id: '2', label: 'B' },
+                      ],
+                    },
+                  ],
+                },
               },
-            },
-          }),
+            }),
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
         },
-      ],
-      session,
-      {
-        channel: 'C1',
-        threadTs: '171.100',
-        sessionKey: 'C1-171.100',
-        say,
-      }
-    )).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
+      ),
+    ).resolves.toMatchObject({ hasPendingChoice: true, continuation: undefined });
 
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
@@ -1763,7 +1556,7 @@ describe('File access blocked error recovery', () => {
       'C123',
       'thread123',
       [],
-      say
+      say,
     );
 
     // Session NOT cleared
@@ -1795,7 +1588,7 @@ describe('File access blocked error recovery', () => {
       'C123',
       'thread123',
       [],
-      say
+      say,
     );
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
@@ -1817,7 +1610,7 @@ describe('File access blocked error recovery', () => {
       'C123',
       'thread123',
       [],
-      say
+      say,
     );
 
     // Budget exhausted — no retry
@@ -1834,15 +1627,7 @@ describe('File access blocked error recovery', () => {
     const session = {} as any;
     const error = new Error('File access blocked: /home/user/secret.env');
 
-    await (executor as any).handleError(
-      error,
-      session,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say
-    );
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('/home/user/secret.env');
@@ -1859,9 +1644,7 @@ describe('File access blocked error recovery', () => {
     const session = { errorRetryCount: 3 } as any;
     const error = new Error('File access blocked: /tmp/test.png');
 
-    const retryAfterMs = await (executor as any).handleError(
-      error, session, 'C123:t1', 'C123', 't1', [], say
-    );
+    const retryAfterMs = await (executor as any).handleError(error, session, 'C123:t1', 'C123', 't1', [], say);
 
     // Should still retry because fileAccessRetryCount is independent
     expect(retryAfterMs).toBe(5_000);
@@ -2116,7 +1899,9 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
   it('catches displayOnThread error without propagating', async () => {
     const mockSummaryService = {
       execute: vi.fn().mockResolvedValue('Summary text'),
-      displayOnThread: vi.fn().mockImplementation(() => { throw new Error('Block kit error'); }),
+      displayOnThread: vi.fn().mockImplementation(() => {
+        throw new Error('Block kit error');
+      }),
       clearDisplay: vi.fn(),
     };
     const mockThreadPanel = {
@@ -2157,11 +1942,14 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
   it('CAS: slow summary A does not delete faster summary B controller', async () => {
     let resolveA: (v: string | null) => void;
-    const promiseA = new Promise<string | null>(r => { resolveA = r; });
+    const promiseA = new Promise<string | null>((r) => {
+      resolveA = r;
+    });
 
     const mockSummaryService = {
-      execute: vi.fn()
-        .mockReturnValueOnce(promiseA)           // first call: slow summary A
+      execute: vi
+        .fn()
+        .mockReturnValueOnce(promiseA) // first call: slow summary A
         .mockResolvedValueOnce('Summary B text'), // second call: fast summary B
       displayOnThread: vi.fn(),
       clearDisplay: vi.fn(),

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -30,9 +30,7 @@ describe('getConfiguredUpdateChannel', () => {
   it('recovers an unquoted Slack channel name from the env file when dotenv parsed it as empty', async () => {
     process.env.DEFAULT_UPDATE_CHANNEL = '';
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue(
-      'DEFAULT_UPDATE_CHANNEL=#soma-work-dev\nDEBUG=true\n' as any,
-    );
+    vi.mocked(fs.readFileSync).mockReturnValue('DEFAULT_UPDATE_CHANNEL=#soma-work-dev\nDEBUG=true\n' as any);
 
     const module = await import('./release-notifier');
 

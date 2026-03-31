@@ -1,5 +1,5 @@
 import { isGitHubAppConfigured } from '../github-auth.js';
-import type { McpServerConfig, McpStdioServerConfig, McpSSEServerConfig, McpHttpServerConfig } from './config-loader';
+import type { McpHttpServerConfig, McpServerConfig, McpSSEServerConfig, McpStdioServerConfig } from './config-loader';
 
 /**
  * Formats MCP server information for display

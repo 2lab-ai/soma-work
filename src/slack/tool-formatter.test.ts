@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ToolFormatter } from './tool-formatter';
 
 describe('ToolFormatter', () => {
@@ -245,32 +245,38 @@ describe('ToolFormatter', () => {
     });
 
     it('should format Edit tool_use', () => {
-      const content = [{
-        type: 'tool_use',
-        name: 'Edit',
-        input: { file_path: '/test.ts', old_string: 'old', new_string: 'new' },
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          name: 'Edit',
+          input: { file_path: '/test.ts', old_string: 'old', new_string: 'new' },
+        },
+      ];
       const result = ToolFormatter.formatToolUse(content);
       expect(result).toContain('Editing');
       expect(result).toContain('/test.ts');
     });
 
     it('should return empty string for TodoWrite', () => {
-      const content = [{
-        type: 'tool_use',
-        name: 'TodoWrite',
-        input: { todos: [] },
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          name: 'TodoWrite',
+          input: { todos: [] },
+        },
+      ];
       const result = ToolFormatter.formatToolUse(content);
       expect(result).toBe('');
     });
 
     it('should return empty string for permission-prompt', () => {
-      const content = [{
-        type: 'tool_use',
-        name: 'mcp__permission-prompt__permission_prompt',
-        input: {},
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          name: 'mcp__permission-prompt__permission_prompt',
+          input: {},
+        },
+      ];
       const result = ToolFormatter.formatToolUse(content);
       expect(result).toBe('');
     });
@@ -300,7 +306,9 @@ describe('ToolFormatter', () => {
     });
 
     it('should return null for TodoWrite', () => {
-      expect(ToolFormatter.formatBuiltInToolResult({ toolName: 'TodoWrite', toolUseId: 'id', result: 'test' })).toBe(null);
+      expect(ToolFormatter.formatBuiltInToolResult({ toolName: 'TodoWrite', toolUseId: 'id', result: 'test' })).toBe(
+        null,
+      );
     });
 
     it('should return null for Glob', () => {
@@ -333,11 +341,13 @@ describe('ToolFormatter', () => {
     });
 
     it('should return null for empty result', () => {
-      expect(ToolFormatter.formatBuiltInToolResult({
-        toolName: 'Bash',
-        toolUseId: 'id',
-        result: null,
-      })).toBe(null);
+      expect(
+        ToolFormatter.formatBuiltInToolResult({
+          toolName: 'Bash',
+          toolUseId: 'id',
+          result: null,
+        }),
+      ).toBe(null);
     });
 
     it('should truncate Read results more aggressively', () => {
@@ -371,11 +381,14 @@ describe('ToolFormatter', () => {
     });
 
     it('should include duration when provided', () => {
-      const result = ToolFormatter.formatMcpToolResult({
-        toolName: 'mcp__server__tool',
-        toolUseId: 'id',
-        result: 'result',
-      }, 5000);
+      const result = ToolFormatter.formatMcpToolResult(
+        {
+          toolName: 'mcp__server__tool',
+          toolUseId: 'id',
+          result: 'result',
+        },
+        5000,
+      );
       expect(result).toContain('5.0');
     });
 
@@ -400,11 +413,13 @@ describe('ToolFormatter', () => {
 
   describe('formatToolResult', () => {
     it('should return null for permission-prompt tool', () => {
-      expect(ToolFormatter.formatToolResult({
-        toolName: 'mcp__permission-prompt__permission_prompt',
-        toolUseId: 'id',
-        result: 'result',
-      })).toBe(null);
+      expect(
+        ToolFormatter.formatToolResult({
+          toolName: 'mcp__permission-prompt__permission_prompt',
+          toolUseId: 'id',
+          result: 'result',
+        }),
+      ).toBe(null);
     });
 
     it('should format MCP tools with formatMcpToolResult', () => {
@@ -470,7 +485,7 @@ describe('ToolFormatter', () => {
     it('should truncate long values within budget', () => {
       const result = ToolFormatter.formatCompactParams(
         { prompt: 'This is a very long prompt that should be truncated to fit within the budget' },
-        40
+        40,
       );
       expect(result.length).toBeLessThanOrEqual(40);
       expect(result).toContain('prompt:');
@@ -486,12 +501,14 @@ describe('ToolFormatter', () => {
 
   describe('formatToolUseCompact', () => {
     it('should use ⏳ for MCP tools', () => {
-      const content = [{
-        type: 'tool_use',
-        id: 'id1',
-        name: 'mcp__llm__chat',
-        input: { model: 'opus' },
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          id: 'id1',
+          name: 'mcp__llm__chat',
+          input: { model: 'opus' },
+        },
+      ];
       const result = ToolFormatter.formatToolUseCompact(content);
       expect(result).toContain('⏳');
       expect(result).toContain('MCP: llm → chat');
@@ -499,23 +516,27 @@ describe('ToolFormatter', () => {
     });
 
     it('should use ⏳ for Task tools', () => {
-      const content = [{
-        type: 'tool_use',
-        id: 'id1',
-        name: 'Task',
-        input: { subagent_type: 'Explore', prompt: 'find code' },
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          id: 'id1',
+          name: 'Task',
+          input: { subagent_type: 'Explore', prompt: 'find code' },
+        },
+      ];
       const result = ToolFormatter.formatToolUseCompact(content);
       expect(result).toContain('⏳');
     });
 
     it('should use ⚪ for sync tools', () => {
-      const content = [{
-        type: 'tool_use',
-        id: 'id1',
-        name: 'Read',
-        input: { file_path: '/tmp/test.ts' },
-      }];
+      const content = [
+        {
+          type: 'tool_use',
+          id: 'id1',
+          name: 'Read',
+          input: { file_path: '/tmp/test.ts' },
+        },
+      ];
       const result = ToolFormatter.formatToolUseCompact(content);
       expect(result).toContain('⚪');
     });

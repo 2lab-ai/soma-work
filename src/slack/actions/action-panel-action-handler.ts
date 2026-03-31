@@ -1,14 +1,14 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { ClaudeHandler } from '../../claude-handler';
-import { RequestCoordinator } from '../request-coordinator';
-import { ContextWindowManager } from '../context-window-manager';
-import { Logger } from '../../logger';
-import { ConversationSession } from '../../types';
-import { MessageHandler, SayFn, RespondFn } from './types';
-import { mergeGitHubPR } from '../../link-metadata-fetcher';
 import { getChannelConfluenceUrl } from '../../channel-registry';
-import { postSourceThreadSummary } from '../source-thread-summary';
+import type { ClaudeHandler } from '../../claude-handler';
+import { mergeGitHubPR } from '../../link-metadata-fetcher';
+import { Logger } from '../../logger';
+import type { ConversationSession } from '../../types';
 import { ActionPanelBuilder } from '../action-panel-builder';
+import { ContextWindowManager } from '../context-window-manager';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SlackApiHelper } from '../slack-api-helper';
+import { postSourceThreadSummary } from '../source-thread-summary';
+import type { MessageHandler, RespondFn, SayFn } from './types';
 
 interface PanelActionContext {
   slackApi: SlackApiHelper;
@@ -165,16 +165,20 @@ export class ActionPanelActionHandler {
           });
           return;
         }
-        await this.handleMerge(value as PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string }, session, respond);
+        await this.handleMerge(
+          value as PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string },
+          session,
+          respond,
+        );
         return;
       }
 
       const isFocusChoiceAction = value.action === 'focus_choice';
       if (
-        !isFocusChoiceAction
-        && (session.activityState === 'working'
-          || session.activityState === 'waiting'
-          || session.actionPanel?.waitingForChoice)
+        !isFocusChoiceAction &&
+        (session.activityState === 'working' ||
+          session.activityState === 'waiting' ||
+          session.actionPanel?.waitingForChoice)
       ) {
         await respond({
           response_type: 'ephemeral',
@@ -233,9 +237,7 @@ export class ActionPanelActionHandler {
       let injectedText: string;
       if (value.action === 'pr_docs') {
         const confluenceUrl = getChannelConfluenceUrl(session.channelId);
-        injectedText = confluenceUrl
-          ? `new ${confluenceUrl} ${requiredUrl}`
-          : config.buildText(requiredUrl);
+        injectedText = confluenceUrl ? `new ${confluenceUrl} ${requiredUrl}` : config.buildText(requiredUrl);
       } else {
         injectedText = config.buildText(requiredUrl);
       }
@@ -243,7 +245,7 @@ export class ActionPanelActionHandler {
       const say = this.createSayFn(session.channelId);
       await this.ctx.messageHandler(
         { user: userId, channel: session.channelId, thread_ts: threadTs, ts: '', text: injectedText },
-        say
+        say,
       );
     } catch (error) {
       this.logger.error('Error handling action panel action', error);
@@ -260,7 +262,7 @@ export class ActionPanelActionHandler {
   private async handleMerge(
     value: PanelActionValue & { prUrl?: string; headBranch?: string; baseBranch?: string },
     session: ConversationSession,
-    respond: RespondFn
+    respond: RespondFn,
   ): Promise<void> {
     const { prUrl, headBranch, baseBranch } = value;
     if (!prUrl) {
@@ -283,7 +285,7 @@ export class ActionPanelActionHandler {
         await this.ctx.slackApi.postMessage(
           session.channelId,
           `🔀 PR merged (squash)${branchInfo ? `: ${branchInfo}` : ''}`,
-          { threadTs }
+          { threadTs },
         );
       }
 
@@ -301,7 +303,7 @@ export class ActionPanelActionHandler {
 
       // Fire-and-forget: do not block the merge response path
       postSourceThreadSummary(this.ctx.slackApi, session, 'merged').catch((err) =>
-        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err),
       );
     } else {
       await respond({
@@ -347,9 +349,7 @@ export class ActionPanelActionHandler {
           workflow: session.workflow,
           closed: true,
           contextRemainingPercent: this.getContextRemainingPercent(session),
-          prStatus: session.actionPanel.prStatus
-            ? { ...session.actionPanel.prStatus }
-            : undefined,
+          prStatus: session.actionPanel.prStatus ? { ...session.actionPanel.prStatus } : undefined,
           turnSummary: session.actionPanel.turnSummary,
           latestResponseLink: session.actionPanel.latestResponseLink,
         });
@@ -357,7 +357,7 @@ export class ActionPanelActionHandler {
           session.channelId,
           session.actionPanel.messageTs,
           panelPayload.text,
-          panelPayload.blocks
+          panelPayload.blocks,
         );
       } catch (error) {
         // Non-blocking: panel update failure shouldn't prevent termination
@@ -397,13 +397,9 @@ export class ActionPanelActionHandler {
     }
 
     const choiceMessageTs = session.actionPanel.choiceMessageTs;
-    const link = choiceMessageTs
-      ? await this.ctx.slackApi.getPermalink(session.channelId, choiceMessageTs)
-      : null;
+    const link = choiceMessageTs ? await this.ctx.slackApi.getPermalink(session.channelId, choiceMessageTs) : null;
 
-    const text = link
-      ? `❓ 질문 카드에서 답변해 주세요: ${link}`
-      : '❓ 이 스레드의 질문 카드에서 답변해 주세요.';
+    const text = link ? `❓ 질문 카드에서 답변해 주세요: ${link}` : '❓ 이 스레드의 질문 카드에서 답변해 주세요.';
 
     await respond({
       response_type: 'ephemeral',

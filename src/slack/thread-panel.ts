@@ -1,13 +1,13 @@
-import { SlackApiHelper } from './slack-api-helper';
-import { RequestCoordinator } from './request-coordinator';
-import { CompletionMessageTracker } from './completion-message-tracker';
-import { ClaudeHandler } from '../claude-handler';
-import { TodoManager } from '../todo-manager';
-import { ConversationSession } from '../types';
-import { Logger } from '../logger';
-import { SlackMessagePayload } from './user-choice-handler';
-import { ThreadSurface } from './thread-surface';
 import type { EndTurnInfo } from '../agent-session/agent-session-types';
+import type { ClaudeHandler } from '../claude-handler';
+import { Logger } from '../logger';
+import type { TodoManager } from '../todo-manager';
+import type { ConversationSession } from '../types';
+import type { CompletionMessageTracker } from './completion-message-tracker';
+import type { RequestCoordinator } from './request-coordinator';
+import type { SlackApiHelper } from './slack-api-helper';
+import { ThreadSurface } from './thread-surface';
+import type { SlackMessagePayload } from './user-choice-handler';
 
 interface ThreadPanelDeps {
   slackApi: SlackApiHelper;
@@ -42,7 +42,7 @@ export class ThreadPanel {
       agentPhase?: string;
       activeTool?: string;
       waitingForChoice?: boolean;
-    }
+    },
   ): Promise<void> {
     await this.surface.setStatus(session, sessionKey, patch);
   }
@@ -57,11 +57,7 @@ export class ThreadPanel {
     }
   }
 
-  async attachChoice(
-    sessionKey: string,
-    payload: SlackMessagePayload,
-    sourceMessageTs?: string
-  ): Promise<void> {
+  async attachChoice(sessionKey: string, payload: SlackMessagePayload, sourceMessageTs?: string): Promise<void> {
     await this.surface.attachChoice(sessionKey, payload, sourceMessageTs);
   }
 

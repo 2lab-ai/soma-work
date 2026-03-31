@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserSettingsStore } from './user-settings-store';
 
 // Trace: Scenario 1 — Existing User Migration
@@ -124,7 +124,7 @@ describe('UserSettingsStore — acceptance', () => {
 
       const all = store.getAllUsers();
       expect(all).toHaveLength(2);
-      expect(all.map(u => u.userId).sort()).toEqual(['U1', 'U2']);
+      expect(all.map((u) => u.userId).sort()).toEqual(['U1', 'U2']);
     });
   });
 

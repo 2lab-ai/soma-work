@@ -4,13 +4,13 @@
  * Extended for workflow-based prompt routing (Phase 6)
  */
 
-import { Logger } from './logger';
-import { userSettingsStore } from './user-settings-store';
-import { llmChatConfigStore } from './llm-chat-config-store';
-import { SYSTEM_PROMPT_FILE } from './env-paths';
-import { WorkflowType } from './types';
-import * as path from 'path';
 import * as fs from 'fs';
+import * as path from 'path';
+import { SYSTEM_PROMPT_FILE } from './env-paths';
+import { llmChatConfigStore } from './llm-chat-config-store';
+import { Logger } from './logger';
+import type { WorkflowType } from './types';
+import { userSettingsStore } from './user-settings-store';
 
 // Prompt file paths
 const PROMPT_DIR = path.join(__dirname, 'prompt');
@@ -33,7 +33,7 @@ const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
  */
 export interface PromptBuilderOptions {
   agentName?: string;
-  promptDir?: string;  // explicit override, takes precedence over agentName
+  promptDir?: string; // explicit override, takes precedence over agentName
 }
 
 /**
@@ -169,7 +169,8 @@ export class PromptBuilder {
 
       // Verify path stays within prompt dirs (prevent directory traversal)
       const inPromptDir = includePath.startsWith(resolvedPromptDir + path.sep) || includePath === resolvedPromptDir;
-      const inFallbackDir = includePath.startsWith(resolvedFallbackDir + path.sep) || includePath === resolvedFallbackDir;
+      const inFallbackDir =
+        includePath.startsWith(resolvedFallbackDir + path.sep) || includePath === resolvedFallbackDir;
       if (!inPromptDir && !inFallbackDir) {
         this.logger.warn('Include blocked: path traversal detected', { filename: trimmedFilename });
         return `<!-- Include blocked: ${trimmedFilename} -->`;
@@ -311,7 +312,9 @@ export class PromptBuilder {
     if (content) {
       content = this.appendLocalSystemPrompt(content);
       this.workflowPromptCache.set(workflow, content);
-      this.logger.info(`📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`);
+      this.logger.info(
+        `📋 WORKFLOW PROMPT loaded: [${workflow}] (${content.length} chars, local: ${!!this.localSystemPrompt})`,
+      );
     }
 
     return content;

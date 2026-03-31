@@ -38,7 +38,11 @@ describe('SlackDmChannel', () => {
   });
 
   it('skips when disabled', async () => {
-    const mockSlackApi = { openDmChannel: vi.fn(), postMessage: vi.fn(), getPermalink: vi.fn().mockResolvedValue(null) };
+    const mockSlackApi = {
+      openDmChannel: vi.fn(),
+      postMessage: vi.fn(),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
     const mockSettingsStore = {
       getUserSettings: vi.fn().mockReturnValue({
         notification: { slackDm: false },

@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { V1QueryAdapter } from '../v1-query-adapter.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTurnResult } from '../agent-session-types.js';
 import { TurnResultCollector } from '../turn-result-collector.js';
+import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 // Trace: Scenario 2 & 3 — V1QueryAdapter.start() / continue()
 
@@ -62,9 +62,7 @@ describe('V1QueryAdapter', () => {
 
     await adapter.start('Hello');
     expect(mockExecutor.execute).toHaveBeenCalledTimes(1);
-    expect(mockExecutor.execute).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'Hello' }),
-    );
+    expect(mockExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({ text: 'Hello' }));
   });
 
   // Trace: S2, Section 3c — start returns AgentTurnResult
@@ -152,9 +150,7 @@ describe('V1QueryAdapter', () => {
     await adapter.continue('Second');
 
     expect(mockExecutor.execute).toHaveBeenCalledTimes(2);
-    expect(mockExecutor.execute).toHaveBeenLastCalledWith(
-      expect.objectContaining({ text: 'Second' }),
-    );
+    expect(mockExecutor.execute).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'Second' }));
   });
 
   // Trace: S3, Section 3a — continue increments turnCount

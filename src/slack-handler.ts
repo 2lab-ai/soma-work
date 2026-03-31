@@ -1,52 +1,47 @@
-import { App } from '@slack/bolt';
-import { ClaudeHandler } from './claude-handler';
-import { Logger } from './logger';
-import { WorkingDirectoryManager } from './working-directory-manager';
+import type { App } from '@slack/bolt';
+import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
+import { TurnRunner, V1QueryAdapter } from './agent-session';
+import type { ClaudeHandler } from './claude-handler';
 import { FileHandler } from './file-handler';
-import { TodoManager } from './todo-manager';
-import { McpManager } from './mcp-manager';
+import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
-import {
-  SlackApiHelper,
-  ReactionManager,
-  ContextWindowManager,
-  McpStatusDisplay,
-  McpHealthMonitor,
-  SessionUiManager,
-  ActionHandlers,
-  ActionHandlerContext,
-  EventRouter,
-  EventRouterDeps,
-  RequestCoordinator,
-  ThreadPanel,
-  ToolTracker,
-  CommandRouter,
-  CommandDependencies,
-  StreamProcessor,
-  ToolEventProcessor,
-  MessageValidator,
-  StatusReporter,
-  TodoDisplayManager,
-  AssistantStatusManager,
-} from './slack';
-import {
-  InputProcessor,
-  SessionInitializer,
-  StreamExecutor,
-  MessageEvent,
-} from './slack/pipeline';
-import { TurnNotifier } from './turn-notifier';
+import type { McpManager } from './mcp-manager';
 import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-channel';
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
-import { WebhookChannel } from './notification-channels/webhook-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
-import { userSettingsStore } from './user-settings-store';
-import { SummaryTimer } from './slack/summary-timer';
+import { WebhookChannel } from './notification-channels/webhook-channel';
+import {
+  type ActionHandlerContext,
+  ActionHandlers,
+  AssistantStatusManager,
+  type CommandDependencies,
+  CommandRouter,
+  ContextWindowManager,
+  EventRouter,
+  type EventRouterDeps,
+  McpHealthMonitor,
+  McpStatusDisplay,
+  MessageValidator,
+  ReactionManager,
+  RequestCoordinator,
+  SessionUiManager,
+  SlackApiHelper,
+  StatusReporter,
+  StreamProcessor,
+  ThreadPanel,
+  TodoDisplayManager,
+  ToolEventProcessor,
+  ToolTracker,
+} from './slack';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
-import { SummaryService } from './slack/summary-service';
 import { createForkExecutor } from './slack/create-fork-executor';
-import { V1QueryAdapter, TurnRunner } from './agent-session';
-import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
+import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
+import { SummaryService } from './slack/summary-service';
+import { SummaryTimer } from './slack/summary-timer';
+import { TodoManager } from './todo-manager';
+import { TurnNotifier } from './turn-notifier';
+import { userSettingsStore } from './user-settings-store';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 interface SlackPermalinkTarget {
   channelId: string;
@@ -145,17 +140,11 @@ export class SlackHandler {
     // Message validation, status reporting, and todo display
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
     this.statusReporter = new StatusReporter(this.slackApi);
-    this.todoDisplayManager = new TodoDisplayManager(
-      this.slackApi,
-      this.todoManager,
-      this.reactionManager
-    );
+    this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
     // Wire todo updates to trigger thread header re-render
-    this.todoDisplayManager.setRenderRequestCallback(
-      async (session, sessionKey) => {
-        await this.threadPanel?.updatePanel(session, sessionKey);
-      }
-    );
+    this.todoDisplayManager.setRenderRequestCallback(async (session, sessionKey) => {
+      await this.threadPanel?.updatePanel(session, sessionKey);
+    });
 
     // Native Slack AI spinner
     this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
@@ -166,7 +155,7 @@ export class SlackHandler {
       this.mcpStatusDisplay,
       mcpCallTracker,
       this.assistantStatusManager,
-      this.mcpHealthMonitor
+      this.mcpHealthMonitor,
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
@@ -347,7 +336,7 @@ export class SlackHandler {
       event,
       cwdResult.workingDirectory!,
       effectiveText,
-      forceWorkflow
+      forceWorkflow,
     );
 
     // Channel routing check: if session was halted due to wrong channel, stop processing
@@ -357,8 +346,7 @@ export class SlackHandler {
     }
 
     const activeChannel = sessionResult.session.channelId || channel;
-    const activeThreadTs =
-      sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+    const activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
 
     const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
     if (hasPendingChoice) {
@@ -443,18 +431,20 @@ export class SlackHandler {
             { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
             undefined,
             errorContext,
-          ).then(() => {
-            this.logger.info('Error auto-retry completed', {
-              channelId: activeChannel,
-              threadTs: activeThreadTs,
+          )
+            .then(() => {
+              this.logger.info('Error auto-retry completed', {
+                channelId: activeChannel,
+                threadTs: activeThreadTs,
+              });
+            })
+            .catch((retryError) => {
+              this.logger.error('Error auto-retry failed', {
+                channelId: activeChannel,
+                threadTs: activeThreadTs,
+                error: (retryError as Error).message,
+              });
             });
-          }).catch((retryError) => {
-            this.logger.error('Error auto-retry failed', {
-              channelId: activeChannel,
-              threadTs: activeThreadTs,
-              error: (retryError as Error).message,
-            });
-          });
         }, retryAfterMs);
         // Store handle for cancellation on session reset
         if (currentSession) {
@@ -540,11 +530,7 @@ export class SlackHandler {
       return false;
     }
 
-    const isManaged = this.isManagedBotMessage(
-      target.channelId,
-      target.messageTs,
-      targetMessage.thread_ts
-    );
+    const isManaged = this.isManagedBotMessage(target.channelId, target.messageTs, targetMessage.thread_ts);
 
     if (isManaged) {
       const value: ManagedDeleteActionValue = {
@@ -741,7 +727,7 @@ export class SlackHandler {
         });
         // Skip auto-resume if notification failed — channel is likely inaccessible
         if (i < recovered.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+          await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
         }
         continue;
       }
@@ -775,7 +761,7 @@ export class SlackHandler {
 
       // Delay between sessions to avoid overwhelming the system
       if (i < recovered.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+        await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
       }
     }
 
@@ -804,9 +790,10 @@ export class SlackHandler {
     if (session.workflow && session.workflow !== 'default') contextParts.push(`워크플로우: ${session.workflow}`);
     if (errorContext) contextParts.push(`⚠️ 이전 시도 중 오류 발생: ${errorContext}`);
 
-    const resumePrompt = contextParts.length > 0
-      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n${contextParts.join('\n')}`
-      : SlackHandler.AUTO_RESUME_PROMPT;
+    const resumePrompt =
+      contextParts.length > 0
+        ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n${contextParts.join('\n')}`
+        : SlackHandler.AUTO_RESUME_PROMPT;
 
     const syntheticEvent: MessageEvent = {
       user: session.ownerId,

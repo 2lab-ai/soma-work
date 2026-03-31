@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { TurnResultCollector } from '../turn-result-collector.js';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { EndTurnInfo, ModelCommandResult } from '../agent-session-types.js';
+import { TurnResultCollector } from '../turn-result-collector.js';
 
 describe('TurnResultCollector', () => {
   let collector: TurnResultCollector;

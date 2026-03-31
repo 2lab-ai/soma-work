@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Todo } from '../todo-manager';
 import { ReactionManager } from './reaction-manager';
-import { SlackApiHelper } from './slack-api-helper';
-import { Todo } from '../todo-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 // Mock SlackApiHelper
 const createMockSlackApi = () => ({

@@ -6,9 +6,9 @@ vi.mock('../user-settings-store', () => ({
   },
 }));
 
-import { SlackBlockKitChannel } from './slack-block-kit-channel';
 import { CompletionMessageTracker } from '../slack/completion-message-tracker';
-import { TurnCompletionEvent } from '../turn-notifier';
+import type { TurnCompletionEvent } from '../turn-notifier';
+import { SlackBlockKitChannel } from './slack-block-kit-channel';
 
 // Contract tests — Rich Turn Notification
 // Trace: docs/rich-turn-notification/trace.md
@@ -41,7 +41,7 @@ function makeRichEvent(overrides: Partial<TurnCompletionEvent> = {}): TurnComple
     toolStats: {
       Bash: { count: 59, totalDurationMs: 767400 },
       WebFetch: { count: 7, totalDurationMs: 118200 },
-      'mcp__send_file__send_document': { count: 3, totalDurationMs: 44400 },
+      mcp__send_file__send_document: { count: 3, totalDurationMs: 44400 },
       WebSearch: { count: 2, totalDurationMs: 42500 },
       Task: { count: 2, totalDurationMs: 17200 },
     },
@@ -65,9 +65,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).toContain('`default`');
       expect(allText).toContain('`opus-4.6`');
@@ -83,9 +83,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       // Should contain start time from formatClock (locale time string)
       // and elapsed duration in M:SS format
@@ -102,9 +102,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).toContain('Ctx');
       expect(allText).toContain('▓');
@@ -123,9 +123,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).toContain('5h');
       expect(allText).toContain('42%');
@@ -139,18 +139,20 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
     it('omits 5h/7d line when not available', async () => {
       const api = createMockSlackApi();
       const channel = new SlackBlockKitChannel(api);
-      await channel.send(makeRichEvent({
-        fiveHourUsage: undefined,
-        fiveHourDelta: undefined,
-        sevenDayUsage: undefined,
-        sevenDayDelta: undefined,
-      }));
+      await channel.send(
+        makeRichEvent({
+          fiveHourUsage: undefined,
+          fiveHourDelta: undefined,
+          sevenDayUsage: undefined,
+          sevenDayDelta: undefined,
+        }),
+      );
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).not.toContain('5h');
       expect(allText).not.toContain('7d');
@@ -166,9 +168,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).toContain(':wrench:');
       expect(allText).toContain('Bash×59');
@@ -183,16 +185,18 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
     it('falls back to simple format when no rich data provided', async () => {
       const api = createMockSlackApi();
       const channel = new SlackBlockKitChannel(api);
-      await channel.send(makeEvent({
-        sessionTitle: 'Simple session',
-        durationMs: 5000,
-      }));
+      await channel.send(
+        makeEvent({
+          sessionTitle: 'Simple session',
+          durationMs: 5000,
+        }),
+      );
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       // Should still have session title
       expect(allText).toContain('Simple session');
@@ -209,16 +213,18 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       const channel = new SlackBlockKitChannel(api);
 
       // Test with 500k tokens
-      await channel.send(makeRichEvent({
-        contextUsageTokens: 500000,
-        contextWindowSize: 1000000,
-      }));
+      await channel.send(
+        makeRichEvent({
+          contextUsageTokens: 500000,
+          contextWindowSize: 1000000,
+        }),
+      );
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       expect(allText).toContain('500.0k');
       expect(allText).toContain('1M');
@@ -235,9 +241,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       const call = api.postMessage.mock.calls[0];
       const blocks = call[2].attachments[0].blocks;
-      const allText = blocks.map((b: any) =>
-        b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? ''
-      ).join('\n');
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
 
       // 50% of 5-width bar = ~3 filled
       // Check bar contains mix of filled and empty
@@ -283,7 +289,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       const deletedTimestamps: string[] = [];
       await tracker.deleteAll(
         sessionKey,
-        async (_ch, ts) => { deletedTimestamps.push(ts); },
+        async (_ch, ts) => {
+          deletedTimestamps.push(ts);
+        },
         'C-TEST',
       );
       expect(deletedTimestamps).toEqual([postedTs]);

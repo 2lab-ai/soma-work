@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
-import { llmChatConfigStore } from '../../llm-chat-config-store';
 import { isAdminUser } from '../../admin-utils';
+import { llmChatConfigStore } from '../../llm-chat-config-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles llm_chat configuration commands (set/show/reset)
@@ -32,11 +32,13 @@ export class LlmChatHandler implements CommandHandler {
     switch (action.action) {
       case 'show': {
         const display = llmChatConfigStore.formatForDisplay();
-        await reply(`⚙️ *LLM Chat Configuration*\n\n\`\`\`\n${display}\n\`\`\`\n\n_Use \`set llm_chat <provider> <key> <value>\` to change settings (admin only)._`);
+        await reply(
+          `⚙️ *LLM Chat Configuration*\n\n\`\`\`\n${display}\n\`\`\`\n\n_Use \`set llm_chat <provider> <key> <value>\` to change settings (admin only)._`,
+        );
         break;
       }
       case 'reset': {
-        if (!await this.requireAdmin(user, reply)) break;
+        if (!(await this.requireAdmin(user, reply))) break;
         const resetError = llmChatConfigStore.reset();
         if (resetError) {
           await reply(`❌ *Configuration Error*\n\n${resetError}`);
@@ -47,12 +49,14 @@ export class LlmChatHandler implements CommandHandler {
         break;
       }
       case 'set': {
-        if (!await this.requireAdmin(user, reply)) break;
+        if (!(await this.requireAdmin(user, reply))) break;
         const error = llmChatConfigStore.set(action.provider, action.key, action.value);
         if (error) {
           await reply(`❌ *Configuration Error*\n\n${error}`);
         } else {
-          await reply(`✅ *LLM Chat Config Updated*\n\n\`${action.provider}.${action.key}\` → \`${action.value}\`\n\n_This change applies to new llm_chat calls in this session._`);
+          await reply(
+            `✅ *LLM Chat Config Updated*\n\n\`${action.provider}.${action.key}\` → \`${action.value}\`\n\n_This change applies to new llm_chat calls in this session._`,
+          );
         }
         break;
       }

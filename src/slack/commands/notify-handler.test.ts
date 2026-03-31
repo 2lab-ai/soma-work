@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { NotifyHandler } from './notify-handler';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { userSettingsStore } from '../../user-settings-store';
+import { NotifyHandler } from './notify-handler';
 
 // Contract tests — Scenario 5: Notify Command Handler
 // Trace: docs/turn-notification/trace.md
@@ -20,9 +20,11 @@ describe('NotifyHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('활성화'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('활성화'),
+      }),
+    );
   });
 
   it('off disables Slack DM notifications', async () => {
@@ -31,9 +33,11 @@ describe('NotifyHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('비활성화'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('비활성화'),
+      }),
+    );
   });
 
   it('status shows current settings', async () => {
@@ -51,9 +55,11 @@ describe('NotifyHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('12345'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('12345'),
+      }),
+    );
   });
 
   it('telegram off removes chat ID', async () => {
@@ -62,9 +68,11 @@ describe('NotifyHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('해제'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('해제'),
+      }),
+    );
   });
 
   it('invalid action shows usage', async () => {
@@ -73,9 +81,11 @@ describe('NotifyHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringMatching(/사용법|usage|help/i),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringMatching(/사용법|usage|help/i),
+      }),
+    );
   });
 
   it('persists settings to user settings store', async () => {

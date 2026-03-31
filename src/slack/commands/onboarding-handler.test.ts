@@ -28,7 +28,7 @@ describe('OnboardingHandler', () => {
     expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('Cannot start onboarding while a request is in progress'),
-      { threadTs: '171.100' }
+      { threadTs: '171.100' },
     );
   });
 

@@ -1,5 +1,5 @@
-import { Logger } from '../logger';
 import { getGitHubAppAuth, isGitHubAppConfigured } from '../github-auth.js';
+import { Logger } from '../logger';
 import type { McpServerConfig, McpStdioServerConfig } from './config-loader';
 
 /**
@@ -11,9 +11,7 @@ export class McpServerFactory {
   /**
    * Inject GitHub App authentication into server configurations
    */
-  async injectGitHubAuth(
-    servers: Record<string, McpServerConfig>
-  ): Promise<Record<string, McpServerConfig>> {
+  async injectGitHubAuth(servers: Record<string, McpServerConfig>): Promise<Record<string, McpServerConfig>> {
     const processedServers: Record<string, McpServerConfig> = {};
 
     for (const [serverName, serverConfig] of Object.entries(servers)) {
@@ -50,7 +48,7 @@ export class McpServerFactory {
    * Provision default servers based on available authentication
    */
   async provisionDefaultServers(
-    existingServers: Record<string, McpServerConfig> = {}
+    existingServers: Record<string, McpServerConfig> = {},
   ): Promise<Record<string, McpServerConfig>> {
     const baseDirectory = process.env.BASE_DIRECTORY || '/usercontent';
     const servers = { ...existingServers };
@@ -68,7 +66,7 @@ export class McpServerFactory {
 
   private async provisionGitHubAppServers(
     servers: Record<string, McpServerConfig>,
-    baseDirectory: string
+    baseDirectory: string,
   ): Promise<void> {
     const githubAuth = getGitHubAppAuth();
     if (!githubAuth) return;
@@ -104,10 +102,7 @@ export class McpServerFactory {
     }
   }
 
-  private provisionGitHubTokenServers(
-    servers: Record<string, McpServerConfig>,
-    baseDirectory: string
-  ): void {
+  private provisionGitHubTokenServers(servers: Record<string, McpServerConfig>, baseDirectory: string): void {
     const githubToken = process.env.GITHUB_TOKEN;
 
     // Add filesystem server if not already configured
@@ -135,10 +130,7 @@ export class McpServerFactory {
     });
   }
 
-  private provisionMinimalServers(
-    servers: Record<string, McpServerConfig>,
-    baseDirectory: string
-  ): void {
+  private provisionMinimalServers(servers: Record<string, McpServerConfig>, baseDirectory: string): void {
     // Add minimal filesystem server if no GitHub authentication is available
     if (!servers.filesystem) {
       servers.filesystem = {

@@ -7,7 +7,6 @@
  * 이 객체는 턴 시작 시 생성되고, 턴 종료 시 getResult()로 결과를 반환한다.
  */
 
-import type { TurnObserver } from './turn-observer.js';
 import type {
   AgentPhase,
   AgentTurnResult,
@@ -17,6 +16,7 @@ import type {
   UsageData,
   UserChoiceQuestion,
 } from './agent-session-types.js';
+import type { TurnObserver } from './turn-observer.js';
 
 export class TurnResultCollector implements TurnObserver {
   private readonly messages: string[] = [];
@@ -44,9 +44,9 @@ export class TurnResultCollector implements TurnObserver {
   }
 
   onToolEnd(toolName: string, toolUseId: string, duration?: number): void {
-    const call = this.toolCalls.find(c => c.toolUseId === toolUseId);
+    const call = this.toolCalls.find((c) => c.toolUseId === toolUseId);
     if (call) {
-      call.duration = duration ?? (Date.now() - (this.toolStartTimes.get(toolUseId) ?? Date.now()));
+      call.duration = duration ?? Date.now() - (this.toolStartTimes.get(toolUseId) ?? Date.now());
     }
     this.toolStartTimes.delete(toolUseId);
   }

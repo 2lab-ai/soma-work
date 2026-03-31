@@ -112,7 +112,7 @@ describe('main-env-bootstrap', () => {
         devSourceDir,
         legacyRootDir,
         targetDir,
-      })
+      }),
     ).rejects.toThrow(/non-empty target/i);
   });
 
@@ -138,7 +138,7 @@ describe('main-env-bootstrap', () => {
           devSourceDir,
           legacyRootDir,
           targetDir,
-        })
+        }),
       ).rejects.toThrow(/pre-create .* and chown it to the runner user/i);
     } finally {
       fs.chmodSync(blockedParent, 0o755);

@@ -24,11 +24,11 @@ export class TodoManager {
     this.todos.set(sessionId, todos);
     if (this._onUpdate) this._onUpdate(sessionId, todos);
     this.logger.debug('Updated todos for session', {
-      sessionId, 
+      sessionId,
       todoCount: todos.length,
-      pending: todos.filter(t => t.status === 'pending').length,
-      inProgress: todos.filter(t => t.status === 'in_progress').length,
-      completed: todos.filter(t => t.status === 'completed').length,
+      pending: todos.filter((t) => t.status === 'pending').length,
+      inProgress: todos.filter((t) => t.status === 'in_progress').length,
+      completed: todos.filter((t) => t.status === 'completed').length,
     });
   }
 
@@ -42,11 +42,11 @@ export class TodoManager {
     }
 
     let message = '📋 *Task List*\n\n';
-    
+
     // Group by status
-    const pending = todos.filter(t => t.status === 'pending');
-    const inProgress = todos.filter(t => t.status === 'in_progress');
-    const completed = todos.filter(t => t.status === 'completed');
+    const pending = todos.filter((t) => t.status === 'pending');
+    const inProgress = todos.filter((t) => t.status === 'in_progress');
+    const completed = todos.filter((t) => t.status === 'completed');
 
     // Show in-progress tasks first
     if (inProgress.length > 0) {
@@ -81,7 +81,7 @@ export class TodoManager {
     const total = todos.length;
     const completedCount = completed.length;
     const progress = total > 0 ? Math.round((completedCount / total) * 100) : 0;
-    
+
     message += `\n*Progress:* ${completedCount}/${total} tasks completed (${progress}%)`;
 
     return message;
@@ -108,12 +108,14 @@ export class TodoManager {
 
     // Check if any task status, activeForm, content, or dependencies changed
     for (const newTodo of newTodos) {
-      const oldTodo = oldTodos.find(t => t.id === newTodo.id);
-      if (!oldTodo
-        || oldTodo.status !== newTodo.status
-        || oldTodo.activeForm !== newTodo.activeForm
-        || oldTodo.content !== newTodo.content
-        || JSON.stringify(oldTodo.dependencies) !== JSON.stringify(newTodo.dependencies)) {
+      const oldTodo = oldTodos.find((t) => t.id === newTodo.id);
+      if (
+        !oldTodo ||
+        oldTodo.status !== newTodo.status ||
+        oldTodo.activeForm !== newTodo.activeForm ||
+        oldTodo.content !== newTodo.content ||
+        JSON.stringify(oldTodo.dependencies) !== JSON.stringify(newTodo.dependencies)
+      ) {
         return true;
       }
     }
@@ -126,26 +128,26 @@ export class TodoManager {
     const changes: string[] = [];
 
     for (const newTodo of newTodos) {
-      const oldTodo = oldTodos.find(t => t.id === newTodo.id);
-      
+      const oldTodo = oldTodos.find((t) => t.id === newTodo.id);
+
       if (!oldTodo) {
         // New task added
         changes.push(`➕ Added: ${newTodo.content}`);
       } else if (oldTodo.status !== newTodo.status) {
         // Status changed
         const statusEmoji = {
-          'pending': '⏳',
-          'in_progress': '🔄',
-          'completed': '✅'
+          pending: '⏳',
+          in_progress: '🔄',
+          completed: '✅',
         };
-        
+
         changes.push(`${statusEmoji[newTodo.status]} ${newTodo.content}`);
       }
     }
 
     // Check for removed tasks
     for (const oldTodo of oldTodos) {
-      if (!newTodos.find(t => t.id === oldTodo.id)) {
+      if (!newTodos.find((t) => t.id === oldTodo.id)) {
         changes.push(`➖ Removed: ${oldTodo.content}`);
       }
     }
@@ -159,8 +161,8 @@ export class TodoManager {
    */
   isBlocked(todo: Todo, allTodos: Todo[]): boolean {
     if (!todo.dependencies || todo.dependencies.length === 0) return false;
-    return todo.dependencies.some(depId => {
-      const dep = allTodos.find(t => t.id === depId);
+    return todo.dependencies.some((depId) => {
+      const dep = allTodos.find((t) => t.id === depId);
       // Missing dep → treat as blocking (dangling ref should not unblock)
       if (!dep) return true;
       return dep.status !== 'completed';

@@ -13,10 +13,10 @@
  * This is what we display to the user - NOT the cumulative total.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ContextHandler } from './context-handler';
-import type { CommandDependencies, CommandContext, SayFn } from './types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUsage } from '../../types';
+import { ContextHandler } from './context-handler';
+import type { CommandContext, CommandDependencies, SayFn } from './types';
 
 describe('ContextHandler', () => {
   let handler: ContextHandler;
@@ -65,13 +65,13 @@ describe('ContextHandler', () => {
       // After 2 requests, current context is 2000 + 800 = 2800
       // Cumulative totals are 3000 input, 1300 output
       const usage: SessionUsage = {
-        currentInputTokens: 2000,    // Current request input (includes history!)
-        currentOutputTokens: 800,    // Current response output
+        currentInputTokens: 2000, // Current request input (includes history!)
+        currentOutputTokens: 800, // Current response output
         currentCacheReadTokens: 0,
         currentCacheCreateTokens: 0,
         contextWindow: 200000,
-        totalInputTokens: 3000,      // Sum of all requests (1000 + 2000)
-        totalOutputTokens: 1300,     // Sum of all responses (500 + 800)
+        totalInputTokens: 3000, // Sum of all requests (1000 + 2000)
+        totalOutputTokens: 1300, // Sum of all responses (500 + 800)
         totalCostUsd: 0.05,
         lastUpdated: Date.now(),
       };
@@ -99,7 +99,7 @@ describe('ContextHandler', () => {
       expect(message).toContain('2.8k/200k');
 
       // Session totals show cumulative values correctly
-      expect(message).toContain('• Input: 3k');   // cumulative
+      expect(message).toContain('• Input: 3k'); // cumulative
       expect(message).toContain('• Output: 1.3k'); // cumulative
     });
 
@@ -132,9 +132,9 @@ describe('ContextHandler', () => {
         currentCacheReadTokens: 0,
         currentCacheCreateTokens: 0,
         contextWindow: 200000,
-        totalInputTokens: 60000,  // higher due to multiple requests
+        totalInputTokens: 60000, // higher due to multiple requests
         totalOutputTokens: 15000,
-        totalCostUsd: 0.10,
+        totalCostUsd: 0.1,
         lastUpdated: Date.now(),
       };
 
@@ -164,7 +164,7 @@ describe('ContextHandler', () => {
         contextWindow: 200000,
         totalInputTokens: 200000,
         totalOutputTokens: 50000,
-        totalCostUsd: 0.50,
+        totalCostUsd: 0.5,
         lastUpdated: Date.now(),
       };
 
@@ -189,7 +189,7 @@ describe('ContextHandler', () => {
       const usage: SessionUsage = {
         currentInputTokens: 5000,
         currentOutputTokens: 1000,
-        currentCacheReadTokens: 3000,  // Read from cache
+        currentCacheReadTokens: 3000, // Read from cache
         currentCacheCreateTokens: 500, // Created new cache
         contextWindow: 200000,
         totalInputTokens: 10000,

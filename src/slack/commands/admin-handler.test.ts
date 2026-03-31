@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock modules before imports
 vi.mock('../../admin-utils', () => ({
@@ -28,12 +28,12 @@ vi.mock('../../token-manager', () => ({
 
 vi.mock('fs');
 
-import { AdminHandler } from './admin-handler';
-import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
-import { userSettingsStore } from '../../user-settings-store';
-import { tokenManager } from '../../token-manager';
 import fs from 'fs';
-import { CommandContext } from './types';
+import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
+import { tokenManager } from '../../token-manager';
+import { userSettingsStore } from '../../user-settings-store';
+import { AdminHandler } from './admin-handler';
+import type { CommandContext } from './types';
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -71,7 +71,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('U_NEW'),
-        })
+        }),
       );
     });
 
@@ -85,7 +85,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('Admin only'),
-        })
+        }),
       );
     });
 
@@ -115,7 +115,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('U_NEW'),
-        })
+        }),
       );
     });
 
@@ -133,8 +133,26 @@ describe('AdminHandler', () => {
   describe('users command', () => {
     it('shows accepted and pending users', async () => {
       vi.mocked(userSettingsStore.getAllUsers).mockReturnValue([
-        { userId: 'U1', accepted: true, acceptedBy: 'U_ADMIN', acceptedAt: '2026-01-01', defaultDirectory: '', bypassPermission: false, persona: 'default', defaultModel: 'claude-opus-4-6' as any, lastUpdated: '' },
-        { userId: 'U2', accepted: false, defaultDirectory: '', bypassPermission: false, persona: 'default', defaultModel: 'claude-opus-4-6' as any, lastUpdated: '' },
+        {
+          userId: 'U1',
+          accepted: true,
+          acceptedBy: 'U_ADMIN',
+          acceptedAt: '2026-01-01',
+          defaultDirectory: '',
+          bypassPermission: false,
+          persona: 'default',
+          defaultModel: 'claude-opus-4-6' as any,
+          lastUpdated: '',
+        },
+        {
+          userId: 'U2',
+          accepted: false,
+          defaultDirectory: '',
+          bypassPermission: false,
+          persona: 'default',
+          defaultModel: 'claude-opus-4-6' as any,
+          lastUpdated: '',
+        },
       ]);
       const ctx = makeCtx({ text: 'users' });
       const result = await handler.execute(ctx);
@@ -143,7 +161,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringMatching(/U1.*U2|U2.*U1/s),
-        })
+        }),
       );
     });
 
@@ -176,7 +194,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('DEBUG=true'),
-        })
+        }),
       );
     });
 
@@ -219,7 +237,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('.env'),
-        })
+        }),
       );
     });
   });
@@ -249,11 +267,7 @@ describe('AdminHandler', () => {
       const ctx = makeCtx({ text: 'config DEBUG=true' });
       await handler.execute(ctx);
 
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.stringContaining('DEBUG=true'),
-        'utf8'
-      );
+      expect(fs.writeFileSync).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('DEBUG=true'), 'utf8');
       // Should not contain old value
       const written = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
       expect(written).not.toContain('DEBUG=false');
@@ -300,7 +314,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('Usage'),
-        })
+        }),
       );
     });
 
@@ -318,7 +332,7 @@ describe('AdminHandler', () => {
       expect(ctx.say).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('process.env'),
-        })
+        }),
       );
     });
   });
@@ -341,9 +355,9 @@ describe('AdminHandler', () => {
 
     it.each([
       'hello',
-      'accept',  // no target
-      'config',  // no subcommand
-      'cct',     // handled by CctHandler
+      'accept', // no target
+      'config', // no subcommand
+      'cct', // handled by CctHandler
     ])('rejects "%s"', (text) => {
       expect(handler.canHandle(text)).toBe(false);
     });

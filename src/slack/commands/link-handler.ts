@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser } from '../command-parser';
-import { SessionLink } from '../../types';
 import { Logger } from '../../logger';
+import type { SessionLink } from '../../types';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles link command - attach issue/PR/doc links to current session

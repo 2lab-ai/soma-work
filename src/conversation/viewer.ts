@@ -1,4 +1,4 @@
-import { ConversationRecord, ConversationMeta, ConversationTurn } from './types';
+import type { ConversationMeta, ConversationRecord, ConversationTurn } from './types';
 
 /**
  * Escape HTML to prevent XSS
@@ -29,7 +29,9 @@ function formatTime(ts: number): string {
  * Render the conversation list page
  */
 export function renderConversationListPage(conversations: ConversationMeta[]): string {
-  const rows = conversations.map(c => `
+  const rows = conversations
+    .map(
+      (c) => `
     <tr onclick="window.location='/conversations/${escapeHtml(c.id)}'" style="cursor:pointer">
       <td>${escapeHtml(c.title || '(no title)')}</td>
       <td>${escapeHtml(c.ownerName)}</td>
@@ -37,7 +39,9 @@ export function renderConversationListPage(conversations: ConversationMeta[]): s
       <td>${c.turnCount}</td>
       <td>${formatTime(c.updatedAt)}</td>
     </tr>
-  `).join('');
+  `,
+    )
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -51,9 +55,10 @@ export function renderConversationListPage(conversations: ConversationMeta[]): s
   <div class="container">
     <h1>📝 Conversations</h1>
     <p class="subtitle">${conversations.length} conversations recorded</p>
-    ${conversations.length === 0
-      ? '<p class="empty">No conversations yet.</p>'
-      : `<table>
+    ${
+      conversations.length === 0
+        ? '<p class="empty">No conversations yet.</p>'
+        : `<table>
         <thead>
           <tr>
             <th>Title</th>
@@ -130,12 +135,13 @@ function renderTurn(turn: ConversationTurn, index: number, conversationId: strin
     contentHtml = `<pre class="content">${escapeHtml(turn.rawContent)}</pre>`;
   } else {
     // Assistant: show summary with expand button
-    const summaryHtml = turn.summarized && turn.summaryTitle
-      ? `<div class="summary">
+    const summaryHtml =
+      turn.summarized && turn.summaryTitle
+        ? `<div class="summary">
           <div class="summary-title">${escapeHtml(turn.summaryTitle)}</div>
           <div class="summary-body">${escapeHtml(turn.summaryBody || '')}</div>
         </div>`
-      : `<div class="summary pending">
+        : `<div class="summary pending">
           <em>Summary pending...</em>
         </div>`;
 

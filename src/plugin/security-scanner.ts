@@ -205,11 +205,26 @@ const SENSITIVE_ENV_PATTERNS = [
 // ---------------------------------------------------------------------------
 
 const SCANNABLE_EXTENSIONS = new Set([
-  '.ts', '.js', '.tsx', '.jsx', '.mts', '.mjs', '.cjs', '.cts',
-  '.json', '.yaml', '.yml', '.toml',
-  '.sh', '.bash', '.zsh',
-  '.py', '.rb', '.pl',
-  '.node', '.wasm',
+  '.ts',
+  '.js',
+  '.tsx',
+  '.jsx',
+  '.mts',
+  '.mjs',
+  '.cjs',
+  '.cts',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.py',
+  '.rb',
+  '.pl',
+  '.node',
+  '.wasm',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -272,9 +287,9 @@ export function scanPluginDirectory(pluginDir: string, pluginName: string): Scan
       blocked,
       requiresApproval,
       findingCount: findings.length,
-      critical: findings.filter(f => f.severity === 'CRITICAL').length,
-      high: findings.filter(f => f.severity === 'HIGH').length,
-      medium: findings.filter(f => f.severity === 'MEDIUM').length,
+      critical: findings.filter((f) => f.severity === 'CRITICAL').length,
+      high: findings.filter((f) => f.severity === 'HIGH').length,
+      medium: findings.filter((f) => f.severity === 'MEDIUM').length,
     });
   } else {
     logger.info('Security scan passed', { pluginName });
@@ -290,7 +305,7 @@ export function scanPluginDirectory(pluginDir: string, pluginName: string): Scan
  */
 export function scanMcpServerConfig(
   serverName: string,
-  config: { type?: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string }
+  config: { type?: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string },
 ): McpServerScanResult {
   const findings: SecurityFinding[] = [];
 
@@ -323,7 +338,7 @@ export function scanMcpServerConfig(
   // Check env for sensitive variable forwarding
   if (config.env) {
     for (const [key, value] of Object.entries(config.env)) {
-      const isSensitive = SENSITIVE_ENV_PATTERNS.some(p => p.test(key));
+      const isSensitive = SENSITIVE_ENV_PATTERNS.some((p) => p.test(key));
       if (isSensitive) {
         // Only warn if the value looks like it references another env var
         // or contains an actual secret pattern (not a placeholder)
@@ -342,7 +357,11 @@ export function scanMcpServerConfig(
   // Check URL for non-HTTPS
   if (config.url) {
     const urlHost = (() => {
-      try { return new URL(config.url).hostname; } catch { return ''; }
+      try {
+        return new URL(config.url).hostname;
+      } catch {
+        return '';
+      }
     })();
     const isLocal = urlHost === 'localhost' || urlHost === '127.0.0.1' || urlHost === '::1';
     if (config.url.startsWith('http://') && !isLocal) {
@@ -550,7 +569,13 @@ function scanStructure(pluginDir: string): SecurityFinding[] {
   // Check for symlinks (can escape plugin sandbox to access host files)
   const symlinks = collectSymlinks(pluginDir, 3);
   for (const link of symlinks) {
-    const target = (() => { try { return fs.readlinkSync(link); } catch { return 'unknown'; } })();
+    const target = (() => {
+      try {
+        return fs.readlinkSync(link);
+      } catch {
+        return 'unknown';
+      }
+    })();
     findings.push({
       rule: 'STRUCTURE_SYMLINK',
       description: `Symlink found pointing to: ${target}`,
@@ -576,7 +601,7 @@ function scanStructure(pluginDir: string): SecurityFinding[] {
   }
 
   // Check for .env files (might contain leaked secrets)
-  const envFiles = files.filter(f => path.basename(f).startsWith('.env'));
+  const envFiles = files.filter((f) => path.basename(f).startsWith('.env'));
   for (const envFile of envFiles) {
     findings.push({
       rule: 'STRUCTURE_ENV_FILE',
@@ -659,7 +684,7 @@ function computeRiskLevel(findings: SecurityFinding[]): RiskSeverity {
   const severityOrder: RiskSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
   for (const level of severityOrder) {
-    if (findings.some(f => f.severity === level)) {
+    if (findings.some((f) => f.severity === level)) {
       return level;
     }
   }

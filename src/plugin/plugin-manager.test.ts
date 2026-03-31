@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginManager } from './plugin-manager';
-import { PluginConfig, MarketplaceEntry } from './types';
+import type { MarketplaceEntry, PluginConfig } from './types';
 
 // Mock marketplace-fetcher
 vi.mock('./marketplace-fetcher', () => ({
@@ -25,13 +25,16 @@ vi.mock('./defaults', () => ({
 }));
 
 import { fetchPlugin } from './marketplace-fetcher';
+
 const mockFetchPlugin = vi.mocked(fetchPlugin);
 
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
+
 const mockLoadUnifiedConfig = vi.mocked(loadUnifiedConfig);
 const mockSaveUnifiedConfig = vi.mocked(saveUnifiedConfig);
 
-import { isDefaultPlugin, isDefaultMarketplace } from './defaults';
+import { isDefaultMarketplace, isDefaultPlugin } from './defaults';
+
 const mockIsDefaultPlugin = vi.mocked(isDefaultPlugin);
 const mockIsDefaultMarketplace = vi.mocked(isDefaultMarketplace);
 
@@ -71,7 +74,7 @@ describe('PluginManager', () => {
     expect(mockFetchPlugin).toHaveBeenCalledWith(
       { name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' },
       'omc',
-      expect.any(String)
+      expect.any(String),
     );
 
     const paths = mgr.getPluginPaths();
@@ -431,11 +434,9 @@ describe('PluginManager', () => {
     it('injects default marketplace and plugin into empty config', async () => {
       // Override defaults mock for this test
       const defaults = await import('./defaults');
-      vi.mocked(defaults).DEFAULT_MARKETPLACES = [
-        { name: 'test-mkt', repo: 'org/test-mkt', ref: 'main' },
-      ];
+      vi.mocked(defaults).DEFAULT_MARKETPLACES = [{ name: 'test-mkt', repo: 'org/test-mkt', ref: 'main' }];
       vi.mocked(defaults).DEFAULT_PLUGINS = ['tool-d@test-mkt'];
-      vi.mocked(defaults.isDefaultPlugin).mockImplementation(ref => ref === 'tool-d@test-mkt');
+      vi.mocked(defaults.isDefaultPlugin).mockImplementation((ref) => ref === 'tool-d@test-mkt');
 
       const installedPath = path.join(tmpDir, 'tool-d');
       mockFetchPlugin.mockResolvedValueOnce({
@@ -460,11 +461,9 @@ describe('PluginManager', () => {
 
     it('user config takes precedence on marketplace name collision', async () => {
       const defaults = await import('./defaults');
-      vi.mocked(defaults).DEFAULT_MARKETPLACES = [
-        { name: 'official', repo: 'default/repo', ref: 'main' },
-      ];
+      vi.mocked(defaults).DEFAULT_MARKETPLACES = [{ name: 'official', repo: 'default/repo', ref: 'main' }];
       vi.mocked(defaults).DEFAULT_PLUGINS = ['tool-x@official'];
-      vi.mocked(defaults.isDefaultPlugin).mockImplementation(ref => ref === 'tool-x@official');
+      vi.mocked(defaults.isDefaultPlugin).mockImplementation((ref) => ref === 'tool-x@official');
 
       const installedPath = path.join(tmpDir, 'tool-x');
       mockFetchPlugin.mockResolvedValueOnce({

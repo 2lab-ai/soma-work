@@ -1,9 +1,9 @@
-import { FileHandler, ProcessedFile } from '../../file-handler';
-import { userSettingsStore } from '../../user-settings-store';
+import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
-import { WorkflowType } from '../../types';
-import { MessageEvent, SayFn, InputProcessResult } from './types';
-import { CommandRouter } from '../commands';
+import type { WorkflowType } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
+import type { CommandRouter } from '../commands';
+import { InputProcessResult, type MessageEvent, type SayFn } from './types';
 
 interface InputProcessorDeps {
   fileHandler: FileHandler;
@@ -21,10 +21,7 @@ export class InputProcessor {
   /**
    * 파일 처리 및 입력 검증
    */
-  async processFiles(
-    event: MessageEvent,
-    say: SayFn
-  ): Promise<{ files: ProcessedFile[]; shouldContinue: boolean }> {
+  async processFiles(event: MessageEvent, say: SayFn): Promise<{ files: ProcessedFile[]; shouldContinue: boolean }> {
     const { user, thread_ts, ts, files } = event;
 
     // Update user's Jira info from mapping
@@ -37,7 +34,7 @@ export class InputProcessor {
 
       if (processedFiles.length > 0) {
         await say({
-          text: `📎 Processing ${processedFiles.length} file(s): ${processedFiles.map(f => f.name).join(', ')}`,
+          text: `📎 Processing ${processedFiles.length} file(s): ${processedFiles.map((f) => f.name).join(', ')}`,
           thread_ts: thread_ts || ts,
         });
       }
@@ -54,7 +51,7 @@ export class InputProcessor {
    */
   async routeCommand(
     event: MessageEvent,
-    say: SayFn
+    say: SayFn,
   ): Promise<{ handled: boolean; continueWithPrompt?: string; forceWorkflow?: WorkflowType }> {
     const { user, channel, thread_ts, ts, text } = event;
 

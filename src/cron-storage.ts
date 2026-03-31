@@ -6,9 +6,9 @@
  * Pattern: src/metrics/report-scheduler.ts (loadScheduleState/saveScheduleState)
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 
@@ -66,7 +66,7 @@ export function matchesCronExpression(expression: string, date: Date): boolean {
 function matchField(field: string, value: number, min: number, max: number): boolean {
   // Handle comma-separated values
   const parts = field.split(',');
-  return parts.some(part => matchPart(part.trim(), value, min, max));
+  return parts.some((part) => matchPart(part.trim(), value, min, max));
 }
 
 function matchPart(part: string, value: number, min: number, max: number): boolean {
@@ -116,15 +116,15 @@ export function isValidCronExpression(expression: string): boolean {
 
   // Regex: *, N, N-M, */N, N-M/N, comma-separated combinations
   const cronFieldRegex = /^((\*|\d+(-\d+)?)(\/\d+)?)(,((\*|\d+(-\d+)?)(\/\d+)?))*$/;
-  if (!fields.every(f => cronFieldRegex.test(f))) return false;
+  if (!fields.every((f) => cronFieldRegex.test(f))) return false;
 
   // Range validation per field: [min, max]
   const ranges: [number, number][] = [
-    [0, 59],  // minute
-    [0, 23],  // hour
-    [1, 31],  // day of month
-    [1, 12],  // month
-    [0, 7],   // day of week (0 and 7 = Sunday)
+    [0, 59], // minute
+    [0, 23], // hour
+    [1, 31], // day of month
+    [1, 12], // month
+    [0, 7], // day of week (0 and 7 = Sunday)
   ];
 
   for (let i = 0; i < 5; i++) {
@@ -147,10 +147,13 @@ export function isValidCronExpression(expression: string): boolean {
     }
     // Check numeric values in range
     const nums = fields[i].match(/\d+/g);
-    if (nums && nums.some(n => {
-      const v = parseInt(n, 10);
-      return v < min || v > max;
-    })) {
+    if (
+      nums &&
+      nums.some((n) => {
+        const v = parseInt(n, 10);
+        return v < min || v > max;
+      })
+    ) {
       return false;
     }
   }
@@ -207,7 +210,7 @@ export class CronStorage {
 
   /** Get jobs for a specific owner. */
   getJobsByOwner(owner: string): CronJob[] {
-    return this.load().jobs.filter(j => j.owner === owner);
+    return this.load().jobs.filter((j) => j.owner === owner);
   }
 
   /** Add a new job. Throws on duplicate name for same owner. */
@@ -215,7 +218,7 @@ export class CronStorage {
     const data = this.load();
 
     // Check duplicate
-    const existing = data.jobs.find(j => j.owner === job.owner && j.name === job.name);
+    const existing = data.jobs.find((j) => j.owner === job.owner && j.name === job.name);
     if (existing) {
       throw new Error(`DUPLICATE_NAME: Cron job '${job.name}' already exists for this user`);
     }
@@ -239,7 +242,7 @@ export class CronStorage {
   removeJob(owner: string, name: string): boolean {
     const data = this.load();
     const before = data.jobs.length;
-    data.jobs = data.jobs.filter(j => !(j.owner === owner && j.name === name));
+    data.jobs = data.jobs.filter((j) => !(j.owner === owner && j.name === name));
 
     if (data.jobs.length === before) {
       return false; // Not found
@@ -253,7 +256,7 @@ export class CronStorage {
   /** Update lastRunAt and lastRunMinute for a job. */
   updateLastRun(jobId: string, now: Date): void {
     const data = this.load();
-    const job = data.jobs.find(j => j.id === jobId);
+    const job = data.jobs.find((j) => j.id === jobId);
     if (!job) return;
 
     job.lastRunAt = now.toISOString();

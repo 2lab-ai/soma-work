@@ -19,19 +19,9 @@ describe('StatusReporter', () => {
   it('createStatusMessage uses slackApi.postMessage and stores ts', async () => {
     slackApi.postMessage.mockResolvedValue({ ts: '111.222', channel: 'C123' });
 
-    const result = await reporter.createStatusMessage(
-      'C123',
-      '999.888',
-      'session-1',
-      'working',
-      '[tag] '
-    );
+    const result = await reporter.createStatusMessage('C123', '999.888', 'session-1', 'working', '[tag] ');
 
-    expect(slackApi.postMessage).toHaveBeenCalledWith(
-      'C123',
-      '[tag] ⚙️ *Working...*',
-      { threadTs: '999.888' }
-    );
+    expect(slackApi.postMessage).toHaveBeenCalledWith('C123', '[tag] ⚙️ *Working...*', { threadTs: '999.888' });
     expect(result).toBe('111.222');
     expect(reporter.getStatusMessage('session-1')).toEqual({
       channel: 'C123',
@@ -48,11 +38,7 @@ describe('StatusReporter', () => {
 
     await reporter.updateStatus('session-1', 'completed');
 
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'C123',
-      '111.222',
-      '✅ *Task completed*'
-    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', '✅ *Task completed*');
   });
 
   it('updateStatusDirect uses slackApi.updateMessage with explicit ts', async () => {
@@ -60,10 +46,6 @@ describe('StatusReporter', () => {
 
     await reporter.updateStatusDirect('C123', '111.222', 'error', '[tag] ');
 
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'C123',
-      '111.222',
-      '[tag] ❌ *Error occurred*'
-    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', '[tag] ❌ *Error occurred*');
   });
 });

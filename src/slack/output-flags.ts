@@ -9,45 +9,45 @@
 
 export const OutputFlag = {
   /** Final assistant text response */
-  FINAL_RESULT:    1 << 0,
+  FINAL_RESULT: 1 << 0,
   /** LLM extended thinking / reasoning output */
-  THINKING:        1 << 1,
+  THINKING: 1 << 1,
   /** Tool call notification — name only (e.g. "📝 Edit file.ts") */
-  TOOL_CALL:       1 << 2,
+  TOOL_CALL: 1 << 2,
   /** Tool call detail — args, diff, command, MCP inputs */
-  TOOL_DETAIL:     1 << 3,
+  TOOL_DETAIL: 1 << 3,
   /** Tool execution result */
-  TOOL_RESULT:     1 << 4,
+  TOOL_RESULT: 1 << 4,
   /** MCP / subagent progress status messages */
-  MCP_PROGRESS:    1 << 5,
+  MCP_PROGRESS: 1 << 5,
   /** Status text messages (Thinking / Working / Completed) */
-  STATUS_MESSAGE:  1 << 6,
+  STATUS_MESSAGE: 1 << 6,
   /** Emoji reactions (thinking_face, gear, check_mark) */
   STATUS_REACTION: 1 << 7,
   /** Native Slack assistant spinner */
-  STATUS_SPINNER:  1 << 8,
+  STATUS_SPINNER: 1 << 8,
   /** User choice / form prompts (ALWAYS shown) */
-  USER_CHOICE:     1 << 9,
+  USER_CHOICE: 1 << 9,
   /** Permission approval prompts (ALWAYS shown) */
-  PERMISSION:      1 << 10,
+  PERMISSION: 1 << 10,
   /** Action panel updates */
-  ACTION_PANEL:    1 << 11,
+  ACTION_PANEL: 1 << 11,
   /** Thread header (title, workflow badge) */
-  THREAD_HEADER:   1 << 12,
+  THREAD_HEADER: 1 << 12,
   /** Session footer (timing, context, usage) */
-  SESSION_FOOTER:  1 << 13,
+  SESSION_FOOTER: 1 << 13,
   /** Context window emoji (80p, 60p, …) */
-  CONTEXT_EMOJI:   1 << 14,
+  CONTEXT_EMOJI: 1 << 14,
   /** Todo list create / update */
-  TODO_UPDATE:     1 << 15,
+  TODO_UPDATE: 1 << 15,
   /** Todo progress reactions */
-  TODO_REACTION:   1 << 16,
+  TODO_REACTION: 1 << 16,
   /** Error messages and error status */
-  ERROR:           1 << 17,
+  ERROR: 1 << 17,
   /** System / command responses, onboarding */
-  SYSTEM:          1 << 18,
+  SYSTEM: 1 << 18,
   /** Raw model response data (debug) */
-  RAW_DATA:        1 << 19,
+  RAW_DATA: 1 << 19,
 } as const;
 
 export type OutputFlagValue = (typeof OutputFlag)[keyof typeof OutputFlag];
@@ -57,16 +57,10 @@ export type OutputFlagValue = (typeof OutputFlag)[keyof typeof OutputFlag];
 export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 
 /** Flags that are ALWAYS active regardless of log level */
-const ALWAYS =
-  OutputFlag.USER_CHOICE |
-  OutputFlag.PERMISSION |
-  OutputFlag.ERROR;
+const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
 /** MINIMAL — final result + essential interactions + long-running status */
-export const LOG_MINIMAL =
-  ALWAYS |
-  OutputFlag.FINAL_RESULT |
-  OutputFlag.MCP_PROGRESS;
+export const LOG_MINIMAL = ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
 export const LOG_COMPACT =
@@ -93,16 +87,14 @@ export const LOG_DETAIL =
   OutputFlag.SYSTEM;
 
 /** VERBOSE — everything including raw data */
-export const LOG_VERBOSE =
-  LOG_DETAIL |
-  OutputFlag.RAW_DATA;
+export const LOG_VERBOSE = LOG_DETAIL | OutputFlag.RAW_DATA;
 
 // ── Lookup helpers ───────────────────────────────────────────────────
 
 const VERBOSITY_MAP: Record<LogVerbosity, number> = {
   minimal: LOG_MINIMAL,
   compact: LOG_COMPACT,
-  detail:  LOG_DETAIL,
+  detail: LOG_DETAIL,
   verbose: LOG_VERBOSE,
 };
 
@@ -137,23 +129,23 @@ export type RenderMode = 'hidden' | 'compact' | 'detail' | 'verbose';
 /** Resolve the render mode for tool call output */
 export function getToolCallRenderMode(mask: number): RenderMode {
   if (!shouldOutput(OutputFlag.TOOL_CALL, mask)) return 'hidden';
-  if (shouldOutput(OutputFlag.RAW_DATA, mask))    return 'verbose';
+  if (shouldOutput(OutputFlag.RAW_DATA, mask)) return 'verbose';
   if (shouldOutput(OutputFlag.TOOL_DETAIL, mask)) return 'detail';
   return 'compact';
 }
 
 /** Resolve the render mode for tool result output */
 export function getToolResultRenderMode(mask: number): RenderMode {
-  if (!shouldOutput(OutputFlag.TOOL_CALL, mask))   return 'hidden';
-  if (shouldOutput(OutputFlag.RAW_DATA, mask))     return 'verbose';
-  if (shouldOutput(OutputFlag.TOOL_RESULT, mask))  return 'detail';
-  return 'compact';  // compact = no separate result, update tool call in-place
+  if (!shouldOutput(OutputFlag.TOOL_CALL, mask)) return 'hidden';
+  if (shouldOutput(OutputFlag.RAW_DATA, mask)) return 'verbose';
+  if (shouldOutput(OutputFlag.TOOL_RESULT, mask)) return 'detail';
+  return 'compact'; // compact = no separate result, update tool call in-place
 }
 
 /** Resolve the render mode for thinking output */
 export function getThinkingRenderMode(mask: number): RenderMode {
   if (!shouldOutput(OutputFlag.THINKING, mask)) return 'hidden';
-  if (shouldOutput(OutputFlag.RAW_DATA, mask))   return 'verbose';
+  if (shouldOutput(OutputFlag.RAW_DATA, mask)) return 'verbose';
   if (shouldOutput(OutputFlag.TOOL_DETAIL, mask)) return 'detail';
   return 'compact';
 }
@@ -162,15 +154,15 @@ export function getThinkingRenderMode(mask: number): RenderMode {
 
 /** Reverse map: flag value → name */
 const FLAG_NAME_MAP: Record<number, string> = Object.fromEntries(
-  Object.entries(OutputFlag).map(([name, value]) => [value, name])
+  Object.entries(OutputFlag).map(([name, value]) => [value, name]),
 );
 
 /** Ordered levels for determining minimum level that includes a flag */
 const LEVELS_ASC: { name: string; mask: number }[] = [
-  { name: 'always',  mask: ALWAYS },
+  { name: 'always', mask: ALWAYS },
   { name: 'minimal', mask: LOG_MINIMAL },
   { name: 'compact', mask: LOG_COMPACT },
-  { name: 'detail',  mask: LOG_DETAIL },
+  { name: 'detail', mask: LOG_DETAIL },
   { name: 'verbose', mask: LOG_VERBOSE },
 ];
 

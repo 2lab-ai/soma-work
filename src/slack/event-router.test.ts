@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EventRouter, EventRouterDeps } from './event-router';
-import { SlackApiHelper } from './slack-api-helper';
-import { SessionUiManager } from './session-manager';
-import { ActionHandlers, MessageHandler } from './action-handlers';
-import { ClaudeHandler } from '../claude-handler';
-import { ConversationSession } from '../types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ClaudeHandler } from '../claude-handler';
+import type { ConversationSession } from '../types';
+import type { ActionHandlers, MessageHandler } from './action-handlers';
+import { EventRouter, type EventRouterDeps } from './event-router';
+import type { SessionUiManager } from './session-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 // Mock channel registry
 vi.mock('../channel-registry', () => ({
@@ -144,9 +144,7 @@ describe('EventRouter', () => {
       router.setup();
 
       // Find app_mention handler
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -160,18 +158,13 @@ describe('EventRouter', () => {
 
       await handler({ event: mockEvent, say: mockSay });
 
-      expect(mockMessageHandler).toHaveBeenCalledWith(
-        expect.objectContaining({ text: 'Hello bot' }),
-        mockSay
-      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'Hello bot' }), mockSay);
     });
 
     it('should preserve other user mentions and only strip bot mention — Issue #141', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -189,16 +182,14 @@ describe('EventRouter', () => {
       expect(mockMessageHandler).toHaveBeenCalledTimes(1);
       expect(mockMessageHandler).toHaveBeenCalledWith(
         expect.objectContaining({ text: 'review <@U999> PR please' }),
-        mockSay
+        mockSay,
       );
     });
 
     it('should handle multiple bot mentions with other user mentions — Issue #141', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -215,16 +206,14 @@ describe('EventRouter', () => {
       // Both <@B123> removed, both <@U111> and <@U222> preserved
       expect(mockMessageHandler).toHaveBeenCalledWith(
         expect.objectContaining({ text: 'compare <@U111> and <@U222> code' }),
-        mockSay
+        mockSay,
       );
     });
 
     it('should not mutate original event text — Issue #141', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -246,9 +235,7 @@ describe('EventRouter', () => {
       mockSlackApi.getBotUserId.mockRejectedValueOnce(new Error('API error'));
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -266,16 +253,14 @@ describe('EventRouter', () => {
       expect(mockMessageHandler).toHaveBeenCalledTimes(1);
       expect(mockMessageHandler).toHaveBeenCalledWith(
         expect.objectContaining({ text: '<@B123> review <@U999> code' }),
-        mockSay
+        mockSay,
       );
     });
 
     it('should handle text with no mentions at all — Issue #141', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       // Edge case: app_mention event with no mention markers in text (unlikely but defensive)
@@ -291,10 +276,7 @@ describe('EventRouter', () => {
       await handler({ event: mockEvent, say: mockSay });
 
       expect(mockMessageHandler).toHaveBeenCalledTimes(1);
-      expect(mockMessageHandler).toHaveBeenCalledWith(
-        expect.objectContaining({ text: 'hello world' }),
-        mockSay
-      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'hello world' }), mockSay);
     });
   });
 
@@ -303,9 +285,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(createMockSession());
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -326,9 +306,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -349,9 +327,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(createMockSession());
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -374,9 +350,7 @@ describe('EventRouter', () => {
     it('should send welcome message when bot joins', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'member_joined_channel'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -390,16 +364,14 @@ describe('EventRouter', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('Claude Code'),
-        })
+        }),
       );
     });
 
     it('should not send message when other user joins', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'member_joined_channel'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'member_joined_channel');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -433,11 +405,7 @@ describe('EventRouter', () => {
 
       await callbacks.onWarning(session, 30 * 60 * 1000, undefined);
 
-      expect(mockSessionManager.handleSessionWarning).toHaveBeenCalledWith(
-        session,
-        30 * 60 * 1000,
-        undefined
-      );
+      expect(mockSessionManager.handleSessionWarning).toHaveBeenCalledWith(session, 30 * 60 * 1000, undefined);
     });
 
     it('should call session manager on expiry', async () => {
@@ -457,9 +425,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -481,7 +447,7 @@ describe('EventRouter', () => {
           text: 'analyze this file',
           files: expect.arrayContaining([expect.objectContaining({ id: 'F1' })]),
         }),
-        mockSay
+        mockSay,
       );
       // Should NOT add no_entry emoji
       expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('C456', '123.456', 'no_entry');
@@ -493,9 +459,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -520,9 +484,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(createMockSession());
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -545,9 +507,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -569,9 +529,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -593,7 +551,7 @@ describe('EventRouter', () => {
           text: '',
           files: expect.arrayContaining([expect.objectContaining({ id: 'F1' })]),
         }),
-        mockSay
+        mockSay,
       );
     });
 
@@ -601,9 +559,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -623,7 +579,7 @@ describe('EventRouter', () => {
         expect.objectContaining({
           text: 'compare with <@U999> file',
         }),
-        mockSay
+        mockSay,
       );
     });
 
@@ -631,9 +587,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -656,9 +610,7 @@ describe('EventRouter', () => {
       mockClaudeHandler.getSession.mockReturnValue(null);
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'message'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -687,9 +639,7 @@ describe('EventRouter', () => {
     it('should skip app_mention when event has files (file_share handles it)', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -710,9 +660,7 @@ describe('EventRouter', () => {
     it('should process app_mention normally when no files', async () => {
       router.setup();
 
-      const eventCall = mockApp.event.mock.calls.find(
-        (call) => call[0] === 'app_mention'
-      );
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'app_mention');
       const handler = eventCall![1];
 
       const mockEvent = {
@@ -726,10 +674,7 @@ describe('EventRouter', () => {
 
       await handler({ event: mockEvent, say: mockSay });
 
-      expect(mockMessageHandler).toHaveBeenCalledWith(
-        expect.objectContaining({ text: 'hello' }),
-        mockSay
-      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(expect.objectContaining({ text: 'hello' }), mockSay);
     });
   });
 

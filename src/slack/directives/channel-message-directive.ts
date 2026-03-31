@@ -30,7 +30,7 @@ export class ChannelMessageDirectiveHandler {
     let match;
 
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const messageText = this.parseChannelMessageJson(match[1].trim());
+      const messageText = ChannelMessageDirectiveHandler.parseChannelMessageJson(match[1].trim());
       if (messageText) {
         const cleanedText = text.replace(match[0], '').trim();
         return { messageText, cleanedText };
@@ -42,14 +42,14 @@ export class ChannelMessageDirectiveHandler {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = this.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = ChannelMessageDirectiveHandler.extractBalancedJson(text, rawMatch.index);
       if (!jsonStr) continue;
 
-      const messageText = this.parseChannelMessageJson(jsonStr);
+      const messageText = ChannelMessageDirectiveHandler.parseChannelMessageJson(jsonStr);
       if (messageText) {
         const before = text.substring(0, rawMatch.index).trim();
         const after = text.substring(rawMatch.index + jsonStr.length).trim();
-        const cleanedText = before && after ? `${before}\n\n${after}` : (before || after);
+        const cleanedText = before && after ? `${before}\n\n${after}` : before || after;
         return { messageText, cleanedText };
       }
     }
@@ -109,9 +109,12 @@ export class ChannelMessageDirectiveHandler {
       if (parsed.type !== 'channel_message') return null;
 
       const raw =
-        typeof parsed.text === 'string' ? parsed.text
-          : typeof parsed.message === 'string' ? parsed.message
-            : typeof parsed.content === 'string' ? parsed.content
+        typeof parsed.text === 'string'
+          ? parsed.text
+          : typeof parsed.message === 'string'
+            ? parsed.message
+            : typeof parsed.content === 'string'
+              ? parsed.content
               : null;
 
       const normalized = raw?.trim();

@@ -1,4 +1,4 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles working directory commands (cwd)
@@ -11,8 +11,7 @@ export class CwdHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
 
   canHandle(text: string): boolean {
-    return this.deps.workingDirManager.parseSetCommand(text) !== null ||
-           this.deps.workingDirManager.isGetCommand(text);
+    return this.deps.workingDirManager.parseSetCommand(text) !== null || this.deps.workingDirManager.isGetCommand(text);
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
@@ -21,26 +20,24 @@ export class CwdHandler implements CommandHandler {
     // Check for set command - now disabled
     const setDirPath = this.deps.workingDirManager.parseSetCommand(text);
     if (setDirPath) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '⚠️ Working directory 설정은 비활성화되었습니다.\n' +
-        '각 사용자는 고유한 디렉토리(`BASE_DIRECTORY/{userId}/`)를 자동으로 사용합니다.\n' +
-        '`cwd` 명령으로 현재 디렉토리를 확인하세요.',
-        { threadTs }
+          '각 사용자는 고유한 디렉토리(`BASE_DIRECTORY/{userId}/`)를 자동으로 사용합니다.\n' +
+          '`cwd` 명령으로 현재 디렉토리를 확인하세요.',
+        { threadTs },
       );
       return { handled: true };
     }
 
     // Check for get command - show fixed directory
     if (this.deps.workingDirManager.isGetCommand(text)) {
-      const directory = this.deps.workingDirManager.getWorkingDirectory(
-        channel,
-        threadTs,
-        user
-      );
+      const directory = this.deps.workingDirManager.getWorkingDirectory(channel, threadTs, user);
 
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }

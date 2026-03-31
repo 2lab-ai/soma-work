@@ -1,24 +1,39 @@
 import './env-paths';
 import { App } from '@slack/bolt';
-import { config, validateConfig, runPreflightChecks } from './config';
-import { ClaudeHandler } from './claude-handler';
-import { SlackHandler } from './slack-handler';
-import { McpManager } from './mcp-manager';
-import { PluginManager } from './plugin/plugin-manager';
-import { loadUnifiedConfig } from './unified-config-loader';
-import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR, DATA_DIR } from './env-paths';
-import { Logger } from './logger';
-import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
-import { initializeDispatchService } from './dispatch-service';
-import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, setDashboardTaskAccessor, setDashboardStopHandler, setDashboardCloseHandler, setDashboardTrashHandler, setDashboardCommandHandler, broadcastSessionUpdate, broadcastTaskUpdate, broadcastConversationUpdate, setOnTurnRecordedCallback, setOAuthUserLookup } from './conversation';
-import { notifyRelease, getVersionInfo } from './release-notifier';
-import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
-import { tokenManager } from './token-manager';
-import { startReportScheduler, stopReportScheduler } from './metrics';
-import { CronScheduler, SyntheticMessageEvent } from './cron-scheduler';
+import { ClaudeHandler } from './claude-handler';
+import { config, runPreflightChecks, validateConfig } from './config';
+import {
+  broadcastConversationUpdate,
+  broadcastSessionUpdate,
+  broadcastTaskUpdate,
+  initRecorder,
+  setDashboardCloseHandler,
+  setDashboardCommandHandler,
+  setDashboardSessionAccessor,
+  setDashboardStopHandler,
+  setDashboardTaskAccessor,
+  setDashboardTrashHandler,
+  setOAuthUserLookup,
+  setOnTurnRecordedCallback,
+  startWebServer,
+  stopWebServer,
+} from './conversation';
+import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
 import { CronStorage } from './cron-storage';
+import { initializeDispatchService } from './dispatch-service';
+import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
+import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
+import { Logger } from './logger';
+import { McpManager } from './mcp-manager';
+import { startReportScheduler, stopReportScheduler } from './metrics';
 import { acquirePidLock, releasePidLock } from './pid-lock';
+import { PluginManager } from './plugin/plugin-manager';
+import { getVersionInfo, notifyRelease } from './release-notifier';
+import { SlackHandler } from './slack-handler';
+import { notifyStartup } from './startup-notifier';
+import { tokenManager } from './token-manager';
+import { loadUnifiedConfig } from './unified-config-loader';
 
 const logger = new Logger('Main');
 
@@ -36,7 +51,9 @@ async function start() {
 
     // Single instance guard — prevent duplicate processes (Issue #152)
     if (!acquirePidLock(DATA_DIR)) {
-      logger.error('Another soma-work instance is already running. Exiting to prevent duplicate Socket Mode connections.');
+      logger.error(
+        'Another soma-work instance is already running. Exiting to prevent duplicate Socket Mode connections.',
+      );
       process.exit(1);
     }
     timing('PID lock acquired');
@@ -184,7 +201,7 @@ async function start() {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
       const lookupId = session?.sessionId || sessionKey;
       const todos = slackHandler.getTodoManager().getTodos(lookupId);
-      return todos.map(t => ({ content: t.content, status: t.status }));
+      return todos.map((t) => ({ content: t.content, status: t.status }));
     });
 
     // Connect dashboard: stop handler (abort running session)
@@ -213,20 +230,26 @@ async function start() {
         return;
       }
       const noopSay = async () => ({ ts: undefined as string | undefined });
-      await slackHandler.handleMessage({
-        type: 'message',
-        channel: session.channelId,
-        thread_ts: session.threadTs,
-        text: message,
-        user: session.ownerId,
-        ts: String(Date.now() / 1000),
-      } as any, noopSay);
+      await slackHandler.handleMessage(
+        {
+          type: 'message',
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: message,
+          user: session.ownerId,
+          ts: String(Date.now() / 1000),
+        } as any,
+        noopSay,
+      );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
     });
 
     // Connect dashboard: real-time task updates
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
-      broadcastTaskUpdate(sessionId, todos.map(t => ({ content: t.content, status: t.status })));
+      broadcastTaskUpdate(
+        sessionId,
+        todos.map((t) => ({ content: t.content, status: t.status })),
+      );
     });
 
     // Connect dashboard: real-time conversation turn updates
@@ -272,7 +295,9 @@ async function start() {
     }
 
     const versionInfoForLog = getVersionInfo();
-    const versionTag = versionInfoForLog ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})` : 'dev';
+    const versionTag = versionInfoForLog
+      ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})`
+      : 'dev';
     logger.info(`⚡️ Claude Code Slack bot is running! [${versionTag}]`);
 
     // Start report scheduler (non-blocking, non-critical)
@@ -323,20 +348,25 @@ async function start() {
     }
 
     // Notify users whose sessions were interrupted by crash (non-blocking)
-    slackHandler.notifyCrashRecovery().then(notified => {
-      if (notified > 0) {
-        timing(`Crash recovery notifications sent (${notified} sessions)`);
-      }
-    }).catch(error => {
-      logger.warn('Crash recovery notifications failed (non-critical)', error);
-    });
+    slackHandler
+      .notifyCrashRecovery()
+      .then((notified) => {
+        if (notified > 0) {
+          timing(`Crash recovery notifications sent (${notified} sessions)`);
+        }
+      })
+      .catch((error) => {
+        logger.warn('Crash recovery notifications failed (non-critical)', error);
+      });
 
     // Scan channels the bot is a member of (non-blocking)
-    scanChannels(app.client).then(count => {
-      timing(`Channel scan complete (${count} channels)`);
-    }).catch(error => {
-      logger.warn('Channel scan failed (non-critical)', error);
-    });
+    scanChannels(app.client)
+      .then((count) => {
+        timing(`Channel scan complete (${count} channels)`);
+      })
+      .catch((error) => {
+        logger.warn('Channel scan failed (non-critical)', error);
+      });
 
     // Send release notification to configured channel
     try {

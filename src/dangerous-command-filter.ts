@@ -41,9 +41,9 @@ export interface DangerousCommandResult {
  * Returns the result with matched pattern descriptions.
  */
 export function checkDangerousCommand(command: string): DangerousCommandResult {
-  const matched = DANGEROUS_PATTERNS
-    .filter(({ pattern }) => pattern.test(command))
-    .map(({ description }) => description);
+  const matched = DANGEROUS_PATTERNS.filter(({ pattern }) => pattern.test(command)).map(
+    ({ description }) => description,
+  );
 
   return {
     isDangerous: matched.length > 0,
@@ -62,12 +62,7 @@ export function isDangerousCommand(command: string): boolean {
  * SSH command patterns — matches `ssh`, `scp`, `sftp`, `rsync` over SSH.
  * These commands allow remote server access and must be restricted to admin users.
  */
-const SSH_PATTERNS: ReadonlyArray<RegExp> = [
-  /\bssh\b/,
-  /\bscp\b/,
-  /\bsftp\b/,
-  /\brsync\b.*\b-e\s+['"]?ssh/,
-];
+const SSH_PATTERNS: ReadonlyArray<RegExp> = [/\bssh\b/, /\bscp\b/, /\bsftp\b/, /\brsync\b.*\b-e\s+['"]?ssh/];
 
 /**
  * Check if a bash command involves SSH (remote server access).

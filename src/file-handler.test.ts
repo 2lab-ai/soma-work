@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FileHandler, ProcessedFile } from './file-handler';
+import { FileHandler, type ProcessedFile } from './file-handler';
 
 describe('FileHandler.formatFilePrompt — image path included for viewing', () => {
   const handler = new FileHandler();
@@ -80,10 +80,7 @@ describe('FileHandler.formatFilePrompt — image path included for viewing', () 
   });
 
   it('handles mixed image + non-image files correctly', async () => {
-    const result = await handler.formatFilePrompt(
-      [makeImageFile(), makePdfFile()],
-      'analyze these'
-    );
+    const result = await handler.formatFilePrompt([makeImageFile(), makePdfFile()], 'analyze these');
 
     // Image path should now be present
     expect(result).toContain('/tmp/slack-file-12345-screenshot.png');
@@ -220,7 +217,12 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
 
   it('downloadFile detects media by extension when mimetype is application/octet-stream', async () => {
     const fh = handler as any;
-    const file = { name: 'recording.mp4', mimetype: 'application/octet-stream', size: 5_000_000, url_private_download: 'https://example.com/video' };
+    const file = {
+      name: 'recording.mp4',
+      mimetype: 'application/octet-stream',
+      size: 5_000_000,
+      url_private_download: 'https://example.com/video',
+    };
     const result = await fh.downloadFile(file);
 
     expect(result).not.toBeNull();
@@ -243,7 +245,12 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
   // Gemini review P2 fix: media files skip download, return metadata-only ProcessedFile
   it('downloadFile returns metadata-only ProcessedFile for video without downloading', async () => {
     const fh = handler as any;
-    const file = { name: 'big-video.mp4', mimetype: 'video/mp4', size: 200_000_000, url_private_download: 'https://example.com/video' };
+    const file = {
+      name: 'big-video.mp4',
+      mimetype: 'video/mp4',
+      size: 200_000_000,
+      url_private_download: 'https://example.com/video',
+    };
     const result = await fh.downloadFile(file);
 
     expect(result).not.toBeNull();
@@ -256,7 +263,12 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
 
   it('downloadFile returns metadata-only ProcessedFile for audio without downloading', async () => {
     const fh = handler as any;
-    const file = { name: 'podcast.mp3', mimetype: 'audio/mpeg', size: 80_000_000, url_private_download: 'https://example.com/audio' };
+    const file = {
+      name: 'podcast.mp3',
+      mimetype: 'audio/mpeg',
+      size: 80_000_000,
+      url_private_download: 'https://example.com/audio',
+    };
     const result = await fh.downloadFile(file);
 
     expect(result).not.toBeNull();

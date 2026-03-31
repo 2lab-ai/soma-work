@@ -1,6 +1,6 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
+import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
-import { userSettingsStore, AVAILABLE_MODELS, MODEL_ALIASES } from '../../user-settings-store';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles model commands (status/list/set) — persists to user default
@@ -29,12 +29,10 @@ export class ModelHandler implements CommandHandler {
       });
     } else if (modelAction.action === 'list') {
       const currentModel = userSettingsStore.getUserDefaultModel(user);
-      const modelList = AVAILABLE_MODELS
-        .map(m => {
-          const displayName = userSettingsStore.getModelDisplayName(m);
-          return m === currentModel ? `• *${displayName}* _(current)_\n  \`${m}\`` : `• ${displayName}\n  \`${m}\``;
-        })
-        .join('\n');
+      const modelList = AVAILABLE_MODELS.map((m) => {
+        const displayName = userSettingsStore.getModelDisplayName(m);
+        return m === currentModel ? `• *${displayName}* _(current)_\n  \`${m}\`` : `• ${displayName}\n  \`${m}\``;
+      }).join('\n');
 
       await say({
         text: `🤖 *Available Models*\n\n${modelList}\n\n_Use \`model set <name>\` to change your default model._`,
@@ -57,7 +55,9 @@ export class ModelHandler implements CommandHandler {
           thread_ts: threadTs,
         });
       } else {
-        const aliasesText = Object.keys(MODEL_ALIASES).map(a => `\`${a}\``).join(', ');
+        const aliasesText = Object.keys(MODEL_ALIASES)
+          .map((a) => `\`${a}\``)
+          .join(', ');
         await say({
           text: `❌ *Unknown Model*\n\nModel \`${modelAction.model}\` not found.\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
           thread_ts: threadTs,

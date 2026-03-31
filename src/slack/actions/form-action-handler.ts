@@ -1,12 +1,12 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { UserChoiceHandler } from '../user-choice-handler';
-import { ClaudeHandler } from '../../claude-handler';
-import { UserChoices } from '../../types';
+import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
-import { PendingFormStore } from './pending-form-store';
-import { ChoiceActionHandler } from './choice-action-handler';
-import { MessageHandler, SayFn, PendingChoiceFormData } from './types';
-import { ThreadPanel } from '../thread-panel';
+import type { UserChoices } from '../../types';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { ThreadPanel } from '../thread-panel';
+import { UserChoiceHandler } from '../user-choice-handler';
+import type { ChoiceActionHandler } from './choice-action-handler';
+import type { PendingFormStore } from './pending-form-store';
+import { type MessageHandler, PendingChoiceFormData, type SayFn } from './types';
 
 interface FormActionContext {
   slackApi: SlackApiHelper;
@@ -24,7 +24,7 @@ export class FormActionHandler {
   constructor(
     private ctx: FormActionContext,
     private formStore: PendingFormStore,
-    private choiceHandler: ChoiceActionHandler
+    private choiceHandler: ChoiceActionHandler,
   ) {}
 
   async handleCustomInputSingle(body: any, client: any): Promise<void> {
@@ -60,7 +60,16 @@ export class FormActionHandler {
 
       await client.views.open({
         trigger_id: triggerId,
-        view: this.buildCustomInputModal(sessionKey, question, channel, messageTs, threadTs, 'multi', formId, questionId),
+        view: this.buildCustomInputModal(
+          sessionKey,
+          question,
+          channel,
+          messageTs,
+          threadTs,
+          'multi',
+          formId,
+          questionId,
+        ),
       });
     } catch (error) {
       this.logger.error('Error opening custom input modal for multi-choice', error);
@@ -74,12 +83,28 @@ export class FormActionHandler {
       const userId = body.user.id;
       const inputValue = view.state.values.custom_input_block.custom_input_text.value || '';
 
-      this.logger.info('Custom input submitted', { type, sessionKey, questionId, inputLength: inputValue.length, userId });
+      this.logger.info('Custom input submitted', {
+        type,
+        sessionKey,
+        questionId,
+        inputLength: inputValue.length,
+        userId,
+      });
 
       if (type === 'single') {
         await this.handleSingleCustomInput(sessionKey, question, channel, messageTs, threadTs, userId, inputValue);
       } else if (type === 'multi') {
-        await this.handleMultiCustomInput(formId, sessionKey, questionId, question, channel, messageTs, threadTs, userId, inputValue);
+        await this.handleMultiCustomInput(
+          formId,
+          sessionKey,
+          questionId,
+          question,
+          channel,
+          messageTs,
+          threadTs,
+          userId,
+          inputValue,
+        );
       }
     } catch (error) {
       this.logger.error('Error processing custom input submission', error);
@@ -93,7 +118,7 @@ export class FormActionHandler {
     messageTs: string,
     threadTs: string | undefined,
     userId: string,
-    inputValue: string
+    inputValue: string,
   ): Promise<void> {
     const completionMessageTs = this.resolveChoiceMessageTs(sessionKey, messageTs);
 
@@ -117,7 +142,7 @@ export class FormActionHandler {
             targetTs,
             completedText,
             completedBlocks,
-            [] // 기존 attachments(버튼) 제거
+            [], // 기존 attachments(버튼) 제거
           );
         } catch (error) {
           this.logger.warn('Failed to update choice message after custom input', { targetTs, error });
@@ -139,7 +164,7 @@ export class FormActionHandler {
       const resolvedThreadTs = this.resolveSessionThreadTs(sessionKey, threadTs);
       await this.ctx.messageHandler(
         { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: inputValue },
-        say
+        say,
       );
     }
   }
@@ -153,7 +178,7 @@ export class FormActionHandler {
     messageTs: string,
     threadTs: string | undefined,
     userId: string,
-    inputValue: string
+    inputValue: string,
   ): Promise<void> {
     const pendingForm = this.formStore.get(formId);
     if (!pendingForm) {
@@ -180,7 +205,7 @@ export class FormActionHandler {
       choicesData,
       formId,
       sessionKey,
-      pendingForm.selections
+      pendingForm.selections,
     );
 
     const targetMessageTs = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs);
@@ -191,7 +216,7 @@ export class FormActionHandler {
           targetTs,
           '📋 선택이 필요합니다',
           undefined,
-          updatedPayload.attachments
+          updatedPayload.attachments,
         );
       } catch (error) {
         this.logger.warn('Failed to update multi-choice form after custom input', {
@@ -218,7 +243,7 @@ export class FormActionHandler {
     threadTs: string | undefined,
     type: 'single' | 'multi',
     formId?: string,
-    questionId?: string
+    questionId?: string,
   ): any {
     return {
       type: 'modal',
@@ -291,7 +316,7 @@ export class FormActionHandler {
   private resolveChoiceSyncMessageTs(
     sessionKey: string,
     sourceMessageTs: string | undefined,
-    threadMessageTs: string | undefined
+    threadMessageTs: string | undefined,
   ): string[] {
     const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
     const targets = new Set<string>();

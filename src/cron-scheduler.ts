@@ -6,10 +6,10 @@
  * Pattern: src/slack-handler.ts:745-762 (autoResumeSession synthetic message)
  */
 
+import { type CronJob, type CronStorage, matchesCronExpression } from './cron-storage';
 import { Logger } from './logger';
-import { CronStorage, CronJob, matchesCronExpression } from './cron-storage';
-import { SessionRegistry } from './session-registry';
-import { ConversationSession } from './types';
+import type { SessionRegistry } from './session-registry';
+import type { ConversationSession } from './types';
 
 const logger = new Logger('CronScheduler');
 const POLL_INTERVAL_MS = 60_000; // 1 minute
@@ -61,7 +61,7 @@ export class CronScheduler {
     if (this.timer) return;
     logger.info('CronScheduler started');
     // Fire immediately on start, then every 60s
-    this.tick().catch(err => logger.error('Initial tick failed', { error: err?.message }));
+    this.tick().catch((err) => logger.error('Initial tick failed', { error: err?.message }));
     this.timer = setInterval(() => this.tick(), POLL_INTERVAL_MS);
   }
 
@@ -154,10 +154,7 @@ export class CronScheduler {
     const sessions = this.deps.sessionRegistry.getAllSessions();
 
     const isEligible = (s: ConversationSession) =>
-      s.ownerId === owner &&
-      s.channelId === channel &&
-      s.isActive &&
-      s.state !== 'SLEEPING'; // Sleeping sessions should not receive cron injections
+      s.ownerId === owner && s.channelId === channel && s.isActive && s.state !== 'SLEEPING'; // Sleeping sessions should not receive cron injections
 
     // If threadTs specified, match exactly
     if (threadTs) {

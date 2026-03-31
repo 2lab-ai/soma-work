@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { SessionUsage } from '../types';
 import { ThreadHeaderBuilder } from './thread-header-builder';
-import { SessionUsage } from '../types';
 
 function collectBlockTexts(blocks: any[]): string[] {
   const lines: string[] = [];
@@ -67,10 +67,11 @@ describe('ThreadHeaderBuilder', () => {
     });
 
     const blocks = (payload.blocks || payload.attachments?.[0]?.blocks || []) as any[];
-    const linkContext = blocks.find((block) =>
-      block.type === 'context'
-      && Array.isArray(block.elements)
-      && block.elements.some((el: any) => String(el.text || '').includes('github.com'))
+    const linkContext = blocks.find(
+      (block) =>
+        block.type === 'context' &&
+        Array.isArray(block.elements) &&
+        block.elements.some((el: any) => String(el.text || '').includes('github.com')),
     );
 
     expect(linkContext).toBeDefined();
@@ -108,7 +109,7 @@ describe('ThreadHeaderBuilder', () => {
       contextWindow: 1_000_000,
       totalInputTokens: 200_000,
       totalOutputTokens: 80_000,
-      totalCostUsd: 0.50,
+      totalCostUsd: 0.5,
       lastUpdated: Date.now(),
     };
 

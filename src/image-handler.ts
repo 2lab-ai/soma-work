@@ -17,23 +17,17 @@ export class ImageHandler {
 
   formatImagePrompt(imagePath: string, filename: string, mimetype: string, userText: string): string {
     let prompt = userText || 'Please analyze this image.';
-    
+
     prompt += `\n\nImage: ${filename}\n`;
     prompt += `Type: ${mimetype}\n`;
     prompt += `Note: Please analyze this image and provide insights about what you see.\n`;
-    
+
     return prompt;
   }
 
   isImageSupported(mimetype: string): boolean {
-    const supportedTypes = [
-      'image/jpeg',
-      'image/jpg', 
-      'image/png',
-      'image/gif',
-      'image/webp'
-    ];
-    
+    const supportedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+
     return supportedTypes.includes(mimetype.toLowerCase());
   }
 }

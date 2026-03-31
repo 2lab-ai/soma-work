@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
@@ -172,7 +172,7 @@ describe('SessionInitializer — workspace wiring integration', () => {
     expect(mockClaudeHandler.addSourceWorkingDir).toHaveBeenCalledWith(
       'C001',
       'thread001',
-      '/tmp/U123/session_1711111111111_0'
+      '/tmp/U123/session_1711111111111_0',
     );
   });
 

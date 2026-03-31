@@ -1,13 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-working-dir-test',
 }));
 
-import { SessionRegistry } from './session-registry';
 import { normalizeTmpPath } from './path-utils';
+import { SessionRegistry } from './session-registry';
 
 const TEST_DATA_DIR = '/tmp/soma-work-working-dir-test';
 const TEST_WORKING_DIR = '/tmp/soma-work-working-dir-test-dirs';

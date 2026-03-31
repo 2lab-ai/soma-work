@@ -1,4 +1,4 @@
-import { ModelCommandListResponse, ModelCommandRunResponse } from './types';
+import type { ModelCommandListResponse, ModelCommandRunResponse } from './types';
 
 export function parseModelCommandRunResponse(raw: unknown): ModelCommandRunResponse | null {
   const candidates = extractJsonCandidates(raw);

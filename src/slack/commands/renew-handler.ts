@@ -1,5 +1,5 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles /renew command - save context and generate handoff message
@@ -23,27 +23,30 @@ export class RenewHandler implements CommandHandler {
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '💡 No active session to renew. Start a conversation first!',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
 
     // Check if a request is in progress
     if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '⚠️ Cannot renew while a request is in progress. Please wait for the current response to complete.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
 
     // Check if already in renew process
     if (session.renewState) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '⚠️ Renew is already in progress. Please wait for it to complete.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
@@ -55,11 +58,12 @@ export class RenewHandler implements CommandHandler {
     session.renewState = 'pending_save';
     session.renewUserMessage = userMessage || undefined;
 
-    await this.deps.slackApi.postSystemMessage(channel,
+    await this.deps.slackApi.postSystemMessage(
+      channel,
       userMessage
         ? `🔄 Saving context for handoff...\n_Load 후 지시사항: "${userMessage}"_`
         : '🔄 Saving context for handoff...',
-      { threadTs }
+      { threadTs },
     );
 
     // Return /save as the prompt to continue with.

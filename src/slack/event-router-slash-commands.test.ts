@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Integration Tests for EventRouter.setupSlashCommands()
@@ -79,7 +79,10 @@ describe('EventRouter.setupSlashCommands — integration', () => {
         registerHandlers: vi.fn(),
       },
       commandDeps: {
-        workingDirManager: { parseSetCommand: vi.fn().mockReturnValue(null), isGetCommand: vi.fn().mockReturnValue(false) },
+        workingDirManager: {
+          parseSetCommand: vi.fn().mockReturnValue(null),
+          isGetCommand: vi.fn().mockReturnValue(false),
+        },
         mcpManager: { getPluginManager: vi.fn() },
         claudeHandler: {},
         sessionUiManager: {},
@@ -142,7 +145,7 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         response_type: 'ephemeral',
-      })
+      }),
     );
     // Must NOT expose internal error details
     const errorText = respond.mock.calls[0][0].text;
@@ -166,9 +169,7 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     respond.mockRejectedValueOnce(new Error('respond() also failed'));
 
     // Should not throw — double fault is caught internally
-    await expect(
-      handlers['/soma']({ command, ack, respond })
-    ).resolves.not.toThrow();
+    await expect(handlers['/soma']({ command, ack, respond })).resolves.not.toThrow();
   });
 
   // ============================================================
@@ -188,7 +189,7 @@ describe('EventRouter.setupSlashCommands — integration', () => {
       expect(respond).toHaveBeenCalledWith(
         expect.objectContaining({
           response_type: 'ephemeral',
-        })
+        }),
       );
       const text = respond.mock.calls[0][0].text;
       expect(text).toContain('스레드 컨텍스트가 필요');
@@ -222,15 +223,12 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     await handlers['/session']({ command, ack, respond });
 
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(mockDeps.sessionManager.formatUserSessionsBlocks).toHaveBeenCalledWith(
-      'U_TEST',
-      { showControls: true }
-    );
+    expect(mockDeps.sessionManager.formatUserSessionsBlocks).toHaveBeenCalledWith('U_TEST', { showControls: true });
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '2 active sessions',
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
@@ -247,14 +245,12 @@ describe('EventRouter.setupSlashCommands — integration', () => {
       expect.objectContaining({
         text: '활성 세션이 없습니다.',
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
   it('/session: error returns generic ephemeral error', async () => {
-    mockDeps.sessionManager.formatUserSessionsBlocks.mockRejectedValue(
-      new Error('Redis timeout')
-    );
+    mockDeps.sessionManager.formatUserSessionsBlocks.mockRejectedValue(new Error('Redis timeout'));
 
     const { command, ack, respond } = createMockBoltArgs({ command: '/session' });
     await handlers['/session']({ command, ack, respond });
@@ -279,7 +275,7 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         response_type: 'ephemeral',
-      })
+      }),
     );
     const text = respond.mock.calls[0][0].text;
     expect(text).toContain('스레드 내에서만');
@@ -303,8 +299,6 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     });
     respond.mockRejectedValueOnce(new Error('response_url expired'));
 
-    await expect(
-      handlers['/new']({ command, ack, respond })
-    ).resolves.not.toThrow();
+    await expect(handlers['/new']({ command, ack, respond })).resolves.not.toThrow();
   });
 });

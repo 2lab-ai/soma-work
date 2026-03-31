@@ -43,39 +43,84 @@ export interface ComplexityResult {
 // ---------------------------------------------------------------------------
 
 const ARCHITECTURE_KEYWORDS = [
-  '아키텍처', '설계', '마이그레이션', '리팩토링', '리팩터링',
-  'architecture', 'design', 'migration', 'refactor', 'refactoring',
-  '마이크로서비스', 'microservice', 'monorepo',
+  '아키텍처',
+  '설계',
+  '마이그레이션',
+  '리팩토링',
+  '리팩터링',
+  'architecture',
+  'design',
+  'migration',
+  'refactor',
+  'refactoring',
+  '마이크로서비스',
+  'microservice',
+  'monorepo',
 ];
 
 const DEBUG_KEYWORDS = [
-  '에러', '버그', '크래시', '오류', '장애', '실패',
-  'error', 'bug', 'crash', 'exception', 'failure', 'broken',
+  '에러',
+  '버그',
+  '크래시',
+  '오류',
+  '장애',
+  '실패',
+  'error',
+  'bug',
+  'crash',
+  'exception',
+  'failure',
+  'broken',
 ];
 
 const SIMPLICITY_KEYWORDS = [
-  '간단히', '간단하게', '조회', '확인', '알려줘', '뭐야',
-  'simple', 'simply', 'just', 'quick', 'briefly',
+  '간단히',
+  '간단하게',
+  '조회',
+  '확인',
+  '알려줘',
+  '뭐야',
+  'simple',
+  'simply',
+  'just',
+  'quick',
+  'briefly',
 ];
 
 const CROSS_FILE_KEYWORDS = [
-  '여러 파일', 'cross-cutting', 'cross-file', '전반적',
-  '여러 모듈', '다수의 파일', 'multiple files', 'across files',
+  '여러 파일',
+  'cross-cutting',
+  'cross-file',
+  '전반적',
+  '여러 모듈',
+  '다수의 파일',
+  'multiple files',
+  'across files',
 ];
 
 const SYSTEM_WIDE_KEYWORDS = [
-  '전체 시스템', '전역', '시스템 전체', '전체적',
-  'system-wide', 'global', 'entire system', 'all modules',
+  '전체 시스템',
+  '전역',
+  '시스템 전체',
+  '전체적',
+  'system-wide',
+  'global',
+  'entire system',
+  'all modules',
 ];
 
 const IRREVERSIBILITY_KEYWORDS = [
-  '되돌리기 어려', '롤백 불가', '비가역', '파괴적',
-  'irreversible', 'destructive', 'cannot rollback', 'breaking change',
+  '되돌리기 어려',
+  '롤백 불가',
+  '비가역',
+  '파괴적',
+  'irreversible',
+  'destructive',
+  'cannot rollback',
+  'breaking change',
 ];
 
-const TEST_KEYWORDS = [
-  '테스트', 'test', 'spec', '검증', 'verify', 'vitest', 'jest',
-];
+const TEST_KEYWORDS = ['테스트', 'test', 'spec', '검증', 'verify', 'vitest', 'jest'];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -320,10 +365,7 @@ export function scoreComplexity(text: string): ComplexityResult {
   // pasted diffs/code. Keep original text for code block counting.
   const prose = stripCodeBlocks(text);
 
-  const signals = [
-    ...collectLexicalSignals(prose, text),
-    ...collectStructuralSignals(prose),
-  ];
+  const signals = [...collectLexicalSignals(prose, text), ...collectStructuralSignals(prose)];
 
   const rawScore = signals.reduce((sum, s) => sum + s.points, 0);
   const score = Math.max(0, rawScore); // floor at 0

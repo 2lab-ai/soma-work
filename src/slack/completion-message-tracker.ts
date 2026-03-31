@@ -51,7 +51,9 @@ export class CompletionMessageTracker {
     // Defense-in-depth: never track a protected timestamp
     if (this.isProtected(sessionKey, messageTs)) {
       logger.warn('BLOCKED: attempted to track protected timestamp (thread root)', {
-        sessionKey, messageTs, category,
+        sessionKey,
+        messageTs,
+        category,
       });
       return;
     }
@@ -94,10 +96,11 @@ export class CompletionMessageTracker {
 
     // Defense-in-depth: filter out any protected timestamps
     const protectedSet = this.protectedTs.get(sessionKey);
-    const safeTimestamps = timestamps.filter(ts => {
+    const safeTimestamps = timestamps.filter((ts) => {
       if (protectedSet?.has(ts)) {
         logger.warn('BLOCKED: skipping deletion of protected timestamp (thread root)', {
-          sessionKey, messageTs: ts,
+          sessionKey,
+          messageTs: ts,
         });
         return false;
       }
@@ -108,9 +111,7 @@ export class CompletionMessageTracker {
 
     logger.info('Deleting completion messages', { sessionKey, count: safeTimestamps.length });
 
-    const results = await Promise.allSettled(
-      safeTimestamps.map(ts => deleteMessage(channel, ts))
-    );
+    const results = await Promise.allSettled(safeTimestamps.map((ts) => deleteMessage(channel, ts)));
 
     // Re-track any timestamps whose deletion failed so they can be retried.
     const failed: string[] = [];

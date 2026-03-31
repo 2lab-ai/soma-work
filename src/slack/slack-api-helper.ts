@@ -1,4 +1,4 @@
-import { App } from '@slack/bolt';
+import type { App } from '@slack/bolt';
 import { Logger } from '../logger';
 
 export interface MessageOptions {
@@ -13,10 +13,10 @@ export interface MessageOptions {
  * Rate limiting 설정
  */
 interface RateLimitConfig {
-  bucketSize: number;      // 최대 버스트 크기
-  refillRate: number;      // 초당 리필 토큰 수
-  minInterval: number;     // 최소 요청 간격 (ms)
-  maxQueueSize: number;    // 최대 큐 크기 (초과 시 oldest drop)
+  bucketSize: number; // 최대 버스트 크기
+  refillRate: number; // 초당 리필 토큰 수
+  minInterval: number; // 최소 요청 간격 (ms)
+  maxQueueSize: number; // 최대 큐 크기 (초과 시 oldest drop)
 }
 
 interface UpdateMessageOptions {
@@ -25,10 +25,10 @@ interface UpdateMessageOptions {
 }
 
 const DEFAULT_RATE_LIMIT: RateLimitConfig = {
-  bucketSize: 10,          // 최대 10개 버스트
-  refillRate: 3,           // 초당 3개 리필
-  minInterval: 100,        // 최소 100ms 간격
-  maxQueueSize: 200,       // 최대 큐 크기 (초과 시 oldest drop)
+  bucketSize: 10, // 최대 10개 버스트
+  refillRate: 3, // 초당 3개 리필
+  minInterval: 100, // 최소 100ms 간격
+  maxQueueSize: 200, // 최대 큐 크기 (초과 시 oldest drop)
 };
 
 /**
@@ -52,7 +52,10 @@ export class SlackApiHelper {
   private processing = false;
   private rateLimit: RateLimitConfig;
 
-  constructor(private app: App, rateLimit?: Partial<RateLimitConfig>) {
+  constructor(
+    private app: App,
+    rateLimit?: Partial<RateLimitConfig>,
+  ) {
     this.rateLimit = { ...DEFAULT_RATE_LIMIT, ...rateLimit };
     this.tokens = this.rateLimit.bucketSize;
     this.lastRefill = Date.now();
@@ -157,7 +160,7 @@ export class SlackApiHelper {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -175,9 +178,7 @@ export class SlackApiHelper {
    */
   async getUserName(userId: string): Promise<string> {
     try {
-      const result = await this.enqueue(() =>
-        this.app.client.users.info({ user: userId })
-      );
+      const result = await this.enqueue(() => this.app.client.users.info({ user: userId }));
       return result.user?.real_name || result.user?.name || userId;
     } catch (error) {
       this.logger.warn('Failed to get user name', { userId, error });
@@ -194,9 +195,7 @@ export class SlackApiHelper {
     email?: string;
   }> {
     try {
-      const result = await this.enqueue(() =>
-        this.app.client.users.info({ user: userId })
-      );
+      const result = await this.enqueue(() => this.app.client.users.info({ user: userId }));
       const profile = (result.user as any)?.profile;
       return {
         displayName: profile?.display_name || (result.user as any)?.real_name || (result.user as any)?.name || userId,
@@ -217,9 +216,7 @@ export class SlackApiHelper {
       if (channelId.startsWith('D')) {
         return 'DM';
       }
-      const result = await this.enqueue(() =>
-        this.app.client.conversations.info({ channel: channelId })
-      );
+      const result = await this.enqueue(() => this.app.client.conversations.info({ channel: channelId }));
       return `#${(result.channel as any)?.name || channelId}`;
     } catch (error) {
       this.logger.warn('Failed to get channel name', { channelId, error });
@@ -236,7 +233,7 @@ export class SlackApiHelper {
         this.app.client.chat.getPermalink({
           channel,
           message_ts: messageTs,
-        })
+        }),
       );
       return result.permalink || null;
     } catch (error) {
@@ -257,7 +254,7 @@ export class SlackApiHelper {
           oldest: ts,
           inclusive: true,
           limit: 1,
-        })
+        }),
       );
       const messages = (response.messages as any[]) || [];
       const exact = messages.find((message) => message?.ts === ts);
@@ -274,9 +271,7 @@ export class SlackApiHelper {
   async getBotUserId(): Promise<string> {
     if (!this.botUserId) {
       try {
-        const response = await this.enqueue(() =>
-          this.app.client.auth.test()
-        );
+        const response = await this.enqueue(() => this.app.client.auth.test());
         this.botUserId = response.user_id as string;
       } catch (error) {
         this.logger.error('Failed to get bot user ID', error);
@@ -291,9 +286,7 @@ export class SlackApiHelper {
    * Trace: docs/turn-notification/trace.md, Scenario 2, Section 3b
    */
   async openDmChannel(userId: string): Promise<string> {
-    const result = await this.enqueue(() =>
-      this.app.client.conversations.open({ users: userId })
-    );
+    const result = await this.enqueue(() => this.app.client.conversations.open({ users: userId }));
     const channelId = result.channel?.id;
     if (!channelId) {
       throw new Error(`Failed to open DM channel for user ${userId}`);
@@ -308,7 +301,7 @@ export class SlackApiHelper {
   async postSystemMessage(
     channel: string,
     text: string,
-    options?: MessageOptions
+    options?: MessageOptions,
   ): Promise<{ ts?: string; channel?: string }> {
     const result = await this.postMessage(channel, text, options);
     if (result.ts) {
@@ -323,7 +316,7 @@ export class SlackApiHelper {
   async postMessage(
     channel: string,
     text: string,
-    options?: MessageOptions
+    options?: MessageOptions,
   ): Promise<{ ts?: string; channel?: string }> {
     try {
       const payload: any = {
@@ -358,7 +351,7 @@ export class SlackApiHelper {
     text: string,
     blocks?: any[],
     attachments?: any[],
-    options?: UpdateMessageOptions
+    options?: UpdateMessageOptions,
   ): Promise<void> {
     try {
       const payload: any = {
@@ -388,9 +381,7 @@ export class SlackApiHelper {
    */
   async deleteMessage(channel: string, ts: string): Promise<void> {
     try {
-      await this.enqueue(() =>
-        this.app.client.chat.delete({ channel, ts })
-      );
+      await this.enqueue(() => this.app.client.chat.delete({ channel, ts }));
     } catch (error) {
       this.logger.warn('Failed to delete message', { channel, ts, error });
       throw error;
@@ -400,11 +391,7 @@ export class SlackApiHelper {
   /**
    * Delete bot-authored messages within a thread (keeps the root message)
    */
-  async deleteThreadBotMessages(
-    channel: string,
-    threadTs: string,
-    options?: { excludeTs?: string[] }
-  ): Promise<void> {
+  async deleteThreadBotMessages(channel: string, threadTs: string, options?: { excludeTs?: string[] }): Promise<void> {
     const excludeTs = new Set(options?.excludeTs || []);
     const botUserId = await this.getBotUserId();
     let cursor: string | undefined;
@@ -417,7 +404,7 @@ export class SlackApiHelper {
             ts: threadTs,
             limit: 200,
             cursor,
-          })
+          }),
         );
 
         const messages = (response.messages as any[]) || [];
@@ -452,7 +439,7 @@ export class SlackApiHelper {
     user: string,
     text: string,
     threadTs?: string,
-    blocks?: any[]
+    blocks?: any[],
   ): Promise<{ ts?: string }> {
     try {
       const result = await this.enqueue(() =>
@@ -462,7 +449,7 @@ export class SlackApiHelper {
           text,
           thread_ts: threadTs,
           blocks,
-        })
+        }),
       );
       return { ts: (result as any).message_ts || (result as any).ts };
     } catch (error) {
@@ -482,7 +469,7 @@ export class SlackApiHelper {
           channel,
           timestamp: ts,
           name: emoji,
-        })
+        }),
       );
       return true;
     } catch (error: any) {
@@ -505,7 +492,7 @@ export class SlackApiHelper {
           channel,
           timestamp: ts,
           name: emoji,
-        })
+        }),
       );
     } catch (error: any) {
       // 존재하지 않는 리액션 에러는 무시
@@ -520,9 +507,7 @@ export class SlackApiHelper {
    */
   async getChannelInfo(channelId: string): Promise<any> {
     try {
-      const result = await this.enqueue(() =>
-        this.app.client.conversations.info({ channel: channelId })
-      );
+      const result = await this.enqueue(() => this.app.client.conversations.info({ channel: channelId }));
       return result.channel;
     } catch (error) {
       this.logger.warn('Failed to get channel info', { channelId, error });
@@ -539,7 +524,7 @@ export class SlackApiHelper {
         channel_id: channelId,
         thread_ts: threadTs,
         status,
-      })
+      }),
     );
   }
 
@@ -552,7 +537,7 @@ export class SlackApiHelper {
         channel_id: channelId,
         thread_ts: threadTs,
         title,
-      })
+      }),
     );
   }
 
@@ -565,7 +550,7 @@ export class SlackApiHelper {
         this.app.client.views.open({
           trigger_id: triggerId,
           view,
-        })
+        }),
       );
     } catch (error) {
       this.logger.error('Failed to open modal', { triggerId, error });

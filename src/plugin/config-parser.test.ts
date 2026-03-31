@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parsePluginRef, validateMarketplaceEntry, validatePluginConfig, isSafeName } from './config-parser';
+import { describe, expect, it } from 'vitest';
+import { isSafeName, parsePluginRef, validateMarketplaceEntry, validatePluginConfig } from './config-parser';
 
 describe('parsePluginRef', () => {
   it('parses valid "name@marketplace" format', () => {
@@ -77,9 +77,7 @@ describe('validateMarketplaceEntry', () => {
   });
 
   it('accepts entry with ref', () => {
-    expect(
-      validateMarketplaceEntry({ name: 'official', repo: 'anthropics/plugins', ref: 'v1.0.0' })
-    ).toBe(true);
+    expect(validateMarketplaceEntry({ name: 'official', repo: 'anthropics/plugins', ref: 'v1.0.0' })).toBe(true);
   });
 
   it('rejects missing name', () => {
@@ -118,9 +116,7 @@ describe('validatePluginConfig', () => {
 
   it('validates full config', () => {
     const raw = {
-      marketplace: [
-        { name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' },
-      ],
+      marketplace: [{ name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' }],
       plugins: ['omc@soma-work'],
       localOverrides: ['./src/local'],
     };

@@ -5,17 +5,20 @@
 
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import {
-  MarketplaceEntry, MarketplaceManifest, MarketplacePluginEntry,
-  CacheMeta,
-  OfficialMarketplaceManifest, OfficialPluginSource,
-  EXTERNAL_PLUGIN_PATH,
-} from './types';
-import { readCacheMeta, writeCacheMeta, hasCachedPlugin } from './plugin-cache';
-import { scanPluginDirectory, formatScanReport } from './security-scanner';
+import * as path from 'path';
 import { Logger } from '../logger';
+import { hasCachedPlugin, readCacheMeta, writeCacheMeta } from './plugin-cache';
+import { formatScanReport, scanPluginDirectory } from './security-scanner';
+import {
+  type CacheMeta,
+  EXTERNAL_PLUGIN_PATH,
+  type MarketplaceEntry,
+  type MarketplaceManifest,
+  type MarketplacePluginEntry,
+  type OfficialMarketplaceManifest,
+  type OfficialPluginSource,
+} from './types';
 
 const logger = new Logger('MarketplaceFetcher');
 
@@ -33,7 +36,11 @@ function enforceSecurityGate(installedPath: string, pluginName: string): boolean
       findings: scanResult.findings.length,
     });
     logger.warn(formatScanReport(scanResult));
-    try { fs.rmSync(installedPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(installedPath, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
     return false;
   }
   if (scanResult.findings.length > 0) {
@@ -62,11 +69,11 @@ function cachedResult(pluginsDir: string, pluginName: string, sha: string): Fetc
  */
 export function resolveRemoteSha(repo: string, ref: string): string | null {
   try {
-    const result = execFileSync(
-      'gh',
-      ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }
-    ).trim();
+    const result = execFileSync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 15000,
+    }).trim();
     return result || null;
   } catch (error) {
     logger.warn('Failed to resolve remote SHA', { repo, ref, error: (error as Error).message });
@@ -79,11 +86,11 @@ export function resolveRemoteSha(repo: string, ref: string): string | null {
  */
 function downloadTarballFile(repo: string, ref: string, outPath: string): boolean {
   try {
-    const data = execFileSync(
-      'gh',
-      ['api', `repos/${repo}/tarball/${ref}`],
-      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, maxBuffer: 100 * 1024 * 1024 }
-    );
+    const data = execFileSync('gh', ['api', `repos/${repo}/tarball/${ref}`], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60000,
+      maxBuffer: 100 * 1024 * 1024,
+    });
     fs.writeFileSync(outPath, data);
     return true;
   } catch (error) {
@@ -207,7 +214,8 @@ export function validateOfficialManifest(raw: unknown): OfficialMarketplaceManif
       if (!src || typeof src !== 'object') return false;
       const srcObj = src as Record<string, unknown>;
       if (srcObj.source === 'url' && typeof srcObj.url !== 'string') return false;
-      if (srcObj.source === 'git-subdir' && (typeof srcObj.url !== 'string' || typeof srcObj.path !== 'string')) return false;
+      if (srcObj.source === 'git-subdir' && (typeof srcObj.url !== 'string' || typeof srcObj.path !== 'string'))
+        return false;
     }
     return true;
   });
@@ -266,7 +274,9 @@ export function normaliseOfficialManifest(official: OfficialMarketplaceManifest)
 /**
  * Convert an official plugin source to the internal MarketplacePluginEntry format.
  */
-export function normalisePluginSource(source: OfficialPluginSource): Omit<MarketplacePluginEntry, 'description'> | null {
+export function normalisePluginSource(
+  source: OfficialPluginSource,
+): Omit<MarketplacePluginEntry, 'description'> | null {
   if (typeof source === 'string') {
     // Local path: "./plugins/stv" → "plugins/stv"
     const cleaned = source.replace(/^\.\//, '');
@@ -300,7 +310,7 @@ function installPlugin(
   extractedRoot: string,
   pluginPath: string,
   pluginsDir: string,
-  pluginName: string
+  pluginName: string,
 ): string | null {
   const sourcePath = path.join(extractedRoot, pluginPath);
   if (!fs.existsSync(sourcePath)) {
@@ -324,13 +334,21 @@ function installPlugin(
     return targetPath;
   } catch (error) {
     logger.error('Failed to install plugin', { pluginName, error: (error as Error).message });
-    try { fs.rmSync(tmpTarget, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(tmpTarget, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
     return null;
   }
 }
 
 function cleanupTmpDir(tmpDir: string): void {
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -346,7 +364,7 @@ function cleanupTmpDir(tmpDir: string): void {
 export async function fetchPlugin(
   marketplace: MarketplaceEntry,
   pluginName: string,
-  pluginsDir: string
+  pluginsDir: string,
 ): Promise<FetchResult | null> {
   const ref = marketplace.ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);

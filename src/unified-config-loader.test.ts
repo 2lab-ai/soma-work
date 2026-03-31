@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import { saveUnifiedConfig, UnifiedConfig } from './unified-config-loader';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { saveUnifiedConfig, type UnifiedConfig } from './unified-config-loader';
 
 describe('saveUnifiedConfig', () => {
   let tmpDir: string;

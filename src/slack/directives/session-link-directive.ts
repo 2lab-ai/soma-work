@@ -13,7 +13,7 @@
  * }
  */
 
-import { SessionLink, SessionLinks } from '../../types';
+import type { SessionLink, SessionLinks } from '../../types';
 
 export interface SessionLinkExtractResult {
   links: SessionLinks | null;
@@ -46,7 +46,7 @@ export class SessionLinkDirectiveHandler {
     let match;
 
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const links = this.parseSessionLinksJson(match[1].trim());
+      const links = SessionLinkDirectiveHandler.parseSessionLinksJson(match[1].trim());
       if (links) {
         const cleanedText = text.replace(match[0], '').trim();
         return { links, cleanedText };
@@ -58,13 +58,13 @@ export class SessionLinkDirectiveHandler {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = this.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = SessionLinkDirectiveHandler.extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
-        const links = this.parseSessionLinksJson(jsonStr);
+        const links = SessionLinkDirectiveHandler.parseSessionLinksJson(jsonStr);
         if (links) {
           const before = text.substring(0, rawMatch.index).trim();
           const after = text.substring(rawMatch.index + jsonStr.length).trim();
-          const cleanedText = before && after ? `${before}\n\n${after}` : (before || after);
+          const cleanedText = before && after ? `${before}\n\n${after}` : before || after;
           return { links, cleanedText };
         }
       }

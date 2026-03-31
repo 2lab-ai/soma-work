@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
-import { userSettingsStore } from '../../user-settings-store';
 import { getAvailablePersonas } from '../../claude-handler';
+import { userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles persona commands (status/list/set)
@@ -19,14 +19,14 @@ export class PersonaHandler implements CommandHandler {
       const currentPersona = userSettingsStore.getUserPersona(user);
       const availablePersonas = getAvailablePersonas();
       await say({
-        text: `🎭 *Persona Status*\n\nYour current persona: \`${currentPersona}\`\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}\n\n_Use \`persona set <name>\` to change your persona._`,
+        text: `🎭 *Persona Status*\n\nYour current persona: \`${currentPersona}\`\n\nAvailable personas: ${availablePersonas.map((p) => `\`${p}\``).join(', ')}\n\n_Use \`persona set <name>\` to change your persona._`,
         thread_ts: threadTs,
       });
     } else if (personaAction.action === 'list') {
       const availablePersonas = getAvailablePersonas();
       const currentPersona = userSettingsStore.getUserPersona(user);
       const personaList = availablePersonas
-        .map(p => p === currentPersona ? `• \`${p}\` _(current)_` : `• \`${p}\``)
+        .map((p) => (p === currentPersona ? `• \`${p}\` _(current)_` : `• \`${p}\``))
         .join('\n');
       await say({
         text: `🎭 *Available Personas*\n\n${personaList}\n\n_Use \`persona set <name>\` to change your persona._`,
@@ -42,7 +42,7 @@ export class PersonaHandler implements CommandHandler {
         });
       } else {
         await say({
-          text: `❌ *Unknown Persona*\n\nPersona \`${personaAction.persona}\` not found.\n\nAvailable personas: ${availablePersonas.map(p => `\`${p}\``).join(', ')}`,
+          text: `❌ *Unknown Persona*\n\nPersona \`${personaAction.persona}\` not found.\n\nAvailable personas: ${availablePersonas.map((p) => `\`${p}\``).join(', ')}`,
           thread_ts: threadTs,
         });
       }

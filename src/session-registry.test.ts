@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-session-registry-test',
@@ -261,19 +261,21 @@ describe('SessionRegistry persistence', () => {
   it('loads old JSON format without sessionWorkingDir field gracefully', () => {
     // Write a JSON file manually without sessionWorkingDir
     const fs = require('fs');
-    const oldFormatSessions = [{
-      key: 'C123-171.010',
-      ownerId: 'U123',
-      ownerName: 'Tester',
-      channelId: 'C123',
-      threadTs: '171.010',
-      sessionId: 'session-old',
-      isActive: true,
-      lastActivity: new Date().toISOString(),
-      state: 'MAIN',
-      workflow: 'default',
-      // NO sessionWorkingDir field — simulates pre-fix JSON
-    }];
+    const oldFormatSessions = [
+      {
+        key: 'C123-171.010',
+        ownerId: 'U123',
+        ownerName: 'Tester',
+        channelId: 'C123',
+        threadTs: '171.010',
+        sessionId: 'session-old',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+        // NO sessionWorkingDir field — simulates pre-fix JSON
+      },
+    ];
     fs.writeFileSync(
       require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
       JSON.stringify(oldFormatSessions, null, 2),
@@ -315,19 +317,21 @@ describe('SessionRegistry persistence', () => {
   // Security: sessionWorkingDir with path traversal is dropped on load
   it('drops sessionWorkingDir with path traversal on load', () => {
     const fs = require('fs');
-    const maliciousSessions = [{
-      key: 'C123-171.011',
-      ownerId: 'U123',
-      ownerName: 'Tester',
-      channelId: 'C123',
-      threadTs: '171.011',
-      sessionId: 'session-malicious',
-      isActive: true,
-      lastActivity: new Date().toISOString(),
-      state: 'MAIN',
-      workflow: 'default',
-      sessionWorkingDir: '/tmp/../etc/passwd', // path traversal attempt
-    }];
+    const maliciousSessions = [
+      {
+        key: 'C123-171.011',
+        ownerId: 'U123',
+        ownerName: 'Tester',
+        channelId: 'C123',
+        threadTs: '171.011',
+        sessionId: 'session-malicious',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+        sessionWorkingDir: '/tmp/../etc/passwd', // path traversal attempt
+      },
+    ];
     fs.writeFileSync(
       require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
       JSON.stringify(maliciousSessions, null, 2),

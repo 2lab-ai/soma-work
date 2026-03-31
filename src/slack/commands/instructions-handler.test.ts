@@ -1,14 +1,14 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock modules before imports
 vi.mock('../../admin-utils', () => ({
   isAdminUser: vi.fn(),
 }));
 
-import { InstructionsHandler } from './instructions-handler';
 import { isAdminUser } from '../../admin-utils';
-import { CommandContext, CommandDependencies } from './types';
-import { ConversationSession } from '../../types';
+import type { ConversationSession } from '../../types';
+import { InstructionsHandler } from './instructions-handler';
+import type { CommandContext, CommandDependencies } from './types';
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -76,7 +76,7 @@ describe('InstructionsHandler', () => {
       expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
         'C123',
         expect.stringContaining('Admin only'),
-        expect.objectContaining({ threadTs: 'thread123' })
+        expect.objectContaining({ threadTs: 'thread123' }),
       );
     });
 
@@ -92,7 +92,7 @@ describe('InstructionsHandler', () => {
       expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
         'C123',
         expect.stringContaining('No active session'),
-        expect.objectContaining({ threadTs: 'thread123' })
+        expect.objectContaining({ threadTs: 'thread123' }),
       );
     });
 
@@ -117,7 +117,7 @@ describe('InstructionsHandler', () => {
       expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
         'C123',
         expect.stringContaining('No instructions captured'),
-        expect.objectContaining({ threadTs: 'thread123' })
+        expect.objectContaining({ threadTs: 'thread123' }),
       );
     });
 

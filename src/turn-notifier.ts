@@ -132,9 +132,7 @@ export class TurnNotifier {
 
     if (active.length === 0) return;
 
-    const results = await Promise.allSettled(
-      active.map((ch) => ch.send(event)),
-    );
+    const results = await Promise.allSettled(active.map((ch) => ch.send(event)));
 
     for (let i = 0; i < results.length; i++) {
       const result = results[i];

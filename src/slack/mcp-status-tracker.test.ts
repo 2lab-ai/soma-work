@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { McpStatusDisplay, StatusUpdateConfig } from './mcp-status-tracker';
-import { SlackApiHelper } from './slack-api-helper';
-import { McpCallTracker } from '../mcp-call-tracker';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { McpCallTracker } from '../mcp-call-tracker';
+import { McpStatusDisplay, type StatusUpdateConfig } from './mcp-status-tracker';
+import type { SlackApiHelper } from './slack-api-helper';
 
 // Mock SlackApiHelper
 const createMockSlackApi = () => ({
@@ -46,7 +46,7 @@ describe('McpStatusDisplay', () => {
     mockMcpCallTracker = createMockMcpCallTracker();
     display = new McpStatusDisplay(
       mockSlackApi as unknown as SlackApiHelper,
-      mockMcpCallTracker as unknown as McpCallTracker
+      mockMcpCallTracker as unknown as McpCallTracker,
     );
   });
 
@@ -94,11 +94,9 @@ describe('McpStatusDisplay', () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
 
-      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-        'C123',
-        expect.stringContaining('codex → search'),
-        { threadTs: '111.222' }
-      );
+      expect(mockSlackApi.postMessage).toHaveBeenCalledWith('C123', expect.stringContaining('codex → search'), {
+        threadTs: '111.222',
+      });
     });
 
     it('should update message on subsequent ticks', async () => {

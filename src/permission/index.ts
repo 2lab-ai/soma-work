@@ -2,10 +2,9 @@
  * Permission handling modules
  */
 
+export { PermissionCheckResult, PermissionService } from './service';
 export {
-  SlackPermissionMessenger,
   PermissionMessageContext,
   PermissionMessageResult,
+  SlackPermissionMessenger,
 } from './slack-messenger';
-
-export { PermissionService, PermissionCheckResult } from './service';

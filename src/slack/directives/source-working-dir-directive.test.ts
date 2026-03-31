@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { SourceWorkingDirDirectiveHandler } from './source-working-dir-directive';
 
 describe('SourceWorkingDirDirectiveHandler', () => {
@@ -39,7 +39,8 @@ describe('SourceWorkingDirDirectiveHandler', () => {
 
     describe('raw JSON', () => {
       it('should extract directive from raw JSON in text', () => {
-        const text = '소스를 받았습니다. {"type": "source_working_dir", "action": "add", "path": "/tmp/U123/20260323_guci_pr45"} 리뷰를 시작합니다.';
+        const text =
+          '소스를 받았습니다. {"type": "source_working_dir", "action": "add", "path": "/tmp/U123/20260323_guci_pr45"} 리뷰를 시작합니다.';
 
         const result = SourceWorkingDirDirectiveHandler.extract(text);
         expect(result.action).toBe('add');
@@ -115,7 +116,8 @@ describe('SourceWorkingDirDirectiveHandler', () => {
 
     describe('text cleanup', () => {
       it('should strip directive and preserve surrounding text', () => {
-        const text = 'Before text.\n{"type": "source_working_dir", "action": "add", "path": "/tmp/U123/dir"}\nAfter text.';
+        const text =
+          'Before text.\n{"type": "source_working_dir", "action": "add", "path": "/tmp/U123/dir"}\nAfter text.';
         const result = SourceWorkingDirDirectiveHandler.extract(text);
         expect(result.action).toBe('add');
         expect(result.cleanedText).toContain('Before text.');

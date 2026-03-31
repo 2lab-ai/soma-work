@@ -9,7 +9,10 @@ function loadAdminUsers(): ReadonlySet<string> {
   if (adminUsers === null) {
     const raw = process.env.ADMIN_USERS || '';
     adminUsers = new Set(
-      raw.split(',').map(id => id.trim()).filter(id => id.length > 0)
+      raw
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0),
     );
   }
   return adminUsers;

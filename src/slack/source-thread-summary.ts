@@ -5,9 +5,9 @@
  * Issue #64: mid-thread 멘션 시 초기 응답 유지 + 원본 스레드 추적
  */
 
-import { ConversationSession } from '../types';
-import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
+import type { ConversationSession } from '../types';
+import type { SlackApiHelper } from './slack-api-helper';
 
 const logger = new Logger('SourceThreadSummary');
 
@@ -22,7 +22,7 @@ const logger = new Logger('SourceThreadSummary');
 export async function postSourceThreadSummary(
   slackApi: SlackApiHelper,
   session: ConversationSession,
-  trigger: 'merged' | 'closed'
+  trigger: 'merged' | 'closed',
 ): Promise<void> {
   if (!session.sourceThread) {
     return;
@@ -34,9 +34,7 @@ export async function postSourceThreadSummary(
     // Build summary lines
     const icon = trigger === 'merged' ? '✅' : '🔚';
     const verb = trigger === 'merged' ? '작업 완료 (PR merged)' : '세션 종료';
-    const lines: string[] = [
-      `${icon} *"${session.title || 'Untitled'}"* ${verb}`,
-    ];
+    const lines: string[] = [`${icon} *"${session.title || 'Untitled'}"* ${verb}`];
 
     if (session.links?.issue?.url) {
       lines.push(`📌 *이슈*: <${session.links.issue.url}|${session.links.issue.label || 'Issue'}>`);

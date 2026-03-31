@@ -20,7 +20,7 @@
  * 3. contextWindow - DYNAMICALLY SET from SDK's ModelUsage.contextWindow (not hardcoded)
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { SessionUsage } from '../../types';
 
 // Matches the renamed constant in stream-executor.ts
@@ -64,7 +64,7 @@ function updateSessionUsage(
     lastTurnOutputTokens?: number;
     lastTurnCacheReadTokens?: number;
     lastTurnCacheCreateTokens?: number;
-  }
+  },
 ): void {
   if (!session.usage) {
     session.usage = {
@@ -81,7 +81,7 @@ function updateSessionUsage(
   }
 
   // Dynamically update context window: max(SDK, model lookup)
-  const sdkWindow = (usageData.contextWindow && usageData.contextWindow > 0) ? usageData.contextWindow : 0;
+  const sdkWindow = usageData.contextWindow && usageData.contextWindow > 0 ? usageData.contextWindow : 0;
   const lookupWindow = resolveContextWindow(usageData.modelName || session.model);
   const resolvedWindow = Math.max(sdkWindow, lookupWindow);
   if (resolvedWindow > 0) {
@@ -97,8 +97,12 @@ function updateSessionUsage(
   const hasPerTurn = usageData.lastTurnInputTokens !== undefined;
   session.usage.currentInputTokens = hasPerTurn ? usageData.lastTurnInputTokens! : usageData.inputTokens;
   session.usage.currentOutputTokens = hasPerTurn ? usageData.lastTurnOutputTokens! : usageData.outputTokens;
-  session.usage.currentCacheReadTokens = hasPerTurn ? usageData.lastTurnCacheReadTokens! : usageData.cacheReadInputTokens;
-  session.usage.currentCacheCreateTokens = hasPerTurn ? usageData.lastTurnCacheCreateTokens! : usageData.cacheCreationInputTokens;
+  session.usage.currentCacheReadTokens = hasPerTurn
+    ? usageData.lastTurnCacheReadTokens!
+    : usageData.cacheReadInputTokens;
+  session.usage.currentCacheCreateTokens = hasPerTurn
+    ? usageData.lastTurnCacheCreateTokens!
+    : usageData.cacheCreationInputTokens;
 
   // TOTAL values are ACCUMULATED (billing: use aggregate values)
   session.usage.totalInputTokens += usageData.inputTokens;
@@ -255,7 +259,7 @@ describe('Dynamic Context Window from SDK', () => {
       outputTokens: 50_000,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
-      totalCostUsd: 0.50,
+      totalCostUsd: 0.5,
       contextWindow: 1_000_000,
     });
 
@@ -373,7 +377,8 @@ describe('Cache tokens in context calculation', () => {
 
     const u = session.usage!;
     // Total context = input + cacheRead + cacheCreate + output
-    const totalUsed = u.currentInputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens + u.currentOutputTokens;
+    const totalUsed =
+      u.currentInputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens + u.currentOutputTokens;
     expect(totalUsed).toBe(123_929);
 
     // Old calculation (WRONG): just inputTokens + outputTokens
@@ -399,11 +404,11 @@ describe('Per-turn usage vs billing aggregate', () => {
 
     updateSessionUsage(session, {
       // Billing aggregate (cumulative across 10 tool calls)
-      inputTokens: 500,          // sum of non-cached inputs across all calls
-      outputTokens: 8000,        // sum of all outputs
-      cacheReadInputTokens: 2_000_000,  // 10 × 200k
+      inputTokens: 500, // sum of non-cached inputs across all calls
+      outputTokens: 8000, // sum of all outputs
+      cacheReadInputTokens: 2_000_000, // 10 × 200k
       cacheCreationInputTokens: 200_000,
-      totalCostUsd: 2.50,
+      totalCostUsd: 2.5,
       // Per-turn: last assistant message's actual usage
       lastTurnInputTokens: 50,
       lastTurnOutputTokens: 800,
@@ -419,8 +424,8 @@ describe('Per-turn usage vs billing aggregate', () => {
     expect(u.currentCacheCreateTokens).toBe(5_000);
 
     // Context used = 50 + 800 + 180k + 5k = 185,850 (reasonable)
-    const contextUsed = u.currentInputTokens + u.currentOutputTokens
-      + u.currentCacheReadTokens + u.currentCacheCreateTokens;
+    const contextUsed =
+      u.currentInputTokens + u.currentOutputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens;
     expect(contextUsed).toBe(185_850);
 
     // NOT the old buggy value: 2M + 200k + 500 + 8k ≈ 2.2M

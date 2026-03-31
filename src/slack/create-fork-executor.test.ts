@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createForkExecutor } from './create-fork-executor.js';
 
 // Minimal mock of ClaudeHandler with dispatchOneShot
@@ -60,9 +60,9 @@ describe('createForkExecutor', () => {
       'prompt',
       expect.stringContaining('executive summaries'),
       'claude-opus-4-6',
-      undefined,      // abortController
-      'session-abc',  // sessionId for fork
-      '/tmp/work',    // cwd
+      undefined, // abortController
+      'session-abc', // sessionId for fork
+      '/tmp/work', // cwd
     );
   });
 
@@ -108,10 +108,12 @@ describe('createForkExecutor', () => {
 
   it('forwards abort from external signal to internal AbortController', async () => {
     let capturedController: AbortController | undefined;
-    mockHandler.dispatchOneShot.mockImplementation(async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
-      capturedController = abortCtrl;
-      return 'Summary';
-    });
+    mockHandler.dispatchOneShot.mockImplementation(
+      async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
+        capturedController = abortCtrl;
+        return 'Summary';
+      },
+    );
     const executor = createForkExecutor(mockHandler as any);
     const ac = new AbortController();
 
@@ -137,10 +139,12 @@ describe('createForkExecutor', () => {
 
   it('pre-aborted signal creates already-aborted AbortController', async () => {
     let capturedController: AbortController | undefined;
-    mockHandler.dispatchOneShot.mockImplementation(async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
-      capturedController = abortCtrl;
-      return 'Summary';
-    });
+    mockHandler.dispatchOneShot.mockImplementation(
+      async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
+        capturedController = abortCtrl;
+        return 'Summary';
+      },
+    );
     const executor = createForkExecutor(mockHandler as any);
     const ac = new AbortController();
     ac.abort(); // pre-abort
@@ -154,7 +158,9 @@ describe('createForkExecutor', () => {
   describe('stale session fallback', () => {
     it('retries without sessionId when fork fails with "No conversation found"', async () => {
       mockHandler.dispatchOneShot
-        .mockRejectedValueOnce(new Error('Claude Code returned an error result: No conversation found with session ID: abc-123'))
+        .mockRejectedValueOnce(
+          new Error('Claude Code returned an error result: No conversation found with session ID: abc-123'),
+        )
         .mockResolvedValueOnce('Fallback summary');
 
       const executor = createForkExecutor(mockHandler as any);

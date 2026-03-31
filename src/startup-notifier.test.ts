@@ -55,10 +55,12 @@ describe('notifyStartup', () => {
     });
 
     expect(client.conversations.list).toHaveBeenCalledTimes(1);
-    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      channel: 'CDEPLOY',
-      text: 'Bot Started - v0.2.45 (dev)',
-    }));
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'CDEPLOY',
+        text: 'Bot Started - v0.2.45 (dev)',
+      }),
+    );
   });
 
   it('falls back when DEFAULT_UPDATE_CHANNEL env var is missing', async () => {
@@ -77,8 +79,10 @@ describe('notifyStartup', () => {
       versionInfo,
     });
 
-    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      text: 'Bot Started - v0.2.45 (dev)',
-    }));
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Bot Started - v0.2.45 (dev)',
+      }),
+    );
   });
 });

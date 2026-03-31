@@ -1,7 +1,7 @@
-import { WorkingDirectoryManager } from '../working-directory-manager';
-import { ClaudeHandler } from '../claude-handler';
+import type { ClaudeHandler } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { WorkingDirectoryManager } from '../working-directory-manager';
 
 export interface ValidationResult {
   valid: boolean;
@@ -19,23 +19,15 @@ export class MessageValidator {
 
   constructor(
     private workingDirManager: WorkingDirectoryManager,
-    private claudeHandler: ClaudeHandler
+    private claudeHandler: ClaudeHandler,
   ) {}
 
   /**
    * Validate that a working directory is set for the given context
    * Returns validation result with error message if not valid
    */
-  validateWorkingDirectory(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): ValidationResult {
-    const workingDirectory = this.workingDirManager.getWorkingDirectory(
-      channelId,
-      threadTs,
-      userId
-    );
+  validateWorkingDirectory(userId: string, channelId: string, threadTs?: string): ValidationResult {
+    const workingDirectory = this.workingDirManager.getWorkingDirectory(channelId, threadTs, userId);
 
     if (workingDirectory) {
       return { valid: true, workingDirectory };
@@ -53,11 +45,7 @@ export class MessageValidator {
   /**
    * Build appropriate error message based on context
    */
-  private buildCwdErrorMessage(
-    channelId: string,
-    threadTs?: string,
-    isDM?: boolean
-  ): string {
+  private buildCwdErrorMessage(channelId: string, threadTs?: string, isDM?: boolean): string {
     let errorMessage = `⚠️ No working directory set. `;
 
     if (!isDM && !this.workingDirManager.hasChannelWorkingDirectory(channelId)) {
@@ -87,11 +75,7 @@ export class MessageValidator {
   /**
    * Check if a user can interrupt the current session
    */
-  checkInterruptPermission(
-    userId: string,
-    channelId: string,
-    threadTs: string
-  ): InterruptCheckResult {
+  checkInterruptPermission(userId: string, channelId: string, threadTs: string): InterruptCheckResult {
     const canInterrupt = this.claudeHandler.canInterrupt(channelId, threadTs, userId);
 
     if (canInterrupt) {
@@ -112,11 +96,7 @@ export class MessageValidator {
   /**
    * Get working directory without validation (for contexts where it's optional)
    */
-  getWorkingDirectory(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): string | undefined {
+  getWorkingDirectory(userId: string, channelId: string, threadTs?: string): string | undefined {
     return this.workingDirManager.getWorkingDirectory(channelId, threadTs, userId);
   }
 }

@@ -1,8 +1,8 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser } from '../command-parser';
-import { isDefaultPlugin } from '../../plugin/defaults';
 import { isAdminUser } from '../../admin-utils';
-import { PluginUpdateDetail } from '../../plugin/types';
+import { isDefaultPlugin } from '../../plugin/defaults';
+import type { PluginUpdateDetail } from '../../plugin/types';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles `plugins` slash commands: list / add / remove.
@@ -41,10 +41,7 @@ export class PluginsHandler implements CommandHandler {
   // Subcommand handlers
   // ---------------------------------------------------------------------------
 
-  private async handleList(
-    threadTs: string,
-    say: CommandContext['say'],
-  ): Promise<CommandResult> {
+  private async handleList(threadTs: string, say: CommandContext['say']): Promise<CommandResult> {
     const pluginManager = this.deps.mcpManager.getPluginManager();
     if (!pluginManager) {
       await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
@@ -68,13 +65,13 @@ export class PluginsHandler implements CommandHandler {
     }
 
     // Show user-installed marketplace plugins
-    const userPlugins = installed.filter(ref => !isDefaultPlugin(ref));
+    const userPlugins = installed.filter((ref) => !isDefaultPlugin(ref));
     if (userPlugins.length === 0) {
       lines.push('');
       lines.push('_No additional marketplace plugins installed. Use `plugins add name@marketplace` to install._');
     } else {
       for (const ref of userPlugins) {
-        const detail = resolved.find(r => r.name === ref);
+        const detail = resolved.find((r) => r.name === ref);
         const pathInfo = detail ? ` (resolved: ${detail.localPath})` : '';
         lines.push(`\u2022 *${ref}* \u2014 Marketplace plugin${pathInfo}`);
       }
@@ -84,11 +81,7 @@ export class PluginsHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async handleAdd(
-    pluginRef: string,
-    threadTs: string,
-    say: CommandContext['say'],
-  ): Promise<CommandResult> {
+  private async handleAdd(pluginRef: string, threadTs: string, say: CommandContext['say']): Promise<CommandResult> {
     const pluginManager = this.deps.mcpManager.getPluginManager();
     if (!pluginManager) {
       await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
@@ -110,11 +103,7 @@ export class PluginsHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async handleRemove(
-    pluginRef: string,
-    threadTs: string,
-    say: CommandContext['say'],
-  ): Promise<CommandResult> {
+  private async handleRemove(pluginRef: string, threadTs: string, say: CommandContext['say']): Promise<CommandResult> {
     // Protect the built-in local plugin and default plugins
     if (this.isBuiltInLocal(pluginRef) || isDefaultPlugin(pluginRef)) {
       const label = this.isBuiltInLocal(pluginRef) ? 'Built-in local' : 'Default';
@@ -146,11 +135,7 @@ export class PluginsHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async handleUpdate(
-    user: string,
-    threadTs: string,
-    say: CommandContext['say'],
-  ): Promise<CommandResult> {
+  private async handleUpdate(user: string, threadTs: string, say: CommandContext['say']): Promise<CommandResult> {
     // Admin-only gate
     if (!isAdminUser(user)) {
       await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
@@ -163,7 +148,10 @@ export class PluginsHandler implements CommandHandler {
       return { handled: true };
     }
 
-    await say({ text: '🔄 플러그인 전체 업데이트를 시작합니다. 캐시를 삭제하고 새로 다운로드합니다...', thread_ts: threadTs });
+    await say({
+      text: '🔄 플러그인 전체 업데이트를 시작합니다. 캐시를 삭제하고 새로 다운로드합니다...',
+      thread_ts: threadTs,
+    });
 
     try {
       const result = await pluginManager.forceRefresh();

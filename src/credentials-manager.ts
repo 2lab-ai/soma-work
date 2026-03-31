@@ -1,8 +1,8 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import { Logger } from './logger';
+import * as path from 'path';
 import { config } from './config';
+import { Logger } from './logger';
 
 const logger = new Logger('CredentialsManager');
 

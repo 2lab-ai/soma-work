@@ -1,11 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   gitUrlToRepo,
+  normaliseOfficialManifest,
   normalisePluginSource,
   validateOfficialManifest,
-  normaliseOfficialManifest,
 } from './marketplace-fetcher';
-import { EXTERNAL_PLUGIN_PATH, OfficialMarketplaceManifest } from './types';
+import { EXTERNAL_PLUGIN_PATH, type OfficialMarketplaceManifest } from './types';
 
 // ---------------------------------------------------------------------------
 // gitUrlToRepo
@@ -126,10 +126,7 @@ describe('validateOfficialManifest', () => {
   it('filters out entries without name', () => {
     const input = {
       name: 'test',
-      plugins: [
-        { name: 'valid', source: './path' },
-        { source: './no-name' },
-      ],
+      plugins: [{ name: 'valid', source: './path' }, { source: './no-name' }],
     };
     const result = validateOfficialManifest(input);
     expect(result!.plugins).toHaveLength(1);
@@ -139,10 +136,7 @@ describe('validateOfficialManifest', () => {
   it('filters out entries without source', () => {
     const input = {
       name: 'test',
-      plugins: [
-        { name: 'valid', source: './path' },
-        { name: 'no-source' },
-      ],
+      plugins: [{ name: 'valid', source: './path' }, { name: 'no-source' }],
     };
     const result = validateOfficialManifest(input);
     expect(result!.plugins).toHaveLength(1);

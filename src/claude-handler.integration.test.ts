@@ -8,29 +8,32 @@
  * Skips automatically if credentials are unavailable.
  */
 
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { ClaudeHandler } from './claude-handler';
 import { McpManager } from './mcp-manager';
-import { ConversationSession } from './types';
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { ConversationSession } from './types';
 
 // Skip if running inside Claude Code session (nested sessions crash)
 // Run from a regular terminal: npx vitest run src/claude-handler.integration.test.ts
 const isNestedSession = !!process.env.CLAUDECODE;
 const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
 
-const canRun = !isNestedSession && (hasApiKey || (() => {
-  try {
-    const fs = require('fs');
-    const os = require('os');
-    const path = require('path');
-    // Claude subscription auth
-    const authDir = path.join(os.homedir(), '.claude');
-    return fs.existsSync(authDir);
-  } catch {
-    return false;
-  }
-})());
+const canRun =
+  !isNestedSession &&
+  (hasApiKey ||
+    (() => {
+      try {
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+        // Claude subscription auth
+        const authDir = path.join(os.homedir(), '.claude');
+        return fs.existsSync(authDir);
+      } catch {
+        return false;
+      }
+    })());
 
 const describeWithCredentials = canRun ? describe : describe.skip;
 
@@ -67,7 +70,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
   });
 
   async function collectStream(
-    stream: AsyncGenerator<SDKMessage, void, unknown>
+    stream: AsyncGenerator<SDKMessage, void, unknown>,
   ): Promise<{ messages: SDKMessage[]; text: string; errors: string[] }> {
     const messages: SDKMessage[] = [];
     let text = '';
@@ -94,12 +97,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     const session = createMockSession({ model: 'claude-sonnet-4-20250514' });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery(
-      'Say "hello" and nothing else.',
-      session,
-      abortController,
-      '/tmp',
-    );
+    const stream = handler.streamQuery('Say "hello" and nothing else.', session, abortController, '/tmp');
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -114,12 +112,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery(
-      'Say "effort-high-ok" and nothing else.',
-      session,
-      abortController,
-      '/tmp',
-    );
+    const stream = handler.streamQuery('Say "effort-high-ok" and nothing else.', session, abortController, '/tmp');
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -133,12 +126,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery(
-      'Say "effort-low-ok" and nothing else.',
-      session,
-      abortController,
-      '/tmp',
-    );
+    const stream = handler.streamQuery('Say "effort-low-ok" and nothing else.', session, abortController, '/tmp');
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -156,12 +144,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
 
     let crashed = false;
     try {
-      const stream = handler.streamQuery(
-        'Say "max-test" and nothing else.',
-        session,
-        abortController,
-        '/tmp',
-      );
+      const stream = handler.streamQuery('Say "max-test" and nothing else.', session, abortController, '/tmp');
       await collectStream(stream);
     } catch (error: any) {
       if (error.message?.includes('exited with code')) {
@@ -186,12 +169,7 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery(
-      'Say "opus-high-ok" and nothing else.',
-      session,
-      abortController,
-      '/tmp',
-    );
+    const stream = handler.streamQuery('Say "opus-high-ok" and nothing else.', session, abortController, '/tmp');
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_CONFIG_DIR = '/tmp/llm-chat-config-test';
 const TEST_CONFIG_FILE = `${TEST_CONFIG_DIR}/config.json`;
@@ -18,12 +18,20 @@ describe('LlmChatConfigStore', () => {
   beforeEach(() => {
     fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
     // Remove config file to start fresh with defaults
-    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore if not exists */ }
+    try {
+      fs.unlinkSync(TEST_CONFIG_FILE);
+    } catch {
+      /* ignore if not exists */
+    }
     store = new LlmChatConfigStore();
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(TEST_CONFIG_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_CONFIG_FILE);
+    } catch {
+      /* ignore */
+    }
   });
 
   describe('constructor / defaults', () => {

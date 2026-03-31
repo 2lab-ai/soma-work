@@ -4,8 +4,14 @@
  * Opt-in: user must enable via `notify on`.
  */
 
-import { NotificationChannel, TurnCompletionEvent, getCategoryEmoji, getCategoryLabel, buildThreadPermalink } from '../turn-notifier.js';
 import { Logger } from '../logger.js';
+import {
+  buildThreadPermalink,
+  getCategoryEmoji,
+  getCategoryLabel,
+  type NotificationChannel,
+  type TurnCompletionEvent,
+} from '../turn-notifier.js';
 
 const logger = new Logger('SlackDmChannel');
 

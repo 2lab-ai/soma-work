@@ -11,16 +11,21 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import {
-  PluginConfig, MarketplaceEntry, ResolvedPlugin, SdkPluginPath, PluginRef,
-  ForceRefreshResult, PluginUpdateDetail,
-} from './types';
-import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
-import { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
-import { readCacheMeta, hasCachedPlugin } from './plugin-cache';
-import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { Logger } from '../logger';
-import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultPlugin, isDefaultMarketplace } from './defaults';
+import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
+import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
+import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultMarketplace, isDefaultPlugin } from './defaults';
+import { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
+import { hasCachedPlugin, readCacheMeta } from './plugin-cache';
+import type {
+  ForceRefreshResult,
+  MarketplaceEntry,
+  PluginConfig,
+  PluginRef,
+  PluginUpdateDetail,
+  ResolvedPlugin,
+  SdkPluginPath,
+} from './types';
 
 const logger = new Logger('PluginManager');
 
@@ -38,12 +43,7 @@ export class PluginManager {
   private resolved: readonly ResolvedPlugin[] = [];
   private initialized = false;
 
-  constructor(
-    pluginConfig: PluginConfig,
-    pluginsDir: string,
-    configFile?: string,
-    mcpFallback?: string,
-  ) {
+  constructor(pluginConfig: PluginConfig, pluginsDir: string, configFile?: string, mcpFallback?: string) {
     this.pluginConfig = pluginConfig;
     this.pluginsDir = path.resolve(pluginsDir);
     this.configFile = configFile;
@@ -112,9 +112,9 @@ export class PluginManager {
 
     logger.info('Plugin initialization complete', {
       total: results.length,
-      defaults: results.filter(r => r.source === 'default').length,
-      marketplace: results.filter(r => r.source === 'marketplace').length,
-      localOverrides: results.filter(r => r.source === 'local-override').length,
+      defaults: results.filter((r) => r.source === 'default').length,
+      marketplace: results.filter((r) => r.source === 'marketplace').length,
+      localOverrides: results.filter((r) => r.source === 'local-override').length,
     });
   }
 
@@ -127,7 +127,7 @@ export class PluginManager {
       logger.warn('getPluginPaths called before initialize — returning empty');
       return [];
     }
-    return this.resolved.map(r => ({ type: 'local' as const, path: r.localPath }));
+    return this.resolved.map((r) => ({ type: 'local' as const, path: r.localPath }));
   }
 
   /**
@@ -170,8 +170,10 @@ export class PluginManager {
         details.push({
           name: `${ref.pluginName}@${ref.marketplaceName}`,
           status: 'error',
-          oldSha: null, oldDate: null,
-          newSha: null, newDate: null,
+          oldSha: null,
+          oldDate: null,
+          newSha: null,
+          newDate: null,
           error: msg,
         });
         continue;
@@ -205,8 +207,10 @@ export class PluginManager {
           details.push({
             name: pluginDisplayName,
             status: 'error',
-            oldSha: null, oldDate: null,
-            newSha: null, newDate: null,
+            oldSha: null,
+            oldDate: null,
+            newSha: null,
+            newDate: null,
             error: msg,
           });
         }
@@ -258,9 +262,17 @@ export class PluginManager {
         if (result) {
           // Success — remove backup
           if (backedUp) {
-            try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch { /* ignore */ }
+            try {
+              fs.rmSync(backupDir, { recursive: true, force: true });
+            } catch {
+              /* ignore */
+            }
           }
-          try { if (fs.existsSync(metaBackup)) fs.unlinkSync(metaBackup); } catch { /* ignore */ }
+          try {
+            if (fs.existsSync(metaBackup)) fs.unlinkSync(metaBackup);
+          } catch {
+            /* ignore */
+          }
 
           details.push({
             name: pluginDisplayName,
@@ -280,7 +292,8 @@ export class PluginManager {
             status: 'error',
             oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
             oldDate: oldMeta?.fetchedAt ?? null,
-            newSha: null, newDate: null,
+            newSha: null,
+            newDate: null,
             error: msg,
           });
         }
@@ -294,7 +307,8 @@ export class PluginManager {
           status: 'error',
           oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
           oldDate: oldMeta?.fetchedAt ?? null,
-          newSha: null, newDate: null,
+          newSha: null,
+          newDate: null,
           error: msg,
         });
       }
@@ -312,8 +326,8 @@ export class PluginManager {
       throw error;
     }
 
-    const updated = details.filter(d => d.status === 'updated' || d.status === 'new').length;
-    const unchanged = details.filter(d => d.status === 'unchanged').length;
+    const updated = details.filter((d) => d.status === 'updated' || d.status === 'new').length;
+    const unchanged = details.filter((d) => d.status === 'unchanged').length;
 
     return {
       total: this.resolved.length,
@@ -352,7 +366,7 @@ export class PluginManager {
     }
 
     const existing = this.pluginConfig.marketplace || [];
-    if (existing.some(m => m.name === entry.name)) {
+    if (existing.some((m) => m.name === entry.name)) {
       return { success: false, error: `Marketplace "${entry.name}" already exists` };
     }
 
@@ -372,13 +386,13 @@ export class PluginManager {
       return { success: false, error: `Default marketplace "${name}" cannot be removed` };
     }
     const existing = this.pluginConfig.marketplace || [];
-    if (!existing.some(m => m.name === name)) {
+    if (!existing.some((m) => m.name === name)) {
       return { success: false, error: `Marketplace "${name}" not found` };
     }
 
     this.pluginConfig = {
       ...this.pluginConfig,
-      marketplace: existing.filter(m => m.name !== name),
+      marketplace: existing.filter((m) => m.name !== name),
     };
 
     this.saveConfig();
@@ -420,7 +434,7 @@ export class PluginManager {
 
     this.pluginConfig = {
       ...this.pluginConfig,
-      plugins: existing.filter(p => p !== pluginRef),
+      plugins: existing.filter((p) => p !== pluginRef),
     };
 
     this.saveConfig();
@@ -455,20 +469,14 @@ export class PluginManager {
   private mergeDefaults(): PluginConfig {
     const userMarketplaces = this.pluginConfig.marketplace || [];
     const userPlugins = this.pluginConfig.plugins || [];
-    const userNames = new Set(userMarketplaces.map(m => m.name));
+    const userNames = new Set(userMarketplaces.map((m) => m.name));
 
     // Add default marketplaces that aren't already defined by user
-    const mergedMarketplaces = [
-      ...userMarketplaces,
-      ...DEFAULT_MARKETPLACES.filter(d => !userNames.has(d.name)),
-    ];
+    const mergedMarketplaces = [...userMarketplaces, ...DEFAULT_MARKETPLACES.filter((d) => !userNames.has(d.name))];
 
     // Add default plugins that aren't already in user list
     const userPluginSet = new Set(userPlugins);
-    const mergedPlugins = [
-      ...userPlugins,
-      ...DEFAULT_PLUGINS.filter(d => !userPluginSet.has(d)),
-    ];
+    const mergedPlugins = [...userPlugins, ...DEFAULT_PLUGINS.filter((d) => !userPluginSet.has(d))];
 
     return {
       ...this.pluginConfig,
@@ -490,8 +498,10 @@ export class PluginManager {
 
   /** Restore backed-up plugin directory and meta file on fetch failure. */
   private restoreBackup(
-    backupDir: string, pluginDir: string,
-    metaBackup: string, metaFile: string,
+    backupDir: string,
+    pluginDir: string,
+    metaBackup: string,
+    metaFile: string,
     backedUp: boolean,
   ): void {
     try {
