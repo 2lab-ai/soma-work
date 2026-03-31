@@ -32,7 +32,7 @@ jobs:
         run: npx biome check src/ scripts/
 
       - name: Type Check
-        run: tsc --noEmit
+        run: npx tsc --noEmit
 
       - name: Test
         run: npm test
