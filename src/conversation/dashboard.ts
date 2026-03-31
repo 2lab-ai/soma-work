@@ -83,6 +83,7 @@ export interface UserDayStats {
   linesDeleted: number;
   mergeLinesAdded: number;
   mergeLinesDeleted: number;
+  workflowCounts: Record<string, number>;
 }
 
 export interface UserStats {
@@ -99,6 +100,7 @@ export interface UserStats {
     linesDeleted: number;
     mergeLinesAdded: number;
     mergeLinesDeleted: number;
+    workflowCounts: Record<string, number>;
   };
 }
 
@@ -235,12 +237,18 @@ function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string,
         sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
         commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
         mergeLinesAdded: 0, mergeLinesDeleted: 0,
+        workflowCounts: {},
       });
     }
     const day = dayMap.get(dateStr)!;
 
     switch (ev.eventType) {
-      case 'session_created': day.sessionsCreated++; break;
+      case 'session_created': {
+        day.sessionsCreated++;
+        const wf = (ev.metadata?.workflow as string) || 'default';
+        day.workflowCounts[wf] = (day.workflowCounts[wf] || 0) + 1;
+        break;
+      }
       case 'turn_used': day.turnsUsed++; break;
       case 'pr_created': day.prsCreated++; break;
       case 'pr_merged': day.prsMerged++; break;
@@ -374,20 +382,28 @@ export async function registerDashboardRoutes(
         const dayMap = aggregateUserStats(events, userId);
         const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-        const totals = days.reduce((acc, d) => ({
-          sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
-          turnsUsed: acc.turnsUsed + d.turnsUsed,
-          prsCreated: acc.prsCreated + d.prsCreated,
-          prsMerged: acc.prsMerged + d.prsMerged,
-          commitsCreated: acc.commitsCreated + d.commitsCreated,
-          linesAdded: acc.linesAdded + d.linesAdded,
-          linesDeleted: acc.linesDeleted + d.linesDeleted,
-          mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
-          mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
-        }), {
+        const totals = days.reduce((acc, d) => {
+          const wfCounts = { ...acc.workflowCounts };
+          for (const [wf, cnt] of Object.entries(d.workflowCounts)) {
+            wfCounts[wf] = (wfCounts[wf] || 0) + cnt;
+          }
+          return {
+            sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
+            turnsUsed: acc.turnsUsed + d.turnsUsed,
+            prsCreated: acc.prsCreated + d.prsCreated,
+            prsMerged: acc.prsMerged + d.prsMerged,
+            commitsCreated: acc.commitsCreated + d.commitsCreated,
+            linesAdded: acc.linesAdded + d.linesAdded,
+            linesDeleted: acc.linesDeleted + d.linesDeleted,
+            mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
+            mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
+            workflowCounts: wfCounts,
+          };
+        }, {
           sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
           commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
           mergeLinesAdded: 0, mergeLinesDeleted: 0,
+          workflowCounts: {} as Record<string, number>,
         });
 
         reply.send({ userId, period, days, totals } satisfies UserStats);
@@ -1163,6 +1179,7 @@ body {
       <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC; +/-</div><div class="value" id="stat-merge-lines">-</div></div>
       <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens">-</div></div>
       <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
+      <div class="stat-card" style="grid-column:span 2"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
     </div>
 
     <div class="chart-row" id="chart-row"></div>
@@ -1451,6 +1468,12 @@ async function loadStats() {
     document.getElementById('stat-merged').textContent = data.totals.prsMerged;
     document.getElementById('stat-commits').textContent = data.totals.commitsCreated;
     document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
+    // Workflow counts
+    const wfCounts = data.totals.workflowCounts || {};
+    const wfEntries = Object.entries(wfCounts).sort(function(a, b) { return b[1] - a[1]; });
+    document.getElementById('stat-workflows').innerHTML = wfEntries.length
+      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
+      : '<span style="color:var(--text-muted)">-</span>';
     updateTokenStats();
     renderCharts(data.days);
   } catch (e) { console.error('Failed to load stats', e); }
