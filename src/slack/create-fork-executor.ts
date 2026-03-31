@@ -26,6 +26,30 @@ const FORK_SYSTEM_PROMPT =
  */
 export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
   return async (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal): Promise<string | null> => {
+    /** Build an AbortController that mirrors the caller's signal. */
+    const makeAbortController = (): AbortController | undefined => {
+      if (!abortSignal) return undefined;
+      const ac = new AbortController();
+      if (abortSignal.aborted) {
+        ac.abort(abortSignal.reason);
+      } else {
+        abortSignal.addEventListener('abort', () => ac.abort(abortSignal.reason), { once: true });
+      }
+      return ac;
+    };
+
+    /** Single dispatch attempt. When resumeId is provided, forkSession is enabled. */
+    const attempt = async (resumeId?: string): Promise<string> => {
+      return claudeHandler.dispatchOneShot(
+        prompt,
+        FORK_SYSTEM_PROMPT,
+        model,
+        makeAbortController(),
+        resumeId,
+        cwd,
+      );
+    };
+
     try {
       logger.info('Fork executor: starting summary query', {
         promptLength: prompt.length,
@@ -34,29 +58,37 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
         cwd: cwd ?? 'none',
       });
 
-      // Thread AbortSignal → AbortController for dispatchOneShot compatibility.
-      // If caller provided a signal, wrap it; otherwise pass undefined.
-      let abortController: AbortController | undefined;
-      if (abortSignal) {
-        abortController = new AbortController();
-        // Forward external abort to our controller
-        if (abortSignal.aborted) {
-          abortController.abort(abortSignal.reason);
+      let response: string;
+      try {
+        response = await attempt(sessionId);
+      } catch (firstError) {
+        // If the fork failed because the session no longer exists, retry without fork.
+        // Claude SDK returns "No conversation found with session ID: ..." for stale sessions.
+        const msg = firstError instanceof Error ? firstError.message : String(firstError);
+        const isStaleSession = sessionId && msg.toLowerCase().includes('no conversation found');
+
+        if (isStaleSession) {
+          // Short-circuit: if caller already aborted, don't waste a retry
+          if (abortSignal?.aborted) {
+            throw firstError;
+          }
+          logger.warn('Fork executor: stale sessionId, retrying without fork', {
+            sessionId,
+            error: msg,
+          });
+          try {
+            response = await attempt(undefined);
+          } catch (fallbackError) {
+            logger.error('Fork executor: fallback also failed', {
+              originalError: msg,
+              fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            });
+            throw fallbackError;
+          }
         } else {
-          abortSignal.addEventListener('abort', () => {
-            abortController!.abort(abortSignal.reason);
-          }, { once: true });
+          throw firstError;
         }
       }
-
-      const response = await claudeHandler.dispatchOneShot(
-        prompt,
-        FORK_SYSTEM_PROMPT,
-        model,
-        abortController,
-        sessionId, // fork session for conversation context
-        cwd,       // working directory for forked session
-      );
 
       const trimmed = response.trim();
 

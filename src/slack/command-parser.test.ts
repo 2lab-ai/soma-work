@@ -672,6 +672,110 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('isPotentialCommand - false positive prevention', () => {
+    // Should return isPotential: true
+    it('should recognize "help" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('help').isPotential).toBe(true);
+    });
+
+    it('should recognize "sessions" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('sessions').isPotential).toBe(true);
+    });
+
+    it('should recognize "/help" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('/help').isPotential).toBe(true);
+    });
+
+    it('should recognize "/sessions" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('/sessions').isPotential).toBe(true);
+    });
+
+    it('should recognize "$model" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('$model').isPotential).toBe(true);
+    });
+
+    it('should recognize "$model opus" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('$model opus').isPotential).toBe(true);
+    });
+
+    it('should recognize "$verbosity" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('$verbosity').isPotential).toBe(true);
+    });
+
+    it('should recognize "$effort high" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('$effort high').isPotential).toBe(true);
+    });
+
+    it('should recognize "$" as a potential command (bare dollar — session info)', () => {
+      expect(CommandParser.isPotentialCommand('$').isPotential).toBe(true);
+    });
+
+    it('should recognize "show prompt" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('show prompt').isPotential).toBe(true);
+    });
+
+    it('should recognize "show instructions" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('show instructions').isPotential).toBe(true);
+    });
+
+    // Should return isPotential: false (the fixed false positives)
+    it('should not recognize "help me with something" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('help me with something').isPotential).toBe(false);
+    });
+
+    it('should not recognize "help 에 sessions 치면" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('help 에 sessions 치면').isPotential).toBe(false);
+    });
+
+    it('should not recognize "new idea for the project" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('new idea for the project').isPotential).toBe(false);
+    });
+
+    it('should not recognize "model accuracy is low" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('model accuracy is low').isPotential).toBe(false);
+    });
+
+    it('should not recognize "sessions are important" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('sessions are important').isPotential).toBe(false);
+    });
+
+    it('should not recognize "close the door" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('close the door').isPotential).toBe(false);
+    });
+
+    it('should not recognize "context of this conversation" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('context of this conversation').isPotential).toBe(false);
+    });
+
+    it('should not recognize "/tmp/project" as a potential command (file path)', () => {
+      expect(CommandParser.isPotentialCommand('/tmp/project').isPotential).toBe(false);
+    });
+
+    it('should not recognize "/usr/bin/node" as a potential command (file path)', () => {
+      expect(CommandParser.isPotentialCommand('/usr/bin/node').isPotential).toBe(false);
+    });
+
+    it('should not recognize "$PATH is wrong" as a potential command (env variable)', () => {
+      expect(CommandParser.isPotentialCommand('$PATH is wrong').isPotential).toBe(false);
+    });
+
+    it('should not recognize "$HOME/documents" as a potential command (env variable)', () => {
+      expect(CommandParser.isPotentialCommand('$HOME/documents').isPotential).toBe(false);
+    });
+
+    it('should not recognize "show prompt please" as a potential command (three words)', () => {
+      expect(CommandParser.isPotentialCommand('show prompt please').isPotential).toBe(false);
+    });
+
+    it('should not recognize "" as a potential command (empty string)', () => {
+      expect(CommandParser.isPotentialCommand('').isPotential).toBe(false);
+    });
+
+    it('should not recognize "   " as a potential command (whitespace only)', () => {
+      expect(CommandParser.isPotentialCommand('   ').isPotential).toBe(false);
+    });
+  });
+
   describe('isRenewCommand', () => {
     it('should match "renew"', () => {
       expect(CommandParser.isRenewCommand('renew')).toBe(true);
