@@ -14,6 +14,8 @@ soma-work supports a **multi-agent architecture** where each sub-agent is an ind
 
 The main bot (@soma) can delegate work to sub-agents via `agent_chat` / `agent_reply` MCP tools, and users can also @mention sub-agents directly.
 
+> **Status**: Agents connect via Socket Mode and receive events. Full ClaudeHandler wiring for @mention/DM responses and `agent_chat` query integration is in progress (Phase 2). The infrastructure (AgentManager, AgentInstance, Agent MCP Server) is complete and tested.
+
 ```
 User → @soma-jangbi "review this PR"
        → jangbi's own Slack App → jangbi's ClaudeHandler → Response
@@ -154,6 +156,8 @@ This generates a Slack App manifest, opens the creation URL, and prompts you to 
 
 ### Step 2: Add to `config.json`
 
+> **Note**: On non-`main` branches, the app reads `config.dev.json` instead of `config.json` (unless `SOMA_CONFIG_DIR` is set). Make sure you edit the correct file for your environment.
+
 Add an entry under the `agents` key:
 
 ```json
@@ -185,7 +189,7 @@ Add an entry under the `agents` key:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `promptDir` | `src/prompt/<agent-name>` | Path to prompt directory |
-| `persona` | `default` | Persona file name (from `src/persona/`) |
+| `persona` | `default` | Persona file name *(planned — not yet applied at runtime)* |
 | `description` | — | Human-readable description |
 | `model` | inherited from main | Claude model override |
 

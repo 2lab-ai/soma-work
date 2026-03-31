@@ -98,6 +98,8 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 - **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
+> **Note**: Direct @mention/DM handling and `agent_chat` query integration are being wired up (Phase 2). Agents currently connect via Socket Mode and receive events, but full ClaudeHandler integration is in progress.
+
 See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 
 ---
@@ -123,7 +125,7 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 └─┬──┘ └──┬───┘ └────┬───┘         └───────────────────┘
   │        │          │
   │  ┌─────▼────┐ ┌───▼──────┐
-  │  │ 26 Cmd   │ │ Pipeline │
+  │  │ 27 Cmd   │ │ Pipeline │
   │  │ Handlers │ │ in→sess→ │
   │  └──────────┘ │ stream   │
   │               └────┬─────┘
