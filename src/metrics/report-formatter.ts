@@ -516,7 +516,10 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
         r.metrics.prsMerged * 10;
       return { ...r, score };
     })
-    .sort((a, b) => b.score - a.score || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }))
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.rank - b.rank || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }),
+    )
     .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   const top = scored[0];
@@ -731,7 +734,11 @@ export class ReportFormatter {
           r.metrics.commitsCreated * 3 +
           r.metrics.prsCreated * 5 +
           r.metrics.prsMerged * 10;
-        return scoreOf(b) - scoreOf(a) || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' });
+        return (
+          scoreOf(b) - scoreOf(a) ||
+          a.rank - b.rank ||
+          a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' })
+        );
       })
       .slice(0, MAX_RANKINGS_IN_BLOCKS);
     if (sortedRankings.length > 0) {
