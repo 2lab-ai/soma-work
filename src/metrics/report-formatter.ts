@@ -62,9 +62,14 @@ type SlackBlock = SlackHeaderBlock | SlackSectionBlock | SlackContextBlock | Sla
 
 // === Block Kit Safety Layer ===
 
-/** Sanitize user-provided text to prevent Slack mrkdwn injection (mentions, links). */
+/** Sanitize user-provided text to prevent Slack mrkdwn injection and layout breakage. */
 function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/[\r\n]+/g, ' ') // collapse newlines — prevent layout breakage
+    .replace(/[*_~`]/g, '') // strip mrkdwn formatting chars — prevent emphasis injection
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /** Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity. Logs a warning in dev. */
@@ -159,6 +164,25 @@ function trimToLimit(blocks: SlackBlock[], limit: number): SlackBlock[] {
 interface FormattedReport {
   blocks: SlackBlock[];
   text: string;
+}
+
+/**
+ * Sanitize DerivedMetrics at the formatter boundary.
+ * Replaces NaN/Infinity with 0 for all numeric fields, ensuring downstream
+ * rendering never emits "NaN%" or "Infinity" in any display path.
+ */
+function safeDerived(d: DerivedMetrics): DerivedMetrics {
+  return {
+    ...d,
+    prMergeRate: safeNum(d.prMergeRate),
+    sessionCompletionRate: safeNum(d.sessionCompletionRate),
+    churnRatio: safeNum(d.churnRatio),
+    netLines: safeNum(d.netLines),
+    avgCodePerCommit: safeNum(d.avgCodePerCommit),
+    avgCodePerPr: safeNum(d.avgCodePerPr),
+    avgTurnsPerSession: safeNum(d.avgTurnsPerSession),
+    productivityScore: safeNum(d.productivityScore),
+  };
 }
 
 // === Visual Helpers (Bauhaus: functional only) ===
@@ -697,15 +721,29 @@ export class ReportFormatter {
       ...metricsToSections(report.metrics),
     ];
 
-    const displayRankings = report.rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
-    if (displayRankings.length > 0) {
+    // Sort rankings by consistent scoring formula, then take top N — same logic as buildRankings
+    const sortedRankings = [...report.rankings]
+      .sort((a, b) => {
+        const scoreOf = (r: UserRanking) =>
+          r.metrics.turnsUsed +
+          r.metrics.sessionsCreated +
+          r.metrics.issuesCreated * 2 +
+          r.metrics.commitsCreated * 3 +
+          r.metrics.prsCreated * 5 +
+          r.metrics.prsMerged * 10;
+        return scoreOf(b) - scoreOf(a) || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' });
+      })
+      .slice(0, MAX_RANKINGS_IN_BLOCKS);
+    if (sortedRankings.length > 0) {
       blocks.push({ type: 'divider' });
       blocks.push({
         type: 'header',
         text: { type: 'plain_text', text: ':medal: 사용자 랭킹', emoji: true },
       });
-      for (const r of displayRankings) {
-        const medal = r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : `#${r.rank}`;
+      for (let idx = 0; idx < sortedRankings.length; idx++) {
+        const r = sortedRankings[idx];
+        const displayRank = idx + 1;
+        const medal = displayRank <= 3 ? ['🥇', '🥈', '🥉'][displayRank - 1] : `#${displayRank}`;
         blocks.push({
           type: 'section',
           text: {
@@ -732,7 +770,8 @@ export class ReportFormatter {
    * 4-field KPI grid, 2-field efficiency, time distribution, action alerts. ≤10 blocks.
    */
   formatEnrichedDaily(report: EnrichedDailyReport): FormattedReport {
-    const { metrics: m, derived: d, trend, hourlyDistribution, peakHour } = report;
+    const { metrics: m, derived: rawD, trend, hourlyDistribution, peakHour } = report;
+    const d = safeDerived(rawD);
     const dayLabel = getDayLabel(report.date);
     const grade = computeGrade(d);
     const reportTitle = `일간 리포트 — ${report.date} (${dayLabel})`;
@@ -852,7 +891,7 @@ export class ReportFormatter {
   formatEnrichedWeekly(report: EnrichedWeeklyReport): FormattedReport {
     const {
       metrics: m,
-      derived: d,
+      derived: rawD,
       trend,
       dailyBreakdown,
       hourlyDistribution,
@@ -860,6 +899,7 @@ export class ReportFormatter {
       activeDays,
       rankings,
     } = report;
+    const d = safeDerived(rawD);
 
     const grade = computeGrade(d, activeDays);
     const weekEnd = report.weekEnd.slice(5); // "MM-DD" portion
