@@ -1132,6 +1132,7 @@ export class SessionRegistry {
     if (!session) return false;
     session.trashed = true;
     this.logger.info('Session trashed', { sessionKey, ownerId: session.ownerId });
+    this.saveSessions();
     return true;
   }
 

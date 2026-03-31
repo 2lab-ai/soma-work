@@ -309,7 +309,11 @@ export function broadcastTaskUpdate(sessionKey: string, tasks: Array<{ content: 
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn });
+    // Strip rawContent from assistant turns to reduce bandwidth
+    const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent
+      ? { ...turn, rawContent: undefined }
+      : turn;
+    const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
       try { client.send(payload); } catch { wsClients.delete(client); }
     }
@@ -513,8 +517,20 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const { key } = request.params;
       const { message } = request.body || {};
-      if (!message) {
-        reply.status(400).send({ error: 'message is required' });
+      if (!message || typeof message !== 'string') {
+        reply.status(400).send({ error: 'message is required and must be a string' });
+        return;
+      }
+      if (message.length > 4000) {
+        reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
+        return;
+      }
+      // Verify requesting user owns this session
+      const authUser = (request as any).dashboardUser;
+      const sessions = _getSessionsFn?.();
+      const targetSession = sessions?.get(key);
+      if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
+        reply.status(403).send({ error: 'You can only send commands to your own sessions' });
         return;
       }
       try {
@@ -548,7 +564,15 @@ export async function registerDashboardRoutes(
   try {
     await server.register(await import('@fastify/websocket'));
 
-    server.get('/ws/dashboard', { websocket: true }, (socket: any) => {
+    const MAX_WS_CLIENTS = 100;
+
+    server.get('/ws/dashboard', { websocket: true, preHandler: [authMiddleware] }, (socket: any) => {
+      // Enforce max client cap to prevent DoS
+      if (wsClients.size >= MAX_WS_CLIENTS) {
+        logger.warn('WebSocket max clients reached, rejecting', { total: wsClients.size });
+        socket.close(1013, 'Max clients reached');
+        return;
+      }
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
@@ -1216,6 +1240,9 @@ function esc(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+function escJs(s) {
+  return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
+}
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60000) return 'just now';
@@ -1274,10 +1301,11 @@ function setPeriod(period) {
 }
 
 // ── Session cache ──
-const _sessionCache = {};
+let _sessionCache = {};
 
 // ── Kanban rendering ──
 function renderBoard(board) {
+  _sessionCache = {}; // Clear stale cache each render cycle
   for (const col of ['working', 'waiting', 'idle']) {
     const container = document.getElementById('cards-' + col);
     const countEl = document.getElementById('count-' + col);
@@ -1364,17 +1392,17 @@ function renderCard(s, col) {
   // Action buttons
   let actionBtn = '';
   if (col === 'working') {
-    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\'' + esc(s.key) + '\',\'stop\')">&#x23F9; Stop</button>';
+    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'stop\')">&#x23F9; Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
-    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\'' + esc(s.key) + '\',\'close\')">&#x274C; Close</button>';
+    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'close\')">&#x274C; Close</button>';
   } else if (col === 'closed') {
-    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\'' + esc(s.key) + '\',\'trash\')">&#x1F5D1; Trash</button>';
+    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'trash\')">&#x1F5D1; Trash</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  return '<div class="' + cls + '" onclick="openPanel(\'' + esc(s.key) + '\')">'
+  return '<div class="' + cls + '" onclick="openPanel(\'' + escJs(s.key) + '\')">'
     + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + convLink + '</div>'
     + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
     + linksHtml
