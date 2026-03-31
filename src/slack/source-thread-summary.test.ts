@@ -487,3 +487,84 @@ describe('buildRequestCompleteBlocks edge cases', () => {
     expect(result.text).toBeDefined();
   });
 });
+
+describe('postSourceThreadSummary fallback paths', () => {
+  it('falls back to threadTs when threadRootTs is missing', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'fallback-thread-ts',
+      // threadRootTs is intentionally missing
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
+
+    expect(mockSlackApi.getPermalink).toHaveBeenCalledWith('C_WORK', 'fallback-thread-ts');
+  });
+
+  it('does not throw when getPermalink rejects', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockRejectedValue(new Error('Slack API unavailable')),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    // Should not throw — fire-and-forget
+    await expect(
+      postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')
+    ).resolves.not.toThrow();
+  });
+
+  it('skips permalink when channelId is missing', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Task',
+      // channelId is intentionally missing
+      threadTs: 'ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    await postSourceThreadSummary(mockSlackApi as any, session as any, 'closed');
+
+    // getPermalink should NOT be called when channelId is falsy
+    expect(mockSlackApi.getPermalink).not.toHaveBeenCalled();
+    // But postMessage should still be called
+    expect(mockSlackApi.postMessage).toHaveBeenCalled();
+  });
+});
+
+describe('buildRequestStartBlocks truncation boundary', () => {
+  it('does not truncate title at exactly 150 chars', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const exactTitle = 'X'.repeat(150);
+    const session = { title: exactTitle, workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.blocks[0].text.text).toBe(exactTitle);
+    expect(result.blocks[0].text.text.length).toBe(150);
+  });
+
+  it('truncates title at 151 chars', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const overTitle = 'Y'.repeat(151);
+    const session = { title: overTitle, workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.blocks[0].text.text.length).toBe(150);
+    expect(result.blocks[0].text.text.endsWith('...')).toBe(true);
+  });
+});
