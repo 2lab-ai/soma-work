@@ -37,6 +37,32 @@ const DEFAULT_CONFIG: LlmChatConfig = {
 
 export { DEFAULT_CONFIG };
 
+/**
+ * Expand flat dot-notation config keys into nested objects and coerce types.
+ * e.g. { "features.fast_mode": "true" } → { features: { fast_mode: true } }
+ */
+export function expandConfigOverride(flat: Record<string, string>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flat)) {
+    const coerced: unknown = value === 'true' ? true : value === 'false' ? false : value;
+
+    if (key.includes('.')) {
+      const parts = key.split('.');
+      let target: Record<string, unknown> = result;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in target) || typeof target[parts[i]] !== 'object' || target[parts[i]] === null) {
+          target[parts[i]] = {};
+        }
+        target = target[parts[i]] as Record<string, unknown>;
+      }
+      target[parts[parts.length - 1]] = coerced;
+    } else {
+      result[key] = coerced;
+    }
+  }
+  return result;
+}
+
 const VALID_BACKENDS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG));
 
 /**
@@ -164,12 +190,12 @@ export class LlmChatConfigStore {
   /** Generate prompt snippet for system prompt injection (replaces hardcoded models in common.prompt) */
   toPromptSnippet(): string {
     const formatBackend = (cfg: LlmBackendConfig): string => {
-      const configStr =
-        cfg.configOverride && Object.keys(cfg.configOverride).length > 0
-          ? `, config: { ${Object.entries(cfg.configOverride)
-              .map(([k, v]) => `"${k}":"${v}"`)
-              .join(', ')} }`
-          : '';
+      if (!cfg.configOverride || Object.keys(cfg.configOverride).length === 0) {
+        return `    - ${cfg.backend}: <parameters>model: "${cfg.model}"</parameters>`;
+      }
+      // Expand flat dot-notation keys and coerce types for correct prompt output
+      const expanded = expandConfigOverride(cfg.configOverride);
+      const configStr = `, config: ${JSON.stringify(expanded)}`;
       return `    - ${cfg.backend}: <parameters>model: "${cfg.model}"${configStr}</parameters>`;
     };
 
