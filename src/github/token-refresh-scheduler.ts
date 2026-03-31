@@ -1,6 +1,6 @@
 import { Logger } from '../logger';
-import { GitHubApiClient, TokenInfo } from './api-client';
-import { GitCredentialsManager } from './git-credentials-manager';
+import { type GitHubApiClient, TokenInfo } from './api-client';
+import type { GitCredentialsManager } from './git-credentials-manager';
 
 const logger = new Logger('TokenRefreshScheduler');
 
@@ -20,7 +20,7 @@ export class TokenRefreshScheduler {
   constructor(
     private apiClient: GitHubApiClient,
     private credentialsManager: GitCredentialsManager,
-    private installationId: number
+    private installationId: number,
   ) {}
 
   /**
@@ -73,7 +73,7 @@ export class TokenRefreshScheduler {
     }
 
     logger.info(
-      `GitHub App token refresh scheduled for ${refreshAt.toISOString()} (in ${Math.round(timeUntilRefresh / 1000 / 60)} minutes)`
+      `GitHub App token refresh scheduled for ${refreshAt.toISOString()} (in ${Math.round(timeUntilRefresh / 1000 / 60)} minutes)`,
     );
 
     this.refreshTimer = setTimeout(() => {

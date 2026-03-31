@@ -41,7 +41,7 @@ describe('FormActionHandler', () => {
         threadPanel,
       } as any,
       formStore as any,
-      choiceHandler as any
+      choiceHandler as any,
     );
   });
 
@@ -120,14 +120,14 @@ describe('FormActionHandler', () => {
       'thread-choice-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼) 제거
+      [], // 기존 attachments(버튼) 제거
     );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'panel-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼) 제거
+      [], // 기존 attachments(버튼) 제거
     );
   });
 
@@ -190,14 +190,14 @@ describe('FormActionHandler', () => {
       'panel-message-ts',
       expect.any(String),
       undefined,
-      expect.any(Array)
+      expect.any(Array),
     );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'thread-form-message-ts',
       expect.any(String),
       undefined,
-      expect.any(Array)
+      expect.any(Array),
     );
   });
 });

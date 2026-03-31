@@ -1,12 +1,12 @@
-import {
+import type {
   Continuation,
+  RenewState,
   SaveContextResultPayload,
   SessionResourceSnapshot,
   SessionResourceUpdateRequest,
   UserChoice,
   UserChoices,
   WorkflowType,
-  RenewState,
 } from '../types';
 
 export type ModelCommandId =
@@ -79,12 +79,7 @@ export interface ModelCommandPayloadMap {
 }
 
 export interface ModelCommandError {
-  code:
-    | 'INVALID_ARGS'
-    | 'INVALID_COMMAND'
-    | 'INVALID_OPERATION'
-    | 'SEQUENCE_MISMATCH'
-    | 'CONTEXT_ERROR';
+  code: 'INVALID_ARGS' | 'INVALID_COMMAND' | 'INVALID_OPERATION' | 'SEQUENCE_MISMATCH' | 'CONTEXT_ERROR';
   message: string;
   details?: unknown;
 }

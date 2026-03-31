@@ -50,9 +50,7 @@ export class GitHubApiClient {
       return jwt.sign(payload, this.privateKey, { algorithm: 'RS256' });
     } catch (error) {
       logger.error('Failed to generate GitHub App JWT:', error);
-      throw new Error(
-        `Failed to generate GitHub App JWT: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      throw new Error(`Failed to generate GitHub App JWT: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -64,17 +62,14 @@ export class GitHubApiClient {
       logger.debug(`Generating GitHub App installation token for installation ${installationId}`);
 
       const appJWT = this.getAppJWT();
-      const response = await fetch(
-        `https://api.github.com/app/installations/${installationId}/access_tokens`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${appJWT}`,
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
-          },
-        }
-      );
+      const response = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${appJWT}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+        },
+      });
 
       if (!response.ok) {
         throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
@@ -92,7 +87,7 @@ export class GitHubApiClient {
     } catch (error) {
       logger.error('Failed to generate GitHub App installation token:', error);
       throw new Error(
-        `Failed to authenticate with GitHub App: ${error instanceof Error ? error.message : 'Unknown error'}`
+        `Failed to authenticate with GitHub App: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
     }
   }
@@ -132,9 +127,7 @@ export class GitHubApiClient {
       }));
     } catch (error) {
       logger.error('Failed to list GitHub App installations:', error);
-      throw new Error(
-        `Failed to list installations: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      throw new Error(`Failed to list installations: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }

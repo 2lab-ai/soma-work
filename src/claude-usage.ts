@@ -38,11 +38,10 @@ function readTokenFromKeychain(): string | null {
   }
 
   try {
-    const raw = execFileSync(
-      'security',
-      ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
+    const raw = execFileSync('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
     const parsed = JSON.parse(raw) as {
       claudeAiOauth?: {
         accessToken?: string;
@@ -99,7 +98,7 @@ function tokenHash(token: string): string {
 }
 
 export async function fetchClaudeUsageSnapshot(
-  cacheTtlMs: number = DEFAULT_CACHE_TTL_MS
+  cacheTtlMs: number = DEFAULT_CACHE_TTL_MS,
 ): Promise<ClaudeUsageSnapshot | null> {
   const token = getClaudeOauthToken();
   if (!token) {

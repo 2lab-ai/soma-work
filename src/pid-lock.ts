@@ -12,7 +12,7 @@
  * @see https://github.com/2lab-ai/soma-work/issues/152
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, closeSync, constants } from 'fs';
+import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { Logger } from './logger';
 
@@ -52,7 +52,7 @@ function parseLockContent(content: string): { pid: number; startTime: number } |
   // Support legacy format (bare PID) for backward compatibility
   if (!trimmed.includes(':')) {
     const pid = parseInt(trimmed, 10);
-    return (isNaN(pid) || pid <= 0) ? null : { pid, startTime: 0 };
+    return isNaN(pid) || pid <= 0 ? null : { pid, startTime: 0 };
   }
 
   const [pidStr, timeStr] = trimmed.split(':');
@@ -125,7 +125,11 @@ export function acquirePidLock(dataDir: string): boolean {
   if (!parsed) {
     // Corrupted lock file — treat as stale
     logger.warn(`[pid-lock] Corrupted lock file (content="${existingContent.trim()}"), removing`);
-    try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* ignore if already gone */
+    }
     return tryAtomicCreate(lockPath, content);
   }
 
@@ -142,7 +146,11 @@ export function acquirePidLock(dataDir: string): boolean {
 
   // Stale lock — process died without cleanup
   logger.warn(`[pid-lock] Stale PID lock detected (pid=${parsed.pid}), removing`);
-  try { unlinkSync(lockPath); } catch { /* ignore if already gone */ }
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    /* ignore if already gone */
+  }
   return tryAtomicCreate(lockPath, content);
 }
 

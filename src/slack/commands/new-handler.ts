@@ -1,6 +1,6 @@
 import { Logger } from '../../logger';
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles /new command - resets session context while preserving metadata
@@ -23,9 +23,10 @@ export class NewHandler implements CommandHandler {
     // Check if there's an active request in progress (P1 race condition fix)
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '⚠️ Cannot reset session while a request is in progress. Please wait for the current response to complete or cancel it first.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
@@ -73,9 +74,10 @@ export class NewHandler implements CommandHandler {
         return { handled: true, continueWithPrompt: prompt };
       } else {
         // No session and no prompt
-        await this.deps.slackApi.postSystemMessage(channel,
+        await this.deps.slackApi.postSystemMessage(
+          channel,
           '💡 No existing session in this thread. Just start typing to begin a new conversation!',
-          { threadTs }
+          { threadTs },
         );
         return { handled: true };
       }

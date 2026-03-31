@@ -21,7 +21,9 @@ interface ToolResultLike {
  * Parse commit info from git commit output.
  * Example output: "[main abc1234] commit message\n 3 files changed, 50 insertions(+), 10 deletions(-)"
  */
-export function parseGitCommitResult(output: string): { sha?: string; linesAdded?: number; linesDeleted?: number } | null {
+export function parseGitCommitResult(
+  output: string,
+): { sha?: string; linesAdded?: number; linesDeleted?: number } | null {
   // Match: [branch sha] message
   const commitMatch = output.match(/\[[\w/.-]+\s+([a-f0-9]{7,})\]/);
   if (!commitMatch) return null;
@@ -125,18 +127,22 @@ export function interceptToolResults(
       // Detect git commit
       const commitInfo = parseGitCommitResult(output);
       if (commitInfo) {
-        emitter.emitGitHubEvent('commit_created', userId, userName, sessionKey, {
-          commitSha: commitInfo.sha,
-          linesAdded: commitInfo.linesAdded,
-          linesDeleted: commitInfo.linesDeleted,
-        }).catch(err => logger.error('Failed to emit metrics event', err));
+        emitter
+          .emitGitHubEvent('commit_created', userId, userName, sessionKey, {
+            commitSha: commitInfo.sha,
+            linesAdded: commitInfo.linesAdded,
+            linesDeleted: commitInfo.linesDeleted,
+          })
+          .catch((err) => logger.error('Failed to emit metrics event', err));
 
         // Also emit code_lines_added if there are lines
         if (commitInfo.linesAdded && commitInfo.linesAdded > 0) {
-          emitter.emitGitHubEvent('code_lines_added', userId, userName, sessionKey, {
-            linesAdded: commitInfo.linesAdded,
-            linesDeleted: commitInfo.linesDeleted,
-          }).catch(err => logger.error('Failed to emit metrics event', err));
+          emitter
+            .emitGitHubEvent('code_lines_added', userId, userName, sessionKey, {
+              linesAdded: commitInfo.linesAdded,
+              linesDeleted: commitInfo.linesDeleted,
+            })
+            .catch((err) => logger.error('Failed to emit metrics event', err));
         }
 
         logger.debug(`Detected git commit: ${commitInfo.sha}, +${commitInfo.linesAdded}/-${commitInfo.linesDeleted}`);
@@ -145,10 +151,12 @@ export function interceptToolResults(
       // Detect gh pr create
       const prCreateInfo = parseGhPrCreateResult(output);
       if (prCreateInfo) {
-        emitter.emitGitHubEvent('pr_created', userId, userName, sessionKey, {
-          prUrl: prCreateInfo.prUrl,
-          prNumber: prCreateInfo.prNumber,
-        }).catch(err => logger.error('Failed to emit pr_created', err));
+        emitter
+          .emitGitHubEvent('pr_created', userId, userName, sessionKey, {
+            prUrl: prCreateInfo.prUrl,
+            prNumber: prCreateInfo.prNumber,
+          })
+          .catch((err) => logger.error('Failed to emit pr_created', err));
 
         logger.debug(`Detected PR create: ${prCreateInfo.prUrl}`);
       }
@@ -156,9 +164,11 @@ export function interceptToolResults(
       // Detect gh pr merge
       const mergeInfo = parseGhPrMergeResult(output);
       if (mergeInfo) {
-        emitter.emitGitHubEvent('pr_merged', userId, userName, sessionKey, {
-          prNumber: mergeInfo.prNumber,
-        }).catch(err => logger.error('Failed to emit pr_merged', err));
+        emitter
+          .emitGitHubEvent('pr_merged', userId, userName, sessionKey, {
+            prNumber: mergeInfo.prNumber,
+          })
+          .catch((err) => logger.error('Failed to emit pr_merged', err));
 
         logger.debug(`Detected PR merge: #${mergeInfo.prNumber}`);
       }
@@ -172,15 +182,19 @@ export function interceptToolResults(
         try {
           const jsonMatch = output.match(/\{[^}]*"number"\s*:\s*(\d+)[^}]*\}/);
           if (jsonMatch) prNum = parseInt(jsonMatch[1], 10);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
 
         if (prNum) {
           onMergeStats(sessionKey, prNum, prViewStats.additions, prViewStats.deletions);
-          emitter.emitGitHubEvent('merge_lines_added', userId, userName, sessionKey, {
-            prNumber: prNum,
-            linesAdded: prViewStats.additions,
-            linesDeleted: prViewStats.deletions,
-          }).catch(err => logger.error('Failed to emit merge_lines_added', err));
+          emitter
+            .emitGitHubEvent('merge_lines_added', userId, userName, sessionKey, {
+              prNumber: prNum,
+              linesAdded: prViewStats.additions,
+              linesDeleted: prViewStats.deletions,
+            })
+            .catch((err) => logger.error('Failed to emit merge_lines_added', err));
           logger.debug(`Recorded merge stats: PR #${prNum} +${prViewStats.additions}/-${prViewStats.deletions}`);
         }
       }

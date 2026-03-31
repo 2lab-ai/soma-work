@@ -9,10 +9,10 @@
  * Trace: docs/multi-agent/trace.md, Scenarios 2, 4, 5, 7
  */
 
-import type { AgentConfig } from './types';
-import { AgentInstance, AgentInfo } from './agent-instance';
-import { McpManager } from './mcp-manager';
+import { type AgentInfo, AgentInstance } from './agent-instance';
 import { Logger } from './logger';
+import type { McpManager } from './mcp-manager';
+import type { AgentConfig } from './types';
 
 export interface AgentQueryResult {
   sessionId: string;
@@ -107,7 +107,7 @@ export class AgentManager {
    * List all agents with their status.
    */
   listAgents(): AgentInfo[] {
-    return Array.from(this.agents.values()).map(a => a.getInfo());
+    return Array.from(this.agents.values()).map((a) => a.getInfo());
   }
 
   /**

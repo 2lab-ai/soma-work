@@ -1,6 +1,6 @@
-import { UserSettingsStore } from '../user-settings-store';
-import { SessionRegistry } from '../session-registry';
 import { Logger } from '../logger';
+import type { SessionRegistry } from '../session-registry';
+import type { UserSettingsStore } from '../user-settings-store';
 
 const logger = new Logger('PermissionService');
 
@@ -16,7 +16,7 @@ export interface PermissionCheckResult {
 export class PermissionService {
   constructor(
     private userSettings: UserSettingsStore,
-    private sessionRegistry: SessionRegistry
+    private sessionRegistry: SessionRegistry,
   ) {}
 
   /**
@@ -41,11 +41,7 @@ export class PermissionService {
    * Check if a user can interrupt an active session
    * Only session owner or current initiator can interrupt
    */
-  canInterruptSession(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): PermissionCheckResult {
+  canInterruptSession(userId: string, channelId: string, threadTs?: string): PermissionCheckResult {
     const session = this.sessionRegistry.getSession(channelId, threadTs);
 
     if (!session) {
@@ -80,11 +76,7 @@ export class PermissionService {
   /**
    * Comprehensive permission check for a message action
    */
-  checkMessagePermissions(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): PermissionCheckResult {
+  checkMessagePermissions(userId: string, channelId: string, threadTs?: string): PermissionCheckResult {
     // Check interrupt permission
     const interruptCheck = this.canInterruptSession(userId, channelId, threadTs);
     if (!interruptCheck.allowed) {

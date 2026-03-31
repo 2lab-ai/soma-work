@@ -1,12 +1,12 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
-import { Logger } from '../../logger';
 import {
-  getCredentialStatus,
   copyBackupCredentials,
+  getCredentialStatus,
   hasClaudeAiOauth,
   isCredentialManagerEnabled,
 } from '../../credentials-manager';
+import { Logger } from '../../logger';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles credential restore command

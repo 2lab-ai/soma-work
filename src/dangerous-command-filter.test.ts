@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { isDangerousCommand, checkDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import { describe, expect, it } from 'vitest';
+import { checkDangerousCommand, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {

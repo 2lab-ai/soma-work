@@ -1,8 +1,8 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser } from '../command-parser';
-import { Logger } from '../../logger';
-import { getDirSizeBytes, formatBytes } from '../../utils/dir-size';
 import path from 'path';
+import { Logger } from '../../logger';
+import { formatBytes, getDirSizeBytes } from '../../utils/dir-size';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles close command - close current thread's session with confirmation.
@@ -50,7 +50,9 @@ export class CloseHandler implements CommandHandler {
         session.title ? `*${session.title}*\n` : '',
         cleanupSummary,
         '이 세션을 종료하시겠습니까?',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
 
       // Post confirmation message with buttons
       await say({

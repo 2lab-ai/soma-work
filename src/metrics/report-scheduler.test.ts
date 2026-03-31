@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportScheduler } from './report-scheduler';
 
 // Contract tests — Scenario 6: ReportScheduler + ReportHandler
@@ -14,20 +14,66 @@ describe('ReportScheduler', () => {
     vi.useFakeTimers();
     mockAggregator = {
       aggregateDaily: vi.fn().mockResolvedValue({
-        date: '2026-03-25', period: 'daily', metrics: {},
+        date: '2026-03-25',
+        period: 'daily',
+        metrics: {},
       }),
       aggregateWeekly: vi.fn().mockResolvedValue({
-        weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly', metrics: {}, rankings: [],
+        weekStart: '2026-03-23',
+        weekEnd: '2026-03-29',
+        period: 'weekly',
+        metrics: {},
+        rankings: [],
       }),
       aggregateEnrichedDaily: vi.fn().mockResolvedValue({
-        date: '2026-03-25', period: 'daily', metrics: {},
-        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0, netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0 },
-        trend: null, hourlyDistribution: [], peakHour: null, achievements: [], funFacts: [],
+        date: '2026-03-25',
+        period: 'daily',
+        metrics: {},
+        derived: {
+          productivityScore: 0,
+          prMergeRate: 0,
+          avgCodePerPr: 0,
+          avgCodePerCommit: 0,
+          avgTurnsPerSession: 0,
+          sessionCompletionRate: 0,
+          netLines: 0,
+          churnRatio: 0,
+          avgChangedLinesPerPr: 0,
+          commitPerActiveDay: 0,
+          prPerActiveDay: 0,
+        },
+        trend: null,
+        hourlyDistribution: [],
+        peakHour: null,
+        achievements: [],
+        funFacts: [],
       }),
       aggregateEnrichedWeekly: vi.fn().mockResolvedValue({
-        weekStart: '2026-03-23', weekEnd: '2026-03-29', period: 'weekly', metrics: {}, rankings: [],
-        derived: { productivityScore: 0, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0, avgTurnsPerSession: 0, sessionCompletionRate: 0, netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0 },
-        trend: null, dailyBreakdown: [], hourlyDistribution: [], peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+        weekStart: '2026-03-23',
+        weekEnd: '2026-03-29',
+        period: 'weekly',
+        metrics: {},
+        rankings: [],
+        derived: {
+          productivityScore: 0,
+          prMergeRate: 0,
+          avgCodePerPr: 0,
+          avgCodePerCommit: 0,
+          avgTurnsPerSession: 0,
+          sessionCompletionRate: 0,
+          netLines: 0,
+          churnRatio: 0,
+          avgChangedLinesPerPr: 0,
+          commitPerActiveDay: 0,
+          prPerActiveDay: 0,
+        },
+        trend: null,
+        dailyBreakdown: [],
+        hourlyDistribution: [],
+        peakHour: null,
+        activeDays: 0,
+        achievements: [],
+        funFacts: [],
       }),
     };
     mockFormatter = {
@@ -39,10 +85,13 @@ describe('ReportScheduler', () => {
     mockPublisher = {
       publish: vi.fn().mockResolvedValue({ ts: '123.456' }),
     };
-    scheduler = new ReportScheduler(
-      mockAggregator, mockFormatter, mockPublisher,
-      { channelId: 'C123', timezone: 'Asia/Seoul', dailyHour: 0, weeklyDay: 1, weeklyHour: 9 }
-    );
+    scheduler = new ReportScheduler(mockAggregator, mockFormatter, mockPublisher, {
+      channelId: 'C123',
+      timezone: 'Asia/Seoul',
+      dailyHour: 0,
+      weeklyDay: 1,
+      weeklyHour: 9,
+    });
     // Reset schedule state to avoid cross-test contamination from disk file
     scheduler.setScheduleState({});
   });

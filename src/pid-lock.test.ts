@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { rmSync } from 'fs';
+import { join } from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // Contract tests derived from docs/pid-lock/trace.md
 // Tests the atomic O_EXCL-based PID lock with PID:timestamp format

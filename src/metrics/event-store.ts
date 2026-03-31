@@ -5,9 +5,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Logger } from '../logger';
-import { MetricsEvent } from './types';
 import { DATA_DIR } from '../env-paths';
+import { Logger } from '../logger';
+import type { MetricsEvent } from './types';
 
 const logger = new Logger('MetricsEventStore');
 
@@ -22,7 +22,9 @@ function timestampToDateStr(timestamp: number): string {
   const d = new Date(timestamp);
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: EVENT_TIMEZONE,
-    year: 'numeric', month: '2-digit', day: '2-digit',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
   });
   return formatter.format(d);
 }
@@ -82,7 +84,10 @@ export class MetricsEventStore {
       // Serialize writes per file to prevent JSONL line interleave under concurrency
       const prev = this.writeQueues.get(filePath) || Promise.resolve();
       const next = prev.then(() => fs.promises.appendFile(filePath, line, 'utf-8'));
-      this.writeQueues.set(filePath, next.catch(() => {})); // keep chain alive on error
+      this.writeQueues.set(
+        filePath,
+        next.catch(() => {}),
+      ); // keep chain alive on error
       await next;
 
       logger.debug(`Appended event ${event.eventType} to ${path.basename(filePath)}`);
@@ -105,7 +110,7 @@ export class MetricsEventStore {
 
       try {
         const content = await fs.promises.readFile(filePath, 'utf-8');
-        const lines = content.split('\n').filter(line => line.trim().length > 0);
+        const lines = content.split('\n').filter((line) => line.trim().length > 0);
 
         for (let i = 0; i < lines.length; i++) {
           try {

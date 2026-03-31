@@ -5,12 +5,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Logger } from '../logger';
 import { DATA_DIR } from '../env-paths';
-import { ReportAggregator } from './report-aggregator';
-import { ReportFormatter } from './report-formatter';
-import { ReportPublisher } from './report-publisher';
-import { ReportConfig, ScheduleState } from './types';
+import { Logger } from '../logger';
+import type { ReportAggregator } from './report-aggregator';
+import type { ReportFormatter } from './report-formatter';
+import type { ReportPublisher } from './report-publisher';
+import type { ReportConfig, ScheduleState } from './types';
 
 const logger = new Logger('ReportScheduler');
 const POLL_INTERVAL_MS = 60_000; // 1 minute
@@ -28,11 +28,15 @@ function nowInTimezone(timezone: string): {
   const now = new Date();
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
   });
   const parts = formatter.formatToParts(now);
-  const get = (type: string) => parts.find(p => p.type === type)?.value || '0';
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || '0';
 
   const year = get('year');
   const month = get('month');

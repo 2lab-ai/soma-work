@@ -1,25 +1,25 @@
-import { ClaudeHandler } from '../../claude-handler';
-import { SlackApiHelper } from '../slack-api-helper';
-import { MessageValidator } from '../message-validator';
-import { ReactionManager } from '../reaction-manager';
-import { ContextWindowManager } from '../context-window-manager';
-import { RequestCoordinator } from '../request-coordinator';
-import { MessageFormatter } from '../message-formatter';
-import { WorkingDirectoryManager } from '../../working-directory-manager';
-import { Logger } from '../../logger';
 import * as fs from 'fs';
-import { MessageEvent, SayFn, SessionInitResult } from './types';
-import { getDispatchService } from '../../dispatch-service';
-import { ConversationSession, WorkflowType } from '../../types';
-import { createConversation, getConversationUrl } from '../../conversation';
-import { AssistantStatusManager } from '../assistant-status-manager';
-import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
-import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
-import { userSettingsStore } from '../../user-settings-store';
 import { getAdminUsers } from '../../admin-utils';
+import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
+import type { ClaudeHandler } from '../../claude-handler';
+import { createConversation, getConversationUrl } from '../../conversation';
+import { getDispatchService } from '../../dispatch-service';
+import { Logger } from '../../logger';
+import type { ConversationSession, WorkflowType } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
+import type { WorkingDirectoryManager } from '../../working-directory-manager';
+import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
+import type { AssistantStatusManager } from '../assistant-status-manager';
+import type { ContextWindowManager } from '../context-window-manager';
+import { MessageFormatter } from '../message-formatter';
+import type { MessageValidator } from '../message-validator';
+import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
+import type { ReactionManager } from '../reaction-manager';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
-import { ThreadPanel } from '../thread-panel';
-import { shouldOutput, OutputFlag, LOG_DETAIL } from '../output-flags';
+import type { ThreadPanel } from '../thread-panel';
+import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
@@ -59,7 +59,7 @@ export class SessionInitializer {
   private transferSourceWorkingDirs(
     sourceSession: ConversationSession,
     targetChannel: string,
-    targetThreadTs: string
+    targetThreadTs: string,
   ): void {
     if (!sourceSession.sourceWorkingDirs?.length) return;
 
@@ -84,7 +84,7 @@ export class SessionInitializer {
    */
   async validateWorkingDirectory(
     event: MessageEvent,
-    say: SayFn
+    say: SayFn,
   ): Promise<{ valid: boolean; workingDirectory?: string }> {
     const { user, channel, thread_ts, ts } = event;
 
@@ -110,7 +110,7 @@ export class SessionInitializer {
     event: MessageEvent,
     workingDirectory: string,
     effectiveText?: string,
-    forceWorkflow?: WorkflowType
+    forceWorkflow?: WorkflowType,
   ): Promise<SessionInitResult> {
     const { user, channel, thread_ts, ts, text } = event;
     const threadTs = thread_ts || ts;
@@ -182,7 +182,9 @@ export class SessionInitializer {
         }
       } else {
         this.logger.warn('Failed to create session working directory, falling back to shared user dir', {
-          sessionKey, user, workingDirectory,
+          sessionKey,
+          user,
+          workingDirectory,
         });
       }
 
@@ -207,23 +209,37 @@ export class SessionInitializer {
         // New user: create pending record + notify admins
         this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
         userSettingsStore.createPendingUser(user, userName);
-        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', { threadTs });
+        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
+          threadTs,
+        });
         await this.notifyAdminsNewUser(user, userName);
         // Terminate the just-created session so next message also triggers gate
         this.deps.claudeHandler.terminateSession(sessionKey);
         return {
-          session, sessionKey, isNewSession, userName, workingDirectory,
-          abortController: new AbortController(), halted: true,
+          session,
+          sessionKey,
+          isNewSession,
+          userName,
+          workingDirectory,
+          abortController: new AbortController(),
+          halted: true,
         };
       }
       if (!userSettings.accepted) {
         // Existing pending user re-messaging
         this.logger.debug('Pending user re-message blocked', { sessionKey, user });
-        await this.deps.slackApi.postMessage(channel, '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.', { threadTs });
+        await this.deps.slackApi.postMessage(channel, '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.', {
+          threadTs,
+        });
         this.deps.claudeHandler.terminateSession(sessionKey);
         return {
-          session, sessionKey, isNewSession, userName, workingDirectory,
-          abortController: new AbortController(), halted: true,
+          session,
+          sessionKey,
+          isNewSession,
+          userName,
+          workingDirectory,
+          abortController: new AbortController(),
+          halted: true,
         };
       }
     }
@@ -249,7 +265,7 @@ export class SessionInitializer {
           channel,
           threadTs,
           forceWorkflow,
-          forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session'
+          forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session',
         );
       } else {
         // Check if dispatch is already in flight for this session (race condition prevention)
@@ -294,7 +310,8 @@ export class SessionInitializer {
     const PR_ROUTABLE_WORKFLOWS = new Set(['pr-review', 'pr-fix-and-update', 'pr-docs-confluence']);
     const prUrl = session.links?.pr?.url;
     // Skip channel routing for synthetic events that were already routed (e.g., after "현재 채널에서 진행")
-    const shouldRoute = isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') && !skipAutoBotThread;
+    const shouldRoute =
+      isNewSession && !!prUrl && PR_ROUTABLE_WORKFLOWS.has(session.workflow || '') && !skipAutoBotThread;
 
     this.logger.info('🔀 Channel routing check', {
       isNewSession,
@@ -316,7 +333,7 @@ export class SessionInitializer {
         correct: routeCheck.correct,
         reason: routeCheck.reason,
         suggestedCount: routeCheck.suggestedChannels.length,
-        suggestedChannels: routeCheck.suggestedChannels.map(ch => ({ id: ch.id, name: ch.name })),
+        suggestedChannels: routeCheck.suggestedChannels.map((ch) => ({ id: ch.id, name: ch.name })),
       });
 
       if (!routeCheck.correct && routeCheck.suggestedChannels.length > 0) {
@@ -351,8 +368,13 @@ export class SessionInitializer {
 
         // Don't register AbortController — no stream will run for halted sessions
         return {
-          session, sessionKey, isNewSession, userName, workingDirectory,
-          abortController: new AbortController(), halted: true,
+          session,
+          sessionKey,
+          isNewSession,
+          userName,
+          workingDirectory,
+          abortController: new AbortController(),
+          halted: true,
         };
       } else if (!routeCheck.correct && routeCheck.reason === 'no_mapping') {
         const defaultRouteChannel = this.resolveDefaultRouteChannel(channel);
@@ -401,8 +423,13 @@ export class SessionInitializer {
         });
 
         return {
-          session, sessionKey, isNewSession, userName, workingDirectory,
-          abortController: new AbortController(), halted: true,
+          session,
+          sessionKey,
+          isNewSession,
+          userName,
+          workingDirectory,
+          abortController: new AbortController(),
+          halted: true,
         };
       } else if (routeCheck.correct) {
         if (skipAutoBotThread) {
@@ -420,7 +447,7 @@ export class SessionInitializer {
             user,
             userName,
             effectiveWorkingDir,
-            isMidThread
+            isMidThread,
           );
           if (migrated) {
             return migrated;
@@ -442,7 +469,7 @@ export class SessionInitializer {
           user,
           userName,
           effectiveWorkingDir,
-          isMidThread
+          isMidThread,
         );
         if (migrated) {
           return migrated;
@@ -451,14 +478,7 @@ export class SessionInitializer {
     }
 
     // Handle concurrency control
-    const abortController = this.handleConcurrency(
-      sessionKey,
-      channel,
-      threadTs,
-      user,
-      userName,
-      session
-    );
+    const abortController = this.handleConcurrency(sessionKey, channel, threadTs, user, userName, session);
 
     return {
       session,
@@ -477,12 +497,7 @@ export class SessionInitializer {
    * @param threadTs - Thread timestamp
    * @param text - Text to use for classification
    */
-  async runDispatch(
-    channel: string,
-    threadTs: string,
-    text: string,
-    forceWorkflow?: WorkflowType
-  ): Promise<void> {
+  async runDispatch(channel: string, threadTs: string, text: string, forceWorkflow?: WorkflowType): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('Forcing workflow during re-dispatch', {
@@ -493,7 +508,7 @@ export class SessionInitializer {
         channel,
         threadTs,
         forceWorkflow,
-        forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset'
+        forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset',
       );
       return;
     }
@@ -511,12 +526,7 @@ export class SessionInitializer {
    * Uses AbortController for proper timeout cancellation
    * Tracks in-flight dispatch to prevent race conditions
    */
-  private async dispatchWorkflow(
-    channel: string,
-    threadTs: string,
-    text: string,
-    sessionKey: string
-  ): Promise<void> {
+  private async dispatchWorkflow(channel: string, threadTs: string, text: string, sessionKey: string): Promise<void> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
     let resolveTracking: () => void;
@@ -586,11 +596,14 @@ export class SessionInitializer {
 
       const elapsed = Date.now() - startTime;
       const complexityTag = result.complexity ? ` complexity=${result.complexity.score}/${result.complexity.tier}` : '';
-      this.logger.info(`✅ Session workflow set: [${result.workflow}] "${result.title}" (${elapsed}ms)${complexityTag}`, {
-        channel,
-        threadTs,
-        complexity: result.complexity ? { score: result.complexity.score, tier: result.complexity.tier } : undefined,
-      });
+      this.logger.info(
+        `✅ Session workflow set: [${result.workflow}] "${result.title}" (${elapsed}ms)${complexityTag}`,
+        {
+          channel,
+          threadTs,
+          complexity: result.complexity ? { score: result.complexity.score, tier: result.complexity.tier } : undefined,
+        },
+      );
 
       // Remove dispatching reaction
       await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
@@ -600,7 +613,7 @@ export class SessionInitializer {
         await this.deps.slackApi.updateMessage(
           channel,
           dispatchMessageTs,
-          `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`
+          `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`,
         );
       }
 
@@ -611,14 +624,16 @@ export class SessionInitializer {
       if (result.links && Object.keys(result.links).length > 0) {
         this.deps.claudeHandler.setSessionLinks(channel, threadTs, result.links);
         this.logger.info('🔗 Stored session links from dispatch', {
-          channel, threadTs,
+          channel,
+          threadTs,
           links: result.links,
           hasPrLink: !!result.links.pr,
           prUrl: result.links.pr?.url,
         });
       } else {
         this.logger.info('🔗 No links extracted from dispatch', {
-          channel, threadTs,
+          channel,
+          threadTs,
           textPreview: text.substring(0, 100),
         });
       }
@@ -638,7 +653,7 @@ export class SessionInitializer {
         await this.deps.slackApi.updateMessage(
           channel,
           dispatchMessageTs,
-          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`
+          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`,
         );
       }
 
@@ -664,8 +679,8 @@ export class SessionInitializer {
     const isChannelId = /^[CG][A-Z0-9]+$/i.test(configured);
     const normalizedName = configured.replace(/^#/, '').toLowerCase();
     const resolved = isChannelId
-      ? channels.find(ch => ch.id === configured)
-      : channels.find(ch => ch.name.toLowerCase() === normalizedName);
+      ? channels.find((ch) => ch.id === configured)
+      : channels.find((ch) => ch.name.toLowerCase() === normalizedName);
 
     if (!resolved || resolved.id === currentChannel) {
       return undefined;
@@ -684,7 +699,7 @@ export class SessionInitializer {
     user: string,
     userName: string,
     workingDirectory: string,
-    isMidThread: boolean = false
+    isMidThread: boolean = false,
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -734,7 +749,7 @@ export class SessionInitializer {
       channel,
       rootResult.ts,
       session.workflow || 'default',
-      session.title || 'Session'
+      session.title || 'Session',
     );
 
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
@@ -759,7 +774,11 @@ export class SessionInitializer {
         this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
       }
       const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
-      await this.deps.slackApi.postMessage(channel, `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`, { threadTs });
+      await this.deps.slackApi.postMessage(
+        channel,
+        `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`,
+        { threadTs },
+      );
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
@@ -790,7 +809,7 @@ export class SessionInitializer {
     channel: string,
     newThreadTs: string,
     oldThreadPermalink: string | null,
-    session: ConversationSession
+    session: ConversationSession,
   ): Promise<void> {
     const lines: string[] = ['📎 기존 대화 컨텍스트를 새 스레드로 복사했습니다.'];
 
@@ -827,7 +846,7 @@ export class SessionInitializer {
   private async postRouteAdvisory(
     channel: string,
     threadTs: string,
-    routeBlockParams: ChannelRouteBlockParams
+    routeBlockParams: ChannelRouteBlockParams,
   ): Promise<void> {
     const { text: advisoryText, blocks } = buildChannelRouteBlocks(routeBlockParams);
     this.logger.info('🔀 Posting channel route advisory (public)', {
@@ -862,7 +881,7 @@ export class SessionInitializer {
     threadTs: string,
     user: string,
     userName: string,
-    session: ConversationSession
+    session: ConversationSession,
   ): AbortController {
     const isRequestActive = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const canInterrupt = this.deps.claudeHandler.canInterrupt(channel, threadTs, user);

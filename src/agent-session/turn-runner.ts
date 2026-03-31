@@ -66,12 +66,7 @@ export class TurnRunner {
     const _finalPhase = deriveStatus(result.endTurn, result.hasPendingChoice);
 
     try {
-      await this.surface?.finalizeOnEndTurn(
-        this.session,
-        this.sessionKey,
-        result.endTurn,
-        result.hasPendingChoice,
-      );
+      await this.surface?.finalizeOnEndTurn(this.session, this.sessionKey, result.endTurn, result.hasPendingChoice);
     } catch {
       // fire-and-forget
     }
@@ -94,7 +89,11 @@ export class TurnRunner {
     return this._turnStartTime;
   }
 
-  private async safeSetStatus(patch: { agentPhase?: string; activeTool?: string; waitingForChoice?: boolean }): Promise<void> {
+  private async safeSetStatus(patch: {
+    agentPhase?: string;
+    activeTool?: string;
+    waitingForChoice?: boolean;
+  }): Promise<void> {
     try {
       await this.surface?.setStatus(this.session, this.sessionKey, patch);
     } catch {

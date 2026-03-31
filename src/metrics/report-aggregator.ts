@@ -4,22 +4,22 @@
  */
 
 import { Logger } from '../logger';
-import { MetricsEventStore } from './event-store';
+import type { MetricsEventStore } from './event-store';
 import {
-  MetricsEvent,
+  type Achievement,
+  type AggregatedMetrics,
+  type DailyBreakdown,
+  type DailyReport,
+  type DerivedMetrics,
+  type EnrichedDailyReport,
+  type EnrichedWeeklyReport,
+  type FunFact,
+  type HourlyDistribution,
+  type MetricsEvent,
   MetricsEventType,
-  AggregatedMetrics,
-  DailyReport,
-  WeeklyReport,
-  UserRanking,
-  DerivedMetrics,
-  TrendComparison,
-  DailyBreakdown,
-  HourlyDistribution,
-  Achievement,
-  FunFact,
-  EnrichedDailyReport,
-  EnrichedWeeklyReport,
+  type TrendComparison,
+  type UserRanking,
+  type WeeklyReport,
 } from './types';
 
 const logger = new Logger('ReportAggregator');
@@ -60,14 +60,30 @@ function aggregateEvents(events: MetricsEvent[]): AggregatedMetrics {
 
   for (const e of events) {
     switch (e.eventType) {
-      case 'session_created':  m.sessionsCreated++; break;
-      case 'session_slept':    m.sessionsSlept++; break;
-      case 'session_closed':   m.sessionsClosed++; break;
-      case 'issue_created':    m.issuesCreated++; break;
-      case 'pr_created':       m.prsCreated++; break;
-      case 'commit_created':   m.commitsCreated++; break;
-      case 'pr_merged':        m.prsMerged++; break;
-      case 'turn_used':        m.turnsUsed++; break;
+      case 'session_created':
+        m.sessionsCreated++;
+        break;
+      case 'session_slept':
+        m.sessionsSlept++;
+        break;
+      case 'session_closed':
+        m.sessionsClosed++;
+        break;
+      case 'issue_created':
+        m.issuesCreated++;
+        break;
+      case 'pr_created':
+        m.prsCreated++;
+        break;
+      case 'commit_created':
+        m.commitsCreated++;
+        break;
+      case 'pr_merged':
+        m.prsMerged++;
+        break;
+      case 'turn_used':
+        m.turnsUsed++;
+        break;
       case 'code_lines_added':
         m.codeLinesAdded += (e.metadata?.linesAdded as number) || 0;
         m.codeLinesDeleted += (e.metadata?.linesDeleted as number) || 0;
@@ -218,7 +234,7 @@ export class ReportAggregator {
     const prevMetrics = aggregateEvents(prevEvents);
 
     const dailyBreakdown = computeDailyBreakdown(events, weekStart);
-    const activeDays = dailyBreakdown.filter(d => d.totalEvents > 0).length;
+    const activeDays = dailyBreakdown.filter((d) => d.totalEvents > 0).length;
     const derived = computeDerivedMetrics(base.metrics, activeDays);
     const trend = computeTrend(base.metrics, prevMetrics);
     const hourlyDistribution = computeHourlyDistribution(events);
@@ -278,10 +294,16 @@ export function computeDerivedMetrics(m: AggregatedMetrics, activeDays: number =
 export function computeTrend(current: AggregatedMetrics, previous: AggregatedMetrics): TrendComparison | null {
   // If previous period has zero activity, return a baseline-zero trend instead of null.
   // All deltas are set to the current values (treat as +100% for non-zero, 0% for zero).
-  const prevTotal = previous.sessionsCreated + previous.turnsUsed + previous.prsCreated +
-    previous.commitsCreated + previous.issuesCreated + previous.prsMerged + previous.codeLinesAdded;
+  const prevTotal =
+    previous.sessionsCreated +
+    previous.turnsUsed +
+    previous.prsCreated +
+    previous.commitsCreated +
+    previous.issuesCreated +
+    previous.prsMerged +
+    previous.codeLinesAdded;
   if (prevTotal === 0) {
-    const baselinePctChange = (curr: number): number => curr > 0 ? 100 : 0;
+    const baselinePctChange = (curr: number): number => (curr > 0 ? 100 : 0);
     return {
       sessionsCreatedDelta: baselinePctChange(current.sessionsCreated),
       turnsUsedDelta: baselinePctChange(current.turnsUsed),
@@ -320,7 +342,7 @@ export function computeDailyBreakdown(events: MetricsEvent[], weekStart: string)
     const dayOfWeek = d.getUTCDay();
     const dayLabel = DAY_LABELS[dayOfWeek];
 
-    const dayEvents = events.filter(e => {
+    const dayEvents = events.filter((e) => {
       const eventDate = timestampToDateInTz(e.timestamp);
       return eventDate === date;
     });
@@ -349,9 +371,7 @@ export function computeHourlyDistribution(events: MetricsEvent[]): HourlyDistrib
 
 export function findPeakHour(distribution: HourlyDistribution[]): number | null {
   if (distribution.length === 0) return null;
-  const max = distribution.reduce((best, curr) =>
-    curr.eventCount > best.eventCount ? curr : best
-  );
+  const max = distribution.reduce((best, curr) => (curr.eventCount > best.eventCount ? curr : best));
   return max.eventCount > 0 ? max.hour : null;
 }
 
@@ -407,7 +427,11 @@ export function computeAchievements(
 
   // Personal best: >50% improvement in productivity score vs previous period
   if (trend && !trend.baselineZero && trend.productivityScoreDelta > 50) {
-    achievements.push({ icon: '🏆', title: '퍼스널 베스트', description: `생산성 +${trend.productivityScoreDelta}% 향상!` });
+    achievements.push({
+      icon: '🏆',
+      title: '퍼스널 베스트',
+      description: `생산성 +${trend.productivityScoreDelta}% 향상!`,
+    });
   }
 
   // Consistency badge: session completion rate > 80%
@@ -422,7 +446,11 @@ export function computeAchievements(
 
   // Laser focus: deep engagement per session
   if (d.avgTurnsPerSession > 10) {
-    achievements.push({ icon: '🎯', title: '레이저 포커스', description: `세션당 ${d.avgTurnsPerSession}턴 — 집중력 MAX` });
+    achievements.push({
+      icon: '🎯',
+      title: '레이저 포커스',
+      description: `세션당 ${d.avgTurnsPerSession}턴 — 집중력 MAX`,
+    });
   }
 
   return achievements.slice(0, 5); // Max 5
@@ -465,15 +493,18 @@ export function computeFunFacts(
   if (m.codeLinesDeleted > 0) {
     const net = m.codeLinesAdded - m.codeLinesDeleted;
     const netSign = net >= 0 ? '+' : '';
-    facts.push({ icon: '🔄', text: `코드 변동: +${m.codeLinesAdded.toLocaleString()} / -${m.codeLinesDeleted.toLocaleString()} (순 ${netSign}${net.toLocaleString()})` });
+    facts.push({
+      icon: '🔄',
+      text: `코드 변동: +${m.codeLinesAdded.toLocaleString()} / -${m.codeLinesDeleted.toLocaleString()} (순 ${netSign}${net.toLocaleString()})`,
+    });
   }
 
   // Total events count
   facts.push({ icon: '📊', text: `총 이벤트: ${events.length.toLocaleString()}건 기록` });
 
   // Night owl / Early bird
-  const nightEvents = hourlyDist.filter(h => h.hour >= 22 || h.hour < 6).reduce((s, h) => s + h.eventCount, 0);
-  const morningEvents = hourlyDist.filter(h => h.hour >= 6 && h.hour < 12).reduce((s, h) => s + h.eventCount, 0);
+  const nightEvents = hourlyDist.filter((h) => h.hour >= 22 || h.hour < 6).reduce((s, h) => s + h.eventCount, 0);
+  const morningEvents = hourlyDist.filter((h) => h.hour >= 6 && h.hour < 12).reduce((s, h) => s + h.eventCount, 0);
   if (nightEvents > morningEvents && nightEvents > 10) {
     facts.push({ icon: '🦉', text: `야행성 모드: 심야 활동 ${nightEvents}건` });
   } else if (morningEvents > nightEvents && morningEvents > 10) {
@@ -484,16 +515,17 @@ export function computeFunFacts(
 
   // Busiest day (from dailyBreakdown if available)
   if (dailyBreakdown && dailyBreakdown.length > 0) {
-    const busiestDay = dailyBreakdown.reduce((best, curr) =>
-      curr.totalEvents > best.totalEvents ? curr : best
-    );
+    const busiestDay = dailyBreakdown.reduce((best, curr) => (curr.totalEvents > best.totalEvents ? curr : best));
     if (busiestDay.totalEvents > 0) {
-      facts.push({ icon: '📅', text: `가장 바쁜 날: ${busiestDay.dayLabel} (${busiestDay.date}, 이벤트 ${busiestDay.totalEvents}건)` });
+      facts.push({
+        icon: '📅',
+        text: `가장 바쁜 날: ${busiestDay.dayLabel} (${busiestDay.date}, 이벤트 ${busiestDay.totalEvents}건)`,
+      });
     }
 
     // Weekend warrior: any weekend day (토=6, 일=0) with activity
     const weekendActivity = dailyBreakdown
-      .filter(day => {
+      .filter((day) => {
         const dayOfWeek = new Date(day.date + 'T00:00:00Z').getUTCDay();
         return (dayOfWeek === 0 || dayOfWeek === 6) && day.totalEvents > 0;
       })
@@ -520,12 +552,15 @@ export function computeFunFacts(
 // Cache Intl.DateTimeFormat instances — these are expensive to construct.
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: REPORT_TIMEZONE,
-  year: 'numeric', month: '2-digit', day: '2-digit',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
 });
 
 const hourFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: REPORT_TIMEZONE,
-  hour: 'numeric', hour12: false,
+  hour: 'numeric',
+  hour12: false,
 });
 
 /**

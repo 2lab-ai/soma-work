@@ -1,7 +1,14 @@
-import { SessionLink, SessionLinkHistory, SessionLinks, SessionUsage, WorkflowType, ConversationSession } from '../types';
-import { ContextWindowManager } from './context-window-manager';
-import { type SessionTheme } from '../user-settings-store';
 import { getStatusEmoji } from '../link-metadata-fetcher';
+import type {
+  ConversationSession,
+  SessionLink,
+  SessionLinkHistory,
+  SessionLinks,
+  SessionUsage,
+  WorkflowType,
+} from '../types';
+import type { SessionTheme } from '../user-settings-store';
+import { ContextWindowManager } from './context-window-manager';
 
 /** Max links to display per type in Default theme */
 const MAX_LINKS_PER_TYPE = 5;
@@ -30,8 +37,11 @@ export interface ThreadHeaderPayload {
 }
 
 export class ThreadHeaderBuilder {
-  static fromSession(session: ConversationSession, overrides?: { closed?: boolean; theme?: SessionTheme }): ThreadHeaderPayload {
-    return this.build({
+  static fromSession(
+    session: ConversationSession,
+    overrides?: { closed?: boolean; theme?: SessionTheme },
+  ): ThreadHeaderPayload {
+    return ThreadHeaderBuilder.build({
       title: session.title,
       workflow: session.workflow,
       ownerName: session.ownerName,
@@ -46,13 +56,17 @@ export class ThreadHeaderBuilder {
 
   static build(data: ThreadHeaderData): ThreadHeaderPayload {
     const theme = data.theme || 'default';
-    const textFallback = this.buildTextFallback(data);
+    const textFallback = ThreadHeaderBuilder.buildTextFallback(data);
 
     switch (theme) {
-      case 'default': return { text: textFallback, blocks: this.buildDefault(data) };
-      case 'compact': return { text: textFallback, blocks: this.buildCompact(data) };
-      case 'minimal': return { text: textFallback, blocks: this.buildMinimal(data) };
-      default: return { text: textFallback, blocks: this.buildDefault(data) };
+      case 'default':
+        return { text: textFallback, blocks: ThreadHeaderBuilder.buildDefault(data) };
+      case 'compact':
+        return { text: textFallback, blocks: ThreadHeaderBuilder.buildCompact(data) };
+      case 'minimal':
+        return { text: textFallback, blocks: ThreadHeaderBuilder.buildMinimal(data) };
+      default:
+        return { text: textFallback, blocks: ThreadHeaderBuilder.buildDefault(data) };
     }
   }
 
@@ -61,10 +75,14 @@ export class ThreadHeaderBuilder {
   // ---------------------------------------------------------------------------
 
   private static resolveTitle(data: ThreadHeaderData): string {
-    return data.title
-      || data.links?.pr?.title || data.links?.issue?.title
-      || data.links?.pr?.label || data.links?.issue?.label
-      || 'Session';
+    return (
+      data.title ||
+      data.links?.pr?.title ||
+      data.links?.issue?.title ||
+      data.links?.pr?.label ||
+      data.links?.issue?.label ||
+      'Session'
+    );
   }
 
   private static resolveOwner(data: ThreadHeaderData): string | undefined {
@@ -72,8 +90,8 @@ export class ThreadHeaderBuilder {
   }
 
   private static buildTextFallback(data: ThreadHeaderData): string {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
+    const title = ThreadHeaderBuilder.resolveTitle(data);
+    const owner = ThreadHeaderBuilder.resolveOwner(data);
     const parts: string[] = [title];
     if (owner) parts.push(owner);
     return parts.join('\n');
@@ -87,7 +105,7 @@ export class ThreadHeaderBuilder {
   private static headerBlock(text: string): any {
     return {
       type: 'header',
-      text: { type: 'plain_text', text: this.truncateHeader(text), emoji: true },
+      text: { type: 'plain_text', text: ThreadHeaderBuilder.truncateHeader(text), emoji: true },
     };
   }
 
@@ -104,49 +122,49 @@ export class ThreadHeaderBuilder {
   private static metaElements(data: ThreadHeaderData): any[] {
     const els: any[] = [];
     const workflow = data.workflow || 'default';
-    els.push(this.mrkdwn(`\`${workflow}\``));
+    els.push(ThreadHeaderBuilder.mrkdwn(`\`${workflow}\``));
     if (data.model) {
-      els.push(this.mrkdwn(`\`${this.formatModelName(data.model)}\``));
+      els.push(ThreadHeaderBuilder.mrkdwn(`\`${ThreadHeaderBuilder.formatModelName(data.model)}\``));
     }
-    const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) els.push(this.mrkdwn(ctxBar));
+    const ctxBar = ThreadHeaderBuilder.formatContextBar(data.usage);
+    if (ctxBar) els.push(ThreadHeaderBuilder.mrkdwn(ctxBar));
     return els;
   }
 
   private static linkElements(data: ThreadHeaderData): any[] {
-    return this.formatLinks(data.links).map(t => this.mrkdwn(t));
+    return ThreadHeaderBuilder.formatLinks(data.links).map((t) => ThreadHeaderBuilder.mrkdwn(t));
   }
 
   private static ownerMention(data: ThreadHeaderData): any | undefined {
-    return data.ownerId ? this.mrkdwn(`<@${data.ownerId}>`) : undefined;
+    return data.ownerId ? ThreadHeaderBuilder.mrkdwn(`<@${data.ownerId}>`) : undefined;
   }
 
   // ---------------------------------------------------------------------------
   // Theme: Default (Rich Card) — maximum info density, all links with metadata
   // ---------------------------------------------------------------------------
   private static buildDefault(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const blocks: any[] = [this.headerBlock(title)];
+    const title = ThreadHeaderBuilder.resolveTitle(data);
+    const blocks: any[] = [ThreadHeaderBuilder.headerBlock(title)];
 
     // Row 1: @owner + workflow + model
     const row1: any[] = [];
-    const mention = this.ownerMention(data);
+    const mention = ThreadHeaderBuilder.ownerMention(data);
     if (mention) row1.push(mention);
-    row1.push(...this.metaElements(data));
-    if (row1.length > 0) blocks.push(this.contextBlock(row1));
+    row1.push(...ThreadHeaderBuilder.metaElements(data));
+    if (row1.length > 0) blocks.push(ThreadHeaderBuilder.contextBlock(row1));
 
     // Row 2+: All links from linkHistory (max 5 per type) with metadata
-    const allLinkElements = this.formatAllLinks(data.linkHistory, data.links);
+    const allLinkElements = ThreadHeaderBuilder.formatAllLinks(data.linkHistory, data.links);
     if (allLinkElements.length > 0) {
       // Group into context blocks (max 10 elements each)
       for (let i = 0; i < allLinkElements.length; i += 10) {
-        blocks.push(this.contextBlock(allLinkElements.slice(i, i + 10)));
+        blocks.push(ThreadHeaderBuilder.contextBlock(allLinkElements.slice(i, i + 10)));
       }
     }
 
     // Closed indicator
     if (data.closed) {
-      blocks.push(this.contextBlock([this.mrkdwn('🔴 _종료됨_')]));
+      blocks.push(ThreadHeaderBuilder.contextBlock([ThreadHeaderBuilder.mrkdwn('🔴 _종료됨_')]));
     }
 
     return blocks;
@@ -156,18 +174,16 @@ export class ThreadHeaderBuilder {
   // Theme: Compact — section.text + thin context, active links only
   // ---------------------------------------------------------------------------
   private static buildCompact(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const owner = this.resolveOwner(data);
+    const title = ThreadHeaderBuilder.resolveTitle(data);
+    const owner = ThreadHeaderBuilder.resolveOwner(data);
     const emoji = data.closed ? '🔴' : '🟢';
     const sectionText = owner ? `${emoji} *${owner} — ${title}*` : `${emoji} *${title}*`;
 
-    const blocks: any[] = [
-      { type: 'section', text: this.mrkdwn(sectionText) },
-    ];
+    const blocks: any[] = [{ type: 'section', text: ThreadHeaderBuilder.mrkdwn(sectionText) }];
 
-    const ctxEls: any[] = [...this.metaElements(data), ...this.linkElements(data)];
-    if (data.closed) ctxEls.push(this.mrkdwn('_종료됨_'));
-    if (ctxEls.length > 0) blocks.push(this.contextBlock(ctxEls));
+    const ctxEls: any[] = [...ThreadHeaderBuilder.metaElements(data), ...ThreadHeaderBuilder.linkElements(data)];
+    if (data.closed) ctxEls.push(ThreadHeaderBuilder.mrkdwn('_종료됨_'));
+    if (ctxEls.length > 0) blocks.push(ThreadHeaderBuilder.contextBlock(ctxEls));
     return blocks;
   }
 
@@ -175,17 +191,17 @@ export class ThreadHeaderBuilder {
   // Theme: Minimal — single context line, bare minimum
   // ---------------------------------------------------------------------------
   private static buildMinimal(data: ThreadHeaderData): any[] {
-    const title = this.resolveTitle(data);
-    const els: any[] = [this.mrkdwn(title)];
+    const title = ThreadHeaderBuilder.resolveTitle(data);
+    const els: any[] = [ThreadHeaderBuilder.mrkdwn(title)];
     if (data.model) {
-      els.push(this.mrkdwn(`\`${this.formatModelName(data.model)}\``));
+      els.push(ThreadHeaderBuilder.mrkdwn(`\`${ThreadHeaderBuilder.formatModelName(data.model)}\``));
     }
-    const ctxBar = this.formatContextBar(data.usage);
-    if (ctxBar) els.push(this.mrkdwn(ctxBar));
+    const ctxBar = ThreadHeaderBuilder.formatContextBar(data.usage);
+    if (ctxBar) els.push(ThreadHeaderBuilder.mrkdwn(ctxBar));
     // Active links only (labels)
-    els.push(...this.linkElements(data));
-    if (data.closed) els.push(this.mrkdwn('_종료됨_'));
-    return [this.contextBlock(els)];
+    els.push(...ThreadHeaderBuilder.linkElements(data));
+    if (data.closed) els.push(ThreadHeaderBuilder.mrkdwn('_종료됨_'));
+    return [ThreadHeaderBuilder.contextBlock(els)];
   }
 
   // ---------------------------------------------------------------------------
@@ -197,45 +213,42 @@ export class ThreadHeaderBuilder {
    * Shows up to MAX_LINKS_PER_TYPE per type with title and status.
    * Falls back to active links if no history available.
    */
-  private static formatAllLinks(
-    linkHistory?: SessionLinkHistory,
-    activeLinks?: SessionLinks
-  ): any[] {
+  private static formatAllLinks(linkHistory?: SessionLinkHistory, activeLinks?: SessionLinks): any[] {
     const elements: any[] = [];
 
     if (!linkHistory) {
       // Fallback: use active links only
-      return this.formatLinks(activeLinks).map(t => this.mrkdwn(t));
+      return ThreadHeaderBuilder.formatLinks(activeLinks).map((t) => ThreadHeaderBuilder.mrkdwn(t));
     }
 
     // Issues
     const issues = linkHistory.issues || [];
     const displayIssues = issues.slice(-MAX_LINKS_PER_TYPE);
     for (const link of displayIssues) {
-      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '📋')));
+      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '📋')));
     }
     if (issues.length > MAX_LINKS_PER_TYPE) {
-      elements.push(this.mrkdwn(`_+${issues.length - MAX_LINKS_PER_TYPE} more issues_`));
+      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${issues.length - MAX_LINKS_PER_TYPE} more issues_`));
     }
 
     // PRs
     const prs = linkHistory.prs || [];
     const displayPrs = prs.slice(-MAX_LINKS_PER_TYPE);
     for (const link of displayPrs) {
-      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '🔀')));
+      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '🔀')));
     }
     if (prs.length > MAX_LINKS_PER_TYPE) {
-      elements.push(this.mrkdwn(`_+${prs.length - MAX_LINKS_PER_TYPE} more PRs_`));
+      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${prs.length - MAX_LINKS_PER_TYPE} more PRs_`));
     }
 
     // Docs
     const docs = linkHistory.docs || [];
     const displayDocs = docs.slice(-MAX_LINKS_PER_TYPE);
     for (const link of displayDocs) {
-      elements.push(this.mrkdwn(this.formatLinkWithMeta(link, '📄')));
+      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '📄')));
     }
     if (docs.length > MAX_LINKS_PER_TYPE) {
-      elements.push(this.mrkdwn(`_+${docs.length - MAX_LINKS_PER_TYPE} more docs_`));
+      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${docs.length - MAX_LINKS_PER_TYPE} more docs_`));
     }
 
     return elements;
@@ -264,17 +277,17 @@ export class ThreadHeaderBuilder {
     if (!links) return [];
     const parts: string[] = [];
 
-    if (links.issue?.url && !this.isSlackMessageUrl(links.issue.url)) {
+    if (links.issue?.url && !ThreadHeaderBuilder.isSlackMessageUrl(links.issue.url)) {
       const label = links.issue.label || 'Issue';
       parts.push(`<${links.issue.url}|${label}>`);
     }
 
-    if (links.pr?.url && !this.isSlackMessageUrl(links.pr.url)) {
+    if (links.pr?.url && !ThreadHeaderBuilder.isSlackMessageUrl(links.pr.url)) {
       const label = links.pr.label || 'PR';
       parts.push(`<${links.pr.url}|${label}>`);
     }
 
-    if (links.doc?.url && !this.isSlackMessageUrl(links.doc.url)) {
+    if (links.doc?.url && !ThreadHeaderBuilder.isSlackMessageUrl(links.doc.url)) {
       const label = links.doc.label || 'Doc';
       parts.push(`<${links.doc.url}|${label}>`);
     }
@@ -318,7 +331,7 @@ export class ThreadHeaderBuilder {
     const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
 
     const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
-    return `${bar} ${this.formatTokenCount(used)}/${this.formatTokenCount(total)} (${pct}%)`;
+    return `${bar} ${ThreadHeaderBuilder.formatTokenCount(used)}/${ThreadHeaderBuilder.formatTokenCount(total)} (${pct}%)`;
   }
 
   /**

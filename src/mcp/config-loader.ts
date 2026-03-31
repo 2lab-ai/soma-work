@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Logger } from '../logger';
 import { MCP_CONFIG_FILE } from '../env-paths';
-import { scanMcpServerConfig, formatMcpScanReport } from '../plugin/security-scanner';
+import { Logger } from '../logger';
+import { formatMcpScanReport, scanMcpServerConfig } from '../plugin/security-scanner';
 
 export type McpStdioServerConfig = {
   type?: 'stdio'; // Optional for backwards compatibility
@@ -148,7 +148,10 @@ export class McpConfigLoader {
       // Security scan MCP server config
       const scanResult = scanMcpServerConfig(name, config);
       if (scanResult.blocked) {
-        validationLogger.error('MCP server BLOCKED by security scan', { serverName: name, riskLevel: scanResult.riskLevel });
+        validationLogger.error('MCP server BLOCKED by security scan', {
+          serverName: name,
+          riskLevel: scanResult.riskLevel,
+        });
         validationLogger.warn(formatMcpScanReport(scanResult));
         continue;
       }

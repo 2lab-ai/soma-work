@@ -1,12 +1,12 @@
 import { config } from './config.js';
-import { Logger } from './logger.js';
 import {
-  GitHubApiClient,
-  GitHubAppConfig,
-  TokenRefreshScheduler,
   GitCredentialsManager,
-  Installation,
+  GitHubApiClient,
+  type GitHubAppConfig,
+  type Installation,
+  TokenRefreshScheduler,
 } from './github/index.js';
+import { Logger } from './logger.js';
 
 const logger = new Logger('GitHubAuth');
 
@@ -29,11 +29,7 @@ export class GitHubAppAuth {
 
     if (appConfig.installationId) {
       this.installationId = parseInt(appConfig.installationId, 10);
-      this.tokenScheduler = new TokenRefreshScheduler(
-        this.apiClient,
-        this.credentialsManager,
-        this.installationId
-      );
+      this.tokenScheduler = new TokenRefreshScheduler(this.apiClient, this.credentialsManager, this.installationId);
     }
   }
 
@@ -45,7 +41,7 @@ export class GitHubAppAuth {
 
     if (!targetInstallationId) {
       throw new Error(
-        'Installation ID is required. Either provide it as parameter or configure it in environment variables.'
+        'Installation ID is required. Either provide it as parameter or configure it in environment variables.',
       );
     }
 
@@ -131,9 +127,7 @@ export function isGitHubAppConfigured(): boolean {
 export async function discoverInstallations(): Promise<void> {
   const githubAuth = getGitHubAppAuth();
   if (!githubAuth) {
-    logger.error(
-      'GitHub App not configured. Please set GITHUB_APP_ID and GITHUB_PRIVATE_KEY environment variables.'
-    );
+    logger.error('GitHub App not configured. Please set GITHUB_APP_ID and GITHUB_PRIVATE_KEY environment variables.');
     return;
   }
 
@@ -142,7 +136,7 @@ export async function discoverInstallations(): Promise<void> {
 
     if (installations.length === 0) {
       logger.info(
-        'No GitHub App installations found. Please install the app on at least one organization or repository.'
+        'No GitHub App installations found. Please install the app on at least one organization or repository.',
       );
       return;
     }
@@ -150,24 +144,20 @@ export async function discoverInstallations(): Promise<void> {
     logger.info('GitHub App installations found:');
     installations.forEach((installation, index) => {
       logger.info(
-        `  ${index + 1}. ${installation.account.login} (${installation.account.type}) - ID: ${installation.id}`
+        `  ${index + 1}. ${installation.account.login} (${installation.account.type}) - ID: ${installation.id}`,
       );
     });
 
     if (!config.github.installationId) {
       logger.info('To use GitHub integration, set GITHUB_INSTALLATION_ID to one of the IDs above.');
     } else {
-      const currentInstallation = installations.find(
-        (inst) => inst.id.toString() === config.github.installationId
-      );
+      const currentInstallation = installations.find((inst) => inst.id.toString() === config.github.installationId);
       if (currentInstallation) {
         logger.info(
-          `Currently configured for: ${currentInstallation.account.login} (${currentInstallation.account.type})`
+          `Currently configured for: ${currentInstallation.account.login} (${currentInstallation.account.type})`,
         );
       } else {
-        logger.warn(
-          `Configured installation ID ${config.github.installationId} not found in available installations.`
-        );
+        logger.warn(`Configured installation ID ${config.github.installationId} not found in available installations.`);
       }
     }
   } catch (error) {
@@ -196,7 +186,7 @@ export async function getGitHubTokenForCLI(): Promise<string | null> {
   }
 
   logger.warn(
-    'No GitHub authentication configured. Set GITHUB_TOKEN or configure GitHub App (GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID)'
+    'No GitHub authentication configured. Set GITHUB_TOKEN or configure GitHub App (GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID)',
   );
   return null;
 }

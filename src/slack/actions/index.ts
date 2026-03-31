@@ -1,22 +1,22 @@
-import { App } from '@slack/bolt';
-import { PermissionActionHandler } from './permission-action-handler';
-import { SessionActionHandler } from './session-action-handler';
+import type { App } from '@slack/bolt';
+import { Logger } from '../../logger';
+import type { SlackApiHelper } from '../slack-api-helper';
+import { ActionPanelActionHandler } from './action-panel-action-handler';
+import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
-import { PRActionHandler } from './pr-action-handler';
-import { ActionPanelActionHandler } from './action-panel-action-handler';
-import { ChannelRouteActionHandler } from './channel-route-action-handler';
-import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PendingFormStore } from './pending-form-store';
-import { ActionHandlerContext, PendingChoiceFormData } from './types';
-import { SlackApiHelper } from '../slack-api-helper';
-import { Logger } from '../../logger';
+import { PermissionActionHandler } from './permission-action-handler';
+import { PRActionHandler } from './pr-action-handler';
+import { SessionActionHandler } from './session-action-handler';
+import type { ActionHandlerContext, PendingChoiceFormData } from './types';
+import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 
-// Re-export types for backwards compatibility
-export { ActionHandlerContext, MessageEvent, MessageHandler, SayFn, RespondFn, PendingChoiceFormData } from './types';
 export { PendingFormStore } from './pending-form-store';
+// Re-export types for backwards compatibility
+export { ActionHandlerContext, MessageEvent, MessageHandler, PendingChoiceFormData, RespondFn, SayFn } from './types';
 
 /**
  * ActionRouter - 모든 액션 핸들러 통합 라우터
@@ -58,7 +58,7 @@ export class ActionHandlers {
         threadPanel: ctx.threadPanel,
         completionMessageTracker: ctx.completionMessageTracker,
       },
-      this.formStore
+      this.formStore,
     );
 
     this.formHandler = new FormActionHandler(
@@ -69,7 +69,7 @@ export class ActionHandlers {
         threadPanel: ctx.threadPanel,
       },
       this.formStore,
-      this.choiceHandler
+      this.choiceHandler,
     );
 
     this.jiraHandler = new JiraActionHandler({
@@ -287,11 +287,7 @@ export class ActionHandlers {
    * Invalidate old forms when a new form is created for the same session
    * Updates old form messages to show they're expired and removes them from store
    */
-  async invalidateOldForms(
-    sessionKey: string,
-    newFormId: string,
-    slackApi: SlackApiHelper
-  ): Promise<void> {
+  async invalidateOldForms(sessionKey: string, newFormId: string, slackApi: SlackApiHelper): Promise<void> {
     const oldForms = this.formStore.getFormsBySession(sessionKey);
     const expiredFormBlock = [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _만료됨_' } }];
 
@@ -304,7 +300,7 @@ export class ActionHandlers {
           form.channel,
           form.messageTs,
           '⏱️ _이 폼은 새로운 폼으로 대체되었습니다._',
-          expiredFormBlock
+          expiredFormBlock,
         );
         this.logger.debug('Invalidated old form', { formId, sessionKey });
       } catch (error) {

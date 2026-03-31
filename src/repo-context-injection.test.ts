@@ -30,10 +30,7 @@ describe('buildRepoContextBlock', () => {
   });
 
   it('includes confluence URL when provided', () => {
-    const result = buildRepoContextBlock(
-      ['2lab-ai/soma-work'],
-      'https://2lab.atlassian.net/wiki/spaces/DEV/overview'
-    );
+    const result = buildRepoContextBlock(['2lab-ai/soma-work'], 'https://2lab.atlassian.net/wiki/spaces/DEV/overview');
 
     expect(result).toContain('Project wiki: https://2lab.atlassian.net/wiki/spaces/DEV/overview');
   });
@@ -59,10 +56,7 @@ describe('buildRepoContextBlock', () => {
   // --- Edge cases from Codex review ---
 
   it('builds block with confluenceUrl only (no repos)', () => {
-    const result = buildRepoContextBlock(
-      [],
-      'https://2lab.atlassian.net/wiki/spaces/DEV/overview'
-    );
+    const result = buildRepoContextBlock([], 'https://2lab.atlassian.net/wiki/spaces/DEV/overview');
 
     expect(result).toContain('<channel-repository>');
     expect(result).toContain('</channel-repository>');

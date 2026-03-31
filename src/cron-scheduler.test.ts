@@ -2,14 +2,15 @@
  * CronScheduler — Contract tests
  * Trace: docs/cron-scheduler/trace.md, Scenarios 4-6
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CronScheduler, CronSchedulerDeps, SyntheticMessageEvent } from './cron-scheduler';
-import { CronStorage, CronJob } from './cron-storage';
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CronScheduler, type CronSchedulerDeps, type SyntheticMessageEvent } from './cron-scheduler';
+import { type CronJob, CronStorage } from './cron-storage';
 import { SessionRegistry } from './session-registry';
 import { ConversationSession } from './types';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 
 function createTestJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -63,8 +64,12 @@ describe('CronScheduler — Idle Session Injection', () => {
   it('fires cron when session is idle and expression matches', async () => {
     const storage = new CronStorage(tmpFile);
     const job = storage.addJob({
-      name: 'idle-test', expression: '* * * * *', prompt: 'Hello from cron',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'idle-test',
+      expression: '* * * * *',
+      prompt: 'Hello from cron',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -89,8 +94,12 @@ describe('CronScheduler — Idle Session Injection', () => {
     const storage = new CronStorage(tmpFile);
     // Expression for minute 99 (never matches)
     storage.addJob({
-      name: 'no-match', expression: '99 99 * * *', prompt: 'nope',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'no-match',
+      expression: '99 99 * * *',
+      prompt: 'nope',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -108,8 +117,12 @@ describe('CronScheduler — Idle Session Injection', () => {
   it('does not fire same job twice on same date', async () => {
     const storage = new CronStorage(tmpFile);
     const job = storage.addJob({
-      name: 'dedup-test', expression: '* * * * *', prompt: 'once',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'dedup-test',
+      expression: '* * * * *',
+      prompt: 'once',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -136,8 +149,12 @@ describe('CronScheduler — Idle Session Injection', () => {
   it('updates lastRunMinute after successful injection', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'run-track', expression: '* * * * *', prompt: 'track',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'run-track',
+      expression: '* * * * *',
+      prompt: 'track',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps } = createMockDeps(storage);
@@ -157,8 +174,12 @@ describe('CronScheduler — Idle Session Injection', () => {
   it('injects synthetic message with cron prompt as text', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'format-test', expression: '* * * * *', prompt: 'Do the thing',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'format-test',
+      expression: '* * * * *',
+      prompt: 'Do the thing',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -186,8 +207,12 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
   it('queues cron when session is busy', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'busy-test', expression: '* * * * *', prompt: 'wait for me',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'busy-test',
+      expression: '* * * * *',
+      prompt: 'wait for me',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -209,8 +234,12 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
   it('drains queue on idle transition', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'drain-test', expression: '* * * * *', prompt: 'drained!',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'drain-test',
+      expression: '* * * * *',
+      prompt: 'drained!',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -227,7 +256,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
 
     // Allow async to complete
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].text).toContain('[cron:drain-test]');
@@ -238,12 +267,20 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     const storage = new CronStorage(tmpFile);
     // Create two jobs with different names
     storage.addJob({
-      name: 'job-a', expression: '* * * * *', prompt: 'first',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'job-a',
+      expression: '* * * * *',
+      prompt: 'first',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
     storage.addJob({
-      name: 'job-b', expression: '* * * * *', prompt: 'second',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'job-b',
+      expression: '* * * * *',
+      prompt: 'second',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -259,13 +296,13 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
 
     // First idle → drains one job
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(injectedMessages).toHaveLength(1);
 
     // Set back to working then idle again → drains second job
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(injectedMessages).toHaveLength(2);
   });
 
@@ -273,8 +310,12 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
   it('orphaned queue cleaned on session removal', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'orphan-test', expression: '* * * * *', prompt: 'orphaned',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'orphan-test',
+      expression: '* * * * *',
+      prompt: 'orphaned',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps } = createMockDeps(storage);
@@ -337,7 +378,9 @@ describe('SessionRegistry — onIdle callbacks', () => {
     registry.setActivityState('C1', 't1', 'working');
 
     const fired: string[] = [];
-    registry.registerOnIdle('C1-t1', () => { throw new Error('boom'); });
+    registry.registerOnIdle('C1-t1', () => {
+      throw new Error('boom');
+    });
     registry.registerOnIdle('C1-t1', () => fired.push('survived'));
 
     registry.setActivityState('C1', 't1', 'idle');
@@ -357,8 +400,12 @@ describe('CronScheduler — No Session New Thread', () => {
   it('creates new thread when no session exists', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'new-thread', expression: '* * * * *', prompt: 'Start fresh',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'new-thread',
+      expression: '* * * * *',
+      prompt: 'Start fresh',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
@@ -378,13 +425,19 @@ describe('CronScheduler — No Session New Thread', () => {
   it('skips gracefully on Slack API failure', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'fail-thread', expression: '* * * * *', prompt: 'should fail',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'fail-thread',
+      expression: '* * * * *',
+      prompt: 'should fail',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
     // Override threadCreator to fail
-    deps.threadCreator = vi.fn(async () => { throw new Error('Slack API error'); });
+    deps.threadCreator = vi.fn(async () => {
+      throw new Error('Slack API error');
+    });
 
     const scheduler = new CronScheduler(deps);
     await scheduler.tick(); // should not throw
@@ -397,8 +450,12 @@ describe('CronScheduler — No Session New Thread', () => {
     const isolatedFile = path.join(os.tmpdir(), `cron-sched-isolated-${Date.now()}.json`);
     const storage = new CronStorage(isolatedFile);
     storage.addJob({
-      name: 'prompt-check', expression: '* * * * *', prompt: 'Scheduled report',
-      owner: 'U999', channel: 'CABC', threadTs: null,
+      name: 'prompt-check',
+      expression: '* * * * *',
+      prompt: 'Scheduled report',
+      owner: 'U999',
+      channel: 'CABC',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -450,8 +507,12 @@ describe('CronScheduler — Hardening', () => {
   it('threadTs-specific cron targets exact session among multiple', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'thread-specific', expression: '* * * * *', prompt: 'For thread-2 only',
-      owner: 'U123', channel: 'C456', threadTs: 'thread-2',
+      name: 'thread-specific',
+      expression: '* * * * *',
+      prompt: 'For thread-2 only',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'thread-2',
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
@@ -475,12 +536,18 @@ describe('CronScheduler — Hardening', () => {
   it('messageInjector throw still marks lastRunMinute (no retry storm)', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'throw-test', expression: '* * * * *', prompt: 'boom',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'throw-test',
+      expression: '* * * * *',
+      prompt: 'boom',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps } = createMockDeps(storage);
-    deps.messageInjector = vi.fn(async () => { throw new Error('injector failed'); });
+    deps.messageInjector = vi.fn(async () => {
+      throw new Error('injector failed');
+    });
 
     deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
     deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
@@ -496,15 +563,24 @@ describe('CronScheduler — Hardening', () => {
   it('overlapping ticks are skipped via isRunning guard', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
-      name: 'overlap-test', expression: '* * * * *', prompt: 'slow',
-      owner: 'U123', channel: 'C456', threadTs: null,
+      name: 'overlap-test',
+      expression: '* * * * *',
+      prompt: 'slow',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
     });
 
     const { deps, injectedMessages } = createMockDeps(storage);
 
     // Make messageInjector slow
     let resolveInjector: () => void;
-    deps.messageInjector = vi.fn(() => new Promise<void>(resolve => { resolveInjector = resolve; }));
+    deps.messageInjector = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveInjector = resolve;
+        }),
+    );
 
     deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
     deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
@@ -512,7 +588,7 @@ describe('CronScheduler — Hardening', () => {
 
     const scheduler = new CronScheduler(deps);
     const tick1 = scheduler.tick(); // starts, blocks on messageInjector
-    await new Promise(resolve => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 5));
 
     await scheduler.tick(); // should be skipped (isRunning)
 

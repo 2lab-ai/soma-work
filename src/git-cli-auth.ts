@@ -10,7 +10,7 @@ export interface GitEnvironmentVariables {
 
 export async function getGitEnvironmentVariables(): Promise<GitEnvironmentVariables> {
   const env: GitEnvironmentVariables = {};
-  
+
   try {
     const githubToken = await getGitHubTokenForCLI();
     if (githubToken) {
@@ -38,10 +38,9 @@ export async function getGitCommands(): Promise<{
   return {
     gitPush: `${tokenPrefix}git push`,
     gitPull: `${tokenPrefix}git pull`,
-    gitClone: (repoUrl: string, directory?: string) => 
+    gitClone: (repoUrl: string, directory?: string) =>
       `${tokenPrefix}git clone ${repoUrl}${directory ? ` ${directory}` : ''}`,
-    gitRemoteSetUrl: (remoteName: string, url: string) => 
-      `${tokenPrefix}git remote set-url ${remoteName} ${url}`,
+    gitRemoteSetUrl: (remoteName: string, url: string) => `${tokenPrefix}git remote set-url ${remoteName} ${url}`,
   };
 }
 

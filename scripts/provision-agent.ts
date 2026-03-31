@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+
 /**
  * provision-agent.ts — Automated Slack App provisioning for sub-agents
  *
@@ -20,10 +21,10 @@
  *   npx tsx scripts/provision-agent.ts gwanu "배포 및 인프라 전문 에이전트"
  */
 
-import * as http from 'http';
-import * as fs from 'fs';
-import * as path from 'path';
 import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as http from 'http';
+import * as path from 'path';
 
 // ── Constants ──────────────────────────────────────────────
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -63,10 +64,18 @@ const C = {
   reset: '\x1b[0m',
 };
 
-function info(msg: string) { console.log(`${C.blue}ℹ${C.reset}  ${msg}`); }
-function ok(msg: string) { console.log(`${C.green}✓${C.reset}  ${msg}`); }
-function warn(msg: string) { console.log(`${C.yellow}⚠${C.reset}  ${msg}`); }
-function err(msg: string) { console.error(`${C.red}✗${C.reset}  ${msg}`); }
+function info(msg: string) {
+  console.log(`${C.blue}ℹ${C.reset}  ${msg}`);
+}
+function ok(msg: string) {
+  console.log(`${C.green}✓${C.reset}  ${msg}`);
+}
+function warn(msg: string) {
+  console.log(`${C.yellow}⚠${C.reset}  ${msg}`);
+}
+function err(msg: string) {
+  console.error(`${C.red}✗${C.reset}  ${msg}`);
+}
 function step(n: number, total: number, label: string) {
   console.log(`\n${C.bold}${C.cyan}── Step ${n}/${total}: ${label} ──${C.reset}`);
 }
@@ -207,7 +216,7 @@ function buildManifest(agentName: string, description: string): object {
 function startOAuthCallbackServer(
   clientId: string,
   clientSecret: string,
-  redirectUri: string
+  redirectUri: string,
 ): Promise<{ botToken: string; teamId: string; botUserId: string }> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -255,7 +264,7 @@ function startOAuthCallbackServer(
           }),
         });
 
-        const tokenData = await tokenRes.json() as any;
+        const tokenData = (await tokenRes.json()) as any;
 
         if (!tokenData.ok) {
           throw new Error(`oauth.v2.access failed: ${tokenData.error}`);
@@ -374,9 +383,13 @@ ${C.bold}🤖 Provisioning Sub-Agent: ${agentName}${C.reset}
   const manifest = buildManifest(agentName, description);
   info('Calling apps.manifest.create...');
 
-  const createResult = await slackApi('apps.manifest.create', {
-    manifest: JSON.stringify(manifest),
-  }, configToken);
+  const createResult = await slackApi(
+    'apps.manifest.create',
+    {
+      manifest: JSON.stringify(manifest),
+    },
+    configToken,
+  );
 
   const appId = createResult.app_id;
   const credentials = createResult.credentials;
@@ -388,11 +401,7 @@ ${C.bold}🤖 Provisioning Sub-Agent: ${agentName}${C.reset}
   step(3, TOTAL_STEPS, 'Install App to Workspace (OAuth)');
 
   // Start callback server
-  const oauthPromise = startOAuthCallbackServer(
-    credentials.client_id,
-    credentials.client_secret,
-    OAUTH_REDIRECT_URI
-  );
+  const oauthPromise = startOAuthCallbackServer(credentials.client_id, credentials.client_secret, OAUTH_REDIRECT_URI);
 
   // Build OAuth URL
   const oauthUrl = `https://slack.com/oauth/v2/authorize?client_id=${credentials.client_id}&scope=${BOT_SCOPES.join(',')}&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT_URI)}`;
@@ -410,7 +419,9 @@ ${C.bold}🤖 Provisioning Sub-Agent: ${agentName}${C.reset}
     } else if (process.platform === 'linux') {
       execSync(`xdg-open "${oauthUrl}" 2>/dev/null || true`, { stdio: 'ignore' });
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   info('Waiting for OAuth callback...');
   const { botToken, teamId, botUserId } = await oauthPromise;
@@ -437,7 +448,9 @@ ${C.bold}🤖 Provisioning Sub-Agent: ${agentName}${C.reset}
     if (process.platform === 'darwin') {
       execSync(`open "${appSettingsUrl}"`, { stdio: 'ignore' });
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const appToken = await ask(`  Paste App-Level Token (xapp-...): `);
   if (!appToken.startsWith('xapp-')) {

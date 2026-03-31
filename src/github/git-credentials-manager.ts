@@ -34,12 +34,7 @@ export class GitCredentialsManager {
         `url.https://x-access-token:${cleanToken}@github.com/.insteadOf`,
         'https://github.com/',
       ]);
-      await this.executeGitCommand([
-        'config',
-        '--global',
-        'credential.https://github.com.username',
-        cleanToken,
-      ]);
+      await this.executeGitCommand(['config', '--global', 'credential.https://github.com.username', cleanToken]);
 
       // Update environment variable for immediate use
       process.env.GITHUB_TOKEN = cleanToken;
@@ -90,9 +85,7 @@ export class GitCredentialsManager {
   /**
    * Execute git command with output capture
    */
-  private async executeGitCommandWithOutput(
-    args: string[]
-  ): Promise<{ stdout: string; stderr: string }> {
+  private async executeGitCommandWithOutput(args: string[]): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       const git = spawn('git', args);
       let stdout = '';

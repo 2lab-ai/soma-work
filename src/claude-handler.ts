@@ -3,36 +3,49 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
-import { query, type SDKMessage, type Options, type HookInput, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
-import { isAdminUser } from './admin-utils';
-import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers, resolveGatedTool } from './mcp-tool-permission-config';
-import { mcpToolGrantStore } from './mcp-tool-grant-store';
-import { CONFIG_FILE } from './env-paths';
-import * as path from 'path';
-import type { SdkPluginPath } from './plugin/types';
 import {
+  type HookInput,
+  type HookJSONOutput,
+  type Options,
+  query,
+  type SDKMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+import * as path from 'path';
+import { isAdminUser } from './admin-utils';
+import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import { CONFIG_FILE } from './env-paths';
+import { Logger } from './logger';
+import type { McpManager } from './mcp-manager';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+import {
+  getPermissionGatedServers,
+  getRequiredLevel,
+  levelSatisfies,
+  loadMcpToolPermissions,
+  resolveGatedTool,
+} from './mcp-tool-permission-config';
+import type { SdkPluginPath } from './plugin/types';
+import type {
+  ActivityState,
   ConversationSession,
-  SessionLinks,
   SessionLink,
+  SessionLinks,
   SessionResourceSnapshot,
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   WorkflowType,
-  ActivityState,
 } from './types';
-import { Logger } from './logger';
-import { McpManager } from './mcp-manager';
 
 // Fallback local plugins directory (used when no PluginManager is configured)
 const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
-import { userSettingsStore } from './user-settings-store';
-import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
+
 import { sendCredentialAlert } from './credential-alert';
-import { SessionRegistry, SessionExpiryCallbacks, CrashRecoveredSession } from './session-registry';
-import { PromptBuilder, getAvailablePersonas } from './prompt-builder';
-import { McpConfigBuilder, SlackContext } from './mcp-config-builder';
-import { ModelCommandContext } from './model-commands/types';
+import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
+import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
+import type { ModelCommandContext } from './model-commands/types';
+import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
+import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
+import { userSettingsStore } from './user-settings-store';
 
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
@@ -67,13 +80,11 @@ export class ClaudeHandler {
       return;
     }
     // Always preserve LOCAL_PLUGINS_DIR so built-in src/local plugin is never lost
-    const hasLocal = paths.some(p => p.path === LOCAL_PLUGINS_DIR);
-    this.pluginPaths = hasLocal
-      ? paths
-      : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
+    const hasLocal = paths.some((p) => p.path === LOCAL_PLUGINS_DIR);
+    this.pluginPaths = hasLocal ? paths : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
     this.logger.info('Plugin paths configured', {
       count: this.pluginPaths.length,
-      paths: this.pluginPaths.map(p => p.path),
+      paths: this.pluginPaths.map((p) => p.path),
     });
   }
 
@@ -109,11 +120,7 @@ export class ClaudeHandler {
     return this.sessionRegistry.getSession(channelId, threadTs);
   }
 
-  getSessionWithUser(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): ConversationSession | undefined {
+  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
     return this.sessionRegistry.getSessionWithUser(userId, channelId, threadTs);
   }
 
@@ -134,7 +141,7 @@ export class ClaudeHandler {
     ownerName: string,
     channelId: string,
     threadTs?: string,
-    model?: string
+    model?: string,
   ): ConversationSession {
     return this.sessionRegistry.createSession(ownerId, ownerName, channelId, threadTs, model);
   }
@@ -150,7 +157,13 @@ export class ClaudeHandler {
   /**
    * Record merge code change stats for a PR in this session.
    */
-  addMergeStats(channelId: string, threadTs: string | undefined, prNumber: number, linesAdded: number, linesDeleted: number): void {
+  addMergeStats(
+    channelId: string,
+    threadTs: string | undefined,
+    prNumber: number,
+    linesAdded: number,
+    linesDeleted: number,
+  ): void {
     this.sessionRegistry.addMergeStats(channelId, threadTs, prNumber, linesAdded, linesDeleted);
   }
 
@@ -165,12 +178,7 @@ export class ClaudeHandler {
     }
   }
 
-  updateInitiator(
-    channelId: string,
-    threadTs: string | undefined,
-    initiatorId: string,
-    initiatorName: string
-  ): void {
+  updateInitiator(channelId: string, threadTs: string | undefined, initiatorId: string, initiatorName: string): void {
     this.sessionRegistry.updateInitiator(channelId, threadTs, initiatorId, initiatorName);
   }
 
@@ -215,7 +223,7 @@ export class ClaudeHandler {
   updateSessionResources(
     channelId: string,
     threadTs: string | undefined,
-    request: SessionResourceUpdateRequest
+    request: SessionResourceUpdateRequest,
   ): SessionResourceUpdateResult {
     return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
@@ -226,12 +234,7 @@ export class ClaudeHandler {
 
   // ===== Session State Machine =====
 
-  transitionToMain(
-    channelId: string,
-    threadTs: string | undefined,
-    workflow: WorkflowType,
-    title?: string
-  ): void {
+  transitionToMain(channelId: string, threadTs: string | undefined, workflow: WorkflowType, title?: string): void {
     this.sessionRegistry.transitionToMain(channelId, threadTs, workflow, title);
   }
 
@@ -314,7 +317,7 @@ export class ClaudeHandler {
 
       throw new Error(
         `Claude credentials missing: ${credentialResult.error}\n` +
-          'Please log in to Claude manually or enable automatic credential restore.'
+          'Please log in to Claude manually or enable automatic credential restore.',
       );
     }
 
@@ -444,7 +447,7 @@ export class ClaudeHandler {
     session?: ConversationSession,
     abortController?: AbortController,
     workingDirectory?: string,
-    slackContext?: SlackContext
+    slackContext?: SlackContext,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Validate credentials before making the query
     const credentialResult = await ensureValidCredentials();
@@ -458,7 +461,7 @@ export class ClaudeHandler {
 
       throw new Error(
         `Claude credentials missing: ${credentialResult.error}\n` +
-          'Please log in to Claude manually or enable automatic credential restore.'
+          'Please log in to Claude manually or enable automatic credential restore.',
       );
     }
 
@@ -497,23 +500,26 @@ export class ClaudeHandler {
 
     // PreToolUse hooks
     if (slackContext) {
-      const preToolUseHooks: Array<{ matcher: string; hooks: Array<(input: HookInput) => Promise<HookJSONOutput>> }> = [];
+      const preToolUseHooks: Array<{ matcher: string; hooks: Array<(input: HookInput) => Promise<HookJSONOutput>> }> =
+        [];
 
       // Abort guard: deny all tool calls after session abort to prevent SDK fire-and-forget writes
       if (abortController) {
         preToolUseHooks.push({
           matcher: 'Bash',
-          hooks: [async (): Promise<HookJSONOutput> => {
-            if (abortController.signal.aborted) {
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'deny',
-                },
-              };
-            }
-            return { continue: true };
-          }],
+          hooks: [
+            async (): Promise<HookJSONOutput> => {
+              if (abortController.signal.aborted) {
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+              return { continue: true };
+            },
+          ],
         });
       }
 
@@ -522,26 +528,28 @@ export class ClaudeHandler {
       if (!isAdminUser(slackContext.user)) {
         preToolUseHooks.push({
           matcher: 'Bash',
-          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-            const { tool_input } = input as { tool_input: unknown };
-            const toolRecord = tool_input as Record<string, unknown> | undefined;
-            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-            if (isSshCommand(command)) {
-              this.logger.warn('SSH command denied for non-admin user', {
-                command: command.substring(0, 100),
-                user: slackContext.user,
-              });
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'deny',
-                },
-              };
-            }
+              if (isSshCommand(command)) {
+                this.logger.warn('SSH command denied for non-admin user', {
+                  command: command.substring(0, 100),
+                  user: slackContext.user,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
 
-            return { continue: true };
-          }],
+              return { continue: true };
+            },
+          ],
         });
       }
 
@@ -549,26 +557,28 @@ export class ClaudeHandler {
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
           matcher: 'Bash',
-          hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-            const { tool_input } = input as { tool_input: unknown };
-            const toolRecord = tool_input as Record<string, unknown> | undefined;
-            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-            if (isDangerousCommand(command)) {
-              this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
-                command: command.substring(0, 100),
-                user: slackContext.user,
-              });
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'ask',
-                },
-              };
-            }
+              if (isDangerousCommand(command)) {
+                this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
+                  command: command.substring(0, 100),
+                  user: slackContext.user,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'ask',
+                  },
+                };
+              }
 
-            return { continue: true };
-          }],
+              return { continue: true };
+            },
+          ],
         });
       }
 
@@ -585,24 +595,31 @@ export class ClaudeHandler {
         if (gatedServerNames.length > 0) {
           preToolUseHooks.push({
             matcher: 'mcp__',
-            hooks: [async (input: HookInput): Promise<HookJSONOutput> => {
-              const toolName = (input as { tool_name?: string }).tool_name || '';
-              const denied = this.checkMcpToolPermission(toolName, slackContext.user, cachedPermConfig, gatedServerNames);
-              if (denied) {
-                this.logger.warn('MCP tool permission denied by PreToolUse hook', {
-                  tool: toolName,
-                  user: slackContext.user,
-                  reason: denied,
-                });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                  },
-                };
-              }
-              return { continue: true };
-            }],
+            hooks: [
+              async (input: HookInput): Promise<HookJSONOutput> => {
+                const toolName = (input as { tool_name?: string }).tool_name || '';
+                const denied = this.checkMcpToolPermission(
+                  toolName,
+                  slackContext.user,
+                  cachedPermConfig,
+                  gatedServerNames,
+                );
+                if (denied) {
+                  this.logger.warn('MCP tool permission denied by PreToolUse hook', {
+                    tool: toolName,
+                    user: slackContext.user,
+                    reason: denied,
+                  });
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse',
+                      permissionDecision: 'deny',
+                    },
+                  };
+                }
+                return { continue: true };
+              },
+            ],
           });
         }
       }
@@ -775,7 +792,7 @@ export class ClaudeHandler {
 
   private buildModelCommandContext(
     session: ConversationSession | undefined,
-    slackContext: SlackContext | undefined
+    slackContext: SlackContext | undefined,
   ): ModelCommandContext | undefined {
     if (!slackContext) {
       return undefined;
@@ -787,10 +804,7 @@ export class ClaudeHandler {
       user: slackContext.user,
       workflow: session?.workflow,
       renewState: session?.renewState ?? null,
-      session: this.sessionRegistry.getSessionResourceSnapshot(
-        slackContext.channel,
-        slackContext.threadTs
-      ),
+      session: this.sessionRegistry.getSessionResourceSnapshot(slackContext.channel, slackContext.threadTs),
       sessionTitle: session?.title,
     };
   }
@@ -803,11 +817,13 @@ export class ClaudeHandler {
 export function buildRepoContextBlock(repos: string[], confluenceUrl?: string): string {
   const parts: string[] = [];
   if (repos.length > 0) {
-    const repoLines = repos.map(r => {
-      // Guard against pre-prefixed URLs or malformed entries
-      const url = r.startsWith('http') ? r : `https://github.com/${r}`;
-      return `- ${url}`;
-    }).join('\n');
+    const repoLines = repos
+      .map((r) => {
+        // Guard against pre-prefixed URLs or malformed entries
+        const url = r.startsWith('http') ? r : `https://github.com/${r}`;
+        return `- ${url}`;
+      })
+      .join('\n');
     parts.push(`This channel is mapped to the following repository(ies):\n${repoLines}`);
   }
   if (confluenceUrl) {

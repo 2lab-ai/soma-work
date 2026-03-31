@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EventRouter, EventRouterDeps } from './event-router';
-import { SlackApiHelper } from './slack-api-helper';
-import { SessionUiManager } from './session-manager';
-import { ActionHandlers, MessageHandler } from './action-handlers';
-import { ClaudeHandler } from '../claude-handler';
-import { ConversationSession } from '../types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ClaudeHandler } from '../claude-handler';
+import type { ConversationSession } from '../types';
+import type { ActionHandlers, MessageHandler } from './action-handlers';
+import { EventRouter, type EventRouterDeps } from './event-router';
+import type { SessionUiManager } from './session-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 vi.mock('../channel-registry', () => ({
   registerChannel: vi.fn().mockResolvedValue(null),
@@ -154,7 +154,7 @@ describe('EventRouter — source thread re-mention', () => {
       handler({
         event: { user: 'U123', channel: 'C123', ts: '200.300', text: '<@B123> status?', thread_ts: '100.200' },
         say: mockSay,
-      })
+      }),
     ).resolves.not.toThrow();
   });
 });

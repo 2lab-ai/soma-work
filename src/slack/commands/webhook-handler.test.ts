@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { WebhookHandler } from './webhook-handler';
 import { userSettingsStore } from '../../user-settings-store';
+import { WebhookHandler } from './webhook-handler';
 
 // Contract tests — Scenario 6: Webhook Command Handler
 // Trace: docs/turn-notification/trace.md
@@ -20,9 +20,11 @@ describe('WebhookHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('등록'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('등록'),
+      }),
+    );
   });
 
   it('register rejects invalid URL', async () => {
@@ -31,9 +33,11 @@ describe('WebhookHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('❌'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('❌'),
+      }),
+    );
   });
 
   it('remove clears URL', async () => {
@@ -42,9 +46,11 @@ describe('WebhookHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('삭제'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('삭제'),
+      }),
+    );
   });
 
   it('test posts to registered URL', async () => {
@@ -72,9 +78,11 @@ describe('WebhookHandler', () => {
     const result = await handler.execute(ctx);
 
     expect(result.handled).toBe(true);
-    expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('❌'),
-    }));
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('❌'),
+      }),
+    );
   });
 
   it('persists URL to user settings', async () => {

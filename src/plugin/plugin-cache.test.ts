@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import { readCacheMeta, writeCacheMeta, hasCachedPlugin, removeCachedPlugin } from './plugin-cache';
-import { CacheMeta } from './types';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { hasCachedPlugin, readCacheMeta, removeCachedPlugin, writeCacheMeta } from './plugin-cache';
+import type { CacheMeta } from './types';
 
 describe('plugin-cache', () => {
   let tmpDir: string;
@@ -51,7 +51,7 @@ describe('plugin-cache', () => {
       fs.mkdirSync(cacheDir, { recursive: true });
       fs.writeFileSync(
         path.join(cacheDir, 'partial.meta.json'),
-        JSON.stringify({ sha: 'abc' }) // missing fetchedAt, marketplace, ref
+        JSON.stringify({ sha: 'abc' }), // missing fetchedAt, marketplace, ref
       );
       expect(readCacheMeta(tmpDir, 'partial')).toBeNull();
     });

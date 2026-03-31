@@ -1,9 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import { Logger } from './logger.js';
-import { maskUrl } from './turn-notifier.js';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
-import { type LogVerbosity, DEFAULT_LOG_VERBOSITY, getVerbosityFlags, VERBOSITY_NAMES } from './slack/output-flags';
+import { Logger } from './logger.js';
+import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from './slack/output-flags';
+import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
 
@@ -15,16 +15,16 @@ export const AVAILABLE_MODELS = [
   'claude-haiku-4-5-20251001',
 ] as const;
 
-export type ModelId = typeof AVAILABLE_MODELS[number];
+export type ModelId = (typeof AVAILABLE_MODELS)[number];
 
 // Model aliases for user-friendly input
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  'sonnet': 'claude-sonnet-4-5-20250929',
+  sonnet: 'claude-sonnet-4-5-20250929',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-  'opus': 'claude-opus-4-6',
+  opus: 'claude-opus-4-6',
   'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
-  'haiku': 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
 };
 
@@ -32,7 +32,7 @@ export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
 // UI display themes — 3-tier system (shared across Session List, Thread Header, Turn End, AskUser)
 export const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
-export type SessionTheme = typeof SESSION_THEMES[number];
+export type SessionTheme = (typeof SESSION_THEMES)[number];
 export const DEFAULT_THEME: SessionTheme = 'default';
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
@@ -68,16 +68,16 @@ export interface UserSettings {
   userId: string;
   defaultDirectory: string;
   bypassPermission: boolean;
-  persona: string;  // persona file name (without .md extension)
-  defaultModel: ModelId;  // default model for new sessions
-  defaultLogVerbosity?: LogVerbosity;  // default log verbosity for new sessions
-  sessionTheme?: SessionTheme;  // UI display theme. undefined = default ('default' Rich Card)
+  persona: string; // persona file name (without .md extension)
+  defaultModel: ModelId; // default model for new sessions
+  defaultLogVerbosity?: LogVerbosity; // default log verbosity for new sessions
+  sessionTheme?: SessionTheme; // UI display theme. undefined = default ('default' Rich Card)
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
   jiraName?: string;
   slackName?: string;
-  email?: string;  // Slack profile email (auto-fetched via users.info)
+  email?: string; // Slack profile email (auto-fetched via users.info)
   // User acceptance (admin approval)
   accepted: boolean;
   acceptedBy?: string;
@@ -168,7 +168,7 @@ export class UserSettingsStore {
           });
         }
         logger.info('Loaded user settings', {
-          userCount: Object.keys(this.settings).length
+          userCount: Object.keys(this.settings).length,
         });
       } else {
         this.settings = {};
@@ -189,7 +189,7 @@ export class UserSettingsStore {
         const data = fs.readFileSync(this.mappingFile, 'utf8');
         this.slackJiraMapping = JSON.parse(data);
         logger.info('Loaded Slack-Jira mapping', {
-          mappingCount: Object.keys(this.slackJiraMapping).length
+          mappingCount: Object.keys(this.slackJiraMapping).length,
         });
       } else {
         this.slackJiraMapping = {};
@@ -213,11 +213,7 @@ export class UserSettingsStore {
    */
   private saveSettings(): void {
     try {
-      fs.writeFileSync(
-        this.settingsFile,
-        JSON.stringify(this.settings, null, 2),
-        'utf8'
-      );
+      fs.writeFileSync(this.settingsFile, JSON.stringify(this.settings, null, 2), 'utf8');
       logger.debug('Saved user settings to file');
     } catch (error) {
       logger.error('Failed to save user settings', error);
@@ -236,7 +232,8 @@ export class UserSettingsStore {
     }
 
     const existing = this.settings[userId];
-    const needsUpdate = !existing ||
+    const needsUpdate =
+      !existing ||
       existing.jiraAccountId !== mapping.jiraAccountId ||
       existing.jiraName !== mapping.name ||
       (slackName && existing.slackName !== slackName);
@@ -259,7 +256,7 @@ export class UserSettingsStore {
         userId,
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
-        slackName
+        slackName,
       });
       return true;
     }
@@ -637,9 +634,7 @@ export class UserSettingsStore {
    * Get statistics
    */
   getStats(): { userCount: number; directories: string[] } {
-    const directories = [...new Set(
-      Object.values(this.settings).map(s => s.defaultDirectory)
-    )];
+    const directories = [...new Set(Object.values(this.settings).map((s) => s.defaultDirectory))];
     return {
       userCount: Object.keys(this.settings).length,
       directories,

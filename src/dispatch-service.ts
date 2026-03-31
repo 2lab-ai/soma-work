@@ -3,12 +3,12 @@
  * Uses ClaudeHandler.dispatchOneShot for classification (unified auth path)
  */
 
-import { WorkflowType, SessionLinks, SessionLink } from './types';
-import { Logger } from './logger';
-import { ClaudeHandler } from './claude-handler';
-import { scoreComplexity, ComplexityResult } from './complexity-scorer';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ClaudeHandler } from './claude-handler';
+import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
+import { Logger } from './logger';
+import { SessionLink, type SessionLinks, type WorkflowType } from './types';
 
 // Default dispatch model - fast and cheap for classification
 // Can be overridden via DEFAULT_DISPATCH_MODEL env var
@@ -118,7 +118,9 @@ export class DispatchService {
 
     // Check if service is properly configured (prompt + ClaudeHandler)
     if (!this.isConfigured || !this.dispatchPrompt) {
-      this.logger.warn(`📍 DISPATCH → [default] (unconfigured - no dispatch prompt) complexity=${complexity.score}/${complexity.tier}`);
+      this.logger.warn(
+        `📍 DISPATCH → [default] (unconfigured - no dispatch prompt) complexity=${complexity.score}/${complexity.tier}`,
+      );
       dispatchFallbackCount++;
       return {
         workflow: 'default',
@@ -148,18 +150,22 @@ export class DispatchService {
       // Bridge AbortSignal to AbortController for SDK
       const abortController = new AbortController();
       if (abortSignal) {
-        abortSignal.addEventListener('abort', () => {
-          const elapsed = Date.now() - startTime;
-          this.logger.warn(`⏱️ DISPATCH: Abort signal received after ${elapsed}ms`);
-          abortController.abort();
-        }, { once: true });
+        abortSignal.addEventListener(
+          'abort',
+          () => {
+            const elapsed = Date.now() - startTime;
+            this.logger.warn(`⏱️ DISPATCH: Abort signal received after ${elapsed}ms`);
+            abortController.abort();
+          },
+          { once: true },
+        );
       }
 
       const responseText = await this.claudeHandler.dispatchOneShot(
         userMessage,
         this.dispatchPrompt,
         this.model,
-        abortController
+        abortController,
       );
 
       const elapsed = Date.now() - startTime;
@@ -174,12 +180,15 @@ export class DispatchService {
       result.complexity = complexity;
 
       // Workflow dispatch log
-      this.logger.info(`📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms) complexity=${complexity.score}/${complexity.tier}`, {
-        workflow: result.workflow,
-        title: result.title,
-        complexity: { score: complexity.score, tier: complexity.tier },
-        rawResponse: responseText.substring(0, 200),
-      });
+      this.logger.info(
+        `📍 DISPATCH → [${result.workflow}] "${result.title}" (${elapsed}ms) complexity=${complexity.score}/${complexity.tier}`,
+        {
+          workflow: result.workflow,
+          title: result.title,
+          complexity: { score: complexity.score, tier: complexity.tier },
+          rawResponse: responseText.substring(0, 200),
+        },
+      );
 
       return result;
     } catch (error) {
@@ -271,7 +280,10 @@ export class DispatchService {
 
         return {
           workflow: this.validateWorkflow(parsed.workflow),
-          title: typeof parsed.title === 'string' ? this.sanitizeTitle(parsed.title) : this.generateFallbackTitle(userMessage),
+          title:
+            typeof parsed.title === 'string'
+              ? this.sanitizeTitle(parsed.title)
+              : this.generateFallbackTitle(userMessage),
           links: Object.keys(links).length > 0 ? links : undefined,
         };
       } catch (jsonError) {
@@ -318,8 +330,7 @@ export class DispatchService {
     });
 
     // Jira issue: atlassian.net/browse/XXX-123 or selectedIssue=XXX-123
-    const jiraIssueMatch = text.match(/atlassian\.net\/browse\/(\w+-\d+)/) ||
-      text.match(/selectedIssue=(\w+-\d+)/);
+    const jiraIssueMatch = text.match(/atlassian\.net\/browse\/(\w+-\d+)/) || text.match(/selectedIssue=(\w+-\d+)/);
     if (jiraIssueMatch) {
       // Extract the full URL if present
       const urlMatch = text.match(/(https?:\/\/\S*atlassian\.net\S*(?:browse\/\w+-\d+|selectedIssue=\w+-\d+)\S*)/);
@@ -336,7 +347,9 @@ export class DispatchService {
     if (ghPrMatch) {
       const urlMatch = text.match(/(https?:\/\/\S*github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\S*)/);
       links.pr = {
-        url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://github.com/${ghPrMatch[1]}/${ghPrMatch[2]}/pull/${ghPrMatch[3]}`,
+        url: urlMatch
+          ? urlMatch[1].replace(/[>|].*$/, '')
+          : `https://github.com/${ghPrMatch[1]}/${ghPrMatch[2]}/pull/${ghPrMatch[3]}`,
         type: 'pr',
         provider: 'github',
         label: `PR #${ghPrMatch[3]}`,
@@ -349,7 +362,9 @@ export class DispatchService {
       if (ghIssueMatch) {
         const urlMatch = text.match(/(https?:\/\/\S*github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+\S*)/);
         links.issue = {
-          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://github.com/${ghIssueMatch[1]}/${ghIssueMatch[2]}/issues/${ghIssueMatch[3]}`,
+          url: urlMatch
+            ? urlMatch[1].replace(/[>|].*$/, '')
+            : `https://github.com/${ghIssueMatch[1]}/${ghIssueMatch[2]}/issues/${ghIssueMatch[3]}`,
           type: 'issue',
           provider: 'github',
           label: `#${ghIssueMatch[3]}`,
@@ -374,7 +389,9 @@ export class DispatchService {
       if (linearMatch) {
         const urlMatch = text.match(/(https?:\/\/\S*linear\.app\/[\w-]+\/issue\/\w+-\d+\S*)/);
         links.issue = {
-          url: urlMatch ? urlMatch[1].replace(/[>|].*$/, '') : `https://linear.app/${linearMatch[1]}/issue/${linearMatch[2]}`,
+          url: urlMatch
+            ? urlMatch[1].replace(/[>|].*$/, '')
+            : `https://linear.app/${linearMatch[1]}/issue/${linearMatch[2]}`,
           type: 'issue',
           provider: 'linear',
           label: linearMatch[2],
@@ -466,12 +483,14 @@ export class DispatchService {
    * Prevents mention injection (<!channel>, <@U123>) and link formatting
    */
   private sanitizeTitle(title: string): string {
-    return title
-      .replace(/<[!@#][^>]*>/g, '') // Remove <!channel>, <@U123>, <#C123>
-      .replace(/<[^|>]+\|([^>]+)>/g, '$1') // Convert <url|text> to text
-      .replace(/<[^>]+>/g, '') // Remove remaining <url>
-      .replace(/\s+/g, ' ')
-      .trim() || 'New Session';
+    return (
+      title
+        .replace(/<[!@#][^>]*>/g, '') // Remove <!channel>, <@U123>, <#C123>
+        .replace(/<[^|>]+\|([^>]+)>/g, '$1') // Convert <url|text> to text
+        .replace(/<[^>]+>/g, '') // Remove remaining <url>
+        .replace(/\s+/g, ' ')
+        .trim() || 'New Session'
+    );
   }
 
   /**
@@ -481,11 +500,7 @@ export class DispatchService {
     if (!message) return 'New Session';
 
     // Take first 50 chars, clean up
-    const title = message
-      .replace(/\n/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, 50);
+    const title = message.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 50);
 
     return title.length === 50 ? `${title}...` : title || 'New Session';
   }

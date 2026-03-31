@@ -1,6 +1,6 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser } from '../command-parser';
 import { isAdminUser } from '../../admin-utils';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles "show prompt" command — displays the system prompt snapshot for the current session.
@@ -28,17 +28,19 @@ export class PromptHandler implements CommandHandler {
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     if (!session) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '💡 No active session in this thread. Start a conversation first!',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
 
     if (!session.systemPrompt) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '📋 *System Prompt*\n\nNo system prompt captured yet. Send a message first so the prompt is built.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
@@ -51,20 +53,17 @@ export class PromptHandler implements CommandHandler {
     // For large prompts, truncate and indicate the full length.
     const MAX_DISPLAY = 3800;
     const truncated = prompt.length > MAX_DISPLAY;
-    const displayPrompt = truncated
-      ? prompt.slice(0, MAX_DISPLAY) + '\n\n... (truncated)'
-      : prompt;
+    const displayPrompt = truncated ? prompt.slice(0, MAX_DISPLAY) + '\n\n... (truncated)' : prompt;
 
     const header = [
       '📋 *System Prompt Snapshot*',
       `*Workflow:* \`${workflow}\`  |  *Length:* ${charCount.toLocaleString()} chars`,
       truncated ? `⚠️ Prompt exceeds display limit. Showing first ${MAX_DISPLAY.toLocaleString()} chars.` : '',
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
-    await this.deps.slackApi.postSystemMessage(channel,
-      `${header}\n\n\`\`\`\n${displayPrompt}\n\`\`\``,
-      { threadTs }
-    );
+    await this.deps.slackApi.postSystemMessage(channel, `${header}\n\n\`\`\`\n${displayPrompt}\n\`\`\``, { threadTs });
 
     return { handled: true };
   }

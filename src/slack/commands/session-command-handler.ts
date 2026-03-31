@@ -1,8 +1,8 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
+import { MODEL_ALIASES, type ModelId, userSettingsStore } from '../../user-settings-store';
+import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
-import { userSettingsStore, MODEL_ALIASES, type ModelId } from '../../user-settings-store';
-import { getVerbosityFlags, getVerbosityName, VERBOSITY_NAMES, LOG_DETAIL } from '../output-flags';
-import { getDirSizeBytes, formatBytes as formatBytesUtil } from '../../utils/dir-size';
+import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '../output-flags';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles $ prefix commands for current-session-only settings.
@@ -49,10 +49,7 @@ export class SessionCommandHandler implements CommandHandler {
     }
   }
 
-  private async showSessionInfo(
-    ctx: CommandContext,
-    session: any
-  ): Promise<CommandResult> {
+  private async showSessionInfo(ctx: CommandContext, session: any): Promise<CommandResult> {
     const { say, threadTs, user } = ctx;
 
     const modelId = session.model || userSettingsStore.getUserDefaultModel(user);
@@ -100,9 +97,7 @@ export class SessionCommandHandler implements CommandHandler {
     if (session.usage) {
       const u = session.usage;
       const current = u.currentInputTokens + u.currentOutputTokens;
-      const pct = u.contextWindow > 0
-        ? ((u.contextWindow - current) / u.contextWindow * 100).toFixed(0)
-        : '?';
+      const pct = u.contextWindow > 0 ? (((u.contextWindow - current) / u.contextWindow) * 100).toFixed(0) : '?';
       lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% available)`);
       if (u.totalCostUsd > 0) {
         lines.push(`*Cost:* $${u.totalCostUsd.toFixed(4)}`);
@@ -147,10 +142,7 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async showSessionModel(
-    ctx: CommandContext,
-    session: any
-  ): Promise<CommandResult> {
+  private async showSessionModel(ctx: CommandContext, session: any): Promise<CommandResult> {
     const { say, threadTs, user } = ctx;
     const modelId = session.model || userSettingsStore.getUserDefaultModel(user);
     const modelDisplay = userSettingsStore.getModelDisplayName(modelId as ModelId);
@@ -164,16 +156,14 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async setSessionModel(
-    ctx: CommandContext,
-    session: any,
-    input: string
-  ): Promise<CommandResult> {
+  private async setSessionModel(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     const resolved = userSettingsStore.resolveModelInput(input);
 
     if (!resolved) {
-      const aliases = Object.keys(MODEL_ALIASES).map(a => `\`${a}\``).join(', ');
+      const aliases = Object.keys(MODEL_ALIASES)
+        .map((a) => `\`${a}\``)
+        .join(', ');
       await say({
         text: `❌ Unknown model \`${input}\`.\n*Available:* ${aliases}`,
         thread_ts: threadTs,
@@ -190,10 +180,7 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async showSessionVerbosity(
-    ctx: CommandContext,
-    session: any
-  ): Promise<CommandResult> {
+  private async showSessionVerbosity(ctx: CommandContext, session: any): Promise<CommandResult> {
     const { say, threadTs, user } = ctx;
     const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
     const verbosityName = getVerbosityName(verbosityMask);
@@ -207,16 +194,12 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async setSessionVerbosity(
-    ctx: CommandContext,
-    session: any,
-    input: string
-  ): Promise<CommandResult> {
+  private async setSessionVerbosity(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     const resolved = userSettingsStore.resolveVerbosityInput(input);
 
     if (!resolved) {
-      const valid = VERBOSITY_NAMES.map(n => `\`${n}\``).join(', ');
+      const valid = VERBOSITY_NAMES.map((n) => `\`${n}\``).join(', ');
       await say({
         text: `❌ Unknown verbosity \`${input}\`.\n*Available:* ${valid}`,
         thread_ts: threadTs,
@@ -231,10 +214,7 @@ export class SessionCommandHandler implements CommandHandler {
     });
     return { handled: true };
   }
-  private async showSessionEffort(
-    ctx: CommandContext,
-    session: any
-  ): Promise<CommandResult> {
+  private async showSessionEffort(ctx: CommandContext, session: any): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     const effortLevel = session.effort || 'default';
     const isOverridden = session.effort != null;
@@ -246,17 +226,13 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private async setSessionEffort(
-    ctx: CommandContext,
-    session: any,
-    input: string
-  ): Promise<CommandResult> {
+  private async setSessionEffort(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     const valid = ['low', 'medium', 'high', 'max'] as const;
     const normalized = input.toLowerCase();
 
     if (!valid.includes(normalized as any)) {
-      const validStr = valid.map(v => `\`${v}\``).join(', ');
+      const validStr = valid.map((v) => `\`${v}\``).join(', ');
       await say({
         text: `❌ Unknown effort level \`${input}\`.\n*Available:* ${validStr}\n_⚠️ \`max\` requires API key (not available for Claude.ai subscribers)_`,
         thread_ts: threadTs,
@@ -264,8 +240,8 @@ export class SessionCommandHandler implements CommandHandler {
       return { handled: true };
     }
 
-    session.effort = normalized as typeof valid[number];
-    const warning = normalized === 'max' ? '\n_⚠️ \`max\` requires API key — will fail on Claude.ai subscription_' : '';
+    session.effort = normalized as (typeof valid)[number];
+    const warning = normalized === 'max' ? '\n_⚠️ `max` requires API key — will fail on Claude.ai subscription_' : '';
     await say({
       text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`$effort high\` to restore default._`,
       thread_ts: threadTs,

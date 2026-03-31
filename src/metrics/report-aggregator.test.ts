@@ -1,12 +1,17 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { ReportAggregator, computeDerivedMetrics, computeTrend } from './report-aggregator';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MetricsEventStore } from './event-store';
-import { MetricsEvent, MetricsEventType, AggregatedMetrics } from './types';
+import { computeDerivedMetrics, computeTrend, ReportAggregator } from './report-aggregator';
+import type { AggregatedMetrics, MetricsEvent, MetricsEventType } from './types';
 
 // Contract tests — Scenario 4: ReportAggregator
 // Trace: docs/daily-weekly-report/trace.md
 
-function makeEvent(type: MetricsEventType, userId = 'U123', userName = 'User1', metadata?: Record<string, unknown>): MetricsEvent {
+function makeEvent(
+  type: MetricsEventType,
+  userId = 'U123',
+  userName = 'User1',
+  metadata?: Record<string, unknown>,
+): MetricsEvent {
   return {
     id: `evt-${Math.random()}`,
     timestamp: Date.now(),
@@ -73,10 +78,7 @@ describe('ReportAggregator', () => {
 
   // Trace: Scenario 4, Section 3b — weekly aggregates 7 days
   it('weekly_aggregatesSevenDays', async () => {
-    mockStore.readRange.mockResolvedValue([
-      makeEvent('session_created'),
-      makeEvent('turn_used'),
-    ]);
+    mockStore.readRange.mockResolvedValue([makeEvent('session_created'), makeEvent('turn_used')]);
 
     const report = await aggregator.aggregateWeekly('2026-03-23'); // Monday
 
@@ -197,10 +199,17 @@ describe('ReportAggregator', () => {
 
   it('computeDerivedMetrics_zeroActiveDays_noDivisionError', () => {
     const m: AggregatedMetrics = {
-      sessionsCreated: 5, sessionsSlept: 1, sessionsClosed: 3,
-      issuesCreated: 2, prsCreated: 3, commitsCreated: 10,
-      codeLinesAdded: 500, codeLinesDeleted: 50, prsMerged: 2,
-      mergeLinesAdded: 300, turnsUsed: 20,
+      sessionsCreated: 5,
+      sessionsSlept: 1,
+      sessionsClosed: 3,
+      issuesCreated: 2,
+      prsCreated: 3,
+      commitsCreated: 10,
+      codeLinesAdded: 500,
+      codeLinesDeleted: 50,
+      prsMerged: 2,
+      mergeLinesAdded: 300,
+      turnsUsed: 20,
     };
 
     // activeDays = 0 should NOT throw, should use safeActiveDays = 1
@@ -213,15 +222,22 @@ describe('ReportAggregator', () => {
 
   it('computeTrend_prevHasOnlyIssuesAndMerges_notBaselineZero', () => {
     const current: AggregatedMetrics = {
-      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
-      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
-      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
-      mergeLinesAdded: 0, turnsUsed: 0,
+      sessionsCreated: 0,
+      sessionsSlept: 0,
+      sessionsClosed: 0,
+      issuesCreated: 0,
+      prsCreated: 0,
+      commitsCreated: 0,
+      codeLinesAdded: 0,
+      codeLinesDeleted: 0,
+      prsMerged: 0,
+      mergeLinesAdded: 0,
+      turnsUsed: 0,
     };
     const previous: AggregatedMetrics = {
       ...current,
       issuesCreated: 5, // Only issues — old code would miss this
-      prsMerged: 3,     // Only merges — old code would miss this
+      prsMerged: 3, // Only merges — old code would miss this
     };
 
     const trend = computeTrend(current, previous);
@@ -232,10 +248,17 @@ describe('ReportAggregator', () => {
 
   it('computeTrend_prevHasOnlyCodeLines_notBaselineZero', () => {
     const zero: AggregatedMetrics = {
-      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
-      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
-      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0,
-      mergeLinesAdded: 0, turnsUsed: 0,
+      sessionsCreated: 0,
+      sessionsSlept: 0,
+      sessionsClosed: 0,
+      issuesCreated: 0,
+      prsCreated: 0,
+      commitsCreated: 0,
+      codeLinesAdded: 0,
+      codeLinesDeleted: 0,
+      prsMerged: 0,
+      mergeLinesAdded: 0,
+      turnsUsed: 0,
     };
     const previous: AggregatedMetrics = { ...zero, codeLinesAdded: 1000 };
 
@@ -259,10 +282,7 @@ describe('ReportAggregator', () => {
         ];
       }
       // Previous week
-      return [
-        makeEvent('session_created'),
-        makeEvent('turn_used'),
-      ];
+      return [makeEvent('session_created'), makeEvent('turn_used')];
     });
 
     const report = await aggregator.aggregateEnrichedWeekly('2026-03-23');

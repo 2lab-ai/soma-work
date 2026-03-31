@@ -1,6 +1,6 @@
 import { Logger } from '../logger';
-import { SlackApiHelper } from './slack-api-helper';
-import { McpManager } from '../mcp-manager';
+import type { McpManager } from '../mcp-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 export interface McpHealthMonitorOptions {
   errorThreshold?: number;
@@ -28,19 +28,14 @@ export class McpHealthMonitor {
   constructor(
     private slackApi: SlackApiHelper,
     private mcpManager: McpManager,
-    options?: McpHealthMonitorOptions
+    options?: McpHealthMonitorOptions,
   ) {
     this.errorThreshold = options?.errorThreshold ?? DEFAULT_ERROR_THRESHOLD;
     this.errorWindowMs = options?.errorWindowMs ?? DEFAULT_ERROR_WINDOW_MS;
     this.alertCooldownMs = options?.alertCooldownMs ?? DEFAULT_ALERT_COOLDOWN_MS;
   }
 
-  async recordResult(args: {
-    toolName?: string;
-    isError?: boolean;
-    channel: string;
-    threadTs: string;
-  }): Promise<void> {
+  async recordResult(args: { toolName?: string; isError?: boolean; channel: string; threadTs: string }): Promise<void> {
     if (!args.toolName || !args.toolName.startsWith('mcp__')) {
       return;
     }
@@ -74,11 +69,13 @@ export class McpHealthMonitor {
   }
 
   private getState(serverName: string): ServerHealthState {
-    return this.states.get(serverName) || {
-      errorCount: 0,
-      lastErrorAt: null,
-      lastAlertAt: null,
-    };
+    return (
+      this.states.get(serverName) || {
+        errorCount: 0,
+        lastErrorAt: null,
+        lastAlertAt: null,
+      }
+    );
   }
 
   private shouldAlert(state: ServerHealthState, now: number): boolean {
@@ -97,12 +94,10 @@ export class McpHealthMonitor {
     serverName: string,
     channel: string,
     threadTs: string,
-    errorCount: number
+    errorCount: number,
   ): Promise<void> {
     const reloaded = this.mcpManager.reloadConfiguration();
-    const reloadText = reloaded
-      ? 'MCP 구성 재로드 완료'
-      : 'MCP 구성 재로드 실패 (mcp-servers.json 확인 필요)';
+    const reloadText = reloaded ? 'MCP 구성 재로드 완료' : 'MCP 구성 재로드 실패 (mcp-servers.json 확인 필요)';
 
     const message = [
       `⚠️ MCP 서버 오류 증가: ${serverName}`,

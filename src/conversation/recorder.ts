@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
-import { ConversationStorage } from './storage';
-import { ConversationRecord, ConversationTurn } from './types';
-import { summarizeResponse } from './summarizer';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { ConversationStorage } from './storage';
+import { summarizeResponse } from './summarizer';
+import type { ConversationRecord, ConversationTurn } from './types';
 
 const logger = new Logger('ConversationRecorder');
 
@@ -35,9 +35,12 @@ export function setOnTurnRecordedCallback(fn: (conversationId: string, turn: Con
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
   const previous = writeLocks.get(conversationId) || Promise.resolve();
   const current = previous.then(() => getStorage().save(record));
-  writeLocks.set(conversationId, current.catch((err) => {
-    logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
-  }));
+  writeLocks.set(
+    conversationId,
+    current.catch((err) => {
+      logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
+    }),
+  );
   await current;
 }
 
@@ -95,7 +98,7 @@ export function createConversation(
   ownerId: string,
   ownerName: string,
   title?: string,
-  workflow?: string
+  workflow?: string,
 ): string {
   const id = randomUUID();
   const now = Date.now();
@@ -116,7 +119,7 @@ export function createConversation(
   cacheRecord(id, record);
 
   // Fire-and-forget: persist to disk (serialized per conversation)
-  serializedSave(id, record).catch(err => {
+  serializedSave(id, record).catch((err) => {
     logger.error(`Failed to persist new conversation ${id}`, err);
   });
 
@@ -127,25 +130,22 @@ export function createConversation(
 /**
  * Record a user turn (fire-and-forget, non-blocking)
  */
-export function recordUserTurn(
-  conversationId: string,
-  content: string,
-  userName?: string,
-  userId?: string
-): void {
+export function recordUserTurn(conversationId: string, content: string, userName?: string, userId?: string): void {
   // Fire-and-forget
-  _recordUserTurnAsync(conversationId, content, userName, userId).catch(err => {
+  _recordUserTurnAsync(conversationId, content, userName, userId).catch((err) => {
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event (fire-and-forget)
-  getMetricsEmitter().emitTurnUsed(conversationId, userId, userName, 'user').catch(err => logger.debug('metrics emit failed', err));
+  getMetricsEmitter()
+    .emitTurnUsed(conversationId, userId, userName, 'user')
+    .catch((err) => logger.debug('metrics emit failed', err));
 }
 
 async function _recordUserTurnAsync(
   conversationId: string,
   content: string,
   userName?: string,
-  userId?: string
+  userId?: string,
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -173,22 +173,18 @@ async function _recordUserTurnAsync(
  * Record an assistant turn (fire-and-forget, non-blocking).
  * Generates summary asynchronously after saving raw content.
  */
-export function recordAssistantTurn(
-  conversationId: string,
-  content: string
-): void {
+export function recordAssistantTurn(conversationId: string, content: string): void {
   // Fire-and-forget
-  _recordAssistantTurnAsync(conversationId, content).catch(err => {
+  _recordAssistantTurnAsync(conversationId, content).catch((err) => {
     logger.error(`Failed to record assistant turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event for assistant (fire-and-forget)
-  getMetricsEmitter().emitTurnUsed(conversationId, 'assistant', 'assistant', 'assistant').catch(err => logger.debug('metrics emit failed', err));
+  getMetricsEmitter()
+    .emitTurnUsed(conversationId, 'assistant', 'assistant', 'assistant')
+    .catch((err) => logger.debug('metrics emit failed', err));
 }
 
-async function _recordAssistantTurnAsync(
-  conversationId: string,
-  content: string
-): Promise<void> {
+async function _recordAssistantTurnAsync(conversationId: string, content: string): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
     logger.warn(`Conversation ${conversationId} not found, skipping assistant turn recording`);
@@ -211,7 +207,7 @@ async function _recordAssistantTurnAsync(
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 
   // Then generate summary asynchronously (don't block)
-  generateSummary(conversationId, turn.id, content).catch(err => {
+  generateSummary(conversationId, turn.id, content).catch((err) => {
     logger.error(`Failed to generate summary for turn ${turn.id}`, err);
   });
 }
@@ -219,11 +215,7 @@ async function _recordAssistantTurnAsync(
 /**
  * Generate summary for an assistant turn and update the record
  */
-async function generateSummary(
-  conversationId: string,
-  turnId: string,
-  content: string
-): Promise<void> {
+async function generateSummary(conversationId: string, turnId: string, content: string): Promise<void> {
   const summary = await summarizeResponse(content);
   if (!summary) {
     logger.warn(`Summary generation returned null for turn ${turnId} in conversation ${conversationId}`);
@@ -236,7 +228,7 @@ async function generateSummary(
     return;
   }
 
-  const turn = record.turns.find(t => t.id === turnId);
+  const turn = record.turns.find((t) => t.id === turnId);
   if (!turn) {
     logger.warn(`Turn ${turnId} not found in conversation ${conversationId} during summary — possible race condition`);
     return;
@@ -284,14 +276,11 @@ export async function listConversations() {
 /**
  * Get a specific turn's raw content (for lazy loading)
  */
-export async function getTurnRawContent(
-  conversationId: string,
-  turnId: string
-): Promise<string | null> {
+export async function getTurnRawContent(conversationId: string, turnId: string): Promise<string | null> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) return null;
 
-  const turn = record.turns.find(t => t.id === turnId);
+  const turn = record.turns.find((t) => t.id === turnId);
   return turn?.rawContent || null;
 }
 
@@ -300,7 +289,7 @@ export async function getTurnRawContent(
  */
 export async function updateConversationMeta(
   conversationId: string,
-  updates: { title?: string; workflow?: string }
+  updates: { title?: string; workflow?: string },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) return;

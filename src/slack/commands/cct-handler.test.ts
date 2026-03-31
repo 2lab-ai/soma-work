@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Contract tests for CctHandler — derived from docs/cct-token-rotation/trace.md
 // Scenarios 2 & 3

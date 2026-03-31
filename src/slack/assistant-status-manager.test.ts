@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantStatusManager } from './assistant-status-manager';
-import { SlackApiHelper } from './slack-api-helper';
+import type { SlackApiHelper } from './slack-api-helper';
 
 const createMockSlackApi = () => ({
   setAssistantStatus: vi.fn().mockResolvedValue(undefined),
@@ -25,7 +25,7 @@ describe('AssistantStatusManager', () => {
 
     it('should auto-disable on first failure', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } })
+        Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');

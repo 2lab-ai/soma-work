@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
 import { ContextWindowManager } from '../context-window-manager';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles /context command - displays current session context window usage
@@ -19,17 +19,19 @@ export class ContextHandler implements CommandHandler {
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     if (!session) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '💡 No active session in this thread. Start a conversation first!',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
 
     if (!session.usage) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '📊 *Session Context*\n\nNo usage data available yet. Send a message to start tracking.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
@@ -44,10 +46,7 @@ export class ContextHandler implements CommandHandler {
     // Context bar visualization
     const contextBar = ThreadHeaderBuilder.formatContextBar(usage) || '░░░░░';
 
-    const lines: string[] = [
-      '📊 *Session Context*',
-      '',
-    ];
+    const lines: string[] = ['📊 *Session Context*', ''];
 
     // Model info
     if (session.model) {
@@ -56,7 +55,9 @@ export class ContextHandler implements CommandHandler {
 
     // Current context window usage with visual bar
     lines.push(`*Context Window:* ${contextBar}`);
-    lines.push(`  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${availablePercent.toFixed(0)}% available)`);
+    lines.push(
+      `  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${availablePercent.toFixed(0)}% available)`,
+    );
 
     // Cache info
     if (usage.currentCacheReadTokens > 0 || usage.currentCacheCreateTokens > 0) {

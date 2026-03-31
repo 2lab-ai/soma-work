@@ -48,7 +48,7 @@ describe('ChoiceActionHandler', () => {
         messageHandler,
         threadPanel,
       } as any,
-      formStore as any
+      formStore as any,
     );
   });
 
@@ -86,14 +86,14 @@ describe('ChoiceActionHandler', () => {
       'thread-choice-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼) 제거
+      [], // 기존 attachments(버튼) 제거
     );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'panel-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼) 제거
+      [], // 기존 attachments(버튼) 제거
     );
 
     expect(messageHandler).toHaveBeenCalledWith(
@@ -103,7 +103,7 @@ describe('ChoiceActionHandler', () => {
         ts: 'panel-message-ts',
         text: '2',
       }),
-      expect.any(Function)
+      expect.any(Function),
     );
   });
 
@@ -158,14 +158,14 @@ describe('ChoiceActionHandler', () => {
       'thread-form-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼 폼) 제거
+      [], // 기존 attachments(버튼 폼) 제거
     );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'panel-message-ts',
       expect.any(String),
       expect.any(Array),
-      [] // 기존 attachments(버튼 폼) 제거
+      [], // 기존 attachments(버튼 폼) 제거
     );
 
     expect(messageHandler).toHaveBeenCalledWith(
@@ -173,7 +173,7 @@ describe('ChoiceActionHandler', () => {
         channel: 'C123',
         thread_ts: 'thread-root',
       }),
-      expect.any(Function)
+      expect.any(Function),
     );
   });
 
@@ -228,14 +228,14 @@ describe('ChoiceActionHandler', () => {
       'panel-message-ts',
       expect.any(String),
       undefined,
-      expect.any(Array)
+      expect.any(Array),
     );
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C123',
       'thread-form-message-ts',
       expect.any(String),
       undefined,
-      expect.any(Array)
+      expect.any(Array),
     );
   });
 });

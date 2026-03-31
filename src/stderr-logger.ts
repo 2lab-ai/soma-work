@@ -15,7 +15,7 @@ export class StderrLogger implements LoggerInterface {
   private formatMessage(level: string, message: string, data?: any): string {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level}] [${this.context}]`;
-    
+
     if (data) {
       return `${prefix} ${message}\n${JSON.stringify(data, null, 2)}`;
     }
@@ -38,11 +38,14 @@ export class StderrLogger implements LoggerInterface {
   }
 
   error(message: string, error?: any) {
-    const errorData = error instanceof Error ? {
-      errorMessage: error.message,
-      stack: error.stack,
-      ...error
-    } : error;
+    const errorData =
+      error instanceof Error
+        ? {
+            errorMessage: error.message,
+            stack: error.stack,
+            ...error,
+          }
+        : error;
     process.stderr.write(this.formatMessage('ERROR', message, errorData) + '\n');
   }
 }

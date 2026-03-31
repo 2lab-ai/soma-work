@@ -6,9 +6,12 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
+    "build": "npm run check && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
     "prod": "node dist/index.js",
-    "lint": "tsc --noEmit",
+    "check": "biome check src/ scripts/",
+    "lint": "tsc --noEmit && biome check src/ scripts/",
+    "format": "biome check --write src/ scripts/",
+    "format:check": "biome format src/ scripts/",
     "test": "vitest run",
     "test:watch": "vitest",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
@@ -19,6 +22,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
     "@types/node": "=24.0.4",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",

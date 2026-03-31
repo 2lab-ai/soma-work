@@ -9,9 +9,9 @@
  * - Provides channel↔repo mapping for smart routing
  */
 
-import { WebClient } from '@slack/web-api';
-import { Logger } from './logger';
+import type { WebClient } from '@slack/web-api';
 import { getChannelDescription, invalidateChannelCache } from './channel-description-cache';
+import { Logger } from './logger';
 
 const logger = new Logger('ChannelRegistry');
 
@@ -20,7 +20,7 @@ export interface ChannelInfo {
   name: string;
   purpose: string;
   topic: string;
-  repos: string[];      // Parsed repo URLs/names (e.g., "owner/repo")
+  repos: string[]; // Parsed repo URLs/names (e.g., "owner/repo")
   confluenceUrl?: string; // First Confluence wiki URL found in purpose/topic
   joinedAt: number;
 }
@@ -105,9 +105,9 @@ export async function scanChannels(client: WebClient): Promise<number> {
 
     logger.info('✅ Channel scan complete', {
       totalChannels,
-      channelsWithRepos: [...channels.values()].filter(c => c.repos.length > 0).length,
-      repoMappings: [...repoToChannels.entries()].map(([repo, chs]) =>
-        `${repo} → [${chs.map(id => channels.get(id)?.name || id).join(', ')}]`
+      channelsWithRepos: [...channels.values()].filter((c) => c.repos.length > 0).length,
+      repoMappings: [...repoToChannels.entries()].map(
+        ([repo, chs]) => `${repo} → [${chs.map((id) => channels.get(id)?.name || id).join(', ')}]`,
       ),
     });
 
@@ -121,10 +121,7 @@ export async function scanChannels(client: WebClient): Promise<number> {
 /**
  * Register a channel when bot joins it.
  */
-export async function registerChannel(
-  client: WebClient,
-  channelId: string
-): Promise<ChannelInfo | null> {
+export async function registerChannel(client: WebClient, channelId: string): Promise<ChannelInfo | null> {
   try {
     logger.info('📝 Registering channel', { channelId });
     const result = await client.conversations.info({ channel: channelId });
@@ -193,7 +190,7 @@ export function findChannelsForRepo(repoFullName: string): string[] {
   logger.debug('🔎 findChannelsForRepo', {
     input: repoFullName,
     normalized,
-    matchedChannels: result.map(id => ({ id, name: channels.get(id)?.name })),
+    matchedChannels: result.map((id) => ({ id, name: channels.get(id)?.name })),
     totalRepoMappings: repoToChannels.size,
     allMappedRepos: [...repoToChannels.keys()],
   });
@@ -240,10 +237,7 @@ export function getChannelConfluenceUrl(channelId: string): string | undefined {
  * Check if a PR URL belongs to the correct channel.
  * Returns: { correct: true } or { correct: false, suggestedChannels: [...] }
  */
-export function checkRepoChannelMatch(
-  prUrl: string,
-  currentChannel: string
-): RepoChannelMatchResult {
+export function checkRepoChannelMatch(prUrl: string, currentChannel: string): RepoChannelMatchResult {
   const currentChannelInfo = channels.get(currentChannel);
 
   logger.info('🧭 checkRepoChannelMatch START', {
@@ -278,7 +272,7 @@ export function checkRepoChannelMatch(
       repo,
       currentChannel,
       currentChannelName: currentChannelInfo?.name,
-      mappedChannels: mappedChannelIds.map(id => ({ id, name: channels.get(id)?.name })),
+      mappedChannels: mappedChannelIds.map((id) => ({ id, name: channels.get(id)?.name })),
     });
     return { correct: true, suggestedChannels: [], reason: 'matched' };
   }
@@ -286,7 +280,7 @@ export function checkRepoChannelMatch(
   // Wrong channel — suggest the correct ones, sorted by repo count ascending
   // (fewer repos = more specialized channel = higher priority)
   const suggestedChannels = mappedChannelIds
-    .map(id => channels.get(id))
+    .map((id) => channels.get(id))
     .filter((ch): ch is ChannelInfo => ch !== undefined)
     .sort((a, b) => a.repos.length - b.repos.length);
 
@@ -294,7 +288,7 @@ export function checkRepoChannelMatch(
     repo,
     currentChannel,
     currentChannelName: currentChannelInfo?.name,
-    suggestedChannels: suggestedChannels.map(ch => ({ id: ch.id, name: ch.name, repoCount: ch.repos.length })),
+    suggestedChannels: suggestedChannels.map((ch) => ({ id: ch.id, name: ch.name, repoCount: ch.repos.length })),
   });
 
   return { correct: false, suggestedChannels, reason: 'mismatch' };
@@ -323,7 +317,7 @@ function parseRepos(text: string): string[] {
   if (repos.size === 0 && text.trim().length > 0) {
     logger.debug('📎 parseRepos: no repos found in text', {
       textPreview: text.substring(0, 150),
-      patterns: REPO_PATTERNS.map(p => p.source),
+      patterns: REPO_PATTERNS.map((p) => p.source),
     });
   }
 
@@ -353,8 +347,8 @@ function rebuildRepoIndex(): void {
   logger.info('🗂️ Repo index rebuilt', {
     repos: repoCount,
     totalChannels: channels.size,
-    mappings: [...repoToChannels.entries()].map(([repo, chs]) =>
-      `${repo} → [${chs.map(id => channels.get(id)?.name || id).join(', ')}]`
+    mappings: [...repoToChannels.entries()].map(
+      ([repo, chs]) => `${repo} → [${chs.map((id) => channels.get(id)?.name || id).join(', ')}]`,
     ),
   });
 }

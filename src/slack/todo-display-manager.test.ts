@@ -33,11 +33,7 @@ describe('TodoDisplayManager', () => {
     reactionManager = {
       updateTaskProgressReaction: vi.fn().mockResolvedValue(undefined),
     };
-    manager = new TodoDisplayManager(
-      slackApi as any,
-      todoManager as any,
-      reactionManager as any
-    );
+    manager = new TodoDisplayManager(slackApi as any, todoManager as any, reactionManager as any);
   });
 
   it('handleTodoUpdate uses slackApi.updateMessage for existing todo message', async () => {
@@ -46,23 +42,17 @@ describe('TodoDisplayManager', () => {
 
     await manager.handleTodoUpdate(
       {
-        todos: [
-          { id: 'todo-1', content: 'Do it', status: 'in_progress', priority: 'high' },
-        ],
+        todos: [{ id: 'todo-1', content: 'Do it', status: 'in_progress', priority: 'high' }],
       },
       'session-1',
       'session-id',
       'C123',
       '999.888',
       say,
-      0
+      0,
     );
 
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'C123',
-      '111.222',
-      'todo list'
-    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', 'todo list');
     expect(say).not.toHaveBeenCalled();
   });
 
@@ -73,23 +63,17 @@ describe('TodoDisplayManager', () => {
 
     await manager.handleTodoUpdate(
       {
-        todos: [
-          { id: 'todo-1', content: 'Do it', status: 'completed', priority: 'high' },
-        ],
+        todos: [{ id: 'todo-1', content: 'Do it', status: 'completed', priority: 'high' }],
       },
       'session-1',
       'session-id',
       'C123',
       '999.888',
       say,
-      0
+      0,
     );
 
-    expect(slackApi.updateMessage).toHaveBeenCalledWith(
-      'C123',
-      '111.222',
-      'todo list'
-    );
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C123', '111.222', 'todo list');
     expect(say).toHaveBeenCalledWith({
       text: 'todo list',
       thread_ts: '999.888',

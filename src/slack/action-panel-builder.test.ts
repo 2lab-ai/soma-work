@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ActionPanelBuilder } from './action-panel-builder';
 import { LOG_DETAIL } from './output-flags';
 
@@ -23,8 +23,10 @@ function getStatusSectionText(payload: { blocks: any[] }): string {
 function getFieldsSectionText(payload: { blocks: any[] }): string {
   // Find the summary fields section (has "소요 시간" or "도구 사용"), not the hero fields
   const fieldsBlock = payload.blocks.find(
-    (block) => block.type === 'section' && Array.isArray(block.fields)
-      && block.fields.some((f: any) => /소요 시간|도구 사용/.test(String(f.text || '')))
+    (block) =>
+      block.type === 'section' &&
+      Array.isArray(block.fields) &&
+      block.fields.some((f: any) => /소요 시간|도구 사용/.test(String(f.text || ''))),
   );
   if (!fieldsBlock) return '';
   return fieldsBlock.fields.map((f: any) => String(f.text || '')).join(' ');
@@ -45,13 +47,15 @@ describe('ActionPanelBuilder', () => {
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
     const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
 
-    expect(actionIds).toEqual(expect.arrayContaining([
-      'panel_pr_fix_new',
-      'panel_pr_fix_renew',
-      'panel_pr_approve',
-      'panel_pr_docs',
-      'panel_close',
-    ]));
+    expect(actionIds).toEqual(
+      expect.arrayContaining([
+        'panel_pr_fix_new',
+        'panel_pr_fix_renew',
+        'panel_pr_approve',
+        'panel_pr_docs',
+        'panel_close',
+      ]),
+    );
   });
 
   it('dynamically adds review buttons when prUrl exists and workflow has no review buttons', () => {
@@ -126,8 +130,7 @@ describe('ActionPanelBuilder', () => {
 
     // Metrics context (verbosity label)
     const ctxBlock = payload.blocks.find(
-      (block) => block.type === 'context'
-        && block.elements?.some((el: any) => /detail/.test(String(el?.text || '')))
+      (block) => block.type === 'context' && block.elements?.some((el: any) => /detail/.test(String(el?.text || ''))),
     );
     expect(ctxBlock).toBeDefined();
   });
@@ -139,16 +142,12 @@ describe('ActionPanelBuilder', () => {
       sessionKey: 'session-5',
       workflow: 'default',
       waitingForChoice: true,
-      choiceBlocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } },
-      ],
+      choiceBlocks: [{ type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } }],
       contextRemainingPercent: 73,
     });
 
     // Choice blocks are rendered in the panel
-    const choiceSection = payload.blocks.find(
-      (b) => b.type === 'section' && b.text?.text === '❓ *질문*'
-    );
+    const choiceSection = payload.blocks.find((b) => b.type === 'section' && b.text?.text === '❓ *질문*');
     expect(choiceSection).toBeDefined();
 
     // Workflow buttons are hidden (only close button remains)
@@ -195,8 +194,7 @@ describe('ActionPanelBuilder', () => {
 
     // Footer context with timestamp and link
     const footerCtx = payload.blocks.find(
-      (b) => b.type === 'context'
-        && b.elements?.some((el: any) => /종료/.test(String(el?.text || '')))
+      (b) => b.type === 'context' && b.elements?.some((el: any) => /종료/.test(String(el?.text || ''))),
     );
     expect(footerCtx).toBeDefined();
     const footerTexts = footerCtx.elements.map((el: any) => String(el.text)).join(' ');
@@ -269,9 +267,7 @@ describe('ActionPanelBuilder', () => {
       hasActiveRequest: true,
     });
     const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const stopButton = actionBlocks
-      .flatMap((b: any) => b.elements)
-      .find((el: any) => el.action_id === 'panel_stop');
+    const stopButton = actionBlocks.flatMap((b: any) => b.elements).find((el: any) => el.action_id === 'panel_stop');
 
     expect(stopButton).toBeDefined();
     expect(stopButton.text.text).toBe('⏸ 중지');

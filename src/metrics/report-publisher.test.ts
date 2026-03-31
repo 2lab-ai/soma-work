@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportPublisher } from './report-publisher';
 
 // Contract tests — Scenario 5: ReportPublisher
@@ -18,11 +18,7 @@ describe('ReportPublisher', () => {
     const blocks = [{ type: 'header', text: { type: 'plain_text', text: 'Test' } }];
     await publisher.publish('C123', blocks, 'fallback text');
 
-    expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-      'C123',
-      'fallback text',
-      expect.objectContaining({ blocks })
-    );
+    expect(mockSlackApi.postMessage).toHaveBeenCalledWith('C123', 'fallback text', expect.objectContaining({ blocks }));
   });
 
   // Trace: Scenario 5, Section 5 — skips when no channel configured

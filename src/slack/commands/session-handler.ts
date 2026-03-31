@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser } from '../command-parser';
 import { Logger } from '../../logger';
-import { userSettingsStore, THEME_NAMES, type SessionTheme } from '../../user-settings-store';
+import { type SessionTheme, THEME_NAMES, userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles session commands (sessions/all_sessions/terminate)
@@ -12,9 +12,11 @@ export class SessionHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
 
   canHandle(text: string): boolean {
-    return CommandParser.isSessionsCommand(text) ||
-           CommandParser.isAllSessionsCommand(text) ||
-           CommandParser.parseTerminateCommand(text) !== null;
+    return (
+      CommandParser.isSessionsCommand(text) ||
+      CommandParser.isAllSessionsCommand(text) ||
+      CommandParser.parseTerminateCommand(text) !== null
+    );
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
@@ -27,7 +29,7 @@ export class SessionHandler implements CommandHandler {
         // Query: show current theme
         const current = userSettingsStore.getUserSessionTheme(user);
         const themeList = Object.entries(THEME_NAMES)
-          .map(([k, v]) => k === current ? `*\`${k}\` ${v}* ← 현재` : `\`${k}\` ${v}`)
+          .map(([k, v]) => (k === current ? `*\`${k}\` ${v}* ← 현재` : `\`${k}\` ${v}`))
           .join('\n');
         await say({
           text: `🎨 *현재 테마: ${current} (${THEME_NAMES[current]})*\n\n${themeList}\n\n변경: \`theme set <A-L>\` · 초기화: \`theme set default\``,
@@ -67,10 +69,9 @@ export class SessionHandler implements CommandHandler {
       const { isPublic } = CommandParser.parseSessionsCommand(text);
       const isDm = channel.startsWith('D');
 
-      const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
-        user,
-        { showControls: !isPublic }
-      );
+      const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(user, {
+        showControls: !isPublic,
+      });
 
       if (isPublic || isDm) {
         // Public: channel-visible by design; DM: ephemeral unreliable, use say() directly
@@ -82,13 +83,7 @@ export class SessionHandler implements CommandHandler {
       } else {
         // Channel: ephemeral (user-only) with fallback
         try {
-          await this.deps.slackApi.postEphemeral(
-            channel,
-            user,
-            msgText,
-            threadTs,
-            blocks
-          );
+          await this.deps.slackApi.postEphemeral(channel, user, msgText, threadTs, blocks);
         } catch (error) {
           this.logger.warn('postEphemeral failed, falling back to regular message', error);
           await say({

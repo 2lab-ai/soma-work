@@ -1,5 +1,5 @@
-import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
+import type { SlackApiHelper } from './slack-api-helper';
 
 export type StatusType = 'thinking' | 'working' | 'waiting' | 'completed' | 'error' | 'cancelled';
 
@@ -41,7 +41,7 @@ export class StatusReporter {
     threadTs: string,
     sessionKey: string,
     initialStatus: StatusType = 'thinking',
-    tag: string = ''
+    tag: string = '',
   ): Promise<string | undefined> {
     try {
       const config = STATUS_CONFIG[initialStatus];
@@ -76,11 +76,7 @@ export class StatusReporter {
 
     try {
       const config = STATUS_CONFIG[status];
-      await this.slackApi.updateMessage(
-        statusMessage.channel,
-        statusMessage.ts,
-        config.text
-      );
+      await this.slackApi.updateMessage(statusMessage.channel, statusMessage.ts, config.text);
       this.logger.debug('Updated status message', { sessionKey, status });
     } catch (error) {
       this.logger.error('Failed to update status message', { sessionKey, status, error });
@@ -91,12 +87,7 @@ export class StatusReporter {
    * Update status message using explicit channel and ts (for callback contexts)
    * @param tag Optional verbose tag prefix
    */
-  async updateStatusDirect(
-    channel: string,
-    ts: string,
-    status: StatusType,
-    tag: string = ''
-  ): Promise<void> {
+  async updateStatusDirect(channel: string, ts: string, status: StatusType, tag: string = ''): Promise<void> {
     try {
       const config = STATUS_CONFIG[status];
       await this.slackApi.updateMessage(channel, ts, tag + config.text);

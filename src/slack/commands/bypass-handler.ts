@@ -1,6 +1,6 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles bypass permission commands

@@ -1,16 +1,16 @@
-import { App } from '@slack/bolt';
-import { SlackApiHelper } from './slack-api-helper';
-import { SessionUiManager } from './session-manager';
-import { ActionHandlers, MessageHandler, MessageEvent, SayFn } from './action-handlers';
-import { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
+import type { App } from '@slack/bolt';
+import { registerChannel, unregisterChannel } from '../channel-registry';
+import type { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
-import { registerChannel, unregisterChannel } from '../channel-registry';
-import { ConversationSession } from '../types';
-import { SlashCommandAdapter } from './slash-command-adapter';
-import { CommandRouter } from './commands/command-router';
+import type { ConversationSession } from '../types';
+import type { ActionHandlers, MessageEvent, MessageHandler, SayFn } from './action-handlers';
 import { CommandParser } from './command-parser';
-import { CommandDependencies } from './commands/types';
+import { CommandRouter } from './commands/command-router';
+import type { CommandDependencies } from './commands/types';
+import type { SessionUiManager } from './session-manager';
+import type { SlackApiHelper } from './slack-api-helper';
+import { SlashCommandAdapter } from './slash-command-adapter';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -31,7 +31,7 @@ export class EventRouter {
   constructor(
     private app: App,
     private deps: EventRouterDeps,
-    private messageHandler: MessageHandler
+    private messageHandler: MessageHandler,
   ) {
     if (deps.commandDeps) {
       this.commandRouter = new CommandRouter(deps.commandDeps);
@@ -81,7 +81,7 @@ export class EventRouter {
         user: event.user,
         thread_ts: event.thread_ts,
         text: event.text?.substring(0, 50),
-        hasFiles: !!((event as any).files?.length),
+        hasFiles: !!(event as any).files?.length,
       });
 
       // Dedup guard: if message has files, the file_share handler is authoritative.
@@ -115,15 +115,13 @@ export class EventRouter {
       } catch (err) {
         this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
       }
-      const text = botId
-        ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim()
-        : event.text.trim(); // fallback: preserve all mentions if botId unavailable
+      const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
       await this.messageHandler(
         {
           ...event,
           text,
         } as MessageEvent,
-        say
+        say,
       );
     });
 
@@ -148,7 +146,6 @@ export class EventRouter {
         hasText: !!messageEvent.text,
       });
 
-      
       // 파일 업로드 처리
       if (event.subtype === 'file_share' && messageEvent.files) {
         await this.handleFileUpload(messageEvent, say);
@@ -164,9 +161,7 @@ export class EventRouter {
 
   // Commands that require thread/session context — not available via slash commands
   // These need a real thread_ts to find or create sessions.
-  private static readonly SESSION_DEPENDENT_COMMANDS = [
-    'new', 'close', 'renew', 'context', 'restore', 'link',
-  ];
+  private static readonly SESSION_DEPENDENT_COMMANDS = ['new', 'close', 'renew', 'context', 'restore', 'link'];
 
   /**
    * Slash command 핸들러 설정
@@ -258,10 +253,9 @@ export class EventRouter {
       });
 
       try {
-        const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(
-          command.user_id,
-          { showControls: true }
-        );
+        const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(command.user_id, {
+          showControls: true,
+        });
         await respond({
           text,
           blocks,
@@ -517,7 +511,7 @@ export class EventRouter {
     channel: string,
     threadTs: string,
     session: ConversationSession,
-    say: SayFn
+    say: SayFn,
   ): Promise<void> {
     try {
       const title = session.title || 'Untitled';
@@ -549,10 +543,13 @@ export class EventRouter {
    * 주기적 세션 정리 설정
    */
   private setupSessionCleanup(): void {
-    this.cleanupIntervalId = setInterval(async () => {
-      this.logger.debug('Running session cleanup');
-      await this.deps.claudeHandler.cleanupInactiveSessions();
-    }, 5 * 60 * 1000); // 5분마다
+    this.cleanupIntervalId = setInterval(
+      async () => {
+        this.logger.debug('Running session cleanup');
+        await this.deps.claudeHandler.cleanupInactiveSessions();
+      },
+      5 * 60 * 1000,
+    ); // 5분마다
   }
 
   /**

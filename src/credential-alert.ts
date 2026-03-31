@@ -1,7 +1,7 @@
 import { WebClient } from '@slack/web-api';
 import { config } from './config';
-import { Logger } from './logger';
 import { getCredentialStatus, isCredentialManagerEnabled } from './credentials-manager';
+import { Logger } from './logger';
 
 const logger = new Logger('CredentialAlert');
 
@@ -59,9 +59,7 @@ export async function sendCredentialAlert(error?: string): Promise<void> {
         limit: 1000,
       });
 
-      const channel = result.channels?.find(
-        (ch) => ch.name === channelNameWithoutHash
-      );
+      const channel = result.channels?.find((ch) => ch.name === channelNameWithoutHash);
 
       if (channel?.id) {
         channelId = channel.id;
@@ -98,7 +96,7 @@ function buildAlertMessage(
     hasClaudeAiOauth: boolean;
     autoRestoreEnabled: boolean;
   },
-  error?: string
+  error?: string,
 ): string {
   const lines: string[] = [
     '🚨 *Claude Credential Alert*',
@@ -123,7 +121,7 @@ function buildAlertMessage(
     '2. Or enable auto-restore: Set `AUTOMATIC_RESTORE_CREDENTIAL=1` environment variable',
     '3. Ensure `~/.claude/credentials.json` backup file exists',
     '',
-    '_This bot requires valid Claude credentials to function._'
+    '_This bot requires valid Claude credentials to function._',
   );
 
   return lines.join('\n');

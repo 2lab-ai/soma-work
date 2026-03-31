@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { V1QueryAdapter } from '../v1-query-adapter.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContinuationHandler } from '../agent-session-types.js';
 import { TurnResultCollector } from '../turn-result-collector.js';
+import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 // Trace: Scenario 2 — V1QueryAdapter.startWithContinuation()
 
@@ -75,9 +75,7 @@ describe('V1QueryAdapter.startWithContinuation', () => {
     mockExecutor = {
       execute: vi.fn().mockImplementation(() => {
         callCount++;
-        const collector = createCollectorWithContinuation(
-          callCount < 3 ? { prompt: `Turn ${callCount + 1}` } : null,
-        );
+        const collector = createCollectorWithContinuation(callCount < 3 ? { prompt: `Turn ${callCount + 1}` } : null);
         return Promise.resolve({
           success: true,
           messageCount: 1,
@@ -111,9 +109,8 @@ describe('V1QueryAdapter.startWithContinuation', () => {
     mockExecutor = {
       execute: vi.fn().mockImplementation(() => {
         callCount++;
-        const continuation = callCount === 1
-          ? { prompt: 'after reset', resetSession: true, dispatchText: 'dispatch' }
-          : null;
+        const continuation =
+          callCount === 1 ? { prompt: 'after reset', resetSession: true, dispatchText: 'dispatch' } : null;
         const collector = createCollectorWithContinuation(continuation);
         return Promise.resolve({
           success: true,
@@ -157,9 +154,7 @@ describe('V1QueryAdapter.startWithContinuation', () => {
     mockExecutor = {
       execute: vi.fn().mockImplementation((params: any) => {
         callCount++;
-        const continuation = callCount === 1
-          ? { prompt: 'continue' }
-          : null;
+        const continuation = callCount === 1 ? { prompt: 'continue' } : null;
         const collector = createCollectorWithContinuation(continuation);
         return Promise.resolve({
           success: true,
@@ -227,9 +222,7 @@ describe('V1QueryAdapter.startWithContinuation', () => {
       turnRunner: mockRunner,
     });
 
-    await expect(adapter.startWithContinuation('Start', handler)).rejects.toThrow(
-      'Session lost after reset',
-    );
+    await expect(adapter.startWithContinuation('Start', handler)).rejects.toThrow('Session lost after reset');
   });
 
   // TurnRunner integration: begin/finish called per turn

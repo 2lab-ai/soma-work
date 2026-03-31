@@ -1,7 +1,7 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── S2, S3, S5: McpConfigBuilder integration with tool permissions ──
 
@@ -27,9 +27,9 @@ vi.mock('./admin-utils', () => ({
   resetAdminUsersCache: vi.fn(),
 }));
 
-import { McpConfigBuilder } from './mcp-config-builder';
 import { isAdminUser } from './admin-utils';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
+import { McpConfigBuilder } from './mcp-config-builder';
 
 describe('McpConfigBuilder tool permission integration', () => {
   function createMockMcpManager() {
@@ -41,17 +41,20 @@ describe('McpConfigBuilder tool permission integration', () => {
 
   beforeEach(() => {
     // Write config with permission section
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
-      'server-tools': {
-        permission: {
-          db_query: 'write',
-          logs: 'read',
-          list: 'read',
-          list_service: 'read',
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          permission: {
+            db_query: 'write',
+            logs: 'read',
+            list: 'read',
+            list_service: 'read',
+          },
+          dev2: { ssh: { host: 'example.com' } },
         },
-        dev2: { ssh: { host: 'example.com' } },
-      },
-    }));
+      }),
+    );
   });
 
   afterEach(() => {
@@ -75,7 +78,7 @@ describe('McpConfigBuilder tool permission integration', () => {
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_REGULAR' });
 
     // Non-admin without grant should NOT have server-tools in allowedTools
-    const serverToolsAllowed = config.allowedTools?.some(t => t.startsWith('mcp__server-tools'));
+    const serverToolsAllowed = config.allowedTools?.some((t) => t.startsWith('mcp__server-tools'));
     expect(serverToolsAllowed).toBe(false);
   });
 
@@ -101,13 +104,16 @@ describe('McpConfigBuilder tool permission integration', () => {
     // Write a read grant to the grants file (simulating approval)
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_READ_USER': {
-        'server-tools': {
-          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_READ_USER: {
+          'server-tools': {
+            read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_READ_USER' });
@@ -126,13 +132,16 @@ describe('McpConfigBuilder tool permission integration', () => {
   it('writeGrantAllowsAllTools', async () => {
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_WRITE_USER': {
-        'server-tools': {
-          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_WRITE_USER: {
+          'server-tools': {
+            write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_WRITE_USER' });
@@ -161,27 +170,33 @@ describe('Generic permission gating', () => {
 
   it('gates multiple MCP servers independently', async () => {
     // Config with TWO permission-gated servers
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
-      'server-tools': {
-        permission: { db_query: 'write', logs: 'read' },
-        dev2: { ssh: { host: 'example.com' } },
-      },
-      'database-mcp': {
-        permission: { execute: 'write', query: 'read' },
-        conn: { host: 'db.example.com' },
-      },
-    }));
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          permission: { db_query: 'write', logs: 'read' },
+          dev2: { ssh: { host: 'example.com' } },
+        },
+        'database-mcp': {
+          permission: { execute: 'write', query: 'read' },
+          conn: { host: 'db.example.com' },
+        },
+      }),
+    );
 
     // User has read grant on server-tools only
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_MULTI_USER': {
-        'server-tools': {
-          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_MULTI_USER: {
+          'server-tools': {
+            read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_MULTI_USER' });
@@ -191,21 +206,24 @@ describe('Generic permission gating', () => {
     expect(config.allowedTools).not.toContain('mcp__server-tools__db_query');
 
     // database-mcp: no grant → entirely blocked
-    const dbMcpAllowed = config.allowedTools?.some(t => t.startsWith('mcp__database-mcp'));
+    const dbMcpAllowed = config.allowedTools?.some((t) => t.startsWith('mcp__database-mcp'));
     expect(dbMcpAllowed).toBe(false);
   });
 
   it('admin bypasses all gated servers', async () => {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
-      'server-tools': {
-        permission: { db_query: 'write', logs: 'read' },
-        dev2: { ssh: { host: 'example.com' } },
-      },
-      'database-mcp': {
-        permission: { execute: 'write', query: 'read' },
-        conn: { host: 'db.example.com' },
-      },
-    }));
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          permission: { db_query: 'write', logs: 'read' },
+          dev2: { ssh: { host: 'example.com' } },
+        },
+        'database-mcp': {
+          permission: { execute: 'write', query: 'read' },
+          conn: { host: 'db.example.com' },
+        },
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_ADMIN' });
@@ -216,26 +234,32 @@ describe('Generic permission gating', () => {
   });
 
   it('write grant on second server allows all its tools', async () => {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
-      'server-tools': {
-        permission: { db_query: 'write', logs: 'read' },
-        dev2: { ssh: { host: 'example.com' } },
-      },
-      'database-mcp': {
-        permission: { execute: 'write', query: 'read' },
-        conn: { host: 'db.example.com' },
-      },
-    }));
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          permission: { db_query: 'write', logs: 'read' },
+          dev2: { ssh: { host: 'example.com' } },
+        },
+        'database-mcp': {
+          permission: { execute: 'write', query: 'read' },
+          conn: { host: 'db.example.com' },
+        },
+      }),
+    );
 
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_DB_WRITER': {
-        'database-mcp': {
-          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_DB_WRITER: {
+          'database-mcp': {
+            write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_DB_WRITER' });
@@ -245,17 +269,20 @@ describe('Generic permission gating', () => {
     expect(config.allowedTools).toContain('mcp__database-mcp__query');
 
     // server-tools: no grant → blocked
-    const serverToolsAllowed = config.allowedTools?.some(t => t.startsWith('mcp__server-tools'));
+    const serverToolsAllowed = config.allowedTools?.some((t) => t.startsWith('mcp__server-tools'));
     expect(serverToolsAllowed).toBe(false);
   });
 
   it('no permission config → server-tools allowed with blanket prefix (backward compat)', async () => {
     // Config WITHOUT permission section
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
-      'server-tools': {
-        dev2: { ssh: { host: 'example.com' } },
-      },
-    }));
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        'server-tools': {
+          dev2: { ssh: { host: 'example.com' } },
+        },
+      }),
+    );
 
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C1', user: 'U_REGULAR' });
@@ -277,20 +304,20 @@ describe('PreToolUse permission hook', () => {
   });
 });
 
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
 // ── checkMcpToolPermission logic tests (Layer 2 runtime enforcement) ──
 // Since checkMcpToolPermission is private, we test the same logic via
 // the exported resolveGatedTool + getRequiredLevel + levelSatisfies chain
 // plus mcpToolGrantStore for grant lookups.
 import {
-  resolveGatedTool,
+  getPermissionGatedServers,
   getRequiredLevel,
   levelSatisfies,
-  getPermissionGatedServers,
   loadMcpToolPermissions,
   type McpToolPermissionConfig,
   type PermissionLevel,
+  resolveGatedTool,
 } from './mcp-tool-permission-config';
-import { mcpToolGrantStore } from './mcp-tool-grant-store';
 
 /**
  * Reproduces the exact logic of ClaudeHandler.checkMcpToolPermission (claude-handler.ts ~line 732).
@@ -348,12 +375,7 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
 
   it('denies unlisted tool on gated server (deny-by-default)', () => {
     // Tool exists on gated server but is NOT in permission config
-    const result = checkMcpToolPermission(
-      'mcp__server-tools__unknown_tool',
-      'U_REGULAR',
-      permConfig,
-      gatedServerNames,
-    );
+    const result = checkMcpToolPermission('mcp__server-tools__unknown_tool', 'U_REGULAR', permConfig, gatedServerNames);
     expect(result).not.toBeNull();
     expect(result).toContain('not listed in permission config');
     expect(result).toContain('Access denied by default');
@@ -361,12 +383,7 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
 
   it('denies tool on gated server when user has no grant', () => {
     // No grants on disk — user should be denied
-    const result = checkMcpToolPermission(
-      'mcp__server-tools__logs',
-      'U_NO_GRANT',
-      permConfig,
-      gatedServerNames,
-    );
+    const result = checkMcpToolPermission('mcp__server-tools__logs', 'U_NO_GRANT', permConfig, gatedServerNames);
     expect(result).not.toBeNull();
     expect(result).toContain('No active grant');
     expect(result).toContain('Required: read');
@@ -375,13 +392,16 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
   it('denies tool when user has read grant but tool requires write', () => {
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_READ_ONLY': {
-        'server-tools': {
-          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_READ_ONLY: {
+          'server-tools': {
+            read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const result = checkMcpToolPermission(
       'mcp__server-tools__db_query', // requires write
@@ -398,13 +418,16 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
   it('allows tool when user has write grant and tool requires write', () => {
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_WRITER': {
-        'server-tools': {
-          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_WRITER: {
+          'server-tools': {
+            write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const result = checkMcpToolPermission(
       'mcp__server-tools__db_query', // requires write
@@ -418,13 +441,16 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
   it('allows tool when user has write grant and tool requires read', () => {
     const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
-    fs.writeFileSync(grantFile, JSON.stringify({
-      'U_WRITER': {
-        'server-tools': {
-          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+    fs.writeFileSync(
+      grantFile,
+      JSON.stringify({
+        U_WRITER: {
+          'server-tools': {
+            write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+          },
         },
-      },
-    }));
+      }),
+    );
 
     const result = checkMcpToolPermission(
       'mcp__server-tools__logs', // requires read
@@ -446,12 +472,7 @@ describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
   });
 
   it('allows non-mcp tool names (returns null)', () => {
-    const result = checkMcpToolPermission(
-      'Bash',
-      'U_REGULAR',
-      permConfig,
-      gatedServerNames,
-    );
+    const result = checkMcpToolPermission('Bash', 'U_REGULAR', permConfig, gatedServerNames);
     expect(result).toBeNull();
   });
 });

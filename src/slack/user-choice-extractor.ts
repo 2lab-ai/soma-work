@@ -1,4 +1,4 @@
-import { UserChoice, UserChoices, UserChoiceQuestion } from '../types';
+import type { UserChoice, UserChoiceQuestion, UserChoices } from '../types';
 
 export interface ExtractedChoice {
   choice: UserChoice | null;
@@ -15,8 +15,8 @@ export class UserChoiceExtractor {
    * Supports both ```json blocks and raw JSON objects
    */
   static extractUserChoice(text: string): ExtractedChoice {
-    let choice: UserChoice | null = null;
-    let choices: UserChoices | null = null;
+    const choice: UserChoice | null = null;
+    const choices: UserChoices | null = null;
     let textWithoutChoice = text;
 
     // Try to find JSON in code blocks first
@@ -24,7 +24,7 @@ export class UserChoiceExtractor {
     let match;
 
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const result = this.parseAndNormalizeChoice(match[1].trim());
+      const result = UserChoiceExtractor.parseAndNormalizeChoice(match[1].trim());
       if (result.choice || result.choices) {
         textWithoutChoice = text.replace(match[0], '').trim();
         return { ...result, textWithoutChoice };
@@ -36,9 +36,9 @@ export class UserChoiceExtractor {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = this.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = UserChoiceExtractor.extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
-        const result = this.parseAndNormalizeChoice(jsonStr);
+        const result = UserChoiceExtractor.parseAndNormalizeChoice(jsonStr);
         if (result.choice || result.choices) {
           textWithoutChoice = text.substring(0, rawMatch.index).trim();
           return {
@@ -125,8 +125,7 @@ export class UserChoiceExtractor {
       }
 
       // Format 3: UserChoiceGroup (from system.prompt)
-      if (parsed.question && Array.isArray(parsed.choices) &&
-          (!parsed.type || parsed.type === 'user_choice_group')) {
+      if (parsed.question && Array.isArray(parsed.choices) && (!parsed.type || parsed.type === 'user_choice_group')) {
         const firstChoice = parsed.choices[0];
         if (firstChoice && (firstChoice.type === 'user_choice' || firstChoice.options || firstChoice.choices)) {
           const questions: UserChoiceQuestion[] = parsed.choices.map((c: any, idx: number) => ({

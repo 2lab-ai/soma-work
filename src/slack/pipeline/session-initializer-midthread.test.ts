@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mocks MUST be hoisted - define factories inline
 vi.mock('../../user-settings-store', () => ({
@@ -32,7 +32,12 @@ vi.mock('../../user-settings-store', () => ({
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
+  AVAILABLE_MODELS: [
+    'claude-opus-4-6',
+    'claude-sonnet-4-5-20250929',
+    'claude-opus-4-5-20251101',
+    'claude-haiku-4-5-20251001',
+  ],
   DEFAULT_MODEL: 'claude-opus-4-6',
 }));
 
@@ -60,8 +65,8 @@ vi.mock('../../dispatch-service', () => ({
   }),
 }));
 
-import { SessionInitializer } from './session-initializer';
 import { userSettingsStore } from '../../user-settings-store';
+import { SessionInitializer } from './session-initializer';
 
 let sessionInitializer: SessionInitializer;
 let mockClaudeHandler: any;
@@ -207,11 +212,11 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const originalThreadMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === '1711234567.000100'
+      (call: any[]) => call[2]?.threadTs === '1711234567.000100',
     );
 
     const hasPermalinkMessage = originalThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && call[1].includes(newThreadPermalink)
+      (call: any[]) => typeof call[1] === 'string' && call[1].includes(newThreadPermalink),
     );
 
     expect(hasPermalinkMessage).toBe(true);
@@ -230,11 +235,11 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const originalThreadMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === '1711234567.000100'
+      (call: any[]) => call[2]?.threadTs === '1711234567.000100',
     );
 
     const hasRetentionMessage = originalThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && call[1].includes('📋')
+      (call: any[]) => typeof call[1] === 'string' && call[1].includes('📋'),
     );
 
     expect(hasRetentionMessage).toBe(true);
@@ -252,9 +257,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
       text: '@zhugeliang 여기 내용 정리해줘',
     };
 
-    await expect(
-      sessionInitializer.initialize(event as any, '/test/dir')
-    ).resolves.toBeDefined();
+    await expect(sessionInitializer.initialize(event as any, '/test/dir')).resolves.toBeDefined();
 
     expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
   });
@@ -296,10 +299,7 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === 'thread123' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('📋')
+      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && call[1].includes('📋'),
     );
 
     expect(retentionMessages).toHaveLength(0);
@@ -436,9 +436,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
     // Retention message was posted to original thread
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('📋')
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
     );
     expect(retentionMessages).toHaveLength(1);
   });
@@ -460,9 +458,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
     // Should still post retention (without permalink)
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('📋')
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
     );
     expect(retentionMessages).toHaveLength(1);
 
@@ -499,10 +495,7 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
 
     // Redirect message "🧵" is posted to original thread
     const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === 'thread123' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('🧵')
+      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && call[1].includes('🧵'),
     );
     expect(redirectMessages.length).toBeGreaterThanOrEqual(1);
   });
@@ -520,10 +513,7 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === 'thread123' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('📋')
+      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && call[1].includes('📋'),
     );
     expect(retentionMessages).toHaveLength(0);
   });
@@ -570,9 +560,7 @@ describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        call[1].includes('📋')
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
     );
 
     expect(retentionMessages).toHaveLength(1);

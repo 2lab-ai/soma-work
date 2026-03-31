@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { SummaryService, SUMMARY_PROMPT, type SummarySessionInfo, type ForkExecutor } from './summary-service.js';
+import { describe, expect, it, vi } from 'vitest';
+import { type ForkExecutor, SUMMARY_PROMPT, SummaryService, type SummarySessionInfo } from './summary-service.js';
 
 // Trace: docs/turn-summary-lifecycle/trace.md
 
@@ -67,7 +67,13 @@ describe('SummaryService', () => {
       const session = makeSession({ model: 'claude-sonnet-4-20250514' });
       await service.execute(session);
 
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-sonnet-4-20250514', undefined, undefined, undefined);
+      expect(mockFork).toHaveBeenCalledWith(
+        expect.any(String),
+        'claude-sonnet-4-20250514',
+        undefined,
+        undefined,
+        undefined,
+      );
     });
 
     it('execute() passes sessionId and workingDirectory to forkExecutor for context-aware summary', async () => {
@@ -82,7 +88,13 @@ describe('SummaryService', () => {
       const result = await service.execute(session);
 
       expect(result).toBe('context-aware summary');
-      expect(mockFork).toHaveBeenCalledWith(expect.any(String), 'claude-opus-4-6', 'sdk-session-abc123', '/tmp/workdir', undefined);
+      expect(mockFork).toHaveBeenCalledWith(
+        expect.any(String),
+        'claude-opus-4-6',
+        'sdk-session-abc123',
+        '/tmp/workdir',
+        undefined,
+      );
     });
 
     it('execute() passes abortSignal to forkExecutor', async () => {

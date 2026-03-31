@@ -36,7 +36,10 @@ export const config = {
     installationId: process.env.GITHUB_INSTALLATION_ID || '',
     token: process.env.GITHUB_TOKEN || '',
   },
-  adminUsers: (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean),
+  adminUsers: (process.env.ADMIN_USERS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
   debug: process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development',
   conversation: {
     summaryModel: process.env.SUMMARY_MODEL || 'claude-haiku-4-20250414',
@@ -101,7 +104,9 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
   if (!slackBotToken) {
     errors.push('❌ SLACK_BOT_TOKEN: Missing');
   } else if (!slackBotToken.startsWith('xoxb-')) {
-    errors.push(`❌ SLACK_BOT_TOKEN: Invalid format (should start with "xoxb-", got "${slackBotToken.substring(0, 10)}...")`);
+    errors.push(
+      `❌ SLACK_BOT_TOKEN: Invalid format (should start with "xoxb-", got "${slackBotToken.substring(0, 10)}...")`,
+    );
   } else {
     logger.info('SLACK_BOT_TOKEN: Format OK (xoxb-...)');
   }
@@ -110,7 +115,9 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
   if (!slackAppToken) {
     errors.push('❌ SLACK_APP_TOKEN: Missing');
   } else if (!slackAppToken.startsWith('xapp-')) {
-    errors.push(`❌ SLACK_APP_TOKEN: Invalid format (should start with "xapp-", got "${slackAppToken.substring(0, 10)}...")`);
+    errors.push(
+      `❌ SLACK_APP_TOKEN: Invalid format (should start with "xapp-", got "${slackAppToken.substring(0, 10)}...")`,
+    );
   } else {
     logger.info('SLACK_APP_TOKEN: Format OK (xapp-...)');
   }
@@ -148,7 +155,9 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
   if (!anthropicKey) {
     warnings.push('⚠️ ANTHROPIC_API_KEY: Not set (using Claude subscription)');
   } else if (!anthropicKey.startsWith('sk-ant-')) {
-    warnings.push(`⚠️ ANTHROPIC_API_KEY: Unusual format (expected "sk-ant-...", got "${anthropicKey.substring(0, 10)}...")`);
+    warnings.push(
+      `⚠️ ANTHROPIC_API_KEY: Unusual format (expected "sk-ant-...", got "${anthropicKey.substring(0, 10)}...")`,
+    );
   } else {
     logger.info('ANTHROPIC_API_KEY: Format OK (sk-ant-...)');
   }

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { ChannelRouteActionHandler, buildChannelRouteBlocks } from './channel-route-action-handler';
+import { describe, expect, it, vi } from 'vitest';
+import { buildChannelRouteBlocks, ChannelRouteActionHandler } from './channel-route-action-handler';
 
 describe('buildChannelRouteBlocks', () => {
   it('hides stay-in-channel button by default', () => {
@@ -14,7 +14,7 @@ describe('buildChannelRouteBlocks', () => {
       userId: 'U123',
     });
 
-    const actionsBlock = blocks.find(block => block.type === 'actions');
+    const actionsBlock = blocks.find((block) => block.type === 'actions');
     expect(actionsBlock).toBeDefined();
     const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
     expect(actionIds).toContain('channel_route_move');
@@ -35,7 +35,7 @@ describe('buildChannelRouteBlocks', () => {
       allowStay: true,
     });
 
-    const actionsBlock = blocks.find(block => block.type === 'actions');
+    const actionsBlock = blocks.find((block) => block.type === 'actions');
     const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
     expect(actionIds).toContain('channel_route_stay');
   });
@@ -54,7 +54,7 @@ describe('buildChannelRouteBlocks', () => {
       allowMove: false,
     });
 
-    const actionsBlock = blocks.find(block => block.type === 'actions');
+    const actionsBlock = blocks.find((block) => block.type === 'actions');
     const actionIds = actionsBlock.elements.map((el: any) => el.action_id);
     expect(actionIds).not.toContain('channel_route_move');
     expect(actionIds).toContain('channel_route_stop');

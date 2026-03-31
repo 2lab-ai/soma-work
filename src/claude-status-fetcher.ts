@@ -111,7 +111,9 @@ export async function fetchClaudeStatus(): Promise<ClaudeStatusInfo | null> {
 
   // Coalesce concurrent requests — during an outage many errors fire at once
   if (inflight) return inflight;
-  inflight = doFetch().finally(() => { inflight = null; });
+  inflight = doFetch().finally(() => {
+    inflight = null;
+  });
   return inflight;
 }
 
@@ -130,7 +132,8 @@ function parseStatusPage(html: string): ClaudeStatusInfo | null {
   try {
     // Extract components: match component-container blocks with status color and name
     // Fix: support extra CSS classes before status-* (e.g., "component-container border-color status-red")
-    const componentRegex = /<div\s+class="component-container[^"]*?(status-\w+)"[^>]*>[\s\S]*?<div\s+class="name">([\s\S]*?)<\/div>[\s\S]*?<\/div>\s*<\/div>/g;
+    const componentRegex =
+      /<div\s+class="component-container[^"]*?(status-\w+)"[^>]*>[\s\S]*?<div\s+class="name">([\s\S]*?)<\/div>[\s\S]*?<\/div>\s*<\/div>/g;
 
     const components: ClaudeStatusInfo['components'] = [];
     let match: RegExpExecArray | null;
@@ -175,11 +178,11 @@ function parseStatusPage(html: string): ClaudeStatusInfo | null {
     // Derive overall status
     // Fix: Bug 4 — unknown components should not default to 'operational'
     let overall: ClaudeStatusInfo['overall'] = 'operational';
-    if (components.some(c => c.status === 'outage')) {
+    if (components.some((c) => c.status === 'outage')) {
       overall = 'outage';
-    } else if (components.some(c => c.status === 'degraded')) {
+    } else if (components.some((c) => c.status === 'degraded')) {
       overall = 'degraded';
-    } else if (components.some(c => c.status === 'unknown')) {
+    } else if (components.some((c) => c.status === 'unknown')) {
       overall = 'unknown';
     }
 
@@ -266,7 +269,7 @@ const SLACK_ERROR_PATTERNS = [
   'missing_scope',
   'token_revoked',
   'no more than 50 items allowed',
-  'an api error occurred:',  // Slack-specific format (trailing colon distinguishes from generic API errors)
+  'an api error occurred:', // Slack-specific format (trailing colon distinguishes from generic API errors)
 ];
 
 const API_ERROR_KEYWORDS = [
@@ -286,17 +289,19 @@ export function isApiLikeError(error: { message?: string }): boolean {
 
   // Exclude Slack API errors first — they contain patterns like "rate_limited"
   // that could false-positive on API keyword matching
-  if (SLACK_ERROR_PATTERNS.some(p => message.includes(p))) {
+  if (SLACK_ERROR_PATTERNS.some((p) => message.includes(p))) {
     return false;
   }
 
   // Check for HTTP status codes (4xx/5xx) in error-related context
   // Fix: Review feedback — avoid false-positives on incidental numbers (port 443, "450ms", etc.)
-  if (/(?:error|status|http|code)[:\s]*[45]\d{2}\b/i.test(message) ||
-      /\b[45]\d{2}\s+(?:error|bad|not|service|internal|gateway|timeout|unavailable|forbidden|unauthorized)/i.test(message)) {
+  if (
+    /(?:error|status|http|code)[:\s]*[45]\d{2}\b/i.test(message) ||
+    /\b[45]\d{2}\s+(?:error|bad|not|service|internal|gateway|timeout|unavailable|forbidden|unauthorized)/i.test(message)
+  ) {
     return true;
   }
 
   // Check for API error keywords
-  return API_ERROR_KEYWORDS.some(keyword => message.includes(keyword));
+  return API_ERROR_KEYWORDS.some((keyword) => message.includes(keyword));
 }

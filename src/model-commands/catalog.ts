@@ -1,10 +1,5 @@
-import {
-  SessionLink,
-  SessionResourceSnapshot,
-  SessionResourceType,
-  SessionResourceUpdateRequest,
-} from '../types';
-import {
+import type { SessionLink, SessionResourceSnapshot, SessionResourceType, SessionResourceUpdateRequest } from '../types';
+import type {
   ContinueSessionParams,
   ModelCommandContext,
   ModelCommandDescriptor,
@@ -198,9 +193,7 @@ export function getDefaultSessionSnapshot(): SessionResourceSnapshot {
   };
 }
 
-export function normalizeSessionSnapshot(
-  snapshot: SessionResourceSnapshot | undefined
-): SessionResourceSnapshot {
+export function normalizeSessionSnapshot(snapshot: SessionResourceSnapshot | undefined): SessionResourceSnapshot {
   if (!snapshot) {
     return getDefaultSessionSnapshot();
   }
@@ -210,9 +203,7 @@ export function normalizeSessionSnapshot(
     prs: (snapshot.prs || []).map((link) => normalizeLink(link, 'pr')),
     docs: (snapshot.docs || []).map((link) => normalizeLink(link, 'doc')),
     active: {
-      issue: snapshot.active?.issue
-        ? normalizeLink(snapshot.active.issue, 'issue')
-        : undefined,
+      issue: snapshot.active?.issue ? normalizeLink(snapshot.active.issue, 'issue') : undefined,
       pr: snapshot.active?.pr ? normalizeLink(snapshot.active.pr, 'pr') : undefined,
       doc: snapshot.active?.doc ? normalizeLink(snapshot.active.doc, 'doc') : undefined,
     },
@@ -259,10 +250,7 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   return commands;
 }
 
-function toRunError(
-  commandId: ModelCommandRunRequest['commandId'],
-  error: ModelCommandError
-): ModelCommandRunResponse {
+function toRunError(commandId: ModelCommandRunRequest['commandId'], error: ModelCommandError): ModelCommandRunResponse {
   return {
     type: 'model_command_result',
     commandId,
@@ -271,10 +259,7 @@ function toRunError(
   };
 }
 
-function updateActiveFromArray(
-  snapshot: SessionResourceSnapshot,
-  resourceType: SessionResourceType
-): void {
+function updateActiveFromArray(snapshot: SessionResourceSnapshot, resourceType: SessionResourceType): void {
   const historyKey = HISTORY_KEY_BY_RESOURCE[resourceType];
   const activeKey = ACTIVE_KEY_BY_RESOURCE[resourceType];
   const links = snapshot[historyKey];
@@ -283,12 +268,9 @@ function updateActiveFromArray(
 
 export function applySessionUpdateToSnapshot(
   snapshot: SessionResourceSnapshot,
-  request: SessionResourceUpdateRequest
+  request: SessionResourceUpdateRequest,
 ): { ok: true; snapshot: SessionResourceSnapshot } | { ok: false; error: ModelCommandError } {
-  if (
-    typeof request.expectedSequence === 'number'
-    && request.expectedSequence !== snapshot.sequence
-  ) {
+  if (typeof request.expectedSequence === 'number' && request.expectedSequence !== snapshot.sequence) {
     return {
       ok: false,
       error: {
@@ -369,7 +351,7 @@ export function applySessionUpdateToSnapshot(
 
 export function runModelCommand(
   request: ModelCommandRunRequest,
-  context: ModelCommandContext
+  context: ModelCommandContext,
 ): ModelCommandRunResponse {
   const session = normalizeSessionSnapshot(context.session);
 
@@ -390,10 +372,7 @@ export function runModelCommand(
     let resultSnapshot = session;
     const operations = request.params.operations ?? [];
     if (operations.length > 0) {
-      const updateResult = applySessionUpdateToSnapshot(
-        session,
-        { ...request.params, operations }
-      );
+      const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
       if (!updateResult.ok) {
         return toRunError('UPDATE_SESSION', updateResult.error);
       }

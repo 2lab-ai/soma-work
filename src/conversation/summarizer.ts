@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { Logger } from '../logger';
 import { config } from '../config';
+import { Logger } from '../logger';
 
 const logger = new Logger('Summarizer');
 
@@ -8,8 +8,8 @@ const logger = new Logger('Summarizer');
  * Summary result from the summarizer
  */
 export interface SummaryResult {
-  title: string;    // 1-line title
-  body: string;     // 3-line summary
+  title: string; // 1-line title
+  body: string; // 3-line summary
 }
 
 // Cache the Anthropic client
@@ -47,9 +47,8 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
 
   // Truncate very long content to save tokens
   const maxContentLength = 8000;
-  const truncatedContent = content.length > maxContentLength
-    ? content.substring(0, maxContentLength) + '\n...[truncated]'
-    : content;
+  const truncatedContent =
+    content.length > maxContentLength ? content.substring(0, maxContentLength) + '\n...[truncated]' : content;
 
   try {
     const model = getSummaryModel();
@@ -68,8 +67,8 @@ ${truncatedContent}`,
     });
 
     const text = response.content
-      .filter(block => block.type === 'text')
-      .map(block => (block as { type: 'text'; text: string }).text)
+      .filter((block) => block.type === 'text')
+      .map((block) => (block as { type: 'text'; text: string }).text)
       .join('');
 
     // Strip markdown code block wrappers (LLMs frequently add them despite instructions)

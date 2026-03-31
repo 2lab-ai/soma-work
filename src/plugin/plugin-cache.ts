@@ -5,8 +5,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { CacheMeta } from './types';
 import { Logger } from '../logger';
+import type { CacheMeta } from './types';
 
 const CACHE_DIR = '.cache';
 

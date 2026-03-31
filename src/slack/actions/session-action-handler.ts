@@ -1,17 +1,17 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { SessionUiManager } from '../session-manager';
-import { ReactionManager } from '../reaction-manager';
-import { RequestCoordinator } from '../request-coordinator';
-import { ThreadHeaderBuilder } from '../thread-header-builder';
+import type { ClaudeHandler } from '../../claude-handler';
+import { Logger } from '../../logger';
+import type { ConversationSession } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import { ActionPanelBuilder } from '../action-panel-builder';
 import { ContextWindowManager } from '../context-window-manager';
-import { ThreadPanel } from '../thread-panel';
-import { ClaudeHandler } from '../../claude-handler';
-import { ConversationSession } from '../../types';
+import type { ReactionManager } from '../reaction-manager';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SessionUiManager } from '../session-manager';
+import type { SlackApiHelper } from '../slack-api-helper';
 import { postSourceThreadSummary } from '../source-thread-summary';
-import { Logger } from '../../logger';
-import { RespondFn } from './types';
-import { userSettingsStore } from '../../user-settings-store';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import type { ThreadPanel } from '../thread-panel';
+import type { RespondFn } from './types';
 
 interface SessionActionContext {
   slackApi: SlackApiHelper;
@@ -67,7 +67,7 @@ export class SessionActionHandler {
 
       // Fire-and-forget: must not block session termination sequence
       postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch((err) =>
-        this.logger.error('Unexpected escape from postSourceThreadSummary', err)
+        this.logger.error('Unexpected escape from postSourceThreadSummary', err),
       );
 
       // Abort active AI request before deleting session
@@ -287,7 +287,7 @@ export class SessionActionHandler {
         await this.ctx.slackApi.postEphemeral(
           channel,
           userId,
-          `✅ 세션이 종료되었습니다: *${session.title || channelName}*`
+          `✅ 세션이 종료되었습니다: *${session.title || channelName}*`,
         );
 
         if (session.threadTs) {
@@ -295,7 +295,7 @@ export class SessionActionHandler {
             await this.ctx.slackApi.postMessage(
               session.channelId,
               `🔒 *세션이 종료되었습니다*\n\n<@${userId}>에 의해 세션이 종료되었습니다. 새로운 대화를 시작하려면 다시 메시지를 보내주세요.`,
-              { threadTs: session.threadTs }
+              { threadTs: session.threadTs },
             );
           } catch (error) {
             this.logger.warn('Failed to notify original thread about session termination', error);
@@ -325,9 +325,7 @@ export class SessionActionHandler {
    */
   private async updateSessionUiAsClosed(session: ConversationSession): Promise<void> {
     const threadTs = session.threadRootTs || session.threadTs;
-    const sessionKey = threadTs
-      ? this.ctx.claudeHandler.getSessionKey(session.channelId, threadTs)
-      : '';
+    const sessionKey = threadTs ? this.ctx.claudeHandler.getSessionKey(session.channelId, threadTs) : '';
 
     if (this.ctx.threadPanel && sessionKey) {
       try {
@@ -352,15 +350,12 @@ export class SessionActionHandler {
           closed: true,
           contextRemainingPercent: this.getContextRemainingPercent(session),
         });
-        const combinedBlocks = [
-          ...(headerPayload.blocks || []),
-          ...panelPayload.blocks,
-        ];
+        const combinedBlocks = [...(headerPayload.blocks || []), ...panelPayload.blocks];
         await this.ctx.slackApi.updateMessage(
           channelId,
           session.actionPanel.messageTs,
           panelPayload.text,
-          combinedBlocks
+          combinedBlocks,
         );
       } catch (error) {
         this.logger.warn('Failed to update action panel as closed', { error });

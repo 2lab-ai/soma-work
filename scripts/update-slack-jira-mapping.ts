@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+
 /**
  * Slack-Jira User Mapping Update Script
  *
@@ -11,10 +12,10 @@
  *   npm run update-mapping
  */
 
+import { config } from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { config } from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,19 +63,17 @@ async function fetchSlackUsers(): Promise<SlackUser[]> {
 
   const response = await fetch('https://slack.com/api/users.list', {
     headers: {
-      'Authorization': `Bearer ${token}`,
+      Authorization: `Bearer ${token}`,
     },
   });
 
-  const data = await response.json() as { ok: boolean; members: SlackUser[]; error?: string };
+  const data = (await response.json()) as { ok: boolean; members: SlackUser[]; error?: string };
 
   if (!data.ok) {
     throw new Error(`Slack API error: ${data.error}`);
   }
 
-  return data.members.filter(
-    (user) => !user.deleted && !user.is_bot && !user.is_app_user && user.id !== 'USLACKBOT'
-  );
+  return data.members.filter((user) => !user.deleted && !user.is_bot && !user.is_app_user && user.id !== 'USLACKBOT');
 }
 
 async function fetchJiraUsers(): Promise<JiraUser[]> {
@@ -84,9 +83,9 @@ async function fetchJiraUsers(): Promise<JiraUser[]> {
     `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}/rest/api/3/users/search?maxResults=1000`,
     {
       headers: {
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
-    }
+    },
   );
 
   if (!response.ok) {
@@ -94,12 +93,15 @@ async function fetchJiraUsers(): Promise<JiraUser[]> {
     return [];
   }
 
-  const data = await response.json() as JiraUser[];
+  const data = (await response.json()) as JiraUser[];
   return data.filter((user) => user.active && user.accountType === 'atlassian');
 }
 
 function normalizeNameForMatching(name: string): string {
-  return name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, '');
 }
 
 function matchUsers(slackUsers: SlackUser[], jiraUsers: JiraUser[]): Mapping {
@@ -135,7 +137,7 @@ function matchUsers(slackUsers: SlackUser[], jiraUsers: JiraUser[]): Mapping {
     const normalizedRealName = normalizeNameForMatching(slackUser.real_name);
     const normalizedName = normalizeNameForMatching(slackUser.name);
 
-    let matchedJiraUser = jiraUserMap.get(normalizedRealName) || jiraUserMap.get(normalizedName);
+    const matchedJiraUser = jiraUserMap.get(normalizedRealName) || jiraUserMap.get(normalizedName);
 
     if (matchedJiraUser) {
       mapping[slackUser.id] = {
@@ -178,9 +180,7 @@ function printMapping(mapping: Mapping): void {
   console.log('|----------|------------|-----------|-----------------|');
 
   for (const [slackId, entry] of Object.entries(mapping)) {
-    console.log(
-      `| ${slackId} | ${entry.slackName || entry.name} | ${entry.name} | ${entry.jiraAccountId} |`
-    );
+    console.log(`| ${slackId} | ${entry.slackName || entry.name} | ${entry.name} | ${entry.jiraAccountId} |`);
   }
 
   console.log(`\nTotal: ${Object.keys(mapping).length} users mapped`);

@@ -10,11 +10,11 @@
  */
 
 import { App } from '@slack/bolt';
-import type { AgentConfig } from './types';
-import { McpManager } from './mcp-manager';
+import { Logger } from './logger';
+import type { McpManager } from './mcp-manager';
 import { PromptBuilder } from './prompt-builder';
 import { SessionRegistry } from './session-registry';
-import { Logger } from './logger';
+import type { AgentConfig } from './types';
 
 export interface AgentInfo {
   name: string;

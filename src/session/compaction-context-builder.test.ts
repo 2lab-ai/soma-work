@@ -1,10 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { ConversationSession, SessionLinks } from '../types';
 import {
   buildCompactionContext,
+  type CompactionSessionSnapshot,
   snapshotFromSession,
-  CompactionSessionSnapshot,
 } from './compaction-context-builder';
-import { ConversationSession, SessionLinks } from '../types';
 
 describe('buildCompactionContext', () => {
   const baseSnapshot: CompactionSessionSnapshot = {
@@ -130,7 +130,17 @@ describe('snapshotFromSession', () => {
       // Fields that should NOT be in snapshot
       sessionId: 'sess-123',
       threadTs: '123.456',
-      usage: { currentInputTokens: 0, currentOutputTokens: 0, currentCacheReadTokens: 0, currentCacheCreateTokens: 0, contextWindow: 200000, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0, lastUpdated: 0 },
+      usage: {
+        currentInputTokens: 0,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+        contextWindow: 200000,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        lastUpdated: 0,
+      },
     } as ConversationSession;
 
     const snapshot = snapshotFromSession(session);

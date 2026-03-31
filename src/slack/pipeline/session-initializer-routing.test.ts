@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
@@ -57,8 +57,8 @@ vi.mock('../../dispatch-service', () => ({
   }),
 }));
 
-import { SessionInitializer } from './session-initializer';
 import * as channelRegistry from '../../channel-registry';
+import { SessionInitializer } from './session-initializer';
 
 describe('SessionInitializer - channel routing advisory', () => {
   let sessionInitializer: SessionInitializer;
@@ -276,13 +276,12 @@ describe('SessionInitializer - channel routing advisory', () => {
 
     const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
-    const headerCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
-      Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments)
+    const headerCall = mockSlackApi.postMessage.mock.calls.find(
+      (call: any[]) => Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments),
     );
     expect(headerCall).toBeDefined();
-    const migratedContextCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
-      call[2]?.threadTs === 'msg123' &&
-      String(call[1] || '').includes('View conversation history')
+    const migratedContextCall = mockSlackApi.postMessage.mock.calls.find(
+      (call: any[]) => call[2]?.threadTs === 'msg123' && String(call[1] || '').includes('View conversation history'),
     );
     expect(migratedContextCall).toBeDefined();
     expect(String(migratedContextCall?.[1] || '')).toContain('PR #1');

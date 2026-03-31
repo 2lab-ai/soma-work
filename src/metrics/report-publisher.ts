@@ -27,11 +27,7 @@ export class ReportPublisher {
    * Publish a formatted report to a Slack channel.
    * Returns the message timestamp if successful.
    */
-  async publish(
-    channelId: string,
-    blocks: any[],
-    text: string,
-  ): Promise<{ ts?: string } | null> {
+  async publish(channelId: string, blocks: any[], text: string): Promise<{ ts?: string } | null> {
     if (!channelId) {
       logger.error('No channel ID configured, skipping report publish');
       return null;

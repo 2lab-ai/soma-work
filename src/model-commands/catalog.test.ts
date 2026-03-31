@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runModelCommand, getDefaultSessionSnapshot } from './catalog';
+import { getDefaultSessionSnapshot, runModelCommand } from './catalog';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
 
 function makeContext(overrides?: Partial<ModelCommandContext>): ModelCommandContext {
@@ -64,10 +64,7 @@ describe('UPDATE_SESSION with title', () => {
 describe('GET_SESSION includes title', () => {
   it('returns title from context', () => {
     const ctx = makeContext({ sessionTitle: 'Existing Title' });
-    const result = runModelCommand(
-      { commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest,
-      ctx,
-    );
+    const result = runModelCommand({ commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest, ctx);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -76,10 +73,7 @@ describe('GET_SESSION includes title', () => {
 
   it('returns null title when context has no title', () => {
     const ctx = makeContext();
-    const result = runModelCommand(
-      { commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest,
-      ctx,
-    );
+    const result = runModelCommand({ commandId: 'GET_SESSION', params: undefined } as ModelCommandRunRequest, ctx);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;

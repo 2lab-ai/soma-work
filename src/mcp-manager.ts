@@ -1,15 +1,15 @@
-import { McpConfigLoader, McpServerFactory, McpInfoFormatter } from './mcp/index';
 import { MCP_CONFIG_FILE } from './env-paths';
-import type { McpServerConfig, McpConfiguration } from './mcp/index';
+import type { McpConfiguration, McpServerConfig } from './mcp/index';
+import { McpConfigLoader, McpInfoFormatter, McpServerFactory } from './mcp/index';
 import type { PluginManager } from './plugin/plugin-manager';
 
-// Re-export types for backward compatibility
-export type { McpServerConfig, McpConfiguration };
 export type {
-  McpStdioServerConfig,
-  McpSSEServerConfig,
   McpHttpServerConfig,
+  McpSSEServerConfig,
+  McpStdioServerConfig,
 } from './mcp/index';
+// Re-export types for backward compatibility
+export type { McpConfiguration, McpServerConfig };
 
 /**
  * McpManager - Facade for MCP server configuration management

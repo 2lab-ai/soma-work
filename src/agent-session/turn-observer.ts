@@ -10,11 +10,7 @@
  * 3. fire-and-forget — observer 메서드는 동기적이며, 실패해도 기존 흐름에 영향 없음
  */
 
-import type {
-  AgentPhase,
-  EndTurnInfo,
-  ModelCommandResult,
-} from './agent-session-types.js';
+import type { AgentPhase, EndTurnInfo, ModelCommandResult } from './agent-session-types.js';
 
 export interface TurnObserver {
   // === 도구 이벤트 ===

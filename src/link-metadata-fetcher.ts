@@ -3,10 +3,10 @@
  * Uses in-memory cache with TTL to minimize API calls.
  */
 
-import { SessionLink } from './types';
 import { config } from './config';
 import { getGitHubAppAuth } from './github-auth';
 import { Logger } from './logger';
+import type { SessionLink } from './types';
 
 const logger = new Logger('LinkMetadataFetcher');
 
@@ -24,14 +24,24 @@ const MAX_TITLE_LENGTH = 40;
 // Status emoji mapping
 const STATUS_EMOJI: Record<string, string> = {
   // Jira statuses
-  'to do': '⬜', 'open': '⬜', 'backlog': '⬜',
-  'in progress': '🔵', 'in development': '🔵',
-  'in review': '🟡', 'review': '🟡',
-  'done': '✅', 'closed': '✅', 'resolved': '✅',
+  'to do': '⬜',
+  open: '⬜',
+  backlog: '⬜',
+  'in progress': '🔵',
+  'in development': '🔵',
+  'in review': '🟡',
+  review: '🟡',
+  done: '✅',
+  closed: '✅',
+  resolved: '✅',
   // GitHub PR statuses
-  'pr:open': '🟢', 'pr:draft': '⚪', 'pr:merged': '🟣', 'pr:closed': '🔴',
+  'pr:open': '🟢',
+  'pr:draft': '⚪',
+  'pr:merged': '🟣',
+  'pr:closed': '🔴',
   // GitHub issue statuses
-  'issue:open': '🟢', 'issue:closed': '✅',
+  'issue:open': '🟢',
+  'issue:closed': '✅',
 };
 
 /**
@@ -116,11 +126,9 @@ export async function fetchBatchLinkMetadata(links: SessionLink[]): Promise<Sess
     links.map(async (link) => {
       const meta = await fetchLinkMetadata(link);
       return { ...link, title: meta.title ?? link.title, status: meta.status ?? link.status };
-    })
+    }),
   );
-  return results.map((r, i) =>
-    r.status === 'fulfilled' ? r.value : { ...links[i] }
-  );
+  return results.map((r, i) => (r.status === 'fulfilled' ? r.value : { ...links[i] }));
 }
 
 /**
@@ -146,7 +154,7 @@ async function fetchGitHubMetadata(link: SessionLink): Promise<{ title?: string;
 
   if (!response.ok) return {};
 
-  const data = await response.json() as {
+  const data = (await response.json()) as {
     title?: string;
     state?: string;
     merged?: boolean;
@@ -187,7 +195,7 @@ async function fetchJiraMetadata(link: SessionLink): Promise<{ title?: string; s
 
   if (!response.ok) return {};
 
-  const data = await response.json() as {
+  const data = (await response.json()) as {
     fields?: {
       summary?: string;
       status?: { name?: string };
@@ -241,7 +249,7 @@ export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransi
 
     if (!response.ok) return [];
 
-    const data = await response.json() as {
+    const data = (await response.json()) as {
       transitions?: Array<{
         id: string;
         name: string;
@@ -249,7 +257,7 @@ export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransi
       }>;
     };
 
-    return (data.transitions || []).map(t => ({
+    return (data.transitions || []).map((t) => ({
       id: t.id,
       name: t.name,
       to: {
@@ -272,8 +280,8 @@ export interface GitHubPRDetails {
   mergeable: boolean | null;
   mergeableState: string;
   draft: boolean;
-  head: string;   // source branch
-  base: string;   // target branch
+  head: string; // source branch
+  base: string; // target branch
 }
 
 /**
@@ -288,20 +296,17 @@ export async function fetchGitHubPRDetails(link: SessionLink): Promise<GitHubPRD
   if (!prInfo) return undefined;
 
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`,
-      {
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
-        },
-      }
-    );
+    const response = await fetch(`https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
+      },
+    });
 
     if (!response.ok) return undefined;
 
-    const data = await response.json() as {
+    const data = (await response.json()) as {
       state?: string;
       merged?: boolean;
       mergeable?: boolean | null;
@@ -345,7 +350,7 @@ export function isPRMergeable(details: GitHubPRDetails): boolean {
  */
 export async function mergeGitHubPR(
   prUrl: string,
-  mergeMethod: 'squash' | 'merge' | 'rebase' = 'squash'
+  mergeMethod: 'squash' | 'merge' | 'rebase' = 'squash',
 ): Promise<{ success: boolean; message: string }> {
   const token = await getGitHubToken();
   if (!token) return { success: false, message: 'GitHub 인증 토큰을 찾을 수 없습니다.' };
@@ -364,12 +369,12 @@ export async function mergeGitHubPR(
     // Fetch PR to get source branch
     const prResponse = await fetch(
       `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}`,
-      { headers }
+      { headers },
     );
     if (!prResponse.ok) {
       return { success: false, message: `PR 조회 실패: ${prResponse.status}` };
     }
-    const prData = await prResponse.json() as { head?: { ref?: string }; title?: string };
+    const prData = (await prResponse.json()) as { head?: { ref?: string }; title?: string };
     const sourceBranch = prData.head?.ref;
 
     // Merge
@@ -379,21 +384,21 @@ export async function mergeGitHubPR(
         method: 'PUT',
         headers,
         body: JSON.stringify({ merge_method: mergeMethod }),
-      }
+      },
     );
 
     if (!mergeResponse.ok) {
-      const errorData = await mergeResponse.json().catch(() => ({})) as { message?: string };
+      const errorData = (await mergeResponse.json().catch(() => ({}))) as { message?: string };
       return { success: false, message: `머지 실패: ${(errorData as any).message || mergeResponse.status}` };
     }
 
     // Delete source branch
     if (sourceBranch) {
       try {
-        await fetch(
-          `https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/git/refs/heads/${sourceBranch}`,
-          { method: 'DELETE', headers }
-        );
+        await fetch(`https://api.github.com/repos/${prInfo.owner}/${prInfo.repo}/git/refs/heads/${sourceBranch}`, {
+          method: 'DELETE',
+          headers,
+        });
       } catch (error) {
         logger.warn('Failed to delete source branch after merge', { sourceBranch, error: (error as Error).message });
       }
@@ -414,7 +419,7 @@ export async function mergeGitHubPR(
  * Evaluates the latest review per user to determine the aggregate state.
  */
 export async function fetchGitHubPRReviewStatus(
-  link: SessionLink
+  link: SessionLink,
 ): Promise<'approved' | 'changes_requested' | 'pending' | undefined> {
   const token = await getGitHubToken();
   if (!token) return undefined;
@@ -431,12 +436,12 @@ export async function fetchGitHubPRReviewStatus(
           Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'Claude-Code-Slack-Bot/1.0.0',
         },
-      }
+      },
     );
 
     if (!response.ok) return undefined;
 
-    const reviews = await response.json() as Array<{
+    const reviews = (await response.json()) as Array<{
       user?: { login?: string };
       state?: string;
       submitted_at?: string;
@@ -455,8 +460,8 @@ export async function fetchGitHubPRReviewStatus(
     }
 
     const states = [...latestByUser.values()];
-    if (states.some(s => s === 'CHANGES_REQUESTED')) return 'changes_requested';
-    if (states.some(s => s === 'APPROVED')) return 'approved';
+    if (states.some((s) => s === 'CHANGES_REQUESTED')) return 'changes_requested';
+    if (states.some((s) => s === 'APPROVED')) return 'approved';
     return 'pending';
   } catch (error) {
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });

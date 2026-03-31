@@ -9,8 +9,8 @@
  */
 
 import type { ClaudeHandler } from '../claude-handler.js';
-import type { ForkExecutor } from './summary-service.js';
 import { Logger } from '../logger.js';
+import type { ForkExecutor } from './summary-service.js';
 
 const logger = new Logger('createForkExecutor');
 
@@ -25,7 +25,13 @@ const FORK_SYSTEM_PROMPT =
  * @returns A ForkExecutor function compatible with SummaryService
  */
 export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
-  return async (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal): Promise<string | null> => {
+  return async (
+    prompt: string,
+    model?: string,
+    sessionId?: string,
+    cwd?: string,
+    abortSignal?: AbortSignal,
+  ): Promise<string | null> => {
     /** Build an AbortController that mirrors the caller's signal. */
     const makeAbortController = (): AbortController | undefined => {
       if (!abortSignal) return undefined;
@@ -40,14 +46,7 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
 
     /** Single dispatch attempt. When resumeId is provided, forkSession is enabled. */
     const attempt = async (resumeId?: string): Promise<string> => {
-      return claudeHandler.dispatchOneShot(
-        prompt,
-        FORK_SYSTEM_PROMPT,
-        model,
-        makeAbortController(),
-        resumeId,
-        cwd,
-      );
+      return claudeHandler.dispatchOneShot(prompt, FORK_SYSTEM_PROMPT, model, makeAbortController(), resumeId, cwd);
     };
 
     try {
