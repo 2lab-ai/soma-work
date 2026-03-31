@@ -68,6 +68,10 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
         const isStaleSession = sessionId && msg.toLowerCase().includes('no conversation found');
 
         if (isStaleSession) {
+          // Short-circuit: if caller already aborted, don't waste a retry
+          if (abortSignal?.aborted) {
+            throw firstError;
+          }
           logger.warn('Fork executor: stale sessionId, retrying without fork', {
             sessionId,
             error: msg,
