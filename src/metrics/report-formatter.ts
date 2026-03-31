@@ -24,6 +24,10 @@ import {
 
 const MAX_RANKINGS_IN_BLOCKS = 5;
 
+// === Bauhaus v5 Layout Constraints ===
+const V5_MAX_WEEKLY_BLOCKS = 12;
+const V5_MAX_DAILY_BLOCKS = 10;
+
 // === Block Kit Safety Layer ===
 
 const MAX_BLOCKS = 50;
@@ -283,14 +287,19 @@ function buildActionAlerts(
 ): any | null {
   const fields: Array<{ type: string; text: string }> = [];
 
-  // Merge rate warning — P1 if < 30%, P2 if < 50%
+  // Merge rate — P1: critical (<30%), immediate target 50%. P2: needs work (30-49%), target 60%.
   if (m.prsCreated >= 3 && d.prMergeRate < 50) {
-    const severity = d.prMergeRate < 30 ? 'P1' : 'P2';
-    const target = d.prMergeRate < 30 ? 50 : 60;
+    const isP1 = d.prMergeRate < 30;
+    const severity = isP1 ? 'P1' : 'P2';
+    // P1 = 1차 회복선(50%), P2 = 정상 운영선(60%)
+    const target = isP1 ? 50 : 60;
+    const action = isP1
+      ? '당일 리뷰 + PR당 변경 50줄 이하로 즉시 축소.'
+      : '당일 리뷰 + PR당 변경 100줄 이하 유지.';
     fields.push({
       type: 'mrkdwn',
       text: truncateFieldText(
-        `*${severity} — 머지율*\n당일 리뷰 + PR당 변경 100줄 이하 유지.\n목표: 머지율 ${target}%+ (현재 ${d.prMergeRate}%).`
+        `*${severity} — 머지율*\n${action}\n1차목표 ${target}%+ (현재 ${d.prMergeRate}%, 기준 60%).`
       ),
     });
   }
@@ -396,8 +405,9 @@ function buildRankings(rankings: UserRanking[]): any[] {
   const top = scored[0];
   const rest = scored.slice(1);
 
-  // Top 1: full detail on same line
-  const topLine = `1위 *${top.userName}* ${fmt(top.score)}점 — PR ${top.metrics.prsCreated}→${top.metrics.prsMerged} · 커밋 ${top.metrics.commitsCreated} · +${fmt(top.metrics.codeLinesAdded)}줄`;
+  // Top 1: full detail — all scoring formula components visible
+  const tm = top.metrics;
+  const topLine = `1위 *${top.userName}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
 
   // Rest: compressed to single line
   const restCompact = rest.map(r => `${r.rank}위 *${r.userName}* ${fmt(r.score)}점`).join(' · ');
@@ -467,6 +477,10 @@ function generateNarrative(
   trend: TrendComparison | null,
   activeDays?: number,
 ): string {
+  // Zero activity guard — no data, no diagnosis
+  if (m.prsCreated === 0 && m.commitsCreated === 0 && m.sessionsCreated === 0) {
+    return '기간 내 활동 없음.';
+  }
   // High volume coding but review bottleneck
   if (m.prsCreated >= 10 && d.prMergeRate < 20) {
     const unmerged = m.prsCreated - m.prsMerged;
@@ -729,7 +743,14 @@ export class ReportFormatter {
     const text = `${grade} · 일간 리포트 — ${report.date} (${dayLabel})\n` +
       `생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
-    return { blocks: safeBlocks(blocks), text };
+    // v5 layout contract: daily ≤ 10 blocks
+    const finalBlocks = safeBlocks(blocks);
+    if (finalBlocks.length > V5_MAX_DAILY_BLOCKS) {
+      const excess = finalBlocks.length - V5_MAX_DAILY_BLOCKS;
+      finalBlocks.splice(V5_MAX_DAILY_BLOCKS - 1, excess);
+    }
+
+    return { blocks: finalBlocks, text };
   }
 
   /**
@@ -829,6 +850,14 @@ export class ReportFormatter {
     const text = `${grade} · 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}\n` +
       `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
-    return { blocks: safeBlocks(blocks), text };
+    // v5 layout contract: weekly ≤ 12 blocks
+    const finalBlocks = safeBlocks(blocks);
+    if (finalBlocks.length > V5_MAX_WEEKLY_BLOCKS) {
+      // Trim conditional blocks (cadence, action) to fit constraint
+      const excess = finalBlocks.length - V5_MAX_WEEKLY_BLOCKS;
+      finalBlocks.splice(V5_MAX_WEEKLY_BLOCKS - 1, excess);
+    }
+
+    return { blocks: finalBlocks, text };
   }
 }
