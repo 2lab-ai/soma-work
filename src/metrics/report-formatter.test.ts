@@ -142,7 +142,8 @@ describe('ReportFormatter', () => {
     expect(result.text).toContain('150');
 
     // Should contain day-of-week
-    const headerText = result.blocks[0]?.text?.text ?? '';
+    const firstBlock = result.blocks[0];
+    const headerText = (firstBlock && 'text' in firstBlock && firstBlock.text) ? firstBlock.text.text : '';
     expect(headerText).toMatch(/\([월화수목금토일]\)/);
   });
 
@@ -389,10 +390,10 @@ describe('ReportFormatter', () => {
 
     // All text blocks should be within 3000 char limit
     for (const block of result.blocks) {
-      if (block.text?.text) {
+      if ('text' in block && block.text) {
         expect(block.text.text.length).toBeLessThanOrEqual(3000);
       }
-      if (block.text?.text && block.type === 'header') {
+      if (block.type === 'header') {
         expect(block.text.text.length).toBeLessThanOrEqual(150);
       }
     }

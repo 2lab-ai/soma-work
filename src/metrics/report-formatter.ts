@@ -36,13 +36,31 @@ interface SlackTextObject {
   emoji?: boolean;
 }
 
-interface SlackBlock {
-  type: 'header' | 'section' | 'divider' | 'context' | 'actions' | 'image';
-  text?: SlackTextObject;
-  fields?: SlackTextObject[];
-  elements?: SlackTextObject[];
+interface SlackHeaderBlock {
+  type: 'header';
+  text: { type: 'plain_text'; text: string; emoji?: boolean };
   block_id?: string;
 }
+
+interface SlackSectionBlock {
+  type: 'section';
+  text?: SlackTextObject;
+  fields?: SlackTextObject[];
+  block_id?: string;
+}
+
+interface SlackContextBlock {
+  type: 'context';
+  elements: SlackTextObject[];
+  block_id?: string;
+}
+
+interface SlackDividerBlock {
+  type: 'divider';
+  block_id?: string;
+}
+
+type SlackBlock = SlackHeaderBlock | SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
 // === Block Kit Safety Layer ===
 
@@ -367,9 +385,15 @@ function buildActionAlerts(
 
   if (fields.length === 0) return null;
 
+  // Sort P1 before P2 so high-severity alerts are never truncated
+  const sorted = fields.sort((a, b) => {
+    const getPriority = (t: string) => t.startsWith('*P1') ? 0 : 1;
+    return getPriority(a.text) - getPriority(b.text);
+  });
+
   return {
     type: 'section',
-    fields: safeFields(fields.slice(0, 4)),
+    fields: safeFields(sorted.slice(0, 4)),
   };
 }
 
@@ -416,7 +440,7 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
       r.metrics.issuesCreated * 2 + r.metrics.commitsCreated * 3 +
       r.metrics.prsCreated * 5 + r.metrics.prsMerged * 10;
     return { ...r, score };
-  });
+  }).sort((a, b) => b.score - a.score);
 
   const top = scored[0];
   const rest = scored.slice(1);
@@ -493,8 +517,10 @@ function generateNarrative(
   trend: TrendComparison | null,
   activeDays?: number,
 ): string {
-  // Zero activity guard — no data, no diagnosis
-  if (m.prsCreated === 0 && m.commitsCreated === 0 && m.sessionsCreated === 0) {
+  // Zero activity guard — no meaningful work output
+  const totalActivity = m.prsCreated + m.commitsCreated + m.sessionsCreated
+    + m.prsMerged + m.issuesCreated + m.turnsUsed;
+  if (totalActivity === 0) {
     return '기간 내 활동 없음.';
   }
   // High volume coding but review bottleneck
@@ -579,7 +605,7 @@ function generateDailySummary(
 
   const parts: string[] = [];
   if (m.prsCreated > 0) {
-    parts.push(`머지율 \`${d.prMergeRate}%\` (목표 15%)`);
+    parts.push(`머지율 \`${d.prMergeRate}%\``);
   }
   parts.push(`순코드 ${netSign}${fmt(d.netLines)}줄`);
   if (m.commitsCreated > 0) parts.push(`커밋 ${m.commitsCreated}건`);
