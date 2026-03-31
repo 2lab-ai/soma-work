@@ -97,7 +97,10 @@ function truncateHeader(text: string): string {
 }
 
 function safeFields(fields: SlackTextObject[]): SlackTextObject[] {
-  return fields.slice(0, MAX_FIELDS);
+  return fields.slice(0, MAX_FIELDS).map((f) => ({
+    ...f,
+    text: truncateFieldText(f.text),
+  }));
 }
 
 const MAX_CONTEXT_ELEMENTS = 10;
@@ -251,6 +254,7 @@ function metricsToSections(m: AggregatedMetrics): SlackBlock[] {
  */
 function computeGrade(d: DerivedMetrics, activeDays?: number): string {
   let score = 0;
+  let maxScore = 6; // 3 axes × 2 points each (daily baseline)
   if (d.prMergeRate >= 60) score += 2;
   else if (d.prMergeRate >= 40) score += 1;
   if (d.sessionCompletionRate >= 60) score += 2;
@@ -258,14 +262,16 @@ function computeGrade(d: DerivedMetrics, activeDays?: number): string {
   if (d.churnRatio <= 20) score += 2;
   else if (d.churnRatio <= 35) score += 1;
   if (activeDays !== undefined) {
+    maxScore = 8; // 4 axes × 2 points (weekly)
     if (activeDays >= 5) score += 2;
     else if (activeDays >= 3) score += 1;
-  } else {
-    score += 1; // neutral for daily
   }
-  if (score >= 7) return 'A';
-  if (score >= 5) return 'B';
-  if (score >= 3) return 'C';
+  // Normalize to percentage of max, then map to grade.
+  // This ensures daily (3-axis) and weekly (4-axis) are graded on the same scale.
+  const pct = (score / maxScore) * 100;
+  if (pct >= 87.5) return 'A'; // ≥7/8 or ≥5.25/6
+  if (pct >= 62.5) return 'B'; // ≥5/8 or ≥3.75/6
+  if (pct >= 37.5) return 'C'; // ≥3/8 or ≥2.25/6
   return 'D';
 }
 
@@ -473,9 +479,9 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
   const blocks: SlackBlock[] = [];
   if (rankings.length < 2) return blocks;
 
-  const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
-
-  const scored = displayRankings
+  // Score ALL rankings first, THEN sort, THEN slice top N.
+  // This ensures the leaderboard reflects the true top performers, not just the first N inputs.
+  const scored = rankings
     .map((r) => {
       const score =
         r.metrics.turnsUsed +
@@ -486,7 +492,8 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
         r.metrics.prsMerged * 10;
       return { ...r, score };
     })
-    .sort((a, b) => b.score - a.score || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }));
+    .sort((a, b) => b.score - a.score || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }))
+    .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   const top = scored[0];
   const rest = scored.slice(1);
@@ -495,8 +502,10 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
   const tm = top.metrics;
   const topLine = `1위 *${sanitizeMrkdwn(top.userName, 100)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
 
-  // Rest: compressed to single line
-  const restCompact = rest.map((r) => `${r.rank}위 *${sanitizeMrkdwn(r.userName, 100)}* ${fmt(r.score)}점`).join(' · ');
+  // Rest: use sorted index as rank (not original r.rank which may be stale after re-sorting)
+  const restCompact = rest
+    .map((r, i) => `${i + 2}위 *${sanitizeMrkdwn(r.userName, 100)}* ${fmt(r.score)}점`)
+    .join(' · ');
 
   const rankingText = truncateText(`*팀* (턴+세션+이슈×2+커밋×3+PR×5+머지×10)\n${topLine}\n${restCompact}`);
 
