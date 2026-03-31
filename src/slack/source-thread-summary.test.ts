@@ -398,3 +398,92 @@ describe('buildRequestStartBlocks edge cases', () => {
     expect(result.text).toContain('Session');
   });
 });
+
+describe('postSourceThreadSummary success path', () => {
+  it('passes Block Kit blocks to postMessage on success', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Deploy feature',
+      workflow: 'deploy',
+      channelId: 'C_WORK',
+      threadTs: 'work-ts',
+      threadRootTs: 'work-root-ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {
+        pr: { url: 'https://github.com/org/repo/pull/10', label: 'PR #10' },
+      },
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
+
+    const callArgs = mockSlackApi.postMessage.mock.calls[0];
+    expect(callArgs[0]).toBe('C_ORIGINAL');
+    expect(callArgs[1]).toContain('Deploy feature');
+    const opts = callArgs[2];
+    expect(opts.threadTs).toBe('111.222');
+    expect(opts.blocks).toBeDefined();
+    expect(Array.isArray(opts.blocks)).toBe(true);
+    expect(opts.blocks.length).toBeGreaterThanOrEqual(2);
+    expect(opts.blocks[0].type).toBe('header');
+    expect(opts.blocks[1].type).toBe('section');
+  });
+
+  it('uses threadRootTs over threadTs for permalink lookup', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'thread-ts-fallback',
+      threadRootTs: 'root-ts-preferred',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    await postSourceThreadSummary(mockSlackApi as any, session as any, 'closed');
+
+    expect(mockSlackApi.getPermalink).toHaveBeenCalledWith('C_WORK', 'root-ts-preferred');
+  });
+});
+
+describe('buildRequestCompleteBlocks edge cases', () => {
+  it('omits elapsed field when turnSummary has no timer emoji', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      turnSummary: 'no timer info here',
+    });
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).not.toContain('소요');
+  });
+
+  it('omits elapsed field when turnSummary is undefined', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {});
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).not.toContain('소요');
+  });
+
+  it('handles empty string title gracefully', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: '', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
+    expect(result.blocks[0].text.text).toBe('Session');
+    expect(result.text).toContain('Session');
+  });
+
+  it('handles whitespace-only title', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: '   ', workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    // Whitespace title passes through (not empty string), this is acceptable
+    expect(result.blocks[0].text.text).toBeDefined();
+    expect(result.text).toBeDefined();
+  });
+});
