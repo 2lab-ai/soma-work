@@ -13,19 +13,61 @@ import { ThreadHeaderBuilder } from './thread-header-builder';
 
 const logger = new Logger('SourceThreadSummary');
 
+// ── BlockKit type interfaces ──
+
+interface SlackTextObject {
+  type: 'plain_text' | 'mrkdwn';
+  text: string;
+  emoji?: boolean;
+}
+
+interface SlackField {
+  type: 'mrkdwn';
+  text: string;
+}
+
+interface SlackBlock {
+  type: string;
+  text?: SlackTextObject;
+  fields?: SlackField[];
+  accessory?: Record<string, unknown>;
+  elements?: Record<string, unknown>[];
+}
+
+// ── Slack text truncation helpers ──
+
+/** Slack Block Kit text limits */
+const SLACK_LIMITS = {
+  HEADER_TEXT: 150,
+  SECTION_TEXT: 3000,
+  FIELD_TEXT: 2000,
+  BUTTON_TEXT: 75,
+} as const;
+
+/** Truncate text to a max length, appending '...' if truncated. */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 3) + '...';
+}
+
+/** Escape mrkdwn special characters in user-provided text. */
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /** Build common metadata fields (owner + execution environment). */
 function buildMetaFields(
   session: ConversationSession,
   workflow: string,
   model?: string
-): any[] {
-  const fields: any[] = [];
+): SlackField[] {
+  const fields: SlackField[] = [];
   if (session.ownerId) {
-    fields.push({ type: 'mrkdwn', text: `*담당*\n<@${session.ownerId}>` });
+    fields.push({ type: 'mrkdwn', text: truncate(`*담당*\n<@${session.ownerId}>`, SLACK_LIMITS.FIELD_TEXT) });
   }
   const envParts = [`\`${workflow}\``];
   if (model) envParts.push(`\`${model}\``);
-  fields.push({ type: 'mrkdwn', text: `*실행*\n${envParts.join(' · ')}` });
+  fields.push({ type: 'mrkdwn', text: truncate(`*실행*\n${envParts.join(' · ')}`, SLACK_LIMITS.FIELD_TEXT) });
   return fields;
 }
 
@@ -40,30 +82,28 @@ function buildMetaFields(
 export function buildRequestStartBlocks(
   session: ConversationSession,
   workThreadPermalink?: string | null
-): { text: string; blocks: any[] } {
+): { text: string; blocks: SlackBlock[] } {
   const title = session.title || 'Session';
-  const safeTitle = title.length > 150 ? title.slice(0, 147) + '...' : title;
+  const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
   const model = session.model ? ThreadHeaderBuilder.formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
 
-  const fields: any[] = [
-    { type: 'mrkdwn', text: '*상태*\n시작' },
+  const fields: SlackField[] = [
+    { type: 'mrkdwn', text: truncate('*상태*\n시작', SLACK_LIMITS.FIELD_TEXT) },
   ];
 
   fields.push(...buildMetaFields(session, workflow, model));
 
-  const section: any = {
+  const section: SlackBlock = {
     type: 'section',
-    // mrkdwn section text supports up to 3000 chars; raw title is intentional here
-    // as the 150-char truncation is only needed for plain_text header blocks.
-    text: { type: 'mrkdwn', text: `*목표*\n${title}` },
+    text: { type: 'mrkdwn', text: truncate(`*목표*\n${escapeMrkdwn(title)}`, SLACK_LIMITS.SECTION_TEXT) },
     fields,
   };
 
   if (workThreadPermalink) {
     section.accessory = {
       type: 'button',
-      text: { type: 'plain_text', text: '스레드', emoji: true },
+      text: { type: 'plain_text', text: truncate('스레드', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
       url: workThreadPermalink,
       action_id: 'source_open_thread',
     };
@@ -101,9 +141,9 @@ export function buildRequestCompleteBlocks(
     issueContext?: { cause?: string; impact?: string };
     prContext?: { fix?: string; test?: string };
   }
-): { text: string; blocks: any[] } {
+): { text: string; blocks: SlackBlock[] } {
   const title = session.title || 'Session';
-  const safeTitle = title.length > 150 ? title.slice(0, 147) + '...' : title;
+  const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
   const model = session.model ? ThreadHeaderBuilder.formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
   const statusLabel = trigger === 'merged' ? '머지 완료' : '완료';
@@ -112,35 +152,35 @@ export function buildRequestCompleteBlocks(
   const elapsed = options?.turnSummary?.match(/⏱\s*(.+?)(?:\s*·|$)/)?.[1]?.trim();
 
   // ── Hero section ──
-  const heroFields: any[] = [
-    { type: 'mrkdwn', text: `*상태*\n${statusLabel}` },
+  const heroFields: SlackField[] = [
+    { type: 'mrkdwn', text: truncate(`*상태*\n${statusLabel}`, SLACK_LIMITS.FIELD_TEXT) },
   ];
 
   if (elapsed) {
-    heroFields.push({ type: 'mrkdwn', text: `*소요*\n${elapsed}` });
+    heroFields.push({ type: 'mrkdwn', text: truncate(`*소요*\n${elapsed}`, SLACK_LIMITS.FIELD_TEXT) });
   }
 
   heroFields.push(...buildMetaFields(session, workflow, model));
 
   if (options?.verifyResult) {
-    heroFields.push({ type: 'mrkdwn', text: `*검증*\n${options.verifyResult}` });
+    heroFields.push({ type: 'mrkdwn', text: truncate(`*검증*\n${escapeMrkdwn(options.verifyResult)}`, SLACK_LIMITS.FIELD_TEXT) });
   }
 
   // Build conclusion text
   const conclusionParts: string[] = [];
   if (options?.executiveSummary) {
-    conclusionParts.push(`*결론*\n${options.executiveSummary}`);
+    conclusionParts.push(`*결론*\n${escapeMrkdwn(options.executiveSummary)}`);
   }
 
   const heroText = conclusionParts.length > 0
     ? conclusionParts.join('\n\n')
-    : `*결론*\n${title} ${statusLabel}`;
+    : `*결론*\n${escapeMrkdwn(title)} ${statusLabel}`;
 
-  const blocks: any[] = [
+  const blocks: SlackBlock[] = [
     { type: 'header', text: { type: 'plain_text', text: safeTitle } },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: heroText },
+      text: { type: 'mrkdwn', text: truncate(heroText, SLACK_LIMITS.SECTION_TEXT) },
       fields: heroFields,
     },
   ];
@@ -158,21 +198,21 @@ export function buildRequestCompleteBlocks(
     const issueUrl = session.links!.issue!.url;
     const issueTitle = session.links!.issue!.title;
     const issueText = issueTitle
-      ? `*Issue* <${issueUrl}|${issueLabel}>\n${issueTitle}`
-      : `*Issue* <${issueUrl}|${issueLabel}>`;
+      ? `*Issue* <${issueUrl}|${escapeMrkdwn(issueLabel)}>\n${escapeMrkdwn(issueTitle)}`
+      : `*Issue* <${issueUrl}|${escapeMrkdwn(issueLabel)}>`;
 
-    const issueSection: any = {
+    const issueSection: SlackBlock = {
       type: 'section',
-      text: { type: 'mrkdwn', text: issueText },
+      text: { type: 'mrkdwn', text: truncate(issueText, SLACK_LIMITS.SECTION_TEXT) },
     };
 
     if (options?.issueContext?.cause || options?.issueContext?.impact) {
       issueSection.fields = [];
       if (options.issueContext.cause) {
-        issueSection.fields.push({ type: 'mrkdwn', text: `*원인*\n${options.issueContext.cause}` });
+        issueSection.fields.push({ type: 'mrkdwn', text: truncate(`*원인*\n${escapeMrkdwn(options.issueContext.cause)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
       if (options.issueContext.impact) {
-        issueSection.fields.push({ type: 'mrkdwn', text: `*영향*\n${options.issueContext.impact}` });
+        issueSection.fields.push({ type: 'mrkdwn', text: truncate(`*영향*\n${escapeMrkdwn(options.issueContext.impact)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
     }
 
@@ -185,21 +225,21 @@ export function buildRequestCompleteBlocks(
     const prUrl = session.links!.pr!.url;
     const prTitle = session.links!.pr!.title;
     const prText = prTitle
-      ? `*PR* <${prUrl}|${prLabel}>\n${prTitle}`
-      : `*PR* <${prUrl}|${prLabel}>`;
+      ? `*PR* <${prUrl}|${escapeMrkdwn(prLabel)}>\n${escapeMrkdwn(prTitle)}`
+      : `*PR* <${prUrl}|${escapeMrkdwn(prLabel)}>`;
 
-    const prSection: any = {
+    const prSection: SlackBlock = {
       type: 'section',
-      text: { type: 'mrkdwn', text: prText },
+      text: { type: 'mrkdwn', text: truncate(prText, SLACK_LIMITS.SECTION_TEXT) },
     };
 
     if (options?.prContext?.fix || options?.prContext?.test) {
       prSection.fields = [];
       if (options.prContext.fix) {
-        prSection.fields.push({ type: 'mrkdwn', text: `*수정*\n${options.prContext.fix}` });
+        prSection.fields.push({ type: 'mrkdwn', text: truncate(`*수정*\n${escapeMrkdwn(options.prContext.fix)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
       if (options.prContext.test) {
-        prSection.fields.push({ type: 'mrkdwn', text: `*테스트*\n${options.prContext.test}` });
+        prSection.fields.push({ type: 'mrkdwn', text: truncate(`*테스트*\n${escapeMrkdwn(options.prContext.test)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
     }
 
@@ -207,12 +247,12 @@ export function buildRequestCompleteBlocks(
   }
 
   // ── Actions row ──
-  const actionElements: any[] = [];
+  const actionElements: Record<string, unknown>[] = [];
 
   if (hasPR) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: session.links!.pr!.label || 'PR', emoji: true },
+      text: { type: 'plain_text', text: truncate(session.links!.pr!.label || 'PR', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
       url: session.links!.pr!.url,
       action_id: 'source_open_pr',
       style: 'primary',
@@ -222,7 +262,7 @@ export function buildRequestCompleteBlocks(
   if (hasIssue) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: session.links!.issue!.label || 'Issue', emoji: true },
+      text: { type: 'plain_text', text: truncate(session.links!.issue!.label || 'Issue', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
       url: session.links!.issue!.url,
       action_id: 'source_open_issue',
     });
@@ -231,7 +271,7 @@ export function buildRequestCompleteBlocks(
   if (options?.workThreadPermalink) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: '스레드', emoji: true },
+      text: { type: 'plain_text', text: truncate('스레드', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
       url: options.workThreadPermalink,
       action_id: 'source_open_thread',
     });
@@ -275,7 +315,11 @@ export async function postSourceThreadSummary(
     const sessionThreadTs = session.threadRootTs || session.threadTs;
     let workThreadPermalink: string | null = null;
     if (sessionChannel && sessionThreadTs) {
-      workThreadPermalink = await slackApi.getPermalink(sessionChannel, sessionThreadTs);
+      try {
+        workThreadPermalink = await slackApi.getPermalink(sessionChannel, sessionThreadTs);
+      } catch (permalinkError) {
+        logger.warn('getPermalink failed, continuing without permalink', { error: permalinkError });
+      }
       if (!workThreadPermalink) {
         logger.warn('Failed to get permalink for work thread in summary', {
           sessionChannel,
