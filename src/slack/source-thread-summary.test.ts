@@ -661,3 +661,87 @@ describe('Block Kit truncation and escaping', () => {
     expect(prButton.text.text.length).toBeLessThanOrEqual(75);
   });
 });
+
+describe('safeText', () => {
+  it('does not split HTML entities at boundary', async () => {
+    const { safeText } = await import('./source-thread-summary');
+    // Create a string where '&' at position will cause &amp; to straddle the truncation point
+    // 'a'.repeat(17) + '&' = 18 chars raw -> escaped: 'a'.repeat(17) + '&amp;' = 22 chars
+    // With max=20, slice at 17 would cut '&amp;' mid-entity
+    const input = 'a'.repeat(17) + '&';
+    const result = safeText(input, 20);
+    // Should not contain a broken entity like '&am...' or '&a...'
+    expect(result).not.toMatch(/&[a-z]{0,3}\.\.\./);
+    expect(result.length).toBeLessThanOrEqual(20);
+    expect(result.endsWith('...')).toBe(true);
+  });
+});
+
+describe('text fallback sanitization', () => {
+  it('text fallback strips Slack tokens like <@U123>', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Fix for <@U123> issue', workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.text).not.toContain('<@U123>');
+    expect(result.text).toContain('Fix for');
+  });
+
+  it('text fallback strips <!here> token in complete blocks', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Alert <!here> deploy', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    expect(result.text).not.toContain('<!here>');
+    expect(result.text).toContain('Alert');
+  });
+});
+
+describe('payload contract', () => {
+  it('start blocks have exactly 2 blocks (header+section)', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Test', workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.blocks.length).toBe(2);
+    expect(result.blocks[0].type).toBe('header');
+    expect(result.blocks[1].type).toBe('section');
+  });
+
+  it('complete blocks with issue+PR have divider and actions', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: {
+        issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' },
+        pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' },
+      },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    const types = result.blocks.map((b: any) => b.type);
+    // Expected sequence: header, section, divider, section(issue), section(pr), actions
+    expect(types[0]).toBe('header');
+    expect(types[1]).toBe('section');
+    expect(types[2]).toBe('divider');
+    expect(types).toContain('actions');
+    // At least 6 blocks: header + hero section + divider + issue section + pr section + actions
+    expect(result.blocks.length).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe('escape then truncate preserves valid entities', () => {
+  it('handles 3000+ char string with & chars without broken entities', async () => {
+    const { safeText } = await import('./source-thread-summary');
+    // Build a string longer than 3000 chars with scattered '&' characters
+    const base = 'hello & world '.repeat(300); // ~4200 chars raw
+    const result = safeText(base, 3000);
+    expect(result.length).toBeLessThanOrEqual(3000);
+    expect(result.endsWith('...')).toBe(true);
+    // Verify no broken entities: every '&' should be followed by 'amp;', 'lt;', or 'gt;'
+    const ampMatches = [...result.matchAll(/&/g)];
+    for (const m of ampMatches) {
+      const after = result.slice(m.index!, m.index! + 5);
+      if (after !== '&amp;' && !after.startsWith('&lt;') && !after.startsWith('&gt;')) {
+        // The only acceptable case is if '&' is part of '...' at the end
+        expect(result.slice(m.index!)).toBe('...');
+      }
+    }
+  });
+});

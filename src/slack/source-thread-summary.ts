@@ -27,7 +27,7 @@ interface SlackField {
 }
 
 interface SlackBlock {
-  type: string;
+  type: 'header' | 'section' | 'divider' | 'actions' | 'context';
   text?: SlackTextObject;
   fields?: SlackField[];
   accessory?: Record<string, unknown>;
@@ -50,9 +50,33 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 3) + '...';
 }
 
+/** Truncate text that may contain HTML entities without splitting them. */
+function safeTruncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max - 3;
+  // Don't split HTML entities like &amp; &lt; &gt;
+  const tail = text.slice(Math.max(0, end - 5), end);
+  const ampIdx = tail.lastIndexOf('&');
+  if (ampIdx !== -1 && !tail.slice(ampIdx).includes(';')) {
+    end = Math.max(0, end - 5) + ampIdx;
+  }
+  return text.slice(0, end) + '...';
+}
+
 /** Escape mrkdwn special characters in user-provided text. */
 function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Escape mrkdwn special chars, then truncate to max length without splitting HTML entities. */
+export function safeText(text: string, max: number): string {
+  const escaped = escapeMrkdwn(text);
+  return safeTruncate(escaped, max);
+}
+
+/** Strip Slack special tokens from fallback text. */
+function stripSlackTokens(text: string): string {
+  return text.replace(/<[^>]+>/g, '');
 }
 
 /** Build common metadata fields (owner + execution environment). */
@@ -96,7 +120,7 @@ export function buildRequestStartBlocks(
 
   const section: SlackBlock = {
     type: 'section',
-    text: { type: 'mrkdwn', text: truncate(`*목표*\n${escapeMrkdwn(title)}`, SLACK_LIMITS.SECTION_TEXT) },
+    text: { type: 'mrkdwn', text: safeTruncate(`*목표*\n${escapeMrkdwn(title)}`, SLACK_LIMITS.SECTION_TEXT) },
     fields,
   };
 
@@ -110,7 +134,7 @@ export function buildRequestStartBlocks(
   }
 
   return {
-    text: `${safeTitle} — 시작`,
+    text: stripSlackTokens(`${safeTitle} — 시작`),
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: safeTitle } },
       section,
@@ -163,7 +187,7 @@ export function buildRequestCompleteBlocks(
   heroFields.push(...buildMetaFields(session, workflow, model));
 
   if (options?.verifyResult) {
-    heroFields.push({ type: 'mrkdwn', text: truncate(`*검증*\n${escapeMrkdwn(options.verifyResult)}`, SLACK_LIMITS.FIELD_TEXT) });
+    heroFields.push({ type: 'mrkdwn', text: safeTruncate(`*검증*\n${escapeMrkdwn(options.verifyResult)}`, SLACK_LIMITS.FIELD_TEXT) });
   }
 
   // Build conclusion text
@@ -180,7 +204,7 @@ export function buildRequestCompleteBlocks(
     { type: 'header', text: { type: 'plain_text', text: safeTitle } },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: truncate(heroText, SLACK_LIMITS.SECTION_TEXT) },
+      text: { type: 'mrkdwn', text: safeTruncate(heroText, SLACK_LIMITS.SECTION_TEXT) },
       fields: heroFields,
     },
   ];
@@ -203,16 +227,16 @@ export function buildRequestCompleteBlocks(
 
     const issueSection: SlackBlock = {
       type: 'section',
-      text: { type: 'mrkdwn', text: truncate(issueText, SLACK_LIMITS.SECTION_TEXT) },
+      text: { type: 'mrkdwn', text: safeTruncate(issueText, SLACK_LIMITS.SECTION_TEXT) },
     };
 
     if (options?.issueContext?.cause || options?.issueContext?.impact) {
       issueSection.fields = [];
       if (options.issueContext.cause) {
-        issueSection.fields.push({ type: 'mrkdwn', text: truncate(`*원인*\n${escapeMrkdwn(options.issueContext.cause)}`, SLACK_LIMITS.FIELD_TEXT) });
+        issueSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*원인*\n${escapeMrkdwn(options.issueContext.cause)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
       if (options.issueContext.impact) {
-        issueSection.fields.push({ type: 'mrkdwn', text: truncate(`*영향*\n${escapeMrkdwn(options.issueContext.impact)}`, SLACK_LIMITS.FIELD_TEXT) });
+        issueSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*영향*\n${escapeMrkdwn(options.issueContext.impact)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
     }
 
@@ -230,16 +254,16 @@ export function buildRequestCompleteBlocks(
 
     const prSection: SlackBlock = {
       type: 'section',
-      text: { type: 'mrkdwn', text: truncate(prText, SLACK_LIMITS.SECTION_TEXT) },
+      text: { type: 'mrkdwn', text: safeTruncate(prText, SLACK_LIMITS.SECTION_TEXT) },
     };
 
     if (options?.prContext?.fix || options?.prContext?.test) {
       prSection.fields = [];
       if (options.prContext.fix) {
-        prSection.fields.push({ type: 'mrkdwn', text: truncate(`*수정*\n${escapeMrkdwn(options.prContext.fix)}`, SLACK_LIMITS.FIELD_TEXT) });
+        prSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*수정*\n${escapeMrkdwn(options.prContext.fix)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
       if (options.prContext.test) {
-        prSection.fields.push({ type: 'mrkdwn', text: truncate(`*테스트*\n${escapeMrkdwn(options.prContext.test)}`, SLACK_LIMITS.FIELD_TEXT) });
+        prSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*테스트*\n${escapeMrkdwn(options.prContext.test)}`, SLACK_LIMITS.FIELD_TEXT) });
       }
     }
 
@@ -285,7 +309,7 @@ export function buildRequestCompleteBlocks(
   }
 
   return {
-    text: `${safeTitle} — ${statusLabel}`,
+    text: stripSlackTokens(`${safeTitle} — ${statusLabel}`),
     blocks,
   };
 }
