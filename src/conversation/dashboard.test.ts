@@ -407,6 +407,91 @@ describe('Dashboard API', () => {
     expect(script).toContain("openPanel(\\''");
   });
 
+  // ── Hostile input escaping (runtime safety) ──
+
+  it('should safely return hostile session keys via API without corruption', async () => {
+    const hostileKey = "C1:t1'\\evil";
+    const sessions = new Map<string, any>();
+    sessions.set(hostileKey, {
+      sessionId: 'hostile-sid',
+      title: "Session with 'hostile' key\\path",
+      ownerId: 'U1',
+      ownerName: "Al'ice",
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: "t1'\\evil",
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T10:00:00Z'),
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    // API must JSON-serialize hostile keys without corruption
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.working).toHaveLength(1);
+    const s = body.board.working[0];
+    // key field carries the hostile map key through JSON intact
+    expect(s.key).toBe(hostileKey);
+    expect(s.title).toBe("Session with 'hostile' key\\path");
+    expect(s.ownerName).toBe("Al'ice");
+  });
+
+  it('should produce valid inline JS even with hostile session data present', async () => {
+    const hostileKey = "C1:t1'\\evil";
+    const sessions = new Map<string, any>();
+    sessions.set(hostileKey, {
+      sessionId: 'hostile-sid',
+      title: "O'Reilly\\Media",
+      ownerId: 'U1',
+      ownerName: "Al'ice",
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: "t1'\\evil",
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T10:00:00Z'),
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const html: string = res.body;
+
+    // The entire inline <script> must still parse as valid JS
+    // even though session data with hostile chars will be fetched at runtime
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const scriptContent = scriptMatch![1];
+    expect(() => new Function(scriptContent)).not.toThrow();
+
+    // Verify escJs function is present and structurally correct
+    expect(scriptContent).toContain('function escJs(s)');
+    // escJs must escape backslashes BEFORE quotes (order matters)
+    const escJsBody = scriptContent.match(/function escJs\(s\)\s*\{([\s\S]*?)\n\s*\}/);
+    expect(escJsBody).not.toBeNull();
+    // The replace chain must handle \\ before ' — verify ordering
+    const body = escJsBody![1];
+    const bsPos = body.indexOf('replace(/\\\\/g');
+    const quotePos = body.indexOf("replace(/'/g");
+    expect(bsPos).toBeGreaterThan(-1);
+    expect(quotePos).toBeGreaterThan(-1);
+    expect(bsPos).toBeLessThan(quotePos); // backslash escape first, then quote
+  });
+
   // ── Auth ──
 
   it('should require auth for dashboard API', async () => {
