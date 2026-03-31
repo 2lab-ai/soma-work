@@ -540,7 +540,9 @@ function generateWeeklySummary(
       ? ` · 전주 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
       : '';
 
-  return `머지율 \`${d.prMergeRate}%\` (목표 15%) · 활동일 \`${activeDays}/7\` (목표 3+) · 순코드 ${netSign}${fmt(d.netLines)}줄${trendSuffix}`;
+  const totalLines = m.codeLinesAdded + m.codeLinesDeleted;
+  const netContext = totalLines > 0 ? ` (총변경 ${fmt(totalLines)}줄)` : '';
+  return `머지율 \`${d.prMergeRate}%\` (목표 60%) · 활동일 \`${activeDays}/7\` (목표 5+) · 순코드 ${netSign}${fmt(d.netLines)}줄${netContext}${trendSuffix}`;
 }
 
 /**
@@ -743,11 +745,13 @@ export class ReportFormatter {
     const text = `${grade} · 일간 리포트 — ${report.date} (${dayLabel})\n` +
       `생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
-    // v5 layout contract: daily ≤ 10 blocks
+    // v5 layout contract: daily ≤ 10 blocks.
+    // Trim strategy: keep header (first) + footer (last), remove excess from middle.
     const finalBlocks = safeBlocks(blocks);
     if (finalBlocks.length > V5_MAX_DAILY_BLOCKS) {
-      const excess = finalBlocks.length - V5_MAX_DAILY_BLOCKS;
-      finalBlocks.splice(V5_MAX_DAILY_BLOCKS - 1, excess);
+      const footer = finalBlocks.pop()!;
+      finalBlocks.length = V5_MAX_DAILY_BLOCKS - 1;
+      finalBlocks.push(footer);
     }
 
     return { blocks: finalBlocks, text };
@@ -850,12 +854,14 @@ export class ReportFormatter {
     const text = `${grade} · 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}\n` +
       `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
-    // v5 layout contract: weekly ≤ 12 blocks
+    // v5 layout contract: weekly ≤ 12 blocks.
+    // Trim strategy: keep header (first) + footer (last), remove excess from the middle.
+    // This preserves identity and attribution even when optional sections overflow.
     const finalBlocks = safeBlocks(blocks);
     if (finalBlocks.length > V5_MAX_WEEKLY_BLOCKS) {
-      // Trim conditional blocks (cadence, action) to fit constraint
-      const excess = finalBlocks.length - V5_MAX_WEEKLY_BLOCKS;
-      finalBlocks.splice(V5_MAX_WEEKLY_BLOCKS - 1, excess);
+      const footer = finalBlocks.pop()!;
+      finalBlocks.length = V5_MAX_WEEKLY_BLOCKS - 1;
+      finalBlocks.push(footer);
     }
 
     return { blocks: finalBlocks, text };
