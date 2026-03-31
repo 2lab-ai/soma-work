@@ -10,7 +10,7 @@ vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/llm-chat-config-test',
 }));
 
-import { LlmChatConfigStore } from './llm-chat-config-store';
+import { LlmChatConfigStore, expandConfigOverride } from './llm-chat-config-store';
 
 describe('LlmChatConfigStore', () => {
   let store: LlmChatConfigStore;
@@ -160,10 +160,13 @@ describe('LlmChatConfigStore', () => {
       expect(snippet).toContain('gemini-3.1-pro-preview');
     });
 
-    it('should include config overrides in snippet', () => {
+    it('should include config overrides in snippet with proper nested JSON', () => {
       const snippet = store.toPromptSnippet();
       expect(snippet).toContain('model_reasoning_effort');
       expect(snippet).toContain('xhigh');
+      // Should output nested features object with boolean, not flat string
+      expect(snippet).toContain('"features":{"fast_mode":true}');
+      expect(snippet).not.toContain('"features.fast_mode"');
     });
 
     it('should reflect updated values', () => {
@@ -180,6 +183,46 @@ describe('LlmChatConfigStore', () => {
       expect(display).toContain('*codex*');
       expect(display).toContain('*gemini*');
       expect(display).toContain('gpt-5.3-codex');
+    });
+  });
+
+  describe('expandConfigOverride()', () => {
+    it('should expand dot-notation keys into nested objects', () => {
+      const result = expandConfigOverride({ 'features.fast_mode': 'true' });
+      expect(result).toEqual({ features: { fast_mode: true } });
+    });
+
+    it('should coerce "true" to boolean true', () => {
+      const result = expandConfigOverride({ 'features.fast_mode': 'true' });
+      expect((result.features as any).fast_mode).toBe(true);
+    });
+
+    it('should coerce "false" to boolean false', () => {
+      const result = expandConfigOverride({ 'features.fast_mode': 'false' });
+      expect((result.features as any).fast_mode).toBe(false);
+    });
+
+    it('should keep non-boolean strings as strings', () => {
+      const result = expandConfigOverride({ model_reasoning_effort: 'xhigh', service_tier: 'fast' });
+      expect(result).toEqual({ model_reasoning_effort: 'xhigh', service_tier: 'fast' });
+    });
+
+    it('should handle mixed flat and dot-notation keys', () => {
+      const result = expandConfigOverride({
+        model_reasoning_effort: 'xhigh',
+        'features.fast_mode': 'true',
+        service_tier: 'fast',
+      });
+      expect(result).toEqual({
+        model_reasoning_effort: 'xhigh',
+        features: { fast_mode: true },
+        service_tier: 'fast',
+      });
+    });
+
+    it('should handle deeply nested dot notation', () => {
+      const result = expandConfigOverride({ 'a.b.c': 'true' });
+      expect(result).toEqual({ a: { b: { c: true } } });
     });
   });
 
