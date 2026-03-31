@@ -192,24 +192,24 @@ describe('buildRequestStartBlocks', () => {
     expect(result.blocks).toHaveLength(2);
     expect(result.blocks[0].type).toBe('header');
     expect(result.blocks[1].type).toBe('section');
-    expect(result.blocks[1].fields!.length).toBeGreaterThanOrEqual(2);
+    expect((result.blocks[1] as any).fields!.length).toBeGreaterThanOrEqual(2);
   });
 
   it('adds accessory button when permalink provided', async () => {
     const { buildRequestStartBlocks } = await import('./source-thread-summary');
     const session = { title: 'Task', workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session, 'https://slack.com/archives/C1/p1');
-    const section = result.blocks[1];
+    const section = result.blocks[1] as any;
     expect(section.accessory).toBeDefined();
-    expect((section.accessory as any).action_id).toBe('source_open_thread');
-    expect((section.accessory as any).url).toBe('https://slack.com/archives/C1/p1');
+    expect(section.accessory.action_id).toBe('source_open_thread');
+    expect(section.accessory.url).toBe('https://slack.com/archives/C1/p1');
   });
 
   it('omits accessory button when no permalink', async () => {
     const { buildRequestStartBlocks } = await import('./source-thread-summary');
     const session = { title: 'Task', workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session, null);
-    expect(result.blocks[1].accessory).toBeUndefined();
+    expect((result.blocks[1] as any).accessory).toBeUndefined();
   });
 
   it('truncates long titles in header block', async () => {
@@ -217,7 +217,7 @@ describe('buildRequestStartBlocks', () => {
     const longTitle = 'A'.repeat(200);
     const session = { title: longTitle, workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
-    expect(result.blocks[0].text!.text.length).toBeLessThanOrEqual(150);
+    expect((result.blocks[0] as any).text.text.length).toBeLessThanOrEqual(150);
   });
 });
 
@@ -272,7 +272,7 @@ describe('buildRequestCompleteBlocks', () => {
       executiveSummary: 'All tests passing, code reviewed',
     });
     const heroSection = result.blocks[1];
-    expect(heroSection.text!.text).toContain('All tests passing, code reviewed');
+    expect((heroSection as any).text.text).toContain('All tests passing, code reviewed');
   });
 
   it('includes verify result in hero fields', async () => {
@@ -281,7 +281,7 @@ describe('buildRequestCompleteBlocks', () => {
     const result = buildRequestCompleteBlocks(session, 'merged', {
       verifyResult: 'PASS',
     });
-    const heroFields = result.blocks[1].fields!;
+    const heroFields = (result.blocks[1] as any).fields!;
     const verifyField = heroFields.find((f: any) => f.text.includes('검증'));
     expect(verifyField).toBeDefined();
     expect(verifyField!.text).toContain('PASS');
@@ -292,7 +292,7 @@ describe('buildRequestCompleteBlocks', () => {
     const longTitle = 'B'.repeat(200);
     const session = { title: longTitle, workflow: 'default', links: {} } as any;
     const result = buildRequestCompleteBlocks(session, 'merged');
-    expect(result.blocks[0].text!.text.length).toBeLessThanOrEqual(150);
+    expect((result.blocks[0] as any).text.text.length).toBeLessThanOrEqual(150);
   });
 
   it('renders issue section without PR section when only issue linked', async () => {
@@ -394,7 +394,7 @@ describe('buildRequestStartBlocks edge cases', () => {
     const { buildRequestStartBlocks } = await import('./source-thread-summary');
     const session = { workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
-    expect(result.blocks[0].text!.text).toBe('Session');
+    expect((result.blocks[0] as any).text.text).toBe('Session');
     expect(result.text).toContain('Session');
   });
 });
@@ -474,7 +474,7 @@ describe('buildRequestCompleteBlocks edge cases', () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = { title: '', workflow: 'default', links: {} } as any;
     const result = buildRequestCompleteBlocks(session, 'closed');
-    expect(result.blocks[0].text!.text).toBe('Session');
+    expect((result.blocks[0] as any).text.text).toBe('Session');
     expect(result.text).toContain('Session');
   });
 
@@ -483,7 +483,7 @@ describe('buildRequestCompleteBlocks edge cases', () => {
     const session = { title: '   ', workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
     // Whitespace title passes through (not empty string), this is acceptable
-    expect(result.blocks[0].text!.text).toBeDefined();
+    expect((result.blocks[0] as any).text.text).toBeDefined();
     expect(result.text).toBeDefined();
   });
 });
@@ -577,8 +577,8 @@ describe('buildRequestStartBlocks truncation boundary', () => {
     const exactTitle = 'X'.repeat(150);
     const session = { title: exactTitle, workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
-    expect(result.blocks[0].text!.text).toBe(exactTitle);
-    expect(result.blocks[0].text!.text.length).toBe(150);
+    expect((result.blocks[0] as any).text.text).toBe(exactTitle);
+    expect((result.blocks[0] as any).text.text.length).toBe(150);
   });
 
   it('truncates title at 151 chars', async () => {
@@ -586,8 +586,8 @@ describe('buildRequestStartBlocks truncation boundary', () => {
     const overTitle = 'Y'.repeat(151);
     const session = { title: overTitle, workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
-    expect(result.blocks[0].text!.text.length).toBe(150);
-    expect(result.blocks[0].text!.text.endsWith('...')).toBe(true);
+    expect((result.blocks[0] as any).text.text.length).toBe(150);
+    expect((result.blocks[0] as any).text.text.endsWith('...')).toBe(true);
   });
 });
 
@@ -600,7 +600,7 @@ describe('Block Kit truncation and escaping', () => {
       executiveSummary: longSummary,
     });
     const heroSection = result.blocks[1];
-    expect(heroSection.text!.text.length).toBeLessThanOrEqual(3000);
+    expect((heroSection as any).text.text.length).toBeLessThanOrEqual(3000);
   });
 
   it('truncates long field values to 2000 chars', async () => {
@@ -610,7 +610,7 @@ describe('Block Kit truncation and escaping', () => {
     const result = buildRequestCompleteBlocks(session, 'merged', {
       verifyResult: longVerify,
     });
-    const heroFields = result.blocks[1].fields!;
+    const heroFields = (result.blocks[1] as any).fields!;
     const verifyField = heroFields.find((f: any) => f.text.includes('검증'));
     expect(verifyField).toBeDefined();
     expect(verifyField!.text.length).toBeLessThanOrEqual(2000);
@@ -621,12 +621,12 @@ describe('Block Kit truncation and escaping', () => {
     const session = { title: '<script>&foo</script>', workflow: 'default', links: {} } as any;
     const result = buildRequestCompleteBlocks(session, 'closed');
     // Hero section mrkdwn text should have escaped chars
-    const heroText = result.blocks[1].text!.text;
+    const heroText = (result.blocks[1] as any).text.text;
     expect(heroText).toContain('&lt;script&gt;');
     expect(heroText).toContain('&amp;foo');
     expect(heroText).toContain('&lt;/script&gt;');
     // Header (plain_text) should NOT be escaped
-    expect(result.blocks[0].text!.text).toContain('<script>');
+    expect((result.blocks[0] as any).text.text).toContain('<script>');
   });
 
   it('text fallback contains title and status label', async () => {
@@ -642,7 +642,7 @@ describe('Block Kit truncation and escaping', () => {
     const session = { title: '   ', workflow: 'default' } as any;
     const result = buildRequestStartBlocks(session);
     // Whitespace title passes through (not empty string), this is acceptable
-    expect(result.blocks[0].text!.text).toBeDefined();
+    expect((result.blocks[0] as any).text.text).toBeDefined();
     expect(result.text).toBeDefined();
   });
 
@@ -656,7 +656,7 @@ describe('Block Kit truncation and escaping', () => {
     const result = buildRequestCompleteBlocks(session, 'merged');
     const actionsBlock = result.blocks.find((b: any) => b.type === 'actions');
     expect(actionsBlock).toBeDefined();
-    const prButton = actionsBlock!.elements!.find((e: any) => e.action_id === 'source_open_pr') as any;
+    const prButton = (actionsBlock as any).elements.find((e: any) => e.action_id === 'source_open_pr') as any;
     expect(prButton).toBeDefined();
     expect(prButton.text.text.length).toBeLessThanOrEqual(75);
   });
@@ -664,7 +664,7 @@ describe('Block Kit truncation and escaping', () => {
 
 describe('safeText', () => {
   it('does not split HTML entities at boundary', async () => {
-    const { safeText } = await import('./source-thread-summary');
+    const { _safeText: safeText } = await import('./source-thread-summary');
     // Create a string where '&' at position will cause &amp; to straddle the truncation point
     // 'a'.repeat(17) + '&' = 18 chars raw -> escaped: 'a'.repeat(17) + '&amp;' = 22 chars
     // With max=20, slice at 17 would cut '&amp;' mid-entity
@@ -728,7 +728,7 @@ describe('payload contract', () => {
 
 describe('escape then truncate preserves valid entities', () => {
   it('handles 3000+ char string with & chars without broken entities', async () => {
-    const { safeText } = await import('./source-thread-summary');
+    const { _safeText: safeText } = await import('./source-thread-summary');
     // Build a string longer than 3000 chars with scattered '&' characters
     const base = 'hello & world '.repeat(300); // ~4200 chars raw
     const result = safeText(base, 3000);
@@ -743,5 +743,91 @@ describe('escape then truncate preserves valid entities', () => {
         expect(result.slice(m.index!)).toBe('...');
       }
     }
+  });
+});
+
+describe('postSourceThreadSummary return value', () => {
+  it('returns true on success', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    const result = await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
+    expect(result).toBe(true);
+  });
+
+  it('returns false on failure', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockRejectedValue(new Error('Slack API error')),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C1/p1'),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '111.222' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    const result = await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
+    expect(result).toBe(false);
+  });
+
+  it('returns false when no sourceThread', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+    const session = {
+      title: 'Task',
+      channelId: 'C_WORK',
+      threadTs: 'ts',
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    const result = await postSourceThreadSummary(mockSlackApi as any, session as any, 'closed');
+    expect(result).toBe(false);
+  });
+});
+
+describe('buildLinkSection', () => {
+  it('produces correct section for issue', async () => {
+    const { _buildLinkSection: buildLinkSection } = await import('./source-thread-summary');
+    const section = buildLinkSection(
+      'Issue',
+      'https://github.com/org/repo/issues/42',
+      '#42',
+      'Login broken on Safari',
+      [{ key: 'cause', value: 'Cookie handling' }]
+    );
+    expect(section.type).toBe('section');
+    expect(section.text.text).toContain('Issue');
+    expect(section.text.text).toContain('github.com/org/repo/issues/42');
+    expect(section.text.text).toContain('#42');
+    expect(section.text.text).toContain('Login broken on Safari');
+    expect(section.fields).toBeDefined();
+    expect(section.fields!.length).toBe(1);
+    expect(section.fields![0].text).toContain('cause');
+    expect(section.fields![0].text).toContain('Cookie handling');
+  });
+});
+
+describe('backtick escape in meta fields', () => {
+  it('workflow with backticks is escaped in meta fields', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'my`workflow`name' } as any;
+    const result = buildRequestStartBlocks(session);
+    const blocksJson = JSON.stringify(result.blocks);
+    // Backticks should be replaced with single quotes
+    expect(blocksJson).not.toContain('my`workflow`name');
+    expect(blocksJson).toContain("my'workflow'name");
   });
 });

@@ -13,26 +13,35 @@ import { ThreadHeaderBuilder } from './thread-header-builder';
 
 const logger = new Logger('SourceThreadSummary');
 
-// ── BlockKit type interfaces ──
-
-interface SlackTextObject {
-  type: 'plain_text' | 'mrkdwn';
-  text: string;
-  emoji?: boolean;
-}
+// ── BlockKit type interfaces (discriminated union) ──
 
 interface SlackField {
   type: 'mrkdwn';
   text: string;
 }
 
-interface SlackBlock {
-  type: 'header' | 'section' | 'divider' | 'actions' | 'context';
-  text?: SlackTextObject;
+interface SlackHeaderBlock {
+  type: 'header';
+  text: { type: 'plain_text'; text: string };
+}
+
+interface SlackSectionBlock {
+  type: 'section';
+  text: { type: 'mrkdwn'; text: string };
   fields?: SlackField[];
   accessory?: Record<string, unknown>;
-  elements?: Record<string, unknown>[];
 }
+
+interface SlackDividerBlock {
+  type: 'divider';
+}
+
+interface SlackActionsBlock {
+  type: 'actions';
+  elements: Record<string, unknown>[];
+}
+
+type SlackBlock = SlackHeaderBlock | SlackSectionBlock | SlackDividerBlock | SlackActionsBlock;
 
 // ── Slack text truncation helpers ──
 
@@ -69,7 +78,7 @@ function escapeMrkdwn(text: string): string {
 }
 
 /** Escape mrkdwn special chars, then truncate to max length without splitting HTML entities. */
-export function safeText(text: string, max: number): string {
+function safeText(text: string, max: number): string {
   const escaped = escapeMrkdwn(text);
   return safeTruncate(escaped, max);
 }
@@ -89,10 +98,41 @@ function buildMetaFields(
   if (session.ownerId) {
     fields.push({ type: 'mrkdwn', text: truncate(`*담당*\n<@${session.ownerId}>`, SLACK_LIMITS.FIELD_TEXT) });
   }
-  const envParts = [`\`${workflow}\``];
-  if (model) envParts.push(`\`${model}\``);
+  const safeWorkflow = workflow.replace(/`/g, "'");
+  const envParts = [`\`${safeWorkflow}\``];
+  if (model) {
+    const safeModel = model.replace(/`/g, "'");
+    envParts.push(`\`${safeModel}\``);
+  }
   fields.push({ type: 'mrkdwn', text: truncate(`*실행*\n${envParts.join(' · ')}`, SLACK_LIMITS.FIELD_TEXT) });
   return fields;
+}
+
+/**
+ * Build a link section block for issue or PR display.
+ * DRY helper used by both issue and PR section construction.
+ */
+function buildLinkSection(
+  linkType: string,
+  url: string,
+  label: string,
+  title?: string,
+  contextFields?: { key: string; value: string }[]
+): SlackSectionBlock {
+  const linkText = title
+    ? `*${linkType}* <${url}|${escapeMrkdwn(label)}>\n${escapeMrkdwn(title)}`
+    : `*${linkType}* <${url}|${escapeMrkdwn(label)}>`;
+  const section: SlackSectionBlock = {
+    type: 'section',
+    text: { type: 'mrkdwn', text: safeTruncate(linkText, SLACK_LIMITS.SECTION_TEXT) },
+  };
+  if (contextFields && contextFields.length > 0) {
+    section.fields = contextFields.map(f => ({
+      type: 'mrkdwn' as const,
+      text: safeTruncate(`*${f.key}*\n${escapeMrkdwn(f.value)}`, SLACK_LIMITS.FIELD_TEXT),
+    }));
+  }
+  return section;
 }
 
 /**
@@ -118,7 +158,7 @@ export function buildRequestStartBlocks(
 
   fields.push(...buildMetaFields(session, workflow, model));
 
-  const section: SlackBlock = {
+  const section: SlackSectionBlock = {
     type: 'section',
     text: { type: 'mrkdwn', text: safeTruncate(`*목표*\n${escapeMrkdwn(title)}`, SLACK_LIMITS.SECTION_TEXT) },
     fields,
@@ -133,12 +173,11 @@ export function buildRequestStartBlocks(
     };
   }
 
+  const headerBlock: SlackHeaderBlock = { type: 'header', text: { type: 'plain_text', text: safeTitle } };
+
   return {
     text: stripSlackTokens(`${safeTitle} — 시작`),
-    blocks: [
-      { type: 'header', text: { type: 'plain_text', text: safeTitle } },
-      section,
-    ],
+    blocks: [headerBlock, section],
   };
 }
 
@@ -200,47 +239,38 @@ export function buildRequestCompleteBlocks(
     ? conclusionParts.join('\n\n')
     : `*결론*\n${escapeMrkdwn(title)} ${statusLabel}`;
 
-  const blocks: SlackBlock[] = [
-    { type: 'header', text: { type: 'plain_text', text: safeTitle } },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: safeTruncate(heroText, SLACK_LIMITS.SECTION_TEXT) },
-      fields: heroFields,
-    },
-  ];
+  const headerBlock: SlackHeaderBlock = { type: 'header', text: { type: 'plain_text', text: safeTitle } };
+  const heroSection: SlackSectionBlock = {
+    type: 'section',
+    text: { type: 'mrkdwn', text: safeTruncate(heroText, SLACK_LIMITS.SECTION_TEXT) },
+    fields: heroFields,
+  };
+
+  const blocks: SlackBlock[] = [headerBlock, heroSection];
 
   // ── Issue section ──
   const hasIssue = session.links?.issue?.url;
   const hasPR = session.links?.pr?.url;
 
   if (hasIssue || hasPR) {
-    blocks.push({ type: 'divider' });
+    const divider: SlackDividerBlock = { type: 'divider' };
+    blocks.push(divider);
   }
 
   if (hasIssue) {
     const issueLabel = session.links!.issue!.label || 'Issue';
     const issueUrl = session.links!.issue!.url;
     const issueTitle = session.links!.issue!.title;
-    const issueText = issueTitle
-      ? `*Issue* <${issueUrl}|${escapeMrkdwn(issueLabel)}>\n${escapeMrkdwn(issueTitle)}`
-      : `*Issue* <${issueUrl}|${escapeMrkdwn(issueLabel)}>`;
 
-    const issueSection: SlackBlock = {
-      type: 'section',
-      text: { type: 'mrkdwn', text: safeTruncate(issueText, SLACK_LIMITS.SECTION_TEXT) },
-    };
-
-    if (options?.issueContext?.cause || options?.issueContext?.impact) {
-      issueSection.fields = [];
-      if (options.issueContext.cause) {
-        issueSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*원인*\n${escapeMrkdwn(options.issueContext.cause)}`, SLACK_LIMITS.FIELD_TEXT) });
-      }
-      if (options.issueContext.impact) {
-        issueSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*영향*\n${escapeMrkdwn(options.issueContext.impact)}`, SLACK_LIMITS.FIELD_TEXT) });
-      }
+    const contextFields: { key: string; value: string }[] = [];
+    if (options?.issueContext?.cause) {
+      contextFields.push({ key: '원인', value: options.issueContext.cause });
+    }
+    if (options?.issueContext?.impact) {
+      contextFields.push({ key: '영향', value: options.issueContext.impact });
     }
 
-    blocks.push(issueSection);
+    blocks.push(buildLinkSection('Issue', issueUrl, issueLabel, issueTitle, contextFields));
   }
 
   // ── PR section ──
@@ -248,26 +278,16 @@ export function buildRequestCompleteBlocks(
     const prLabel = session.links!.pr!.label || 'PR';
     const prUrl = session.links!.pr!.url;
     const prTitle = session.links!.pr!.title;
-    const prText = prTitle
-      ? `*PR* <${prUrl}|${escapeMrkdwn(prLabel)}>\n${escapeMrkdwn(prTitle)}`
-      : `*PR* <${prUrl}|${escapeMrkdwn(prLabel)}>`;
 
-    const prSection: SlackBlock = {
-      type: 'section',
-      text: { type: 'mrkdwn', text: safeTruncate(prText, SLACK_LIMITS.SECTION_TEXT) },
-    };
-
-    if (options?.prContext?.fix || options?.prContext?.test) {
-      prSection.fields = [];
-      if (options.prContext.fix) {
-        prSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*수정*\n${escapeMrkdwn(options.prContext.fix)}`, SLACK_LIMITS.FIELD_TEXT) });
-      }
-      if (options.prContext.test) {
-        prSection.fields.push({ type: 'mrkdwn', text: safeTruncate(`*테스트*\n${escapeMrkdwn(options.prContext.test)}`, SLACK_LIMITS.FIELD_TEXT) });
-      }
+    const contextFields: { key: string; value: string }[] = [];
+    if (options?.prContext?.fix) {
+      contextFields.push({ key: '수정', value: options.prContext.fix });
+    }
+    if (options?.prContext?.test) {
+      contextFields.push({ key: '테스트', value: options.prContext.test });
     }
 
-    blocks.push(prSection);
+    blocks.push(buildLinkSection('PR', prUrl, prLabel, prTitle, contextFields));
   }
 
   // ── Actions row ──
@@ -302,10 +322,11 @@ export function buildRequestCompleteBlocks(
   }
 
   if (actionElements.length > 0) {
-    blocks.push({
+    const actionsBlock: SlackActionsBlock = {
       type: 'actions',
       elements: actionElements,
-    });
+    };
+    blocks.push(actionsBlock);
   }
 
   return {
@@ -316,7 +337,7 @@ export function buildRequestCompleteBlocks(
 
 /**
  * Post a work summary to the original (source) thread.
- * Fire-and-forget: errors are logged but never thrown.
+ * Returns true on success, false on failure or when no sourceThread exists.
  *
  * @param slackApi - Slack API helper
  * @param session - The session that completed
@@ -326,9 +347,9 @@ export async function postSourceThreadSummary(
   slackApi: SlackApiHelper,
   session: ConversationSession,
   trigger: 'merged' | 'closed',
-): Promise<void> {
+): Promise<boolean> {
   if (!session.sourceThread) {
-    return;
+    return false;
   }
 
   try {
@@ -368,7 +389,14 @@ export async function postSourceThreadSummary(
       title: session.title,
       blockCount: payload.blocks.length,
     });
+
+    return true;
   } catch (error) {
     logger.error('Failed to post source thread summary', error);
+    return false;
   }
 }
+
+// Re-export for testing
+export { safeText as _safeText };
+export { buildLinkSection as _buildLinkSection };
