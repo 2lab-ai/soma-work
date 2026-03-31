@@ -360,6 +360,53 @@ describe('Dashboard API', () => {
     expect(body.turns[1].summaryTitle).toBe('Greeting');
   });
 
+  // ── Inline JS escaping regression (PR #280) ──
+
+  it('should render syntactically valid inline JavaScript', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const html: string = res.body;
+
+    // Extract <script> content
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const scriptContent = scriptMatch![1];
+
+    // Verify the script is syntactically valid JS
+    // new Function() parses but does not execute the code
+    expect(() => new Function(scriptContent)).not.toThrow();
+  });
+
+  it('should render onclick handlers with properly escaped quotes', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard/U123',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+
+    // Extract <script> content
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // The JS code that builds onclick handlers must use \' for escaping
+    // NOT '' (empty string concat) which was the bug before PR #280
+    // Check doAction onclick builders have properly escaped quotes
+    expect(script).toContain("doAction(\\''");
+    expect(script).toContain("\\',\\'stop\\'");
+    expect(script).toContain("\\',\\'close\\'");
+    expect(script).toContain("\\',\\'trash\\'");
+    // Check openPanel onclick builder
+    expect(script).toContain("openPanel(\\''");
+  });
+
   // ── Auth ──
 
   it('should require auth for dashboard API', async () => {
