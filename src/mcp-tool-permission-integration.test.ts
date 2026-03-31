@@ -276,3 +276,182 @@ describe('PreToolUse permission hook', () => {
     expect(isAdminUser('U_ADMIN')).toBe(true);
   });
 });
+
+// ── checkMcpToolPermission logic tests (Layer 2 runtime enforcement) ──
+// Since checkMcpToolPermission is private, we test the same logic via
+// the exported resolveGatedTool + getRequiredLevel + levelSatisfies chain
+// plus mcpToolGrantStore for grant lookups.
+import {
+  resolveGatedTool,
+  getRequiredLevel,
+  levelSatisfies,
+  getPermissionGatedServers,
+  loadMcpToolPermissions,
+  type McpToolPermissionConfig,
+  type PermissionLevel,
+} from './mcp-tool-permission-config';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+
+/**
+ * Reproduces the exact logic of ClaudeHandler.checkMcpToolPermission (claude-handler.ts ~line 732).
+ * SYNC: If you modify ClaudeHandler.checkMcpToolPermission, update this test helper too.
+ * Returns a denial reason string, or null if the tool is allowed.
+ */
+function checkMcpToolPermission(
+  toolName: string,
+  userId: string,
+  permConfig: McpToolPermissionConfig,
+  gatedServerNames: string[],
+): string | null {
+  const resolved = resolveGatedTool(toolName, gatedServerNames);
+  if (!resolved) return null;
+
+  const { serverName, toolFunction } = resolved;
+  const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
+
+  // Task 1: deny-by-default for unlisted tools on gated servers
+  if (!requiredLevel) {
+    return `Tool ${toolFunction} on gated server ${serverName} is not listed in permission config. Access denied by default.`;
+  }
+
+  // Check active grants
+  mcpToolGrantStore.reload();
+  const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'write');
+  const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'read');
+  const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
+
+  if (!userLevel) {
+    return `No active grant for ${serverName}. Required: ${requiredLevel}. Use mcp__mcp-tool-permission__request_permission to request access.`;
+  }
+
+  if (!levelSatisfies(userLevel, requiredLevel)) {
+    return `Insufficient grant level for ${serverName}/${toolFunction}. Have: ${userLevel}, required: ${requiredLevel}.`;
+  }
+
+  return null;
+}
+
+describe('checkMcpToolPermission logic (Layer 2 runtime enforcement)', () => {
+  const permConfig: McpToolPermissionConfig = {
+    'server-tools': {
+      db_query: 'write',
+      logs: 'read',
+      list: 'read',
+    },
+  };
+  const gatedServerNames = getPermissionGatedServers(permConfig);
+
+  afterEach(() => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    if (fs.existsSync(grantFile)) fs.unlinkSync(grantFile);
+  });
+
+  it('denies unlisted tool on gated server (deny-by-default)', () => {
+    // Tool exists on gated server but is NOT in permission config
+    const result = checkMcpToolPermission(
+      'mcp__server-tools__unknown_tool',
+      'U_REGULAR',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).not.toBeNull();
+    expect(result).toContain('not listed in permission config');
+    expect(result).toContain('Access denied by default');
+  });
+
+  it('denies tool on gated server when user has no grant', () => {
+    // No grants on disk — user should be denied
+    const result = checkMcpToolPermission(
+      'mcp__server-tools__logs',
+      'U_NO_GRANT',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).not.toBeNull();
+    expect(result).toContain('No active grant');
+    expect(result).toContain('Required: read');
+  });
+
+  it('denies tool when user has read grant but tool requires write', () => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_READ_ONLY': {
+        'server-tools': {
+          read: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const result = checkMcpToolPermission(
+      'mcp__server-tools__db_query', // requires write
+      'U_READ_ONLY',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).not.toBeNull();
+    expect(result).toContain('Insufficient grant level');
+    expect(result).toContain('Have: read');
+    expect(result).toContain('required: write');
+  });
+
+  it('allows tool when user has write grant and tool requires write', () => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_WRITER': {
+        'server-tools': {
+          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const result = checkMcpToolPermission(
+      'mcp__server-tools__db_query', // requires write
+      'U_WRITER',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows tool when user has write grant and tool requires read', () => {
+    const grantFile = path.join(DATA_DIR, 'mcp-tool-grants.json');
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    fs.writeFileSync(grantFile, JSON.stringify({
+      'U_WRITER': {
+        'server-tools': {
+          write: { grantedAt: new Date().toISOString(), expiresAt, grantedBy: 'U_ADMIN' },
+        },
+      },
+    }));
+
+    const result = checkMcpToolPermission(
+      'mcp__server-tools__logs', // requires read
+      'U_WRITER',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows tool NOT on any gated server (returns null)', () => {
+    const result = checkMcpToolPermission(
+      'mcp__some-other-server__some_tool',
+      'U_REGULAR',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows non-mcp tool names (returns null)', () => {
+    const result = checkMcpToolPermission(
+      'Bash',
+      'U_REGULAR',
+      permConfig,
+      gatedServerNames,
+    );
+    expect(result).toBeNull();
+  });
+});

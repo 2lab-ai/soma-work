@@ -160,6 +160,11 @@ interface RequestToolStats {
  */
 export class StreamExecutor {
   private logger = new Logger('StreamExecutor');
+  /**
+   * Per-session AbortController for in-flight summary fork queries.
+   * On new user input, abort() is called to cancel the running fork and prevent stale display.
+   */
+  private summaryAbortControllers = new Map<string, AbortController>();
 
   constructor(private deps: StreamExecutorDeps) {}
 
@@ -243,6 +248,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Trace: docs/turn-summary-lifecycle/trace.md, S2
     if (this.deps.summaryTimer) {
       this.deps.summaryTimer.cancel(params.sessionKey);
+    }
+
+    // Abort any in-flight summary fork to prevent stale summary from repopulating after clearDisplay.
+    // This is the key fix for the race: timer cancel only prevents new fires, but an already-running
+    // fork must be explicitly aborted so its result is discarded.
+    const pendingAbort = this.summaryAbortControllers.get(params.sessionKey);
+    if (pendingAbort) {
+      pendingAbort.abort();
+      this.summaryAbortControllers.delete(params.sessionKey);
     }
 
     // Clear any displayed summary on new user input
@@ -1324,8 +1338,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!this.deps.summaryService) return;
+
+    // Create AbortController for this fork — stored so new user input can abort it.
+    const abortController = new AbortController();
+    this.summaryAbortControllers.set(sessionKey, abortController);
+
     try {
-      const summaryText = await this.deps.summaryService.execute(session as any);
+      const summaryText = await this.deps.summaryService.execute(session as any, abortController.signal);
+
+      // CAS cleanup: only remove if this controller is still the active one for this session.
+      // Prevents a slow summary A from deleting a newer summary B's controller.
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
+
       if (summaryText) {
         this.deps.summaryService.displayOnThread(session as any, summaryText);
         // Trigger re-render so the summary blocks appear in the Slack thread header.
@@ -1333,6 +1359,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
       }
     } catch (err: any) {
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
+      if (abortController.signal.aborted) {
+        this.logger.info('Summary fork aborted by new user input', { sessionKey });
+        return;
+      }
       this.logger.warn('Summary timer callback failed', { error: err?.message });
     }
   }
@@ -1340,6 +1373,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
+
+    // Abort and clean up any in-flight summary fork for this session
+    const pendingSummaryAbort = this.summaryAbortControllers.get(sessionKey);
+    if (pendingSummaryAbort) {
+      pendingSummaryAbort.abort();
+      this.summaryAbortControllers.delete(sessionKey);
+    }
 
     // Cleanup active MCP status tracking to prevent stuck timers
     this.deps.toolEventProcessor.cleanup(sessionKey);
