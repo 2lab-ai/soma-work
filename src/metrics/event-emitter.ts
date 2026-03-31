@@ -16,6 +16,7 @@ interface SessionLike {
   ownerName?: string;
   channelId: string;
   threadTs?: string;
+  workflow?: string;
 }
 
 function sessionKeyFrom(session: SessionLike): string {
@@ -71,7 +72,7 @@ export class MetricsEventEmitter {
       session.ownerId,
       session.ownerName || 'unknown',
       sessionKeyFrom(session),
-      { channelId: session.channelId, threadTs: session.threadTs },
+      { channelId: session.channelId, threadTs: session.threadTs, workflow: session.workflow || 'default' },
     );
     await this.emit(event);
   }

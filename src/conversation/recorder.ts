@@ -17,6 +17,17 @@ const activeConversations = new Map<string, ConversationRecord>();
 // Per-conversation write locks to serialize disk writes and prevent race conditions
 const writeLocks = new Map<string, Promise<void>>();
 
+// Optional callback fired after each turn is recorded
+let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
+
+/**
+ * Set a callback that fires after each turn is recorded.
+ * Used by the dashboard to broadcast real-time conversation updates.
+ */
+export function setOnTurnRecordedCallback(fn: (conversationId: string, turn: ConversationTurn) => void): void {
+  _onTurnRecorded = fn;
+}
+
 /**
  * Serialize save operations per conversation to prevent race conditions.
  * Each conversation's writes are queued so only one writeFile runs at a time.
@@ -155,6 +166,7 @@ async function _recordUserTurnAsync(
   record.updatedAt = Date.now();
 
   await serializedSave(conversationId, record);
+  if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 }
 
 /**
@@ -196,6 +208,7 @@ async function _recordAssistantTurnAsync(
 
   // Save immediately with raw content (serialized to prevent race conditions)
   await serializedSave(conversationId, record);
+  if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 
   // Then generate summary asynchronously (don't block)
   generateSummary(conversationId, turn.id, content).catch(err => {

@@ -14,10 +14,16 @@ export interface Todo {
 export class TodoManager {
   private logger = new Logger('TodoManager');
   private todos: Map<string, Todo[]> = new Map(); // sessionId -> todos
+  private _onUpdate: ((sessionId: string, todos: Todo[]) => void) | null = null;
+
+  setOnUpdateCallback(fn: (sessionId: string, todos: Todo[]) => void): void {
+    this._onUpdate = fn;
+  }
 
   updateTodos(sessionId: string, todos: Todo[]): void {
     this.todos.set(sessionId, todos);
-    this.logger.debug('Updated todos for session', { 
+    if (this._onUpdate) this._onUpdate(sessionId, todos);
+    this.logger.debug('Updated todos for session', {
       sessionId, 
       todoCount: todos.length,
       pending: todos.filter(t => t.status === 'pending').length,
