@@ -187,62 +187,6 @@ function computeGrade(d: DerivedMetrics, activeDays?: number): string {
 }
 
 /**
- * v5: Header block — grade + report title.
- * Format: "C · 주간 리포트 — 2026-03-23 ~ 29"
- */
-function buildHeroBand(
-  _m: AggregatedMetrics,
-  d: DerivedMetrics,
-  _trend: TrendComparison | null,
-  activeDays?: number,
-  reportTitle?: string,
-): any {
-  const grade = computeGrade(d, activeDays);
-  const title = reportTitle ?? '리포트';
-  return {
-    type: 'header',
-    text: {
-      type: 'plain_text',
-      text: truncateHeader(`${grade} · ${title}`),
-      emoji: true,
-    },
-  };
-}
-
-/**
- * v5: Context line — key metrics with targets, backticks only for 2-3 most important numbers.
- * Format: "머지율 `9.5%` (목표 15%) · 활동일 `1/7` (목표 3+) · 순코드 +10,177줄 · 첫 기록"
- */
-function buildKPIGrid(
-  m: AggregatedMetrics,
-  d: DerivedMetrics,
-  trend: TrendComparison | null,
-  activeDays?: number,
-): any[] {
-  const netSign = d.netLines >= 0 ? '+' : '';
-  const trendSuffix = trend?.baselineZero
-    ? ' · 첫 기록'
-    : (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5)
-      ? ` · 전주 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
-      : '';
-
-  const activeDaysPart = activeDays !== undefined
-    ? ` · 활동일 \`${activeDays}/7\` (목표 3+)`
-    : '';
-
-  const contextText = truncateText(
-    `머지율 \`${d.prMergeRate}%\` (목표 15%)${activeDaysPart} · 순코드 ${netSign}${fmt(d.netLines)}줄${trendSuffix}`
-  );
-
-  return [
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: contextText }],
-    },
-  ];
-}
-
-/**
  * v5: Pipeline flow — session funnel + PR funnel as 4-field KPI grid section.
  * Includes sessions, PR flow, code, and activity.
  */
@@ -339,13 +283,14 @@ function buildActionAlerts(
 ): any | null {
   const fields: Array<{ type: string; text: string }> = [];
 
-  // Merge rate warning — P1 if < 30%, P2 if < 15% target
+  // Merge rate warning — P1 if < 30%, P2 if < 50%
   if (m.prsCreated >= 3 && d.prMergeRate < 50) {
     const severity = d.prMergeRate < 30 ? 'P1' : 'P2';
+    const target = d.prMergeRate < 30 ? 50 : 60;
     fields.push({
       type: 'mrkdwn',
       text: truncateFieldText(
-        `*${severity} — 머지율*\n당일 리뷰 + PR당 변경 100줄 이하 유지.\n목표: 머지율 15%+ (현재 ${d.prMergeRate}%).`
+        `*${severity} — 머지율*\n당일 리뷰 + PR당 변경 100줄 이하 유지.\n목표: 머지율 ${target}%+ (현재 ${d.prMergeRate}%).`
       ),
     });
   }
@@ -609,19 +554,6 @@ function generateDailySummary(
   parts.push(trendSuffix ? trendSuffix.replace(/^ · /, '') : `${dayLabel}요일`);
 
   return parts.filter(Boolean).join(' · ');
-}
-
-/**
- * v5: Insights block — replaced by narrative in v5 design.
- * Kept as stub for any remaining call sites.
- */
-function buildInsights(
-  _m: AggregatedMetrics,
-  _d: DerivedMetrics,
-  _peakHour: number | null,
-  _trend: TrendComparison | null,
-): any {
-  return { type: 'mrkdwn', text: '' };
 }
 
 // === Main Formatter Class ===
