@@ -179,9 +179,11 @@ async function start() {
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
 
-    // Connect dashboard: task accessor
+    // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
     setDashboardTaskAccessor((sessionKey: string) => {
-      const todos = slackHandler.getTodoManager().getTodos(sessionKey);
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      const lookupId = session?.sessionId || sessionKey;
+      const todos = slackHandler.getTodoManager().getTodos(lookupId);
       return todos.map(t => ({ content: t.content, status: t.status }));
     });
 

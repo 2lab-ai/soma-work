@@ -119,6 +119,18 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
+/** Verify the authenticated user owns the target session. Returns null if OK, or a 403 reply if not. */
+function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
+  const authUser = request.dashboardUser;
+  const sessions = _getSessionsFn?.();
+  const targetSession = sessions?.get(sessionKey);
+  if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
+    reply.status(403).send({ error: 'You can only modify your own sessions' });
+    return false;
+  }
+  return true;
+}
+
 // ── Task accessor ──────────────────────────────────────────────────
 
 type TaskAccessor = (sessionKey: string) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> | undefined;
@@ -283,7 +295,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void };
+type WsClient = { send: (data: string) => void; close: () => void; userId?: string };
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -313,16 +325,23 @@ export function broadcastTaskUpdate(sessionKey: string, tasks: Array<{ content: 
   }
 }
 
-/** Broadcast conversation turn update to all connected WebSocket clients */
+/** Broadcast conversation turn update — scoped to session owner's WS clients only */
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
+    // Resolve session owner for scoping
+    const sessions = _getSessionsFn?.();
+    const session = sessions?.get(conversationId);
+    const ownerId = session?.ownerId;
+
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent
       ? { ...turn, rawContent: undefined }
       : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
+      // Only send to clients belonging to the session owner (or all if owner unknown)
+      if (ownerId && client.userId && client.userId !== ownerId) continue;
       try { client.send(payload); } catch { wsClients.delete(client); }
     }
   } catch (error) {
@@ -475,6 +494,7 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
       try {
         if (_stopHandlerFn) {
           await _stopHandlerFn(key);
@@ -494,6 +514,7 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
       try {
         if (_closeHandlerFn) {
           await _closeHandlerFn(key);
@@ -513,6 +534,7 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
       try {
         if (_trashHandlerFn) {
           await _trashHandlerFn(key);
@@ -541,14 +563,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
         return;
       }
-      // Verify requesting user owns this session
-      const authUser = (request as any).dashboardUser;
-      const sessions = _getSessionsFn?.();
-      const targetSession = sessions?.get(key);
-      if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
-        reply.status(403).send({ error: 'You can only send commands to your own sessions' });
-        return;
-      }
+      if (!requireSessionOwner(request, reply, key)) return;
       try {
         if (_commandHandlerFn) {
           await _commandHandlerFn(key, message);
@@ -582,16 +597,18 @@ export async function registerDashboardRoutes(
 
     const MAX_WS_CLIENTS = 100;
 
-    server.get('/ws/dashboard', { websocket: true, preHandler: [authMiddleware] }, (socket: any) => {
+    server.get('/ws/dashboard', { websocket: true, preHandler: [authMiddleware] }, (socket: any, request: any) => {
       // Enforce max client cap to prevent DoS
       if (wsClients.size >= MAX_WS_CLIENTS) {
         logger.warn('WebSocket max clients reached, rejecting', { total: wsClients.size });
         socket.close(1013, 'Max clients reached');
         return;
       }
+      const authUser = request?.dashboardUser;
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
+        userId: authUser?.userId,
       };
       wsClients.add(client);
       logger.debug('WebSocket client connected', { total: wsClients.size });
