@@ -1126,6 +1126,15 @@ export class SessionRegistry {
     return true;
   }
 
+  /** Mark a session as trashed (hidden from dashboard but kept in conversation list) */
+  trashSession(sessionKey: string): boolean {
+    const session = this.sessions.get(sessionKey);
+    if (!session) return false;
+    session.trashed = true;
+    this.logger.info('Session trashed', { sessionKey, ownerId: session.ownerId });
+    return true;
+  }
+
   /**
    * Clean up inactive sessions based on max age
    * 3-stage lifecycle: Active → Sleep (24h) → Delete (7d sleep)
