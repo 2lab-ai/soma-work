@@ -150,4 +150,94 @@ describe('createForkExecutor', () => {
     expect(capturedController).toBeDefined();
     expect(capturedController!.signal.aborted).toBe(true);
   });
+
+  describe('stale session fallback', () => {
+    it('retries without sessionId when fork fails with "No conversation found"', async () => {
+      mockHandler.dispatchOneShot
+        .mockRejectedValueOnce(new Error('Claude Code returned an error result: No conversation found with session ID: abc-123'))
+        .mockResolvedValueOnce('Fallback summary');
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt', 'claude-sonnet-4-20250514', 'abc-123', '/tmp/work');
+
+      expect(result).toBe('Fallback summary');
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(2);
+
+      // First call: with sessionId
+      expect(mockHandler.dispatchOneShot.mock.calls[0][4]).toBe('abc-123');
+      // Second call: without sessionId
+      expect(mockHandler.dispatchOneShot.mock.calls[1][4]).toBeUndefined();
+      // cwd preserved in both calls
+      expect(mockHandler.dispatchOneShot.mock.calls[1][5]).toBe('/tmp/work');
+    });
+
+    it('does NOT retry when error is unrelated to stale session', async () => {
+      mockHandler.dispatchOneShot.mockRejectedValue(new Error('API rate limit'));
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt', undefined, 'session-xyz');
+
+      expect(result).toBeNull();
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry when no sessionId was provided', async () => {
+      mockHandler.dispatchOneShot.mockRejectedValue(new Error('No conversation found with session ID: phantom'));
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt');
+
+      expect(result).toBeNull();
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null when fallback also fails', async () => {
+      mockHandler.dispatchOneShot
+        .mockRejectedValueOnce(new Error('No conversation found with session ID: abc'))
+        .mockRejectedValueOnce(new Error('Network error'));
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt', undefined, 'abc');
+
+      expect(result).toBeNull();
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(2);
+    });
+
+    it('detects stale session case-insensitively', async () => {
+      mockHandler.dispatchOneShot
+        .mockRejectedValueOnce(new Error('no conversation found with session ID: abc'))
+        .mockResolvedValueOnce('Fallback OK');
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt', undefined, 'abc');
+
+      expect(result).toBe('Fallback OK');
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(2);
+    });
+
+    it('creates fresh AbortController for retry when abortSignal is provided', async () => {
+      const controllers: (AbortController | undefined)[] = [];
+      mockHandler.dispatchOneShot
+        .mockImplementationOnce(async (_m: string, _s: string, _mod: string, ac: AbortController) => {
+          controllers.push(ac);
+          throw new Error('No conversation found with session ID: xyz');
+        })
+        .mockImplementationOnce(async (_m: string, _s: string, _mod: string, ac: AbortController) => {
+          controllers.push(ac);
+          return 'Fallback with signal';
+        });
+
+      const executor = createForkExecutor(mockHandler as any);
+      const ac = new AbortController();
+      const result = await executor('prompt', undefined, 'xyz', undefined, ac.signal);
+
+      expect(result).toBe('Fallback with signal');
+      expect(controllers).toHaveLength(2);
+      // Both should be AbortControllers (not undefined)
+      expect(controllers[0]).toBeInstanceOf(AbortController);
+      expect(controllers[1]).toBeInstanceOf(AbortController);
+      // They should be different instances
+      expect(controllers[0]).not.toBe(controllers[1]);
+    });
+  });
 });
