@@ -7,17 +7,17 @@
  * maximum information density, zero decoration waste, rule-based action alerts.
  */
 
-import {
-  type AggregatedMetrics,
-  type DailyBreakdown,
-  type DailyReport,
-  type DerivedMetrics,
-  type EnrichedDailyReport,
-  type EnrichedWeeklyReport,
-  type HourlyDistribution,
-  type TrendComparison,
-  type UserRanking,
-  type WeeklyReport,
+import type {
+  AggregatedMetrics,
+  DailyBreakdown,
+  DailyReport,
+  DerivedMetrics,
+  EnrichedDailyReport,
+  EnrichedWeeklyReport,
+  HourlyDistribution,
+  TrendComparison,
+  UserRanking,
+  WeeklyReport,
 } from './types';
 
 const MAX_RANKINGS_IN_BLOCKS = 5;
@@ -67,9 +67,15 @@ function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/** Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity. */
+/** Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity. Logs a warning in dev. */
 function safeNum(n: number): number {
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n)) {
+    if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production') {
+      console.warn(`[report-formatter] safeNum received non-finite value: ${n}`);
+    }
+    return 0;
+  }
+  return n;
 }
 
 const MAX_BLOCKS = 50;
@@ -94,12 +100,57 @@ function safeFields(fields: SlackTextObject[]): SlackTextObject[] {
   return fields.slice(0, MAX_FIELDS);
 }
 
+const MAX_CONTEXT_ELEMENTS = 10;
+
+function safeContextElements(elements: SlackTextObject[]): SlackTextObject[] {
+  return elements.slice(0, MAX_CONTEXT_ELEMENTS);
+}
+
+/**
+ * Sanitize + truncate in correct order: escape entities first, then truncate the final payload.
+ * This prevents entity expansion from pushing text over Slack limits.
+ */
+function sanitizeMrkdwn(text: string, max = MAX_TEXT_LENGTH): string {
+  return truncateText(escapeMrkdwn(text), max);
+}
+
 function safeBlocks(blocks: SlackBlock[]): SlackBlock[] {
   if (blocks.length <= MAX_BLOCKS) return blocks;
   const header = blocks[0];
   const footer = blocks[blocks.length - 1];
   const middle = blocks.slice(1, -1).slice(0, MAX_BLOCKS - 2);
   return [header, ...middle, footer];
+}
+
+/**
+ * Priority-based block trimming: preserves header (first) and footer (last).
+ * Drops blocks in priority order: dividers first, then middle context blocks,
+ * then middle sections — ensuring highest-value diagnostic blocks survive.
+ */
+function trimToLimit(blocks: SlackBlock[], limit: number): SlackBlock[] {
+  if (blocks.length <= limit) return blocks;
+
+  const header = blocks[0];
+  const footer = blocks[blocks.length - 1];
+  const middle = blocks.slice(1, -1);
+
+  // Assign priority: divider=0 (drop first), context=1, section=2 (keep), header=3 (keep)
+  const prioritized = middle.map((block, idx) => {
+    let priority = 2;
+    if (block.type === 'divider') priority = 0;
+    else if (block.type === 'context') priority = 1;
+    return { block, idx, priority };
+  });
+
+  // Sort by priority descending (highest priority = keep first), stable by original index
+  prioritized.sort((a, b) => b.priority - a.priority || a.idx - b.idx);
+
+  // Keep only what fits
+  const kept = prioritized.slice(0, limit - 2);
+  // Restore original order
+  kept.sort((a, b) => a.idx - b.idx);
+
+  return [header, ...kept.map((k) => k.block), footer];
 }
 
 interface FormattedReport {
@@ -410,7 +461,7 @@ function buildDailyCadence(breakdown: DailyBreakdown[]): SlackBlock | null {
 
   return {
     type: 'context' as const,
-    elements,
+    elements: safeContextElements(elements),
   };
 }
 
@@ -435,17 +486,17 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
         r.metrics.prsMerged * 10;
       return { ...r, score };
     })
-    .sort((a, b) => b.score - a.score || a.userName.localeCompare(b.userName));
+    .sort((a, b) => b.score - a.score || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }));
 
   const top = scored[0];
   const rest = scored.slice(1);
 
   // Top 1: full detail — all scoring formula components visible
   const tm = top.metrics;
-  const topLine = `1위 *${escapeMrkdwn(top.userName)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
+  const topLine = `1위 *${sanitizeMrkdwn(top.userName, 100)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
 
   // Rest: compressed to single line
-  const restCompact = rest.map((r) => `${r.rank}위 *${escapeMrkdwn(r.userName)}* ${fmt(r.score)}점`).join(' · ');
+  const restCompact = rest.map((r) => `${r.rank}위 *${sanitizeMrkdwn(r.userName, 100)}* ${fmt(r.score)}점`).join(' · ');
 
   const rankingText = truncateText(`*팀* (턴+세션+이슈×2+커밋×3+PR×5+머지×10)\n${topLine}\n${restCompact}`);
 
@@ -651,7 +702,7 @@ export class ReportFormatter {
           text: {
             type: 'mrkdwn',
             text:
-              `${medal} *${escapeMrkdwn(r.userName)}*\n` +
+              `${medal} *${sanitizeMrkdwn(r.userName, 100)}*\n` +
               `턴 \`${r.metrics.turnsUsed}\` · PR \`${r.metrics.prsCreated}\` · 머지 \`${r.metrics.prsMerged}\` · 커밋 \`${r.metrics.commitsCreated}\` · 코드 \`+${r.metrics.codeLinesAdded}\``,
           },
         });
@@ -752,7 +803,7 @@ export class ReportFormatter {
       const timeElements = buildTimeDistribution(hourlyDistribution, peakHour);
       blocks.push({
         type: 'context',
-        elements: timeElements,
+        elements: safeContextElements(timeElements),
       });
     }
 
@@ -780,15 +831,8 @@ export class ReportFormatter {
       `생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     // v5 layout contract: daily ≤ 10 blocks.
-    // Trim strategy: keep header (first) + footer (last), remove excess from middle.
-    const finalBlocks = safeBlocks(blocks);
-    if (finalBlocks.length > V5_MAX_DAILY_BLOCKS) {
-      const footer = finalBlocks.pop()!;
-      finalBlocks.length = V5_MAX_DAILY_BLOCKS - 1;
-      finalBlocks.push(footer);
-    }
-
-    return { blocks: finalBlocks, text };
+    // Priority-based trim: drop dividers first, then context (except footer), preserve data blocks.
+    return { blocks: trimToLimit(safeBlocks(blocks), V5_MAX_DAILY_BLOCKS), text };
   }
 
   /**
@@ -900,15 +944,7 @@ export class ReportFormatter {
       `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     // v5 layout contract: weekly ≤ 12 blocks.
-    // Trim strategy: keep header (first) + footer (last), remove excess from the middle.
-    // This preserves identity and attribution even when optional sections overflow.
-    const finalBlocks = safeBlocks(blocks);
-    if (finalBlocks.length > V5_MAX_WEEKLY_BLOCKS) {
-      const footer = finalBlocks.pop()!;
-      finalBlocks.length = V5_MAX_WEEKLY_BLOCKS - 1;
-      finalBlocks.push(footer);
-    }
-
-    return { blocks: finalBlocks, text };
+    // Priority-based trim: drop dividers first, then context (except footer), preserve data blocks.
+    return { blocks: trimToLimit(safeBlocks(blocks), V5_MAX_WEEKLY_BLOCKS), text };
   }
 }
