@@ -70,7 +70,7 @@ describe('Dashboard API', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.board).toEqual({ working: [], waiting: [], idle: [] });
+    expect(body.board).toEqual({ working: [], waiting: [], idle: [], closed: [] });
   });
 
   it('should categorize sessions into kanban columns', async () => {

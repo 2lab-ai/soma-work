@@ -10,7 +10,7 @@ import { CONFIG_FILE, MCP_CONFIG_FILE, PLUGINS_DIR, DATA_DIR } from './env-paths
 import { Logger } from './logger';
 import { discoverInstallations, isGitHubAppConfigured, getGitHubAppAuth } from './github-auth.js';
 import { initializeDispatchService } from './dispatch-service';
-import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, broadcastSessionUpdate, setOAuthUserLookup } from './conversation';
+import { initRecorder, startWebServer, stopWebServer, setDashboardSessionAccessor, setDashboardTaskAccessor, setDashboardStopHandler, setDashboardCloseHandler, setDashboardTrashHandler, setDashboardCommandHandler, broadcastSessionUpdate, broadcastTaskUpdate, broadcastConversationUpdate, setOnTurnRecordedCallback, setOAuthUserLookup } from './conversation';
 import { notifyRelease, getVersionInfo } from './release-notifier';
 import { notifyStartup } from './startup-notifier';
 import { scanChannels } from './channel-registry';
@@ -178,6 +178,61 @@ async function start() {
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+
+    // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
+    setDashboardTaskAccessor((sessionKey: string) => {
+      const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      const lookupId = session?.sessionId || sessionKey;
+      const todos = slackHandler.getTodoManager().getTodos(lookupId);
+      return todos.map(t => ({ content: t.content, status: t.status }));
+    });
+
+    // Connect dashboard: stop handler (abort running session)
+    setDashboardStopHandler(async (sessionKey: string) => {
+      slackHandler.getRequestCoordinator().abortSession(sessionKey);
+      logger.info('Dashboard: stopped session', { sessionKey });
+    });
+
+    // Connect dashboard: close handler (terminate session)
+    setDashboardCloseHandler(async (sessionKey: string) => {
+      claudeHandler.terminateSession(sessionKey);
+      logger.info('Dashboard: closed session', { sessionKey });
+    });
+
+    // Connect dashboard: trash handler (hide session from dashboard)
+    setDashboardTrashHandler(async (sessionKey: string) => {
+      claudeHandler.getSessionRegistry().trashSession(sessionKey);
+      logger.info('Dashboard: trashed session', { sessionKey });
+    });
+
+    // Connect dashboard: command handler (inject message as if user typed in Slack)
+    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+      const session = claudeHandler.getSessionByKey(sessionKey);
+      if (!session) {
+        logger.warn('Dashboard command: session not found', { sessionKey });
+        return;
+      }
+      const noopSay = async () => ({ ts: undefined as string | undefined });
+      await slackHandler.handleMessage({
+        type: 'message',
+        channel: session.channelId,
+        thread_ts: session.threadTs,
+        text: message,
+        user: session.ownerId,
+        ts: String(Date.now() / 1000),
+      } as any, noopSay);
+      logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+    });
+
+    // Connect dashboard: real-time task updates
+    slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
+      broadcastTaskUpdate(sessionId, todos.map(t => ({ content: t.content, status: t.status })));
+    });
+
+    // Connect dashboard: real-time conversation turn updates
+    setOnTurnRecordedCallback((conversationId, turn) => {
+      broadcastConversationUpdate(conversationId, turn);
+    });
 
     // Connect OAuth: email → Slack user lookup for dashboard login
     {

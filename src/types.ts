@@ -241,6 +241,8 @@ export interface ConversationSession {
   renewSaveResult?: SaveContextResultPayload;
   // Ghost Session Fix #99: defense-in-depth flag for in-flight code to self-terminate
   terminated?: boolean;
+  // Dashboard: session hidden from dashboard view but kept in conversation list
+  trashed?: boolean;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID

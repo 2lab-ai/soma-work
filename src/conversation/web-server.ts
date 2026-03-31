@@ -81,6 +81,11 @@ async function authMiddleware(
     }
     return;
   }
+  // Attach OAuth user info to request for downstream use
+  const dashUser = getDashboardUser(request);
+  if (dashUser) {
+    (request as any).dashboardUser = dashUser;
+  }
 }
 
 let server: FastifyInstance | null = null;
