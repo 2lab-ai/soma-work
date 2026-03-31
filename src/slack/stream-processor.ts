@@ -3,19 +3,27 @@
  * Extracted from slack-handler.ts for-await loop (Phase 4.1)
  */
 
-import { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { Logger } from '../logger';
-import { SessionLinks } from '../types';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
+import { Logger } from '../logger';
+import type { SessionLinks } from '../types';
+import type { SlackMessagePayload } from './choice-message-builder';
 import {
-  ToolFormatter,
-  UserChoiceHandler,
-  MessageFormatter,
-} from './index';
-import { SlackMessagePayload } from './choice-message-builder';
-import { SessionLinkDirectiveHandler, ChannelMessageDirectiveHandler, SourceWorkingDirDirectiveHandler } from './directives';
+  ChannelMessageDirectiveHandler,
+  SessionLinkDirectiveHandler,
+  SourceWorkingDirDirectiveHandler,
+} from './directives';
 import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
-import { OutputFlag, shouldOutput as checkOutputFlag, verboseTag, getToolCallRenderMode, getToolResultRenderMode, getThinkingRenderMode, LOG_DETAIL } from './output-flags';
+import { MessageFormatter, ToolFormatter, UserChoiceHandler } from './index';
+import {
+  shouldOutput as checkOutputFlag,
+  getThinkingRenderMode,
+  getToolCallRenderMode,
+  getToolResultRenderMode,
+  LOG_DETAIL,
+  OutputFlag,
+  verboseTag,
+} from './output-flags';
 
 /**
  * Context for stream processing
@@ -33,42 +41,37 @@ export interface StreamContext {
 /**
  * Slack say function type
  */
-export type SayFunction = (message: { text: string; thread_ts: string; blocks?: any[]; attachments?: any[] }) => Promise<{ ts?: string }>;
+export type SayFunction = (message: {
+  text: string;
+  thread_ts: string;
+  blocks?: any[];
+  attachments?: any[];
+}) => Promise<{ ts?: string }>;
 
 /**
  * Handler for assistant text messages
  */
-export interface AssistantTextHandler {
-  (content: string, context: StreamContext): Promise<void>;
-}
+export type AssistantTextHandler = (content: string, context: StreamContext) => Promise<void>;
 
 /**
  * Handler for tool use events
  */
-export interface ToolUseHandler {
-  (toolUse: ToolUseEvent, context: StreamContext): Promise<void>;
-}
+export type ToolUseHandler = (toolUse: ToolUseEvent, context: StreamContext) => Promise<void>;
 
 /**
  * Handler for tool result events
  */
-export interface ToolResultHandler {
-  (toolResult: ToolResultEvent, context: StreamContext): Promise<void>;
-}
+export type ToolResultHandler = (toolResult: ToolResultEvent, context: StreamContext) => Promise<void>;
 
 /**
  * Handler for todo updates
  */
-export interface TodoUpdateHandler {
-  (input: any, context: StreamContext): Promise<void>;
-}
+export type TodoUpdateHandler = (input: any, context: StreamContext) => Promise<void>;
 
 /**
  * Handler for final result
  */
-export interface ResultHandler {
-  (result: string, context: StreamContext): Promise<void>;
-}
+export type ResultHandler = (result: string, context: StreamContext) => Promise<void>;
 
 /**
  * Tool use event data
@@ -176,17 +179,11 @@ export interface StreamCallbacks {
   /** Called when model outputs source_working_dir JSON directive */
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
-  onChoiceCreated?: (
-    payload: SlackMessagePayload,
-    context: StreamContext,
-    sourceMessageTs?: string
-  ) => Promise<void>;
+  onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext, sourceMessageTs?: string) => Promise<void>;
   /** Called when SDK emits compact_boundary (context was auto-compacted) */
   onCompactBoundary?: (metadata?: Record<string, unknown>) => void;
   /** Called before sending the final assistant message to append footer text */
-  buildFinalResponseFooter?: (
-    params: FinalResponseFooterParams
-  ) => Promise<string | undefined> | string | undefined;
+  buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -263,7 +260,7 @@ export class StreamProcessor {
   async process(
     stream: AsyncIterable<SDKMessage>,
     context: StreamContext,
-    abortSignal: AbortSignal
+    abortSignal: AbortSignal,
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
     let lastUsage: UsageData | undefined;
@@ -330,7 +327,7 @@ export class StreamProcessor {
   private async handleAssistantMessage(
     message: SDKMessage,
     context: StreamContext,
-    currentMessages: string[]
+    currentMessages: string[],
   ): Promise<void> {
     if (message.type !== 'assistant') return;
 
@@ -412,9 +409,7 @@ export class StreamProcessor {
     }
 
     // Check for TodoWrite tool
-    const todoTool = content.find((part: any) =>
-      part.type === 'tool_use' && part.name === 'TodoWrite'
-    );
+    const todoTool = content.find((part: any) => part.type === 'tool_use' && part.name === 'TodoWrite');
     if (todoTool && this.callbacks.onTodoUpdate) {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
@@ -475,11 +470,10 @@ export class StreamProcessor {
       }));
 
     for (const toolUse of toolUses) {
-      this.logger.debug('Received tool_use', ToolFormatter.buildToolUseLogSummary(
-        toolUse.id,
-        toolUse.name,
-        toolUse.input
-      ));
+      this.logger.debug(
+        'Received tool_use',
+        ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
+      );
     }
 
     // Track last tool name for endTurnInfo (Issue #42 S3)
@@ -542,11 +536,7 @@ export class StreamProcessor {
   /**
    * Handle text content in assistant message
    */
-  private async handleTextMessage(
-    content: any[],
-    context: StreamContext,
-    currentMessages: string[]
-  ): Promise<void> {
+  private async handleTextMessage(content: any[], context: StreamContext, currentMessages: string[]): Promise<void> {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
@@ -584,7 +574,7 @@ export class StreamProcessor {
   private async handleMultiChoiceMessage(
     choices: any,
     textWithoutChoice: string,
-    context: StreamContext
+    context: StreamContext,
   ): Promise<void> {
     const questions = choices.questions || [];
     const questionCount = questions.length;
@@ -614,7 +604,7 @@ export class StreamProcessor {
       this.logger.info('Splitting multi-choice form into multiple messages', {
         totalQuestions: questionCount,
         chunkCount: chunks.length,
-        questionsPerChunk: chunks.map(c => c.length),
+        questionsPerChunk: chunks.map((c) => c.length),
       });
     }
 
@@ -637,11 +627,7 @@ export class StreamProcessor {
   /**
    * Send a single form chunk (called by handleMultiChoiceMessage)
    */
-  private async sendSingleFormChunk(
-    choices: any,
-    context: StreamContext,
-    invalidateOldForms: boolean
-  ): Promise<void> {
+  private async sendSingleFormChunk(choices: any, context: StreamContext, invalidateOldForms: boolean): Promise<void> {
     const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Create pending form
@@ -711,7 +697,7 @@ export class StreamProcessor {
   private async handleSingleChoiceMessage(
     choice: any,
     textWithoutChoice: string,
-    context: StreamContext
+    context: StreamContext,
   ): Promise<void> {
     // Log the original model output for debugging
     this.logger.debug('Received single choice from model', {
@@ -759,11 +745,7 @@ export class StreamProcessor {
   /**
    * Send choice as plain text when Slack blocks fail
    */
-  private async sendChoiceFallback(
-    choice: any,
-    context: StreamContext,
-    type: 'single' | 'multi'
-  ): Promise<void> {
+  private async sendChoiceFallback(choice: any, context: StreamContext, type: 'single' | 'multi'): Promise<void> {
     this.logger.warn('Sending choice as fallback plain text', { type });
 
     let fallbackText: string;
@@ -777,7 +759,10 @@ export class StreamProcessor {
         '',
         ...questions.map((q: any, idx: number) => {
           const optionsList = (q.choices || [])
-            .map((opt: any, optIdx: number) => `  ${optIdx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`)
+            .map(
+              (opt: any, optIdx: number) =>
+                `  ${optIdx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ''}`,
+            )
             .join('\n');
           return `*Q${idx + 1}. ${q.question}*\n${optionsList}`;
         }),
@@ -785,7 +770,7 @@ export class StreamProcessor {
         '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
         '_예: Q1: 1, Q2: 2, Q3: 1_',
       ];
-      fallbackText = lines.filter(l => l !== '').join('\n');
+      fallbackText = lines.filter((l) => l !== '').join('\n');
     } else {
       // Single choice fallback
       const options = (choice.choices || [])
@@ -798,7 +783,9 @@ export class StreamProcessor {
         options,
         '',
         '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
-      ].filter(l => l !== '').join('\n');
+      ]
+        .filter((l) => l !== '')
+        .join('\n');
     }
 
     await context.say({
@@ -870,9 +857,14 @@ export class StreamProcessor {
     const lines: string[] = [];
     for (const [, entry] of entries) {
       if (entry.status === 'done' || entry.status === 'error') {
-        lines.push(ToolFormatter.formatOneLineToolComplete(
-          entry.toolName, entry.input, entry.status === 'error', entry.duration
-        ));
+        lines.push(
+          ToolFormatter.formatOneLineToolComplete(
+            entry.toolName,
+            entry.input,
+            entry.status === 'error',
+            entry.duration,
+          ),
+        );
       } else {
         const isAsync = entry.toolName.startsWith('mcp__') || entry.toolName === 'Task';
         const icon = isAsync ? '⏳' : '⚪';
@@ -886,8 +878,8 @@ export class StreamProcessor {
     // Cleanup only when all entries are finalized:
     // - all statuses resolved (done/error)
     // - async tools (MCP/Task) have duration set (or won't get one)
-    const allDone = Array.from(entries.values()).every(e => e.status !== 'pending');
-    const allDurationsResolved = Array.from(entries.values()).every(e => {
+    const allDone = Array.from(entries.values()).every((e) => e.status !== 'pending');
+    const allDurationsResolved = Array.from(entries.values()).every((e) => {
       const isAsync = e.toolName.startsWith('mcp__') || e.toolName === 'Task';
       return !isAsync || e.duration !== undefined;
     });
@@ -958,7 +950,7 @@ export class StreamProcessor {
   private async handleResultMessage(
     message: any,
     context: StreamContext,
-    currentMessages: string[]
+    currentMessages: string[],
   ): Promise<UsageData | undefined> {
     this.logger.info('Received result from Claude SDK', {
       subtype: message.subtype,
@@ -972,9 +964,10 @@ export class StreamProcessor {
     // Parse stop_reason → EndTurnInfo (Issue #42 S3)
     const rawStopReason = message.stop_reason as string | null;
     const validReasons = ['end_turn', 'max_tokens', 'tool_use', 'stop_sequence'] as const;
-    const reason = rawStopReason && validReasons.includes(rawStopReason as any)
-      ? (rawStopReason as typeof validReasons[number])
-      : 'end_turn';
+    const reason =
+      rawStopReason && validReasons.includes(rawStopReason as any)
+        ? (rawStopReason as (typeof validReasons)[number])
+        : 'end_turn';
     this._endTurnInfo = {
       reason,
       timestamp: Date.now(),
@@ -1113,7 +1106,7 @@ export class StreamProcessor {
     result: string,
     context: StreamContext,
     usage?: UsageData,
-    durationMs?: number
+    durationMs?: number,
   ): Promise<void> {
     // Extract response directives before user choice
     const processedResult = await this.extractAndDispatchDirectives(result, context);
@@ -1180,10 +1173,11 @@ export class StreamProcessor {
     } catch (error: any) {
       // Fallback: if Block Kit fails, send as plain text
       const slackError = error?.data?.error;
-      const isBlockKitError = slackError === 'invalid_blocks'
-        || slackError === 'invalid_attachments'
-        || slackError === 'too_many_blocks'
-        || slackError === 'invalid_blocks_format';
+      const isBlockKitError =
+        slackError === 'invalid_blocks' ||
+        slackError === 'invalid_attachments' ||
+        slackError === 'too_many_blocks' ||
+        slackError === 'invalid_blocks_format';
 
       if (isBlockKitError) {
         this.logger.warn('Block Kit rendering failed, falling back to plain text', {
@@ -1208,9 +1202,7 @@ export class StreamProcessor {
   private extractTextContent(content: any[]): string | null {
     if (!content) return null;
 
-    const textParts = content
-      .filter((part: any) => part.type === 'text')
-      .map((part: any) => part.text);
+    const textParts = content.filter((part: any) => part.type === 'text').map((part: any) => part.text);
 
     return textParts.length > 0 ? textParts.join('') : null;
   }

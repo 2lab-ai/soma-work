@@ -1,5 +1,5 @@
-import { UserChoice, UserChoices } from '../types';
-import { SessionTheme } from '../user-settings-store';
+import type { UserChoice, UserChoices } from '../types';
+import type { SessionTheme } from '../user-settings-store';
 
 export interface SlackMessagePayload {
   blocks?: any[];
@@ -21,10 +21,13 @@ export class ChoiceMessageBuilder {
     const resolvedTheme = theme ?? 'default';
 
     switch (resolvedTheme) {
-      case 'compact': return this.buildThemeCompact(choice, sessionKey);
-      case 'minimal': return this.buildThemeMinimal(choice, sessionKey);
+      case 'compact':
+        return ChoiceMessageBuilder.buildThemeCompact(choice, sessionKey);
+      case 'minimal':
+        return ChoiceMessageBuilder.buildThemeMinimal(choice, sessionKey);
       case 'default':
-      default: return this.buildThemeDefault(choice, sessionKey);
+      default:
+        return ChoiceMessageBuilder.buildThemeDefault(choice, sessionKey);
     }
   }
 
@@ -185,15 +188,15 @@ export class ChoiceMessageBuilder {
       },
     });
 
-    const buttons = this.buildOptionButtons(choice, sessionKey);
-    buttons.push(this.buildCustomInputButton(sessionKey, choice.question));
+    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
+    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
 
     blocks.push({
       type: 'actions',
       elements: buttons,
     });
 
-    return this.wrapAttachment(blocks);
+    return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
 
   // ---------------------------------------------------------------------------
@@ -214,15 +217,15 @@ export class ChoiceMessageBuilder {
       ],
     });
 
-    const buttons = this.buildOptionButtons(choice, sessionKey);
-    buttons.push(this.buildCustomInputButton(sessionKey, choice.question));
+    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
+    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
 
     blocks.push({
       type: 'actions',
       elements: buttons,
     });
 
-    return this.wrapAttachment(blocks);
+    return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
 
   // ===========================================================================
@@ -240,7 +243,7 @@ export class ChoiceMessageBuilder {
     choices: UserChoices,
     formId: string,
     sessionKey: string,
-    selections: Record<string, { choiceId: string; label: string }> = {}
+    selections: Record<string, { choiceId: string; label: string }> = {},
   ): SlackMessagePayload {
     const attachmentBlocks: any[] = [];
 
@@ -259,7 +262,7 @@ export class ChoiceMessageBuilder {
     });
 
     // Progress bar and description
-    const progressBar = this.buildProgressBar(answeredCount, totalQuestions);
+    const progressBar = ChoiceMessageBuilder.buildProgressBar(answeredCount, totalQuestions);
     const progressText = isComplete ? '✅ 모두 완료!' : `${answeredCount}/${totalQuestions} 완료`;
 
     const contextElements: any[] = [

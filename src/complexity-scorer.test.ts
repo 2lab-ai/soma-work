@@ -1,9 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import {
-  scoreComplexity,
-  ComplexityTier,
-  ComplexityResult,
-} from './complexity-scorer';
+import { describe, expect, it } from 'vitest';
+import { ComplexityResult, ComplexityTier, scoreComplexity } from './complexity-scorer';
 
 describe('complexity-scorer', () => {
   describe('scoreComplexity', () => {
@@ -32,29 +28,27 @@ describe('complexity-scorer', () => {
       const result = scoreComplexity('간단히 확인해줘');
       expect(result.tier).toBe('LOW');
       // "간단히" should trigger negative lexical signal
-      expect(result.signals.some(s => s.points < 0)).toBe(true);
+      expect(result.signals.some((s) => s.points < 0)).toBe(true);
     });
   });
 
   describe('lexical signals', () => {
     it('adds points for architecture keywords', () => {
       const result = scoreComplexity(
-        '이 서비스의 아키텍처를 설계하고 마이그레이션 계획을 세워줘. 전체 리팩토링이 필요할 수 있어.'
+        '이 서비스의 아키텍처를 설계하고 마이그레이션 계획을 세워줘. 전체 리팩토링이 필요할 수 있어.',
       );
-      expect(result.signals.some(s => s.category === 'lexical' && s.name === 'architecture_keywords')).toBe(true);
+      expect(result.signals.some((s) => s.category === 'lexical' && s.name === 'architecture_keywords')).toBe(true);
       expect(result.score).toBeGreaterThanOrEqual(3);
     });
 
     it('adds points for debug keywords', () => {
-      const result = scoreComplexity(
-        '에러가 발생하고 있어. 크래시 로그를 보면 버그가 있는 것 같아.'
-      );
-      expect(result.signals.some(s => s.category === 'lexical' && s.name === 'debug_keywords')).toBe(true);
+      const result = scoreComplexity('에러가 발생하고 있어. 크래시 로그를 보면 버그가 있는 것 같아.');
+      expect(result.signals.some((s) => s.category === 'lexical' && s.name === 'debug_keywords')).toBe(true);
     });
 
     it('subtracts points for simplicity keywords', () => {
       const result = scoreComplexity('간단히 조회해줘');
-      const simpleSig = result.signals.find(s => s.name === 'simplicity_keywords');
+      const simpleSig = result.signals.find((s) => s.name === 'simplicity_keywords');
       expect(simpleSig).toBeDefined();
       expect(simpleSig!.points).toBeLessThan(0);
     });
@@ -62,66 +56,58 @@ describe('complexity-scorer', () => {
     it('adds points for long messages (>200 words)', () => {
       const longMessage = 'word '.repeat(201);
       const result = scoreComplexity(longMessage);
-      expect(result.signals.some(s => s.name === 'long_message')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'long_message')).toBe(true);
     });
 
     it('adds more points for very long messages (>500 words)', () => {
       const veryLongMessage = 'word '.repeat(501);
       const result = scoreComplexity(veryLongMessage);
-      const sig = result.signals.find(s => s.name === 'very_long_message');
+      const sig = result.signals.find((s) => s.name === 'very_long_message');
       expect(sig).toBeDefined();
       expect(sig!.points).toBeGreaterThanOrEqual(3);
     });
 
     it('adds points for multiple file paths', () => {
       const result = scoreComplexity(
-        'src/dispatch-service.ts, src/types.ts, src/session-registry.ts 이 세 파일을 수정해야 해'
+        'src/dispatch-service.ts, src/types.ts, src/session-registry.ts 이 세 파일을 수정해야 해',
       );
-      expect(result.signals.some(s => s.name === 'multiple_file_paths')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'multiple_file_paths')).toBe(true);
     });
 
     it('adds points for multiple code blocks', () => {
       const result = scoreComplexity(
-        '이렇게 바꿔줘:\n```ts\nconst a = 1;\n```\n그리고 이것도:\n```ts\nconst b = 2;\n```'
+        '이렇게 바꿔줘:\n```ts\nconst a = 1;\n```\n그리고 이것도:\n```ts\nconst b = 2;\n```',
       );
-      expect(result.signals.some(s => s.name === 'multiple_code_blocks')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'multiple_code_blocks')).toBe(true);
     });
   });
 
   describe('structural signals', () => {
     it('adds points for multiple subtasks (numbered list)', () => {
-      const result = scoreComplexity(
-        '다음을 해줘:\n1. 타입 정의\n2. 함수 구현\n3. 테스트 작성\n4. 문서화'
-      );
-      expect(result.signals.some(s => s.name === 'subtasks')).toBe(true);
+      const result = scoreComplexity('다음을 해줘:\n1. 타입 정의\n2. 함수 구현\n3. 테스트 작성\n4. 문서화');
+      expect(result.signals.some((s) => s.name === 'subtasks')).toBe(true);
     });
 
     it('adds more points for many subtasks (6+)', () => {
-      const result = scoreComplexity(
-        '1. 타입\n2. 함수\n3. 테스트\n4. 문서\n5. 리뷰\n6. 배포\n7. 모니터링'
-      );
-      const sig = result.signals.find(s => s.name === 'many_subtasks');
+      const result = scoreComplexity('1. 타입\n2. 함수\n3. 테스트\n4. 문서\n5. 리뷰\n6. 배포\n7. 모니터링');
+      const sig = result.signals.find((s) => s.name === 'many_subtasks');
       expect(sig).toBeDefined();
       expect(sig!.points).toBeGreaterThanOrEqual(4);
     });
 
     it('adds points for cross-file change indicators', () => {
-      const result = scoreComplexity(
-        '여러 파일에 걸쳐 변경해야 해. cross-cutting concern이라서'
-      );
-      expect(result.signals.some(s => s.name === 'cross_file_change')).toBe(true);
+      const result = scoreComplexity('여러 파일에 걸쳐 변경해야 해. cross-cutting concern이라서');
+      expect(result.signals.some((s) => s.name === 'cross_file_change')).toBe(true);
     });
 
     it('adds points for test requirement indicators', () => {
       const result = scoreComplexity('구현하고 테스트도 작성해줘');
-      expect(result.signals.some(s => s.name === 'test_required')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'test_required')).toBe(true);
     });
 
     it('adds points for system-wide impact indicators', () => {
-      const result = scoreComplexity(
-        '전체 시스템에 영향을 미치는 전역 설정 변경이야'
-      );
-      expect(result.signals.some(s => s.name === 'system_wide_impact')).toBe(true);
+      const result = scoreComplexity('전체 시스템에 영향을 미치는 전역 설정 변경이야');
+      expect(result.signals.some((s) => s.name === 'system_wide_impact')).toBe(true);
     });
   });
 
@@ -185,7 +171,7 @@ describe('complexity-scorer', () => {
   describe('false positive prevention', () => {
     it('does NOT match "spec" inside "specific"', () => {
       const result = scoreComplexity('This is a specific requirement');
-      expect(result.signals.some(s => s.name === 'test_required')).toBe(false);
+      expect(result.signals.some((s) => s.name === 'test_required')).toBe(false);
     });
 
     it('does NOT match "error" inside "errorHandler"', () => {
@@ -194,17 +180,17 @@ describe('complexity-scorer', () => {
       const result = scoreComplexity('the errorHandler class');
       // This is debatable, but our regex uses whitespace/punctuation boundaries
       // so "errorHandler" won't match "error" (no boundary between error and Handler)
-      expect(result.signals.some(s => s.name === 'debug_keywords')).toBe(false);
+      expect(result.signals.some((s) => s.name === 'debug_keywords')).toBe(false);
     });
 
     it('matches "error" as a standalone word', () => {
       const result = scoreComplexity('there is an error in the code');
-      expect(result.signals.some(s => s.name === 'debug_keywords')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'debug_keywords')).toBe(true);
     });
 
     it('matches "test" at end of sentence', () => {
       const result = scoreComplexity('please write a test');
-      expect(result.signals.some(s => s.name === 'test_required')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'test_required')).toBe(true);
     });
   });
 
@@ -220,35 +206,21 @@ describe('complexity-scorer', () => {
       ].join('\n');
       const result = scoreComplexity(msg);
       // "architecture", "microservice", "refactor", "migration" are inside code block
-      expect(result.signals.some(s => s.name === 'architecture_keywords')).toBe(false);
+      expect(result.signals.some((s) => s.name === 'architecture_keywords')).toBe(false);
     });
 
     it('still counts code blocks themselves', () => {
-      const msg = [
-        'Change this:',
-        '```ts',
-        'const a = 1;',
-        '```',
-        'To this:',
-        '```ts',
-        'const b = 2;',
-        '```',
-      ].join('\n');
+      const msg = ['Change this:', '```ts', 'const a = 1;', '```', 'To this:', '```ts', 'const b = 2;', '```'].join(
+        '\n',
+      );
       const result = scoreComplexity(msg);
-      expect(result.signals.some(s => s.name === 'multiple_code_blocks')).toBe(true);
+      expect(result.signals.some((s) => s.name === 'multiple_code_blocks')).toBe(true);
     });
 
     it('does not count bullet items inside code blocks as subtasks', () => {
-      const msg = [
-        'Update the README',
-        '```md',
-        '- item one',
-        '- item two',
-        '- item three',
-        '```',
-      ].join('\n');
+      const msg = ['Update the README', '```md', '- item one', '- item two', '- item three', '```'].join('\n');
       const result = scoreComplexity(msg);
-      expect(result.signals.some(s => s.name === 'subtasks')).toBe(false);
+      expect(result.signals.some((s) => s.name === 'subtasks')).toBe(false);
     });
   });
 });

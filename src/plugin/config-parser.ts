@@ -2,8 +2,8 @@
  * Parses and validates the `plugin` section of config.json.
  */
 
-import { PluginConfig, PluginRef, MarketplaceEntry } from './types';
 import { Logger } from '../logger';
+import type { MarketplaceEntry, PluginConfig, PluginRef } from './types';
 
 const logger = new Logger('PluginConfigParser');
 
@@ -100,9 +100,7 @@ export function validatePluginConfig(raw: unknown): PluginConfig {
 
   // localOverrides
   if (Array.isArray(obj.localOverrides)) {
-    result.localOverrides = obj.localOverrides.filter(
-      (p): p is string => typeof p === 'string' && p.length > 0
-    );
+    result.localOverrides = obj.localOverrides.filter((p): p is string => typeof p === 'string' && p.length > 0);
   }
 
   return result;

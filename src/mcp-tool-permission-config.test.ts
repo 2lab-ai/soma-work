@@ -1,14 +1,14 @@
-import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { describe, expect, it } from 'vitest';
 import {
-  loadMcpToolPermissions,
+  getPermissionGatedServers,
   getRequiredLevel,
   levelSatisfies,
-  getPermissionGatedServers,
-  resolveGatedTool,
+  loadMcpToolPermissions,
   type McpToolPermissionConfig,
+  resolveGatedTool,
 } from './mcp-tool-permission-config';
 
 function writeTempConfig(content: object): string {

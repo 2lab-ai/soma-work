@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../admin-utils', () => ({
   isAdminUser: vi.fn(),
@@ -12,9 +12,9 @@ vi.mock('../../user-settings-store', () => ({
   },
 }));
 
-import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 import { isAdminUser } from '../../admin-utils';
 import { userSettingsStore } from '../../user-settings-store';
+import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 
 function makeBody(actionId: string, value: string, userId = 'U_ADMIN') {
   return {
@@ -58,7 +58,7 @@ describe('UserAcceptanceActionHandler', () => {
         expect.objectContaining({
           replace_original: true,
           text: expect.stringContaining('U_NEW'),
-        })
+        }),
       );
     });
 
@@ -69,7 +69,7 @@ describe('UserAcceptanceActionHandler', () => {
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         'U_NEW',
         expect.stringContaining('승인'),
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 
@@ -115,7 +115,7 @@ describe('UserAcceptanceActionHandler', () => {
       expect(mockRespond).toHaveBeenCalledWith(
         expect.objectContaining({
           replace_original: true,
-        })
+        }),
       );
     });
 
@@ -126,7 +126,7 @@ describe('UserAcceptanceActionHandler', () => {
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         'U_NEW',
         expect.stringContaining('거부'),
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 

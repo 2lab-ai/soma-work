@@ -1,14 +1,14 @@
-import { ActivityState, WorkflowType } from '../types';
-import { getVerbosityName, LogVerbosity } from './output-flags';
+import type { ActivityState, WorkflowType } from '../types';
+import { getVerbosityName, type LogVerbosity } from './output-flags';
 
 export interface PRStatusInfo {
-  state: string;      // 'open' | 'closed' | 'merged'
+  state: string; // 'open' | 'closed' | 'merged'
   mergeable: boolean;
   draft: boolean;
   merged: boolean;
   approved?: boolean; // true if PR has been approved
-  head?: string;      // source branch
-  base?: string;      // target branch
+  head?: string; // source branch
+  base?: string; // target branch
 }
 
 export interface ActionPanelBuildParams {
@@ -85,12 +85,12 @@ export class ActionPanelBuilder {
 
     // Closed state: status + divider + summary grid + footer
     if (params.closed) {
-      return this.buildClosedPanel(params);
+      return ActionPanelBuilder.buildClosedPanel(params);
     }
 
     const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
 
-    const status = this.resolveStatus({
+    const status = ActionPanelBuilder.resolveStatus({
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
@@ -100,7 +100,7 @@ export class ActionPanelBuilder {
     const isQuestionPending = params.waitingForChoice === true;
     const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
 
-    const closeButton = this.buildCloseButton(params.sessionKey);
+    const closeButton = ActionPanelBuilder.buildCloseButton(params.sessionKey);
 
     // Build final action rows with close button merged in
     let actionRows: any[];
@@ -125,22 +125,22 @@ export class ActionPanelBuilder {
           if (key === 'pr_approve' && params.prStatus?.merged) return false;
           return true;
         })
-        .map((key) => this.buildButton(ACTION_DEFS[key], params.sessionKey));
+        .map((key) => ActionPanelBuilder.buildButton(ACTION_DEFS[key], params.sessionKey));
 
-      if (params.prUrl && !actions.some(k => k.startsWith('pr_review'))) {
-        workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
-        workflowButtons.push(this.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
+      if (params.prUrl && !actions.some((k) => k.startsWith('pr_review'))) {
+        workflowButtons.push(ActionPanelBuilder.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
+        workflowButtons.push(ActionPanelBuilder.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
       }
 
-      if (this.shouldRenderMergeButton(workflow, params)) {
-        workflowButtons.push(this.buildMergeButton(params));
+      if (ActionPanelBuilder.shouldRenderMergeButton(workflow, params)) {
+        workflowButtons.push(ActionPanelBuilder.buildMergeButton(params));
       }
 
       // Enforce max 1 primary button (recommended action only)
-      this.enforceMaxOnePrimary(workflowButtons);
+      ActionPanelBuilder.enforceMaxOnePrimary(workflowButtons);
 
       if (workflowButtons.length > 0) {
-        const chunks = this.chunk(workflowButtons, 5);
+        const chunks = ActionPanelBuilder.chunk(workflowButtons, 5);
         actionRows = chunks.map((row, i) => ({
           type: 'actions',
           block_id: `workflow_actions${i > 0 ? `_${i}` : ''}`,
@@ -156,19 +156,21 @@ export class ActionPanelBuilder {
     const blocks: any[] = [];
 
     // 1. Status blocks (hero section + fields section)
-    blocks.push(...this.buildStatusBlocks({
-      status,
-      waitingForChoice: params.waitingForChoice,
-      activityState: params.activityState,
-      hasActiveRequest: params.hasActiveRequest,
-      agentPhase: params.agentPhase,
-      activeTool: params.activeTool,
-      prStatus: params.prStatus,
-      contextRemainingPercent: params.contextRemainingPercent,
-    }));
+    blocks.push(
+      ...ActionPanelBuilder.buildStatusBlocks({
+        status,
+        waitingForChoice: params.waitingForChoice,
+        activityState: params.activityState,
+        hasActiveRequest: params.hasActiveRequest,
+        agentPhase: params.agentPhase,
+        activeTool: params.activeTool,
+        prStatus: params.prStatus,
+        contextRemainingPercent: params.contextRemainingPercent,
+      }),
+    );
 
     // 2. Metrics context (small text: time + tools + link + verbosity)
-    const metricsCtx = this.buildMetricsContext({
+    const metricsCtx = ActionPanelBuilder.buildMetricsContext({
       turnSummary: params.turnSummary,
       latestResponseLink: params.latestResponseLink,
       logVerbosity: params.logVerbosity,
@@ -178,7 +180,7 @@ export class ActionPanelBuilder {
     // 3. Choice slot (when waiting for user input)
     if (isQuestionPending && params.choiceBlocks) {
       blocks.push({ type: 'divider' });
-      blocks.push(...this.buildChoiceSlotBlocks(params.choiceBlocks));
+      blocks.push(...ActionPanelBuilder.buildChoiceSlotBlocks(params.choiceBlocks));
     }
 
     // 4. Divider + action rows (with close button merged)
@@ -239,8 +241,8 @@ export class ActionPanelBuilder {
     prStatus?: PRStatusInfo;
     contextRemainingPercent?: number;
   }): any[] {
-    const badge = this.statusBadge(params.status);
-    const agentChip = this.buildAgentChip({
+    const badge = ActionPanelBuilder.statusBadge(params.status);
+    const agentChip = ActionPanelBuilder.buildAgentChip({
       waitingForChoice: params.waitingForChoice,
       activityState: params.activityState,
       hasActiveRequest: params.hasActiveRequest,
@@ -251,24 +253,28 @@ export class ActionPanelBuilder {
     const statusText = agentChip ? `${badge}\n_${agentChip}_` : badge;
 
     // PR chip for right column
-    const prChip = params.prStatus ? this.prStatusChip(params.prStatus) : '';
+    const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
 
     if (prChip) {
       // 2-column fields: status (left) + PR (right)
-      return [{
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: statusText },
-          { type: 'mrkdwn', text: `*PR*\n${prChip}` },
-        ],
-      }];
+      return [
+        {
+          type: 'section',
+          fields: [
+            { type: 'mrkdwn', text: statusText },
+            { type: 'mrkdwn', text: `*PR*\n${prChip}` },
+          ],
+        },
+      ];
     }
 
     // No PR — plain section
-    return [{
-      type: 'section',
-      text: { type: 'mrkdwn', text: statusText },
-    }];
+    return [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: statusText },
+      },
+    ];
   }
 
   /**
@@ -290,7 +296,7 @@ export class ActionPanelBuilder {
     }
 
     if (params.logVerbosity !== undefined) {
-      elements.push({ type: 'mrkdwn', text: this.verbosityLabel(params.logVerbosity) });
+      elements.push({ type: 'mrkdwn', text: ActionPanelBuilder.verbosityLabel(params.logVerbosity) });
     }
 
     if (elements.length === 0) return null;
@@ -305,7 +311,7 @@ export class ActionPanelBuilder {
     const LABELS: Record<LogVerbosity, string> = {
       minimal: '🔇 minimal',
       compact: '📎 compact',
-      detail:  '📋 detail',
+      detail: '📋 detail',
       verbose: '📢 verbose',
     };
     const name = getVerbosityName(mask);
@@ -324,11 +330,11 @@ export class ActionPanelBuilder {
     }
 
     if (params.activeTool) {
-      return this.formatToolLabel(params.activeTool);
+      return ActionPanelBuilder.formatToolLabel(params.activeTool);
     }
 
     if (params.agentPhase) {
-      return this.truncateLine(params.agentPhase, 22);
+      return ActionPanelBuilder.truncateLine(params.agentPhase, 22);
     }
 
     if (params.hasActiveRequest) {
@@ -348,7 +354,7 @@ export class ActionPanelBuilder {
 
   private static contextChip(contextRemainingPercent?: number): string {
     if (typeof contextRemainingPercent === 'number' && Number.isFinite(contextRemainingPercent)) {
-      return `${this.formatPercent(contextRemainingPercent)}%`;
+      return `${ActionPanelBuilder.formatPercent(contextRemainingPercent)}%`;
     }
     return '--%';
   }
@@ -363,7 +369,7 @@ export class ActionPanelBuilder {
       const serverName = parts[1] || 'mcp';
       const actualTool = parts.slice(2).join('__');
       const label = actualTool ? `${serverName}:${actualTool}` : serverName;
-      return this.truncateLine(label, 20);
+      return ActionPanelBuilder.truncateLine(label, 20);
     }
 
     const aliases: Record<string, string> = {
@@ -378,7 +384,7 @@ export class ActionPanelBuilder {
       Task: '에이전트 위임',
     };
 
-    return aliases[toolName] || this.truncateLine(toolName, 20);
+    return aliases[toolName] || ActionPanelBuilder.truncateLine(toolName, 20);
   }
 
   private static statusBadge(status: string): string {
@@ -413,9 +419,7 @@ export class ActionPanelBuilder {
   }
 
   private static buildMergeButton(params: ActionPanelBuildParams): any {
-    const prLabel = params.prStatus?.head
-      ? `${params.prStatus.head} → ${params.prStatus.base}`
-      : 'PR';
+    const prLabel = params.prStatus?.head ? `${params.prStatus.head} → ${params.prStatus.base}` : 'PR';
 
     return {
       type: 'button',
@@ -441,10 +445,7 @@ export class ActionPanelBuilder {
     };
   }
 
-  private static shouldRenderMergeButton(
-    workflow: WorkflowType,
-    params: ActionPanelBuildParams
-  ): boolean {
+  private static shouldRenderMergeButton(workflow: WorkflowType, params: ActionPanelBuildParams): boolean {
     if (!params.prStatus?.mergeable || !params.prUrl) {
       return false;
     }
@@ -458,10 +459,12 @@ export class ActionPanelBuilder {
 
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
     if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
-      return [{
-        type: 'section',
-        text: { type: 'mrkdwn', text: '❓ *응답이 필요한 질문이 있습니다.*' },
-      }];
+      return [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: '❓ *응답이 필요한 질문이 있습니다.*' },
+        },
+      ];
     }
     return choiceBlocks.map((block) => JSON.parse(JSON.stringify(block)));
   }
@@ -509,7 +512,7 @@ export class ActionPanelBuilder {
    */
   private static buildClosedPanel(params: ActionPanelBuildParams): ActionPanelPayload {
     const workflow = params.workflow || 'default';
-    const prChip = params.prStatus ? this.prStatusChip(params.prStatus) : '';
+    const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
 
     const heroBlock = prChip
       ? {
@@ -526,7 +529,7 @@ export class ActionPanelBuilder {
     // Summary fields grid (2-column layout)
     const fields: any[] = [];
     if (params.turnSummary) {
-      const { elapsed, toolCount } = this.parseTurnSummary(params.turnSummary);
+      const { elapsed, toolCount } = ActionPanelBuilder.parseTurnSummary(params.turnSummary);
       if (elapsed) {
         fields.push({ type: 'mrkdwn', text: `*소요 시간*\n${elapsed}` });
       }
@@ -547,7 +550,7 @@ export class ActionPanelBuilder {
 
     // Context footer: timestamp + link
     const footerElements: any[] = [];
-    footerElements.push({ type: 'mrkdwn', text: `${this.formatCloseTimestamp()} 종료` });
+    footerElements.push({ type: 'mrkdwn', text: `${ActionPanelBuilder.formatCloseTimestamp()} 종료` });
 
     if (params.latestResponseLink) {
       footerElements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|최신 응답>` });

@@ -66,44 +66,44 @@ export interface UserRanking {
  * Derived metrics computed from raw AggregatedMetrics.
  */
 export interface DerivedMetrics {
-  productivityScore: number;       // Weighted composite score
+  productivityScore: number; // Weighted composite score
   /**
    * prsMerged / prsCreated * 100 (%).
    * Note: this is in-period throughput, not cohort conversion — a PR created
    * and merged in different periods will be counted in separate buckets.
    */
   prMergeRate: number;
-  avgCodePerPr: number;            // codeLinesAdded / prsCreated
-  avgCodePerCommit: number;        // codeLinesAdded / commitsCreated
-  avgTurnsPerSession: number;      // turnsUsed / sessionsCreated
-  sessionCompletionRate: number;   // sessionsClosed / sessionsCreated * 100 (%)
-  netLines: number;                // codeLinesAdded - codeLinesDeleted
-  churnRatio: number;              // codeLinesDeleted / (codeLinesAdded + codeLinesDeleted) * 100, or 0
-  avgChangedLinesPerPr: number;    // (codeLinesAdded + codeLinesDeleted) / prsCreated
-  commitPerActiveDay: number;      // commitsCreated / activeDays
-  prPerActiveDay: number;          // prsCreated / activeDays
+  avgCodePerPr: number; // codeLinesAdded / prsCreated
+  avgCodePerCommit: number; // codeLinesAdded / commitsCreated
+  avgTurnsPerSession: number; // turnsUsed / sessionsCreated
+  sessionCompletionRate: number; // sessionsClosed / sessionsCreated * 100 (%)
+  netLines: number; // codeLinesAdded - codeLinesDeleted
+  churnRatio: number; // codeLinesDeleted / (codeLinesAdded + codeLinesDeleted) * 100, or 0
+  avgChangedLinesPerPr: number; // (codeLinesAdded + codeLinesDeleted) / prsCreated
+  commitPerActiveDay: number; // commitsCreated / activeDays
+  prPerActiveDay: number; // prsCreated / activeDays
 }
 
 /**
  * Trend comparison vs previous period.
  */
 export interface TrendComparison {
-  sessionsCreatedDelta: number;    // % change
+  sessionsCreatedDelta: number; // % change
   turnsUsedDelta: number;
   prsCreatedDelta: number;
   commitsCreatedDelta: number;
   codeLinesAddedDelta: number;
   prsMergedDelta: number;
   productivityScoreDelta: number;
-  baselineZero: boolean;           // true if previous period had no activity
+  baselineZero: boolean; // true if previous period had no activity
 }
 
 /**
  * Per-day breakdown for weekly heatmap.
  */
 export interface DailyBreakdown {
-  date: string;           // YYYY-MM-DD
-  dayLabel: string;       // 월,화,수,목,금,토,일
+  date: string; // YYYY-MM-DD
+  dayLabel: string; // 월,화,수,목,금,토,일
   totalEvents: number;
   metrics: AggregatedMetrics;
 }
@@ -112,7 +112,7 @@ export interface DailyBreakdown {
  * Hourly distribution for peak hour analysis.
  */
 export interface HourlyDistribution {
-  hour: number;           // 0-23
+  hour: number; // 0-23
   eventCount: number;
 }
 
@@ -120,7 +120,7 @@ export interface HourlyDistribution {
  * Achievement badge.
  */
 export interface Achievement {
-  icon: string;           // Emoji
+  icon: string; // Emoji
   title: string;
   description: string;
 }
@@ -138,7 +138,7 @@ export interface FunFact {
  */
 export interface EnrichedDailyReport extends DailyReport {
   derived: DerivedMetrics;
-  trend: TrendComparison | null;   // null if no previous data
+  trend: TrendComparison | null; // null if no previous data
   hourlyDistribution: HourlyDistribution[];
   peakHour: number | null;
   achievements: Achievement[];

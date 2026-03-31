@@ -10,9 +10,9 @@ import { Logger } from './logger';
 const logger = new Logger('TokenManager');
 
 export interface TokenEntry {
-  readonly name: string;           // "cct1", "cct2", ...
-  readonly value: string;          // actual token value
-  cooldownUntil: Date | null;      // null = available
+  readonly name: string; // "cct1", "cct2", ...
+  readonly value: string; // actual token value
+  cooldownUntil: Date | null; // null = available
 }
 
 export interface RotationResult {
@@ -63,18 +63,23 @@ export class TokenManager {
     const singleToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
     if (tokenList) {
-      const values = tokenList.split(',').map(t => t.trim()).filter(t => t.length > 0);
+      const values = tokenList
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
       this.tokens = values.map((value, i) => ({
         name: `cct${i + 1}`,
         value,
         cooldownUntil: null,
       }));
     } else if (singleToken) {
-      this.tokens = [{
-        name: 'cct1',
-        value: singleToken,
-        cooldownUntil: null,
-      }];
+      this.tokens = [
+        {
+          name: 'cct1',
+          value: singleToken,
+          cooldownUntil: null,
+        },
+      ];
     } else {
       this.tokens = [];
       logger.warn('No OAuth tokens configured (CLAUDE_CODE_OAUTH_TOKEN_LIST / CLAUDE_CODE_OAUTH_TOKEN)');
@@ -86,7 +91,7 @@ export class TokenManager {
 
     logger.info(`TokenManager initialized: ${this.tokens.length} token(s) loaded, active=${this.tokens[0]?.name}`, {
       count: this.tokens.length,
-      names: this.tokens.map(t => t.name),
+      names: this.tokens.map((t) => t.name),
     });
   }
 
@@ -103,7 +108,7 @@ export class TokenManager {
    * Clears cooldown on the target token.
    */
   setActiveToken(name: string): boolean {
-    const index = this.tokens.findIndex(t => t.name === name);
+    const index = this.tokens.findIndex((t) => t.name === name);
     if (index === -1) return false;
 
     this.activeIndex = index;
@@ -193,11 +198,14 @@ export class TokenManager {
     this.activeIndex = earliestIndex;
     this.applyToken();
 
-    logger.warn(`All tokens on cooldown! Using ${this.tokens[earliestIndex].name} (earliest recovery: ${earliestTime.toLocaleTimeString()})`, {
-      previous: previousName,
-      active: this.tokens[earliestIndex].name,
-      earliestRecovery: earliestTime.toISOString(),
-    });
+    logger.warn(
+      `All tokens on cooldown! Using ${this.tokens[earliestIndex].name} (earliest recovery: ${earliestTime.toLocaleTimeString()})`,
+      {
+        previous: previousName,
+        active: this.tokens[earliestIndex].name,
+        earliestRecovery: earliestTime.toISOString(),
+      },
+    );
 
     return {
       rotated: true,

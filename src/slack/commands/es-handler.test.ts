@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EsHandler } from './es-handler';
 
 // Trace: docs/turn-summary-lifecycle/trace.md

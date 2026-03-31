@@ -1,18 +1,18 @@
 import Fastify, {
-  FastifyInstance,
-  FastifyRequest,
-  FastifyReply,
-  InjectOptions,
-  LightMyRequestResponse,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type InjectOptions,
+  type LightMyRequestResponse,
 } from 'fastify';
-import { Logger } from '../logger';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
-import { getConversation, listConversations, getTurnRawContent } from './recorder';
-import { renderConversationListPage, renderConversationViewPage } from './viewer';
-import { ConversationTurn } from './types';
+import { Logger } from '../logger';
 import { registerDashboardRoutes } from './dashboard';
-import { registerOAuthRoutes, getDashboardUser } from './oauth';
+import { getDashboardUser, registerOAuthRoutes } from './oauth';
+import { getConversation, getTurnRawContent, listConversations } from './recorder';
+import type { ConversationTurn } from './types';
+import { renderConversationListPage, renderConversationViewPage } from './viewer';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -33,9 +33,7 @@ function validateAuthToken(request: FastifyRequest): boolean {
   // 1. Check Authorization header (Bearer token)
   const authHeader = request.headers.authorization;
   if (authHeader && token) {
-    const providedToken = authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : authHeader;
+    const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
     if (providedToken === token) return true;
   }
 
@@ -64,13 +62,9 @@ function validateAuthToken(request: FastifyRequest): boolean {
  * API requests (Accept: application/json or /api/ paths) get 401 JSON.
  * Browser requests get redirected to /login.
  */
-async function authMiddleware(
-  request: FastifyRequest,
-  reply: FastifyReply
-): Promise<void> {
+async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   if (!validateAuthToken(request)) {
-    const isApi = request.url.startsWith('/api/') ||
-      (request.headers.accept || '').includes('application/json');
+    const isApi = request.url.startsWith('/api/') || (request.headers.accept || '').includes('application/json');
     if (isApi) {
       reply.status(401).send({
         error: 'Unauthorized',
@@ -149,20 +143,24 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
 
   // Conversation detail page
-  server.get<{ Params: { id: string } }>('/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
-    try {
-      const record = await getConversation(request.params.id);
-      if (!record) {
-        reply.status(404).send('Conversation not found');
-        return;
+  server.get<{ Params: { id: string } }>(
+    '/conversations/:id',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.id);
+        if (!record) {
+          reply.status(404).send('Conversation not found');
+          return;
+        }
+        const html = renderConversationViewPage(record);
+        reply.type('text/html; charset=utf-8').send(html);
+      } catch (error) {
+        logger.error('Error rendering conversation', error);
+        reply.status(500).send('Internal Server Error');
       }
-      const html = renderConversationViewPage(record);
-      reply.type('text/html; charset=utf-8').send(html);
-    } catch (error) {
-      logger.error('Error rendering conversation', error);
-      reply.status(500).send('Internal Server Error');
-    }
-  });
+    },
+  );
 
   // ---- JSON API Routes (require auth when token is configured) ----
 
@@ -178,36 +176,40 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
 
   // Get conversation detail (JSON)
-  server.get<{ Params: { id: string } }>('/api/conversations/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
-    try {
-      const record = await getConversation(request.params.id);
-      if (!record) {
-        reply.status(404).send({ error: 'Not found' });
-        return;
+  server.get<{ Params: { id: string } }>(
+    '/api/conversations/:id',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.id);
+        if (!record) {
+          reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+
+        // Return turns without rawContent (lazy load via separate endpoint)
+        const turnsWithoutRaw = record.turns.map((t: ConversationTurn) => ({
+          id: t.id,
+          role: t.role,
+          timestamp: t.timestamp,
+          userName: t.userName,
+          summaryTitle: t.summaryTitle,
+          summaryBody: t.summaryBody,
+          summarized: t.summarized,
+          // Include rawContent only for user turns (they're short)
+          rawContent: t.role === 'user' ? t.rawContent : undefined,
+        }));
+
+        reply.send({
+          ...record,
+          turns: turnsWithoutRaw,
+        });
+      } catch (error) {
+        logger.error('Error getting conversation API', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
       }
-
-      // Return turns without rawContent (lazy load via separate endpoint)
-      const turnsWithoutRaw = record.turns.map((t: ConversationTurn) => ({
-        id: t.id,
-        role: t.role,
-        timestamp: t.timestamp,
-        userName: t.userName,
-        summaryTitle: t.summaryTitle,
-        summaryBody: t.summaryBody,
-        summarized: t.summarized,
-        // Include rawContent only for user turns (they're short)
-        rawContent: t.role === 'user' ? t.rawContent : undefined,
-      }));
-
-      reply.send({
-        ...record,
-        turns: turnsWithoutRaw,
-      });
-    } catch (error) {
-      logger.error('Error getting conversation API', error);
-      reply.status(500).send({ error: 'Internal Server Error' });
-    }
-  });
+    },
+  );
 
   // Get raw content for a specific turn (lazy load)
   server.get<{ Params: { id: string; turnId: string } }>(
@@ -225,7 +227,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         logger.error('Error getting turn raw content', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   // Export selected turns as markdown
@@ -241,9 +243,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         }
 
         const selectedIds = new Set(request.body.turnIds || []);
-        const selectedTurns = selectedIds.size > 0
-          ? record.turns.filter(t => selectedIds.has(t.id))
-          : record.turns;
+        const selectedTurns = selectedIds.size > 0 ? record.turns.filter((t) => selectedIds.has(t.id)) : record.turns;
 
         const markdown = generateMarkdownExport(record.title, record.ownerName, selectedTurns);
         reply.type('text/markdown; charset=utf-8').send(markdown);
@@ -251,7 +251,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         logger.error('Error exporting conversation', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   // ---- OAuth Routes (public — no auth required) ----
@@ -330,11 +330,7 @@ export async function injectWebServer(request: InjectRequest): Promise<InjectRes
 /**
  * Generate markdown export from selected turns
  */
-function generateMarkdownExport(
-  title: string | undefined,
-  ownerName: string,
-  turns: ConversationTurn[]
-): string {
+function generateMarkdownExport(title: string | undefined, ownerName: string, turns: ConversationTurn[]): string {
   const lines: string[] = [];
 
   lines.push(`# ${title || 'Conversation'}`);

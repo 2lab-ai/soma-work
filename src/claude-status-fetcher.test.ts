@@ -5,16 +5,16 @@
  * All tests must FAIL (RED) until implementation exists.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // These imports will fail until the module is created — that's the RED state
 import {
+  type ClaudeStatusInfo,
   fetchClaudeStatus,
   formatStatusForSlack,
   invalidateStatusCache,
   isApiLikeError,
   shouldShowStatusBlock,
-  type ClaudeStatusInfo,
 } from './claude-status-fetcher';
 
 // === Sample HTML fixtures ===
@@ -87,31 +87,37 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
 
   // Trace: S1, Section 3b — component parsing
   it('fetchClaudeStatus_parsesComponentStatuses', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
     expect(status).not.toBeNull();
     expect(status!.components).toContainEqual(
-      expect.objectContaining({ name: expect.stringContaining('Claude API'), status: 'outage' })
+      expect.objectContaining({ name: expect.stringContaining('Claude API'), status: 'outage' }),
     );
     expect(status!.components).toContainEqual(
-      expect.objectContaining({ name: expect.stringContaining('Claude Code'), status: 'degraded' })
+      expect.objectContaining({ name: expect.stringContaining('Claude Code'), status: 'degraded' }),
     );
     expect(status!.components).toContainEqual(
-      expect.objectContaining({ name: expect.stringContaining('Government'), status: 'operational' })
+      expect.objectContaining({ name: expect.stringContaining('Government'), status: 'operational' }),
     );
   });
 
   // Trace: S1, Section 3b — incident parsing
   it('fetchClaudeStatus_parsesIncidents', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -122,10 +128,13 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
 
   // Trace: S1, Section 3b — overall derivation
   it('fetchClaudeStatus_derivesOverallStatus', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -154,10 +163,13 @@ describe('Scenario 1 — Fetch and display status on API error', () => {
 
   // Trace: S1, Section 5 — parse failure
   it('fetchClaudeStatus_returnsNullOnParseFailure', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve('<html><body>totally different page</body></html>'),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve('<html><body>totally different page</body></html>'),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -250,7 +262,8 @@ describe('Scenario 3 — Graceful degradation when unreachable', () => {
   it('fetchClaudeStatus_doesNotCacheNull', async () => {
     vi.useFakeTimers();
 
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockRejectedValueOnce(new Error('ECONNREFUSED'))
       .mockResolvedValueOnce({
         ok: true,
@@ -294,7 +307,7 @@ describe('Scenario 4 — Format status for Slack', () => {
     expect(result).toContain('All Systems Operational');
     expect(result).toContain(':large_green_circle:');
     // Should be a concise single-line format, not per-component listing
-    expect(result.split('\n').filter(l => l.trim()).length).toBeLessThanOrEqual(2);
+    expect(result.split('\n').filter((l) => l.trim()).length).toBeLessThanOrEqual(2);
   });
 
   // Trace: S4, Section 3b — multi-line mixed statuses
@@ -324,9 +337,7 @@ describe('Scenario 4 — Format status for Slack', () => {
   it('formatStatusForSlack_withIncidents', () => {
     const status: ClaudeStatusInfo = {
       overall: 'degraded',
-      components: [
-        { name: 'Claude API', status: 'degraded' },
-      ],
+      components: [{ name: 'Claude API', status: 'degraded' }],
       incidents: [
         { title: 'Elevated errors on Claude Opus 4.6', status: 'Investigating' },
         { title: 'Connection reset errors', status: 'Monitoring' },
@@ -443,10 +454,13 @@ describe('S1 — unknown status overall derivation', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -470,10 +484,13 @@ describe('S1 — unknown status overall derivation', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -494,9 +511,7 @@ describe('S2 — operational with incidents visibility', () => {
         { name: 'Claude API', status: 'operational' },
         { name: 'Claude Code', status: 'operational' },
       ],
-      incidents: [
-        { title: 'Investigating elevated latency', status: 'Investigating' },
-      ],
+      incidents: [{ title: 'Investigating elevated latency', status: 'Investigating' }],
       fetchedAt: Date.now(),
     };
 
@@ -525,7 +540,9 @@ describe('S3 — Inflight coalescing', () => {
 
   it('concurrent_calls_share_single_fetch', async () => {
     let resolveFirst: (value: any) => void;
-    const fetchPromise = new Promise(resolve => { resolveFirst = resolve; });
+    const fetchPromise = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
 
     const mockFetch = vi.fn().mockReturnValue(fetchPromise);
     vi.stubGlobal('fetch', mockFetch);
@@ -555,7 +572,8 @@ describe('S3 — Inflight coalescing', () => {
   it('failed_inflight_allows_retry', async () => {
     vi.useFakeTimers();
 
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce({
         ok: true,
@@ -600,10 +618,13 @@ describe('S4 — Regex robustness', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -622,10 +643,13 @@ describe('S4 — Regex robustness', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
 
@@ -655,7 +679,8 @@ describe('S1 — Negative cache / backoff', () => {
   it('negative_cache_skips_fetch_within_backoff', async () => {
     vi.useFakeTimers();
 
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockRejectedValueOnce(new Error('ECONNREFUSED'))
       .mockResolvedValueOnce({
         ok: true,
@@ -677,7 +702,8 @@ describe('S1 — Negative cache / backoff', () => {
   it('negative_cache_allows_retry_after_backoff', async () => {
     vi.useFakeTimers();
 
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockRejectedValueOnce(new Error('ECONNREFUSED'))
       .mockResolvedValueOnce({
         ok: true,
@@ -737,10 +763,13 @@ describe('S2 — Incident status scoping', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
     expect(status).not.toBeNull();
@@ -773,10 +802,13 @@ describe('S2 — Incident status scoping', () => {
   </div>
 </div>`;
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(html),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(html),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
     expect(status).not.toBeNull();
@@ -843,11 +875,14 @@ describe('S4 — non-OK HTTP response', () => {
   });
 
   it('fetchClaudeStatus_returnsNullOnNonOkResponse', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: () => Promise.resolve('Service Unavailable'),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('Service Unavailable'),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
     expect(status).toBeNull();
@@ -870,10 +905,13 @@ describe('S5 — Incident status value extraction', () => {
   });
 
   it('incident_status_extracted_from_updates_div', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(SAMPLE_HTML_MIXED_STATUS),
+      }),
+    );
 
     const status = await fetchClaudeStatus();
     expect(status).not.toBeNull();

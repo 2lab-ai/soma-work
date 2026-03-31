@@ -1,18 +1,18 @@
-import { SlackApiHelper } from './slack-api-helper';
-import { ActionPanelBuilder, PRStatusInfo } from './action-panel-builder';
-import { ThreadHeaderBuilder } from './thread-header-builder';
-import { TaskListBlockBuilder } from './task-list-block-builder';
-import { ContextWindowManager } from './context-window-manager';
-import { RequestCoordinator } from './request-coordinator';
-import { CompletionMessageTracker } from './completion-message-tracker';
-import { ClaudeHandler } from '../claude-handler';
-import { TodoManager } from '../todo-manager';
-import { ConversationSession } from '../types';
-import { Logger } from '../logger';
-import { SlackMessagePayload } from './user-choice-handler';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
-import { userSettingsStore } from '../user-settings-store';
+import type { ClaudeHandler } from '../claude-handler';
 import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
+import { Logger } from '../logger';
+import type { TodoManager } from '../todo-manager';
+import type { ConversationSession } from '../types';
+import { userSettingsStore } from '../user-settings-store';
+import { ActionPanelBuilder, type PRStatusInfo } from './action-panel-builder';
+import type { CompletionMessageTracker } from './completion-message-tracker';
+import { ContextWindowManager } from './context-window-manager';
+import type { RequestCoordinator } from './request-coordinator';
+import type { SlackApiHelper } from './slack-api-helper';
+import { TaskListBlockBuilder } from './task-list-block-builder';
+import { ThreadHeaderBuilder } from './thread-header-builder';
+import type { SlackMessagePayload } from './user-choice-handler';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -144,11 +144,7 @@ export class ThreadSurface {
    * Multiple rapid calls coalesce into a single chat.update.
    * Fire-and-forget — does not wait for the render to complete.
    */
-  requestRender(
-    session: ConversationSession,
-    sessionKey: string,
-    force = false,
-  ): void {
+  requestRender(session: ConversationSession, sessionKey: string, force = false): void {
     this.scheduleRender(session, sessionKey, force);
   }
 
@@ -218,11 +214,7 @@ export class ThreadSurface {
   /**
    * Attach user choice blocks and force-render.
    */
-  async attachChoice(
-    sessionKey: string,
-    payload: SlackMessagePayload,
-    sourceMessageTs?: string,
-  ): Promise<void> {
+  async attachChoice(sessionKey: string, payload: SlackMessagePayload, sourceMessageTs?: string): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
     if (!session) return;
 
@@ -311,11 +303,7 @@ export class ThreadSurface {
   // Debounce & Coalescing
   // =========================================================================
 
-  private scheduleRender(
-    session: ConversationSession,
-    sessionKey: string,
-    force: boolean,
-  ): void {
+  private scheduleRender(session: ConversationSession, sessionKey: string, force: boolean): void {
     const rs = this.getState(sessionKey);
 
     // Always keep latest state for this session
@@ -362,9 +350,7 @@ export class ThreadSurface {
     }
 
     rs.inflightPromise = this.doRender(session, sessionKey, force, overrides ?? undefined)
-      .catch((err) =>
-        this.logger.debug('Surface render error', { sessionKey, error: (err as Error).message }),
-      )
+      .catch((err) => this.logger.debug('Surface render error', { sessionKey, error: (err as Error).message }))
       .finally(() => {
         rs.inflightPromise = null;
         // If state accumulated while we were rendering, flush again
@@ -468,18 +454,14 @@ export class ThreadSurface {
     // Try to update existing message
     if (panelState.messageTs) {
       try {
-        await this.deps.slackApi.updateMessage(
-          channelId,
-          panelState.messageTs,
-          text,
-          blocks,
-          undefined,
-          { unfurlLinks: false, unfurlMedia: false },
-        );
+        await this.deps.slackApi.updateMessage(channelId, panelState.messageTs, text, blocks, undefined, {
+          unfurlLinks: false,
+          unfurlMedia: false,
+        });
         rendered = true;
       } catch (error: any) {
-        const isMessageNotFound = error?.data?.error === 'message_not_found'
-          || error?.message?.includes('message_not_found');
+        const isMessageNotFound =
+          error?.data?.error === 'message_not_found' || error?.message?.includes('message_not_found');
         this.logger.warn('Failed to update surface message', {
           sessionKey,
           isMessageNotFound,
@@ -578,14 +560,13 @@ export class ThreadSurface {
     // ── 3. Task list section (at bottom of header area) ──
     // Slack enforces a 50-block maximum per message. Reserve room for summary.
     const SLACK_MAX_BLOCKS = 50;
-    const summaryBlocks = (session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks))
-      ? session.actionPanel.summaryBlocks
-      : [];
+    const summaryBlocks =
+      session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
+        ? session.actionPanel.summaryBlocks
+        : [];
     const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
 
-    const todos = session.sessionId
-      ? this.deps.todoManager.getTodos(session.sessionId)
-      : [];
+    const todos = session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
     if (todos.length > 0 && budgetForTaskList >= 4) {
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
         startedAt: session.taskListStartedAt,
@@ -624,10 +605,7 @@ export class ThreadSurface {
   /**
    * Closed state: header + closed panel.
    */
-  private buildClosedBlocks(
-    session: ConversationSession,
-    sessionKey: string,
-  ): any[] {
+  private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
     const prStatusInfo = this.getState(sessionKey).prCache;
     const blocks: any[] = [];
 
@@ -652,10 +630,7 @@ export class ThreadSurface {
     return blocks;
   }
 
-  private buildFallbackText(
-    session: ConversationSession,
-    overrides?: { closed?: boolean },
-  ): string {
+  private buildFallbackText(session: ConversationSession, overrides?: { closed?: boolean }): string {
     const title = session.title || 'Session';
     const owner = session.ownerName || session.ownerId || '';
     const closed = overrides?.closed ? ' [종료됨]' : '';
@@ -690,10 +665,7 @@ export class ThreadSurface {
    * Resolve a Slack permalink for the choice message and cache it.
    * Called after attachChoice — non-blocking for the render path.
    */
-  private async resolveChoicePermalink(
-    session: ConversationSession,
-    choiceMessageTs: string,
-  ): Promise<void> {
+  private async resolveChoicePermalink(session: ConversationSession, choiceMessageTs: string): Promise<void> {
     const channelId = session.actionPanel?.channelId || session.channelId;
     if (!channelId || !choiceMessageTs) return;
 

@@ -1,10 +1,10 @@
-import { Logger } from './logger';
-import { config } from './config';
-import { DirectoryFormatter } from './slack/formatters';
-import { normalizeTmpPath, isSafePathSegment } from './path-utils';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import { config } from './config';
+import { Logger } from './logger';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
+import { DirectoryFormatter } from './slack/formatters';
 
 /**
  * WorkingDirectoryManager - Simplified version with fixed user directories
@@ -120,7 +120,12 @@ export class WorkingDirectoryManager {
    * @deprecated - Working directories are now fixed per user
    * This method is kept for backward compatibility but does nothing
    */
-  setWorkingDirectory(_channelId: string, _directory: string, _threadTs?: string, _userId?: string): { success: boolean; resolvedPath?: string; error?: string } {
+  setWorkingDirectory(
+    _channelId: string,
+    _directory: string,
+    _threadTs?: string,
+    _userId?: string,
+  ): { success: boolean; resolvedPath?: string; error?: string } {
     return {
       success: false,
       error: 'Working directory setting is disabled. Each user has a fixed directory.',

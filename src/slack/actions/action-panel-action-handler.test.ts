@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 
 describe('ActionPanelActionHandler', () => {
@@ -34,9 +34,11 @@ describe('ActionPanelActionHandler', () => {
 
     await handler.handleAction(body, respond as any);
 
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: 'ephemeral',
-    }));
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+      }),
+    );
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
@@ -73,9 +75,11 @@ describe('ActionPanelActionHandler', () => {
 
     await handler.handleAction(body, respond as any);
 
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: 'ephemeral',
-    }));
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+      }),
+    );
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
@@ -110,9 +114,11 @@ describe('ActionPanelActionHandler', () => {
 
     await handler.handleAction(body, respond as any);
 
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('종료'),
-    }));
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('종료'),
+      }),
+    );
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
@@ -150,10 +156,12 @@ describe('ActionPanelActionHandler', () => {
 
     await handler.handleAction(body, respond as any);
 
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: 'ephemeral',
-      text: expect.stringContaining('slack.com/archives'),
-    }));
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('slack.com/archives'),
+      }),
+    );
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
@@ -194,10 +202,12 @@ describe('ActionPanelActionHandler', () => {
 
     await handler.handleAction(body, respond as any);
 
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: 'ephemeral',
-      text: expect.stringContaining('merge gate'),
-    }));
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('merge gate'),
+      }),
+    );
     expect(mergeHandler).not.toHaveBeenCalled();
   });
 });

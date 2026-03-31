@@ -396,7 +396,7 @@ function parseMcpResult<T>(content: string): T {
     const preview = content.substring(0, 100);
     throw new Error(
       `Failed to parse input JSON: ${error instanceof Error ? error.message : String(error)}\n` +
-        `Content preview: ${preview}${content.length > 100 ? '...' : ''}`
+        `Content preview: ${preview}${content.length > 100 ? '...' : ''}`,
     );
   }
 
@@ -425,7 +425,7 @@ function parseMcpResult<T>(content: string): T {
       const preview = textContent.substring(0, 100);
       throw new Error(
         `Failed to parse MCP inner JSON: ${error instanceof Error ? error.message : String(error)}\n` +
-          `Content preview: ${preview}${textContent.length > 100 ? '...' : ''}`
+          `Content preview: ${preview}${textContent.length > 100 ? '...' : ''}`,
       );
     }
   }

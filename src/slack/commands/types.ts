@@ -1,12 +1,12 @@
-import { WorkingDirectoryManager } from '../../working-directory-manager';
-import { McpManager } from '../../mcp-manager';
-import { ClaudeHandler } from '../../claude-handler';
-import { SessionUiManager } from '../session-manager';
-import { RequestCoordinator } from '../request-coordinator';
-import { SlackApiHelper } from '../slack-api-helper';
-import { ReactionManager } from '../reaction-manager';
-import { ContextWindowManager } from '../context-window-manager';
-import { WorkflowType } from '../../types';
+import type { ClaudeHandler } from '../../claude-handler';
+import type { McpManager } from '../../mcp-manager';
+import type { WorkflowType } from '../../types';
+import type { WorkingDirectoryManager } from '../../working-directory-manager';
+import type { ContextWindowManager } from '../context-window-manager';
+import type { ReactionManager } from '../reaction-manager';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SessionUiManager } from '../session-manager';
+import type { SlackApiHelper } from '../slack-api-helper';
 
 /**
  * Context passed to command handlers

@@ -2,11 +2,17 @@
  * ToolEventProcessor tests
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ToolEventProcessor, ToolUseEvent, ToolResultEvent, ToolEventContext, SayFunction } from './tool-event-processor';
-import { ToolTracker } from './tool-tracker';
-import { McpStatusDisplay } from './mcp-status-tracker';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { McpCallTracker } from '../mcp-call-tracker';
+import { McpStatusDisplay } from './mcp-status-tracker';
+import {
+  type SayFunction,
+  type ToolEventContext,
+  ToolEventProcessor,
+  type ToolResultEvent,
+  type ToolUseEvent,
+} from './tool-event-processor';
+import { ToolTracker } from './tool-tracker';
 
 describe('ToolEventProcessor', () => {
   let toolTracker: ToolTracker;
@@ -53,9 +59,7 @@ describe('ToolEventProcessor', () => {
     });
 
     it('should call registerCall for MCP tools', async () => {
-      const toolUses: ToolUseEvent[] = [
-        { id: 'tool_1', name: 'mcp__jira__search_issues', input: { query: 'test' } },
-      ];
+      const toolUses: ToolUseEvent[] = [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { query: 'test' } }];
 
       await processor.handleToolUse(toolUses, mockContext);
 
@@ -72,14 +76,12 @@ describe('ToolEventProcessor', () => {
           paramsSummary: '(query: test)',
         },
         'C123',
-        'thread_ts'
+        'thread_ts',
       );
     });
 
     it('should not start MCP tracking for non-MCP tools', async () => {
-      const toolUses: ToolUseEvent[] = [
-        { id: 'tool_1', name: 'Read', input: {} },
-      ];
+      const toolUses: ToolUseEvent[] = [{ id: 'tool_1', name: 'Read', input: {} }];
 
       await processor.handleToolUse(toolUses, mockContext);
 
@@ -88,9 +90,7 @@ describe('ToolEventProcessor', () => {
     });
 
     it('should handle complex MCP tool names', async () => {
-      const toolUses: ToolUseEvent[] = [
-        { id: 'tool_1', name: 'mcp__github__repos__list_branches', input: {} },
-      ];
+      const toolUses: ToolUseEvent[] = [{ id: 'tool_1', name: 'mcp__github__repos__list_branches', input: {} }];
 
       await processor.handleToolUse(toolUses, mockContext);
 
@@ -99,7 +99,11 @@ describe('ToolEventProcessor', () => {
 
     it('should call registerCall for Task tools (subagent)', async () => {
       const toolUses: ToolUseEvent[] = [
-        { id: 'tool_1', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
+        {
+          id: 'tool_1',
+          name: 'Task',
+          input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' },
+        },
       ];
 
       await processor.handleToolUse(toolUses, mockContext);
@@ -111,15 +115,23 @@ describe('ToolEventProcessor', () => {
           displayType: 'Subagent',
         }),
         'C123',
-        'thread_ts'
+        'thread_ts',
       );
     });
 
     it('should use registerCall for multiple trackable tools (no groupId needed)', async () => {
       mcpCallTracker.startCall.mockReturnValueOnce('call_1').mockReturnValueOnce('call_2');
       const toolUses: ToolUseEvent[] = [
-        { id: 'tool_1', name: 'Task', input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' } },
-        { id: 'tool_2', name: 'Task', input: { description: 'hunt', prompt: 'test', subagent_type: 'silent-failure-hunter' } },
+        {
+          id: 'tool_1',
+          name: 'Task',
+          input: { description: 'review', prompt: 'test', subagent_type: 'code-reviewer' },
+        },
+        {
+          id: 'tool_2',
+          name: 'Task',
+          input: { description: 'hunt', prompt: 'test', subagent_type: 'silent-failure-hunter' },
+        },
       ];
 
       await processor.handleToolUse(toolUses, mockContext);
@@ -134,9 +146,7 @@ describe('ToolEventProcessor', () => {
       // Pre-track a tool
       toolTracker.trackToolUse('tool_1', 'Read');
 
-      const toolResults: ToolResultEvent[] = [
-        { toolUseId: 'tool_1', result: 'file contents' },
-      ];
+      const toolResults: ToolResultEvent[] = [{ toolUseId: 'tool_1', result: 'file contents' }];
 
       await processor.handleToolResult(toolResults, mockContext);
 
@@ -173,23 +183,21 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('MCP Result: jira → search_issues'),
-        })
+        }),
       );
     });
 
     it('should format and send built-in tool results', async () => {
       toolTracker.trackToolUse('tool_1', 'Bash');
 
-      const toolResults: ToolResultEvent[] = [
-        { toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' },
-      ];
+      const toolResults: ToolResultEvent[] = [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }];
 
       await processor.handleToolResult(toolResults, mockContext);
 
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('Bash'),
-        })
+        }),
       );
     });
 
@@ -205,16 +213,14 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('🔴'),
-        })
+        }),
       );
     });
 
     it('should skip tools that should not display results', async () => {
       toolTracker.trackToolUse('tool_1', 'TodoWrite');
 
-      const toolResults: ToolResultEvent[] = [
-        { toolUseId: 'tool_1', toolName: 'TodoWrite', result: 'updated' },
-      ];
+      const toolResults: ToolResultEvent[] = [{ toolUseId: 'tool_1', toolName: 'TodoWrite', result: 'updated' }];
 
       await processor.handleToolResult(toolResults, mockContext);
 

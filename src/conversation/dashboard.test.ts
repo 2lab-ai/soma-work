@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── Mocks ──
 
@@ -135,12 +135,22 @@ describe('Dashboard API', () => {
   it('should filter sessions by userId', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
-      sessionId: 's1', title: 'Alice session', ownerId: 'U1', ownerName: 'Alice',
-      channelId: 'C1', activityState: 'working', lastActivity: new Date(),
+      sessionId: 's1',
+      title: 'Alice session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      activityState: 'working',
+      lastActivity: new Date(),
     });
     sessions.set('C2:t2', {
-      sessionId: 's2', title: 'Bob session', ownerId: 'U2', ownerName: 'Bob',
-      channelId: 'C2', activityState: 'working', lastActivity: new Date(),
+      sessionId: 's2',
+      title: 'Bob session',
+      ownerId: 'U2',
+      ownerName: 'Bob',
+      channelId: 'C2',
+      activityState: 'working',
+      lastActivity: new Date(),
     });
     setDashboardSessionAccessor(() => sessions);
 
@@ -158,8 +168,13 @@ describe('Dashboard API', () => {
   it('should include token usage in kanban sessions', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
-      sessionId: 's1', title: 'Token session', ownerId: 'U1', ownerName: 'Alice',
-      channelId: 'C1', activityState: 'working', lastActivity: new Date(),
+      sessionId: 's1',
+      title: 'Token session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      activityState: 'working',
+      lastActivity: new Date(),
       usage: {
         totalInputTokens: 100000,
         totalOutputTokens: 50000,
@@ -188,8 +203,13 @@ describe('Dashboard API', () => {
   it('should include merge stats in kanban sessions', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
-      sessionId: 's1', title: 'Merge session', ownerId: 'U1', ownerName: 'Alice',
-      channelId: 'C1', activityState: 'idle', lastActivity: new Date(),
+      sessionId: 's1',
+      title: 'Merge session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      activityState: 'idle',
+      lastActivity: new Date(),
       mergeStats: { totalLinesAdded: 500, totalLinesDeleted: 100 },
     });
     setDashboardSessionAccessor(() => sessions);
@@ -211,8 +231,11 @@ describe('Dashboard API', () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
       // No sessionId — should be filtered out
-      title: 'Ghost', ownerId: 'U1', channelId: 'C1',
-      activityState: 'working', lastActivity: new Date(),
+      title: 'Ghost',
+      ownerId: 'U1',
+      channelId: 'C1',
+      activityState: 'working',
+      lastActivity: new Date(),
     });
     setDashboardSessionAccessor(() => sessions);
 
@@ -308,7 +331,14 @@ describe('Dashboard API', () => {
       updatedAt: 2000,
       turns: [
         { id: 't1', role: 'user', timestamp: 1000, userName: 'Alice', rawContent: 'Hello' },
-        { id: 't2', role: 'assistant', timestamp: 1500, summaryTitle: 'Greeting', summaryBody: 'Said hello', rawContent: 'Hi there, long response...' },
+        {
+          id: 't2',
+          role: 'assistant',
+          timestamp: 1500,
+          summaryTitle: 'Greeting',
+          summaryBody: 'Said hello',
+          rawContent: 'Hi there, long response...',
+        },
       ],
     });
 

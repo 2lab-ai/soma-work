@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ActionHandlers, ActionHandlerContext, MessageHandler } from './action-handlers';
-import { SlackApiHelper } from './slack-api-helper';
-import { SessionUiManager } from './session-manager';
-import { ClaudeHandler } from '../claude-handler';
-import { ConversationSession } from '../types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ClaudeHandler } from '../claude-handler';
+import type { ConversationSession } from '../types';
+import { type ActionHandlerContext, ActionHandlers, type MessageHandler } from './action-handlers';
+import type { SessionUiManager } from './session-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 // Mock dependencies
 const createMockSlackApi = () => ({
@@ -127,9 +127,7 @@ describe('ActionHandlers', () => {
       handlers.registerHandlers(mockApp as any);
 
       // Find the terminate_session handler
-      const terminateCall = mockApp.action.mock.calls.find(
-        (call) => call[0] === 'terminate_session'
-      );
+      const terminateCall = mockApp.action.mock.calls.find((call) => call[0] === 'terminate_session');
       expect(terminateCall).toBeDefined();
 
       const handler = terminateCall![1];
@@ -159,9 +157,7 @@ describe('ActionHandlers', () => {
 
       handlers.registerHandlers(mockApp as any);
 
-      const terminateCall = mockApp.action.mock.calls.find(
-        (call) => call[0] === 'terminate_session'
-      );
+      const terminateCall = mockApp.action.mock.calls.find((call) => call[0] === 'terminate_session');
       const handler = terminateCall![1];
 
       const mockAck = vi.fn();
@@ -181,7 +177,7 @@ describe('ActionHandlers', () => {
       expect(mockRespond).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('권한이 없습니다'),
-        })
+        }),
       );
     });
 
@@ -193,21 +189,21 @@ describe('ActionHandlers', () => {
 
       handlers.registerHandlers(mockApp as any);
 
-      const confirmCall = mockApp.action.mock.calls.find(
-        (call) => call[0] === 'managed_message_delete_confirm'
-      );
+      const confirmCall = mockApp.action.mock.calls.find((call) => call[0] === 'managed_message_delete_confirm');
       const handler = confirmCall![1];
 
       const mockAck = vi.fn();
       const mockRespond = vi.fn();
       const mockBody = {
-        actions: [{
-          value: JSON.stringify({
-            requesterId: 'U123',
-            targetChannel: 'C123',
-            targetTs: '111.222',
-          }),
-        }],
+        actions: [
+          {
+            value: JSON.stringify({
+              requesterId: 'U123',
+              targetChannel: 'C123',
+              targetTs: '111.222',
+            }),
+          },
+        ],
         user: { id: 'U123' },
       };
 
@@ -219,7 +215,7 @@ describe('ActionHandlers', () => {
         expect.objectContaining({
           text: expect.stringContaining('삭제'),
           replace_original: true,
-        })
+        }),
       );
     });
 
@@ -231,21 +227,21 @@ describe('ActionHandlers', () => {
 
       handlers.registerHandlers(mockApp as any);
 
-      const confirmCall = mockApp.action.mock.calls.find(
-        (call) => call[0] === 'managed_message_delete_confirm'
-      );
+      const confirmCall = mockApp.action.mock.calls.find((call) => call[0] === 'managed_message_delete_confirm');
       const handler = confirmCall![1];
 
       const mockAck = vi.fn();
       const mockRespond = vi.fn();
       const mockBody = {
-        actions: [{
-          value: JSON.stringify({
-            requesterId: 'U123',
-            targetChannel: 'C123',
-            targetTs: '111.222',
-          }),
-        }],
+        actions: [
+          {
+            value: JSON.stringify({
+              requesterId: 'U123',
+              targetChannel: 'C123',
+              targetTs: '111.222',
+            }),
+          },
+        ],
         user: { id: 'U999' },
       };
 
@@ -257,7 +253,7 @@ describe('ActionHandlers', () => {
         expect.objectContaining({
           response_type: 'ephemeral',
           replace_original: false,
-        })
+        }),
       );
     });
   });

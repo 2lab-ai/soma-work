@@ -7,13 +7,13 @@
  * - channel_route_stop: Delete advisory message, stop processing
  */
 
-import { SlackApiHelper } from '../slack-api-helper';
-import { ClaudeHandler } from '../../claude-handler';
+import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
-import { ThreadHeaderBuilder } from '../thread-header-builder';
-import { MessageFormatter } from '../message-formatter';
-import { SessionLinks, SessionLink } from '../../types';
+import type { SessionLink, SessionLinks } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
+import { MessageFormatter } from '../message-formatter';
+import type { SlackApiHelper } from '../slack-api-helper';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
 
 const logger = new Logger('ChannelRouteAction');
 
@@ -88,7 +88,10 @@ export class ChannelRouteActionHandler {
       if (!originalThreadTs) {
         logger.warn('🔀 Missing original thread ts', { value });
       } else {
-        logger.debug('🔀 Deleting bot messages in original thread', { channel: value.originalChannel, threadTs: originalThreadTs });
+        logger.debug('🔀 Deleting bot messages in original thread', {
+          channel: value.originalChannel,
+          threadTs: originalThreadTs,
+        });
         await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
           excludeTs: value.originalTs ? [value.originalTs] : [],
         });
@@ -97,7 +100,11 @@ export class ChannelRouteActionHandler {
       // Terminate original ghost session
       if (sessionThreadTs) {
         const origKey = this.deps.claudeHandler.getSessionKey(value.originalChannel, sessionThreadTs);
-        logger.info('🔀 Terminating original session', { origKey, channel: value.originalChannel, threadTs: sessionThreadTs });
+        logger.info('🔀 Terminating original session', {
+          origKey,
+          channel: value.originalChannel,
+          threadTs: sessionThreadTs,
+        });
         this.deps.claudeHandler.terminateSession(origKey);
       }
 
@@ -156,7 +163,10 @@ export class ChannelRouteActionHandler {
       if (!originalThreadTs) {
         logger.warn('🔀 Missing original thread ts', { value });
       } else {
-        logger.debug('🔀 Deleting bot messages in original thread', { channel: value.originalChannel, threadTs: originalThreadTs });
+        logger.debug('🔀 Deleting bot messages in original thread', {
+          channel: value.originalChannel,
+          threadTs: originalThreadTs,
+        });
         await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
           excludeTs: value.originalTs ? [value.originalTs] : [],
         });
@@ -164,7 +174,11 @@ export class ChannelRouteActionHandler {
 
       if (sessionThreadTs) {
         const origKey = this.deps.claudeHandler.getSessionKey(value.originalChannel, sessionThreadTs);
-        logger.info('🔀 Terminating original session', { origKey, channel: value.originalChannel, threadTs: sessionThreadTs });
+        logger.info('🔀 Terminating original session', {
+          origKey,
+          channel: value.originalChannel,
+          threadTs: sessionThreadTs,
+        });
         this.deps.claudeHandler.terminateSession(origKey);
       }
 
@@ -257,17 +271,15 @@ export class ChannelRouteActionHandler {
     userId: string,
     targetChannel: string,
     targetChannelName: string,
-    originalThreadTs?: string
+    originalThreadTs?: string,
   ): Promise<void> {
-    const threadRootText = value.prUrl
-      ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}`
-      : `<@${userId}> 님의 작업 요청`;
+    const threadRootText = value.prUrl ? `<@${userId}> 님의 작업 요청 — ${value.prUrl}` : `<@${userId}> 님의 작업 요청`;
 
     const ownerName = await this.deps.slackApi.getUserName(userId);
     const links = this.buildLinks(value.prUrl);
     // Generate title from user message, but fall back to PR label if it's just a URL placeholder
     const generated = MessageFormatter.generateSessionTitle(value.userMessage || threadRootText);
-    const title = (generated === '[link]' || generated === '새 대화') ? undefined : generated;
+    const title = generated === '[link]' || generated === '새 대화' ? undefined : generated;
     const headerPayload = ThreadHeaderBuilder.build({
       title,
       workflow: 'default',
@@ -283,14 +295,10 @@ export class ChannelRouteActionHandler {
       threadRootText: threadRootText.substring(0, 80),
     });
 
-    const postResult = await this.deps.slackApi.postMessage(
-      targetChannel,
-      headerPayload.text,
-      {
-        attachments: headerPayload.attachments,
-        blocks: headerPayload.blocks,
-      }
-    );
+    const postResult = await this.deps.slackApi.postMessage(targetChannel, headerPayload.text, {
+      attachments: headerPayload.attachments,
+      blocks: headerPayload.blocks,
+    });
 
     if (!postResult?.ts) {
       logger.error('🔀 Failed to create thread in target channel - no ts returned', {
@@ -319,11 +327,7 @@ export class ChannelRouteActionHandler {
     };
 
     const syntheticSay = async (msg: any) => {
-      return this.deps.slackApi.postMessage(
-        targetChannel,
-        msg.text,
-        { threadTs: postResult.ts, blocks: msg.blocks }
-      );
+      return this.deps.slackApi.postMessage(targetChannel, msg.text, { threadTs: postResult.ts, blocks: msg.blocks });
     };
 
     this.deps.claudeHandler.setBotThread(targetChannel, postResult.ts, postResult.ts);
@@ -400,7 +404,8 @@ export function buildChannelRouteBlocks(params: {
   const showStay = params.allowStay === true;
   const showMove = params.allowMove !== false;
   const moveButtonText = params.moveButtonText || '이동';
-  const sectionText = params.sectionText || `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`;
+  const sectionText =
+    params.sectionText || `🔀 이 repo는 <#${params.targetChannelId}> 채널의 작업입니다.\n이동하시겠습니까?`;
 
   const actionElements: any[] = [];
   if (showMove) {

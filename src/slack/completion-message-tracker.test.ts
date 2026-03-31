@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CompletionMessageTracker } from './completion-message-tracker.js';
 
 // Trace: docs/turn-summary-lifecycle/trace.md
@@ -98,12 +98,10 @@ describe('CompletionMessageTracker', () => {
       tracker.track('session-1', '1000.0001', 'WorkflowComplete');
 
       // deleteMessage is async — we'll sneak in a track() while it resolves
-      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(
-        async (_ch, _ts) => {
-          // Simulate concurrent track() call mid-delete
-          tracker.track('session-1', '2000.0001', 'WorkflowComplete');
-        }
-      );
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(async (_ch, _ts) => {
+        // Simulate concurrent track() call mid-delete
+        tracker.track('session-1', '2000.0001', 'WorkflowComplete');
+      });
 
       await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
 
@@ -121,11 +119,9 @@ describe('CompletionMessageTracker', () => {
       tracker.track('session-1', '1000.0002', 'WorkflowComplete');
       tracker.track('session-1', '1000.0003', 'WorkflowComplete');
 
-      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(
-        async (_ch, ts) => {
-          if (ts === '1000.0002') throw new Error('message_not_found');
-        }
-      );
+      const deleteMessage = vi.fn<(channel: string, ts: string) => Promise<void>>(async (_ch, ts) => {
+        if (ts === '1000.0002') throw new Error('message_not_found');
+      });
 
       await tracker.deleteAll('session-1', deleteMessage, 'C-CHANNEL');
 

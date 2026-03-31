@@ -5,7 +5,7 @@
  * They are merged into the plugin config during PluginManager initialization.
  */
 
-import { MarketplaceEntry } from './types';
+import type { MarketplaceEntry } from './types';
 
 /** Default marketplace sources — merged with user config (user wins on name collision). */
 export const DEFAULT_MARKETPLACES: MarketplaceEntry[] = [
@@ -14,10 +14,7 @@ export const DEFAULT_MARKETPLACES: MarketplaceEntry[] = [
 ];
 
 /** Default plugin refs — always loaded, cannot be removed. */
-export const DEFAULT_PLUGINS: string[] = [
-  'superpowers@claude-plugins-official',
-  'stv@oh-my-claude',
-];
+export const DEFAULT_PLUGINS: string[] = ['superpowers@claude-plugins-official', 'stv@oh-my-claude'];
 
 /** Check if a plugin ref is a default (protected from removal). */
 export function isDefaultPlugin(pluginRef: string): boolean {
@@ -26,5 +23,5 @@ export function isDefaultPlugin(pluginRef: string): boolean {
 
 /** Check if a marketplace name is a default (protected from removal). */
 export function isDefaultMarketplace(name: string): boolean {
-  return DEFAULT_MARKETPLACES.some(m => m.name === name);
+  return DEFAULT_MARKETPLACES.some((m) => m.name === name);
 }

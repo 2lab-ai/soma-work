@@ -2,7 +2,7 @@
  * McpConfigBuilder — SDK Cron blocking tests
  * Trace: docs/cron-scheduler/trace.md, Scenario 1
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 function createMockMcpManager() {
   return {

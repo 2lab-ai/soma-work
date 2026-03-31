@@ -1,8 +1,8 @@
 import { isAdminUser } from '../../admin-utils';
-import { userSettingsStore } from '../../user-settings-store';
 import { Logger } from '../../logger';
-import { RespondFn } from './types';
-import { SlackApiHelper } from '../slack-api-helper';
+import { userSettingsStore } from '../../user-settings-store';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { RespondFn } from './types';
 
 interface UserAcceptanceDeps {
   slackApi: SlackApiHelper;
@@ -42,11 +42,7 @@ export class UserAcceptanceActionHandler {
     });
 
     try {
-      await this.deps.slackApi.postMessage(
-        targetUser,
-        '✅ 사용이 승인되었습니다! 메시지를 보내서 시작하세요.',
-        {}
-      );
+      await this.deps.slackApi.postMessage(targetUser, '✅ 사용이 승인되었습니다! 메시지를 보내서 시작하세요.', {});
     } catch (error) {
       this.logger.error('Failed to notify accepted user', { targetUser, error });
     }
@@ -78,11 +74,7 @@ export class UserAcceptanceActionHandler {
     });
 
     try {
-      await this.deps.slackApi.postMessage(
-        targetUser,
-        '❌ 사용 요청이 거부되었습니다. 관리자에게 문의하세요.',
-        {}
-      );
+      await this.deps.slackApi.postMessage(targetUser, '❌ 사용 요청이 거부되었습니다. 관리자에게 문의하세요.', {});
     } catch (error) {
       this.logger.error('Failed to notify denied user', { targetUser, error });
     }

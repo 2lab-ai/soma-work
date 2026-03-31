@@ -1,52 +1,57 @@
-import { ClaudeHandler } from '../../claude-handler';
-import { FileHandler, ProcessedFile } from '../../file-handler';
-import { userSettingsStore } from '../../user-settings-store';
-import {
-  ConversationSession,
-  SessionResourceUpdateRequest,
-  SessionUsage,
-  Continuation,
-  SaveContextResultPayload,
-  UserChoices,
-  UserChoice,
-} from '../../types';
-import { Logger } from '../../logger';
-import {
-  StreamProcessor,
-  StreamContext,
-  StreamCallbacks,
-  UsageData,
-  ToolEventProcessor,
-  StatusReporter,
-  ReactionManager,
-  ContextWindowManager,
-  ToolTracker,
-  TodoDisplayManager,
-  SlackApiHelper,
-  AssistantStatusManager,
-  UserChoiceHandler,
-} from '../index';
-import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
-import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
-import { ActionHandlers } from '../actions';
-import { RequestCoordinator } from '../request-coordinator';
-import { ThreadPanel } from '../thread-panel';
-import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
-import { ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
-import { SayFn, MessageEvent } from './types';
-import { recordUserTurn, recordAssistantTurn } from '../../conversation';
+import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
+import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { getChannelDescription } from '../../channel-description-cache';
 import { getChannel } from '../../channel-registry';
+import type { ClaudeHandler } from '../../claude-handler';
+import {
+  fetchClaudeStatus,
+  formatStatusForSlack,
+  isApiLikeError,
+  shouldShowStatusBlock,
+} from '../../claude-status-fetcher';
+import { type ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
+import { recordAssistantTurn, recordUserTurn } from '../../conversation';
+import type { FileHandler, ProcessedFile } from '../../file-handler';
+import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
-import { tokenManager, parseCooldownTime } from '../../token-manager';
-import { fetchClaudeStatus, formatStatusForSlack, isApiLikeError, shouldShowStatusBlock } from '../../claude-status-fetcher';
-import { TurnNotifier, determineTurnCategory } from '../../turn-notifier';
-import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
-import { SummaryTimer } from '../summary-timer.js';
-import { CompletionMessageTracker } from '../completion-message-tracker.js';
-import { SummaryService } from '../summary-service';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
-import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
+import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
+import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
+import { parseCooldownTime, tokenManager } from '../../token-manager';
+import { determineTurnCategory, type TurnNotifier } from '../../turn-notifier';
+import type {
+  Continuation,
+  ConversationSession,
+  SaveContextResultPayload,
+  SessionResourceUpdateRequest,
+  SessionUsage,
+  UserChoice,
+  UserChoices,
+} from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
+import type { ActionHandlers } from '../actions';
+import type { CompletionMessageTracker } from '../completion-message-tracker.js';
+import {
+  type AssistantStatusManager,
+  type ContextWindowManager,
+  type ReactionManager,
+  type SlackApiHelper,
+  type StatusReporter,
+  type StreamCallbacks,
+  type StreamContext,
+  StreamProcessor,
+  type TodoDisplayManager,
+  type ToolEventProcessor,
+  type ToolTracker,
+  type UsageData,
+  UserChoiceHandler,
+} from '../index';
+import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SummaryService } from '../summary-service';
+import type { SummaryTimer } from '../summary-timer.js';
+import type { ThreadPanel } from '../thread-panel';
+import { MessageEvent, type SayFn } from './types';
 
 /**
  * Result of stream execution
@@ -54,7 +59,7 @@ import type { ModelCommandResult } from '../../agent-session/agent-session-types
 export interface ExecuteResult {
   success: boolean;
   messageCount: number;
-  continuation?: Continuation;  // Next action to perform (if any)
+  continuation?: Continuation; // Next action to perform (if any)
   /** Structured turn result collected by TurnObserver (Issue #42 S3) */
   turnCollector?: TurnResultCollector;
   /** If set, caller should auto-retry after this many ms (recoverable error). */
@@ -178,12 +183,11 @@ export class StreamExecutor {
     userId: string,
     workingDirectory: string,
     threadTs?: string,
-    mentionTs?: string
+    mentionTs?: string,
   ): Promise<string> {
     // Prepare the prompt with file attachments
-    let rawPrompt = processedFiles.length > 0
-      ? await this.deps.fileHandler.formatFilePrompt(processedFiles, text || '')
-      : text || '';
+    const rawPrompt =
+      processedFiles.length > 0 ? await this.deps.fileHandler.formatFilePrompt(processedFiles, text || '') : text || '';
 
     // Wrap the prompt with speaker tag
     let finalPrompt = `<speaker>${userName}</speaker>\n${rawPrompt}`;
@@ -268,20 +272,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Trace: docs/turn-summary-lifecycle/trace.md, S7
     if (this.deps.completionMessageTracker) {
       const threadRootTs = session.threadRootTs;
-      this.deps.completionMessageTracker.deleteAll(
-        params.sessionKey,
-        async (ch, ts) => {
-          // Defense-in-depth: never delete the thread root message (header)
-          if (threadRootTs && ts === threadRootTs) {
-            this.logger.error('BLOCKED: attempted to delete thread root via completion tracker', {
-              sessionKey: params.sessionKey, ts, threadRootTs,
-            });
-            return;
-          }
-          try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {}
-        },
-        params.channel
-      ).catch(() => {});
+      this.deps.completionMessageTracker
+        .deleteAll(
+          params.sessionKey,
+          async (ch, ts) => {
+            // Defense-in-depth: never delete the thread root message (header)
+            if (threadRootTs && ts === threadRootTs) {
+              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker', {
+                sessionKey: params.sessionKey,
+                ts,
+                threadRootTs,
+              });
+              return;
+            }
+            try {
+              await this.deps.slackApi.deleteMessage(ch, ts);
+            } catch {}
+          },
+          params.channel,
+        )
+        .catch(() => {});
     }
 
     let toolChoicePending = false;
@@ -318,7 +328,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      let finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+      let finalPrompt = await this.preparePrompt(
+        text,
+        processedFiles,
+        userName,
+        user,
+        workingDirectory,
+        threadTs,
+        params.mentionTs,
+      );
 
       // #196: Inject compaction context if SDK auto-compacted during previous turn
       if (session.compactionOccurred) {
@@ -371,10 +389,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Add thinking reaction + native spinner (gated by verbosity)
       // (Status message removed — progress is now shown in ThreadSurface)
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
-        await this.deps.reactionManager.updateReaction(
-          sessionKey,
-          this.deps.statusReporter.getStatusEmoji('thinking')
-        );
+        await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
       }
       if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
         await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
@@ -396,14 +411,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Create Slack context for permission prompts + channel description for system prompt
-      const channelDescription = await getChannelDescription(
-        this.deps.slackApi.getClient(),
-        channel
-      );
+      const channelDescription = await getChannelDescription(this.deps.slackApi.getClient(), channel);
       // Fetch structured repo info from channel registry (parsed from channel description)
       const channelInfo = getChannel(channel);
       const slackContext = {
-        channel, threadTs, mentionTs: params.mentionTs, user, channelDescription,
+        channel,
+        threadTs,
+        mentionTs: params.mentionTs,
+        user,
+        channelDescription,
         sourceThreadTs: params.sourceThreadTs,
         sourceChannel: params.sourceChannel,
         repos: channelInfo?.repos,
@@ -416,7 +432,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
-        get logVerbosity() { return session.logVerbosity ?? LOG_DETAIL; },
+        get logVerbosity() {
+          return session.logVerbosity ?? LOG_DETAIL;
+        },
         say: async (msg) => {
           const result = await say({
             text: msg.text,
@@ -442,7 +460,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
               sessionKey,
-              this.deps.statusReporter.getStatusEmoji('working')
+              this.deps.statusReporter.getStatusEmoji('working'),
             );
           }
           // Native spinner with tool-specific text
@@ -505,17 +523,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             logVerbosity: getVerbosity(),
           });
           // Metrics: detect git/gh commands in Bash output (fire-and-forget)
-          interceptToolResults(toolResults, session.ownerId, session.ownerName || 'unknown', ctx.sessionKey,
+          interceptToolResults(
+            toolResults,
+            session.ownerId,
+            session.ownerName || 'unknown',
+            ctx.sessionKey,
             // Callback to record merge stats into session
             (_sessionKey, prNumber, linesAdded, linesDeleted) => {
               this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
             },
           );
-          const commandResult = await this.handleModelCommandToolResults(
-            toolResults,
-            session,
-            ctx
-          );
+          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
           }
@@ -558,11 +576,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           return this.deps.actionHandlers.getPendingForm(formId);
         },
         onInvalidateOldForms: async (sessionKey, newFormId) => {
-          await this.deps.actionHandlers.invalidateOldForms(
-            sessionKey,
-            newFormId,
-            this.deps.slackApi
-          );
+          await this.deps.actionHandlers.invalidateOldForms(sessionKey, newFormId, this.deps.slackApi);
         },
         onUpdateMessage: async (ch, ts, text) => {
           await this.updateToolCallMessage(ch, ts, text);
@@ -653,7 +667,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
               await this.deps.reactionManager.updateReaction(
                 sessionKey,
-                this.deps.statusReporter.getStatusEmoji('working')
+                this.deps.statusReporter.getStatusEmoji('working'),
               );
             }
             if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
@@ -673,7 +687,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             contextUsagePercentBefore,
             contextUsagePercentAfter: this.getContextUsagePercentFromResult(
               usage,
-              session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW
+              session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW,
             ),
             usageBefore,
             usageAfter,
@@ -688,14 +702,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const processor = new StreamProcessor(streamCallbacks);
 
       // Wire compact duration callback: tool-event-processor → stream-processor
-      this.deps.toolEventProcessor.setCompactDurationCallback(
-        (toolUseId, duration, ch) => processor.updateToolCallDuration(toolUseId, duration, ch)
+      this.deps.toolEventProcessor.setCompactDurationCallback((toolUseId, duration, ch) =>
+        processor.updateToolCallDuration(toolUseId, duration, ch),
       );
 
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
         streamContext,
-        abortController.signal
+        abortController.signal,
       );
 
       if (streamResult.aborted) {
@@ -720,11 +734,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Update reaction based on whether user choice is pending
       const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
-      const finalStatus = hasSdkError ? 'error' : (hasPendingChoice ? 'waiting' : 'completed');
+      const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
           sessionKey,
-          this.deps.statusReporter.getStatusEmoji(finalStatus)
+          this.deps.statusReporter.getStatusEmoji(finalStatus),
         );
       }
       // Always clear status regardless of verbosity — heartbeat timer must be stopped
@@ -732,11 +746,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Transition activity state
-      this.deps.claudeHandler.setActivityState(
-        channel,
-        threadTs,
-        hasPendingChoice ? 'waiting' : 'idle'
-      );
+      this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
       await this.updateRuntimeStatus(session, sessionKey, {
         agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
         activeTool: undefined,
@@ -755,16 +765,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (streamResult.sdkResultError) {
         const { subtype, errors, numTurns } = streamResult.sdkResultError;
         const escMrkdwn = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const errorLines = [
-          `⚠️ *[SDK Result Error]* ${escMrkdwn(subtype)}`,
-          `> *Turns:* ${numTurns ?? 'unknown'}`,
-        ];
+        const errorLines = [`⚠️ *[SDK Result Error]* ${escMrkdwn(subtype)}`, `> *Turns:* ${numTurns ?? 'unknown'}`];
         if (errors.length > 0) {
-          const capped = errors.slice(0, 5).map(e => {
+          const capped = errors.slice(0, 5).map((e) => {
             const escaped = escMrkdwn(e);
             return escaped.length > 200 ? `${escaped.slice(0, 197)}...` : escaped;
           });
-          errorLines.push(...capped.map(e => `> • ${e}`));
+          errorLines.push(...capped.map((e) => `> • ${e}`));
           if (errors.length > 5) {
             errorLines.push(`> _...and ${errors.length - 5} more errors_`);
           }
@@ -803,8 +810,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const contextWindow = session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
           const contextUsagePercentAfter = this.getCurrentContextUsagePercent(session.usage);
           const contextUsageTokens = session.usage
-            ? (session.usage.currentInputTokens + session.usage.currentOutputTokens
-              + (session.usage.currentCacheReadTokens ?? 0) + (session.usage.currentCacheCreateTokens ?? 0))
+            ? session.usage.currentInputTokens +
+              session.usage.currentOutputTokens +
+              (session.usage.currentCacheReadTokens ?? 0) +
+              (session.usage.currentCacheCreateTokens ?? 0)
             : undefined;
 
           this.deps.turnNotifier!.notify({
@@ -819,23 +828,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
             startedAt: requestStartedAt,
             contextUsagePercent: contextUsagePercentAfter,
-            contextUsageDelta: typeof contextUsagePercentAfter === 'number'
-              ? contextUsagePercentAfter - (contextUsagePercentBefore ?? 0)
-              : undefined,
+            contextUsageDelta:
+              typeof contextUsagePercentAfter === 'number'
+                ? contextUsagePercentAfter - (contextUsagePercentBefore ?? 0)
+                : undefined,
             contextUsageTokens,
             contextWindowSize: contextWindow,
             fiveHourUsage: usageAfter?.fiveHour,
-            fiveHourDelta: typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
-              ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
-              : undefined,
+            fiveHourDelta:
+              typeof usageAfter?.fiveHour === 'number' && typeof usageBefore?.fiveHour === 'number'
+                ? Math.round(usageAfter.fiveHour - usageBefore.fiveHour)
+                : undefined,
             sevenDayUsage: usageAfter?.sevenDay,
-            sevenDayDelta: typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
-              ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
-              : undefined,
+            sevenDayDelta:
+              typeof usageAfter?.sevenDay === 'number' && typeof usageBefore?.sevenDay === 'number'
+                ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
+                : undefined,
             toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
           });
         };
-        enrichAndNotify().catch(err => this.logger.warn('Turn notification failed', { error: err?.message }));
+        enrichAndNotify().catch((err) => this.logger.warn('Turn notification failed', { error: err?.message }));
 
         // Start summary timer for non-error completions (fire-and-forget)
         // Trace: docs/turn-summary-lifecycle/trace.md, S1
@@ -861,7 +873,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           session,
           streamResult.collectedText || '',
           threadTs,
-          say
+          say,
         );
         if (continuation) {
           turnCollector.setContinuation(continuation);
@@ -877,7 +889,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           user,
           userName,
           threadTs,
-          say
+          say,
         );
         if (continuation) {
           turnCollector.setContinuation(continuation);
@@ -906,7 +918,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         processedFiles,
         say,
         requestAborted,
-        queryTokenValue
+        queryTokenValue,
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
@@ -932,7 +944,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     processedFiles: ProcessedFile[],
     say: SayFn,
     requestAborted: boolean = false,
-    queryTokenValue?: string
+    queryTokenValue?: string,
   ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
@@ -948,15 +960,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Fire Exception notification only for real errors, not abort/cancel
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (this.deps.turnNotifier && !isAbort) {
-      this.deps.turnNotifier.notify({
-        category: 'Exception',
-        userId: session.ownerId || '',
-        channel,
-        threadTs,
-        sessionTitle: session.title,
-        message: error?.message,
-        durationMs: 0,
-      }).catch(err => this.logger.warn('Exception notification failed', { error: err?.message }));
+      this.deps.turnNotifier
+        .notify({
+          category: 'Exception',
+          userId: session.ownerId || '',
+          channel,
+          threadTs,
+          sessionTitle: session.title,
+          message: error?.message,
+          durationMs: 0,
+        })
+        .catch((err) => this.logger.warn('Exception notification failed', { error: err?.message }));
     }
 
     let retryAfterMs: number | undefined;
@@ -966,9 +980,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Start status page fetch in parallel (non-blocking, 3s timeout)
       // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3a
-      const statusPromise = isApiLikeError(error)
-        ? fetchClaudeStatus().catch(() => null)
-        : Promise.resolve(null);
+      const statusPromise = isApiLikeError(error) ? fetchClaudeStatus().catch(() => null) : Promise.resolve(null);
 
       await this.updateRuntimeStatus(session, sessionKey, {
         agentPhase: '오류 발생',
@@ -1063,16 +1075,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
 
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('error')
-      );
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
 
       // Notify user with detailed error info + Claude service status
       // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
       const statusInfo = await statusPromise;
       const retryAttempt = retryAfterMs
-        ? (this.isFileAccessBlockedError(error) ? (session.fileAccessRetryCount ?? 0) : (session.errorRetryCount ?? 0))
+        ? this.isFileAccessBlockedError(error)
+          ? (session.fileAccessRetryCount ?? 0)
+          : (session.errorRetryCount ?? 0)
         : undefined;
       const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
       await say({
@@ -1088,10 +1099,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         waitingForChoice: false,
       });
 
-      await this.deps.reactionManager.updateReaction(
-        sessionKey,
-        this.deps.statusReporter.getStatusEmoji('cancelled')
-      );
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('cancelled'));
     }
 
     // Clean up temporary files
@@ -1125,7 +1133,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       message.includes('aborted by user') ||
       message.includes('process aborted by user') ||
       message.includes('request was aborted') ||
-      message.includes('operation aborted')  // covers "Operation aborted" and "operation was aborted"
+      message.includes('operation aborted') // covers "Operation aborted" and "operation was aborted"
     );
   }
 
@@ -1223,7 +1231,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       'eai_again',
     ];
 
-    return recoverablePatterns.some(pattern => combined.includes(pattern));
+    return recoverablePatterns.some((pattern) => combined.includes(pattern));
   }
 
   private isRateLimitError(error: any): boolean {
@@ -1256,8 +1264,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Parse cooldown from both error message and stderr content
     const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
-    const cooldownUntil = parseCooldownTime(errorText)
-      ?? new Date(Date.now() + 3600000); // default 1 hour
+    const cooldownUntil = parseCooldownTime(errorText) ?? new Date(Date.now() + 3600000); // default 1 hour
 
     const result = tokenManager.rotateOnRateLimit(failedToken, cooldownUntil);
 
@@ -1281,7 +1288,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const combined = `${message} ${stderr}`;
 
     const invalidSessionPatterns = [
-      'no conversation found',  // Issue #118: exact SDK error message
+      'no conversation found', // Issue #118: exact SDK error message
       'conversation not found',
       'session not found',
       'cannot resume',
@@ -1289,7 +1296,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       'resume session',
     ];
 
-    return invalidSessionPatterns.some(pattern => combined.includes(pattern));
+    return invalidSessionPatterns.some((pattern) => combined.includes(pattern));
   }
 
   /**
@@ -1370,7 +1377,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
+  private async cleanup(
+    session: ConversationSession,
+    sessionKey: string,
+    abortController?: AbortController,
+  ): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
 
@@ -1428,23 +1439,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       'an api error occurred',
     ];
 
-    return slackErrorPatterns.some(pattern => message.includes(pattern));
+    return slackErrorPatterns.some((pattern) => message.includes(pattern));
   }
 
   /**
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null, retryAttempt?: number): string {
+  private formatErrorForUser(
+    error: any,
+    sessionCleared: boolean,
+    statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null,
+    retryAttempt?: number,
+  ): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
 
-    const lines = [
-      `❌ *[Bot Error]* ${errorMessage}`,
-      '',
-      `> *Type:* ${errorType} (${errorName})`,
-    ];
+    const lines = [`❌ *[Bot Error]* ${errorMessage}`, '', `> *Type:* ${errorType} (${errorName})`];
 
     if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
@@ -1454,7 +1466,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           lines.push(`> *원인:* 이미지가 너무 큽니다. API에서 처리할 수 있는 크기를 초과했습니다.`);
           lines.push(`> _이미지 크기를 줄이거나 텍스트로 내용을 설명해 주세요._`);
         } else {
-          lines.push(`> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`);
+          lines.push(
+            `> *원인:* 이미지를 처리할 수 없습니다. 해당 이미지는 API에서 지원하지 않는 형식이거나 손상되었을 수 있습니다.`,
+          );
           lines.push(`> _이미지 대신 텍스트로 내용을 설명해 주세요._`);
         }
       } else {
@@ -1482,17 +1496,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const raw = String(error.stderrContent);
       // Sanitize: strip ANSI escape codes (CSI + OSC + charset) and mask credentials
       const sanitized = raw
-        .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '')  // strip ANSI
-        .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]')  // auth headers ("Bearer <token>")
+        .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
+        .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
         .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
-        .replace(/\bsk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]')      // Anthropic API keys
-        .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]')   // Slack tokens
-        .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]')        // GitHub PATs
-        .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]');   // GitHub fine-grained PATs
+        .replace(/\bsk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]') // Anthropic API keys
+        .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
+        .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
+        .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
       // Take last 500 chars to keep message manageable
-      const truncated = sanitized.length > 500
-        ? `…${sanitized.slice(-500)}`
-        : sanitized;
+      const truncated = sanitized.length > 500 ? `…${sanitized.slice(-500)}` : sanitized;
       lines.push(`> *SDK Details:*`);
       lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
     }
@@ -1532,7 +1544,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       agentPhase?: string;
       activeTool?: string;
       waitingForChoice?: boolean;
-    }
+    },
   ): Promise<void> {
     await this.deps.threadPanel?.setStatus(session, sessionKey, patch);
   }
@@ -1546,16 +1558,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     channel: string,
     requestStartedAt: Date,
     toolStats: RequestToolStats,
-    latestResponseTs: string | undefined
+    latestResponseTs: string | undefined,
   ): Promise<void> {
     if (!session.actionPanel) return;
 
     const elapsedMs = Date.now() - requestStartedAt.getTime();
     const totalToolCalls = Object.values(toolStats).reduce((sum, s) => sum + s.count, 0);
     const elapsedText = this.formatElapsed(elapsedMs);
-    session.actionPanel.turnSummary = totalToolCalls > 0
-      ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}`
-      : `⏱ ${elapsedText}`;
+    session.actionPanel.turnSummary =
+      totalToolCalls > 0 ? `⏱ ${elapsedText} · 🛠 ${totalToolCalls}` : `⏱ ${elapsedText}`;
 
     if (latestResponseTs) {
       session.actionPanel.latestResponseTs = latestResponseTs;
@@ -1600,16 +1611,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return undefined;
     }
 
-    const usedTokens = usage.currentInputTokens + usage.currentOutputTokens
-      + (usage.currentCacheReadTokens ?? 0) + (usage.currentCacheCreateTokens ?? 0);
+    const usedTokens =
+      usage.currentInputTokens +
+      usage.currentOutputTokens +
+      (usage.currentCacheReadTokens ?? 0) +
+      (usage.currentCacheCreateTokens ?? 0);
     const percent = (usedTokens / usage.contextWindow) * 100;
     return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
   }
 
-  private getContextUsagePercentFromResult(
-    usage: UsageData | undefined,
-    contextWindow: number
-  ): number | undefined {
+  private getContextUsagePercentFromResult(usage: UsageData | undefined, contextWindow: number): number | undefined {
     if (!usage || contextWindow <= 0) {
       return undefined;
     }
@@ -1621,34 +1632,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   private buildFinalResponseFooter(data: FinalFooterData): string | undefined {
     const lines: string[] = [];
-    const endedAt = typeof data.durationMs === 'number'
-      ? new Date(data.startedAt.getTime() + data.durationMs)
-      : new Date();
+    const endedAt =
+      typeof data.durationMs === 'number' ? new Date(data.startedAt.getTime() + data.durationMs) : new Date();
 
     lines.push(
-      `⏰ ${this.formatClock(data.startedAt)} → ${this.formatClock(endedAt)} (${this.formatElapsed(endedAt.getTime() - data.startedAt.getTime())})`
+      `⏰ ${this.formatClock(data.startedAt)} → ${this.formatClock(endedAt)} (${this.formatElapsed(endedAt.getTime() - data.startedAt.getTime())})`,
     );
 
     if (typeof data.contextUsagePercentAfter === 'number') {
       const contextAfter = data.contextUsagePercentAfter;
-      const contextDelta = typeof data.contextUsagePercentBefore === 'number'
-        ? contextAfter - data.contextUsagePercentBefore
-        : undefined;
+      const contextDelta =
+        typeof data.contextUsagePercentBefore === 'number' ? contextAfter - data.contextUsagePercentBefore : undefined;
       const contextDeltaText = this.formatSignedDelta(contextDelta, 1);
       const contextDeltaSuffix = contextDeltaText ? ` ${contextDeltaText}` : '';
-      lines.push(
-        `Ctx ${this.renderBar(contextAfter)} ${contextAfter.toFixed(1)}%${contextDeltaSuffix}`
-      );
+      lines.push(`Ctx ${this.renderBar(contextAfter)} ${contextAfter.toFixed(1)}%${contextDeltaSuffix}`);
     }
 
     const fiveHour = data.usageAfter?.fiveHour;
     const sevenDay = data.usageAfter?.sevenDay;
-    const fiveHourDelta = typeof fiveHour === 'number' && typeof data.usageBefore?.fiveHour === 'number'
-      ? Math.round(fiveHour - data.usageBefore.fiveHour)
-      : undefined;
-    const sevenDayDelta = typeof sevenDay === 'number' && typeof data.usageBefore?.sevenDay === 'number'
-      ? Math.round(sevenDay - data.usageBefore.sevenDay)
-      : undefined;
+    const fiveHourDelta =
+      typeof fiveHour === 'number' && typeof data.usageBefore?.fiveHour === 'number'
+        ? Math.round(fiveHour - data.usageBefore.fiveHour)
+        : undefined;
+    const sevenDayDelta =
+      typeof sevenDay === 'number' && typeof data.usageBefore?.sevenDay === 'number'
+        ? Math.round(sevenDay - data.usageBefore.sevenDay)
+        : undefined;
 
     const fiveHourPercent = this.formatPercent(fiveHour);
     const sevenDayPercent = this.formatPercent(sevenDay);
@@ -1656,8 +1665,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const sevenDayDeltaText = this.formatSignedDelta(sevenDayDelta, 0) ?? '--';
 
     lines.push(
-      `5h  ${this.renderBar(fiveHour ?? 0)} ${fiveHourPercent} ${fiveHourDeltaText}  `
-      + `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`
+      `5h  ${this.renderBar(fiveHour ?? 0)} ${fiveHourPercent} ${fiveHourDeltaText}  ` +
+        `7d ${this.renderBar(sevenDay ?? 0, 8)} ${sevenDayPercent} ${sevenDayDeltaText}`,
     );
 
     // Per-request tool statistics
@@ -1707,19 +1716,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /** Format per-request tool stats as compact line: "🛠 Edit×3 Bash×2 Read×5" */
   private formatToolStats(stats: RequestToolStats): string | undefined {
-    const entries = Object.entries(stats)
-      .sort((a, b) => b[1].count - a[1].count);
+    const entries = Object.entries(stats).sort((a, b) => b[1].count - a[1].count);
     if (entries.length === 0) return undefined;
 
     const totalCalls = entries.reduce((sum, [, s]) => sum + s.count, 0);
-    const parts = entries
-      .slice(0, 6)
-      .map(([name, s]) => {
-        const shortName = name.startsWith('mcp__')
-          ? name.split('__').slice(1, 3).join(':')
-          : name;
-        return `${shortName}×${s.count}`;
-      });
+    const parts = entries.slice(0, 6).map(([name, s]) => {
+      const shortName = name.startsWith('mcp__') ? name.split('__').slice(1, 3).join(':') : name;
+      return `${shortName}×${s.count}`;
+    });
     if (entries.length > 6) {
       parts.push(`+${entries.length - 6}`);
     }
@@ -1727,10 +1731,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     return `🛠 ${totalCalls} calls: ${parts.join(' ')}`;
   }
 
-  private formatSignedDelta(
-    delta: number | undefined,
-    decimals: number
-  ): string | undefined {
+  private formatSignedDelta(delta: number | undefined, decimals: number): string | undefined {
     if (typeof delta !== 'number' || !Number.isFinite(delta)) {
       return undefined;
     }
@@ -1772,7 +1773,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Dynamically update context window:
     // Take max(SDK value, model lookup) because SDK often reports the BASE
     // window (200k) even when the 1M beta is active.
-    const sdkWindow = (usage.contextWindow && usage.contextWindow > 0) ? usage.contextWindow : 0;
+    const sdkWindow = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : 0;
     const modelName = usage.modelName || session.model;
     const lookupWindow = resolveContextWindow(modelName);
     const resolved = Math.max(sdkWindow, lookupWindow);
@@ -1791,7 +1792,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.currentInputTokens = hasPerTurn ? usage.lastTurnInputTokens! : usage.inputTokens;
     session.usage.currentOutputTokens = hasPerTurn ? usage.lastTurnOutputTokens! : usage.outputTokens;
     session.usage.currentCacheReadTokens = hasPerTurn ? usage.lastTurnCacheReadTokens! : usage.cacheReadInputTokens;
-    session.usage.currentCacheCreateTokens = hasPerTurn ? usage.lastTurnCacheCreateTokens! : usage.cacheCreationInputTokens;
+    session.usage.currentCacheCreateTokens = hasPerTurn
+      ? usage.lastTurnCacheCreateTokens!
+      : usage.cacheCreationInputTokens;
 
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
@@ -1799,12 +1802,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
-    const contextUsed = session.usage.currentInputTokens + session.usage.currentCacheReadTokens
-      + session.usage.currentCacheCreateTokens + session.usage.currentOutputTokens;
+    const contextUsed =
+      session.usage.currentInputTokens +
+      session.usage.currentCacheReadTokens +
+      session.usage.currentCacheCreateTokens +
+      session.usage.currentOutputTokens;
     this.logger.debug('Updated session usage', {
       currentContext: contextUsed,
       contextWindow: session.usage.contextWindow,
-      contextWindowSource: usage.contextWindow ? 'sdk' : (session.model ? 'model-lookup' : 'fallback'),
+      contextWindowSource: usage.contextWindow ? 'sdk' : session.model ? 'model-lookup' : 'fallback',
       usageSource: hasPerTurn ? 'per-turn' : 'aggregate-fallback',
       totalInput: session.usage.totalInputTokens,
       totalOutput: session.usage.totalOutputTokens,
@@ -1815,7 +1821,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private async handleModelCommandToolResults(
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
-    context: StreamContext
+    context: StreamContext,
   ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: ModelCommandResult[] }> {
     let hasPendingChoice = false;
     let continuation: Continuation | undefined;
@@ -1900,7 +1906,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const updateResult = this.deps.claudeHandler.updateSessionResources(
             context.channel,
             context.threadTs,
-            request
+            request,
           );
 
           if (!updateResult.ok) {
@@ -1929,11 +1935,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Apply title update only if no operations or operations succeeded
         const titleUpdate = (parsed.payload as Record<string, unknown>).title as string | undefined;
         if (titleUpdate && operationsOk) {
-          this.deps.claudeHandler.updateSessionTitle(
-            context.channel,
-            context.threadTs,
-            titleUpdate
-          );
+          this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
           this.logger.info('Applied session title update from UPDATE_SESSION', {
             sessionKey: context.sessionKey,
             title: titleUpdate,
@@ -1963,7 +1965,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private async renderAskUserQuestionFromCommand(
     question: UserChoice | UserChoices,
     session: ConversationSession,
-    context: StreamContext
+    context: StreamContext,
   ): Promise<void> {
     try {
       if (question.type === 'user_choices') {
@@ -1988,10 +1990,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
   }
 
-  private async renderSingleChoiceFromCommand(
-    question: UserChoice,
-    context: StreamContext
-  ): Promise<void> {
+  private async renderSingleChoiceFromCommand(question: UserChoice, context: StreamContext): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
     const theme = session ? userSettingsStore.getUserSessionTheme(session.ownerId) : undefined;
     const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme);
@@ -2002,11 +2001,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         thread_ts: context.threadTs,
       });
 
-      await this.deps.threadPanel?.attachChoice(
-        context.sessionKey,
-        payload,
-        result?.ts
-      );
+      await this.deps.threadPanel?.attachChoice(context.sessionKey, payload, result?.ts);
     } catch (error) {
       this.logger.warn('Failed to render command-driven single choice blocks', {
         sessionKey: context.sessionKey,
@@ -2016,17 +2011,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  private async renderMultiChoiceFromCommand(
-    question: UserChoices,
-    context: StreamContext
-  ): Promise<void> {
+  private async renderMultiChoiceFromCommand(question: UserChoices, context: StreamContext): Promise<void> {
     const maxQuestionsPerForm = 6;
     const chunks: UserChoices[] = [];
     for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
       const chunkQuestions = question.questions.slice(index, index + maxQuestionsPerForm);
-      const chunkLabel = question.questions.length > maxQuestionsPerForm
-        ? ` (${Math.floor(index / maxQuestionsPerForm) + 1}/${Math.ceil(question.questions.length / maxQuestionsPerForm)})`
-        : '';
+      const chunkLabel =
+        question.questions.length > maxQuestionsPerForm
+          ? ` (${Math.floor(index / maxQuestionsPerForm) + 1}/${Math.ceil(question.questions.length / maxQuestionsPerForm)})`
+          : '';
 
       chunks.push({
         ...question,
@@ -2051,18 +2044,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
 
       if (index === 0) {
-        await this.deps.actionHandlers.invalidateOldForms(
-          context.sessionKey,
-          formId,
-          this.deps.slackApi
-        );
+        await this.deps.actionHandlers.invalidateOldForms(context.sessionKey, formId, this.deps.slackApi);
       }
 
-      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(
-        chunk,
-        formId,
-        context.sessionKey
-      );
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(chunk, formId, context.sessionKey);
       try {
         const result = await context.say({
           text: chunk.title || '📋 선택이 필요합니다',
@@ -2077,11 +2062,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        await this.deps.threadPanel?.attachChoice(
-          context.sessionKey,
-          payload,
-          result?.ts
-        );
+        await this.deps.threadPanel?.attachChoice(context.sessionKey, payload, result?.ts);
       } catch (error) {
         this.logger.warn('Failed to render command-driven multi choice blocks', {
           sessionKey: context.sessionKey,
@@ -2094,10 +2075,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  private async sendCommandChoiceFallback(
-    question: UserChoice | UserChoices,
-    context: StreamContext
-  ): Promise<void> {
+  private async sendCommandChoiceFallback(question: UserChoice | UserChoices, context: StreamContext): Promise<void> {
     let fallbackText = '';
 
     if (question.type === 'user_choices') {
@@ -2130,7 +2108,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         options,
         '',
         '_⚠️ 버튼 UI 생성에 실패하여 텍스트로 표시됩니다. 번호로 응답해주세요._',
-      ].filter((line) => line !== '').join('\n');
+      ]
+        .filter((line) => line !== '')
+        .join('\n');
     }
 
     try {
@@ -2154,11 +2134,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session: ConversationSession,
     collectedText: string,
     threadTs: string,
-    say: SayFn
+    say: SayFn,
   ): Promise<Continuation | undefined> {
     // Prefer tool-driven save result, then fall back to text parsing.
-    const saveResult = this.normalizeSaveResultPayload(session.renewSaveResult)
-      || this.parseSaveResult(collectedText);
+    const saveResult = this.normalizeSaveResultPayload(session.renewSaveResult) || this.parseSaveResult(collectedText);
     session.renewSaveResult = undefined;
 
     if (!saveResult) {
@@ -2191,9 +2170,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (files && files.length > 0) {
       // Preferred: use files array directly
       this.logger.info('Renew save completed, using files array', { id, fileCount: files.length });
-      saveContent = files.map((file: { name: string; content: string }) => {
-        return `--- ${file.name} ---\n${file.content}`;
-      }).join('\n\n');
+      saveContent = files
+        .map((file: { name: string; content: string }) => {
+          return `--- ${file.name} ---\n${file.content}`;
+        })
+        .join('\n\n');
     } else if (path || dir) {
       // Fallback: try to read from path/dir
       const savePath = path || dir;
@@ -2227,8 +2208,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Append path.sep to prevent sibling-prefix bypass (e.g., /tmp/session vs /tmp/session-evil)
         const canonicalPath = pathModule.resolve(resolvedPath);
         const resolvedSessionDir = pathModule.resolve(sessionDir!);
-        if (sessionDir && canonicalPath !== resolvedSessionDir
-            && !canonicalPath.startsWith(resolvedSessionDir + pathModule.sep)) {
+        if (
+          sessionDir &&
+          canonicalPath !== resolvedSessionDir &&
+          !canonicalPath.startsWith(resolvedSessionDir + pathModule.sep)
+        ) {
           this.logger.warn('Save path traversal blocked', { resolvedPath: canonicalPath, sessionDir });
           await say({
             text: '⚠️ Save path is outside session directory. Renew cancelled.',
@@ -2275,7 +2259,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         saveContent = scannedContent;
       } else {
         // No files, no path, no scannable save - can't proceed
-        this.logger.warn('Save succeeded but no files or path returned and directory scan failed', { saveResult, sessionDir });
+        this.logger.warn('Save succeeded but no files or path returned and directory scan failed', {
+          saveResult,
+          sessionDir,
+        });
         await say({
           text: '⚠️ Save succeeded but no file content or path was returned.',
           thread_ts: threadTs,
@@ -2295,7 +2282,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Notify in current thread (non-critical — state already cleaned up)
     try {
       await say({
-        text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
+        text:
+          `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
           `🔄 *Session Reset & Re-dispatch*\n` +
           `• 이전 세션 컨텍스트 초기화됨\n` +
           `• 워크플로우 재분류 후 load 실행...` +
@@ -2309,7 +2297,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Generate the load prompt with optional user instruction
     const userInstruction = userMessage
       ? `\n\nAfter loading the context, execute this user instruction:\n<user-instruction>${userMessage}</user-instruction>`
-      : '\n\nContinue with that context. If unsure what to do next, call \'oracle\' agent for guidance.';
+      : "\n\nContinue with that context. If unsure what to do next, call 'oracle' agent for guidance.";
 
     const loadPrompt = `Use 'local:load' skill with this saved context:
 <save>
@@ -2395,9 +2383,7 @@ ${userInstruction}`;
       return null;
     }
 
-    const success = raw.success === true
-      || raw.status === 'saved'
-      || raw.status === 'success';
+    const success = raw.success === true || raw.status === 'saved' || raw.status === 'success';
 
     return {
       success,
@@ -2440,7 +2426,8 @@ ${userInstruction}`;
       }
 
       // Fallback (no saveId): list save directories sorted descending (newest first)
-      const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
+      const entries = fs
+        .readdirSync(saveRoot, { withFileTypes: true })
         .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
         .map((d: { name: string }) => d.name)
         .sort()
@@ -2472,7 +2459,7 @@ ${userInstruction}`;
     userId: string,
     userName: string,
     threadTs: string,
-    say: SayFn
+    say: SayFn,
   ): Continuation | undefined {
     // Parse onboarding_complete JSON from output
     const result = this.parseOnboardingComplete(collectedText);

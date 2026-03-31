@@ -4,14 +4,14 @@
  */
 
 import { Logger } from '../logger';
-import { mcpCallTracker, McpCallTracker } from '../mcp-call-tracker';
-import { ToolTracker } from './tool-tracker';
-import { McpStatusDisplay } from './mcp-status-tracker';
-import { ToolFormatter, ToolResult } from './tool-formatter';
-import { ReactionManager } from './reaction-manager';
-import { AssistantStatusManager } from './assistant-status-manager';
-import { McpHealthMonitor } from './mcp-health-monitor';
-import { getToolResultRenderMode, shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
+import { type McpCallTracker, mcpCallTracker } from '../mcp-call-tracker';
+import type { AssistantStatusManager } from './assistant-status-manager';
+import type { McpHealthMonitor } from './mcp-health-monitor';
+import type { McpStatusDisplay } from './mcp-status-tracker';
+import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import type { ReactionManager } from './reaction-manager';
+import { ToolFormatter, type ToolResult } from './tool-formatter';
+import type { ToolTracker } from './tool-tracker';
 
 /**
  * Context for tool event processing
@@ -72,7 +72,7 @@ export class ToolEventProcessor {
     mcpStatusDisplay: McpStatusDisplay,
     mcpCallTrackerInstance: McpCallTracker = mcpCallTracker,
     assistantStatusManager?: AssistantStatusManager,
-    mcpHealthMonitor?: McpHealthMonitor
+    mcpHealthMonitor?: McpHealthMonitor,
   ) {
     this.toolTracker = toolTracker;
     this.mcpStatusDisplay = mcpStatusDisplay;
@@ -91,9 +91,7 @@ export class ToolEventProcessor {
   /**
    * Set callback for compact mode duration updates (in-place tool call message update)
    */
-  setCompactDurationCallback(
-    cb: (toolUseId: string, duration: number | null, channel: string) => Promise<void>
-  ): void {
+  setCompactDurationCallback(cb: (toolUseId: string, duration: number | null, channel: string) => Promise<void>): void {
     this.onCompactDurationUpdate = cb;
   }
 
@@ -105,11 +103,10 @@ export class ToolEventProcessor {
    */
   async handleToolUse(toolUses: ToolUseEvent[], context: ToolEventContext): Promise<void> {
     for (const toolUse of toolUses) {
-      this.logger.debug('Handling tool_use', ToolFormatter.buildToolUseLogSummary(
-        toolUse.id,
-        toolUse.name,
-        toolUse.input
-      ));
+      this.logger.debug(
+        'Handling tool_use',
+        ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
+      );
 
       // Track tool use ID to name mapping
       this.toolTracker.trackToolUse(toolUse.id, toolUse.name);
@@ -179,9 +176,7 @@ export class ToolEventProcessor {
       displayLabel: subagentName,
       initialDelay: 0,
       predictKey: { serverName: '_subagent', toolName: subagentName },
-      paramsSummary: summary.promptPreview
-        ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})`
-        : '',
+      paramsSummary: summary.promptPreview ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})` : '',
     };
 
     if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
@@ -262,7 +257,7 @@ export class ToolEventProcessor {
   private async sendToolResult(
     toolResult: ToolResultEvent,
     duration: number | null,
-    context: ToolEventContext
+    context: ToolEventContext,
   ): Promise<void> {
     // In compact mode, results are handled via in-place updates — skip separate messages
     const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);

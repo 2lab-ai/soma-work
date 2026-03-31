@@ -34,10 +34,7 @@ type SlackClient = {
  * Get channel description with caching.
  * Returns combined purpose + topic, or empty string for DMs.
  */
-export async function getChannelDescription(
-  client: SlackClient,
-  channelId: string
-): Promise<string> {
+export async function getChannelDescription(client: SlackClient, channelId: string): Promise<string> {
   // Skip DM channels
   if (channelId.startsWith('D')) return '';
 

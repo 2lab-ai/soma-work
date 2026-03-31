@@ -2,7 +2,7 @@
  * Contract Tests — Multi-Agent Architecture
  * Scenarios: S1 (Config Parsing), S2 (Startup), S3 (Direct Chat), S6 (Prompt), S7 (Shutdown)
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── S1: Agent Config Parsing ───────────────────────────────────────────────
 
@@ -102,8 +102,16 @@ describe('S1 — Agent Config Parsing', () => {
 
     const raw = {
       agents: {
-        good: { slackBotToken: 'xoxb-good', slackAppToken: 'xapp-good', signingSecret: 'secret-at-least-20-chars-long' },
-        badToken: { slackBotToken: 'invalid', slackAppToken: 'xapp-bad', signingSecret: 'secret-at-least-20-chars-long' },
+        good: {
+          slackBotToken: 'xoxb-good',
+          slackAppToken: 'xapp-good',
+          signingSecret: 'secret-at-least-20-chars-long',
+        },
+        badToken: {
+          slackBotToken: 'invalid',
+          slackAppToken: 'xapp-bad',
+          signingSecret: 'secret-at-least-20-chars-long',
+        },
         badApp: { slackBotToken: 'xoxb-ok', slackAppToken: 'invalid', signingSecret: 'secret-at-least-20-chars-long' },
       },
     };

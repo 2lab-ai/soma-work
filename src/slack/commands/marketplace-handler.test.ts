@@ -5,9 +5,9 @@
  * missing PluginManager edge case, error handling.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarketplaceHandler } from './marketplace-handler';
-import type { CommandDependencies, CommandContext, SayFn } from './types';
+import type { CommandContext, CommandDependencies, SayFn } from './types';
 
 function createMockPluginManager(overrides: Record<string, unknown> = {}) {
   return {
