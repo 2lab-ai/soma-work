@@ -368,7 +368,7 @@ docs/                               # Architecture & feature specs
 
 ## Multi-Agent Setup
 
-Add sub-agents to `config.json`:
+Add sub-agents to `config.json` (or `config.dev.json` on non-`main` branches):
 
 ```json
 {
