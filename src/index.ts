@@ -125,12 +125,24 @@ async function start() {
       }
     }
 
+    // Initialize AgentManager if agents are configured (Trace: docs/multi-agent/trace.md, S2)
+    let agentManager: import('./agent-manager').AgentManager | undefined;
+    if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
+      const { AgentManager } = await import('./agent-manager');
+      agentManager = new AgentManager(unifiedConfig.agents, mcpManager);
+      timing(`AgentManager created (${Object.keys(unifiedConfig.agents).length} agents configured)`);
+    }
+
     // Initialize handlers
     const claudeHandler = new ClaudeHandler(mcpManager);
     // Inject plugin paths if PluginManager resolved any plugins
     const pluginPaths = pluginManager.getPluginPaths();
     if (pluginPaths.length > 0) {
       claudeHandler.setPluginPaths(pluginPaths);
+    }
+    // Inject agent configs into ClaudeHandler's McpConfigBuilder
+    if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
+      claudeHandler.setAgentConfigs(unifiedConfig.agents);
     }
     timing('ClaudeHandler initialized');
 
@@ -246,6 +258,17 @@ async function start() {
     // Start the app
     await app.start();
     timing('Slack socket connected');
+
+    // Start sub-agent instances after main bot (Trace: docs/multi-agent/trace.md, S2)
+    if (agentManager) {
+      try {
+        await agentManager.startAll();
+        timing('Sub-agents started');
+      } catch (error) {
+        logger.error('AgentManager.startAll() failed (non-critical)', error);
+      }
+    }
+
     const versionInfoForLog = getVersionInfo();
     const versionTag = versionInfoForLog ? `v${versionInfoForLog.version} (${versionInfoForLog.commitHash?.slice(0, 7) || 'dev'})` : 'dev';
     logger.info(`⚡️ Claude Code Slack bot is running! [${versionTag}]`);
@@ -361,6 +384,12 @@ async function start() {
         // Save pending forms for persistence
         slackHandler.savePendingForms();
         logger.info('Pending forms saved successfully');
+
+        // Stop sub-agents (Trace: docs/multi-agent/trace.md, S7)
+        if (agentManager) {
+          await agentManager.stopAll();
+          logger.info('Sub-agents stopped');
+        }
       } catch (error) {
         logger.error('Error during shutdown:', error);
       }
