@@ -42,7 +42,7 @@ export interface SummarySessionInfo {
  * @param cwd - Working directory for the forked session
  * @returns The LLM's response text, or null on failure
  */
-export type ForkExecutor = (prompt: string, model?: string, sessionId?: string, cwd?: string) => Promise<string | null>;
+export type ForkExecutor = (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal) => Promise<string | null>;
 
 /**
  * Handles executive summary generation and display.
@@ -87,9 +87,14 @@ export class SummaryService {
    *
    * Trace: S3, Section 3b
    */
-  async execute(session: SummarySessionInfo): Promise<string | null> {
+  async execute(session: SummarySessionInfo, abortSignal?: AbortSignal): Promise<string | null> {
     if (!session.isActive) {
       logger.warn('Skipping summary — session is not active');
+      return null;
+    }
+
+    if (abortSignal?.aborted) {
+      logger.info('Summary execution skipped — already aborted');
       return null;
     }
 
@@ -103,13 +108,24 @@ export class SummaryService {
     const fullPrompt = this.buildPrompt(session);
 
     try {
-      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, session.workingDirectory);
+      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, session.workingDirectory, abortSignal);
+
+      // Check abort after await — the fork may have completed but user already sent new input
+      if (abortSignal?.aborted) {
+        logger.info('Summary fork completed but aborted — discarding result');
+        return null;
+      }
+
       logger.info('Summary fork completed', {
         hasResponse: !!response,
         responseLength: response?.length ?? 0,
       });
       return response;
     } catch (err: any) {
+      if (err?.name === 'AbortError' || abortSignal?.aborted) {
+        logger.info('Summary fork aborted', { reason: err?.message });
+        return null;
+      }
       logger.error('Summary fork failed', { error: err?.message || String(err) });
       return null;
     }

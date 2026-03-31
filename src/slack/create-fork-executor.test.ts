@@ -92,4 +92,62 @@ describe('createForkExecutor', () => {
 
     expect(result).toBeNull();
   });
+
+  it('threads AbortSignal to dispatchOneShot as AbortController', async () => {
+    mockHandler.dispatchOneShot.mockResolvedValue('Summary');
+    const executor = createForkExecutor(mockHandler as any);
+    const ac = new AbortController();
+
+    await executor('prompt', 'claude-opus-4-6', undefined, undefined, ac.signal);
+
+    // 4th arg should be an AbortController (not undefined)
+    const calledAbortController = mockHandler.dispatchOneShot.mock.calls[0][3];
+    expect(calledAbortController).toBeDefined();
+    expect(calledAbortController).toBeInstanceOf(AbortController);
+  });
+
+  it('forwards abort from external signal to internal AbortController', async () => {
+    let capturedController: AbortController | undefined;
+    mockHandler.dispatchOneShot.mockImplementation(async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
+      capturedController = abortCtrl;
+      return 'Summary';
+    });
+    const executor = createForkExecutor(mockHandler as any);
+    const ac = new AbortController();
+
+    await executor('prompt', 'claude-opus-4-6', undefined, undefined, ac.signal);
+
+    expect(capturedController).toBeDefined();
+    expect(capturedController!.signal.aborted).toBe(false);
+
+    // Abort externally
+    ac.abort();
+    expect(capturedController!.signal.aborted).toBe(true);
+  });
+
+  it('passes undefined AbortController when no signal provided', async () => {
+    mockHandler.dispatchOneShot.mockResolvedValue('Summary');
+    const executor = createForkExecutor(mockHandler as any);
+
+    await executor('prompt');
+
+    const calledAbortController = mockHandler.dispatchOneShot.mock.calls[0][3];
+    expect(calledAbortController).toBeUndefined();
+  });
+
+  it('pre-aborted signal creates already-aborted AbortController', async () => {
+    let capturedController: AbortController | undefined;
+    mockHandler.dispatchOneShot.mockImplementation(async (_msg: string, _sys: string, _model: string, abortCtrl: AbortController) => {
+      capturedController = abortCtrl;
+      return 'Summary';
+    });
+    const executor = createForkExecutor(mockHandler as any);
+    const ac = new AbortController();
+    ac.abort(); // pre-abort
+
+    await executor('prompt', undefined, undefined, undefined, ac.signal);
+
+    expect(capturedController).toBeDefined();
+    expect(capturedController!.signal.aborted).toBe(true);
+  });
 });
