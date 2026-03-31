@@ -3,11 +3,17 @@
  * Extends the existing Fastify conversation web server.
  *
  * Routes:
- *   GET /dashboard              → Dashboard HTML (all users overview)
- *   GET /dashboard/:userId      → Dashboard HTML (specific user)
- *   GET /api/dashboard/sessions → All active sessions as Kanban data (JSON)
- *   GET /api/dashboard/stats    → User statistics (JSON)
- *   WS  /ws/dashboard           → Real-time session state updates (WebSocket)
+ *   GET  /dashboard                          → Dashboard HTML (all users overview)
+ *   GET  /dashboard/:userId                  → Dashboard HTML (specific user)
+ *   GET  /api/dashboard/sessions             → All active sessions as Kanban data (JSON)
+ *   GET  /api/dashboard/stats                → User statistics (JSON)
+ *   GET  /api/dashboard/users                → User list (JSON)
+ *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
+ *   POST /api/dashboard/session/:key/stop    → Stop a working session
+ *   POST /api/dashboard/session/:key/close   → Close/terminate a session
+ *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
+ *   POST /api/dashboard/session/:key/command → Send command to session
+ *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
  */
 
 import { FastifyInstance } from 'fastify';
@@ -31,6 +37,8 @@ export interface KanbanSession {
   threadTs?: string;
   activityState: 'working' | 'waiting' | 'idle';
   sessionState: string; // MAIN | SLEEPING
+  terminated?: boolean;
+  trashed?: boolean;
   conversationId?: string;
   lastActivity: string; // ISO
   /** Links */
@@ -53,12 +61,15 @@ export interface KanbanSession {
     totalCostUsd: number;
     contextUsagePercent: number;
   };
+  /** Task list */
+  tasks?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>;
 }
 
 export interface KanbanBoard {
   working: KanbanSession[];
   waiting: KanbanSession[];
   idle: KanbanSession[];
+  closed: KanbanSession[];
 }
 
 export interface UserDayStats {
@@ -72,6 +83,7 @@ export interface UserDayStats {
   linesDeleted: number;
   mergeLinesAdded: number;
   mergeLinesDeleted: number;
+  workflowCounts: Record<string, number>;
 }
 
 export interface UserStats {
@@ -88,6 +100,7 @@ export interface UserStats {
     linesDeleted: number;
     mergeLinesAdded: number;
     mergeLinesDeleted: number;
+    workflowCounts: Record<string, number>;
   };
 }
 
@@ -106,9 +119,49 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
+/** Verify the authenticated user owns the target session. Returns null if OK, or a 403 reply if not. */
+function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
+  const authUser = request.dashboardUser;
+  const sessions = _getSessionsFn?.();
+  const targetSession = sessions?.get(sessionKey);
+  if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
+    reply.status(403).send({ error: 'You can only modify your own sessions' });
+    return false;
+  }
+  return true;
+}
+
+// ── Task accessor ──────────────────────────────────────────────────
+
+type TaskAccessor = (sessionKey: string) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> | undefined;
+let _getTasksFn: TaskAccessor | null = null;
+
+/** Register task accessor (called once at startup) */
+export function setDashboardTaskAccessor(fn: TaskAccessor): void {
+  _getTasksFn = fn;
+}
+
+// ── Action callbacks ───────────────────────────────────────────────
+
+type StopHandler = (sessionKey: string) => Promise<void>;
+type CloseHandler = (sessionKey: string) => Promise<void>;
+type TrashHandler = (sessionKey: string) => Promise<void>;
+type CommandHandler = (sessionKey: string, message: string) => Promise<void>;
+
+let _stopHandlerFn: StopHandler | null = null;
+let _closeHandlerFn: CloseHandler | null = null;
+let _trashHandlerFn: TrashHandler | null = null;
+let _commandHandlerFn: CommandHandler | null = null;
+
+export function setDashboardStopHandler(fn: StopHandler): void { _stopHandlerFn = fn; }
+export function setDashboardCloseHandler(fn: CloseHandler): void { _closeHandlerFn = fn; }
+export function setDashboardTrashHandler(fn: TrashHandler): void { _trashHandlerFn = fn; }
+export function setDashboardCommandHandler(fn: CommandHandler): void { _commandHandlerFn = fn; }
+
 // ── Kanban transformation ──────────────────────────────────────────
 
 function sessionToKanban(key: string, s: any): KanbanSession {
+  const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   return {
     key,
     title: s.title || 'Untitled',
@@ -120,6 +173,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTs: s.threadTs,
     activityState: s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
+    terminated: s.terminated === true,
+    trashed: s.trashed === true,
     conversationId: s.conversationId,
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
     issueUrl: s.links?.issue?.url,
@@ -141,22 +196,30 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         ? ((s.usage.currentInputTokens || 0) / s.usage.contextWindow) * 100
         : 0,
     } : undefined,
+    tasks,
   };
 }
 
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
-  const board: KanbanBoard = { working: [], waiting: [], idle: [] };
+  const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
 
   for (const [key, session] of sessions.entries()) {
     if (!session.sessionId) continue;
     if (userId && session.ownerId !== userId) continue;
+    if (session.trashed === true) continue;
 
     const kanban = sessionToKanban(key, session);
-    switch (kanban.activityState) {
-      case 'working': board.working.push(kanban); break;
-      case 'waiting': board.waiting.push(kanban); break;
-      default: board.idle.push(kanban); break;
+
+    // Closed: terminated or SLEEPING state
+    if (session.terminated === true || session.state === 'SLEEPING') {
+      board.closed.push(kanban);
+    } else {
+      switch (kanban.activityState) {
+        case 'working': board.working.push(kanban); break;
+        case 'waiting': board.waiting.push(kanban); break;
+        default: board.idle.push(kanban); break;
+      }
     }
   }
 
@@ -166,6 +229,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   board.working.sort(byActivity);
   board.waiting.sort(byActivity);
   board.idle.sort(byActivity);
+  board.closed.sort(byActivity);
 
   return board;
 }
@@ -185,12 +249,18 @@ function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string,
         sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
         commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
         mergeLinesAdded: 0, mergeLinesDeleted: 0,
+        workflowCounts: {},
       });
     }
     const day = dayMap.get(dateStr)!;
 
     switch (ev.eventType) {
-      case 'session_created': day.sessionsCreated++; break;
+      case 'session_created': {
+        day.sessionsCreated++;
+        const wf = (ev.metadata?.workflow as string) || 'default';
+        day.workflowCounts[wf] = (day.workflowCounts[wf] || 0) + 1;
+        break;
+      }
       case 'turn_used': day.turnsUsed++; break;
       case 'pr_created': day.prsCreated++; break;
       case 'pr_merged': day.prsMerged++; break;
@@ -225,7 +295,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void };
+type WsClient = { send: (data: string) => void; close: () => void; userId?: string };
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -239,6 +309,56 @@ export function broadcastSessionUpdate(): void {
     }
   } catch (error) {
     logger.error('Failed to broadcast session update', error);
+  }
+}
+
+/** Broadcast task update to all connected WebSocket clients */
+export function broadcastTaskUpdate(sessionKey: string, tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'task_update', sessionKey, tasks });
+    for (const client of wsClients) {
+      try { client.send(payload); } catch { wsClients.delete(client); }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast task update', error);
+  }
+}
+
+/** Broadcast conversation turn update — scoped to session owner's WS clients only */
+export function broadcastConversationUpdate(conversationId: string, turn: any): void {
+  if (wsClients.size === 0) return;
+  try {
+    // Resolve session owner for scoping
+    const sessions = _getSessionsFn?.();
+    const session = sessions?.get(conversationId);
+    const ownerId = session?.ownerId;
+
+    // Strip rawContent from assistant turns to reduce bandwidth
+    const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent
+      ? { ...turn, rawContent: undefined }
+      : turn;
+    const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
+    for (const client of wsClients) {
+      // Only send to clients belonging to the session owner (or all if owner unknown)
+      if (ownerId && client.userId && client.userId !== ownerId) continue;
+      try { client.send(payload); } catch { wsClients.delete(client); }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/** Broadcast session action feedback to all connected WebSocket clients */
+export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'session_action', sessionKey, action });
+    for (const client of wsClients) {
+      try { client.send(payload); } catch { wsClients.delete(client); }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast session action', error);
   }
 }
 
@@ -281,20 +401,28 @@ export async function registerDashboardRoutes(
         const dayMap = aggregateUserStats(events, userId);
         const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-        const totals = days.reduce((acc, d) => ({
-          sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
-          turnsUsed: acc.turnsUsed + d.turnsUsed,
-          prsCreated: acc.prsCreated + d.prsCreated,
-          prsMerged: acc.prsMerged + d.prsMerged,
-          commitsCreated: acc.commitsCreated + d.commitsCreated,
-          linesAdded: acc.linesAdded + d.linesAdded,
-          linesDeleted: acc.linesDeleted + d.linesDeleted,
-          mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
-          mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
-        }), {
+        const totals = days.reduce((acc, d) => {
+          const wfCounts = { ...acc.workflowCounts };
+          for (const [wf, cnt] of Object.entries(d.workflowCounts)) {
+            wfCounts[wf] = (wfCounts[wf] || 0) + cnt;
+          }
+          return {
+            sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
+            turnsUsed: acc.turnsUsed + d.turnsUsed,
+            prsCreated: acc.prsCreated + d.prsCreated,
+            prsMerged: acc.prsMerged + d.prsMerged,
+            commitsCreated: acc.commitsCreated + d.commitsCreated,
+            linesAdded: acc.linesAdded + d.linesAdded,
+            linesDeleted: acc.linesDeleted + d.linesDeleted,
+            mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
+            mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
+            workflowCounts: wfCounts,
+          };
+        }, {
           sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
           commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
           mergeLinesAdded: 0, mergeLinesDeleted: 0,
+          workflowCounts: {} as Record<string, number>,
         });
 
         reply.send({ userId, period, days, totals } satisfies UserStats);
@@ -359,6 +487,95 @@ export async function registerDashboardRoutes(
     }
   );
 
+  // ── Action routes ──
+
+  server.post<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/stop',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_stopHandlerFn) {
+          await _stopHandlerFn(key);
+        }
+        broadcastSessionAction(key, 'stop');
+        broadcastSessionUpdate();
+        reply.send({ ok: true });
+      } catch (error) {
+        logger.error('Error stopping session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  server.post<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/close',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_closeHandlerFn) {
+          await _closeHandlerFn(key);
+        }
+        broadcastSessionAction(key, 'close');
+        broadcastSessionUpdate();
+        reply.send({ ok: true });
+      } catch (error) {
+        logger.error('Error closing session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  server.post<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/trash',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_trashHandlerFn) {
+          await _trashHandlerFn(key);
+        }
+        broadcastSessionAction(key, 'trash');
+        broadcastSessionUpdate();
+        reply.send({ ok: true });
+      } catch (error) {
+        logger.error('Error trashing session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  server.post<{ Params: { key: string }; Body: { message: string } }>(
+    '/api/dashboard/session/:key/command',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { key } = request.params;
+      const { message } = request.body || {};
+      if (!message || typeof message !== 'string') {
+        reply.status(400).send({ error: 'message is required and must be a string' });
+        return;
+      }
+      if (message.length > 4000) {
+        reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
+        return;
+      }
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_commandHandlerFn) {
+          await _commandHandlerFn(key, message);
+        }
+        reply.send({ ok: true });
+      } catch (error) {
+        logger.error('Error sending command to session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
   // ── HTML Dashboard ──
 
   server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
@@ -378,10 +595,20 @@ export async function registerDashboardRoutes(
   try {
     await server.register(await import('@fastify/websocket'));
 
-    server.get('/ws/dashboard', { websocket: true }, (socket: any) => {
+    const MAX_WS_CLIENTS = 100;
+
+    server.get('/ws/dashboard', { websocket: true, preHandler: [authMiddleware] }, (socket: any, request: any) => {
+      // Enforce max client cap to prevent DoS
+      if (wsClients.size >= MAX_WS_CLIENTS) {
+        logger.warn('WebSocket max clients reached, rejecting', { total: wsClients.size });
+        socket.close(1013, 'Max clients reached');
+        return;
+      }
+      const authUser = request?.dashboardUser;
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
+        userId: authUser?.userId,
       };
       wsClients.add(client);
       logger.debug('WebSocket client connected', { total: wsClients.size });
@@ -407,6 +634,7 @@ export async function registerDashboardRoutes(
 // ── Dashboard HTML ─────────────────────────────────────────────────
 
 function renderDashboardPage(userId?: string): string {
+  const initUser = userId ? JSON.stringify(userId) : 'null';
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -414,160 +642,587 @@ function renderDashboardPage(userId?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>soma-work Dashboard</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #0d1117; --surface: #161b22; --surface2: #21262d;
-  --border: #30363d; --text: #e6edf3; --text-muted: #8b949e;
-  --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; --red: #f85149;
-  --purple: #bc8cff;
+  /* Surface hierarchy — 3 deliberate planes */
+  --bg: #0b0e14;
+  --surface: #12171f;
+  --surface-raised: #1a2130;
+  --border: #2a3548;
+  --border-focus: #4d9de0;
+  /* Typography */
+  --text: #e8edf5;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #6b7d95;
+  /* Functional color — Bauhaus primary triad + accents */
+  --accent: #4d9de0;
+  --accent-hover: #3b82c4;
+  --green: #3ecf8e;
+  --yellow: #f6c90e;
+  --red: #ef4444;
+  --purple: #a78bfa;
+  --orange: #f97316;
+  /* Geometry */
+  --radius: 2px;
+  /* Motion */
+  --ease: cubic-bezier(0.2,0.8,0.2,1);
+  --speed: 140ms;
 }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+
+html,body {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--accent); color: var(--bg); }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: var(--radius); }
+
+/* ── FOCUS — visible outline for keyboard nav ── */
+:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+
 .app { display: flex; flex-direction: column; min-height: 100vh; }
-.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
-.topbar h1 { font-size: 1.1em; font-weight: 600; }
-.topbar .nav { display: flex; gap: 8px; margin-left: auto; }
-.topbar .nav a, .topbar .nav select { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; text-decoration: none; font-size: 0.85em; cursor: pointer; }
-.topbar .nav a:hover, .topbar .nav select:hover { border-color: var(--accent); }
-.topbar .badge { background: var(--green); color: #000; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; }
-.main { flex: 1; padding: 24px; }
 
-/* Period selector */
-.period-bar { display: flex; gap: 8px; margin-bottom: 20px; }
-.period-btn { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 0.85em; }
-.period-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+/* ── TOPBAR — strict horizontal grid ── */
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+}
+.topbar h1 {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+.topbar .nav a,
+.topbar .nav select {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
+  min-height: 32px;
+}
+.topbar .nav a:hover,
+.topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+.ws-badge {
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
 
-/* Stats grid */
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
-.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-.stat-card .label { font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-card .value { font-size: 1.8em; font-weight: 700; margin-top: 4px; }
-.stat-card .delta { font-size: 0.8em; color: var(--green); margin-top: 2px; }
+/* ── MAIN ── */
+.main { flex: 1; padding: 20px; }
+
+/* ── PERIOD SELECTOR — segmented control ── */
+.period-bar { display: inline-flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.period-btn {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+  min-height: 32px;
+}
+.period-btn:last-child { border-right: none; }
+.period-btn:hover { background: var(--surface-raised); color: var(--text); }
+.period-btn.active { background: var(--accent); color: var(--bg); font-weight: 700; }
+
+/* ── STATS GRID — 4-column, monospace numbers ── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  transition: border-color var(--speed) var(--ease);
+}
+.stat-card:hover { border-color: var(--accent); }
+.stat-card .label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.stat-card .value {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.stat-card .delta { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; }
 .stat-card .delta.negative { color: var(--red); }
 
-/* Kanban */
-.kanban { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.kanban-col { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-height: 200px; }
-.kanban-col-header { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-.kanban-col-header h3 { font-size: 0.85em; font-weight: 600; }
-.kanban-col-header .count { background: var(--surface2); padding: 2px 8px; border-radius: 10px; font-size: 0.75em; }
-.kanban-col .cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+/* ── KANBAN — strict 4-column grid ── */
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.kanban-col {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+.kanban-col-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kanban-col-header h3 {
+  font-size: 12px;
+  font-weight: 700;
+  flex: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.kanban-col-header .count {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 24px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.kanban-col .cards {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
 
-.card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
+/* ── STATUS INDICATORS — geometric square + text label ── */
+.working-dot,.waiting-dot,.idle-dot,.closed-dot {
+  width: 8px; height: 8px;
+  border-radius: 1px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.working-dot { background: var(--green); animation: pulse-dot 1.4s ease-in-out infinite; }
+.waiting-dot { background: var(--yellow); }
+.idle-dot { background: var(--text-tertiary); }
+.closed-dot { background: var(--red); opacity: 0.6; }
+
+@keyframes pulse-dot {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── CARD — Bauhaus: flat, geometric, structured layout ── */
+.card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color var(--speed) var(--ease);
+}
 .card:hover { border-color: var(--accent); }
-.card .card-title { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; }
-.card .card-meta { font-size: 0.75em; color: var(--text-muted); display: flex; gap: 8px; flex-wrap: wrap; }
-.card .card-links { font-size: 0.75em; margin-top: 6px; display: flex; gap: 8px; }
-.card .card-links a { color: var(--accent); text-decoration: none; }
+
+/* ── AURA SYSTEM — pure geometric: left-edge color band only ── */
+.aura-legendary { border-left: 4px solid var(--orange) !important; background: linear-gradient(90deg, rgba(249,115,22,0.06) 0%, transparent 40%); }
+.aura-epic { border-left: 4px solid var(--purple) !important; background: linear-gradient(90deg, rgba(167,139,250,0.05) 0%, transparent 40%); }
+.aura-blue { border-left: 4px solid var(--accent) !important; }
+.aura-green { border-left: 4px solid var(--green) !important; }
+.aura-white { border-left: 4px solid rgba(200,210,220,0.4) !important; }
+
+/* ── CARD CONTENT — structured label:value grid ── */
+.card .card-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; line-height: 1.3; display: flex; align-items: flex-start; gap: 6px; }
+.card .card-title-text { flex: 1; }
+.card .conv-link { color: var(--accent); text-decoration: none; font-size: 12px; flex-shrink: 0; opacity: 0.7; }
+.card .conv-link:hover { opacity: 1; }
+.card .card-meta {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.card .card-links { font-size: 12px; margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
+.card .card-links a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .card .card-links a:hover { text-decoration: underline; }
-.card .card-owner { font-size: 0.7em; color: var(--purple); margin-top: 4px; }
-.card .card-merge { font-size: 0.7em; color: var(--green); margin-top: 4px; }
+.card .card-owner { font-size: 12px; color: var(--purple); margin-top: 2px; font-weight: 600; }
+.card .card-merge { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card .card-tokens { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.card .card-tokens .cost { color: var(--green); font-weight: 700; }
 
-.working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; animation: pulse 1.5s infinite; }
-.waiting-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--yellow); display: inline-block; }
-.idle-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); display: inline-block; }
+/* ── TASK LIST — compact rows ── */
+.card-tasks { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
+.card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; }
+.card-task.completed { color: var(--text-tertiary); text-decoration: line-through; opacity: 0.5; }
+.card-task.in_progress { color: var(--text); font-weight: 600; }
+.card-task .task-icon { flex-shrink: 0; }
+.spin { display: inline-block; animation: spin 1.5s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.tasks-more { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-weight: 600; }
 
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* ── ACTION BUTTONS — geometric, adequate hit area ── */
+.card-actions { display: flex; gap: 4px; margin-top: 6px; justify-content: flex-end; }
+.btn-action {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  cursor: pointer;
+  min-height: 26px;
+  transition: all var(--speed) var(--ease);
+}
+.btn-action:hover { border-color: var(--accent); color: var(--text); }
+.btn-action.btn-stop:hover { border-color: var(--red); color: var(--red); }
+.btn-action.btn-close:hover { border-color: var(--yellow); color: var(--yellow); }
+.btn-action.btn-trash:hover { border-color: var(--red); color: var(--red); }
 
-/* Chart */
-.chart-row { display: flex; gap: 12px; margin-bottom: 24px; }
-.chart-container { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-.chart-container h4 { font-size: 0.85em; color: var(--text-muted); margin-bottom: 12px; }
-.bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; }
-.bar { background: var(--accent); border-radius: 2px 2px 0 0; min-width: 8px; flex: 1; transition: height 0.3s; position: relative; }
+/* ── CHARTS — flat, geometric ── */
+.chart-row { display: flex; gap: 10px; margin-bottom: 16px; }
+.chart-container {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+.chart-container h4 { font-size: 12px; font-weight: 700; color: var(--text-tertiary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+.bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
+.bar { background: var(--accent); border-radius: 1px 1px 0 0; min-width: 4px; flex: 1; transition: height 0.3s; position: relative; }
 .bar:hover { background: var(--purple); }
-.bar .bar-tooltip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; font-size: 0.7em; white-space: nowrap; }
+.bar .bar-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  z-index: 10;
+}
 .bar:hover .bar-tooltip { display: block; }
-.bar-labels { display: flex; gap: 4px; margin-top: 4px; }
-.bar-labels span { flex: 1; text-align: center; font-size: 0.6em; color: var(--text-muted); }
+.bar-labels { display: flex; gap: 2px; margin-top: 4px; }
+.bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 600; }
 
-/* Slide panel */
-.slide-panel { position: fixed; top: 0; right: -480px; width: 480px; height: 100vh; background: var(--surface); border-left: 1px solid var(--border); z-index: 100; transition: right 0.3s ease; display: flex; flex-direction: column; overflow: hidden; }
+/* ── SLIDE PANEL — flat, structured ── */
+.slide-panel {
+  position: fixed;
+  top: 0; right: -440px;
+  width: 440px;
+  height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  z-index: 100;
+  transition: right 0.2s var(--ease);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .slide-panel.open { right: 0; }
-.slide-panel-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 99; display: none; }
+.slide-panel-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  background: rgba(0,0,0,0.5);
+  z-index: 99;
+  display: none;
+}
 .slide-panel-overlay.open { display: block; }
-.panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
-.panel-header h3 { flex: 1; font-size: 0.95em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.panel-close { background: none; border: none; color: var(--text-muted); font-size: 1.2em; cursor: pointer; padding: 4px 8px; }
-.panel-close:hover { color: var(--text); }
-.panel-meta { padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 0.8em; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 12px; }
-.panel-meta .meta-item { display: flex; align-items: center; gap: 4px; }
-.panel-meta .meta-label { color: var(--text-muted); }
-.panel-meta .meta-value { color: var(--text); font-weight: 500; }
-.panel-links { padding: 8px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
-.panel-links a { font-size: 0.8em; color: var(--accent); text-decoration: none; background: var(--surface2); padding: 4px 10px; border-radius: 4px; }
-.panel-links a:hover { text-decoration: underline; }
-.panel-tokens { padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; }
-.token-badge { font-size: 0.75em; padding: 3px 8px; border-radius: 4px; background: var(--surface2); border: 1px solid var(--border); }
-.token-badge .tok-label { color: var(--text-muted); }
-.token-badge .tok-value { color: var(--accent); font-weight: 600; }
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-header h3 {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-close {
+  width: 32px; height: 32px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--speed) var(--ease);
+}
+.panel-close:hover { color: var(--text); border-color: var(--accent); }
+.panel-meta {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.panel-meta .meta-item { display: inline-flex; align-items: baseline; gap: 4px; }
+.panel-meta .meta-label { color: var(--text-tertiary); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.panel-meta .meta-value { color: var(--text); font-weight: 600; }
+.panel-links {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.panel-links a {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  background: var(--surface-raised);
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  transition: border-color var(--speed) var(--ease);
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+}
+.panel-links a:hover { border-color: var(--accent); }
+.panel-tokens {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.token-badge {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.token-badge .tok-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.token-badge .tok-value { color: var(--accent); font-variant-numeric: tabular-nums; }
 .token-badge .tok-cost { color: var(--green); }
-.panel-turns { flex: 1; overflow-y: auto; padding: 12px 20px; }
-.turn { margin-bottom: 12px; padding: 10px; border-radius: 6px; }
-.turn.user { background: var(--surface2); border-left: 3px solid var(--accent); }
+.panel-turns { flex: 1; overflow-y: auto; padding: 10px 16px; scroll-behavior: smooth; }
+.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); }
+.turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
 .turn.assistant { background: transparent; border-left: 3px solid var(--purple); }
-.turn-header { font-size: 0.75em; color: var(--text-muted); margin-bottom: 4px; display: flex; justify-content: space-between; }
-.turn-content { font-size: 0.85em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-.turn-summary-title { font-weight: 600; font-size: 0.85em; margin-bottom: 2px; }
-.turn-summary-body { font-size: 0.8em; color: var(--text-muted); line-height: 1.4; }
+.turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; justify-content: space-between; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+.turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
 
-.card .card-tokens { font-size: 0.65em; color: var(--text-muted); margin-top: 3px; }
-.card .card-tokens .cost { color: var(--green); }
+/* ── COMMAND INPUT — flat ── */
+.panel-command {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  background: var(--surface);
+}
+.panel-command input {
+  flex: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 12px;
+  outline: none;
+  min-height: 36px;
+  transition: border-color var(--speed) var(--ease);
+}
+.panel-command input:focus { border-color: var(--accent); }
+.panel-command input::placeholder { color: var(--text-tertiary); }
+.btn-send {
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 14px;
+  cursor: pointer;
+  min-height: 36px;
+  transition: background var(--speed) var(--ease);
+  flex-shrink: 0;
+}
+.btn-send:hover { background: var(--accent-hover); }
+.btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .kanban { grid-template-columns: 1fr; }
+/* ── CLOSED COLUMN ── */
+.show-older-btn {
+  background: var(--surface-raised);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  margin: 4px 8px 8px;
+  width: calc(100% - 16px);
+  transition: all var(--speed) var(--ease);
+  text-align: center;
+  min-height: 30px;
+}
+.show-older-btn:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── RESPONSIVE — Bauhaus grid adapts ── */
+@media (max-width: 1100px) {
+  .kanban { grid-template-columns: repeat(2, 1fr); }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 680px) {
+  .kanban { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: 1fr; }
   .chart-row { flex-direction: column; }
   .slide-panel { width: 100vw; right: -100vw; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+/* ── TOUCH — coarse pointer enlargement ── */
+@media (pointer: coarse) {
+  .btn-action { min-height: 40px; padding: 8px 12px; font-size: 12px; }
+  .btn-send { min-height: 44px; padding: 12px 16px; }
+  .panel-command input { min-height: 44px; padding: 12px 16px; }
+  .panel-close { width: 40px; height: 40px; }
+  .topbar .nav a, .topbar .nav select { min-height: 40px; padding: 8px 16px; }
+  .period-btn { min-height: 40px; padding: 12px 20px; }
+  .show-older-btn { min-height: 40px; padding: 8px 16px; }
+  .card { padding: 12px 16px; }
 }
 </style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
-    <h1>⚡ soma-work</h1>
-    <span class="badge" id="ws-status">Connecting...</span>
+    <h1>&#x26A1; soma-work</h1>
+    <span class="ws-badge" id="ws-status">Connecting...</span>
     <div class="nav">
       <select id="user-select" onchange="selectUser(this.value)">
         <option value="">All Users</option>
       </select>
-      <a href="/conversations">📝 Conversations</a>
+      <a href="/conversations">&#x1F4DD; Conversations</a>
     </div>
   </div>
 
   <div class="main">
     <div class="period-bar">
-      <button class="period-btn active" data-period="day" onclick="setPeriod('day')">오늘</button>
-      <button class="period-btn" data-period="week" onclick="setPeriod('week')">지난 7일</button>
-      <button class="period-btn" data-period="month" onclick="setPeriod('month')">지난 30일</button>
+      <button class="period-btn active" data-period="day" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+      <button class="period-btn" data-period="week" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+      <button class="period-btn" data-period="month" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
     </div>
 
     <div class="stats-grid" id="stats-grid">
-      <div class="stat-card"><div class="label">세션</div><div class="value" id="stat-sessions">-</div></div>
-      <div class="stat-card"><div class="label">턴 사용</div><div class="value" id="stat-turns">-</div></div>
-      <div class="stat-card"><div class="label">PR 생성</div><div class="value" id="stat-prs">-</div></div>
-      <div class="stat-card"><div class="label">PR 머지</div><div class="value" id="stat-merged">-</div></div>
-      <div class="stat-card"><div class="label">커밋</div><div class="value" id="stat-commits">-</div></div>
-      <div class="stat-card"><div class="label">머지 코드 +/-</div><div class="value" id="stat-merge-lines">-</div></div>
-      <div class="stat-card"><div class="label">토큰 사용</div><div class="value" id="stat-tokens">-</div></div>
-      <div class="stat-card"><div class="label">비용 (USD)</div><div class="value" id="stat-cost">-</div></div>
+      <div class="stat-card"><div class="label">&#xC138;&#xC158;</div><div class="value" id="stat-sessions">-</div></div>
+      <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
+      <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
+      <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
+      <div class="stat-card"><div class="label">&#xCEE4;&#xBC0B;</div><div class="value" id="stat-commits">-</div></div>
+      <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC; +/-</div><div class="value" id="stat-merge-lines">-</div></div>
+      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens">-</div></div>
+      <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
+      <div class="stat-card" style="grid-column:span 2"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
     </div>
 
     <div class="chart-row" id="chart-row"></div>
 
-    <h2 style="font-size:1em; margin-bottom:12px;">📋 세션 보드</h2>
+    <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F4CB; &#xC138;&#xC158; &#xBCF4;&#xB4DC;</h2>
     <div class="kanban" id="kanban">
       <div class="kanban-col" id="col-working">
-        <div class="kanban-col-header"><span class="working-dot"></span><h3>Working</h3><span class="count" id="count-working">0</span></div>
+        <div class="kanban-col-header">
+          <span class="working-dot"></span>
+          <h3>&#xC9C4;&#xD589;</h3>
+          <span class="count" id="count-working">0</span>
+        </div>
         <div class="cards" id="cards-working"></div>
       </div>
       <div class="kanban-col" id="col-waiting">
-        <div class="kanban-col-header"><span class="waiting-dot"></span><h3>Waiting</h3><span class="count" id="count-waiting">0</span></div>
+        <div class="kanban-col-header">
+          <span class="waiting-dot"></span>
+          <h3>&#xC720;&#xC800;&#xC785;&#xB825;</h3>
+          <span class="count" id="count-waiting">0</span>
+        </div>
         <div class="cards" id="cards-waiting"></div>
       </div>
       <div class="kanban-col" id="col-idle">
-        <div class="kanban-col-header"><span class="idle-dot"></span><h3>Completed / Idle</h3><span class="count" id="count-idle">0</span></div>
+        <div class="kanban-col-header">
+          <span class="idle-dot"></span>
+          <h3>&#xB300;&#xAE30;</h3>
+          <span class="count" id="count-idle">0</span>
+        </div>
         <div class="cards" id="cards-idle"></div>
+      </div>
+      <div class="kanban-col" id="col-closed">
+        <div class="kanban-col-header">
+          <span class="closed-dot"></span>
+          <h3>&#xC885;&#xB8CC;</h3>
+          <span class="count" id="count-closed">0</span>
+        </div>
+        <div class="cards" id="cards-closed"></div>
       </div>
     </div>
   </div>
@@ -577,22 +1232,64 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <div class="slide-panel" id="slide-panel">
     <div class="panel-header">
       <h3 id="panel-title">Session Detail</h3>
-      <button class="panel-close" onclick="closePanel()">✕</button>
+      <button class="panel-close" onclick="closePanel()">&#x2715;</button>
     </div>
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
     <div class="panel-turns" id="panel-turns">
-      <p style="color:var(--text-muted);text-align:center;margin-top:40px">Click a session card to view details</p>
+      <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
+    </div>
+    <div class="panel-command" id="panel-command" style="display:none">
+      <input type="text" id="cmd-input" placeholder="Send message to session..." onkeydown="if(event.key==='Enter')sendCommand()">
+      <button class="btn-send" id="cmd-send" onclick="sendCommand()">Send</button>
     </div>
   </div>
 </div>
 
 <script>
-const INIT_USER = ${userId ? JSON.stringify(userId) : 'null'};
+const INIT_USER = ${initUser};
 let currentUserId = INIT_USER || '';
 let currentPeriod = 'day';
 let ws = null;
+let panelOpen = false;
+let panelSessionKey = null;
+let panelConvId = null;
+let showOlderClosed = false;
+
+// ── Utility ──
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+function escJs(s) {
+  return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
+}
+function timeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60000) return 'just now';
+  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago';
+  if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
+  return Math.floor(ms / 86400000) + 'd ago';
+}
+function formatTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+// ── Card Aura ──
+function getAuraClass(isoStr) {
+  const ms = Date.now() - new Date(isoStr).getTime();
+  const min = ms / 60000;
+  if (min <= 10) return 'aura-legendary';
+  if (min <= 30) return 'aura-epic';
+  if (min <= 60) return 'aura-blue';
+  if (min <= 240) return 'aura-green';
+  if (min <= 480) return 'aura-white';
+  return '';
+}
 
 // ── User list ──
 async function loadUsers() {
@@ -620,42 +1317,126 @@ function selectUser(userId) {
 // ── Period ──
 function setPeriod(period) {
   currentPeriod = period;
-  document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.dataset.period === period));
+  document.querySelectorAll('.period-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.period === period);
+  });
   loadStats();
 }
 
-// ── Sessions (Kanban) ──
+// ── Session cache ──
+let _sessionCache = {};
+
+// ── Kanban rendering ──
 function renderBoard(board) {
+  _sessionCache = {}; // Clear stale cache each render cycle
   for (const col of ['working', 'waiting', 'idle']) {
     const container = document.getElementById('cards-' + col);
     const countEl = document.getElementById('count-' + col);
-    const sessions = board[col] || [];
+    const sessions = (board[col] || []);
     countEl.textContent = sessions.length;
-    container.innerHTML = sessions.map(s => renderCard(s)).join('');
+    container.innerHTML = sessions.map(function(s) { return renderCard(s, col); }).join('');
   }
+  // Closed column with 7-day filter
+  renderClosedColumn(board.closed || []);
 }
 
-// Store session data for panel access
-const _sessionCache = {};
+function renderClosedColumn(sessions) {
+  const container = document.getElementById('cards-closed');
+  const countEl = document.getElementById('count-closed');
+  countEl.textContent = sessions.length;
 
-function renderCard(s) {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recent = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
+  const older = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
+
+  let html = recent.map(function(s) { return renderCard(s, 'closed'); }).join('');
+  if (showOlderClosed) {
+    html += older.map(function(s) { return renderCard(s, 'closed'); }).join('');
+  }
+  if (older.length > 0) {
+    const label = showOlderClosed
+      ? '&#x25B2; Hide older (' + older.length + ')'
+      : '&#x25BC; Show older (' + older.length + ')';
+    html += '<button class="show-older-btn" onclick="toggleOlderClosed()">' + label + '</button>';
+  }
+  container.innerHTML = html;
+}
+
+function toggleOlderClosed() {
+  showOlderClosed = !showOlderClosed;
+  loadSessions();
+}
+
+function renderCard(s, col) {
   _sessionCache[s.key] = s;
+  const aura = getAuraClass(s.lastActivity);
+  const cls = 'card' + (aura ? ' ' + aura : '');
+
+  // Links
   const links = [];
-  if (s.issueUrl) links.push('<a href="' + esc(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()">📋 ' + esc(s.issueLabel || 'Issue') + '</a>');
-  if (s.prUrl) links.push('<a href="' + esc(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()">🔀 ' + esc(s.prLabel || 'PR') + (s.prStatus ? ' (' + esc(s.prStatus) + ')' : '') + '</a>');
-  const mergeInfo = s.mergeStats ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>' : '';
-  const tokenInfo = s.tokenUsage ? '<div class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok · <span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></div>' : '';
-  const convLink = s.conversationId ? ' <a href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()">📝</a>' : '';
-  return '<div class="card" onclick="openPanel(\\'' + esc(s.key) + '\\')">' +
-    '<div class="card-title">' + esc(s.title) + convLink + '</div>' +
-    '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '') + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>' +
-    (links.length ? '<div class="card-links">' + links.join('') + '</div>' : '') +
-    (s.issueTitle ? '<div style="font-size:0.75em;color:var(--text-muted);margin-top:4px">' + esc(s.issueTitle).slice(0,60) + '</div>' : '') +
-    (s.prTitle ? '<div style="font-size:0.75em;color:var(--text-muted);margin-top:2px">' + esc(s.prTitle).slice(0,60) + '</div>' : '') +
-    '<div class="card-owner">' + esc(s.ownerName) + '</div>' +
-    tokenInfo +
-    mergeInfo +
-    '</div>';
+  if (s.issueUrl) {
+    links.push('<a href="' + esc(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + '</a>');
+  }
+  if (s.prUrl) {
+    links.push('<a href="' + esc(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prStatus ? ' (' + esc(s.prStatus) + ')' : '') + '</a>');
+  }
+  const linksHtml = links.length ? '<div class="card-links">' + links.join('') + '</div>' : '';
+
+  // Conversation link
+  const convLink = s.conversationId
+    ? ' <a class="conv-link" href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()" title="View conversation">&#x1F4DD;</a>'
+    : '';
+
+  // Merge stats
+  const mergeHtml = s.mergeStats
+    ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>'
+    : '';
+
+  // Token info
+  const tokenHtml = s.tokenUsage
+    ? '<div class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok &middot; <span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></div>'
+    : '';
+
+  // Tasks
+  let tasksHtml = '';
+  if (s.tasks && s.tasks.length > 0) {
+    const shown = s.tasks.slice(0, 5);
+    const extra = s.tasks.length - shown.length;
+    const taskItems = shown.map(function(t) {
+      let icon, cls2;
+      if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
+      else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls2 = 'in_progress'; }
+      else { icon = '&#x25FB;'; cls2 = 'pending'; }
+      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span>' + esc(t.content.slice(0, 50)) + '</div>';
+    }).join('');
+    tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
+  }
+
+  // Action buttons
+  let actionBtn = '';
+  if (col === 'working') {
+    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'stop\')">&#x23F9; Stop</button>';
+  } else if (col === 'waiting' || col === 'idle') {
+    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'close\')">&#x274C; Close</button>';
+  } else if (col === 'closed') {
+    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'trash\')">&#x1F5D1; Trash</button>';
+  }
+  const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
+
+  const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+
+  return '<div class="' + cls + '" onclick="openPanel(\'' + escJs(s.key) + '\')">'
+    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + convLink + '</div>'
+    + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
+    + linksHtml
+    + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
+    + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
+    + '<div class="card-owner">' + esc(s.ownerName) + '</div>'
+    + tokenHtml
+    + mergeHtml
+    + tasksHtml
+    + actionsHtml
+    + '</div>';
 }
 
 async function loadSessions() {
@@ -665,6 +1446,15 @@ async function loadSessions() {
     const data = await res.json();
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
+}
+
+// ── Action handler ──
+async function doAction(key, action) {
+  try {
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/' + action, { method: 'POST' });
+    if (!res.ok) console.error('Action failed', action, key);
+    else loadSessions();
+  } catch (e) { console.error('Action error', e); }
 }
 
 // ── Stats ──
@@ -684,32 +1474,36 @@ async function loadStats() {
     document.getElementById('stat-merged').textContent = data.totals.prsMerged;
     document.getElementById('stat-commits').textContent = data.totals.commitsCreated;
     document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
-
-    // Compute token totals from active sessions for this user
+    // Workflow counts
+    const wfCounts = data.totals.workflowCounts || {};
+    const wfEntries = Object.entries(wfCounts).sort(function(a, b) { return b[1] - a[1]; });
+    document.getElementById('stat-workflows').innerHTML = wfEntries.length
+      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
+      : '<span style="color:var(--text-secondary)">-</span>';
     updateTokenStats();
-
-    // Render charts
     renderCharts(data.days);
   } catch (e) { console.error('Failed to load stats', e); }
 }
 
 function renderCharts(days) {
   const container = document.getElementById('chart-row');
-  if (!days.length) { container.innerHTML = '<p style="color:var(--text-muted)">No data for this period.</p>'; return; }
-
-  container.innerHTML = renderBarChart('세션', days, d => d.sessionsCreated, 'var(--accent)')
-    + renderBarChart('코드 변경 (머지)', days, d => d.mergeLinesAdded + d.mergeLinesDeleted, 'var(--green)');
+  if (!days.length) {
+    container.innerHTML = '<p style="color:var(--text-secondary)">No data for this period.</p>';
+    return;
+  }
+  container.innerHTML = renderBarChart('&#xC138;&#xC158;', days, function(d) { return d.sessionsCreated; }, 'var(--accent)')
+    + renderBarChart('&#xCF54;&#xB4DC; &#xBCC0;&#xACBD; (&#xBA38;&#xC9C0;)', days, function(d) { return d.mergeLinesAdded + d.mergeLinesDeleted; }, 'var(--green)');
 }
 
 function renderBarChart(title, days, valueFn, color) {
   const values = days.map(valueFn);
-  const max = Math.max(...values, 1);
-  const bars = days.map((d, i) => {
+  const max = Math.max.apply(null, values.concat([1]));
+  const bars = days.map(function(d, i) {
     const h = Math.max(2, (values[i] / max) * 100);
-    const label = d.date.slice(5); // MM-DD
+    const label = d.date.slice(5);
     return '<div class="bar" style="height:' + h + '%;background:' + color + '"><div class="bar-tooltip">' + label + ': ' + values[i] + '</div></div>';
   }).join('');
-  const labels = days.map(d => '<span>' + d.date.slice(8) + '</span>').join('');
+  const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
   return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
 }
 
@@ -719,25 +1513,46 @@ function connectWs() {
   ws = new WebSocket(proto + '//' + location.host + '/ws/dashboard');
   const statusEl = document.getElementById('ws-status');
 
-  ws.onopen = () => { statusEl.textContent = 'Live'; statusEl.style.background = 'var(--green)'; };
-  ws.onclose = () => {
-    statusEl.textContent = 'Reconnecting...'; statusEl.style.background = 'var(--yellow)';
+  ws.onopen = function() {
+    statusEl.textContent = 'Live';
+    statusEl.style.background = 'rgba(62,207,142,0.2)';
+    statusEl.style.borderColor = 'var(--green)';
+    statusEl.style.color = 'var(--green)';
+  };
+  ws.onclose = function() {
+    statusEl.textContent = 'Reconnecting...';
+    statusEl.style.background = '';
+    statusEl.style.borderColor = '';
+    statusEl.style.color = 'var(--yellow)';
     setTimeout(connectWs, 3000);
   };
-  ws.onerror = () => ws.close();
-  ws.onmessage = (ev) => {
+  ws.onerror = function() { ws.close(); };
+  ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'session_update') {
-        // Filter by current user if set
         if (currentUserId) {
-          msg.board.working = msg.board.working.filter(s => s.ownerId === currentUserId);
-          msg.board.waiting = msg.board.waiting.filter(s => s.ownerId === currentUserId);
-          msg.board.idle = msg.board.idle.filter(s => s.ownerId === currentUserId);
+          msg.board.working = (msg.board.working || []).filter(function(s) { return s.ownerId === currentUserId; });
+          msg.board.waiting = (msg.board.waiting || []).filter(function(s) { return s.ownerId === currentUserId; });
+          msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
+          msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
         renderBoard(msg.board);
+      } else if (msg.type === 'task_update') {
+        // Update cached session tasks and re-render
+        if (_sessionCache[msg.sessionKey]) {
+          _sessionCache[msg.sessionKey].tasks = msg.tasks;
+        }
+        loadSessions();
+      } else if (msg.type === 'conversation_update') {
+        // If panel is open for this conversation, append the turn
+        if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
+          appendTurnToPanel(msg.turn);
+        }
+      } else if (msg.type === 'session_action') {
+        // Immediate visual feedback already handled by loadSessions() in doAction
       }
-    } catch { /* ignore */ }
+    } catch (e) { /* ignore */ }
   };
 }
 
@@ -756,19 +1571,14 @@ function updateTokenStats() {
   document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
 }
 
-function formatTokens(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
-}
-
 // ── Slide Panel ──
-let panelOpen = false;
 function openPanel(sessionKey) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
 
-  // Header
+  panelSessionKey = sessionKey;
+  panelConvId = s.conversationId || null;
+
   document.getElementById('panel-title').textContent = s.title || 'Untitled';
 
   // Meta
@@ -784,79 +1594,137 @@ function openPanel(sessionKey) {
   // Links
   const linksEl = document.getElementById('panel-links');
   const linkHtml = [];
-  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">📋 ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' — ' + esc(s.issueTitle).slice(0,50) : '') + '</a>');
-  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">🔀 ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' — ' + esc(s.prTitle).slice(0,50) : '') + '</a>');
-  if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">📝 Full Conversation</a>');
-  linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.8em;color:var(--text-muted)">No links</span>';
+  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
+  if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
+  linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
 
   // Tokens
   const tokensEl = document.getElementById('panel-tokens');
   if (s.tokenUsage) {
-    tokensEl.innerHTML = [
+    let tokHtml = [
       '<span class="token-badge"><span class="tok-label">Input:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalInputTokens) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Output:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalOutputTokens) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + s.tokenUsage.totalCostUsd.toFixed(3) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + s.tokenUsage.contextUsagePercent.toFixed(1) + '%</span></span>',
     ].join('');
     if (s.mergeStats) {
-      tokensEl.innerHTML += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
+      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
     }
+    tokensEl.innerHTML = tokHtml;
   } else {
-    tokensEl.innerHTML = '<span style="font-size:0.8em;color:var(--text-muted)">No token data</span>';
+    tokensEl.innerHTML = '<span style="font-size:0.78em;color:var(--text-secondary)">No token data</span>';
   }
 
-  // Load conversation turns
+  // Conversation turns
   const turnsEl = document.getElementById('panel-turns');
   if (s.conversationId) {
-    turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">Loading...</p>';
+    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
     fetch('/api/dashboard/session/' + s.conversationId)
-      .then(r => r.json())
-      .then(data => {
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
         if (!data.turns || data.turns.length === 0) {
-          turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">No conversation turns</p>';
+          turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
           return;
         }
-        turnsEl.innerHTML = data.turns.map(t => {
-          const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-          if (t.role === 'user') {
-            return '<div class="turn user"><div class="turn-header"><span>👤 ' + esc(t.userName || 'User') + '</span><span>' + time + '</span></div><div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + (t.rawContent && t.rawContent.length > 500 ? '...' : '') + '</div></div>';
-          } else {
-            const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
-            const body = t.summaryBody ? '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>' : '<div class="turn-summary-body" style="color:var(--text-muted);font-style:italic">Generating summary...</div>';
-            return '<div class="turn assistant"><div class="turn-header"><span>🤖 Assistant</span><span>' + time + '</span></div>' + title + body + '</div>';
-          }
-        }).join('');
+        turnsEl.innerHTML = data.turns.map(renderTurn).join('');
+        turnsEl.scrollTop = turnsEl.scrollHeight;
       })
-      .catch(() => {
-        turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">Failed to load conversation</p>';
+      .catch(function() {
+        turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
       });
   } else {
-    turnsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;margin-top:40px">No conversation recorded</p>';
+    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
   }
 
-  // Open panel
+  // Command input — show for non-closed sessions
+  const cmdEl = document.getElementById('panel-command');
+  cmdEl.style.display = (s.terminated || s.sessionState === 'SLEEPING') ? 'none' : '';
+
   document.getElementById('slide-panel').classList.add('open');
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
+}
+
+function renderTurn(t) {
+  const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  if (t.role === 'user') {
+    return '<div class="turn user"><div class="turn-header"><span>&#x1F464; ' + esc(t.userName || 'User') + '</span><span>' + time + '</span></div>'
+      + '<div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div></div>';
+  } else {
+    const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
+    const body = t.summaryBody
+      ? '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>'
+      : '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
+    return '<div class="turn assistant"><div class="turn-header"><span>&#x1F916; Assistant</span><span>' + time + '</span></div>' + title + body + '</div>';
+  }
+}
+
+function appendTurnToPanel(turn) {
+  const turnsEl = document.getElementById('panel-turns');
+  const wasAtBottom = turnsEl.scrollHeight - turnsEl.scrollTop <= turnsEl.clientHeight + 40;
+  turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
+  if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
 }
 
 function closePanel() {
   document.getElementById('slide-panel').classList.remove('open');
   document.getElementById('panel-overlay').classList.remove('open');
   panelOpen = false;
+  panelSessionKey = null;
+  panelConvId = null;
 }
 
-// Escape key closes panel
-document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && panelOpen) closePanel(); });
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && panelOpen) closePanel();
+});
 
-// ── Helpers ──
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
-function timeAgo(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60000) return 'just now';
-  if (ms < 3600000) return Math.floor(ms/60000) + 'm ago';
-  if (ms < 86400000) return Math.floor(ms/3600000) + 'h ago';
-  return Math.floor(ms/86400000) + 'd ago';
+// ── Send command ──
+async function sendCommand() {
+  const input = document.getElementById('cmd-input');
+  const btn = document.getElementById('cmd-send');
+  const msg = input.value.trim();
+  if (!msg || !panelSessionKey) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  input.disabled = true;
+
+  try {
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg }),
+    });
+    if (res.ok) {
+      input.value = '';
+      // Refresh turns after short delay
+      setTimeout(function() {
+        const s = _sessionCache[panelSessionKey];
+        if (s && s.conversationId) {
+          fetch('/api/dashboard/session/' + s.conversationId)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              if (data.turns) {
+                const turnsEl = document.getElementById('panel-turns');
+                turnsEl.innerHTML = data.turns.map(renderTurn).join('');
+                turnsEl.scrollTop = turnsEl.scrollHeight;
+              }
+            })
+            .catch(function() {});
+        }
+      }, 800);
+    } else {
+      console.error('Command failed');
+    }
+  } catch (e) {
+    console.error('Command error', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send';
+    input.disabled = false;
+    input.focus();
+  }
 }
 
 // ── Init ──
@@ -865,7 +1733,7 @@ loadSessions();
 if (currentUserId) loadStats();
 else document.getElementById('stats-grid').style.display = 'none';
 connectWs();
-setInterval(loadSessions, 30000); // Fallback polling
+setInterval(loadSessions, 30000);
 </script>
 </body>
 </html>`;

@@ -842,4 +842,14 @@ export class SlackHandler {
   savePendingForms(): void {
     this.actionHandlers.savePendingForms();
   }
+
+  /** Expose request coordinator for dashboard stop handler */
+  getRequestCoordinator(): RequestCoordinator {
+    return this.requestCoordinator;
+  }
+
+  /** Expose todo manager for dashboard task accessor */
+  getTodoManager(): TodoManager {
+    return this.todoManager;
+  }
 }
