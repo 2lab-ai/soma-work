@@ -25,7 +25,31 @@ const FORK_SYSTEM_PROMPT =
  * @returns A ForkExecutor function compatible with SummaryService
  */
 export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
-  return async (prompt: string, model?: string, sessionId?: string, cwd?: string): Promise<string | null> => {
+  return async (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal): Promise<string | null> => {
+    /** Build an AbortController that mirrors the caller's signal. */
+    const makeAbortController = (): AbortController | undefined => {
+      if (!abortSignal) return undefined;
+      const ac = new AbortController();
+      if (abortSignal.aborted) {
+        ac.abort(abortSignal.reason);
+      } else {
+        abortSignal.addEventListener('abort', () => ac.abort(abortSignal.reason), { once: true });
+      }
+      return ac;
+    };
+
+    /** Single dispatch attempt. When resumeId is provided, forkSession is enabled. */
+    const attempt = async (resumeId?: string): Promise<string> => {
+      return claudeHandler.dispatchOneShot(
+        prompt,
+        FORK_SYSTEM_PROMPT,
+        model,
+        makeAbortController(),
+        resumeId,
+        cwd,
+      );
+    };
+
     try {
       logger.info('Fork executor: starting summary query', {
         promptLength: prompt.length,
@@ -34,14 +58,37 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
         cwd: cwd ?? 'none',
       });
 
-      const response = await claudeHandler.dispatchOneShot(
-        prompt,
-        FORK_SYSTEM_PROMPT,
-        model,
-        undefined, // abortController
-        sessionId, // fork session for conversation context
-        cwd,       // working directory for forked session
-      );
+      let response: string;
+      try {
+        response = await attempt(sessionId);
+      } catch (firstError) {
+        // If the fork failed because the session no longer exists, retry without fork.
+        // Claude SDK returns "No conversation found with session ID: ..." for stale sessions.
+        const msg = firstError instanceof Error ? firstError.message : String(firstError);
+        const isStaleSession = sessionId && msg.toLowerCase().includes('no conversation found');
+
+        if (isStaleSession) {
+          // Short-circuit: if caller already aborted, don't waste a retry
+          if (abortSignal?.aborted) {
+            throw firstError;
+          }
+          logger.warn('Fork executor: stale sessionId, retrying without fork', {
+            sessionId,
+            error: msg,
+          });
+          try {
+            response = await attempt(undefined);
+          } catch (fallbackError) {
+            logger.error('Fork executor: fallback also failed', {
+              originalError: msg,
+              fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            });
+            throw fallbackError;
+          }
+        } else {
+          throw firstError;
+        }
+      }
 
       const trimmed = response.trim();
 
@@ -56,10 +103,16 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
 
       return trimmed;
     } catch (error) {
-      logger.error('Fork executor: failed to generate summary', {
-        error: error instanceof Error ? error.message : String(error),
-        model: model ?? 'default',
-      });
+      // Distinguish abort (expected cancellation) from real errors to avoid noisy telemetry
+      const isAbort = (error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted;
+      if (isAbort) {
+        logger.info('Fork executor: summary query aborted', { model: model ?? 'default' });
+      } else {
+        logger.error('Fork executor: failed to generate summary', {
+          error: error instanceof Error ? error.message : String(error),
+          model: model ?? 'default',
+        });
+      }
       return null;
     }
   };

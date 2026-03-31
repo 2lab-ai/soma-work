@@ -27,6 +27,7 @@ import {
   UserChoiceHandler,
 } from '../index';
 import { OutputFlag, shouldOutput, verboseTag, LOG_DETAIL } from '../output-flags';
+import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { ActionHandlers } from '../actions';
 import { RequestCoordinator } from '../request-coordinator';
 import { ThreadPanel } from '../thread-panel';
@@ -159,6 +160,11 @@ interface RequestToolStats {
  */
 export class StreamExecutor {
   private logger = new Logger('StreamExecutor');
+  /**
+   * Per-session AbortController for in-flight summary fork queries.
+   * On new user input, abort() is called to cancel the running fork and prevent stale display.
+   */
+  private summaryAbortControllers = new Map<string, AbortController>();
 
   constructor(private deps: StreamExecutorDeps) {}
 
@@ -244,6 +250,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.deps.summaryTimer.cancel(params.sessionKey);
     }
 
+    // Abort any in-flight summary fork to prevent stale summary from repopulating after clearDisplay.
+    // This is the key fix for the race: timer cancel only prevents new fires, but an already-running
+    // fork must be explicitly aborted so its result is discarded.
+    const pendingAbort = this.summaryAbortControllers.get(params.sessionKey);
+    if (pendingAbort) {
+      pendingAbort.abort();
+      this.summaryAbortControllers.delete(params.sessionKey);
+    }
+
     // Clear any displayed summary on new user input
     if (this.deps.summaryService) {
       this.deps.summaryService.clearDisplay(session as any);
@@ -252,9 +267,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Delete tracked completion messages on new user input
     // Trace: docs/turn-summary-lifecycle/trace.md, S7
     if (this.deps.completionMessageTracker) {
+      const threadRootTs = session.threadRootTs;
       this.deps.completionMessageTracker.deleteAll(
         params.sessionKey,
-        async (ch, ts) => { try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {} },
+        async (ch, ts) => {
+          // Defense-in-depth: never delete the thread root message (header)
+          if (threadRootTs && ts === threadRootTs) {
+            this.logger.error('BLOCKED: attempted to delete thread root via completion tracker', {
+              sessionKey: params.sessionKey, ts, threadRootTs,
+            });
+            return;
+          }
+          try { await this.deps.slackApi.deleteMessage(ch, ts); } catch {}
+        },
         params.channel
       ).catch(() => {});
     }
@@ -293,7 +318,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      const finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+      let finalPrompt = await this.preparePrompt(text, processedFiles, userName, user, workingDirectory, threadTs, params.mentionTs);
+
+      // #196: Inject compaction context if SDK auto-compacted during previous turn
+      if (session.compactionOccurred) {
+        const compactionCtx = buildCompactionContext(snapshotFromSession(session));
+        if (compactionCtx) {
+          finalPrompt = `${compactionCtx}\n\n${finalPrompt}`;
+          this.logger.info('Injected compaction preservation context', { sessionKey });
+        }
+        session.compactionOccurred = false;
+      }
 
       // Record user turn (fire-and-forget, non-blocking)
       if (session.conversationId && text) {
@@ -607,6 +642,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
+        },
+        // #196: Compaction-Aware Context Preservation
+        onCompactBoundary: () => {
+          session.compactionOccurred = true;
+          this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'working') {
@@ -1298,8 +1338,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   private async onSummaryTimerFire(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!this.deps.summaryService) return;
+
+    // Create AbortController for this fork — stored so new user input can abort it.
+    const abortController = new AbortController();
+    this.summaryAbortControllers.set(sessionKey, abortController);
+
     try {
-      const summaryText = await this.deps.summaryService.execute(session as any);
+      const summaryText = await this.deps.summaryService.execute(session as any, abortController.signal);
+
+      // CAS cleanup: only remove if this controller is still the active one for this session.
+      // Prevents a slow summary A from deleting a newer summary B's controller.
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
+
       if (summaryText) {
         this.deps.summaryService.displayOnThread(session as any, summaryText);
         // Trigger re-render so the summary blocks appear in the Slack thread header.
@@ -1307,6 +1359,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
       }
     } catch (err: any) {
+      if (this.summaryAbortControllers.get(sessionKey) === abortController) {
+        this.summaryAbortControllers.delete(sessionKey);
+      }
+      if (abortController.signal.aborted) {
+        this.logger.info('Summary fork aborted by new user input', { sessionKey });
+        return;
+      }
       this.logger.warn('Summary timer callback failed', { error: err?.message });
     }
   }
@@ -1314,6 +1373,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private async cleanup(session: ConversationSession, sessionKey: string, abortController?: AbortController): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
+
+    // Abort and clean up any in-flight summary fork for this session
+    const pendingSummaryAbort = this.summaryAbortControllers.get(sessionKey);
+    if (pendingSummaryAbort) {
+      pendingSummaryAbort.abort();
+      this.summaryAbortControllers.delete(sessionKey);
+    }
 
     // Cleanup active MCP status tracking to prevent stuck timers
     this.deps.toolEventProcessor.cleanup(sessionKey);
@@ -2158,8 +2224,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
 
         // Security: ensure resolved path stays within session directory (prevent path traversal)
+        // Append path.sep to prevent sibling-prefix bypass (e.g., /tmp/session vs /tmp/session-evil)
         const canonicalPath = pathModule.resolve(resolvedPath);
-        if (sessionDir && !canonicalPath.startsWith(pathModule.resolve(sessionDir))) {
+        const resolvedSessionDir = pathModule.resolve(sessionDir!);
+        if (sessionDir && canonicalPath !== resolvedSessionDir
+            && !canonicalPath.startsWith(resolvedSessionDir + pathModule.sep)) {
           this.logger.warn('Save path traversal blocked', { resolvedPath: canonicalPath, sessionDir });
           await say({
             text: '⚠️ Save path is outside session directory. Renew cancelled.',
@@ -2219,15 +2288,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Get user message if provided with /renew command
     const userMessage = session.renewUserMessage;
 
-    // Notify in current thread
-    await say({
-      text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
-        `🔄 *Session Reset & Re-dispatch*\n` +
-        `• 이전 세션 컨텍스트 초기화됨\n` +
-        `• 워크플로우 재분류 후 load 실행...` +
-        (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
-      thread_ts: threadTs,
-    });
+    // Clear renew state BEFORE any notification I/O to prevent stuck state if say() rejects
+    session.renewState = null;
+    session.renewUserMessage = undefined;
+
+    // Notify in current thread (non-critical — state already cleaned up)
+    try {
+      await say({
+        text: `✅ *Context saved!* (ID: \`${id}\`)\n\n` +
+          `🔄 *Session Reset & Re-dispatch*\n` +
+          `• 이전 세션 컨텍스트 초기화됨\n` +
+          `• 워크플로우 재분류 후 load 실행...` +
+          (userMessage ? `\n• 지시사항: "${userMessage}"` : ''),
+        thread_ts: threadTs,
+      });
+    } catch (notifyError) {
+      this.logger.warn('Renew: notification failed (non-blocking)', { notifyError });
+    }
 
     // Generate the load prompt with optional user instruction
     const userInstruction = userMessage
@@ -2239,10 +2316,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 ${saveContent}
 </save>
 ${userInstruction}`;
-
-    // Clear renew state and user message
-    session.renewState = null;
-    session.renewUserMessage = undefined;
 
     this.logger.info('Renew: returning continuation for load', { id, hasUserMessage: !!userMessage });
 
@@ -2361,10 +2434,12 @@ ${userInstruction}`;
           this.logger.info('scanForLatestSave: found exact save by id', { saveId, contextPath });
           return `--- context.md ---\n${content}`;
         }
-        this.logger.warn('scanForLatestSave: save id not found, trying newest', { saveId });
+        // Fail closed: explicit saveId was given but not found — do not fall back to newest
+        this.logger.warn('scanForLatestSave: explicit save id not found, failing closed', { saveId });
+        return null;
       }
 
-      // Fallback: list save directories sorted descending (newest first)
+      // Fallback (no saveId): list save directories sorted descending (newest first)
       const entries = fs.readdirSync(saveRoot, { withFileTypes: true })
         .filter((d: { isDirectory: () => boolean }) => d.isDirectory())
         .map((d: { name: string }) => d.name)

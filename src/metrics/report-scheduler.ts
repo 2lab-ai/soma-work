@@ -128,8 +128,8 @@ export class ReportScheduler {
           const reportDate = yesterday(now.dateStr);
           logger.info(`Daily report triggered for ${reportDate}`);
 
-          const report = await this.aggregator.aggregateDaily(reportDate);
-          const formatted = this.formatter.formatDaily(report);
+          const report = await this.aggregator.aggregateEnrichedDaily(reportDate);
+          const formatted = this.formatter.formatEnrichedDaily(report);
           const result = await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
 
           // Only mark as sent if publish succeeded (spec: retry next minute on failure)
@@ -150,8 +150,8 @@ export class ReportScheduler {
           const weekStart = lastMonday(now.dateStr);
           logger.info(`Weekly report triggered for week ${weekStart}`);
 
-          const report = await this.aggregator.aggregateWeekly(weekStart);
-          const formatted = this.formatter.formatWeekly(report);
+          const report = await this.aggregator.aggregateEnrichedWeekly(weekStart);
+          const formatted = this.formatter.formatEnrichedWeekly(report);
           const result = await this.publisher.publish(this.config.channelId, formatted.blocks, formatted.text);
 
           // Only mark as sent if publish succeeded (spec: retry next minute on failure)

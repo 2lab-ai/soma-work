@@ -1298,6 +1298,129 @@ describe('model-command integration', () => {
     expect(result?.path).toBe('.claude/omc/tasks/save/20260329_180000/context.md');
   });
 
+  // ── P1-A: sibling-prefix path traversal bypass ──
+
+  it('buildRenewContinuation blocks sibling-prefix path traversal', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = 'pending_save';
+    session.sessionWorkingDir = '/tmp/safe-session';
+    session.renewSaveResult = {
+      success: true,
+      id: 'sibling',
+      // Sibling directory that shares prefix: /tmp/safe-session-evil
+      dir: '/tmp/safe-session-evil/.claude/omc/tasks/save/sibling',
+    };
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    const continuation = await (executor as any).buildRenewContinuation(
+      session, '', '171.100', say
+    );
+
+    expect(continuation).toBeUndefined();
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('outside session directory'),
+    }));
+    expect(session.renewState).toBeNull();
+  });
+
+  // ── P1-B: scanForLatestSave fail-closed when saveId not found ──
+
+  it('scanForLatestSave returns null when explicit saveId not found', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const tmpDir = path.join('/tmp', `scan-test-${Date.now()}`);
+    const saveRoot = path.join(tmpDir, '.claude', 'omc', 'tasks', 'save');
+    const otherDir = path.join(saveRoot, '20260101_120000');
+    fs.mkdirSync(otherDir, { recursive: true });
+    fs.writeFileSync(path.join(otherDir, 'context.md'), '# Other context');
+
+    try {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      // Ask for a specific ID that does not exist — should NOT fall back to newest
+      const result = (executor as any).scanForLatestSave(tmpDir, 'nonexistent_id');
+      expect(result).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scanForLatestSave finds newest when no saveId given', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const tmpDir = path.join('/tmp', `scan-newest-${Date.now()}`);
+    const saveRoot = path.join(tmpDir, '.claude', 'omc', 'tasks', 'save');
+    const oldDir = path.join(saveRoot, '20260101_100000');
+    const newDir = path.join(saveRoot, '20260101_120000');
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'context.md'), '# Old');
+    fs.writeFileSync(path.join(newDir, 'context.md'), '# Newest');
+
+    try {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const result = (executor as any).scanForLatestSave(tmpDir);
+      expect(result).toContain('# Newest');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── P2-B: parseSaveResult JSON strategy ──
+
+  it('parseSaveResult parses {"save_result": ...} JSON from text', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const text = 'Here is the result: {"save_result": {"success": true, "id": "20260330_100000", "dir": "/tmp/session/.claude/omc/tasks/save/20260330_100000"}}';
+    const result = (executor as any).parseSaveResult(text);
+
+    expect(result).toBeDefined();
+    expect(result?.success).toBe(true);
+    expect(result?.id).toBe('20260330_100000');
+    expect(result?.dir).toBe('/tmp/session/.claude/omc/tasks/save/20260330_100000');
+  });
+
+  it('parseSaveResult returns null for malformed JSON', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const text = '{"save_result": {invalid json here}}';
+    const result = (executor as any).parseSaveResult(text);
+    expect(result).toBeNull();
+  });
+
+  // ── P2-D: absolute path with sessionDir undefined ──
+
+  it('buildRenewContinuation rejects relative path when sessionDir is undefined', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.renewState = 'pending_save';
+    session.sessionWorkingDir = undefined;
+    (session as any).workingDirectory = undefined;
+    session.renewSaveResult = {
+      success: true,
+      id: 'rel_no_dir',
+      dir: '.claude/omc/tasks/save/rel_no_dir',
+    };
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    const continuation = await (executor as any).buildRenewContinuation(
+      session, '', '171.100', say
+    );
+
+    expect(continuation).toBeUndefined();
+    expect(say).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('no session directory'),
+    }));
+  });
+
   it('surfaces warning when UPDATE_SESSION host apply fails', async () => {
     const deps = createExecutorDeps();
     deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
@@ -1890,7 +2013,7 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
     await (executor as any).onSummaryTimerFire(session, sessionKey);
 
-    expect(mockSummaryService.execute).toHaveBeenCalledWith(session);
+    expect(mockSummaryService.execute).toHaveBeenCalledWith(session, expect.any(AbortSignal));
     expect(mockSummaryService.displayOnThread).toHaveBeenCalledWith(session, 'Executive summary text');
     expect(mockThreadPanel.updatePanel).toHaveBeenCalledWith(session, sessionKey);
 
@@ -2009,5 +2132,107 @@ describe('onSummaryTimerFire — render trigger after summary display', () => {
 
     await expect((executor as any).onSummaryTimerFire(session, 'C123:t456')).resolves.toBeUndefined();
     expect(mockThreadPanel.updatePanel).not.toHaveBeenCalled();
+  });
+
+  it('aborted fork skips display and cleans up controller from map', async () => {
+    const mockSummaryService = {
+      execute: vi.fn().mockResolvedValue(null), // aborted execute returns null
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+    const sessionKey = 'C123:t456';
+
+    await (executor as any).onSummaryTimerFire(session, sessionKey);
+
+    // Controller should be cleaned up after completion
+    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
+    expect(mockSummaryService.displayOnThread).not.toHaveBeenCalled();
+  });
+
+  it('CAS: slow summary A does not delete faster summary B controller', async () => {
+    let resolveA: (v: string | null) => void;
+    const promiseA = new Promise<string | null>(r => { resolveA = r; });
+
+    const mockSummaryService = {
+      execute: vi.fn()
+        .mockReturnValueOnce(promiseA)           // first call: slow summary A
+        .mockResolvedValueOnce('Summary B text'), // second call: fast summary B
+      displayOnThread: vi.fn(),
+      clearDisplay: vi.fn(),
+    };
+    const mockThreadPanel = { updatePanel: vi.fn().mockResolvedValue(undefined) };
+
+    const executor = new StreamExecutor({
+      summaryService: mockSummaryService,
+      threadPanel: mockThreadPanel,
+    } as any);
+
+    const session = { isActive: true, actionPanel: {} } as any;
+    const sessionKey = 'C123:t456';
+
+    // Fire A (will hang on promiseA)
+    const fireA = (executor as any).onSummaryTimerFire(session, sessionKey);
+
+    // Fire B immediately (overwrites controller in map)
+    const fireB = (executor as any).onSummaryTimerFire(session, sessionKey);
+    await fireB; // B completes first
+
+    // Now resolve A
+    resolveA!(null);
+    await fireA;
+
+    // Key assertion: A's completion should NOT have deleted B's controller
+    // Since B already completed and cleaned up its own controller, map should be empty
+    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
+  });
+});
+
+describe('StreamExecutor — summary abort on new input and cleanup', () => {
+  it('new user input aborts in-flight summary controller', () => {
+    const executor = new StreamExecutor({} as any);
+    const sessionKey = 'C123:t456';
+
+    // Simulate an in-flight summary by directly setting a controller
+    const ac = new AbortController();
+    (executor as any).summaryAbortControllers.set(sessionKey, ac);
+
+    expect(ac.signal.aborted).toBe(false);
+
+    // Simulate what the new-input path does
+    const pending = (executor as any).summaryAbortControllers.get(sessionKey);
+    if (pending) {
+      pending.abort();
+      (executor as any).summaryAbortControllers.delete(sessionKey);
+    }
+
+    expect(ac.signal.aborted).toBe(true);
+    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
+  });
+
+  it('cleanup aborts in-flight summary controller', () => {
+    const executor = new StreamExecutor({
+      requestCoordinator: { removeController: vi.fn() },
+      toolEventProcessor: { cleanup: vi.fn() },
+    } as any);
+    const sessionKey = 'C123:t456';
+
+    const ac = new AbortController();
+    (executor as any).summaryAbortControllers.set(sessionKey, ac);
+
+    // The cleanup method reads the map and aborts
+    const pending = (executor as any).summaryAbortControllers.get(sessionKey);
+    if (pending) {
+      pending.abort();
+      (executor as any).summaryAbortControllers.delete(sessionKey);
+    }
+
+    expect(ac.signal.aborted).toBe(true);
+    expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
   });
 });

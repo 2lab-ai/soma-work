@@ -120,11 +120,13 @@ export class SlackHandler {
     this.mcpHealthMonitor = new McpHealthMonitor(this.slackApi, this.mcpManager);
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
+    const completionMessageTracker = new CompletionMessageTracker();
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
       todoManager: this.todoManager,
+      completionMessageTracker,
     });
 
     // Command routing
@@ -168,8 +170,6 @@ export class SlackHandler {
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
-
-    const completionMessageTracker = new CompletionMessageTracker();
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -699,7 +699,12 @@ export class SlackHandler {
    */
   /** Resume prompt sent to model for auto-resuming interrupted sessions */
   private static readonly AUTO_RESUME_PROMPT =
-    'slack-mcp → get_thread_messages 이거로 유저의 마지막 명령까지 대화를 확인하고 네가 한 작업일 이어서 진행해줘';
+    '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+    '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
+    '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
+    '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
+    '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
+    '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.';
 
   /** Delay between processing crash-recovered sessions (ms) */
   private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
@@ -786,17 +791,21 @@ export class SlackHandler {
    * through the existing handleMessage pipeline.
    */
   private async autoResumeSession(
-    session: { channelId: string; threadTs?: string; ownerId: string },
+    session: { channelId: string; threadTs?: string; ownerId: string; title?: string; workflow?: string },
     notificationTs?: string,
     errorContext?: string,
   ): Promise<void> {
     // Use the notification message's ts so that handleMessage's reaction calls
     // (eyes emoji etc.) target a real Slack message instead of a fabricated timestamp.
 
-    // When error context is available (e.g., file access blocked), inject it into
-    // the resume prompt so the model knows what went wrong and can adapt.
-    const resumePrompt = errorContext
-      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n⚠️ 이전 시도 중 오류 발생: ${errorContext}`
+    // Build context-rich prompt so the model knows WHAT it was doing, not just HOW to resume.
+    const contextParts: string[] = [];
+    if (session.title) contextParts.push(`세션 제목: ${session.title}`);
+    if (session.workflow && session.workflow !== 'default') contextParts.push(`워크플로우: ${session.workflow}`);
+    if (errorContext) contextParts.push(`⚠️ 이전 시도 중 오류 발생: ${errorContext}`);
+
+    const resumePrompt = contextParts.length > 0
+      ? `${SlackHandler.AUTO_RESUME_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n${contextParts.join('\n')}`
       : SlackHandler.AUTO_RESUME_PROMPT;
 
     const syntheticEvent: MessageEvent = {

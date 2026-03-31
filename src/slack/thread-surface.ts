@@ -4,6 +4,7 @@ import { ThreadHeaderBuilder } from './thread-header-builder';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 import { ContextWindowManager } from './context-window-manager';
 import { RequestCoordinator } from './request-coordinator';
+import { CompletionMessageTracker } from './completion-message-tracker';
 import { ClaudeHandler } from '../claude-handler';
 import { TodoManager } from '../todo-manager';
 import { ConversationSession } from '../types';
@@ -22,6 +23,7 @@ interface ThreadSurfaceDeps {
   claudeHandler: ClaudeHandler;
   requestCoordinator: RequestCoordinator;
   todoManager: TodoManager;
+  completionMessageTracker?: CompletionMessageTracker;
 }
 
 interface PRCacheEntry {
@@ -122,6 +124,8 @@ export class ThreadSurface {
       if (!session.actionPanel.messageTs) {
         session.actionPanel.messageTs = session.threadRootTs;
       }
+      // Defense-in-depth: protect thread root from accidental deletion
+      this.deps.completionMessageTracker?.protect(sessionKey, session.threadRootTs);
     }
 
     // Render initial state (force to ensure message is created)
@@ -423,6 +427,7 @@ export class ThreadSurface {
       rs.prCache = null;
     }
     this.sessions.delete(sessionKey);
+    this.deps.completionMessageTracker?.clearProtection(sessionKey);
   }
 
   // =========================================================================
@@ -472,17 +477,25 @@ export class ThreadSurface {
           { unfurlLinks: false, unfurlMedia: false },
         );
         rendered = true;
-      } catch (error) {
-        this.logger.warn('Failed to update surface message', { sessionKey, error });
-        // If this was the thread root (bot-initiated), don't try to create a new one
-        if (session.threadModel === 'bot-initiated' && panelState.messageTs === session.threadRootTs) {
+      } catch (error: any) {
+        const isMessageNotFound = error?.data?.error === 'message_not_found'
+          || error?.message?.includes('message_not_found');
+        this.logger.warn('Failed to update surface message', {
+          sessionKey,
+          isMessageNotFound,
+          error: error?.message || error,
+        });
+        // For bot-initiated with transient errors (network, rate-limit):
+        // keep messageTs so we retry the *update* on next render, not create a duplicate.
+        if (session.threadModel === 'bot-initiated' && !isMessageNotFound) {
           return;
         }
+        // 404 or user-initiated: clear stale reference and fall through to create new
         panelState.messageTs = undefined;
       }
     }
 
-    // Create new message if needed (user-initiated only)
+    // Create new message if needed (any model — including bot-initiated after message_not_found)
     if (!panelState.messageTs) {
       try {
         const threadTs = session.threadRootTs || session.threadTs;
