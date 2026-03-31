@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Logger } from '../logger';
 import { DATA_DIR } from '../env-paths';
-import { ConversationRecord, ConversationMeta } from './types';
+import { Logger } from '../logger';
+import type { ConversationMeta, ConversationRecord } from './types';
 
 const logger = new Logger('ConversationStorage');
 
@@ -74,7 +74,7 @@ export class ConversationStorage {
   async list(): Promise<ConversationMeta[]> {
     try {
       const files = await fs.promises.readdir(this.dataDir);
-      const jsonFiles = files.filter(f => f.endsWith('.json'));
+      const jsonFiles = files.filter((f) => f.endsWith('.json'));
 
       const metas: ConversationMeta[] = [];
 

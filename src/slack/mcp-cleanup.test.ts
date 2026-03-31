@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * MCP Status Cleanup Tests
@@ -65,13 +65,7 @@ class MockToolTracker {
 class MockMcpStatusDisplay {
   private activeCalls: Map<string, { sessionKey: string; status: string }> = new Map();
 
-  registerCall(
-    sessionKey: string,
-    callId: string,
-    _config: any,
-    _channel: string,
-    _threadTs: string
-  ): void {
+  registerCall(sessionKey: string, callId: string, _config: any, _channel: string, _threadTs: string): void {
     this.activeCalls.set(callId, { sessionKey, status: 'running' });
   }
 
@@ -213,7 +207,7 @@ describe('MCP Status Cleanup', () => {
       expect(toolTracker.getToolUseCount()).toBe(1);
 
       // Wait for cleanup
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(cleanupCalled).toBe(true);
       expect(toolTracker.getToolUseCount()).toBe(0);
@@ -225,7 +219,12 @@ describe('MCP Status Cleanup', () => {
   describe('MCP Status Display Cleanup (Session Tick API)', () => {
     it('should register call with tracking', () => {
       const callId = 'call_123';
-      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
+      const config = {
+        displayType: 'MCP',
+        displayLabel: 'github → create_issue',
+        initialDelay: 10000,
+        predictKey: { serverName: 'github', toolName: 'create_issue' },
+      };
 
       mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
 
@@ -235,7 +234,12 @@ describe('MCP Status Cleanup', () => {
 
     it('should complete call and clear active tracking', () => {
       const callId = 'call_123';
-      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
+      const config = {
+        displayType: 'MCP',
+        displayLabel: 'github → create_issue',
+        initialDelay: 10000,
+        predictKey: { serverName: 'github', toolName: 'create_issue' },
+      };
 
       mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
       expect(mcpStatusDisplay.isTracking(callId)).toBe(true);
@@ -245,7 +249,12 @@ describe('MCP Status Cleanup', () => {
     });
 
     it('should handle multiple concurrent MCP calls', () => {
-      const config = (label: string) => ({ displayType: 'MCP', displayLabel: label, initialDelay: 10000, predictKey: { serverName: 'test', toolName: 'test' } });
+      const config = (label: string) => ({
+        displayType: 'MCP',
+        displayLabel: label,
+        initialDelay: 10000,
+        predictKey: { serverName: 'test', toolName: 'test' },
+      });
 
       mcpStatusDisplay.registerCall('session1', 'call_1', config('github → create_issue'), 'C123', '111.222');
       mcpStatusDisplay.registerCall('session1', 'call_2', config('codex → search'), 'C123', '111.222');
@@ -263,7 +272,12 @@ describe('MCP Status Cleanup', () => {
     });
 
     it('should cleanup session and remove all tracking', () => {
-      const config = { displayType: 'MCP', displayLabel: 'test', initialDelay: 0, predictKey: { serverName: 'test', toolName: 'test' } };
+      const config = {
+        displayType: 'MCP',
+        displayLabel: 'test',
+        initialDelay: 0,
+        predictKey: { serverName: 'test', toolName: 'test' },
+      };
 
       mcpStatusDisplay.registerCall('session1', 'call_1', config, 'C123', '111.222');
       mcpStatusDisplay.registerCall('session1', 'call_2', config, 'C123', '111.222');
@@ -310,7 +324,12 @@ describe('MCP Status Cleanup', () => {
       toolTracker.trackMcpCall(toolUseId, callId);
 
       // 3. Register call in status display
-      const config = { displayType: 'MCP', displayLabel: 'github → create_issue', initialDelay: 10000, predictKey: { serverName: 'github', toolName: 'create_issue' } };
+      const config = {
+        displayType: 'MCP',
+        displayLabel: 'github → create_issue',
+        initialDelay: 10000,
+        predictKey: { serverName: 'github', toolName: 'create_issue' },
+      };
       mcpStatusDisplay.registerCall('session1', callId, config, 'C123', '111.222');
 
       // Verify all tracking is active
@@ -340,7 +359,12 @@ describe('MCP Status Cleanup', () => {
       // Simulate abort during tool execution
       const toolUseId = 'tu_123';
       const toolName = 'mcp__codex__search';
-      const config = { displayType: 'MCP', displayLabel: 'codex → search', initialDelay: 0, predictKey: { serverName: 'codex', toolName: 'search' } };
+      const config = {
+        displayType: 'MCP',
+        displayLabel: 'codex → search',
+        initialDelay: 0,
+        predictKey: { serverName: 'codex', toolName: 'search' },
+      };
 
       // Setup tracking
       toolTracker.trackToolUse(toolUseId, toolName);
@@ -369,7 +393,12 @@ describe('MCP Status Cleanup', () => {
       // Tool 1 completes, Tool 2 is aborted
       const toolUse1 = 'tu_1';
       const toolUse2 = 'tu_2';
-      const config = (label: string) => ({ displayType: 'MCP', displayLabel: label, initialDelay: 0, predictKey: { serverName: 'test', toolName: 'test' } });
+      const config = (label: string) => ({
+        displayType: 'MCP',
+        displayLabel: label,
+        initialDelay: 0,
+        predictKey: { serverName: 'test', toolName: 'test' },
+      });
 
       // Start both tools
       toolTracker.trackToolUse(toolUse1, 'mcp__github__list_issues');

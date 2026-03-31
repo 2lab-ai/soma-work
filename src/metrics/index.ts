@@ -3,29 +3,29 @@
  * Used by CommandRouter to inject report dependencies into ReportHandler.
  */
 
+export { getMetricsEmitter, initMetricsEmitter, MetricsEventEmitter } from './event-emitter';
 export { MetricsEventStore } from './event-store';
-export { MetricsEventEmitter, getMetricsEmitter, initMetricsEmitter } from './event-emitter';
 export { ReportAggregator } from './report-aggregator';
 export { ReportFormatter } from './report-formatter';
 export { ReportPublisher } from './report-publisher';
 export { ReportScheduler } from './report-scheduler';
 export type {
-  MetricsEvent,
-  MetricsEventType,
-  AggregatedMetrics,
-  DailyReport,
-  WeeklyReport,
-  UserRanking,
-  ScheduleState,
-  ReportConfig,
-  DerivedMetrics,
-  TrendComparison,
-  DailyBreakdown,
-  HourlyDistribution,
   Achievement,
-  FunFact,
+  AggregatedMetrics,
+  DailyBreakdown,
+  DailyReport,
+  DerivedMetrics,
   EnrichedDailyReport,
   EnrichedWeeklyReport,
+  FunFact,
+  HourlyDistribution,
+  MetricsEvent,
+  MetricsEventType,
+  ReportConfig,
+  ScheduleState,
+  TrendComparison,
+  UserRanking,
+  WeeklyReport,
 } from './types';
 
 import { Logger } from '../logger';
@@ -34,7 +34,7 @@ import { ReportAggregator } from './report-aggregator';
 import { ReportFormatter } from './report-formatter';
 import { ReportPublisher } from './report-publisher';
 import { ReportScheduler } from './report-scheduler';
-import { ReportConfig } from './types';
+import type { ReportConfig } from './types';
 
 const logger = new Logger('Metrics');
 
@@ -65,7 +65,11 @@ export function getReportDeps(): { aggregator: ReportAggregator; formatter: Repo
 let _scheduler: ReportScheduler | null = null;
 
 export function startReportScheduler(slackApi: {
-  postMessage(channel: string, text: string, options?: { blocks?: any[]; threadTs?: string }): Promise<{ ts?: string; channel?: string }>;
+  postMessage(
+    channel: string,
+    text: string,
+    options?: { blocks?: any[]; threadTs?: string },
+  ): Promise<{ ts?: string; channel?: string }>;
 }): ReportScheduler | null {
   const channelId = process.env.REPORT_CHANNEL_ID;
   if (!channelId) {

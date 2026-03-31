@@ -1,6 +1,6 @@
-import { sharedStore, PermissionResponse } from '../../shared-store';
 import { Logger } from '../../logger';
-import { RespondFn } from './types';
+import { type PermissionResponse, sharedStore } from '../../shared-store';
+import type { RespondFn } from './types';
 
 /**
  * 권한 승인/거부 액션 핸들러

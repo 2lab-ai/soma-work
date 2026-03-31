@@ -88,20 +88,22 @@ export function markdownToBlocks(markdown: string): ConvertResult {
 export function thinkingToQuoteBlock(thinkingText: string): SlackBlock {
   return {
     type: 'rich_text',
-    elements: [{
-      type: 'rich_text_quote',
-      elements: [
-        {
-          type: 'emoji',
-          name: 'thought_balloon',
-        },
-        {
-          type: 'text',
-          text: ` ${thinkingText}`,
-          style: { italic: true },
-        },
-      ],
-    }],
+    elements: [
+      {
+        type: 'rich_text_quote',
+        elements: [
+          {
+            type: 'emoji',
+            name: 'thought_balloon',
+          },
+          {
+            type: 'text',
+            text: ` ${thinkingText}`,
+            style: { italic: true },
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -111,7 +113,7 @@ export function thinkingToQuoteBlock(thinkingText: string): SlackBlock {
  * - Remove invalid block structures
  */
 function sanitizeBlocks(blocks: SlackBlock[]): SlackBlock[] {
-  return blocks.map(block => {
+  return blocks.map((block) => {
     if (block.type === 'table') {
       return sanitizeTable(block);
     }
@@ -130,16 +132,12 @@ function sanitizeTable(block: SlackBlock): SlackBlock {
   if (!rows || rows.length === 0) return block;
 
   const truncatedRows = rows.slice(0, MAX_TABLE_ROWS);
-  const truncatedCols = truncatedRows.map(
-    row => row.slice(0, MAX_TABLE_COLUMNS)
-  );
+  const truncatedCols = truncatedRows.map((row) => row.slice(0, MAX_TABLE_COLUMNS));
 
   return {
     ...block,
     rows: truncatedCols,
-    ...(block.column_settings
-      ? { column_settings: block.column_settings.slice(0, MAX_TABLE_COLUMNS) }
-      : {}),
+    ...(block.column_settings ? { column_settings: block.column_settings.slice(0, MAX_TABLE_COLUMNS) } : {}),
   };
 }
 
@@ -208,7 +206,7 @@ function splitMessages(blocks: SlackBlock[]): {
 }
 
 function countTables(blocks: SlackBlock[]): number {
-  return blocks.filter(b => b.type === 'table').length;
+  return blocks.filter((b) => b.type === 'table').length;
 }
 
 /**

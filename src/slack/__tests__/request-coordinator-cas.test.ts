@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { RequestCoordinator } from '../request-coordinator.js';
 
 // Trace: Ghost Session Fix, Scenario 2 — CAS-style removeController (P1)

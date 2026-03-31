@@ -11,7 +11,7 @@
  * Design: pure functions only — no side effects, no I/O.
  */
 
-import { ConversationSession, SessionLinks, SessionLink, WorkflowType } from '../types';
+import type { ConversationSession, SessionLink, SessionLinks, WorkflowType } from '../types';
 
 /**
  * Subset of ConversationSession needed to build the preservation context.

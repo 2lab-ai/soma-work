@@ -10,9 +10,9 @@
 
 import * as fs from 'fs';
 import { Logger } from './logger';
-import { PluginConfig } from './plugin/types';
-import { validatePluginConfig } from './plugin/config-parser';
 import type { McpServerConfig } from './mcp/config-loader';
+import { validatePluginConfig } from './plugin/config-parser';
+import type { PluginConfig } from './plugin/types';
 import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');

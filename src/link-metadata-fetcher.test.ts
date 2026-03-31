@@ -9,7 +9,12 @@ vi.mock('./github-auth', () => ({
   getGitHubAppAuth: () => null,
 }));
 vi.mock('./logger', () => ({
-  Logger: class { info() {} warn() {} error() {} debug() {} },
+  Logger: class {
+    info() {}
+    warn() {}
+    error() {}
+    debug() {}
+  },
 }));
 
 import { fetchBatchLinkMetadata, fetchLinkMetadata } from './link-metadata-fetcher';

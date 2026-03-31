@@ -1,9 +1,9 @@
-import fetch from 'node-fetch';
 import * as fs from 'fs';
-import * as path from 'path';
+import fetch from 'node-fetch';
 import * as os from 'os';
-import { Logger } from './logger';
+import * as path from 'path';
 import { config } from './config';
+import { Logger } from './logger';
 
 export interface ProcessedFile {
   path: string;
@@ -41,7 +41,10 @@ export class FileHandler {
     // Media files (video/audio) only need metadata — skip download entirely.
     // This ensures large media files are still acknowledged instead of silently dropped.
     if (this.isVideoFile(file.mimetype, file.name) || this.isAudioFile(file.mimetype, file.name)) {
-      this.logger.info('Media file detected, skipping download (metadata only)', { name: file.name, mimetype: file.mimetype });
+      this.logger.info('Media file detected, skipping download (metadata only)', {
+        name: file.name,
+        mimetype: file.mimetype,
+      });
       return {
         path: '',
         name: file.name,
@@ -69,7 +72,7 @@ export class FileHandler {
 
       const response = await fetch(file.url_private_download, {
         headers: {
-          'Authorization': `Bearer ${config.slack.botToken}`,
+          Authorization: `Bearer ${config.slack.botToken}`,
         },
         redirect: 'follow',
       });
@@ -143,7 +146,10 @@ export class FileHandler {
   /**
    * Validate image content by checking magic bytes (file signatures)
    */
-  private validateImageContent(buffer: Buffer, expectedMimetype: string): { valid: boolean; reason?: string; detectedFormat?: string } {
+  private validateImageContent(
+    buffer: Buffer,
+    expectedMimetype: string,
+  ): { valid: boolean; reason?: string; detectedFormat?: string } {
     if (buffer.length < 8) {
       return { valid: false, reason: 'Buffer too small' };
     }
@@ -156,8 +162,8 @@ export class FileHandler {
 
     // Image magic bytes
     const magicBytes = {
-      png: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], // PNG
-      jpeg: [0xFF, 0xD8, 0xFF], // JPEG/JPG
+      png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], // PNG
+      jpeg: [0xff, 0xd8, 0xff], // JPEG/JPG
       gif87: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61], // GIF87a
       gif89: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], // GIF89a
       webp: [0x52, 0x49, 0x46, 0x46], // RIFF (WebP starts with RIFF)
@@ -181,7 +187,9 @@ export class FileHandler {
     }
 
     // If no known image format detected, report the first few bytes for debugging
-    const firstBytes = Array.from(buffer.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const firstBytes = Array.from(buffer.slice(0, 8))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join(' ');
     return { valid: false, reason: `Unknown image format. First bytes: ${firstBytes}` };
   }
 
@@ -193,7 +201,21 @@ export class FileHandler {
     return true;
   }
 
-  private static IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  private static IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
   private static VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
 
   private isImageFile(mimetype: string, filename?: string): boolean {
@@ -235,15 +257,15 @@ export class FileHandler {
       'application/x-yaml',
     ];
 
-    return textTypes.some(type => mimetype.startsWith(type));
+    return textTypes.some((type) => mimetype.startsWith(type));
   }
 
   async formatFilePrompt(files: ProcessedFile[], userText: string): Promise<string> {
     let prompt = userText || 'Please analyze the uploaded files.';
-    
+
     if (files.length > 0) {
       prompt += '\n\nUploaded files:\n';
-      
+
       for (const file of files) {
         if (file.isImage) {
           // Include path so the agent can view the image via Read tool.
@@ -263,7 +285,7 @@ export class FileHandler {
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
-          
+
           try {
             const content = fs.readFileSync(file.path, 'utf-8');
             if (content.length > 10000) {
@@ -286,7 +308,7 @@ export class FileHandler {
           }
         }
       }
-      
+
       prompt += '\nPlease analyze these files and provide insights or assistance based on their content.';
     }
 

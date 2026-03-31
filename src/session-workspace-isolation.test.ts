@@ -1,13 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-workspace-isolation-test',
 }));
 
-import { WorkingDirectoryManager } from './working-directory-manager';
 import { SessionRegistry } from './session-registry';
+import { WorkingDirectoryManager } from './working-directory-manager';
 
 const TEST_DATA_DIR = '/tmp/soma-work-workspace-isolation-test';
 const TEST_WORKING_DIR = '/tmp/soma-work-workspace-isolation-dirs';
@@ -39,7 +39,7 @@ describe('Session Workspace Isolation', () => {
       const result = manager.createSessionWorkingDir(
         'U094E5L4A15',
         'https://github.com/2lab-ai/soma-work',
-        'fix-auth-bug'
+        'fix-auth-bug',
       );
       expect(result).toBeDefined();
       expect(result).toMatch(/^\/tmp\/U094E5L4A15\/soma-work_\d+_[a-f0-9]+_fix-auth-bug$/);
@@ -48,22 +48,14 @@ describe('Session Workspace Isolation', () => {
 
     // Trace: Scenario 1, Section 3a — repoUrl → repoName extraction
     it('extracts repo name from GitHub URL', () => {
-      const result = manager.createSessionWorkingDir(
-        'U001',
-        'https://github.com/org/my-repo.git',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('U001', 'https://github.com/org/my-repo.git', 'test');
       expect(result).toBeDefined();
       expect(result).toContain('/my-repo_');
     });
 
     // Trace: Scenario 1, Section 3a — prName sanitization
     it('sanitizes prName with special characters', () => {
-      const result = manager.createSessionWorkingDir(
-        'U001',
-        'https://github.com/org/repo',
-        'fix auth bug!@#$%'
-      );
+      const result = manager.createSessionWorkingDir('U001', 'https://github.com/org/repo', 'fix auth bug!@#$%');
       expect(result).toBeDefined();
       // Should not contain special characters
       expect(result).toMatch(/^[a-zA-Z0-9/_-]+$/);
@@ -71,51 +63,31 @@ describe('Session Workspace Isolation', () => {
 
     // Trace: Scenario 1, Section 5 — empty slackId
     it('returns undefined for empty slackId', () => {
-      const result = manager.createSessionWorkingDir(
-        '',
-        'https://github.com/org/repo',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('', 'https://github.com/org/repo', 'test');
       expect(result).toBeUndefined();
     });
 
     // Trace: Scenario 1, Section 5 — invalid repoUrl
     it('returns undefined for invalid repoUrl', () => {
-      const result = manager.createSessionWorkingDir(
-        'U001',
-        'not-a-url',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('U001', 'not-a-url', 'test');
       expect(result).toBeUndefined();
     });
 
     // Fix: trailing-slash URL handling
     it('handles trailing-slash URLs correctly', () => {
-      const result = manager.createSessionWorkingDir(
-        'U001',
-        'https://github.com/org/my-repo/',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('U001', 'https://github.com/org/my-repo/', 'test');
       expect(result).toBeDefined();
       expect(result).toContain('/my-repo_');
     });
 
     // Fix: slackId path traversal defense
     it('rejects slackId with path traversal (..)', () => {
-      const result = manager.createSessionWorkingDir(
-        '../etc',
-        'https://github.com/org/repo',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('../etc', 'https://github.com/org/repo', 'test');
       expect(result).toBeUndefined();
     });
 
     it('rejects slackId with forward slash', () => {
-      const result = manager.createSessionWorkingDir(
-        'U001/../../etc',
-        'https://github.com/org/repo',
-        'test'
-      );
+      const result = manager.createSessionWorkingDir('U001/../../etc', 'https://github.com/org/repo', 'test');
       expect(result).toBeUndefined();
     });
   });
@@ -125,17 +97,9 @@ describe('Session Workspace Isolation', () => {
   describe('concurrent session isolation', () => {
     // Trace: Scenario 4, Section 3 — two calls produce different paths
     it('produces different paths for same user/repo/pr called twice', () => {
-      const pathA = manager.createSessionWorkingDir(
-        'U094E5L4A15',
-        'https://github.com/2lab-ai/soma-work',
-        'pr-74'
-      );
+      const pathA = manager.createSessionWorkingDir('U094E5L4A15', 'https://github.com/2lab-ai/soma-work', 'pr-74');
       // Small delay to ensure different timestamp
-      const pathB = manager.createSessionWorkingDir(
-        'U094E5L4A15',
-        'https://github.com/2lab-ai/soma-work',
-        'pr-74'
-      );
+      const pathB = manager.createSessionWorkingDir('U094E5L4A15', 'https://github.com/2lab-ai/soma-work', 'pr-74');
       expect(pathA).toBeDefined();
       expect(pathB).toBeDefined();
       expect(pathA).not.toBe(pathB);

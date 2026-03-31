@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentTurnResult, EndTurnInfo } from '../agent-session-types.js';
 import { TurnRunner } from '../turn-runner.js';
-import type { EndTurnInfo, AgentTurnResult } from '../agent-session-types.js';
 
 // Trace: Scenario 4 — TurnRunner lifecycle
 
@@ -65,12 +65,7 @@ describe('TurnRunner', () => {
     await runner.begin('turn-1');
     await runner.finish(result);
 
-    expect(mockSurface.finalizeOnEndTurn).toHaveBeenCalledWith(
-      session,
-      sessionKey,
-      result.endTurn,
-      false,
-    );
+    expect(mockSurface.finalizeOnEndTurn).toHaveBeenCalledWith(session, sessionKey, result.endTurn, false);
   });
 
   // Trace: S4, Section 3c — finish calls deriveStatus
@@ -86,12 +81,7 @@ describe('TurnRunner', () => {
     await runner.begin('turn-1');
     await runner.finish(result);
 
-    expect(mockSurface.finalizeOnEndTurn).toHaveBeenCalledWith(
-      session,
-      sessionKey,
-      result.endTurn,
-      true,
-    );
+    expect(mockSurface.finalizeOnEndTurn).toHaveBeenCalledWith(session, sessionKey, result.endTurn, true);
   });
 
   // Trace: S4, Section 3d — fail sets status to '오류'

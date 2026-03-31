@@ -47,7 +47,8 @@ describe('WebhookChannel', () => {
   });
 
   it('retries on 5xx with exponential backoff', async () => {
-    const mockFetch = vi.fn()
+    const mockFetch = vi
+      .fn()
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 502 })
       .mockResolvedValueOnce({ ok: true, status: 200 });

@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock env-paths to use a non-existent config file, preventing test pollution
 // from the host machine's actual config (which may contain server-tools section).
@@ -12,12 +12,12 @@ vi.mock('./env-paths', async (importOriginal) => {
 });
 
 import {
+  isMidThreadMention,
+  type McpConfig,
   McpConfigBuilder,
-  McpConfig,
   resolveInternalMcpServer,
   resolveModelCommandServerPath,
   resolvePermissionServerPath,
-  isMidThreadMention,
 } from './mcp-config-builder';
 
 describe('MCP server path resolver', () => {
@@ -136,9 +136,9 @@ describe('McpConfigBuilder slack-mcp server', () => {
     // - sourceThreadTs = ORIGINAL thread ts (where mention occurred)
     const config = await builder.buildConfig({
       channel: 'C_NEW',
-      threadTs: '1700000099.000000',   // NEW thread (empty)
-      mentionTs: '1700000010.000000',  // original mention
-      sourceThreadTs: '1700000000.000000',  // ORIGINAL thread (has messages)
+      threadTs: '1700000099.000000', // NEW thread (empty)
+      mentionTs: '1700000010.000000', // original mention
+      sourceThreadTs: '1700000000.000000', // ORIGINAL thread (has messages)
       sourceChannel: 'C_ORIGINAL',
       user: 'U123',
     });
@@ -265,7 +265,7 @@ describe('McpConfigBuilder', () => {
           active: {},
           sequence: 7,
         },
-      }
+      },
     );
 
     expect(config.mcpServers).toBeDefined();

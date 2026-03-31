@@ -39,7 +39,7 @@ export class SourceWorkingDirDirectiveHandler {
     let match;
 
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const result = this.parseDirectiveJson(match[1].trim());
+      const result = SourceWorkingDirDirectiveHandler.parseDirectiveJson(match[1].trim());
       if (result) {
         const cleanedText = text.replace(match[0], '').trim();
         return { ...result, cleanedText };
@@ -51,13 +51,13 @@ export class SourceWorkingDirDirectiveHandler {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = this.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = SourceWorkingDirDirectiveHandler.extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
-        const result = this.parseDirectiveJson(jsonStr);
+        const result = SourceWorkingDirDirectiveHandler.parseDirectiveJson(jsonStr);
         if (result) {
           const before = text.substring(0, rawMatch.index).trim();
           const after = text.substring(rawMatch.index + jsonStr.length).trim();
-          const cleanedText = before && after ? `${before}\n\n${after}` : (before || after);
+          const cleanedText = before && after ? `${before}\n\n${after}` : before || after;
           return { ...result, cleanedText };
         }
       }

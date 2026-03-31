@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * Contract tests for Issue #64, Scenarios 4-5:
@@ -49,7 +49,7 @@ describe('Scenario 4: PR merge posts summary to source thread', () => {
     expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
       'C_ORIGINAL',
       expect.stringContaining('Fix login redirect'),
-      expect.objectContaining({ threadTs: '1711234567.000100' })
+      expect.objectContaining({ threadTs: '1711234567.000100' }),
     );
   });
 
@@ -124,9 +124,7 @@ describe('Scenario 4: PR merge posts summary to source thread', () => {
     const { postSourceThreadSummary } = await import('./source-thread-summary');
 
     // Should not throw
-    await expect(
-      postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')
-    ).resolves.not.toThrow();
+    await expect(postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')).resolves.not.toThrow();
   });
 });
 
@@ -157,7 +155,7 @@ describe('Scenario 5: session close posts summary to source thread', () => {
     expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
       'C_ORIGINAL',
       expect.any(String),
-      expect.objectContaining({ threadTs: '1711234567.000100' })
+      expect.objectContaining({ threadTs: '1711234567.000100' }),
     );
   });
 

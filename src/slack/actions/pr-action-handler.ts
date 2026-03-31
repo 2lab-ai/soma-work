@@ -1,7 +1,7 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { ClaudeHandler } from '../../claude-handler';
+import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
-import { MessageHandler, SayFn, RespondFn } from './types';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { MessageHandler, RespondFn, SayFn } from './types';
 
 interface PRActionContext {
   slackApi: SlackApiHelper;
@@ -70,7 +70,7 @@ export class PRActionHandler {
       const say = this.createSayFn(session.channelId);
       await this.ctx.messageHandler(
         { user: userId, channel: session.channelId, thread_ts: threadTs, ts: '', text: injectedText },
-        say
+        say,
       );
     } catch (error) {
       this.logger.error('Error processing PR merge', error);

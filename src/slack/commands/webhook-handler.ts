@@ -8,13 +8,12 @@
  *   webhook test            — Send test payload to registered URL
  */
 
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
 import { userSettingsStore } from '../../user-settings-store';
 import { validateWebhookUrl, validateWebhookUrlWithDns } from '../../webhook-url-validator';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
-const WEBHOOK_USAGE =
-  `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`;
+const WEBHOOK_USAGE = `📋 *웹훅 사용법*\n\n\`webhook register <url>\` — 웹훅 URL 등록\n\`webhook remove\` — 웹훅 삭제\n\`webhook test\` — 테스트 페이로드 전송`;
 
 export class WebhookHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -62,7 +61,7 @@ export class WebhookHandler implements CommandHandler {
           break;
         }
 
-        if (!await saveSetting({ webhookUrl: url })) break;
+        if (!(await saveSetting({ webhookUrl: url }))) break;
         await say({
           text: `✅ 웹훅이 등록되었습니다: \`${url}\``,
           thread_ts: threadTs,
@@ -71,7 +70,7 @@ export class WebhookHandler implements CommandHandler {
       }
 
       case 'remove':
-        if (!await saveSetting({ webhookUrl: undefined })) break;
+        if (!(await saveSetting({ webhookUrl: undefined }))) break;
         await say({
           text: `✅ 웹훅이 삭제되었습니다.`,
           thread_ts: threadTs,

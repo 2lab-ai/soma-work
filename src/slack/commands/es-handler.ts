@@ -1,5 +1,5 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
 import { SUMMARY_PROMPT } from '../summary-service.js';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles the `es` command — triggers immediate executive summary.

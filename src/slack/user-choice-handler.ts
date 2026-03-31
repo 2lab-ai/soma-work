@@ -1,14 +1,14 @@
 /**
  * User choice handling facade - combines extraction and UI building
  */
-import { UserChoice, UserChoices } from '../types';
-import { SessionTheme } from '../user-settings-store';
-import { UserChoiceExtractor, ExtractedChoice } from './user-choice-extractor';
-import { ChoiceMessageBuilder, SlackMessagePayload } from './choice-message-builder';
+import type { UserChoice, UserChoices } from '../types';
+import type { SessionTheme } from '../user-settings-store';
+import { ChoiceMessageBuilder, type SlackMessagePayload } from './choice-message-builder';
+import { type ExtractedChoice, UserChoiceExtractor } from './user-choice-extractor';
 
+export { SlackMessagePayload } from './choice-message-builder';
 // Re-export types for backwards compatibility
 export { ExtractedChoice } from './user-choice-extractor';
-export { SlackMessagePayload } from './choice-message-builder';
 
 /**
  * Facade class that combines extraction and UI building functionality
@@ -36,7 +36,7 @@ export class UserChoiceHandler {
     choices: UserChoices,
     formId: string,
     sessionKey: string,
-    selections: Record<string, { choiceId: string; label: string }> = {}
+    selections: Record<string, { choiceId: string; label: string }> = {},
   ): SlackMessagePayload {
     return ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, formId, sessionKey, selections);
   }

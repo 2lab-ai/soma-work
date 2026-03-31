@@ -13,8 +13,8 @@
  */
 
 import { execSync } from 'child_process';
-import path from 'path';
 import dotenv from 'dotenv';
+import path from 'path';
 
 function detectBranch(): string {
   try {
@@ -72,4 +72,6 @@ export const DATA_DIR = dataDir;
 dotenv.config({ path: ENV_FILE });
 
 // Startup log
-console.log(`[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} mcp=${MCP_CONFIG_FILE} config=${CONFIG_FILE} plugins=${PLUGINS_DIR} prompt=${SYSTEM_PROMPT_FILE}`);
+console.log(
+  `[env-paths] ${mode} env=${ENV_FILE} data=${DATA_DIR} mcp=${MCP_CONFIG_FILE} config=${CONFIG_FILE} plugins=${PLUGINS_DIR} prompt=${SYSTEM_PROMPT_FILE}`,
+);

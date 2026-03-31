@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
-import { CommandParser, MarketplaceAction } from '../command-parser';
-import type { MarketplaceEntry } from '../../plugin/types';
 import type { PluginManager } from '../../plugin/plugin-manager';
+import type { MarketplaceEntry } from '../../plugin/types';
+import { CommandParser, type MarketplaceAction } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles marketplace management commands (list/add/remove).
@@ -41,10 +41,7 @@ export class MarketplaceHandler implements CommandHandler {
     }
   }
 
-  private async handleList(
-    ctx: CommandContext,
-    pluginManager: PluginManager,
-  ): Promise<CommandResult> {
+  private async handleList(ctx: CommandContext, pluginManager: PluginManager): Promise<CommandResult> {
     const { threadTs, say } = ctx;
     const marketplaces = pluginManager.getMarketplaces();
 

@@ -1,8 +1,8 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { McpToolGrantStore, parseDuration, type PermissionLevel } from './mcp-tool-grant-store';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { McpToolGrantStore, type PermissionLevel, parseDuration } from './mcp-tool-grant-store';
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'grant-store-test-'));
@@ -226,7 +226,7 @@ describe('Corrupted grant file handling', () => {
   it('valid JSON but wrong shape is handled gracefully', () => {
     dir = makeTempDir();
     const grantFile = path.join(dir, 'mcp-tool-grants.json');
-    fs.writeFileSync(grantFile, JSON.stringify("not-an-object"));
+    fs.writeFileSync(grantFile, JSON.stringify('not-an-object'));
 
     const store = new McpToolGrantStore(dir);
     // Should not crash — string won't have expected properties

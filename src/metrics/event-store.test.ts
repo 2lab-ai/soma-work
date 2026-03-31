@@ -1,8 +1,8 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MetricsEventStore } from './event-store';
-import { MetricsEvent } from './types';
+import type { MetricsEvent } from './types';
 
 // Contract tests — Scenario 1: MetricsEventStore (JSONL Storage Layer)
 // Trace: docs/daily-weekly-report/trace.md
@@ -101,6 +101,6 @@ describe('MetricsEventStore', () => {
 
     const events = await store.readRange('2026-03-24', '2026-03-26');
     expect(events).toHaveLength(3);
-    expect(events.map(e => e.id)).toEqual(['day1', 'day2', 'day3']);
+    expect(events.map((e) => e.id)).toEqual(['day1', 'day2', 'day3']);
   });
 });

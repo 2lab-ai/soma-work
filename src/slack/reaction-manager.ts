@@ -1,6 +1,6 @@
-import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
-import { Todo } from '../todo-manager';
+import type { Todo } from '../todo-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 interface OriginalMessage {
   channel: string;
@@ -55,20 +55,12 @@ export class ReactionManager {
 
     // 이전 리액션 제거
     if (currentEmoji) {
-      await this.slackApi.removeReaction(
-        originalMessage.channel,
-        originalMessage.ts,
-        currentEmoji
-      );
+      await this.slackApi.removeReaction(originalMessage.channel, originalMessage.ts, currentEmoji);
       this.logger.debug('Removed previous reaction', { sessionKey, emoji: currentEmoji });
     }
 
     // 새 리액션 추가
-    const success = await this.slackApi.addReaction(
-      originalMessage.channel,
-      originalMessage.ts,
-      emoji
-    );
+    const success = await this.slackApi.addReaction(originalMessage.channel, originalMessage.ts, emoji);
 
     // 성공한 경우에만 현재 리액션 상태 업데이트
     if (success) {

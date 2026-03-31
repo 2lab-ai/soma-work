@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ChannelMessageDirectiveHandler } from './channel-message-directive';
 
 describe('ChannelMessageDirectiveHandler', () => {
@@ -36,10 +36,10 @@ What next?`;
 
     it('should support message/content aliases', () => {
       const messageResult = ChannelMessageDirectiveHandler.extract(
-        '{"type":"channel_message","message":"alias message"}'
+        '{"type":"channel_message","message":"alias message"}',
       );
       const contentResult = ChannelMessageDirectiveHandler.extract(
-        '{"type":"channel_message","content":"alias content"}'
+        '{"type":"channel_message","content":"alias content"}',
       );
 
       expect(messageResult.messageText).toBe('alias message');
@@ -48,16 +48,14 @@ What next?`;
 
     it('should ignore wrong type', () => {
       const result = ChannelMessageDirectiveHandler.extract(
-        '{"type":"session_links","pr":"https://github.com/org/repo/pull/1"}'
+        '{"type":"session_links","pr":"https://github.com/org/repo/pull/1"}',
       );
 
       expect(result.messageText).toBeNull();
     });
 
     it('should ignore empty text payload', () => {
-      const result = ChannelMessageDirectiveHandler.extract(
-        '{"type":"channel_message","text":"   "}'
-      );
+      const result = ChannelMessageDirectiveHandler.extract('{"type":"channel_message","text":"   "}');
 
       expect(result.messageText).toBeNull();
     });

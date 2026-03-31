@@ -1,6 +1,6 @@
-import { SlackApiHelper } from './slack-api-helper';
 import { Logger } from '../logger';
-import { SessionUsage } from '../types';
+import type { SessionUsage } from '../types';
+import type { SlackApiHelper } from './slack-api-helper';
 
 interface ContextState {
   channel: string;
@@ -86,7 +86,7 @@ export class ContextWindowManager {
    */
   static computeRemainingPercent(usage: SessionUsage): number {
     if (!usage || usage.contextWindow <= 0) return 0;
-    const usedTokens = this.computeUsedTokens(usage);
+    const usedTokens = ContextWindowManager.computeUsedTokens(usage);
     const contextWindow = usage.contextWindow;
     return Math.max(0, Math.min(100, ((contextWindow - usedTokens) / contextWindow) * 100));
   }
@@ -174,9 +174,9 @@ export class ContextWindowManager {
    * Used as a safety net when currentEmoji state is lost.
    */
   private async removeAllContextEmojis(channel: string, ts: string, exceptEmoji?: string): Promise<void> {
-    const removals = ContextWindowManager.EMOJI_THRESHOLDS
-      .filter(t => t.emoji !== exceptEmoji)
-      .map(t => this.slackApi.removeReaction(channel, ts, t.emoji));
+    const removals = ContextWindowManager.EMOJI_THRESHOLDS.filter((t) => t.emoji !== exceptEmoji).map((t) =>
+      this.slackApi.removeReaction(channel, ts, t.emoji),
+    );
     await Promise.all(removals);
   }
 

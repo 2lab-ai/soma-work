@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
-import path from 'path';
 import os from 'os';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Permission Validation Tests
@@ -72,7 +72,7 @@ class MockPermissionHandler {
   async handleApproval(
     approvalId: string,
     respondingUserId: string,
-    approved: boolean
+    approved: boolean,
   ): Promise<{ success: boolean; error?: string }> {
     const pendingApproval = await this.store.getPendingApproval(approvalId);
 

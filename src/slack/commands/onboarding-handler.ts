@@ -1,6 +1,6 @@
 import { Logger } from '../../logger';
-import { CommandHandler, CommandContext, CommandResult, CommandDependencies } from './types';
 import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles /onboarding command - force-run onboarding workflow on demand
@@ -20,9 +20,10 @@ export class OnboardingHandler implements CommandHandler {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
     if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
-      await this.deps.slackApi.postSystemMessage(channel,
+      await this.deps.slackApi.postSystemMessage(
+        channel,
         '⚠️ Cannot start onboarding while a request is in progress. Please wait for the current response to complete.',
-        { threadTs }
+        { threadTs },
       );
       return { handled: true };
     }
@@ -41,14 +42,15 @@ export class OnboardingHandler implements CommandHandler {
       session.renewSaveResult = undefined;
     }
 
-    await this.deps.slackApi.postSystemMessage(channel,
+    await this.deps.slackApi.postSystemMessage(
+      channel,
       [
         '🧭 *Onboarding workflow started*',
         '',
         '이번 턴에서 현재 계정 설정 상태를 점검하고,',
         '사용 가능한 워크플로우/`new`/`renew` 실습 가이드까지 안내합니다.',
       ].join('\n'),
-      { threadTs }
+      { threadTs },
     );
 
     return {

@@ -1,6 +1,6 @@
-import { SlashCommand, RespondFn } from '@slack/bolt';
-import { CommandContext, SayFn } from './commands/types';
+import type { RespondFn, SlashCommand } from '@slack/bolt';
 import { Logger } from '../logger';
+import type { CommandContext, SayFn } from './commands/types';
 
 const logger = new Logger('SlashCommandAdapter');
 

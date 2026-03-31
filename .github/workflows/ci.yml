@@ -28,8 +28,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - name: Format & Lint (Biome)
+        run: npx biome check src/ scripts/
+
+      - name: Type Check
+        run: tsc --noEmit
 
       - name: Test
         run: npm test

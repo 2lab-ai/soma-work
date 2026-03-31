@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { V1QueryAdapter } from '../v1-query-adapter.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TurnResultCollector } from '../turn-result-collector.js';
+import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 // Trace: Ghost Session Fix, Scenario 1 — AbortController Unification (P0)
 // These tests verify that V1QueryAdapter does NOT create new AbortControllers,

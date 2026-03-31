@@ -1,5 +1,5 @@
-import { ProcessedFile } from '../../file-handler';
-import { ConversationSession } from '../../types';
+import type { ProcessedFile } from '../../file-handler';
+import type { ConversationSession } from '../../types';
 
 export interface MessageEvent {
   user: string;
@@ -25,9 +25,12 @@ export interface MessageEvent {
   }>;
 }
 
-export interface SayFn {
-  (args: { text: string; thread_ts?: string; blocks?: any[]; attachments?: any[] }): Promise<{ ts?: string }>;
-}
+export type SayFn = (args: {
+  text: string;
+  thread_ts?: string;
+  blocks?: any[];
+  attachments?: any[];
+}) => Promise<{ ts?: string }>;
 
 export interface InputProcessResult {
   processedFiles: ProcessedFile[];

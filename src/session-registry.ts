@@ -3,28 +3,29 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
-import {
+import * as fs from 'fs';
+import * as path from 'path';
+import { DATA_DIR } from './env-paths';
+import { Logger } from './logger';
+import { getMetricsEmitter } from './metrics/event-emitter';
+import { normalizeTmpPath } from './path-utils';
+import type {
+  ActionPanelState,
+  ActivityState,
   ConversationSession,
-  SessionState,
-  SessionLinks,
   SessionLink,
   SessionLinkHistory,
+  SessionLinks,
   SessionResourceOperation,
   SessionResourceSnapshot,
   SessionResourceType,
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
+  SessionState,
   WorkflowType,
-  ActivityState,
-  ActionPanelState,
 } from './types';
-import { Logger } from './logger';
 import { userSettingsStore } from './user-settings-store';
-import { normalizeTmpPath } from './path-utils';
-import { DATA_DIR } from './env-paths';
-import { getMetricsEmitter } from './metrics/event-emitter';
-import * as path from 'path';
-import * as fs from 'fs';
+
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
 // Default session timeout: 24 hours (Active → Sleep)
@@ -37,7 +38,7 @@ const MAX_SLEEP_DURATION = 7 * 24 * 60 * 60 * 1000;
 // Sorted descending: most urgent first
 const WARNING_INTERVALS = [
   12 * 60 * 60 * 1000, // 12 hours remaining - idle check (ask if session is done)
-  10 * 60 * 1000,      // 10 minutes remaining - final warning
+  10 * 60 * 1000, // 10 minutes remaining - final warning
 ];
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinkHistory> = {
@@ -116,7 +117,7 @@ export interface SessionExpiryCallbacks {
   onWarning: (
     session: ConversationSession,
     timeRemaining: number,
-    warningMessageTs?: string
+    warningMessageTs?: string,
   ) => Promise<string | undefined>;
   onSleep: (session: ConversationSession) => Promise<void>;
   onExpiry: (session: ConversationSession) => Promise<void>;
@@ -197,11 +198,7 @@ export class SessionRegistry {
   /**
    * Legacy method for backward compatibility
    */
-  getSessionWithUser(
-    userId: string,
-    channelId: string,
-    threadTs?: string
-  ): ConversationSession | undefined {
+  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
     return this.getSession(channelId, threadTs);
   }
 
@@ -240,7 +237,7 @@ export class SessionRegistry {
     ownerName: string,
     channelId: string,
     threadTs?: string,
-    model?: string
+    model?: string,
   ): ConversationSession {
     // Get user's default model if not provided
     const sessionModel = model || userSettingsStore.getUserDefaultModel(ownerId);
@@ -262,7 +259,9 @@ export class SessionRegistry {
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
 
     // Metrics: emit session_created event (fire-and-forget)
-    getMetricsEmitter().emitSessionCreated(session).catch(err => this.logger.debug('metrics emit failed', err));
+    getMetricsEmitter()
+      .emitSessionCreated(session)
+      .catch((err) => this.logger.debug('metrics emit failed', err));
 
     return session;
   }
@@ -272,12 +271,7 @@ export class SessionRegistry {
    * Sets the workflow type determined by dispatch
    * @returns true if transition succeeded, false if session not found or already transitioned
    */
-  transitionToMain(
-    channelId: string,
-    threadTs: string | undefined,
-    workflow: WorkflowType,
-    title?: string
-  ): boolean {
+  transitionToMain(channelId: string, threadTs: string | undefined, workflow: WorkflowType, title?: string): boolean {
     const session = this.getSession(channelId, threadTs);
     if (!session) {
       this.logger.debug('transitionToMain: session not found', { channelId, threadTs });
@@ -366,7 +360,9 @@ export class SessionRegistry {
     this.saveSessions();
 
     // Metrics: emit session_slept event (fire-and-forget)
-    getMetricsEmitter().emitSessionSlept(session).catch(err => this.logger.debug('metrics emit failed', err));
+    getMetricsEmitter()
+      .emitSessionSlept(session)
+      .catch((err) => this.logger.debug('metrics emit failed', err));
 
     return true;
   }
@@ -415,7 +411,11 @@ export class SessionRegistry {
     });
 
     // Notify dashboard WebSocket clients
-    try { this.onActivityStateChangeCallback?.(); } catch { /* fire-and-forget */ }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch {
+      /* fire-and-forget */
+    }
 
     // Only persist on idle transition to minimize disk I/O
     if (state === 'idle') {
@@ -556,11 +556,7 @@ export class SessionRegistry {
   /**
    * Set a link on a session (issue, pr, or doc)
    */
-  setSessionLink(
-    channelId: string,
-    threadTs: string | undefined,
-    link: SessionLink
-  ): void {
+  setSessionLink(channelId: string, threadTs: string | undefined, link: SessionLink): void {
     this.updateSessionResources(channelId, threadTs, {
       operations: [
         {
@@ -575,11 +571,7 @@ export class SessionRegistry {
   /**
    * Set multiple session links at once
    */
-  setSessionLinks(
-    channelId: string,
-    threadTs: string | undefined,
-    links: SessionLinks
-  ): void {
+  setSessionLinks(channelId: string, threadTs: string | undefined, links: SessionLinks): void {
     const operations: SessionResourceOperation[] = [];
 
     if (links.issue) {
@@ -657,7 +649,7 @@ export class SessionRegistry {
   updateSessionResources(
     channelId: string,
     threadTs: string | undefined,
-    request: SessionResourceUpdateRequest
+    request: SessionResourceUpdateRequest,
   ): SessionResourceUpdateResult {
     const session = this.getSession(channelId, threadTs);
     if (!session) {
@@ -672,10 +664,7 @@ export class SessionRegistry {
     this.ensureSessionLinkState(session);
 
     const currentSequence = session.linkSequence ?? 0;
-    if (
-      typeof request.expectedSequence === 'number'
-      && request.expectedSequence !== currentSequence
-    ) {
+    if (typeof request.expectedSequence === 'number' && request.expectedSequence !== currentSequence) {
       return {
         ok: false,
         reason: 'SEQUENCE_MISMATCH',
@@ -779,7 +768,7 @@ export class SessionRegistry {
 
   private applySessionResourceOperations(
     session: ConversationSession,
-    operations: SessionResourceOperation[]
+    operations: SessionResourceOperation[],
   ): { ok: true; changed: boolean } | { ok: false; changed: boolean; error: string } {
     this.ensureSessionLinkState(session);
 
@@ -814,7 +803,11 @@ export class SessionRegistry {
         if (existingIndex < 0 && operation.resourceType === 'issue') {
           const emitter = getMetricsEmitter();
           const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
-          emitter.emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, { url: normalized.url }).catch(err => this.logger.debug('metrics emit failed', err));
+          emitter
+            .emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, {
+              url: normalized.url,
+            })
+            .catch((err) => this.logger.debug('metrics emit failed', err));
         }
 
         continue;
@@ -871,12 +864,7 @@ export class SessionRegistry {
   /**
    * Update the current initiator of a session
    */
-  updateInitiator(
-    channelId: string,
-    threadTs: string | undefined,
-    initiatorId: string,
-    initiatorName: string
-  ): void {
+  updateInitiator(channelId: string, threadTs: string | undefined, initiatorId: string, initiatorName: string): void {
     const session = this.getSession(channelId, threadTs);
     if (session) {
       session.currentInitiatorId = initiatorId;
@@ -1075,7 +1063,11 @@ export class SessionRegistry {
     session.sourceWorkingDirs ??= [];
     const MAX_SOURCE_WORKING_DIRS = 50;
     if (session.sourceWorkingDirs.length >= MAX_SOURCE_WORKING_DIRS) {
-      this.logger.warn('sourceWorkingDirs limit reached, rejecting new dir', { key, dirPath: resolvedPath, count: session.sourceWorkingDirs.length });
+      this.logger.warn('sourceWorkingDirs limit reached, rejecting new dir', {
+        key,
+        dirPath: resolvedPath,
+        count: session.sourceWorkingDirs.length,
+      });
       return false;
     }
     if (!session.sourceWorkingDirs.includes(resolvedPath)) {
@@ -1115,7 +1107,9 @@ export class SessionRegistry {
     session.terminated = true;
 
     // Metrics: emit session_closed event before deletion (fire-and-forget)
-    getMetricsEmitter().emitSessionClosed(session, sessionKey).catch(err => this.logger.debug('metrics emit failed', err));
+    getMetricsEmitter()
+      .emitSessionClosed(session, sessionKey)
+      .catch((err) => this.logger.debug('metrics emit failed', err));
 
     this.cleanupSourceWorkingDirs(session);
     this.clearOnIdleCallbacks(sessionKey); // Clean up any pending cron callbacks
@@ -1148,9 +1142,7 @@ export class SessionRegistry {
     for (const [key, session] of this.sessions.entries()) {
       // Stage 1: SLEEPING sessions - check if sleep duration exceeded (7 days)
       if (session.state === 'SLEEPING') {
-        const sleepAge = session.sleepStartedAt
-          ? now - session.sleepStartedAt.getTime()
-          : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
+        const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
 
         if (sleepAge >= MAX_SLEEP_DURATION) {
           if (this.expiryCallbacks) {
@@ -1213,7 +1205,7 @@ export class SessionRegistry {
   private async checkAndSendWarning(
     sessionKey: string,
     session: ConversationSession,
-    timeUntilExpiry: number
+    timeUntilExpiry: number,
   ): Promise<void> {
     for (const warningInterval of WARNING_INTERVALS) {
       if (timeUntilExpiry <= warningInterval) {
@@ -1225,7 +1217,7 @@ export class SessionRegistry {
             const newMessageTs = await this.expiryCallbacks!.onWarning(
               session,
               timeUntilExpiry,
-              session.warningMessageTs
+              session.warningMessageTs,
             );
 
             // Update session with warning info
@@ -1344,9 +1336,7 @@ export class SessionRegistry {
 
         // For SLEEPING sessions: check against MAX_SLEEP_DURATION
         if (serialized.state === 'SLEEPING') {
-          const sleepAge = sleepStartedAt
-            ? now - sleepStartedAt.getTime()
-            : MAX_SLEEP_DURATION + 1;
+          const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1;
           if (sleepAge >= MAX_SLEEP_DURATION) {
             // Cleanup sourceWorkingDirs before discarding expired session
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
@@ -1398,22 +1388,28 @@ export class SessionRegistry {
           threadRootTs: serialized.threadRootTs,
           isOnboarding: serialized.isOnboarding,
           sourceThread: serialized.sourceThread,
-          sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter(
-            (d: unknown) => {
-              if (typeof d !== 'string') {
-                this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
-                return false;
-              }
-              const valid = this.isValidSourceWorkingDirPath(d);
-              if (!valid) this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', { dir: d, key: serialized.key });
-              return valid;
+          sourceWorkingDirs: (serialized.sourceWorkingDirs || []).filter((d: unknown) => {
+            if (typeof d !== 'string') {
+              this.logger.warn('Dropped non-string sourceWorkingDir during deserialization', {
+                dir: d,
+                key: serialized.key,
+              });
+              return false;
             }
-          ),
+            const valid = this.isValidSourceWorkingDirPath(d);
+            if (!valid)
+              this.logger.warn('Dropped invalid sourceWorkingDir during deserialization', {
+                dir: d,
+                key: serialized.key,
+              });
+            return valid;
+          }),
           // Session workspace isolation (#77): restore session-unique cwd
           // so Claude SDK resumes in the same project dir where conversations are stored
-          sessionWorkingDir: serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
-            ? serialized.sessionWorkingDir
-            : undefined,
+          sessionWorkingDir:
+            serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
+              ? serialized.sessionWorkingDir
+              : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
         };
@@ -1436,9 +1432,7 @@ export class SessionRegistry {
         }
       }
 
-      this.logger.info(
-        `Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`
-      );
+      this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);
 
       return loaded;
     } catch (error) {
