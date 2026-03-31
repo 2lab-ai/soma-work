@@ -306,8 +306,8 @@ src/                                # TypeScript source
 ├── agent-manager.ts                # Sub-agent lifecycle management
 ├── agent-instance.ts               # Individual agent (Slack App + Handler)
 ├── slack/                          # Slack integration layer
-│   ├── actions/                    # Interactive action handlers (12)
-│   ├── commands/                   # Command handlers (26)
+│   ├── actions/                    # Interactive action handlers (10)
+│   ├── commands/                   # Command handlers (27)
 │   ├── pipeline/                   # Stream processing pipeline
 │   ├── directives/                 # Channel/session link directives
 │   └── formatters/                 # Output formatters
@@ -318,7 +318,7 @@ src/                                # TypeScript source
 ├── permission/                     # Permission service + Slack UI
 ├── plugin/                         # Plugin system (marketplace, cache)
 ├── prompt/                         # System prompts
-│   ├── workflows/                  # Workflow prompts (9 workflows)
+│   ├── workflows/                  # Workflow prompts (10 workflows)
 │   ├── jangbi/                     # Sub-agent: code review specialist
 │   └── gwanu/                      # Sub-agent: DevOps specialist
 ├── persona/                        # Bot personas (12 personas)
