@@ -10,7 +10,7 @@ vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/llm-chat-config-test',
 }));
 
-import { LlmChatConfigStore, expandConfigOverride } from './llm-chat-config-store';
+import { expandConfigOverride, LlmChatConfigStore } from './llm-chat-config-store';
 
 describe('LlmChatConfigStore', () => {
   let store: LlmChatConfigStore;
