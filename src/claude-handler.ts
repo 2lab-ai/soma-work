@@ -77,6 +77,15 @@ export class ClaudeHandler {
     });
   }
 
+  /**
+   * Set agent configurations for the MCP config builder.
+   * Trace: docs/multi-agent/trace.md, Scenario 4
+   */
+  setAgentConfigs(configs: Record<string, any>): void {
+    this.mcpConfigBuilder.setAgentConfigs(configs);
+    this.logger.info('Agent configs set', { agents: Object.keys(configs) });
+  }
+
   // ===== Session Registry Delegation =====
 
   /** Expose SessionRegistry for CronScheduler integration */
