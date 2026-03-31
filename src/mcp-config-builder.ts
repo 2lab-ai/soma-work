@@ -524,6 +524,11 @@ export class McpConfigBuilder {
 
     const userId = slackContext?.user;
 
+    // Reload grants once before iterating servers (not per-server)
+    if (userId && !isAdminUser(userId)) {
+      mcpToolGrantStore.reload();
+    }
+
     for (const serverName of gatedServers) {
       const serverPerms = toolPermConfig[serverName];
       const mcpPrefix = `mcp__${serverName}`;
@@ -539,7 +544,6 @@ export class McpConfigBuilder {
       }
 
       // Non-admin: check grants
-      mcpToolGrantStore.reload();
       const hasWriteGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'write');
       const hasReadGrant = mcpToolGrantStore.hasActiveGrant(userId, serverName, 'read');
       const userLevel: PermissionLevel | null = hasWriteGrant ? 'write' : hasReadGrant ? 'read' : null;
