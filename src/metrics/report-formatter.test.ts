@@ -192,7 +192,7 @@ describe('ReportFormatter', () => {
     });
 
     expect(result.blocks).toBeDefined();
-    expect(result.blocks.length).toBeGreaterThan(10);
+    expect(result.blocks.length).toBeGreaterThanOrEqual(8); // v5: min ~8 blocks
     expect(result.blocks.length).toBeLessThanOrEqual(50); // Block Kit limit
     expect(result.blocks[0].type).toBe('header');
     expect(result.text).toContain('847');
@@ -202,11 +202,9 @@ describe('ReportFormatter', () => {
     expect(allText).toContain('TopUser');
     expect(allText).toContain('SecondUser');
 
-    // Should contain achievements
-    expect(allText).toContain('풀 스트릭');
-
-    // Should contain fun facts
-    expect(allText).toContain('피크');
+    // v5: achievements/funFacts suppressed (Bauhaus: no decorative content)
+    // Instead verify grade in header and narrative section exist
+    expect(allText).toContain('· 주간 리포트');
 
     // Should contain trend indicators (Bauhaus: ↑/↓ arrows)
     expect(allText).toContain('↑');

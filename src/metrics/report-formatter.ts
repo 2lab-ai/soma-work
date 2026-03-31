@@ -164,7 +164,7 @@ function metricsToSections(m: AggregatedMetrics): any[] {
   ];
 }
 
-// === Bauhaus Enriched Block Builders ===
+// === Bauhaus v5 Enriched Block Builders ===
 
 /**
  * Compute a letter grade from operating metrics.
@@ -187,103 +187,147 @@ function computeGrade(d: DerivedMetrics, activeDays?: number): string {
 }
 
 /**
- * Hero Band — The 4 most decision-relevant KPIs + letter grade.
- * This is the visual anchor of the entire report.
+ * v5: Header block — grade + report title.
+ * Format: "C · 주간 리포트 — 2026-03-23 ~ 29"
  */
 function buildHeroBand(
-  m: AggregatedMetrics,
+  _m: AggregatedMetrics,
   d: DerivedMetrics,
-  trend: TrendComparison | null,
+  _trend: TrendComparison | null,
   activeDays?: number,
+  reportTitle?: string,
 ): any {
-  const t = trend;
-  const tb = (delta: number | undefined) => trendBadge(delta, t);
   const grade = computeGrade(d, activeDays);
-
-  const netSign = d.netLines >= 0 ? '+' : '';
+  const title = reportTitle ?? '리포트';
   return {
-    type: 'section',
+    type: 'header',
     text: {
-      type: 'mrkdwn',
-      text: truncateText(
-        `*\`${grade}\`*  ` +
-        `머지 \`${fmt(m.prsMerged)}\`건${tb(t?.prsMergedDelta)}  ·  ` +
-        `머지율 \`${d.prMergeRate}%\`  ·  ` +
-        `순코드 \`${netSign}${fmt(d.netLines)}\`줄${tb(t?.codeLinesAddedDelta)}  ·  ` +
-        `커밋 \`${fmt(m.commitsCreated)}\`${tb(t?.commitsCreatedDelta)}`
-      ),
+      type: 'plain_text',
+      text: truncateHeader(`${grade} · ${title}`),
+      emoji: true,
     },
   };
 }
 
 /**
- * KPI Grid — Secondary metrics, 2 rows × 4 cells.
- * Row 1: Quality metrics
- * Row 2: Efficiency metrics
+ * v5: Context line — key metrics with targets, backticks only for 2-3 most important numbers.
+ * Format: "머지율 `9.5%` (목표 15%) · 활동일 `1/7` (목표 3+) · 순코드 +10,177줄 · 첫 기록"
  */
 function buildKPIGrid(
   m: AggregatedMetrics,
   d: DerivedMetrics,
   trend: TrendComparison | null,
+  activeDays?: number,
 ): any[] {
-  const t = trend;
-  const tb = (delta: number | undefined) => trendBadge(delta, t);
+  const netSign = d.netLines >= 0 ? '+' : '';
+  const trendSuffix = trend?.baselineZero
+    ? ' · 첫 기록'
+    : (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5)
+      ? ` · 전주 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
+      : '';
+
+  const activeDaysPart = activeDays !== undefined
+    ? ` · 활동일 \`${activeDays}/7\` (목표 3+)`
+    : '';
+
+  const contextText = truncateText(
+    `머지율 \`${d.prMergeRate}%\` (목표 15%)${activeDaysPart} · 순코드 ${netSign}${fmt(d.netLines)}줄${trendSuffix}`
+  );
 
   return [
     {
-      type: 'section',
-      fields: safeFields([
-        { type: 'mrkdwn', text: truncateFieldText(`세션 완료율\n\`${d.sessionCompletionRate}%\`${tb(t?.sessionsCreatedDelta)}`) },
-        { type: 'mrkdwn', text: truncateFieldText(`Δ줄/PR\n\`${fmt(d.avgChangedLinesPerPr)}\``) },
-        { type: 'mrkdwn', text: truncateFieldText(`턴/세션\n\`${d.avgTurnsPerSession}\`${tb(t?.turnsUsedDelta)}`) },
-        { type: 'mrkdwn', text: truncateFieldText(`Churn\n\`${Math.round(d.churnRatio)}%\``) },
-      ]),
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: contextText }],
     },
   ];
 }
 
 /**
- * Pipeline Flow — Session funnel + PR funnel side by side.
+ * v5: Pipeline flow — session funnel + PR funnel as 4-field KPI grid section.
+ * Includes sessions, PR flow, code, and activity.
  */
-function buildPipelineFlow(m: AggregatedMetrics, d: DerivedMetrics): any {
-  const sessionFlow = `*세션 파이프라인*\n` +
-    `\`${fmt(m.sessionsCreated)}\` 생성 → \`${m.sessionsSlept}\` 슬립 → \`${m.sessionsClosed}\` 닫기\n` +
-    `완료율 \`${d.sessionCompletionRate}%\`  \`${miniBar(m.sessionsClosed, m.sessionsCreated, 10)}\``;
+function buildPipelineFlow(
+  m: AggregatedMetrics,
+  d: DerivedMetrics,
+  activeDays?: number,
+  dailyBreakdown?: DailyBreakdown[],
+): any {
+  const unmerged = m.prsCreated - m.prsMerged;
+  const netSign = d.netLines >= 0 ? '+' : '';
+  const churnQuality = d.churnRatio <= 20 ? '양호' : d.churnRatio <= 35 ? '주의' : '높음';
 
-  const prFlow = `*PR 파이프라인*\n` +
-    `\`${fmt(m.prsCreated)}\` 생성 → \`${m.prsMerged}\` 머지\n` +
-    `머지율 \`${d.prMergeRate}%\`  \`${miniBar(m.prsMerged, m.prsCreated, 10)}\``;
+  // Find peak day for activity field
+  let peakDayLabel = '';
+  if (dailyBreakdown && dailyBreakdown.length > 0 && hasAnyEvents(dailyBreakdown)) {
+    const peakDay = dailyBreakdown.reduce((best, curr) =>
+      curr.totalEvents > best.totalEvents ? curr : best);
+    if (peakDay.totalEvents > 0) {
+      peakDayLabel = `이벤트 ${fmt(peakDay.totalEvents)}건이 ${peakDay.dayLabel}요일에 집중`;
+    }
+  }
+
+  const activityText = activeDays !== undefined
+    ? `*활동*\n\`${activeDays}/7\`일 (목표 3+)\n${peakDayLabel || '활동 분포 균등'}`
+    : `*활동*\n이벤트 ${fmt(m.sessionsCreated + m.prsCreated + m.commitsCreated)}건\n${peakDayLabel || ''}`;
 
   return {
     type: 'section',
     fields: safeFields([
-      { type: 'mrkdwn', text: truncateFieldText(sessionFlow) },
-      { type: 'mrkdwn', text: truncateFieldText(prFlow) },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(
+          `*세션*\n${fmt(m.sessionsCreated)} 생성 · ${fmt(m.sessionsClosed)} 닫기 · ${m.sessionsSlept} 슬립\n완료율 ${d.sessionCompletionRate}% (닫기/생성)`
+        ),
+      },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(
+          `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 15%) · 미머지 ${unmerged}건`
+        ),
+      },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(
+          `*코드*\n${fmt(m.commitsCreated)} 커밋 · +${fmt(m.codeLinesAdded)} / -${fmt(m.codeLinesDeleted)}\n순 ${netSign}${fmt(d.netLines)} · churn ${Math.round(d.churnRatio)}% (<20% ${churnQuality})`
+        ),
+      },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(activityText),
+      },
     ]),
   };
 }
 
 /**
- * Efficiency Grid — All derived per-unit metrics in one row.
+ * v5: Efficiency + throughput — 2-field section.
  */
 function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays?: number): any {
-  const commitPerDay = activeDays ? `\`${d.commitPerActiveDay}\`/일` : '';
-  const prPerDay = activeDays ? `\`${d.prPerActiveDay}\`/일` : '';
+  const unmerged = m.prsCreated - m.prsMerged;
+  const commitPerPR = m.prsCreated > 0 ? Math.round((m.commitsCreated / m.prsCreated) * 100) / 100 : 0;
 
   return {
     type: 'section',
     fields: safeFields([
-      { type: 'mrkdwn', text: truncateFieldText(`*줄/커밋*\n\`${fmt(d.avgCodePerCommit)}\``) },
-      { type: 'mrkdwn', text: truncateFieldText(`*줄/PR*\n\`${fmt(d.avgCodePerPr)}\``) },
-      { type: 'mrkdwn', text: truncateFieldText(`*커밋 밀도*\n${commitPerDay || `\`${fmt(m.commitsCreated)}\``}`) },
-      { type: 'mrkdwn', text: truncateFieldText(`*PR 밀도*\n${prPerDay || `\`${fmt(m.prsCreated)}\``}`) },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(
+          `*효율*\n줄/커밋 ${fmt(d.avgCodePerCommit)} · 줄/PR ${fmt(d.avgCodePerPr)}\n커밋당 순증가 ${fmt(Math.round(d.netLines / Math.max(m.commitsCreated, 1)))}줄`
+        ),
+      },
+      {
+        type: 'mrkdwn',
+        text: truncateFieldText(
+          `*처리량*\n턴 ${fmt(m.turnsUsed)}회 · 세션당 ${d.avgTurnsPerSession}턴\nPR당 커밋 ${commitPerPR} · 미머지 PR ${unmerged}건`
+        ),
+      },
     ]),
   };
 }
 
 /**
- * Action Needed — Rule-based alerts with thresholds.
- * Only shows when there are actual issues to address.
+ * v5: Action alerts — fields layout with P1/P2 severity and specific targets.
+ * Returns null when no alerts triggered.
  */
 function buildActionAlerts(
   m: AggregatedMetrics,
@@ -293,159 +337,103 @@ function buildActionAlerts(
   hourlyDistribution: HourlyDistribution[],
   activeDays?: number,
 ): any | null {
-  const alerts: string[] = [];
+  const fields: Array<{ type: string; text: string }> = [];
 
-  // Each alert: severity [P1/P2] + metric + delta + benchmark + target + action
-  // Merge rate warning
+  // Merge rate warning — P1 if < 30%, P2 if < 15% target
   if (m.prsCreated >= 3 && d.prMergeRate < 50) {
     const severity = d.prMergeRate < 30 ? 'P1' : 'P2';
-    const delta = trend && !trend.baselineZero ? ` ${deltaArrow(trend.prsMergedDelta)}${deltaText(trend.prsMergedDelta)}` : '';
-    alerts.push(`\`${severity}\` 머지율 \`${d.prMergeRate}%\`${delta} (기준 60%) → PR 크기 축소, 리뷰 턴어라운드 단축`);
+    fields.push({
+      type: 'mrkdwn',
+      text: truncateFieldText(
+        `*${severity} — 머지율*\n당일 리뷰 + PR당 변경 100줄 이하 유지.\n목표: 머지율 15%+ (현재 ${d.prMergeRate}%).`
+      ),
+    });
+  }
+
+  // Low active days
+  if (activeDays !== undefined && activeDays < 3) {
+    fields.push({
+      type: 'mrkdwn',
+      text: truncateFieldText(
+        `*P2 — 활동 분산*\n작업을 3일 이상 분산.\n목표: 활동일 3+일 (현재 ${activeDays}일).`
+      ),
+    });
   }
 
   // High churn
   if (d.churnRatio > 30) {
     const severity = d.churnRatio > 50 ? 'P1' : 'P2';
-    alerts.push(`\`${severity}\` Churn \`${Math.round(d.churnRatio)}%\` (기준 20%) → 재작업 원인 분석, 스펙 정합성 점검`);
-  }
-
-  // Low active days
-  if (activeDays !== undefined && activeDays < 4) {
-    alerts.push(`\`P2\` 활동일 \`${activeDays}/7\` (기준 5일) → 일정 블록화, 컨텍스트 스위칭 최소화`);
+    fields.push({
+      type: 'mrkdwn',
+      text: truncateFieldText(
+        `*${severity} — churn*\n재작업 원인 분석, 스펙 정합성 점검.\n목표: churn 20% 이하 (현재 ${Math.round(d.churnRatio)}%).`
+      ),
+    });
   }
 
   // Late-night work pattern
   const lateNightEvents = [0,1,2,3,4,5].reduce((sum, h) => sum + (hourlyDistribution[h]?.eventCount || 0), 0);
-  const totalEvents = hourlyDistribution.reduce((sum, h) => sum + (h?.eventCount || 0), 0);
-  if (totalEvents > 0 && (lateNightEvents / totalEvents) > 0.25) {
-    const pct = Math.round((lateNightEvents / totalEvents) * 100);
-    alerts.push(`\`P2\` 새벽 \`${pct}%\` (기준 15%) → 작업 시간대 조정, 지속가능성 확보`);
+  const totalHourEvents = hourlyDistribution.reduce((sum, h) => sum + (h?.eventCount || 0), 0);
+  if (totalHourEvents > 0 && (lateNightEvents / totalHourEvents) > 0.25) {
+    const pct = Math.round((lateNightEvents / totalHourEvents) * 100);
+    fields.push({
+      type: 'mrkdwn',
+      text: truncateFieldText(
+        `*P2 — 작업 시간대*\n새벽 집중 ${pct}% — 지속가능성 확보.\n목표: 새벽 비율 15% 이하 유지.`
+      ),
+    });
   }
 
   // Session completion low
   if (m.sessionsCreated >= 5 && d.sessionCompletionRate < 50) {
     const severity = d.sessionCompletionRate < 30 ? 'P1' : 'P2';
-    alerts.push(`\`${severity}\` 완료율 \`${d.sessionCompletionRate}%\` (기준 70%) → 세션 중단 원인 파악, 프롬프트 구조 개선`);
+    fields.push({
+      type: 'mrkdwn',
+      text: truncateFieldText(
+        `*${severity} — 세션 완료율*\n세션 중단 원인 파악, 프롬프트 구조 개선.\n목표: 완료율 70%+ (현재 ${d.sessionCompletionRate}%).`
+      ),
+    });
   }
 
-  if (alerts.length === 0) return null;
+  if (fields.length === 0) return null;
 
   return {
     type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: truncateText(`*⚡ ACTION NEEDED*\n${alerts.slice(0, 3).join('\n')}`),
-    },
+    fields: safeFields(fields.slice(0, 4)),
   };
 }
 
 /**
- * Daily cadence strip — clean monospace grid, no decorative icons.
+ * v5: Daily cadence strip — context elements, one per day, peak day bolded.
  */
 function buildDailyCadence(breakdown: DailyBreakdown[]): any | null {
   if (breakdown.length === 0 || !hasAnyEvents(breakdown)) return null;
 
-  const maxEvents = Math.max(...breakdown.map(d => d.totalEvents), 1);
   const peakDay = breakdown.reduce((best, curr) =>
     curr.totalEvents > best.totalEvents ? curr : best);
 
-  const lines = breakdown.map(d => {
-    const bar = miniBar(d.totalEvents, maxEvents, 10);
-    const count = String(d.totalEvents).padStart(4);
-    const c = d.metrics.commitsCreated > 0 ? ` c\`${d.metrics.commitsCreated}\`` : '';
-    const p = d.metrics.prsCreated > 0 ? ` p\`${d.metrics.prsCreated}\`` : '';
-    const peak = d === peakDay && d.totalEvents > 0 ? ' ◀' : '';
-    return `\`${d.dayLabel}\` \`${bar}\` \`${count}\`${c}${p}${peak}`;
+  const elements = breakdown.map(d => {
+    const isPeak = d === peakDay && d.totalEvents > 0;
+    let label: string;
+    if (isPeak) {
+      const c = d.metrics.commitsCreated > 0 ? ` · ${d.metrics.commitsCreated} 커밋` : '';
+      const p = d.metrics.prsCreated > 0 ? ` · ${d.metrics.prsCreated} PR` : '';
+      label = `*${d.dayLabel} ${d.totalEvents}${p}${c}*`;
+    } else {
+      label = `${d.dayLabel} ${d.totalEvents}`;
+    }
+    return { type: 'mrkdwn', text: truncateText(label) };
   });
 
   return {
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: truncateText(`*일별 활동*\n${lines.join('\n')}`),
-    },
+    type: 'context',
+    elements,
   };
 }
 
 /**
- * Time distribution — compact 4-block view.
- */
-function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | null): any {
-  const blocks = [
-    { label: '새벽', hours: [0,1,2,3,4,5] },
-    { label: '오전', hours: [6,7,8,9,10,11] },
-    { label: '오후', hours: [12,13,14,15,16,17] },
-    { label: '저녁', hours: [18,19,20,21,22,23] },
-  ];
-
-  const blockCounts = blocks.map(b => ({
-    label: b.label,
-    count: b.hours.reduce((sum, h) => sum + (dist[h]?.eventCount || 0), 0),
-  }));
-
-  const maxBlock = Math.max(...blockCounts.map(b => b.count), 1);
-  const lines = blockCounts.map(b => {
-    const bar = miniBar(b.count, maxBlock, 8);
-    return `\`${b.label}\` \`${bar}\` \`${String(b.count).padStart(4)}\``;
-  });
-
-  const peakText = peakHour !== null ? `\n피크 *${hourLabel(peakHour)}*` : '';
-
-  return {
-    type: 'mrkdwn',
-    text: truncateFieldText(`*시간대 분포*\n${lines.join('\n')}${peakText}`),
-  };
-}
-
-/**
- * Operational insights — data-driven bullets, no fluff.
- */
-function buildInsights(
-  m: AggregatedMetrics,
-  d: DerivedMetrics,
-  peakHour: number | null,
-  trend: TrendComparison | null,
-): any {
-  const bullets: string[] = [];
-
-  // PR throughput trend
-  const prDelta = trend?.prsMergedDelta;
-  if (prDelta !== undefined && prDelta !== null && trend && !trend.baselineZero && Math.abs(prDelta) >= 10) {
-    bullets.push(`머지 ${prDelta > 0 ? '증가' : '감소'} \`${Math.abs(prDelta)}%\``);
-  }
-
-  // Code efficiency
-  if (d.avgCodePerCommit > 0) {
-    const qualifier = d.avgCodePerCommit > 200 ? '대규모' : d.avgCodePerCommit < 50 ? '세분화' : '적정';
-    bullets.push(`커밋 크기 ${qualifier} (\`${fmt(d.avgCodePerCommit)}\`줄/커밋)`);
-  }
-
-  // Peak hour
-  if (peakHour !== null) {
-    bullets.push(`집중 시간대 *${hourLabel(peakHour)}*`);
-  }
-
-  // Deep work
-  if (d.avgTurnsPerSession >= 5) {
-    bullets.push(`심층 작업 세션당 \`${d.avgTurnsPerSession}\`턴`);
-  }
-
-  // Issue-to-PR ratio
-  if (m.issuesCreated > 0 && m.prsCreated > 0) {
-    const ratio = Math.round((m.prsCreated / m.issuesCreated) * 10) / 10;
-    bullets.push(`이슈당 PR \`${ratio}\`개`);
-  }
-
-  const bodyText = bullets.length > 0 ? bullets.join('\n') : '효율 양호';
-
-  return {
-    type: 'mrkdwn',
-    text: truncateFieldText(`*인사이트*\n${bodyText}`),
-  };
-}
-
-/**
- * Rankings — compact monospace table, top 5.
+ * v5: Rankings — top 1 gets full detail, rest compressed to single line.
+ * Shows scoring formula as context element.
  */
 function buildRankings(rankings: UserRanking[]): any[] {
   const blocks: any[] = [];
@@ -453,7 +441,6 @@ function buildRankings(rankings: UserRanking[]): any[] {
 
   const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
 
-  // Compute scores
   const scored = displayRankings.map(r => {
     const score = r.metrics.turnsUsed + r.metrics.sessionsCreated +
       r.metrics.issuesCreated * 2 + r.metrics.commitsCreated * 3 +
@@ -461,24 +448,24 @@ function buildRankings(rankings: UserRanking[]): any[] {
     return { ...r, score };
   });
 
-  const topScore = scored[0]?.score || 1;
+  const top = scored[0];
+  const rest = scored.slice(1);
 
-  // Header
-  blocks.push({ type: 'divider' });
+  // Top 1: full detail on same line
+  const topLine = `1위 *${top.userName}* ${fmt(top.score)}점 — PR ${top.metrics.prsCreated}→${top.metrics.prsMerged} · 커밋 ${top.metrics.commitsCreated} · +${fmt(top.metrics.codeLinesAdded)}줄`;
 
-  // Build table-style ranking
-  const lines = scored.map(r => {
-    const rank = r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : `#${r.rank}`;
-    const bar = miniBar(r.score, topScore, 8);
-    return `${rank} *${r.userName}* \`${fmt(r.score)}점\`  \`${bar}\`\n` +
-      `    PR \`${r.metrics.prsCreated}\`→\`${r.metrics.prsMerged}\` · 커밋 \`${r.metrics.commitsCreated}\` · \`+${fmt(r.metrics.codeLinesAdded)}\`줄`;
-  });
+  // Rest: compressed to single line
+  const restCompact = rest.map(r => `${r.rank}위 *${r.userName}* ${fmt(r.score)}점`).join(' · ');
+
+  const rankingText = truncateText(
+    `*팀* (턴+세션+이슈×2+커밋×3+PR×5+머지×10)\n${topLine}\n${restCompact}`
+  );
 
   blocks.push({
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: truncateText(`*팀 랭킹*\n${lines.join('\n')}`),
+      text: rankingText,
     },
   });
 
@@ -486,34 +473,48 @@ function buildRankings(rankings: UserRanking[]): any[] {
 }
 
 /**
- * Achievements + Fun Facts — compressed to max 2 each, outcome-focused.
+ * v5: Time distribution — context elements, 4 time blocks.
  */
-function buildHighlights(achievements: Achievement[], funFacts: FunFact[]): any | null {
-  if (achievements.length === 0 && funFacts.length === 0) return null;
+function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | null): any[] {
+  const timeBlocks = [
+    { label: '새벽', hours: [0,1,2,3,4,5] },
+    { label: '오전', hours: [6,7,8,9,10,11] },
+    { label: '오후', hours: [12,13,14,15,16,17] },
+    { label: '저녁', hours: [18,19,20,21,22,23] },
+  ];
 
-  const parts: string[] = [];
+  const blockCounts = timeBlocks.map(b => ({
+    label: b.label,
+    count: b.hours.reduce((sum, h) => sum + (dist[h]?.eventCount || 0), 0),
+    hours: b.hours,
+  }));
 
-  // Max 2 achievements
-  const topAchievements = achievements.slice(0, 2);
-  for (const a of topAchievements) {
-    parts.push(`${a.icon} *${a.title}* — ${a.description}`);
+  const maxBlock = Math.max(...blockCounts.map(b => b.count), 1);
+
+  const elements = blockCounts.map(b => {
+    const isPeak = peakHour !== null && b.hours.includes(peakHour);
+    const label = isPeak ? `*${b.label} ${b.count}*` : `${b.label} ${b.count}`;
+    return { type: 'mrkdwn', text: truncateText(label) };
+  });
+
+  if (peakHour !== null) {
+    elements.push({ type: 'mrkdwn', text: `피크 ${hourLabel(peakHour)}` });
   }
 
-  // Max 2 fun facts
-  const topFacts = funFacts.slice(0, 2);
-  for (const f of topFacts) {
-    parts.push(`${f.icon} ${f.text}`);
-  }
-
-  return {
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: truncateText(parts.join('  ·  ')) }],
-  };
+  return elements;
 }
 
 /**
- * Narrative takeaway — one memorable sentence about the week's operating pattern.
- * This is what people remember from the report.
+ * v5: Highlights — removed (no decorative content in v5).
+ * Kept as stub returning null to avoid breaking call sites.
+ */
+function buildHighlights(_achievements: Achievement[], _funFacts: FunFact[]): any | null {
+  return null;
+}
+
+/**
+ * v5: Narrative — natural language diagnosis based on data patterns.
+ * Full sentence, not just a label.
  */
 function generateNarrative(
   m: AggregatedMetrics,
@@ -521,33 +522,50 @@ function generateNarrative(
   trend: TrendComparison | null,
   activeDays?: number,
 ): string {
-  // Determine dominant pattern
+  // High volume coding but review bottleneck
+  if (m.prsCreated >= 10 && d.prMergeRate < 20) {
+    const unmerged = m.prsCreated - m.prsMerged;
+    return `코딩 볼륨은 컸으나 리뷰가 따라가지 못했다. ${fmt(m.prsCreated)}건 PR 중 ${m.prsMerged}건 머지, ${unmerged}건 미처리.`;
+  }
+  // Good merge rate + low churn
   if (d.prMergeRate >= 70 && d.churnRatio < 15) {
-    return '높은 머지율과 낮은 churn — 효율적인 코드 생산 주간';
+    return `높은 머지율(${d.prMergeRate}%)과 낮은 churn(${Math.round(d.churnRatio)}%) — 효율적인 코드 생산 주간. 현재 리듬 유지.`;
   }
+  // Review bottleneck with many PRs
   if (d.prMergeRate < 40 && m.prsCreated >= 5) {
-    return '리뷰 병목: PR은 많지만 머지가 따라가지 못하는 패턴';
+    const unmerged = m.prsCreated - m.prsMerged;
+    return `리뷰 병목: ${m.prsCreated}건 PR 생성, ${m.prsMerged}건 머지(${d.prMergeRate}%). ${unmerged}건 미처리 — PR 크기 축소와 당일 리뷰 문화 필요.`;
   }
+  // High churn
   if (d.churnRatio > 30) {
-    return '코드 재작업 비율이 높음 — 요구사항 변경 또는 설계 재검토 필요';
+    return `코드 재작업 비율 ${Math.round(d.churnRatio)}% — 요구사항 변경 또는 설계 재검토가 필요한 주간.`;
   }
-  if (activeDays !== undefined && activeDays <= 3) {
-    return '활동 집중도 낮음 — 산발적 작업 패턴, 블록 단위 집중 필요';
+  // Low active days (weekly)
+  if (activeDays !== undefined && activeDays <= 2) {
+    return `활동이 ${activeDays}일에 집중 — 산발적 패턴. 작업을 3일 이상으로 분산하면 컨텍스트 전환 비용이 줄어든다.`;
   }
+  // Low active days moderate
+  if (activeDays !== undefined && activeDays === 3) {
+    return `활동일 3일 — 목표(5일)에 미달. PR ${m.prsMerged}건 머지, 커밋 ${m.commitsCreated}건. 일정 블록화 권장.`;
+  }
+  // Strong productivity improvement
   if (trend && !trend.baselineZero && (trend.productivityScoreDelta ?? 0) > 20) {
-    return '전주 대비 생산성 급상승 — 현재 리듬 유지가 관건';
+    return `전주 대비 생산성 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)} 급상승 — 현재 리듬 유지가 관건.`;
   }
+  // Productivity drop
   if (trend && !trend.baselineZero && (trend.productivityScoreDelta ?? 0) < -20) {
-    return '생산성 하락 — 병목 원인 식별이 우선';
+    return `생산성 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)} 하락 — 병목 원인 식별이 우선.`;
   }
+  // Deep AI usage
   if (d.avgTurnsPerSession >= 8) {
-    return 'AI 심층 활용 — 세션당 대화 밀도가 높은 집중 패턴';
+    return `AI 심층 활용 — 세션당 ${d.avgTurnsPerSession}턴. 고밀도 집중 패턴이지만 세션 완료율(${d.sessionCompletionRate}%) 점검 필요.`;
   }
-  return '안정적 운영 — 현재 페이스 유지';
+  // Default: stable
+  return `안정적 운영 — 머지율 ${d.prMergeRate}%, 커밋 ${m.commitsCreated}건, 세션 완료율 ${d.sessionCompletionRate}%.`;
 }
 
 /**
- * Weekly summary — data-driven, no quotes.
+ * v5: Weekly context line text — key metrics for context block.
  */
 function generateWeeklySummary(
   m: AggregatedMetrics,
@@ -556,23 +574,18 @@ function generateWeeklySummary(
   activeDays: number,
   trend: TrendComparison | null,
 ): string {
-  const parts: string[] = [];
-  parts.push(`활동일 ${activeDays}/7`);
+  const netSign = d.netLines >= 0 ? '+' : '';
+  const trendSuffix = trend?.baselineZero
+    ? ' · 첫 기록'
+    : (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5)
+      ? ` · 전주 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
+      : '';
 
-  if (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5) {
-    parts.push(`생산성 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`);
-  } else if (trend?.baselineZero) {
-    parts.push('첫 기록');
-  }
-
-  parts.push(`머지 ${m.prsMerged}건`);
-  parts.push(`코드 ${d.netLines >= 0 ? '+' : ''}${fmt(d.netLines)}줄`);
-
-  return parts.join(' · ');
+  return `머지율 \`${d.prMergeRate}%\` (목표 15%) · 활동일 \`${activeDays}/7\` (목표 3+) · 순코드 ${netSign}${fmt(d.netLines)}줄${trendSuffix}`;
 }
 
 /**
- * Daily summary — compact key metrics.
+ * v5: Daily context line text — key metrics for context block.
  */
 function generateDailySummary(
   m: AggregatedMetrics,
@@ -580,18 +593,35 @@ function generateDailySummary(
   dayLabel: string,
   trend: TrendComparison | null,
 ): string {
+  const netSign = d.netLines >= 0 ? '+' : '';
+  const trendSuffix = trend?.baselineZero
+    ? ' · 첫 기록'
+    : (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5)
+      ? ` · 전일 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
+      : '';
+
   const parts: string[] = [];
-
-  if (trend && !trend.baselineZero && Math.abs(trend.productivityScoreDelta ?? 0) >= 5) {
-    parts.push(`생산성 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`);
-  } else if (trend?.baselineZero) {
-    parts.push('첫 기록');
+  if (m.prsCreated > 0) {
+    parts.push(`머지율 \`${d.prMergeRate}%\` (목표 15%)`);
   }
+  parts.push(`순코드 ${netSign}${fmt(d.netLines)}줄`);
+  if (m.commitsCreated > 0) parts.push(`커밋 ${m.commitsCreated}건`);
+  parts.push(trendSuffix ? trendSuffix.replace(/^ · /, '') : `${dayLabel}요일`);
 
-  if (m.commitsCreated > 0) parts.push(`커밋 ${m.commitsCreated}개`);
-  if (m.prsCreated > 0) parts.push(`PR ${m.prsCreated}개`);
+  return parts.filter(Boolean).join(' · ');
+}
 
-  return parts.length > 0 ? parts.join(' · ') : `${dayLabel}요일 활동 요약`;
+/**
+ * v5: Insights block — replaced by narrative in v5 design.
+ * Kept as stub for any remaining call sites.
+ */
+function buildInsights(
+  _m: AggregatedMetrics,
+  _d: DerivedMetrics,
+  _peakHour: number | null,
+  _trend: TrendComparison | null,
+): any {
+  return { type: 'mrkdwn', text: '' };
 }
 
 // === Main Formatter Class ===
@@ -660,81 +690,120 @@ export class ReportFormatter {
   }
 
   /**
-   * Enriched daily report — Bauhaus: grid KPIs, pipeline flow, action alerts.
+   * Enriched daily report — Bauhaus v5: grade in header, natural language narrative,
+   * 4-field KPI grid, 2-field efficiency, time distribution, action alerts. ≤10 blocks.
    */
   formatEnrichedDaily(report: EnrichedDailyReport): FormattedReport {
     const { metrics: m, derived: d, trend, hourlyDistribution, peakHour, achievements, funFacts } = report;
     const dayLabel = getDayLabel(report.date);
+    const grade = computeGrade(d);
+    const reportTitle = `일간 리포트 — ${report.date} (${dayLabel})`;
 
-    const blocks: any[] = [
-      // ── Identity ──
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: truncateHeader(`일간 리포트 — ${report.date} (${dayLabel})`), emoji: true },
+    const blocks: any[] = [];
+
+    // Block 1: Header with grade
+    blocks.push({
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: truncateHeader(`${grade} · ${reportTitle}`),
+        emoji: true,
       },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: generateDailySummary(m, d, dayLabel, trend) }],
+    });
+
+    // Block 2: Context line — key metrics
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: generateDailySummary(m, d, dayLabel, trend) }],
+    });
+
+    // Block 3: Narrative — natural language diagnosis
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: truncateText(generateNarrative(m, d, trend)),
       },
+    });
 
-      // ── Hero Band ──
-      buildHeroBand(m, d, trend),
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `_${generateNarrative(m, d, trend)}_` }],
-      },
-      { type: 'divider' },
+    // Block 4: Divider
+    blocks.push({ type: 'divider' });
 
-      // ── Quality + Efficiency ──
-      ...buildKPIGrid(m, d, trend),
-      buildPipelineFlow(m, d),
-      buildEfficiencyGrid(m, d),
-    ];
+    // Block 5: KPI grid — sessions, PR, code, conversations (4 fields)
+    const unmerged = m.prsCreated - m.prsMerged;
+    const netSign = d.netLines >= 0 ? '+' : '';
+    const churnQuality = d.churnRatio <= 20 ? '양호' : d.churnRatio <= 35 ? '주의' : '높음';
+    blocks.push({
+      type: 'section',
+      fields: safeFields([
+        {
+          type: 'mrkdwn',
+          text: truncateFieldText(
+            `*세션*\n${fmt(m.sessionsCreated)} 생성 · ${fmt(m.sessionsClosed)} 닫기 · ${m.sessionsSlept} 슬립\n완료율 ${d.sessionCompletionRate}% (닫기/생성)`
+          ),
+        },
+        {
+          type: 'mrkdwn',
+          text: truncateFieldText(
+            `*PR 흐름*\n${fmt(m.prsCreated)} 생성 → ${fmt(m.prsMerged)} 머지\n머지율 \`${d.prMergeRate}%\` (목표 15%) · 미머지 ${unmerged}건`
+          ),
+        },
+        {
+          type: 'mrkdwn',
+          text: truncateFieldText(
+            `*코드*\n${fmt(m.commitsCreated)} 커밋 · +${fmt(m.codeLinesAdded)} / -${fmt(m.codeLinesDeleted)}\n순 ${netSign}${fmt(d.netLines)} · churn ${Math.round(d.churnRatio)}% (<20% ${churnQuality})`
+          ),
+        },
+        {
+          type: 'mrkdwn',
+          text: truncateFieldText(
+            `*대화*\n턴 ${fmt(m.turnsUsed)}회 · 세션당 ${d.avgTurnsPerSession}턴\n이슈 ${m.issuesCreated}건`
+          ),
+        },
+      ]),
+    });
 
-    // ── Temporal ──
+    // Block 6: Efficiency (2 fields)
+    blocks.push(buildEfficiencyGrid(m, d));
+
+    // Block 7: Divider (before time distribution, if present)
     if (hasAnyHours(hourlyDistribution)) {
       blocks.push({ type: 'divider' });
+
+      // Block 8: Time distribution as context elements
+      const timeElements = buildTimeDistribution(hourlyDistribution, peakHour);
       blocks.push({
-        type: 'section',
-        fields: [
-          buildTimeDistribution(hourlyDistribution, peakHour),
-          buildInsights(m, d, peakHour, trend),
-        ],
+        type: 'context',
+        elements: timeElements,
       });
     }
 
-    // ── Action ──
+    // Block 9 (conditional): Action alerts
     const actionBlock = buildActionAlerts(m, d, trend, peakHour, hourlyDistribution);
     if (actionBlock) {
-      blocks.push({ type: 'divider' });
       blocks.push(actionBlock);
     }
 
-    // ── Footer ──
-    const highlights = buildHighlights(achievements, funFacts);
-    if (highlights) {
-      blocks.push(highlights);
-    }
-
+    // Block 10: Footer
+    const today = new Date().toISOString().slice(0, 10);
     blocks.push({
       type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `soma-work · ${new Date().toISOString().slice(0, 19)}Z` },
-      ],
+      elements: [{ type: 'mrkdwn', text: `soma-work · ${today} · 비활성 유저 생략` }],
     });
 
     const trendLine = trend && !trend.baselineZero
       ? `전일 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
       : (trend?.baselineZero ? '첫 기록' : '');
-    const text = `일간 리포트 — ${report.date} (${dayLabel})\n` +
+    const text = `${grade} · 일간 리포트 — ${report.date} (${dayLabel})\n` +
       `생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     return { blocks: safeBlocks(blocks), text };
   }
 
   /**
-   * Enriched weekly report — Bauhaus: decision-first KPI grid, pipeline funnels,
-   * efficiency metrics, action alerts, compact rankings.
+   * Enriched weekly report — Bauhaus v5: grade in header, natural language narrative,
+   * 4-field KPI grid, 2-field efficiency, compact cadence strip, action alerts,
+   * rankings with scoring formula. Exactly 12 blocks (or fewer if data missing).
    */
   formatEnrichedWeekly(report: EnrichedWeeklyReport): FormattedReport {
     const {
@@ -743,80 +812,89 @@ export class ReportFormatter {
       rankings, achievements, funFacts,
     } = report;
 
-    const blocks: any[] = [
-      // ── ZONE 1: Identity ──
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: truncateHeader(`주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}`), emoji: true },
+    const grade = computeGrade(d, activeDays);
+    const weekEnd = report.weekEnd.slice(5); // "MM-DD" portion
+    const reportTitle = `주간 리포트 — ${report.weekStart} ~ ${weekEnd}`;
+
+    const blocks: any[] = [];
+
+    // Block 1: Header with grade
+    blocks.push({
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: truncateHeader(`${grade} · ${reportTitle}`),
+        emoji: true,
       },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: generateWeeklySummary(m, d, dailyBreakdown, activeDays, trend) }],
+    });
+
+    // Block 2: Context line — key metrics + targets
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: generateWeeklySummary(m, d, dailyBreakdown, activeDays, trend) }],
+    });
+
+    // Block 3: Narrative — rules-based diagnosis (full sentence)
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: truncateText(generateNarrative(m, d, trend, activeDays)),
       },
+    });
 
-      // ── ZONE 2: Hero Band (decision-first) ──
-      buildHeroBand(m, d, trend, activeDays),
+    // Block 4: Divider (before KPI grid)
+    blocks.push({ type: 'divider' });
 
-      // ── ZONE 3: Narrative (memorable takeaway) ──
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `_${generateNarrative(m, d, trend, activeDays)}_` }],
-      },
-      { type: 'divider' },
+    // Block 5: KPI grid — sessions, PR flow, code, activity (4 fields)
+    blocks.push(buildPipelineFlow(m, d, activeDays, dailyBreakdown));
 
-      // ── ZONE 4: Quality + Efficiency Grid ──
-      ...buildKPIGrid(m, d, trend),
-      buildPipelineFlow(m, d),
-      buildEfficiencyGrid(m, d, activeDays),
-    ];
+    // Block 6: Efficiency + throughput (2 fields)
+    blocks.push(buildEfficiencyGrid(m, d, activeDays));
 
-    // ── ZONE 5: Temporal Pattern ──
+    // Block 7: Divider (before cadence)
+    blocks.push({ type: 'divider' });
+
+    // Block 8: Daily cadence as context elements (skipped if no data)
     const cadence = buildDailyCadence(dailyBreakdown);
     if (cadence) {
-      blocks.push({ type: 'divider' });
       blocks.push(cadence);
     }
 
-    if (hasAnyHours(hourlyDistribution)) {
+    // Block 9: Divider (before actions)
+    blocks.push({ type: 'divider' });
+
+    // Block 10: Action items with P1/P2 severity
+    const actionBlock = buildActionAlerts(m, d, trend, peakHour, hourlyDistribution, activeDays);
+    if (actionBlock) {
+      blocks.push(actionBlock);
+    } else {
+      // No critical alerts — show a positive note
       blocks.push({
         type: 'section',
-        fields: [
-          buildTimeDistribution(hourlyDistribution, peakHour),
-          buildInsights(m, d, peakHour, trend),
-        ],
+        text: {
+          type: 'mrkdwn',
+          text: truncateText(`임계치 초과 항목 없음. 머지율 ${d.prMergeRate}% · 완료율 ${d.sessionCompletionRate}% · churn ${Math.round(d.churnRatio)}%.`),
+        },
       });
     }
 
-    // ── ZONE 6: Action (threshold-based alerts with targets) ──
-    const actionBlock = buildActionAlerts(m, d, trend, peakHour, hourlyDistribution, activeDays);
-    if (actionBlock) {
-      blocks.push({ type: 'divider' });
-      blocks.push(actionBlock);
+    // Block 11: Rankings with scoring formula
+    if (rankings.length >= 2) {
+      blocks.push(...buildRankings(rankings));
     }
 
-    // ── ZONE 7: People ──
-    blocks.push(...buildRankings(rankings));
-
-    // ── ZONE 8: Footer ──
-    const highlights = buildHighlights(achievements, funFacts);
-    if (highlights) {
-      blocks.push(highlights);
-    }
-
+    // Block 12: Footer
+    const today = new Date().toISOString().slice(0, 10);
     blocks.push({
       type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `soma-work · 활동일 \`${activeDays}/7\` · ${new Date().toISOString().slice(0, 19)}Z`,
-        },
-      ],
+      elements: [{ type: 'mrkdwn', text: `soma-work · ${today} · 비활성 유저 생략` }],
     });
 
     const weeklyTrendLine = trend && !trend.baselineZero
       ? `전주 대비 ${deltaArrow(trend.productivityScoreDelta)}${deltaText(trend.productivityScoreDelta)}`
       : (trend?.baselineZero ? '첫 기록' : '');
-    const text = `주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}\n` +
+    const text = `${grade} · 주간 리포트 — ${report.weekStart} ~ ${report.weekEnd}\n` +
       `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     return { blocks: safeBlocks(blocks), text };
