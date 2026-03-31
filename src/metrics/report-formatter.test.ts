@@ -81,11 +81,11 @@ describe('ReportFormatter', () => {
 
     const result = formatter.formatWeekly(report);
 
-    // Should only include top 10 in blocks
+    // Should only include top 5 in blocks (Bauhaus: compact ranking)
     const textContent = JSON.stringify(result.blocks);
     expect(textContent).toContain('User0');
-    expect(textContent).toContain('User9');
-    expect(textContent).not.toContain('User10');
+    expect(textContent).toContain('User4');
+    expect(textContent).not.toContain('User5');
   });
 
   // Trace: Scenario 5, Section 3a — all zeros still renders blocks
@@ -208,8 +208,8 @@ describe('ReportFormatter', () => {
     // Should contain fun facts
     expect(allText).toContain('피크');
 
-    // Should contain trend arrows
-    expect(allText).toContain('📈');
+    // Should contain trend indicators (Bauhaus: ↑/↓ arrows)
+    expect(allText).toContain('↑');
   });
 
   it('enrichedWeekly_noTrend_stillWorks', () => {
@@ -366,8 +366,8 @@ describe('ReportFormatter', () => {
     });
 
     expect(result.blocks.length).toBeLessThanOrEqual(50);
-    // With 10 users we expect around 25-30 blocks — well within limits
-    expect(result.blocks.length).toBeGreaterThan(15);
+    // Bauhaus: compact layout — expect 10-20 blocks with 10 users (top 5 shown in one block)
+    expect(result.blocks.length).toBeGreaterThan(8);
   });
 
   it('enrichedWeekly_longUserName_truncated', () => {
