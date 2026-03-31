@@ -83,51 +83,75 @@ Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB li
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
 
+### 🤖 Multi-Agent Architecture
+
+Run multiple independent AI agents within a single process. Each sub-agent is a separate Slack App with its own persona, system prompt, and session isolation.
+
+```
+@soma          → Main bot (제갈공명 persona)
+@soma-jangbi   → Code review specialist (장비 persona)
+@soma-gwanu    → DevOps & infrastructure (관우 persona)
+```
+
+- **Direct mention**: Users @mention sub-agents directly for specialized tasks
+- **Delegation**: Main bot delegates via `agent_chat` MCP tool
+- **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
+- **Error isolation**: One agent crashing doesn't affect others
+
+See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
+
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Slack Events                     │
-│              (DM / Mention / Thread)                │
-└──────────────────────┬──────────────────────────────┘
-                       │
-                ┌──────▼──────┐
-                │ SlackHandler │  ← Facade
-                └──────┬──────┘
-                       │
-          ┌────────────┼────────────────┐
-          │            │                │
-   ┌──────▼──────┐ ┌──▼───────┐ ┌─────▼──────┐
-   │ EventRouter │ │ Command  │ │  Stream    │
-   │             │ │ Router   │ │ Processor  │
-   └──────┬──────┘ └──┬───────┘ └─────┬──────┘
-          │            │                │
-          │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 26 Command  │  │  Pipeline  │
-          │     │  Handlers   │  │ input →    │
-          │     └─────────────┘  │ session →  │
-          │                      │ stream     │
-          │                      └─────┬──────┘
-          │                            │
-   ┌──────▼────────────────────────────▼──────┐
-   │              ClaudeHandler               │
-   │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-   │  │ Session  │ │ Prompt   │ │ Dispatch │ │
-   │  │ Registry │ │ Builder  │ │ Service  │ │
-   │  └──────────┘ └──────────┘ └──────────┘ │
-   └──────────────────┬───────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-   ┌────▼────┐  ┌────▼────┐  ┌────▼────┐
-   │   MCP   │  │ GitHub  │  │ Permis- │
-   │ Manager │  │  Auth   │  │  sion   │
-   └─────────┘  └─────────┘  └─────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                       Slack Events                            │
+│                 (DM / Mention / Thread)                       │
+└──────────┬──────────────────────────────────┬─────────────────┘
+           │                                  │
+    ┌──────▼──────┐                  ┌────────▼─────────┐
+    │ Main Bot    │                  │  AgentManager     │
+    │ SlackHandler│                  │  ┌─────────────┐  │
+    └──────┬──────┘                  │  │ jangbi      │  │
+           │                         │  │  App+Handler│  │
+  ┌────────┼──────────┐              │  └─────────────┘  │
+  │        │          │              │  ┌─────────────┐  │
+┌─▼──┐ ┌──▼───┐ ┌────▼───┐         │  │ gwanu       │  │
+│Evt │ │ Cmd  │ │ Stream │         │  │  App+Handler│  │
+│Rtr │ │ Rtr  │ │ Proc   │         │  └─────────────┘  │
+└─┬──┘ └──┬───┘ └────┬───┘         └───────────────────┘
+  │        │          │
+  │  ┌─────▼────┐ ┌───▼──────┐
+  │  │ 26 Cmd   │ │ Pipeline │
+  │  │ Handlers │ │ in→sess→ │
+  │  └──────────┘ │ stream   │
+  │               └────┬─────┘
+  │                    │
+  ┌────────────────────▼──────────────────┐
+  │            ClaudeHandler              │
+  │ ┌──────────┐ ┌──────────┐ ┌────────┐ │
+  │ │ Session  │ │ Prompt   │ │Dispatch│ │
+  │ │ Registry │ │ Builder  │ │Service │ │
+  │ └──────────┘ └──────────┘ └────────┘ │
+  └──────────────────┬────────────────────┘
+                     │
+       ┌─────────────┼──────────────┐
+       │             │              │
+  ┌────▼────┐  ┌────▼────┐  ┌─────▼─────┐
+  │   MCP   │  │ GitHub  │  │ Permission│
+  │ Manager │  │  Auth   │  │  Service  │
+  └────┬────┘  └─────────┘  └───────────┘
+       │
+  ┌────▼──────────────────────────────────┐
+  │         Internal MCP Servers          │
+  │  llm · model-command · slack-mcp      │
+  │  cron · agent · server-tools          │
+  │  permission · mcp-tool-permission     │
+  └───────────────────────────────────────┘
 ```
 
-**Three Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager` — present simple interfaces over complex subsystems. Each module follows Single Responsibility Principle.
+**Key Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager` — present simple interfaces over complex subsystems. Each module follows Single Responsibility Principle.
 
 ---
 
@@ -279,6 +303,8 @@ GitHub App takes priority when configured. Falls back to PAT automatically.
 
 ```
 src/                                # TypeScript source
+├── agent-manager.ts                # Sub-agent lifecycle management
+├── agent-instance.ts               # Individual agent (Slack App + Handler)
 ├── slack/                          # Slack integration layer
 │   ├── actions/                    # Interactive action handlers (12)
 │   ├── commands/                   # Command handlers (26)
@@ -292,7 +318,9 @@ src/                                # TypeScript source
 ├── permission/                     # Permission service + Slack UI
 ├── plugin/                         # Plugin system (marketplace, cache)
 ├── prompt/                         # System prompts
-│   └── workflows/                  # Workflow prompts (9 workflows)
+│   ├── workflows/                  # Workflow prompts (9 workflows)
+│   ├── jangbi/                     # Sub-agent: code review specialist
+│   └── gwanu/                      # Sub-agent: DevOps specialist
 ├── persona/                        # Bot personas (12 personas)
 └── local/                          # Claude Code SDK extensions
     ├── agents/                     # Agent definitions (11)
@@ -301,27 +329,64 @@ src/                                # TypeScript source
     ├── commands/                   # Local slash commands
     └── prompts/                    # Local prompts
 
-docs/                               # Architecture & feature specs
-scripts/                            # Utility scripts
-```
+mcp-servers/                        # Internal MCP servers (extracted)
+├── agent/                          # agent_chat / agent_reply tools
+├── llm/                            # LLM aggregate (codex + gemini)
+├── model-command/                  # Session/UI model commands
+├── slack-mcp/                      # Thread context + file upload
+├── cron/                           # Cron job management
+├── server-tools/                   # Server administration
+├── permission/                     # Permission prompt service
+└── mcp-tool-permission/            # Per-tool permission gating
 
-| Category | Files | Lines of Code |
-|----------|------:|-------------:|
-| Source (excl. test/local) | 167 | ~36,000 |
-| Tests | 97 | ~22,400 |
-| Personas | 12 | ~4,700 |
-| Workflow Prompts | 9 | ~1,400 |
+scripts/                            # Utility scripts
+├── provision-agent.ts              # Automated sub-agent provisioning
+├── create-agent.sh                 # Semi-automated agent creation
+└── ...
+
+docs/                               # Architecture & feature specs
+├── how-to-new-agent.md             # Guide: adding new sub-agents
+├── multi-agent/                    # Multi-agent spec & trace
+└── ...
+```
 
 ## Design Principles
 
-1. **Facade Pattern** — Three facades simplify complex subsystems
-2. **Single Responsibility** — One responsibility per module (167 modules)
+1. **Facade Pattern** — Four facades (`SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager`) simplify complex subsystems
+2. **Single Responsibility** — One responsibility per module
 3. **Pipeline Architecture** — Input preprocessing → session init → stream execution
 4. **Workflow Dispatch** — Input classification → specialized workflow prompts
 5. **Append-Only Messages** — New Slack messages instead of edits (reliability)
 6. **Session-Based Context** — Per-thread session persistence with auto-resume
-7. **Dependency Injection** — Testability through injected dependencies
-8. **Hierarchical CWD** — Thread > Channel > User working directory priority
+7. **Error Isolation** — Sub-agent failures don't propagate to the main bot
+8. **Dependency Injection** — Testability through injected dependencies
+9. **Hierarchical CWD** — Thread > Channel > User working directory priority
+
+---
+
+## Multi-Agent Setup
+
+Add sub-agents to `config.json`:
+
+```json
+{
+  "agents": {
+    "jangbi": {
+      "slackBotToken": "xoxb-...",
+      "slackAppToken": "xapp-...",
+      "signingSecret": "...",
+      "description": "Code review specialist"
+    }
+  }
+}
+```
+
+Automated provisioning:
+```bash
+npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
+```
+
+Full guide: [docs/how-to-new-agent.md](./docs/how-to-new-agent.md)
 
 ---
 
@@ -332,7 +397,7 @@ npx vitest run          # Single run
 npx vitest              # Watch mode
 ```
 
-97 test files (~22,400 LOC) covering: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, MCP integration, and more.
+Test coverage includes: event routing, stream processing, command parsing, permission validation, tool formatting, session management, action handlers, pipeline processing, MCP integration, multi-agent lifecycle, and agent MCP server.
 
 ---
 
@@ -344,6 +409,8 @@ npx vitest              # Watch mode
 | Auth errors | API keys, Socket Mode enabled, token expiration |
 | Broken formatting | Markdown → Slack mrkdwn conversion edge cases |
 | Session conflicts | Multiple instances running with same Slack token |
+| Sub-agent not starting | Verify `slackBotToken`/`slackAppToken` format in `config.json` |
+| `agent_chat` "Unknown agent" | Agent name must match `config.json` key (case-sensitive) |
 
 ---
 
