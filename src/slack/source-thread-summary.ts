@@ -13,6 +13,22 @@ import { ThreadHeaderBuilder } from './thread-header-builder';
 
 const logger = new Logger('SourceThreadSummary');
 
+/** Build common metadata fields (owner + execution environment). */
+function buildMetaFields(
+  session: ConversationSession,
+  workflow: string,
+  model?: string
+): any[] {
+  const fields: any[] = [];
+  if (session.ownerId) {
+    fields.push({ type: 'mrkdwn', text: `*담당*\n<@${session.ownerId}>` });
+  }
+  const envParts = [`\`${workflow}\``];
+  if (model) envParts.push(`\`${model}\``);
+  fields.push({ type: 'mrkdwn', text: `*실행*\n${envParts.join(' · ')}` });
+  return fields;
+}
+
 /**
  * Build Block Kit blocks for the "request start" message posted to
  * the original thread when a mid-thread mention creates a new work session.
@@ -34,16 +50,12 @@ export function buildRequestStartBlocks(
     { type: 'mrkdwn', text: '*상태*\n시작' },
   ];
 
-  if (session.ownerId) {
-    fields.push({ type: 'mrkdwn', text: `*담당*\n<@${session.ownerId}>` });
-  }
-
-  const envParts = [`\`${workflow}\``];
-  if (model) envParts.push(`\`${model}\``);
-  fields.push({ type: 'mrkdwn', text: `*실행*\n${envParts.join(' · ')}` });
+  fields.push(...buildMetaFields(session, workflow, model));
 
   const section: any = {
     type: 'section',
+    // mrkdwn section text supports up to 3000 chars; raw title is intentional here
+    // as the 150-char truncation is only needed for plain_text header blocks.
     text: { type: 'mrkdwn', text: `*목표*\n${title}` },
     fields,
   };
@@ -58,7 +70,7 @@ export function buildRequestStartBlocks(
   }
 
   return {
-    text: `${title} — 시작`,
+    text: `${safeTitle} — 시작`,
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: safeTitle } },
       section,
@@ -108,13 +120,7 @@ export function buildRequestCompleteBlocks(
     heroFields.push({ type: 'mrkdwn', text: `*소요*\n${elapsed}` });
   }
 
-  if (session.ownerId) {
-    heroFields.push({ type: 'mrkdwn', text: `*담당*\n<@${session.ownerId}>` });
-  }
-
-  const envParts = [`\`${workflow}\``];
-  if (model) envParts.push(`\`${model}\``);
-  heroFields.push({ type: 'mrkdwn', text: `*실행*\n${envParts.join(' · ')}` });
+  heroFields.push(...buildMetaFields(session, workflow, model));
 
   if (options?.verifyResult) {
     heroFields.push({ type: 'mrkdwn', text: `*검증*\n${options.verifyResult}` });
@@ -239,7 +245,7 @@ export function buildRequestCompleteBlocks(
   }
 
   return {
-    text: `${title} — ${statusLabel}`,
+    text: `${safeTitle} — ${statusLabel}`,
     blocks,
   };
 }

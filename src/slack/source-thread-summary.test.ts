@@ -294,4 +294,107 @@ describe('buildRequestCompleteBlocks', () => {
     const result = buildRequestCompleteBlocks(session, 'merged');
     expect(result.blocks[0].text.text.length).toBeLessThanOrEqual(150);
   });
+
+  it('renders issue section without PR section when only issue linked', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: { issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' } },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('github.com/org/repo/issues/1');
+    expect(blocksJson).not.toContain('source_open_pr');
+    expect(result.blocks.some((b: any) => b.type === 'divider')).toBe(true);
+  });
+
+  it('renders PR section without issue section when only PR linked', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: { pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' } },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('github.com/org/repo/pull/2');
+    expect(blocksJson).not.toContain('source_open_issue');
+  });
+
+  it('includes issue context fields when provided', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: { issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' } },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      issueContext: { cause: 'Race condition', impact: 'Data corruption' },
+    });
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('Race condition');
+    expect(blocksJson).toContain('Data corruption');
+  });
+
+  it('includes PR context fields when provided', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: { pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' } },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      prContext: { fix: 'Added mutex lock', test: '3 unit tests added' },
+    });
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('Added mutex lock');
+    expect(blocksJson).toContain('3 unit tests added');
+  });
+
+  it('includes thread button in actions when workThreadPermalink provided', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Work', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed', {
+      workThreadPermalink: 'https://slack.com/archives/C1/p1',
+    });
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('source_open_thread');
+    expect(blocksJson).toContain('https://slack.com/archives/C1/p1');
+  });
+
+  it('parses elapsed time from turnSummary', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Work', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      turnSummary: '⏱ 3m 22s · 14 turns',
+    });
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('3m 22s');
+  });
+});
+
+describe('postSourceThreadSummary edge cases', () => {
+  it('handles null permalink gracefully in postSourceThreadSummary', async () => {
+    const mockSlackApi = {
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg-ts' }),
+      getPermalink: vi.fn().mockResolvedValue(null),
+    };
+    const session = {
+      title: 'Task', channelId: 'C_NEW', threadTs: 'ts', threadRootTs: 'root-ts',
+      sourceThread: { channel: 'C_ORIGINAL', threadTs: '123.456' },
+      links: {},
+    };
+    const { postSourceThreadSummary } = await import('./source-thread-summary');
+    await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
+    expect(mockSlackApi.postMessage).toHaveBeenCalled();
+    const blocksJson = JSON.stringify(mockSlackApi.postMessage.mock.calls[0][2]?.blocks ?? []);
+    expect(blocksJson).not.toContain('source_open_thread');
+  });
+});
+
+describe('buildRequestStartBlocks edge cases', () => {
+  it('uses Session as default title when title is empty', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.blocks[0].text.text).toBe('Session');
+    expect(result.text).toContain('Session');
+  });
 });
