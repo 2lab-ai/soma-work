@@ -2,11 +2,12 @@
  * CronStorage — Contract tests
  * Trace: docs/cron-scheduler/trace.md, Scenarios 2-3
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
-import { CronStorage, matchesCronExpression, isValidCronExpression, isValidCronName } from './cron-storage';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { CronStorage, isValidCronExpression, isValidCronName, matchesCronExpression } from './cron-storage';
 
 describe('CronStorage', () => {
   let storage: CronStorage;
@@ -18,8 +19,12 @@ describe('CronStorage', () => {
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(tmpFile); } catch {}
-    try { fs.unlinkSync(tmpFile + '.tmp'); } catch {}
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+    try {
+      fs.unlinkSync(tmpFile + '.tmp');
+    } catch {}
   });
 
   // --- Scenario 2: cron_create ---
@@ -58,26 +63,49 @@ describe('CronStorage', () => {
       threadTs: null,
     });
 
-    expect(() => storage.addJob({
-      name: 'dup-test',
-      expression: '0 10 * * *',
-      prompt: 'second',
-      owner: 'U123',
-      channel: 'C789',
-      threadTs: null,
-    })).toThrow('DUPLICATE_NAME');
+    expect(() =>
+      storage.addJob({
+        name: 'dup-test',
+        expression: '0 10 * * *',
+        prompt: 'second',
+        owner: 'U123',
+        channel: 'C789',
+        threadTs: null,
+      }),
+    ).toThrow('DUPLICATE_NAME');
   });
 
   // Trace: S2, Section 5 — Different owners can have same name
   it('allows same name for different owners', () => {
-    storage.addJob({ name: 'report', expression: '0 9 * * *', prompt: 'a', owner: 'U1', channel: 'C1', threadTs: null });
-    const job2 = storage.addJob({ name: 'report', expression: '0 9 * * *', prompt: 'b', owner: 'U2', channel: 'C1', threadTs: null });
+    storage.addJob({
+      name: 'report',
+      expression: '0 9 * * *',
+      prompt: 'a',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+    });
+    const job2 = storage.addJob({
+      name: 'report',
+      expression: '0 9 * * *',
+      prompt: 'b',
+      owner: 'U2',
+      channel: 'C1',
+      threadTs: null,
+    });
     expect(job2.owner).toBe('U2');
   });
 
   // Trace: S2, Section 4 — Side-Effect
   it('persists to JSON file', () => {
-    storage.addJob({ name: 'persist-test', expression: '* * * * *', prompt: 'test', owner: 'U1', channel: 'C1', threadTs: null });
+    storage.addJob({
+      name: 'persist-test',
+      expression: '* * * * *',
+      prompt: 'test',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+    });
 
     const raw = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
     expect(raw.jobs).toHaveLength(1);
@@ -86,7 +114,14 @@ describe('CronStorage', () => {
 
   // Trace: S2, Section 3 — Contract: field mapping
   it('request.name → CronJob.name → jobs[].name transformation', () => {
-    storage.addJob({ name: 'my-cron', expression: '0 9 * * *', prompt: 'hello', owner: 'UABC', channel: 'CXYZ', threadTs: null });
+    storage.addJob({
+      name: 'my-cron',
+      expression: '0 9 * * *',
+      prompt: 'hello',
+      owner: 'UABC',
+      channel: 'CXYZ',
+      threadTs: null,
+    });
 
     const raw = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
     expect(raw.jobs[0].name).toBe('my-cron');
@@ -98,7 +133,14 @@ describe('CronStorage', () => {
 
   // Trace: S3, Section 3a — Happy Path
   it('removes existing job', () => {
-    storage.addJob({ name: 'to-delete', expression: '0 9 * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
+    storage.addJob({
+      name: 'to-delete',
+      expression: '0 9 * * *',
+      prompt: 'x',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+    });
     const removed = storage.removeJob('U1', 'to-delete');
     expect(removed).toBe(true);
     expect(storage.getAll()).toHaveLength(0);
@@ -112,7 +154,14 @@ describe('CronStorage', () => {
 
   // Trace: S3, Section 3a — Contract (owner isolation)
   it('cannot delete other user cron', () => {
-    storage.addJob({ name: 'protected', expression: '0 9 * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
+    storage.addJob({
+      name: 'protected',
+      expression: '0 9 * * *',
+      prompt: 'x',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+    });
     const removed = storage.removeJob('U_OTHER', 'protected');
     expect(removed).toBe(false);
     expect(storage.getAll()).toHaveLength(1);
@@ -128,7 +177,7 @@ describe('CronStorage', () => {
 
     const u1Jobs = storage.getJobsByOwner('U1');
     expect(u1Jobs).toHaveLength(2);
-    expect(u1Jobs.map(j => j.name).sort()).toEqual(['a', 'c']);
+    expect(u1Jobs.map((j) => j.name).sort()).toEqual(['a', 'c']);
   });
 
   // Trace: S3, Section 3b — Sad Path
@@ -140,7 +189,14 @@ describe('CronStorage', () => {
   // --- updateLastRun ---
 
   it('updates lastRunAt and lastRunMinute', () => {
-    const job = storage.addJob({ name: 'run-test', expression: '* * * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
+    const job = storage.addJob({
+      name: 'run-test',
+      expression: '* * * * *',
+      prompt: 'x',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+    });
     const now = new Date('2026-03-28T09:00:00Z');
     storage.updateLastRun(job.id, now);
 
@@ -221,7 +277,7 @@ describe('matchesCronExpression', () => {
     const date = new Date('2026-03-29T00:15:00Z');
     expect(date.getUTCMinutes()).toBe(15); // sanity
     expect(matchesCronExpression('15 0 * * *', date)).toBe(true);
-    expect(matchesCronExpression('45 0 * * *', date)).toBe(false);  // would match IST local min
+    expect(matchesCronExpression('45 0 * * *', date)).toBe(false); // would match IST local min
   });
 
   it('B1: matches UTC month across year boundary', () => {
@@ -229,8 +285,8 @@ describe('matchesCronExpression', () => {
     // In UTC+1 and above, local month=1 (January), dom=1
     const date = new Date('2026-12-31T23:30:00Z');
     expect(date.getUTCMonth()).toBe(11); // JS 0-based → cron 1-based = 12
-    expect(matchesCronExpression('30 23 31 12 *', date)).toBe(true);  // UTC dec 31
-    expect(matchesCronExpression('30 23 1 1 *', date)).toBe(false);   // would match UTC+1 jan 1
+    expect(matchesCronExpression('30 23 31 12 *', date)).toBe(true); // UTC dec 31
+    expect(matchesCronExpression('30 23 1 1 *', date)).toBe(false); // would match UTC+1 jan 1
   });
 });
 
@@ -244,17 +300,17 @@ describe('isValidCronExpression', () => {
   });
 
   it('rejects out-of-range values', () => {
-    expect(isValidCronExpression('61 * * * *')).toBe(false);   // minute > 59
-    expect(isValidCronExpression('* 25 * * *')).toBe(false);   // hour > 23
-    expect(isValidCronExpression('* * 32 * *')).toBe(false);   // dom > 31
-    expect(isValidCronExpression('* * * 13 *')).toBe(false);   // month > 12
-    expect(isValidCronExpression('* * * * 8')).toBe(false);    // dow > 7
-    expect(isValidCronExpression('99 99 * * *')).toBe(false);  // both out of range
+    expect(isValidCronExpression('61 * * * *')).toBe(false); // minute > 59
+    expect(isValidCronExpression('* 25 * * *')).toBe(false); // hour > 23
+    expect(isValidCronExpression('* * 32 * *')).toBe(false); // dom > 31
+    expect(isValidCronExpression('* * * 13 *')).toBe(false); // month > 12
+    expect(isValidCronExpression('* * * * 8')).toBe(false); // dow > 7
+    expect(isValidCronExpression('99 99 * * *')).toBe(false); // both out of range
   });
 
   it('rejects zero step and reversed ranges', () => {
-    expect(isValidCronExpression('*/0 * * * *')).toBe(false);  // step 0
-    expect(isValidCronExpression('5-1 * * * *')).toBe(false);  // reversed range
+    expect(isValidCronExpression('*/0 * * * *')).toBe(false); // step 0
+    expect(isValidCronExpression('5-1 * * * *')).toBe(false); // reversed range
     expect(isValidCronExpression('* 10-1/2 * * *')).toBe(false); // reversed range with step
   });
 });

@@ -2,7 +2,7 @@
  * Tool formatting utilities for Slack bot
  */
 import { McpCallTracker } from '../mcp-call-tracker';
-import { type RenderMode } from './output-flags';
+import type { RenderMode } from './output-flags';
 
 export interface ToolResult {
   toolName?: string;
@@ -63,14 +63,15 @@ export class ToolFormatter {
    */
   static formatEditTool(toolName: string, input: any): string {
     const filePath = input.file_path;
-    const edits = toolName === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
+    const edits =
+      toolName === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
 
     let result = `📝 *Editing \`${filePath}\`*\n`;
 
     for (const edit of edits) {
       result += '\n```diff\n';
-      result += `- ${this.truncateString(edit.old_string, 200)}\n`;
-      result += `+ ${this.truncateString(edit.new_string, 200)}\n`;
+      result += `- ${ToolFormatter.truncateString(edit.old_string, 200)}\n`;
+      result += `+ ${ToolFormatter.truncateString(edit.new_string, 200)}\n`;
       result += '```';
     }
 
@@ -82,7 +83,7 @@ export class ToolFormatter {
    */
   static formatWriteTool(input: any): string {
     const filePath = input.file_path;
-    const preview = this.truncateString(input.content, 300);
+    const preview = ToolFormatter.truncateString(input.content, 300);
 
     return `📄 *Creating \`${filePath}\`*\n\`\`\`\n${preview}\n\`\`\``;
   }
@@ -115,9 +116,7 @@ export class ToolFormatter {
       if (value === undefined || value === null) continue;
 
       if (typeof value === 'string') {
-        const displayValue = value.length > 500
-          ? value.substring(0, 500) + '...'
-          : value;
+        const displayValue = value.length > 500 ? value.substring(0, 500) + '...' : value;
 
         if (displayValue.includes('\n')) {
           lines.push(`*${key}:*\n\`\`\`\n${displayValue}\n\`\`\``);
@@ -127,9 +126,7 @@ export class ToolFormatter {
       } else if (typeof value === 'object') {
         try {
           const jsonStr = JSON.stringify(value, null, 2);
-          const truncated = jsonStr.length > 300
-            ? jsonStr.substring(0, 300) + '...'
-            : jsonStr;
+          const truncated = jsonStr.length > 300 ? jsonStr.substring(0, 300) + '...' : jsonStr;
           lines.push(`*${key}:*\n\`\`\`json\n${truncated}\n\`\`\``);
         } catch {
           lines.push(`*${key}:* [complex object]`);
@@ -154,7 +151,7 @@ export class ToolFormatter {
     let result = `🔌 *MCP: ${serverName} → ${actualToolName}*\n`;
 
     if (input && typeof input === 'object') {
-      const inputStr = this.formatMcpInput(input);
+      const inputStr = ToolFormatter.formatMcpInput(input);
       if (inputStr) {
         result += inputStr;
       }
@@ -182,7 +179,7 @@ export class ToolFormatter {
 
     if (typeof taskInput.subagent_type === 'string' && taskInput.subagent_type.trim()) {
       summary.subagentType = taskInput.subagent_type.trim();
-      const mapped = this.SUBAGENT_DISPLAY_MAP[summary.subagentType];
+      const mapped = ToolFormatter.SUBAGENT_DISPLAY_MAP[summary.subagentType];
       if (mapped) {
         summary.subagentLabel = mapped.label;
         if (!summary.model && mapped.model) {
@@ -192,7 +189,7 @@ export class ToolFormatter {
         const rawLabel = summary.subagentType.includes(':')
           ? summary.subagentType.split(':').pop() || summary.subagentType
           : summary.subagentType;
-        summary.subagentLabel = this.titleCaseSubagent(rawLabel);
+        summary.subagentLabel = ToolFormatter.titleCaseSubagent(rawLabel);
       }
     }
 
@@ -208,9 +205,9 @@ export class ToolFormatter {
       const normalizedPrompt = taskInput.prompt.replace(/\s+/g, ' ').trim();
       summary.promptLength = taskInput.prompt.length;
       if (normalizedPrompt) {
-        summary.promptPreview = this.truncateString(
+        summary.promptPreview = ToolFormatter.truncateString(
           normalizedPrompt,
-          this.TASK_PROMPT_PREVIEW_LENGTH
+          ToolFormatter.TASK_PROMPT_PREVIEW_LENGTH,
         );
       }
     }
@@ -222,16 +219,16 @@ export class ToolFormatter {
    * Format Task tool usage with key inputs for visibility
    */
   static formatTaskTool(input: unknown): string {
-    const summary = this.getTaskToolSummary(input);
+    const summary = ToolFormatter.getTaskToolSummary(input);
     const subagentName = summary.subagentLabel || 'Task';
-    const lines = [`🤖 Using Subagent: *${this.sanitizeInlineValue(subagentName)}*`];
+    const lines = [`🤖 Using Subagent: *${ToolFormatter.sanitizeInlineValue(subagentName)}*`];
 
     if (summary.model) {
-      lines.push(`model: *${this.sanitizeInlineValue(summary.model)}*`);
+      lines.push(`model: *${ToolFormatter.sanitizeInlineValue(summary.model)}*`);
     }
 
     if (summary.promptPreview) {
-      lines.push(`prompt: ${this.sanitizeInlineValue(summary.promptPreview)}`);
+      lines.push(`prompt: ${ToolFormatter.sanitizeInlineValue(summary.promptPreview)}`);
     }
 
     if (summary.promptLength !== undefined) {
@@ -244,14 +241,11 @@ export class ToolFormatter {
   /**
    * Build concise tool_use input summary for debug logging
    */
-  static buildToolUseLogSummary(
-    toolUseId: string,
-    toolName: string,
-    input: unknown
-  ): ToolUseLogSummary {
-    const inputKeys = input && typeof input === 'object' && !Array.isArray(input)
-      ? Object.keys(input as Record<string, unknown>).sort()
-      : [];
+  static buildToolUseLogSummary(toolUseId: string, toolName: string, input: unknown): ToolUseLogSummary {
+    const inputKeys =
+      input && typeof input === 'object' && !Array.isArray(input)
+        ? Object.keys(input as Record<string, unknown>).sort()
+        : [];
 
     const summary: ToolUseLogSummary = {
       toolUseId,
@@ -261,7 +255,7 @@ export class ToolFormatter {
     };
 
     if (toolName === 'Task') {
-      summary.task = this.getTaskToolSummary(input);
+      summary.task = ToolFormatter.getTaskToolSummary(input);
     }
 
     return summary;
@@ -272,10 +266,10 @@ export class ToolFormatter {
    */
   static formatGenericTool(toolName: string, input: any): string {
     if (toolName.startsWith('mcp__')) {
-      return this.formatMcpTool(toolName, input);
+      return ToolFormatter.formatMcpTool(toolName, input);
     }
     if (toolName === 'Task') {
-      return this.formatTaskTool(input);
+      return ToolFormatter.formatTaskTool(input);
     }
     return `🔧 *Using ${toolName}*`;
   }
@@ -285,8 +279,8 @@ export class ToolFormatter {
    */
   static formatToolUse(content: any[], mode: RenderMode = 'detail'): string {
     if (mode === 'hidden') return '';
-    if (mode === 'compact') return this.formatToolUseCompact(content);
-    if (mode === 'verbose') return this.formatToolUseVerbose(content);
+    if (mode === 'compact') return ToolFormatter.formatToolUseCompact(content);
+    if (mode === 'verbose') return ToolFormatter.formatToolUseVerbose(content);
 
     // detail mode — current behavior
     const parts: string[] = [];
@@ -301,23 +295,23 @@ export class ToolFormatter {
         switch (toolName) {
           case 'Edit':
           case 'MultiEdit':
-            parts.push(this.formatEditTool(toolName, input));
+            parts.push(ToolFormatter.formatEditTool(toolName, input));
             break;
           case 'Write':
-            parts.push(this.formatWriteTool(input));
+            parts.push(ToolFormatter.formatWriteTool(input));
             break;
           case 'Read':
-            parts.push(this.formatReadTool(input));
+            parts.push(ToolFormatter.formatReadTool(input));
             break;
           case 'Bash':
-            parts.push(this.formatBashTool(input));
+            parts.push(ToolFormatter.formatBashTool(input));
             break;
           case 'TodoWrite':
             return '';
           case 'mcp__permission-prompt__permission_prompt':
             return '';
           default:
-            parts.push(this.formatGenericTool(toolName, input));
+            parts.push(ToolFormatter.formatGenericTool(toolName, input));
         }
       }
     }
@@ -339,7 +333,7 @@ export class ToolFormatter {
       // Async tools (MCP, Task/Subagent) get ⏳; sync tools get ⚪
       const isAsync = name.startsWith('mcp__') || name === 'Task';
       const icon = isAsync ? '⏳' : '⚪';
-      parts.push(`${icon} ${this.formatOneLineToolUse(name, input)}`);
+      parts.push(`${icon} ${ToolFormatter.formatOneLineToolUse(name, input)}`);
     }
 
     return parts.join('\n');
@@ -347,68 +341,59 @@ export class ToolFormatter {
 
   /** Format a single tool use as one line: `emoji ToolName — context` */
   static formatOneLineToolUse(toolName: string, input: any): string {
-    const emoji = this.getToolEmoji(toolName);
+    const emoji = ToolFormatter.getToolEmoji(toolName);
 
     switch (toolName) {
       case 'Edit':
       case 'MultiEdit':
-        return `${emoji} Edit \`${this.compactPath(input.file_path)}\``;
+        return `${emoji} Edit \`${ToolFormatter.compactPath(input.file_path)}\``;
       case 'Write':
-        return `${emoji} Write \`${this.compactPath(input.file_path)}\``;
+        return `${emoji} Write \`${ToolFormatter.compactPath(input.file_path)}\``;
       case 'Read':
-        return `${emoji} Read \`${this.compactPath(input.file_path)}\``;
+        return `${emoji} Read \`${ToolFormatter.compactPath(input.file_path)}\``;
       case 'Bash':
-        return `${emoji} Bash \`${this.truncateString(String(input.command || ''), 40)}\``;
+        return `${emoji} Bash \`${ToolFormatter.truncateString(String(input.command || ''), 40)}\``;
       case 'Glob':
-        return `${emoji} Glob \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+        return `${emoji} Glob \`${ToolFormatter.truncateString(String(input.pattern || ''), 30)}\``;
       case 'Grep':
-        return `${emoji} Grep \`${this.truncateString(String(input.pattern || ''), 30)}\``;
+        return `${emoji} Grep \`${ToolFormatter.truncateString(String(input.pattern || ''), 30)}\``;
       case 'Task': {
-        const summary = this.getTaskToolSummary(input);
-        return `${emoji} Task: *${summary.subagentLabel || 'Agent'}*${summary.promptPreview ? ' — ' + this.truncateString(summary.promptPreview, 30) : ''}`;
+        const summary = ToolFormatter.getTaskToolSummary(input);
+        return `${emoji} Task: *${summary.subagentLabel || 'Agent'}*${summary.promptPreview ? ' — ' + ToolFormatter.truncateString(summary.promptPreview, 30) : ''}`;
       }
       case 'Skill': {
         const skillName = input?.skill || input?.name || '';
-        return skillName
-          ? `${emoji} Skill: *${skillName}*`
-          : `${emoji} Skill`;
+        return skillName ? `${emoji} Skill: *${skillName}*` : `${emoji} Skill`;
       }
       case 'TaskOutput': {
         const meta = input?._taskMeta;
         if (meta?.subagentLabel || meta?.name) {
           const label = meta.subagentLabel || meta.name;
           return meta.promptPreview
-            ? `${emoji} TaskOutput: *${label}* — ${this.truncateString(meta.promptPreview, 30)}`
+            ? `${emoji} TaskOutput: *${label}* — ${ToolFormatter.truncateString(meta.promptPreview, 30)}`
             : `${emoji} TaskOutput: *${label}*`;
         }
         const taskId = input?.task_id || '';
-        return taskId
-          ? `${emoji} TaskOutput: \`${this.truncateString(taskId, 20)}\``
-          : `${emoji} TaskOutput`;
+        return taskId ? `${emoji} TaskOutput: \`${ToolFormatter.truncateString(taskId, 20)}\`` : `${emoji} TaskOutput`;
       }
       default:
         if (toolName.startsWith('mcp__')) {
           const parts = toolName.split('__');
           const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
-          const params = this.formatCompactParams(input);
+          const params = ToolFormatter.formatCompactParams(input);
           return params ? `${base} ${params}` : base;
         }
         {
-          const params = this.formatCompactParams(input);
+          const params = ToolFormatter.formatCompactParams(input);
           return params ? `${emoji} ${toolName} ${params}` : `${emoji} ${toolName}`;
         }
     }
   }
 
   /** Format a completed tool line with status icon and optional duration */
-  static formatOneLineToolComplete(
-    toolName: string,
-    input: any,
-    isError: boolean,
-    duration?: number | null
-  ): string {
+  static formatOneLineToolComplete(toolName: string, input: any, isError: boolean, duration?: number | null): string {
     const icon = isError ? '🔴' : '🟢';
-    const line = this.formatOneLineToolUse(toolName, input);
+    const line = ToolFormatter.formatOneLineToolUse(toolName, input);
     if (duration !== null && duration !== undefined) {
       return `${icon} ${line} — ${McpCallTracker.formatDuration(duration)}`;
     }
@@ -429,9 +414,7 @@ export class ToolFormatter {
   private static compactPath(filePath: string): string {
     if (!filePath) return '?';
     const parts = filePath.split('/');
-    return parts.length > 2
-      ? `.../${parts.slice(-2).join('/')}`
-      : filePath;
+    return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : filePath;
   }
 
   /**
@@ -479,9 +462,7 @@ export class ToolFormatter {
       const maxValLen = available - c.key.length - 2; // -2 for ": "
       if (maxValLen <= 0) break;
 
-      const truncVal = c.val.length > maxValLen
-        ? c.val.substring(0, maxValLen - 1) + '…'
-        : c.val;
+      const truncVal = c.val.length > maxValLen ? c.val.substring(0, maxValLen - 1) + '…' : c.val;
       display = `${c.key}: ${truncVal}`;
 
       parts.push(display);
@@ -508,30 +489,37 @@ export class ToolFormatter {
         switch (name) {
           case 'Edit':
           case 'MultiEdit': {
-            const edits = name === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
+            const edits =
+              name === 'MultiEdit' ? input.edits : [{ old_string: input.old_string, new_string: input.new_string }];
             let result = `📝 *Editing \`${input.file_path}\`*\n`;
             for (const edit of edits) {
               result += '\n```diff\n';
-              result += `- ${this.truncateString(edit.old_string, this.VERBOSE_TEXT_LIMIT)}\n`;
-              result += `+ ${this.truncateString(edit.new_string, this.VERBOSE_TEXT_LIMIT)}\n`;
+              result += `- ${ToolFormatter.truncateString(edit.old_string, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n`;
+              result += `+ ${ToolFormatter.truncateString(edit.new_string, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n`;
               result += '```';
             }
             parts.push(result);
             break;
           }
           case 'Write':
-            parts.push(`📄 *Creating \`${input.file_path}\`*\n\`\`\`\n${this.truncateString(input.content, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            parts.push(
+              `📄 *Creating \`${input.file_path}\`*\n\`\`\`\n${ToolFormatter.truncateString(input.content, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n\`\`\``,
+            );
             break;
           case 'Bash':
-            parts.push(`🖥️ *Running command:*\n\`\`\`bash\n${this.truncateString(input.command, this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+            parts.push(
+              `🖥️ *Running command:*\n\`\`\`bash\n${ToolFormatter.truncateString(input.command, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n\`\`\``,
+            );
             break;
           default:
             if (name.startsWith('mcp__')) {
-              parts.push(this.formatMcpTool(name, input));
+              parts.push(ToolFormatter.formatMcpTool(name, input));
             } else if (name === 'Task') {
-              parts.push(this.formatTaskTool(input));
+              parts.push(ToolFormatter.formatTaskTool(input));
             } else {
-              parts.push(`🔧 *Using ${name}*\n\`\`\`json\n${this.truncateString(JSON.stringify(input, null, 2), this.VERBOSE_TEXT_LIMIT)}\n\`\`\``);
+              parts.push(
+                `🔧 *Using ${name}*\n\`\`\`json\n${ToolFormatter.truncateString(JSON.stringify(input, null, 2), ToolFormatter.VERBOSE_TEXT_LIMIT)}\n\`\`\``,
+              );
             }
         }
       }
@@ -543,7 +531,7 @@ export class ToolFormatter {
   /** Format a compact completion line for in-place tool message update */
   static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
     const icon = isError ? '🔴' : '🟢';
-    return `${icon} ${this.formatOneLineToolUse(toolName, input)}`;
+    return `${icon} ${ToolFormatter.formatOneLineToolUse(toolName, input)}`;
   }
 
   /**
@@ -592,9 +580,10 @@ export class ToolFormatter {
     if (result) {
       if (typeof result === 'string') {
         const maxLen = toolName === 'Read' ? 500 : 1000;
-        const truncated = result.length > maxLen
-          ? result.substring(0, maxLen) + `\n... (${result.length - maxLen} more chars)`
-          : result;
+        const truncated =
+          result.length > maxLen
+            ? result.substring(0, maxLen) + `\n... (${result.length - maxLen} more chars)`
+            : result;
 
         if (truncated.includes('\n')) {
           formatted += `\`\`\`\n${truncated}\n\`\`\``;
@@ -605,18 +594,17 @@ export class ToolFormatter {
         for (const item of result) {
           if (item.type === 'text' && item.text) {
             const maxLen = toolName === 'Read' ? 500 : 1000;
-            const truncated = item.text.length > maxLen
-              ? item.text.substring(0, maxLen) + `\n... (${item.text.length - maxLen} more chars)`
-              : item.text;
+            const truncated =
+              item.text.length > maxLen
+                ? item.text.substring(0, maxLen) + `\n... (${item.text.length - maxLen} more chars)`
+                : item.text;
             formatted += `\`\`\`\n${truncated}\n\`\`\``;
           }
         }
       } else if (typeof result === 'object') {
         try {
           const jsonStr = JSON.stringify(result, null, 2);
-          const truncated = jsonStr.length > 500
-            ? jsonStr.substring(0, 500) + '...'
-            : jsonStr;
+          const truncated = jsonStr.length > 500 ? jsonStr.substring(0, 500) + '...' : jsonStr;
           formatted += `\`\`\`json\n${truncated}\n\`\`\``;
         } catch {
           formatted += `_[Complex result]_`;
@@ -635,7 +623,7 @@ export class ToolFormatter {
   static formatMcpToolResult(
     toolResult: ToolResult,
     duration?: number | null,
-    mcpCallTracker?: McpCallTracker
+    mcpCallTracker?: McpCallTracker,
   ): string | null {
     const { toolName, result, isError } = toolResult;
 
@@ -665,9 +653,7 @@ export class ToolFormatter {
 
     if (result) {
       if (typeof result === 'string') {
-        const truncated = result.length > 1000
-          ? result.substring(0, 1000) + '...'
-          : result;
+        const truncated = result.length > 1000 ? result.substring(0, 1000) + '...' : result;
 
         if (truncated.includes('\n')) {
           formatted += `\`\`\`\n${truncated}\n\`\`\``;
@@ -677,18 +663,14 @@ export class ToolFormatter {
       } else if (Array.isArray(result)) {
         for (const item of result) {
           if (item.type === 'text' && item.text) {
-            const truncated = item.text.length > 1000
-              ? item.text.substring(0, 1000) + '...'
-              : item.text;
+            const truncated = item.text.length > 1000 ? item.text.substring(0, 1000) + '...' : item.text;
             formatted += `\`\`\`\n${truncated}\n\`\`\``;
           } else if (item.type === 'image') {
             formatted += `_[Image data]_`;
           } else if (typeof item === 'object') {
             try {
               const jsonStr = JSON.stringify(item, null, 2);
-              const truncated = jsonStr.length > 500
-                ? jsonStr.substring(0, 500) + '...'
-                : jsonStr;
+              const truncated = jsonStr.length > 500 ? jsonStr.substring(0, 500) + '...' : jsonStr;
               formatted += `\`\`\`json\n${truncated}\n\`\`\``;
             } catch {
               formatted += `_[Complex result]_`;
@@ -698,9 +680,7 @@ export class ToolFormatter {
       } else if (typeof result === 'object') {
         try {
           const jsonStr = JSON.stringify(result, null, 2);
-          const truncated = jsonStr.length > 500
-            ? jsonStr.substring(0, 500) + '...'
-            : jsonStr;
+          const truncated = jsonStr.length > 500 ? jsonStr.substring(0, 500) + '...' : jsonStr;
           formatted += `\`\`\`json\n${truncated}\n\`\`\``;
         } catch {
           formatted += `_[Complex result]_`;
@@ -719,7 +699,7 @@ export class ToolFormatter {
   static formatToolResult(
     toolResult: ToolResult,
     duration?: number | null,
-    mcpCallTracker?: McpCallTracker
+    mcpCallTracker?: McpCallTracker,
   ): string | null {
     const { toolName } = toolResult;
 
@@ -730,10 +710,10 @@ export class ToolFormatter {
 
     // MCP tools get detailed formatting
     if (toolName?.startsWith('mcp__')) {
-      return this.formatMcpToolResult(toolResult, duration, mcpCallTracker);
+      return ToolFormatter.formatMcpToolResult(toolResult, duration, mcpCallTracker);
     }
 
     // Built-in tools get simpler formatting
-    return this.formatBuiltInToolResult(toolResult);
+    return ToolFormatter.formatBuiltInToolResult(toolResult);
   }
 }

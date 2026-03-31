@@ -6,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { MetricsEventStore } from './event-store';
-import { MetricsEvent, MetricsEventType } from './types';
+import type { MetricsEvent, MetricsEventType } from './types';
 
 const logger = new Logger('MetricsEventEmitter');
 
@@ -89,13 +89,9 @@ export class MetricsEventEmitter {
   }
 
   async emitSessionClosed(session: SessionLike, sessionKey: string): Promise<void> {
-    const event = this.buildEvent(
-      'session_closed',
-      session.ownerId,
-      session.ownerName || 'unknown',
-      sessionKey,
-      { channelId: session.channelId },
-    );
+    const event = this.buildEvent('session_closed', session.ownerId, session.ownerName || 'unknown', sessionKey, {
+      channelId: session.channelId,
+    });
     await this.emit(event);
   }
 
@@ -107,20 +103,23 @@ export class MetricsEventEmitter {
     userName: string | undefined,
     role: 'user' | 'assistant',
   ): Promise<void> {
-    const event = this.buildEvent(
-      'turn_used',
-      userId || 'unknown',
-      userName || 'unknown',
-      undefined,
-      { conversationId, role },
-    );
+    const event = this.buildEvent('turn_used', userId || 'unknown', userName || 'unknown', undefined, {
+      conversationId,
+      role,
+    });
     await this.emit(event);
   }
 
   // === GitHub Events (Scenario 3) ===
 
   async emitGitHubEvent(
-    eventType: 'issue_created' | 'pr_created' | 'pr_merged' | 'commit_created' | 'code_lines_added' | 'merge_lines_added',
+    eventType:
+      | 'issue_created'
+      | 'pr_created'
+      | 'pr_merged'
+      | 'commit_created'
+      | 'code_lines_added'
+      | 'merge_lines_added',
     userId: string,
     userName: string,
     sessionKey: string,

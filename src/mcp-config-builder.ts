@@ -3,17 +3,24 @@
  * Extracted from claude-handler.ts (Phase 5.3)
  */
 
-import { Logger } from './logger';
-import { McpManager } from './mcp-manager';
-import { userSettingsStore } from './user-settings-store';
-import { ModelCommandContext } from './model-commands/types';
-import { CONFIG_FILE } from './env-paths';
-import { normalizeTmpPath, isSafePathSegment } from './path-utils';
-import { isAdminUser } from './admin-utils';
-import { loadMcpToolPermissions, getRequiredLevel, levelSatisfies, getPermissionGatedServers, type McpToolPermissionConfig, type PermissionLevel } from './mcp-tool-permission-config';
-import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isAdminUser } from './admin-utils';
+import { CONFIG_FILE } from './env-paths';
+import { Logger } from './logger';
+import type { McpManager } from './mcp-manager';
+import { mcpToolGrantStore } from './mcp-tool-grant-store';
+import {
+  getPermissionGatedServers,
+  getRequiredLevel,
+  levelSatisfies,
+  loadMcpToolPermissions,
+  type McpToolPermissionConfig,
+  type PermissionLevel,
+} from './mcp-tool-permission-config';
+import type { ModelCommandContext } from './model-commands/types';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
+import { userSettingsStore } from './user-settings-store';
 
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
@@ -48,7 +55,7 @@ export function resolveInternalMcpServer(
   baseDir: string,
   basename: string,
   runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync
+  existsSync: (path: string) => boolean = fs.existsSync,
 ): PermissionServerPathResult {
   const basePath = path.join(baseDir, basename);
   const preferredPath = `${basePath}${runtimeExt}`;
@@ -70,7 +77,7 @@ export function resolveInternalMcpServer(
 export function resolvePermissionServerPath(
   baseDir: string,
   runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync
+  existsSync: (path: string) => boolean = fs.existsSync,
 ): PermissionServerPathResult {
   return resolveInternalMcpServer(baseDir, PERMISSION_SERVER_BASENAME, runtimeExt, existsSync);
 }
@@ -78,7 +85,7 @@ export function resolvePermissionServerPath(
 export function resolveModelCommandServerPath(
   baseDir: string,
   runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync
+  existsSync: (path: string) => boolean = fs.existsSync,
 ): PermissionServerPathResult {
   return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
 }
@@ -149,20 +156,16 @@ export class McpConfigBuilder {
   /**
    * Build MCP configuration for a query
    */
-  async buildConfig(
-    slackContext?: SlackContext,
-    modelCommandContext?: ModelCommandContext
-  ): Promise<McpConfig> {
+  async buildConfig(slackContext?: SlackContext, modelCommandContext?: ModelCommandContext): Promise<McpConfig> {
     // Check if user has bypass permission enabled
-    const userBypass = slackContext?.user
-      ? userSettingsStore.getUserBypassPermission(slackContext.user)
-      : false;
+    const userBypass = slackContext?.user ? userSettingsStore.getUserBypassPermission(slackContext.user) : false;
 
     // Without Slack context or bypass ON: bypass permissions
     // Bypass ON still gets permission-prompt server for dangerous command interception via PreToolUse hook
-    const config: McpConfig = !slackContext || userBypass
-      ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
-      : { permissionMode: 'default', userBypass };
+    const config: McpConfig =
+      !slackContext || userBypass
+        ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
+        : { permissionMode: 'default', userBypass };
 
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
@@ -177,10 +180,7 @@ export class McpConfigBuilder {
     }
 
     if (slackContext) {
-      internalServers['model-command'] = this.buildModelCommandServer(
-        slackContext,
-        modelCommandContext
-      );
+      internalServers['model-command'] = this.buildModelCommandServer(slackContext, modelCommandContext);
     }
 
     // Add slack-mcp server only for mid-thread mentions (mentionTs !== threadTs)
@@ -234,7 +234,9 @@ export class McpConfigBuilder {
       const userId = slackContext.user;
       // Defense-in-depth: validate userId has no path traversal characters
       if (!isSafePathSegment(userId)) {
-        this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', { userId });
+        this.logger.warn('slackContext.user contains path traversal characters, skipping filesystem restriction', {
+          userId,
+        });
       } else {
         const userTmpDir = normalizeTmpPath(path.join('/tmp', userId));
         const fsConfig = config.mcpServers.filesystem as { args?: string[] };
@@ -310,7 +312,7 @@ export class McpConfigBuilder {
    */
   private buildModelCommandServer(
     slackContext: SlackContext,
-    modelCommandContext?: ModelCommandContext
+    modelCommandContext?: ModelCommandContext,
   ): Record<string, any> {
     const modelCommandServerPath = this.getModelCommandServerPath();
     const context: ModelCommandContext = modelCommandContext || {
@@ -357,7 +359,7 @@ export class McpConfigBuilder {
     label: string,
     basename: string,
     serverDir: string,
-    cache: { path: string | null; checked: boolean; triedPaths: string[] }
+    cache: { path: string | null; checked: boolean; triedPaths: string[] },
   ): string {
     if (!cache.checked) {
       const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
@@ -398,7 +400,12 @@ export class McpConfigBuilder {
     if (!this.serverPathRegistry.has(basename)) {
       this.serverPathRegistry.set(basename, { path: null, checked: false, triedPaths: [] });
     }
-    return this.resolveServerPath(label, basename, path.join(MCP_SERVERS_DIR, subdir), this.serverPathRegistry.get(basename)!);
+    return this.resolveServerPath(
+      label,
+      basename,
+      path.join(MCP_SERVERS_DIR, subdir),
+      this.serverPathRegistry.get(basename)!,
+    );
   }
 
   private getPermissionServerPath(): string {
@@ -647,7 +654,10 @@ export class McpConfigBuilder {
   private rawConfigCache: Record<string, any> | null | undefined = undefined;
   private getRawConfig(): Record<string, any> | null {
     if (this.rawConfigCache === undefined) {
-      if (!CONFIG_FILE) { this.rawConfigCache = null; return null; }
+      if (!CONFIG_FILE) {
+        this.rawConfigCache = null;
+        return null;
+      }
       try {
         this.rawConfigCache = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
       } catch {
@@ -662,7 +672,7 @@ export class McpConfigBuilder {
     if (!raw) return false;
     const serverTools = raw['server-tools'];
     if (!serverTools || typeof serverTools !== 'object') return false;
-    const serverKeys = Object.keys(serverTools).filter(k => k !== 'permission');
+    const serverKeys = Object.keys(serverTools).filter((k) => k !== 'permission');
     return serverKeys.length > 0;
   }
 

@@ -58,7 +58,7 @@ function isNonEmptyDirectory(dirPath: string): boolean {
     return false;
   }
 
-  const entries = fs.readdirSync(dirPath).filter(entry => entry !== '.DS_Store');
+  const entries = fs.readdirSync(dirPath).filter((entry) => entry !== '.DS_Store');
   return entries.length > 0;
 }
 
@@ -82,7 +82,7 @@ function assertTargetParentWritable(targetDir: string): void {
   } catch {
     throw new Error(
       `Target parent directory is not writable: ${parentDir}. ` +
-      `Pre-create ${targetDir} and chown it to the runner user.`
+        `Pre-create ${targetDir} and chown it to the runner user.`,
     );
   }
 }

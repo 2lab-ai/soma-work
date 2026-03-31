@@ -1,12 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { migrateLegacyTheme } from './user-settings-store';
-
 // resolveThemeInput is an instance method on UserSettingsStore.
 // We can instantiate a throwaway store pointed at a temp dir to test it.
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { UserSettingsStore } from './user-settings-store';
+import { describe, expect, it } from 'vitest';
+import { migrateLegacyTheme, UserSettingsStore } from './user-settings-store';
 
 function makeStore(): UserSettingsStore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-test-'));

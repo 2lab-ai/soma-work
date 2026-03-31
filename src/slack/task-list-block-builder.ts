@@ -1,4 +1,4 @@
-import { Todo, TodoManager } from '../todo-manager';
+import type { Todo, TodoManager } from '../todo-manager';
 
 /** Slack section text limit is 3000 chars; leave margin for mrkdwn overhead */
 const MAX_SECTION_TEXT_LENGTH = 2800;
@@ -16,11 +16,11 @@ function escapeMrkdwn(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\*/g, '∗')   // fullwidth asterisk
-    .replace(/~/g, '∼')    // tilde operator
-    .replace(/_/g, 'ˍ')    // modifier letter low macron
-    .replace(/`/g, 'ʼ')    // modifier letter apostrophe
-    .replace(/\n/g, ' ');   // flatten newlines
+    .replace(/\*/g, '∗') // fullwidth asterisk
+    .replace(/~/g, '∼') // tilde operator
+    .replace(/_/g, 'ˍ') // modifier letter low macron
+    .replace(/`/g, 'ʼ') // modifier letter apostrophe
+    .replace(/\n/g, ' '); // flatten newlines
 }
 
 /**
@@ -64,7 +64,7 @@ export class TaskListBlockBuilder {
     }
 
     // ── Title + progress bar ──
-    const completed = todos.filter(t => t.status === 'completed').length;
+    const completed = todos.filter((t) => t.status === 'completed').length;
     const total = todos.length;
     const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
     const progressBar = this.renderProgressBar(pct);
@@ -81,9 +81,10 @@ export class TaskListBlockBuilder {
     // ── Task items ──
     const taskLines = this.buildTaskLines(todos);
     // Guard against Slack's 3000-char section text limit
-    const truncatedLines = taskLines.length > MAX_SECTION_TEXT_LENGTH
-      ? taskLines.slice(0, MAX_SECTION_TEXT_LENGTH - 20) + '\n_…truncated_'
-      : taskLines;
+    const truncatedLines =
+      taskLines.length > MAX_SECTION_TEXT_LENGTH
+        ? taskLines.slice(0, MAX_SECTION_TEXT_LENGTH - 20) + '\n_…truncated_'
+        : taskLines;
 
     blocks.push({
       type: 'section',
@@ -148,8 +149,8 @@ export class TaskListBlockBuilder {
 
   private buildBlockedLine(todo: Todo, num: number, allTodos: Todo[], content: string): string {
     const depLabels = (todo.dependencies || [])
-      .map(depId => {
-        const idx = allTodos.findIndex(t => t.id === depId);
+      .map((depId) => {
+        const idx = allTodos.findIndex((t) => t.id === depId);
         return idx >= 0 ? `#${idx + 1}` : `#${depId}`;
       })
       .join(',');
@@ -165,8 +166,8 @@ export class TaskListBlockBuilder {
     if (todo.status !== 'in_progress') return false;
     // Explicit dependencies: all completed → show arrow
     if (todo.dependencies && todo.dependencies.length > 0) {
-      return todo.dependencies.every(depId => {
-        const dep = allTodos.find(t => t.id === depId);
+      return todo.dependencies.every((depId) => {
+        const dep = allTodos.find((t) => t.id === depId);
         return dep?.status === 'completed';
       });
     }
@@ -200,15 +201,11 @@ export class TaskListBlockBuilder {
   // Time & footer text
   // ---------------------------------------------------------------------------
 
-  private buildTimeText(
-    startedAt?: number,
-    completedAt?: number,
-    todos?: Todo[],
-  ): string | null {
+  private buildTimeText(startedAt?: number, completedAt?: number, todos?: Todo[]): string | null {
     if (!startedAt) return null;
 
     const startStr = this.formatTime(startedAt);
-    const allDone = todos?.every(t => t.status === 'completed');
+    const allDone = todos?.every((t) => t.status === 'completed');
 
     if (allDone && completedAt) {
       return `:clock1: Start: ${startStr} — Finished: ${this.formatTime(completedAt)}`;
@@ -225,9 +222,8 @@ export class TaskListBlockBuilder {
     options?: { startedAt?: number; completedAt?: number },
   ): string {
     if (pct === 100) {
-      const elapsed = (options?.startedAt && options?.completedAt)
-        ? this.formatDuration(options.completedAt - options.startedAt)
-        : '';
+      const elapsed =
+        options?.startedAt && options?.completedAt ? this.formatDuration(options.completedAt - options.startedAt) : '';
       return `:white_check_mark: *All ${total} tasks completed*${elapsed ? ` in ${elapsed}` : ''}`;
     }
 

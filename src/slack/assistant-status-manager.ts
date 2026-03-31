@@ -1,5 +1,5 @@
 import { Logger } from '../logger';
-import { SlackApiHelper } from './slack-api-helper';
+import type { SlackApiHelper } from './slack-api-helper';
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 

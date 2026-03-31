@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from './slack-handler';
 
 describe('SlackHandler', () => {
@@ -107,10 +107,12 @@ describe('SlackHandler', () => {
     await handler.handleMessage(event as any, say);
 
     expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-      channel: 'C123',
-      threadTs: '222.333',
-    }));
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C123',
+        threadTs: '222.333',
+      }),
+    );
   });
 
   it('clears waiting choice panel when user sends direct text input', async () => {
@@ -223,7 +225,8 @@ describe('SlackHandler', () => {
       runDispatch: vi.fn().mockResolvedValue(undefined),
     };
     handlerAny.streamExecutor = {
-      execute: vi.fn()
+      execute: vi
+        .fn()
         .mockResolvedValueOnce({
           success: true,
           messageCount: 1,
@@ -253,7 +256,7 @@ describe('SlackHandler', () => {
       'C123',
       '111.222',
       'https://github.com/acme/repo/pull/1',
-      'pr-review'
+      'pr-review',
     );
   });
 
@@ -354,7 +357,7 @@ describe('SlackHandler', () => {
     expect(posted.blocks).toBeDefined();
     const actions = posted.blocks.find((b: any) => b.type === 'actions');
     expect(actions.elements.map((e: any) => e.action_id)).toEqual(
-      expect.arrayContaining(['managed_message_delete_cancel', 'managed_message_delete_confirm'])
+      expect.arrayContaining(['managed_message_delete_cancel', 'managed_message_delete_confirm']),
     );
     expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
     expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();

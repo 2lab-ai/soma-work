@@ -1,9 +1,9 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  parseGitCommitResult,
+  interceptToolResults,
   parseGhPrCreateResult,
   parseGhPrMergeResult,
-  interceptToolResults,
+  parseGitCommitResult,
 } from './tool-result-interceptor';
 
 // Contract tests — Scenario 3 (extended): ToolResultInterceptor
@@ -22,6 +22,7 @@ vi.mock('./event-emitter', () => {
 
 // Access mock for assertions
 import { getMetricsEmitter } from './event-emitter';
+
 const mockEmitter = getMetricsEmitter() as any;
 
 describe('ToolResultInterceptor', () => {
@@ -98,12 +99,14 @@ Done!`;
 
   describe('interceptToolResults', () => {
     it('emits commit_created and code_lines_added on git commit', () => {
-      const toolResults = [{
-        toolName: 'Bash',
-        toolUseId: 'tu-1',
-        result: `[main abc1234] feat: add feature
+      const toolResults = [
+        {
+          toolName: 'Bash',
+          toolUseId: 'tu-1',
+          result: `[main abc1234] feat: add feature
  3 files changed, 100 insertions(+), 20 deletions(-)`,
-      }];
+        },
+      ];
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
 
@@ -111,57 +114,68 @@ Done!`;
       // First call: commit_created
       expect(mockEmitter.emitGitHubEvent.mock.calls[0][0]).toBe('commit_created');
       expect(mockEmitter.emitGitHubEvent.mock.calls[0][4]).toEqual(
-        expect.objectContaining({ commitSha: 'abc1234', linesAdded: 100, linesDeleted: 20 })
+        expect.objectContaining({ commitSha: 'abc1234', linesAdded: 100, linesDeleted: 20 }),
       );
       // Second call: code_lines_added
       expect(mockEmitter.emitGitHubEvent.mock.calls[1][0]).toBe('code_lines_added');
     });
 
     it('emits pr_merged on gh pr merge output', () => {
-      const toolResults = [{
-        toolName: 'Bash',
-        toolUseId: 'tu-2',
-        result: '✓ Merged pull request #82 (feat: daily report)',
-      }];
+      const toolResults = [
+        {
+          toolName: 'Bash',
+          toolUseId: 'tu-2',
+          result: '✓ Merged pull request #82 (feat: daily report)',
+        },
+      ];
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
 
       expect(mockEmitter.emitGitHubEvent).toHaveBeenCalledWith(
-        'pr_merged', 'U123', 'TestUser', 'session-key',
-        expect.objectContaining({ prNumber: 82 })
+        'pr_merged',
+        'U123',
+        'TestUser',
+        'session-key',
+        expect.objectContaining({ prNumber: 82 }),
       );
     });
 
     it('skips non-Bash tool results', () => {
-      const toolResults = [{
-        toolName: 'Read',
-        toolUseId: 'tu-3',
-        result: '[main abc1234] some content',
-      }];
+      const toolResults = [
+        {
+          toolName: 'Read',
+          toolUseId: 'tu-3',
+          result: '[main abc1234] some content',
+        },
+      ];
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
       expect(mockEmitter.emitGitHubEvent).not.toHaveBeenCalled();
     });
 
     it('skips errored tool results', () => {
-      const toolResults = [{
-        toolName: 'Bash',
-        toolUseId: 'tu-4',
-        result: '[main abc1234] commit msg',
-        isError: true,
-      }];
+      const toolResults = [
+        {
+          toolName: 'Bash',
+          toolUseId: 'tu-4',
+          result: '[main abc1234] commit msg',
+          isError: true,
+        },
+      ];
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
       expect(mockEmitter.emitGitHubEvent).not.toHaveBeenCalled();
     });
 
     it('does not emit code_lines_added when linesAdded is 0', () => {
-      const toolResults = [{
-        toolName: 'Bash',
-        toolUseId: 'tu-5',
-        result: `[main abc1234] empty commit
+      const toolResults = [
+        {
+          toolName: 'Bash',
+          toolUseId: 'tu-5',
+          result: `[main abc1234] empty commit
  0 files changed`,
-      }];
+        },
+      ];
 
       interceptToolResults(toolResults, 'U123', 'TestUser', 'session-key');
       // Only commit_created, no code_lines_added

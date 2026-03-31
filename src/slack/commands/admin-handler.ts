@@ -1,16 +1,16 @@
 import fs from 'fs';
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
 import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
-import { userSettingsStore } from '../../user-settings-store';
 import { ENV_FILE } from '../../env-paths';
 import { tokenManager } from '../../token-manager';
+import { userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 const SENSITIVE_PATTERNS = /TOKEN|SECRET|KEY|PASSWORD|PRIVATE/i;
 
 const CACHE_RESET_MAP: Partial<Record<string, () => void>> = {
-  'ADMIN_USERS': () => resetAdminUsersCache(),
-  'CLAUDE_CODE_OAUTH_TOKEN_LIST': () => tokenManager.initialize(),
+  ADMIN_USERS: () => resetAdminUsersCache(),
+  CLAUDE_CODE_OAUTH_TOKEN_LIST: () => tokenManager.initialize(),
 };
 
 function maskSecret(value: string): string {
@@ -36,7 +36,10 @@ export class AdminHandler implements CommandHandler {
 
     const action = CommandParser.parseAdminCommand(text);
     if (!action) {
-      await say({ text: 'Usage: `accept @user` | `deny @user` | `users` | `config show` | `config KEY=VALUE`', thread_ts: threadTs });
+      await say({
+        text: 'Usage: `accept @user` | `deny @user` | `users` | `config show` | `config KEY=VALUE`',
+        thread_ts: threadTs,
+      });
       return { handled: true };
     }
 
@@ -79,8 +82,8 @@ export class AdminHandler implements CommandHandler {
       return { handled: true };
     }
 
-    const accepted = allUsers.filter(u => u.accepted);
-    const pending = allUsers.filter(u => !u.accepted);
+    const accepted = allUsers.filter((u) => u.accepted);
+    const pending = allUsers.filter((u) => !u.accepted);
 
     const lines: string[] = [`👥 *Users* (${allUsers.length} total)\n`];
 
@@ -116,8 +119,8 @@ export class AdminHandler implements CommandHandler {
 
     const entries = content
       .split('\n')
-      .filter(line => line.trim() && !line.trim().startsWith('#'))
-      .map(line => {
+      .filter((line) => line.trim() && !line.trim().startsWith('#'))
+      .map((line) => {
         const eqIdx = line.indexOf('=');
         if (eqIdx === -1) return line;
         const key = line.slice(0, eqIdx);

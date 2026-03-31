@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mocks MUST be hoisted - define factories inline
 vi.mock('../../user-settings-store', () => ({
@@ -32,7 +32,12 @@ vi.mock('../../user-settings-store', () => ({
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'],
+  AVAILABLE_MODELS: [
+    'claude-opus-4-6',
+    'claude-sonnet-4-5-20250929',
+    'claude-opus-4-5-20251101',
+    'claude-haiku-4-5-20251001',
+  ],
   DEFAULT_MODEL: 'claude-opus-4-6',
 }));
 
@@ -59,9 +64,9 @@ vi.mock('../../dispatch-service', () => ({
   }),
 }));
 
+import { userSettingsStore } from '../../user-settings-store';
 // Import after mocks
 import { SessionInitializer } from './session-initializer';
-import { userSettingsStore } from '../../user-settings-store';
 
 describe('SessionInitializer - Onboarding Detection', () => {
   let sessionInitializer: SessionInitializer;
@@ -334,19 +339,9 @@ describe('SessionInitializer - Onboarding Detection', () => {
         text: '/onboarding',
       };
 
-      await sessionInitializer.initialize(
-        event as any,
-        '/test/dir',
-        '온보딩을 시작해줘.',
-        'onboarding'
-      );
+      await sessionInitializer.initialize(event as any, '/test/dir', '온보딩을 시작해줘.', 'onboarding');
 
-      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
-        'C123',
-        'thread123',
-        'onboarding',
-        'Onboarding'
-      );
+      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C123', 'thread123', 'onboarding', 'Onboarding');
       expect(capturedSession.isOnboarding).toBe(true);
     });
   });
@@ -375,13 +370,12 @@ describe('SessionInitializer - Onboarding Detection', () => {
 
       const result = await sessionInitializer.initialize(event as any, '/test/dir');
 
-      const headerCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
-        Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments)
+      const headerCall = mockSlackApi.postMessage.mock.calls.find(
+        (call: any[]) => Array.isArray(call[2]?.blocks) && !Array.isArray(call[2]?.attachments),
       );
       expect(headerCall).toBeDefined();
-      const migratedContextCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) =>
-        call[2]?.threadTs === 'msg123' &&
-        String(call[1] || '').includes('View conversation history')
+      const migratedContextCall = mockSlackApi.postMessage.mock.calls.find(
+        (call: any[]) => call[2]?.threadTs === 'msg123' && String(call[1] || '').includes('View conversation history'),
       );
       expect(migratedContextCall).toBeDefined();
       expect(String(migratedContextCall?.[1] || '')).toContain('이전 스레드');

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantStatusManager } from './assistant-status-manager';
-import { SlackApiHelper } from './slack-api-helper';
+import type { SlackApiHelper } from './slack-api-helper';
 
 const createMockSlackApi = () => ({
   setAssistantStatus: vi.fn().mockResolvedValue(undefined),
@@ -67,11 +67,7 @@ describe('AssistantStatusManager — Heartbeat', () => {
     await manager.setStatus('C123', '123.456', 'is reading files...');
 
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith(
-      'C123',
-      '123.456',
-      'is reading files...'
-    );
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'is reading files...');
   });
 
   // ─── Scenario 3: Clear Status Stops Heartbeat ───
@@ -118,7 +114,7 @@ describe('AssistantStatusManager — Heartbeat', () => {
 
     // Make next API call fail (heartbeat tick)
     mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-      Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } })
+      Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
     );
 
     await vi.advanceTimersByTimeAsync(20_000);

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { ConversationSession } from '../types';
 import { ThreadPanel } from './thread-panel';
-import { ConversationSession } from '../types';
 
 function getPostedBlocks(slackApi: { postMessage: ReturnType<typeof vi.fn> }): any[] {
   return (slackApi.postMessage.mock.calls[0]?.[2] as any)?.blocks || [];
@@ -56,9 +56,10 @@ describe('ThreadPanel', () => {
 
     const blocks = getPostedBlocks(slackApi);
     // Status section block
-    const statusSection = blocks.find((block: any) =>
-      block.type === 'section'
-        && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || ''))
+    const statusSection = blocks.find(
+      (block: any) =>
+        block.type === 'section' &&
+        /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || '')),
     );
     expect(statusSection).toBeDefined();
 
@@ -112,9 +113,10 @@ describe('ThreadPanel', () => {
     await panel.updatePanel(session, 'C123:thread123');
 
     const updateBlocks = (slackApi.updateMessage.mock.calls[1]?.[3] as any[]) || [];
-    const statusSection = updateBlocks.find((block: any) =>
-      block.type === 'section'
-        && /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || ''))
+    const statusSection = updateBlocks.find(
+      (block: any) =>
+        block.type === 'section' &&
+        /(대기|작업 중|입력 대기|사용 가능|요청 처리 중)/.test(String(block.text?.text || '')),
     );
     const statusText = String(statusSection?.text?.text || '');
     expect(statusText).toContain('🟢 *작업 중*');
@@ -169,9 +171,7 @@ describe('ThreadPanel', () => {
     await panel.create(session, 'C123:context-thread');
 
     const blocks = getPostedBlocks(slackApi);
-    const fieldsSection = blocks.find((block: any) =>
-      block.type === 'section' && Array.isArray(block.fields)
-    );
+    const fieldsSection = blocks.find((block: any) => block.type === 'section' && Array.isArray(block.fields));
     const fieldsText = fieldsSection?.fields?.map((f: any) => String(f.text || '')).join(' ') || '';
     // Context % is now in thread header badge, not in action panel
     expect(fieldsText).not.toContain('컨텍스트');
@@ -273,8 +273,8 @@ describe('ThreadPanel', () => {
     expect(slackApi.getPermalink).toHaveBeenCalledTimes(1);
     // Choice blocks are restored in the panel (without message preview)
     const blocks = getPostedBlocks(slackApi);
-    const mirroredActionBlock = blocks.find((block: any) =>
-      block.type === 'actions' && block.elements?.some((el: any) => el.action_id === 'user_choice_1')
+    const mirroredActionBlock = blocks.find(
+      (block: any) => block.type === 'actions' && block.elements?.some((el: any) => el.action_id === 'user_choice_1'),
     );
     expect(mirroredActionBlock).toBeDefined();
   });
@@ -316,21 +316,18 @@ describe('ThreadPanel', () => {
       todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
     });
 
-    await panel.attachChoice(
-      'C123:thread',
-      {
-        attachments: [
-          {
-            blocks: [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: '❓ *질문*' },
-              },
-            ],
-          },
-        ],
-      }
-    );
+    await panel.attachChoice('C123:thread', {
+      attachments: [
+        {
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: '❓ *질문*' },
+            },
+          ],
+        },
+      ],
+    });
 
     expect(session.actionPanel?.choiceMessageTs).toBe('thread-choice-ts');
   });

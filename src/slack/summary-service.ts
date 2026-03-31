@@ -42,7 +42,13 @@ export interface SummarySessionInfo {
  * @param cwd - Working directory for the forked session
  * @returns The LLM's response text, or null on failure
  */
-export type ForkExecutor = (prompt: string, model?: string, sessionId?: string, cwd?: string, abortSignal?: AbortSignal) => Promise<string | null>;
+export type ForkExecutor = (
+  prompt: string,
+  model?: string,
+  sessionId?: string,
+  cwd?: string,
+  abortSignal?: AbortSignal,
+) => Promise<string | null>;
 
 /**
  * Handles executive summary generation and display.
@@ -70,15 +76,17 @@ export class SummaryService {
   buildPrompt(session: SummarySessionInfo): string {
     const contextParts: string[] = [];
     if (session.links?.issue) {
-      contextParts.push(`Active Issue: ${session.links.issue.url} (${session.links.issue.title || session.links.issue.label || 'untitled'})`);
+      contextParts.push(
+        `Active Issue: ${session.links.issue.url} (${session.links.issue.title || session.links.issue.label || 'untitled'})`,
+      );
     }
     if (session.links?.pr) {
-      contextParts.push(`Active PR: ${session.links.pr.url} (${session.links.pr.title || session.links.pr.label || 'untitled'})`);
+      contextParts.push(
+        `Active PR: ${session.links.pr.url} (${session.links.pr.title || session.links.pr.label || 'untitled'})`,
+      );
     }
 
-    return contextParts.length > 0
-      ? `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}`
-      : SUMMARY_PROMPT;
+    return contextParts.length > 0 ? `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}` : SUMMARY_PROMPT;
   }
 
   /**
@@ -108,7 +116,13 @@ export class SummaryService {
     const fullPrompt = this.buildPrompt(session);
 
     try {
-      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, session.workingDirectory, abortSignal);
+      const response = await this.forkExecutor(
+        fullPrompt,
+        session.model,
+        session.sessionId,
+        session.workingDirectory,
+        abortSignal,
+      );
 
       // Check abort after await — the fork may have completed but user already sent new input
       if (abortSignal?.aborted) {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // Trace: Ghost Session Fix, Scenario 3 — session.terminated Flag (P2)
 // These tests verify that terminateSession sets a terminated flag on the session object

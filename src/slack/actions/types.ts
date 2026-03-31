@@ -1,11 +1,11 @@
-import { SlackApiHelper } from '../slack-api-helper';
-import { SessionUiManager } from '../session-manager';
-import { ReactionManager } from '../reaction-manager';
-import { ThreadPanel } from '../thread-panel';
-import { RequestCoordinator } from '../request-coordinator';
-import { CompletionMessageTracker } from '../completion-message-tracker';
-import { ClaudeHandler } from '../../claude-handler';
-import { UserChoiceQuestion } from '../../types';
+import type { ClaudeHandler } from '../../claude-handler';
+import type { UserChoiceQuestion } from '../../types';
+import type { CompletionMessageTracker } from '../completion-message-tracker';
+import type { ReactionManager } from '../reaction-manager';
+import type { RequestCoordinator } from '../request-coordinator';
+import type { SessionUiManager } from '../session-manager';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { ThreadPanel } from '../thread-panel';
 
 export interface MessageEvent {
   user: string;

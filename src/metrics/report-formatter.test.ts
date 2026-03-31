@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ReportFormatter } from './report-formatter';
-import { DailyReport, WeeklyReport, AggregatedMetrics, UserRanking } from './types';
+import type { AggregatedMetrics, DailyReport, UserRanking, WeeklyReport } from './types';
 
 // Contract tests — Scenario 5: ReportFormatter + Publisher
 // Trace: docs/daily-weekly-report/trace.md
@@ -91,9 +91,17 @@ describe('ReportFormatter', () => {
   // Trace: Scenario 5, Section 3a — all zeros still renders blocks
   it('daily_allZeros_stillRendersBlocks', () => {
     const zeroMetrics = makeMetrics({
-      sessionsCreated: 0, sessionsSlept: 0, sessionsClosed: 0,
-      issuesCreated: 0, prsCreated: 0, commitsCreated: 0,
-      codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0, mergeLinesAdded: 0, turnsUsed: 0,
+      sessionsCreated: 0,
+      sessionsSlept: 0,
+      sessionsClosed: 0,
+      issuesCreated: 0,
+      prsCreated: 0,
+      commitsCreated: 0,
+      codeLinesAdded: 0,
+      codeLinesDeleted: 0,
+      prsMerged: 0,
+      mergeLinesAdded: 0,
+      turnsUsed: 0,
     });
     const result = formatter.formatDaily(makeDailyReport({ metrics: zeroMetrics }));
 
@@ -142,7 +150,8 @@ describe('ReportFormatter', () => {
     expect(result.text).toContain('150');
 
     // Should contain day-of-week
-    const headerText = result.blocks[0].text.text;
+    const firstBlock = result.blocks[0];
+    const headerText = firstBlock && 'text' in firstBlock && firstBlock.text ? firstBlock.text.text : '';
     expect(headerText).toMatch(/\([월화수목금토일]\)/);
   });
 
@@ -192,7 +201,7 @@ describe('ReportFormatter', () => {
     });
 
     expect(result.blocks).toBeDefined();
-    expect(result.blocks.length).toBeGreaterThan(10);
+    expect(result.blocks.length).toBeGreaterThanOrEqual(8); // v5: min ~8 blocks
     expect(result.blocks.length).toBeLessThanOrEqual(50); // Block Kit limit
     expect(result.blocks[0].type).toBe('header');
     expect(result.text).toContain('847');
@@ -202,11 +211,9 @@ describe('ReportFormatter', () => {
     expect(allText).toContain('TopUser');
     expect(allText).toContain('SecondUser');
 
-    // Should contain achievements
-    expect(allText).toContain('풀 스트릭');
-
-    // Should contain fun facts
-    expect(allText).toContain('피크');
+    // v5: achievements/funFacts suppressed (Bauhaus: no decorative content)
+    // Instead verify grade in header and narrative section exist
+    expect(allText).toContain('· 주간 리포트');
 
     // Should contain trend indicators (Bauhaus: ↑/↓ arrows)
     expect(allText).toContain('↑');
@@ -248,21 +255,39 @@ describe('ReportFormatter', () => {
     const result = formatter.formatEnrichedWeekly({
       ...makeWeeklyReport(),
       derived: {
-        productivityScore: 50, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
-        avgTurnsPerSession: 0, sessionCompletionRate: 0,
-        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+        productivityScore: 50,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
       },
       trend: {
-        sessionsCreatedDelta: 100, turnsUsedDelta: 100, prsCreatedDelta: 100,
-        commitsCreatedDelta: 100, codeLinesAddedDelta: 100, prsMergedDelta: 100,
-        productivityScoreDelta: 100, baselineZero: true,
+        sessionsCreatedDelta: 100,
+        turnsUsedDelta: 100,
+        prsCreatedDelta: 100,
+        commitsCreatedDelta: 100,
+        codeLinesAddedDelta: 100,
+        prsMergedDelta: 100,
+        productivityScoreDelta: 100,
+        baselineZero: true,
       },
       dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
-        date: `2026-03-${23 + i}`, dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
-        totalEvents: 10, metrics: makeMetrics(),
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 10,
+        metrics: makeMetrics(),
       })),
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 1 })),
-      peakHour: 14, activeDays: 7, achievements: [], funFacts: [],
+      peakHour: 14,
+      activeDays: 7,
+      achievements: [],
+      funFacts: [],
     });
 
     const allText = JSON.stringify(result.blocks);
@@ -278,12 +303,25 @@ describe('ReportFormatter', () => {
         rankings: [{ userId: 'U1', userName: 'SoloUser', metrics: makeMetrics(), rank: 1 }],
       }),
       derived: {
-        productivityScore: 100, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
-        avgTurnsPerSession: 0, sessionCompletionRate: 0,
-        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+        productivityScore: 100,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
       },
-      trend: null, dailyBreakdown: [], hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
-      peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+      trend: null,
+      dailyBreakdown: [],
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+      peakHour: null,
+      activeDays: 0,
+      achievements: [],
+      funFacts: [],
     });
 
     const allText = JSON.stringify(result.blocks);
@@ -295,17 +333,42 @@ describe('ReportFormatter', () => {
     const result = formatter.formatEnrichedWeekly({
       ...makeWeeklyReport(),
       derived: {
-        productivityScore: 100, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
-        avgTurnsPerSession: 0, sessionCompletionRate: 0,
-        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+        productivityScore: 100,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
       },
       trend: null,
       dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
-        date: `2026-03-${23 + i}`, dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
-        totalEvents: 0, metrics: makeMetrics({ sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, commitsCreated: 0, codeLinesAdded: 0, codeLinesDeleted: 0, prsMerged: 0, mergeLinesAdded: 0, issuesCreated: 0, sessionsSlept: 0, sessionsClosed: 0 }),
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 0,
+        metrics: makeMetrics({
+          sessionsCreated: 0,
+          turnsUsed: 0,
+          prsCreated: 0,
+          commitsCreated: 0,
+          codeLinesAdded: 0,
+          codeLinesDeleted: 0,
+          prsMerged: 0,
+          mergeLinesAdded: 0,
+          issuesCreated: 0,
+          sessionsSlept: 0,
+          sessionsClosed: 0,
+        }),
       })),
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
-      peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+      peakHour: null,
+      activeDays: 0,
+      achievements: [],
+      funFacts: [],
     });
 
     const allText = JSON.stringify(result.blocks);
@@ -316,13 +379,25 @@ describe('ReportFormatter', () => {
     const result = formatter.formatEnrichedWeekly({
       ...makeWeeklyReport(),
       derived: {
-        productivityScore: 100, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
-        avgTurnsPerSession: 0, sessionCompletionRate: 0,
-        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+        productivityScore: 100,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
       },
-      trend: null, dailyBreakdown: [],
+      trend: null,
+      dailyBreakdown: [],
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
-      peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+      peakHour: null,
+      activeDays: 0,
+      achievements: [],
+      funFacts: [],
     });
 
     const allText = JSON.stringify(result.blocks);
@@ -333,26 +408,45 @@ describe('ReportFormatter', () => {
   it('enrichedWeekly_blockCountNeverExceeds50', () => {
     // Stress test: 10 users, all sections active
     const manyRankings: UserRanking[] = Array.from({ length: 10 }, (_, i) => ({
-      userId: `U${i}`, userName: `User${i}`, metrics: makeMetrics(), rank: i + 1,
+      userId: `U${i}`,
+      userName: `User${i}`,
+      metrics: makeMetrics(),
+      rank: i + 1,
     }));
     const result = formatter.formatEnrichedWeekly({
       ...makeWeeklyReport({ rankings: manyRankings }),
       derived: {
-        productivityScore: 999, prMergeRate: 80, avgCodePerPr: 500, avgCodePerCommit: 100,
-        avgTurnsPerSession: 8, sessionCompletionRate: 90,
-        netLines: 4500, churnRatio: 15, avgChangedLinesPerPr: 600, commitPerActiveDay: 12, prPerActiveDay: 3,
+        productivityScore: 999,
+        prMergeRate: 80,
+        avgCodePerPr: 500,
+        avgCodePerCommit: 100,
+        avgTurnsPerSession: 8,
+        sessionCompletionRate: 90,
+        netLines: 4500,
+        churnRatio: 15,
+        avgChangedLinesPerPr: 600,
+        commitPerActiveDay: 12,
+        prPerActiveDay: 3,
       },
       trend: {
-        sessionsCreatedDelta: 20, turnsUsedDelta: 15, prsCreatedDelta: 30,
-        commitsCreatedDelta: 25, codeLinesAddedDelta: 40, prsMergedDelta: 50,
-        productivityScoreDelta: 35, baselineZero: false,
+        sessionsCreatedDelta: 20,
+        turnsUsedDelta: 15,
+        prsCreatedDelta: 30,
+        commitsCreatedDelta: 25,
+        codeLinesAddedDelta: 40,
+        prsMergedDelta: 50,
+        productivityScoreDelta: 35,
+        baselineZero: false,
       },
       dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
-        date: `2026-03-${23 + i}`, dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
-        totalEvents: 100 + i * 20, metrics: makeMetrics(),
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 100 + i * 20,
+        metrics: makeMetrics(),
       })),
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 + h })),
-      peakHour: 14, activeDays: 7,
+      peakHour: 14,
+      activeDays: 7,
       achievements: [
         { icon: '🔥', title: 'A1', description: 'd1' },
         { icon: '⚡', title: 'A2', description: 'd2' },
@@ -380,21 +474,33 @@ describe('ReportFormatter', () => {
         ],
       }),
       derived: {
-        productivityScore: 100, prMergeRate: 0, avgCodePerPr: 0, avgCodePerCommit: 0,
-        avgTurnsPerSession: 0, sessionCompletionRate: 0,
-        netLines: 0, churnRatio: 0, avgChangedLinesPerPr: 0, commitPerActiveDay: 0, prPerActiveDay: 0,
+        productivityScore: 100,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
       },
-      trend: null, dailyBreakdown: [],
+      trend: null,
+      dailyBreakdown: [],
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
-      peakHour: null, activeDays: 0, achievements: [], funFacts: [],
+      peakHour: null,
+      activeDays: 0,
+      achievements: [],
+      funFacts: [],
     });
 
     // All text blocks should be within 3000 char limit
     for (const block of result.blocks) {
-      if (block.text?.text) {
+      if ('text' in block && block.text) {
         expect(block.text.text.length).toBeLessThanOrEqual(3000);
       }
-      if (block.text?.text && block.type === 'header') {
+      if (block.type === 'header') {
         expect(block.text.text.length).toBeLessThanOrEqual(150);
       }
     }
@@ -404,14 +510,27 @@ describe('ReportFormatter', () => {
     const result = formatter.formatEnrichedDaily({
       ...makeDailyReport(),
       derived: {
-        productivityScore: 150, prMergeRate: 66.7, avgCodePerPr: 167, avgCodePerCommit: 50,
-        avgTurnsPerSession: 10, sessionCompletionRate: 60,
-        netLines: 450, churnRatio: 10, avgChangedLinesPerPr: 183, commitPerActiveDay: 10, prPerActiveDay: 3,
+        productivityScore: 150,
+        prMergeRate: 66.7,
+        avgCodePerPr: 167,
+        avgCodePerCommit: 50,
+        avgTurnsPerSession: 10,
+        sessionCompletionRate: 60,
+        netLines: 450,
+        churnRatio: 10,
+        avgChangedLinesPerPr: 183,
+        commitPerActiveDay: 10,
+        prPerActiveDay: 3,
       },
       trend: {
-        sessionsCreatedDelta: 10, turnsUsedDelta: -5, prsCreatedDelta: 20,
-        commitsCreatedDelta: 15, codeLinesAddedDelta: 30, prsMergedDelta: 50,
-        productivityScoreDelta: 25, baselineZero: false,
+        sessionsCreatedDelta: 10,
+        turnsUsedDelta: -5,
+        prsCreatedDelta: 20,
+        commitsCreatedDelta: 15,
+        codeLinesAddedDelta: 30,
+        prsMergedDelta: 50,
+        productivityScoreDelta: 25,
+        baselineZero: false,
       },
       hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: h === 14 ? 20 : 2 })),
       peakHour: 14,
@@ -422,5 +541,221 @@ describe('ReportFormatter', () => {
     // Fallback text should include trend info
     expect(result.text).toContain('+25%');
     expect(result.text).toContain('150');
+  });
+
+  // === v5 Bauhaus-specific tests ===
+
+  it('v5_weekly_blockCount_never_exceeds_12', () => {
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport(),
+      derived: {
+        productivityScore: 50,
+        prMergeRate: 10,
+        avgCodePerPr: 500,
+        avgCodePerCommit: 100,
+        avgTurnsPerSession: 2,
+        sessionCompletionRate: 20,
+        netLines: 1000,
+        churnRatio: 40,
+        avgChangedLinesPerPr: 600,
+        commitPerActiveDay: 5,
+        prPerActiveDay: 2,
+      },
+      trend: {
+        sessionsCreatedDelta: 10,
+        turnsUsedDelta: 5,
+        prsCreatedDelta: 20,
+        commitsCreatedDelta: 15,
+        codeLinesAddedDelta: 30,
+        prsMergedDelta: 10,
+        productivityScoreDelta: -25,
+        baselineZero: false,
+      },
+      dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 50 + i * 10,
+        metrics: makeMetrics(),
+      })),
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 })),
+      peakHour: 14,
+      activeDays: 2,
+      achievements: [],
+      funFacts: [],
+    });
+    expect(result.blocks.length).toBeLessThanOrEqual(12);
+    expect(result.blocks[0].type).toBe('header');
+    expect(result.blocks[result.blocks.length - 1].type).toBe('context'); // footer preserved
+  });
+
+  it('v5_daily_blockCount_never_exceeds_10', () => {
+    const result = formatter.formatEnrichedDaily({
+      date: '2026-03-30',
+      period: 'daily',
+      metrics: makeMetrics(),
+      derived: {
+        productivityScore: 50,
+        prMergeRate: 10,
+        avgCodePerPr: 500,
+        avgCodePerCommit: 100,
+        avgTurnsPerSession: 2,
+        sessionCompletionRate: 20,
+        netLines: 1000,
+        churnRatio: 40,
+        avgChangedLinesPerPr: 600,
+        commitPerActiveDay: 5,
+        prPerActiveDay: 2,
+      },
+      trend: {
+        sessionsCreatedDelta: 10,
+        turnsUsedDelta: 5,
+        prsCreatedDelta: 20,
+        commitsCreatedDelta: 15,
+        codeLinesAddedDelta: 30,
+        prsMergedDelta: 10,
+        productivityScoreDelta: 5,
+        baselineZero: false,
+      },
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 })),
+      peakHour: 14,
+      achievements: [],
+      funFacts: [],
+    });
+    expect(result.blocks.length).toBeLessThanOrEqual(10);
+    expect(result.blocks[0].type).toBe('header');
+    expect(result.blocks[result.blocks.length - 1].type).toBe('context'); // footer preserved
+  });
+
+  it('v5_zeroActivity_narrative', () => {
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport(),
+      metrics: makeMetrics({
+        sessionsCreated: 0,
+        sessionsClosed: 0,
+        sessionsSlept: 0,
+        prsCreated: 0,
+        prsMerged: 0,
+        commitsCreated: 0,
+        codeLinesAdded: 0,
+        codeLinesDeleted: 0,
+        mergeLinesAdded: 0,
+        issuesCreated: 0,
+        turnsUsed: 0,
+      }),
+      derived: {
+        productivityScore: 0,
+        prMergeRate: 0,
+        avgCodePerPr: 0,
+        avgCodePerCommit: 0,
+        avgTurnsPerSession: 0,
+        sessionCompletionRate: 0,
+        netLines: 0,
+        churnRatio: 0,
+        avgChangedLinesPerPr: 0,
+        commitPerActiveDay: 0,
+        prPerActiveDay: 0,
+      },
+      trend: null,
+      dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 0,
+        metrics: makeMetrics({
+          sessionsCreated: 0,
+          turnsUsed: 0,
+          prsCreated: 0,
+          commitsCreated: 0,
+          codeLinesAdded: 0,
+          codeLinesDeleted: 0,
+          prsMerged: 0,
+          mergeLinesAdded: 0,
+          issuesCreated: 0,
+          sessionsSlept: 0,
+          sessionsClosed: 0,
+        }),
+      })),
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+      peakHour: null,
+      activeDays: 0,
+      achievements: [],
+      funFacts: [],
+    });
+    const allText = JSON.stringify(result.blocks);
+    expect(allText).toContain('기간 내 활동 없음');
+  });
+
+  it('v5_actionAlert_P1_shows_recovery_target', () => {
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport(),
+      derived: {
+        productivityScore: 30,
+        prMergeRate: 15,
+        avgCodePerPr: 500,
+        avgCodePerCommit: 100,
+        avgTurnsPerSession: 2,
+        sessionCompletionRate: 20,
+        netLines: 1000,
+        churnRatio: 10,
+        avgChangedLinesPerPr: 600,
+        commitPerActiveDay: 5,
+        prPerActiveDay: 2,
+      },
+      trend: null,
+      dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 50,
+        metrics: makeMetrics(),
+      })),
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 })),
+      peakHour: 14,
+      activeDays: 5,
+      achievements: [],
+      funFacts: [],
+    });
+    const allText = JSON.stringify(result.blocks);
+    expect(allText).toContain('P1');
+    expect(allText).toContain('1차목표 50%+');
+    expect(allText).toContain('기준 60%');
+  });
+
+  it('v5_rankings_show_all_formula_components', () => {
+    const result = formatter.formatEnrichedWeekly({
+      ...makeWeeklyReport(),
+      derived: {
+        productivityScore: 100,
+        prMergeRate: 50,
+        avgCodePerPr: 100,
+        avgCodePerCommit: 50,
+        avgTurnsPerSession: 5,
+        sessionCompletionRate: 80,
+        netLines: 3000,
+        churnRatio: 10,
+        avgChangedLinesPerPr: 200,
+        commitPerActiveDay: 5,
+        prPerActiveDay: 2,
+      },
+      trend: null,
+      dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+        date: `2026-03-${23 + i}`,
+        dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+        totalEvents: 50,
+        metrics: makeMetrics(),
+      })),
+      hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 })),
+      peakHour: 14,
+      activeDays: 5,
+      achievements: [],
+      funFacts: [],
+    });
+    const allText = JSON.stringify(result.blocks);
+    // Scoring formula visible
+    expect(allText).toContain('턴+세션+이슈×2+커밋×3+PR×5+머지×10');
+    // All formula components in top 1 detail
+    expect(allText).toContain('턴');
+    expect(allText).toContain('세션');
+    expect(allText).toContain('이슈');
+    expect(allText).toContain('커밋');
+    expect(allText).toContain('PR');
   });
 });

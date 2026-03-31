@@ -25,7 +25,7 @@ interface ExecuteResultCompat {
  */
 export function mapToExecuteResult(turnResult: AgentTurnResult): ExecuteResultCompat {
   return {
-    success: true,  // AgentTurnResult는 정상 완료된 턴만 표현
+    success: true, // AgentTurnResult는 정상 완료된 턴만 표현
     messageCount: turnResult.messages.length,
     continuation: turnResult.continuation ?? undefined,
   };

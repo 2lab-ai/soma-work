@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { CommandParser } from './command-parser';
 
 describe('CommandParser', () => {
@@ -560,7 +560,9 @@ describe('CommandParser', () => {
     });
 
     it('should parse add with both --name and --ref options', () => {
-      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom --ref dev')).toEqual({
+      expect(
+        CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --name custom --ref dev'),
+      ).toEqual({
         action: 'add',
         repo: '2lab-ai/soma-work',
         name: 'custom',
@@ -569,7 +571,9 @@ describe('CommandParser', () => {
     });
 
     it('should parse add with --ref before --name', () => {
-      expect(CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev --name custom')).toEqual({
+      expect(
+        CommandParser.parseMarketplaceCommand('marketplace add 2lab-ai/soma-work --ref dev --name custom'),
+      ).toEqual({
         action: 'add',
         repo: '2lab-ai/soma-work',
         name: 'custom',

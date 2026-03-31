@@ -9,9 +9,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Logger } from './logger';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
-import { type PermissionLevel } from './mcp-tool-permission-config';
+import { Logger } from './logger';
+import type { PermissionLevel } from './mcp-tool-permission-config';
 
 const logger = new Logger('McpToolGrantStore');
 
@@ -22,9 +22,9 @@ export const MAX_GRANT_DURATION_MS = 4 * 7 * 24 * 3600 * 1000;
 export type { PermissionLevel } from './mcp-tool-permission-config';
 
 export interface GrantEntry {
-  grantedAt: string;   // ISO 8601
-  expiresAt: string;   // ISO 8601
-  grantedBy: string;   // Admin user ID
+  grantedAt: string; // ISO 8601
+  expiresAt: string; // ISO 8601
+  grantedBy: string; // Admin user ID
 }
 
 export interface ServerGrants {
@@ -49,10 +49,14 @@ export function parseDuration(duration: string): number | null {
   const unit = match[2];
 
   switch (unit) {
-    case 'h': return value * 3600 * 1000;
-    case 'd': return value * 24 * 3600 * 1000;
-    case 'w': return value * 7 * 24 * 3600 * 1000;
-    default: return null;
+    case 'h':
+      return value * 3600 * 1000;
+    case 'd':
+      return value * 24 * 3600 * 1000;
+    case 'w':
+      return value * 7 * 24 * 3600 * 1000;
+    default:
+      return null;
   }
 }
 
@@ -126,13 +130,7 @@ export class McpToolGrantStore {
   /**
    * Set a grant for a user on a specific server at a permission level.
    */
-  setGrant(
-    userId: string,
-    serverName: string,
-    level: PermissionLevel,
-    expiresAt: string,
-    grantedBy: string,
-  ): void {
+  setGrant(userId: string, serverName: string, level: PermissionLevel, expiresAt: string, grantedBy: string): void {
     if (!this.grants[userId]) {
       this.grants[userId] = {};
     }

@@ -16,10 +16,10 @@
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
  */
 
-import { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { MetricsEvent, AggregatedMetrics } from '../metrics/types';
+import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { getConversation } from './recorder';
 
 const logger = new Logger('Dashboard');
@@ -133,7 +133,9 @@ function requireSessionOwner(request: any, reply: any, sessionKey: string): bool
 
 // ── Task accessor ──────────────────────────────────────────────────
 
-type TaskAccessor = (sessionKey: string) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> | undefined;
+type TaskAccessor = (
+  sessionKey: string,
+) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -153,10 +155,18 @@ let _closeHandlerFn: CloseHandler | null = null;
 let _trashHandlerFn: TrashHandler | null = null;
 let _commandHandlerFn: CommandHandler | null = null;
 
-export function setDashboardStopHandler(fn: StopHandler): void { _stopHandlerFn = fn; }
-export function setDashboardCloseHandler(fn: CloseHandler): void { _closeHandlerFn = fn; }
-export function setDashboardTrashHandler(fn: TrashHandler): void { _trashHandlerFn = fn; }
-export function setDashboardCommandHandler(fn: CommandHandler): void { _commandHandlerFn = fn; }
+export function setDashboardStopHandler(fn: StopHandler): void {
+  _stopHandlerFn = fn;
+}
+export function setDashboardCloseHandler(fn: CloseHandler): void {
+  _closeHandlerFn = fn;
+}
+export function setDashboardTrashHandler(fn: TrashHandler): void {
+  _trashHandlerFn = fn;
+}
+export function setDashboardCommandHandler(fn: CommandHandler): void {
+  _commandHandlerFn = fn;
+}
 
 // ── Kanban transformation ──────────────────────────────────────────
 
@@ -184,18 +194,22 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     prLabel: s.links?.pr?.label,
     prTitle: s.links?.pr?.title,
     prStatus: s.links?.pr?.status,
-    mergeStats: s.mergeStats ? {
-      totalLinesAdded: s.mergeStats.totalLinesAdded,
-      totalLinesDeleted: s.mergeStats.totalLinesDeleted,
-    } : undefined,
-    tokenUsage: s.usage ? {
-      totalInputTokens: s.usage.totalInputTokens || 0,
-      totalOutputTokens: s.usage.totalOutputTokens || 0,
-      totalCostUsd: s.usage.totalCostUsd || 0,
-      contextUsagePercent: s.usage.contextWindow
-        ? ((s.usage.currentInputTokens || 0) / s.usage.contextWindow) * 100
-        : 0,
-    } : undefined,
+    mergeStats: s.mergeStats
+      ? {
+          totalLinesAdded: s.mergeStats.totalLinesAdded,
+          totalLinesDeleted: s.mergeStats.totalLinesDeleted,
+        }
+      : undefined,
+    tokenUsage: s.usage
+      ? {
+          totalInputTokens: s.usage.totalInputTokens || 0,
+          totalOutputTokens: s.usage.totalOutputTokens || 0,
+          totalCostUsd: s.usage.totalCostUsd || 0,
+          contextUsagePercent: s.usage.contextWindow
+            ? ((s.usage.currentInputTokens || 0) / s.usage.contextWindow) * 100
+            : 0,
+        }
+      : undefined,
     tasks,
   };
 }
@@ -216,9 +230,15 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
       board.closed.push(kanban);
     } else {
       switch (kanban.activityState) {
-        case 'working': board.working.push(kanban); break;
-        case 'waiting': board.waiting.push(kanban); break;
-        default: board.idle.push(kanban); break;
+        case 'working':
+          board.working.push(kanban);
+          break;
+        case 'waiting':
+          board.waiting.push(kanban);
+          break;
+        default:
+          board.idle.push(kanban);
+          break;
       }
     }
   }
@@ -246,9 +266,15 @@ function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string,
     if (!dayMap.has(dateStr)) {
       dayMap.set(dateStr, {
         date: dateStr,
-        sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
-        commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
-        mergeLinesAdded: 0, mergeLinesDeleted: 0,
+        sessionsCreated: 0,
+        turnsUsed: 0,
+        prsCreated: 0,
+        prsMerged: 0,
+        commitsCreated: 0,
+        linesAdded: 0,
+        linesDeleted: 0,
+        mergeLinesAdded: 0,
+        mergeLinesDeleted: 0,
         workflowCounts: {},
       });
     }
@@ -261,10 +287,18 @@ function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string,
         day.workflowCounts[wf] = (day.workflowCounts[wf] || 0) + 1;
         break;
       }
-      case 'turn_used': day.turnsUsed++; break;
-      case 'pr_created': day.prsCreated++; break;
-      case 'pr_merged': day.prsMerged++; break;
-      case 'commit_created': day.commitsCreated++; break;
+      case 'turn_used':
+        day.turnsUsed++;
+        break;
+      case 'pr_created':
+        day.prsCreated++;
+        break;
+      case 'pr_merged':
+        day.prsMerged++;
+        break;
+      case 'commit_created':
+        day.commitsCreated++;
+        break;
       case 'code_lines_added':
         day.linesAdded += (ev.metadata?.linesAdded as number) || 0;
         day.linesDeleted += (ev.metadata?.linesDeleted as number) || 0;
@@ -285,9 +319,15 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
 
   let start: Date;
   switch (period) {
-    case 'day': start = now; break;
-    case 'week': start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-    case 'month': start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+    case 'day':
+      start = now;
+      break;
+    case 'week':
+      start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case 'month':
+      start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
   }
   const startDate = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
   return { startDate, endDate: end };
@@ -305,7 +345,11 @@ export function broadcastSessionUpdate(): void {
     const board = buildKanbanBoard();
     const payload = JSON.stringify({ type: 'session_update', board });
     for (const client of wsClients) {
-      try { client.send(payload); } catch { wsClients.delete(client); }
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
     }
   } catch (error) {
     logger.error('Failed to broadcast session update', error);
@@ -313,12 +357,19 @@ export function broadcastSessionUpdate(): void {
 }
 
 /** Broadcast task update to all connected WebSocket clients */
-export function broadcastTaskUpdate(sessionKey: string, tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>): void {
+export function broadcastTaskUpdate(
+  sessionKey: string,
+  tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>,
+): void {
   if (wsClients.size === 0) return;
   try {
     const payload = JSON.stringify({ type: 'task_update', sessionKey, tasks });
     for (const client of wsClients) {
-      try { client.send(payload); } catch { wsClients.delete(client); }
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
     }
   } catch (error) {
     logger.error('Failed to broadcast task update', error);
@@ -335,14 +386,16 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     const ownerId = session?.ownerId;
 
     // Strip rawContent from assistant turns to reduce bandwidth
-    const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent
-      ? { ...turn, rawContent: undefined }
-      : turn;
+    const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
       // Only send to clients belonging to the session owner (or all if owner unknown)
       if (ownerId && client.userId && client.userId !== ownerId) continue;
-      try { client.send(payload); } catch { wsClients.delete(client); }
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
     }
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
@@ -355,7 +408,11 @@ export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'clo
   try {
     const payload = JSON.stringify({ type: 'session_action', sessionKey, action });
     for (const client of wsClients) {
-      try { client.send(payload); } catch { wsClients.delete(client); }
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
     }
   } catch (error) {
     logger.error('Failed to broadcast session action', error);
@@ -380,7 +437,7 @@ export async function registerDashboardRoutes(
       const userId = request.query.userId || undefined;
       const board = buildKanbanBoard(userId);
       reply.send({ board });
-    }
+    },
   );
 
   // User stats
@@ -393,7 +450,10 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'userId is required' });
         return;
       }
-      const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as 'day' | 'week' | 'month';
+      const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as
+        | 'day'
+        | 'week'
+        | 'month';
       const { startDate, endDate } = getDateRange(period);
 
       try {
@@ -401,53 +461,58 @@ export async function registerDashboardRoutes(
         const dayMap = aggregateUserStats(events, userId);
         const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-        const totals = days.reduce((acc, d) => {
-          const wfCounts = { ...acc.workflowCounts };
-          for (const [wf, cnt] of Object.entries(d.workflowCounts)) {
-            wfCounts[wf] = (wfCounts[wf] || 0) + cnt;
-          }
-          return {
-            sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
-            turnsUsed: acc.turnsUsed + d.turnsUsed,
-            prsCreated: acc.prsCreated + d.prsCreated,
-            prsMerged: acc.prsMerged + d.prsMerged,
-            commitsCreated: acc.commitsCreated + d.commitsCreated,
-            linesAdded: acc.linesAdded + d.linesAdded,
-            linesDeleted: acc.linesDeleted + d.linesDeleted,
-            mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
-            mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
-            workflowCounts: wfCounts,
-          };
-        }, {
-          sessionsCreated: 0, turnsUsed: 0, prsCreated: 0, prsMerged: 0,
-          commitsCreated: 0, linesAdded: 0, linesDeleted: 0,
-          mergeLinesAdded: 0, mergeLinesDeleted: 0,
-          workflowCounts: {} as Record<string, number>,
-        });
+        const totals = days.reduce(
+          (acc, d) => {
+            const wfCounts = { ...acc.workflowCounts };
+            for (const [wf, cnt] of Object.entries(d.workflowCounts)) {
+              wfCounts[wf] = (wfCounts[wf] || 0) + cnt;
+            }
+            return {
+              sessionsCreated: acc.sessionsCreated + d.sessionsCreated,
+              turnsUsed: acc.turnsUsed + d.turnsUsed,
+              prsCreated: acc.prsCreated + d.prsCreated,
+              prsMerged: acc.prsMerged + d.prsMerged,
+              commitsCreated: acc.commitsCreated + d.commitsCreated,
+              linesAdded: acc.linesAdded + d.linesAdded,
+              linesDeleted: acc.linesDeleted + d.linesDeleted,
+              mergeLinesAdded: acc.mergeLinesAdded + d.mergeLinesAdded,
+              mergeLinesDeleted: acc.mergeLinesDeleted + d.mergeLinesDeleted,
+              workflowCounts: wfCounts,
+            };
+          },
+          {
+            sessionsCreated: 0,
+            turnsUsed: 0,
+            prsCreated: 0,
+            prsMerged: 0,
+            commitsCreated: 0,
+            linesAdded: 0,
+            linesDeleted: 0,
+            mergeLinesAdded: 0,
+            mergeLinesDeleted: 0,
+            workflowCounts: {} as Record<string, number>,
+          },
+        );
 
         reply.send({ userId, period, days, totals } satisfies UserStats);
       } catch (error) {
         logger.error('Error computing dashboard stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   // All users list (for dashboard navigation)
-  server.get(
-    '/api/dashboard/users',
-    { preHandler: [authMiddleware] },
-    async (_request, reply) => {
-      const sessions = getAllSessions();
-      const users = new Map<string, string>();
-      for (const [, session] of sessions.entries()) {
-        if (session.ownerId && session.ownerName) {
-          users.set(session.ownerId, session.ownerName);
-        }
+  server.get('/api/dashboard/users', { preHandler: [authMiddleware] }, async (_request, reply) => {
+    const sessions = getAllSessions();
+    const users = new Map<string, string>();
+    for (const [, session] of sessions.entries()) {
+      if (session.ownerId && session.ownerName) {
+        users.set(session.ownerId, session.ownerName);
       }
-      reply.send({ users: Array.from(users.entries()).map(([id, name]) => ({ id, name })) });
     }
-  );
+    reply.send({ users: Array.from(users.entries()).map(([id, name]) => ({ id, name })) });
+  });
 
   // Session detail (conversation turns for slide panel)
   server.get<{ Params: { conversationId: string } }>(
@@ -461,7 +526,7 @@ export async function registerDashboardRoutes(
           return;
         }
         // Return lightweight turn summaries (no rawContent for assistant turns)
-        const turns = record.turns.map(t => ({
+        const turns = record.turns.map((t) => ({
           id: t.id,
           role: t.role,
           timestamp: t.timestamp,
@@ -484,7 +549,7 @@ export async function registerDashboardRoutes(
         logger.error('Error fetching session detail', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   // ── Action routes ──
@@ -506,7 +571,7 @@ export async function registerDashboardRoutes(
         logger.error('Error stopping session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   server.post<{ Params: { key: string } }>(
@@ -526,7 +591,7 @@ export async function registerDashboardRoutes(
         logger.error('Error closing session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   server.post<{ Params: { key: string } }>(
@@ -546,7 +611,7 @@ export async function registerDashboardRoutes(
         logger.error('Error trashing session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   server.post<{ Params: { key: string }; Body: { message: string } }>(
@@ -573,7 +638,7 @@ export async function registerDashboardRoutes(
         logger.error('Error sending command to session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   );
 
   // ── HTML Dashboard ──
@@ -587,7 +652,7 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       reply.type('text/html; charset=utf-8').send(renderDashboardPage(request.params.userId));
-    }
+    },
   );
 
   // ── WebSocket ──
@@ -617,7 +682,9 @@ export async function registerDashboardRoutes(
       try {
         const board = buildKanbanBoard();
         socket.send(JSON.stringify({ type: 'session_update', board }));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
 
       socket.on('close', () => {
         wsClients.delete(client);
@@ -1415,17 +1482,17 @@ function renderCard(s, col) {
   // Action buttons
   let actionBtn = '';
   if (col === 'working') {
-    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'stop\')">&#x23F9; Stop</button>';
+    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">&#x23F9; Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
-    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'close\')">&#x274C; Close</button>';
+    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
   } else if (col === 'closed') {
-    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\'' + escJs(s.key) + '\',\'trash\')">&#x1F5D1; Trash</button>';
+    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  return '<div class="' + cls + '" onclick="openPanel(\'' + escJs(s.key) + '\')">'
+  return '<div class="' + cls + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
     + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + convLink + '</div>'
     + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
     + linksHtml

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SlackApiHelper } from './slack-api-helper';
 
 // Mock the App
@@ -303,14 +303,10 @@ describe('SlackApiHelper', () => {
     it('should disable unfurl when requested', async () => {
       mockApp.client.chat.update.mockResolvedValue({});
 
-      await helper.updateMessage(
-        'C123',
-        '123.456',
-        'Updated',
-        [{ type: 'section' }],
-        undefined,
-        { unfurlLinks: false, unfurlMedia: false }
-      );
+      await helper.updateMessage('C123', '123.456', 'Updated', [{ type: 'section' }], undefined, {
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
 
       expect(mockApp.client.chat.update).toHaveBeenCalledWith({
         channel: 'C123',
@@ -417,7 +413,12 @@ describe('SlackApiHelper', () => {
       // Make the first call block by never resolving until we say so
       let resolveFirst: ((v: any) => void) | null = null;
       mockApp.client.chat.postMessage
-        .mockImplementationOnce(() => new Promise<any>(resolve => { resolveFirst = resolve; }))
+        .mockImplementationOnce(
+          () =>
+            new Promise<any>((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
         .mockResolvedValue({ ts: '2', channel: 'C2' });
 
       // p1 starts processing immediately (pops from queue, blocks on execution)

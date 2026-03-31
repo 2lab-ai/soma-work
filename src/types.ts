@@ -36,18 +36,18 @@ export type WorkflowType =
  */
 export interface SessionUsage {
   // Current context window state (from most recent request)
-  currentInputTokens: number;       // Input tokens in most recent request (includes history)
-  currentOutputTokens: number;      // Output tokens in most recent response
-  currentCacheReadTokens: number;   // Cache read tokens in current request
+  currentInputTokens: number; // Input tokens in most recent request (includes history)
+  currentOutputTokens: number; // Output tokens in most recent response
+  currentCacheReadTokens: number; // Cache read tokens in current request
   currentCacheCreateTokens: number; // Cache create tokens in current request
-  contextWindow: number;            // Max context window — dynamically set from SDK (e.g. 1_000_000)
+  contextWindow: number; // Max context window — dynamically set from SDK (e.g. 1_000_000)
 
   // Cumulative session totals
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
 
-  lastUpdated: number;              // Timestamp of last update
+  lastUpdated: number; // Timestamp of last update
 }
 
 /**
@@ -61,8 +61,8 @@ export type RenewState = 'pending_save' | 'pending_load' | null;
  */
 export interface Continuation {
   prompt: string;
-  resetSession?: boolean;  // Reset session before executing (triggers re-dispatch)
-  dispatchText?: string;   // Text to use for dispatch classification (if different from prompt)
+  resetSession?: boolean; // Reset session before executing (triggers re-dispatch)
+  dispatchText?: string; // Text to use for dispatch classification (if different from prompt)
   forceWorkflow?: WorkflowType;
 }
 
@@ -73,9 +73,9 @@ export interface SessionLink {
   url: string;
   type: 'issue' | 'pr' | 'doc';
   provider: 'github' | 'jira' | 'confluence' | 'linear' | 'unknown';
-  label?: string;        // e.g., "PTN-123", "PR #456"
-  title?: string;        // e.g., "Fix login redirect bug"
-  status?: string;       // e.g., "open", "merged", "in-progress"
+  label?: string; // e.g., "PTN-123", "PR #456"
+  title?: string; // e.g., "Fix login redirect bug"
+  status?: string; // e.g., "open", "merged", "in-progress"
   statusCheckedAt?: number;
 }
 
@@ -168,13 +168,13 @@ export interface SaveContextResultPayload {
 }
 
 export interface ActionPanelPRStatus {
-  state: string;      // 'open' | 'closed' | 'merged'
+  state: string; // 'open' | 'closed' | 'merged'
   mergeable: boolean;
   draft: boolean;
   merged: boolean;
   approved?: boolean; // true if PR has been approved
-  head?: string;      // source branch
-  base?: string;      // target branch
+  head?: string; // source branch
+  base?: string; // target branch
 }
 
 export interface ActionPanelState {
@@ -203,8 +203,8 @@ export interface ActionPanelState {
 }
 
 export interface ConversationSession {
-  ownerId: string;           // User who started the session
-  ownerName?: string;        // Display name of owner
+  ownerId: string; // User who started the session
+  ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
   channelId: string;
@@ -223,8 +223,8 @@ export interface ConversationSession {
   // Legacy field for backward compatibility
   userId: string;
   // Session state machine
-  state?: SessionState;      // Current state (INITIALIZING -> MAIN)
-  workflow?: WorkflowType;   // Determined workflow type
+  state?: SessionState; // Current state (INITIALIZING -> MAIN)
+  workflow?: WorkflowType; // Determined workflow type
   // Token usage tracking
   usage?: SessionUsage;
   // Renew command state
@@ -320,10 +320,10 @@ export interface AgentConfig {
   slackBotToken: string;
   slackAppToken: string;
   signingSecret: string;
-  promptDir?: string;      // default: src/prompt/{agentName}
-  persona?: string;        // default: 'default'
+  promptDir?: string; // default: src/prompt/{agentName}
+  persona?: string; // default: 'default'
   description?: string;
-  model?: string;          // default: inherit from main bot
+  model?: string; // default: inherit from main bot
 }
 
 export interface WorkingDirectoryConfig {
@@ -338,8 +338,8 @@ export interface WorkingDirectoryConfig {
  * User choice option for interactive selection
  */
 export interface UserChoiceOption {
-  id: string;           // Unique ID (e.g., "1", "2", "a", "b")
-  label: string;        // Short label for button
+  id: string; // Unique ID (e.g., "1", "2", "a", "b")
+  label: string; // Short label for button
   description?: string; // Optional longer description
 }
 
@@ -347,10 +347,10 @@ export interface UserChoiceOption {
  * Single question in a choice form
  */
 export interface UserChoiceQuestion {
-  id: string;                    // Unique question ID (e.g., "q1", "auth", "db")
-  question: string;              // The question being asked
-  choices: UserChoiceOption[];   // 2-5 options
-  context?: string;              // Optional context
+  id: string; // Unique question ID (e.g., "q1", "auth", "db")
+  question: string; // The question being asked
+  choices: UserChoiceOption[]; // 2-5 options
+  context?: string; // Optional context
 }
 
 /**
@@ -359,9 +359,9 @@ export interface UserChoiceQuestion {
  */
 export interface UserChoice {
   type: 'user_choice';
-  question: string;              // The question being asked
-  choices: UserChoiceOption[];   // 2-5 options
-  context?: string;              // Optional context about why this choice matters
+  question: string; // The question being asked
+  choices: UserChoiceOption[]; // 2-5 options
+  context?: string; // Optional context about why this choice matters
 }
 
 /**
@@ -370,8 +370,8 @@ export interface UserChoice {
  */
 export interface UserChoices {
   type: 'user_choices';
-  title?: string;                // Form title
-  description?: string;          // Form description
+  title?: string; // Form title
+  description?: string; // Form description
   questions: UserChoiceQuestion[]; // Multiple questions
 }
 
@@ -394,7 +394,7 @@ export interface PendingChoiceForm {
  * Matches the format defined in system.prompt
  */
 export interface UserChoiceGroup {
-  question: string;              // Group title/context
-  choices: UserChoice[];         // Array of individual choices
-  context?: string;              // Why these decisions are needed
+  question: string; // Group title/context
+  choices: UserChoice[]; // Array of individual choices
+  context?: string; // Why these decisions are needed
 }

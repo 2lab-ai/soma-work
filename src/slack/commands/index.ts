@@ -1,22 +1,23 @@
 /**
  * Command handlers module
  */
-export { CommandRouter } from './command-router';
-export { CommandHandler, CommandContext, CommandResult, CommandDependencies, SayFn } from './types';
-export { CwdHandler } from './cwd-handler';
-export { McpHandler } from './mcp-handler';
+
 export { BypassHandler } from './bypass-handler';
-export { PersonaHandler } from './persona-handler';
-export { ModelHandler } from './model-handler';
+export { CloseHandler } from './close-handler';
+export { CommandRouter } from './command-router';
+export { ContextHandler } from './context-handler';
+export { CwdHandler } from './cwd-handler';
 export { HelpHandler } from './help-handler';
-export { SessionHandler } from './session-handler';
-export { RestoreHandler } from './restore-handler';
+export { LinkHandler } from './link-handler';
+export { MarketplaceHandler } from './marketplace-handler';
+export { McpHandler } from './mcp-handler';
+export { ModelHandler } from './model-handler';
 export { NewHandler } from './new-handler';
 export { OnboardingHandler } from './onboarding-handler';
-export { ContextHandler } from './context-handler';
-export { RenewHandler } from './renew-handler';
-export { LinkHandler } from './link-handler';
-export { CloseHandler } from './close-handler';
-export { SessionCommandHandler } from './session-command-handler';
-export { MarketplaceHandler } from './marketplace-handler';
+export { PersonaHandler } from './persona-handler';
 export { PluginsHandler } from './plugins-handler';
+export { RenewHandler } from './renew-handler';
+export { RestoreHandler } from './restore-handler';
+export { SessionCommandHandler } from './session-command-handler';
+export { SessionHandler } from './session-handler';
+export { CommandContext, CommandDependencies, CommandHandler, CommandResult, SayFn } from './types';

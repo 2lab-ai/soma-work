@@ -1,6 +1,6 @@
-import { WebClient } from '@slack/web-api';
+import type { WebClient } from '@slack/web-api';
 import { Logger } from './logger';
-import { formatTimestamp, getConfiguredUpdateChannel, resolveChannel, VersionInfo } from './release-notifier';
+import { formatTimestamp, getConfiguredUpdateChannel, resolveChannel, type VersionInfo } from './release-notifier';
 
 const logger = new Logger('StartupNotifier');
 
@@ -17,10 +17,7 @@ function getStartupChannelConfig(): string {
   return configured || LEGACY_STARTUP_CHANNEL_ID;
 }
 
-export async function notifyStartup(
-  client: WebClient,
-  options: StartupNotificationOptions,
-): Promise<boolean> {
+export async function notifyStartup(client: WebClient, options: StartupNotificationOptions): Promise<boolean> {
   const channelConfig = getStartupChannelConfig();
   const channelId = await resolveChannel(client, channelConfig);
   if (!channelId) {
@@ -32,8 +29,7 @@ export async function notifyStartup(
   const blocks: any[] = [];
 
   if (versionInfo) {
-    const isUpgrade = versionInfo.previousVersion !== '0.0.0' &&
-      versionInfo.version !== versionInfo.previousVersion;
+    const isUpgrade = versionInfo.previousVersion !== '0.0.0' && versionInfo.version !== versionInfo.previousVersion;
     const isRollback = versionInfo.isRollback === true;
     const headerText = isRollback
       ? `⏪ v${versionInfo.version} Rollback (${versionInfo.previousVersion} → ${versionInfo.rollbackTargetVersion || 'previous'})`
@@ -70,14 +66,17 @@ export async function notifyStartup(
   blocks.push({
     type: 'section',
     fields: [
-      { type: 'mrkdwn', text: `*MCP*\n${mcpNames.length > 0 ? mcpNames.map(name => `\`${name}\``).join(', ') : '_none_'}` },
+      {
+        type: 'mrkdwn',
+        text: `*MCP*\n${mcpNames.length > 0 ? mcpNames.map((name) => `\`${name}\``).join(', ') : '_none_'}`,
+      },
       { type: 'mrkdwn', text: `*Sessions*\n${loadedSessions} restored` },
     ],
   });
 
   if (versionInfo?.releaseNotes) {
-    const isVersionChange = versionInfo.previousVersion !== '0.0.0' &&
-      versionInfo.version !== versionInfo.previousVersion;
+    const isVersionChange =
+      versionInfo.previousVersion !== '0.0.0' && versionInfo.version !== versionInfo.previousVersion;
     const rollback = versionInfo.isRollback === true;
     const changelogLabel = rollback ? '*⏪ 롤백*' : '*📋 변경 사항*';
     const tagTransition = rollback

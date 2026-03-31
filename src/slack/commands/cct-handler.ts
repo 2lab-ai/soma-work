@@ -1,7 +1,7 @@
-import { CommandHandler, CommandContext, CommandResult } from './types';
-import { CommandParser } from '../command-parser';
 import { isAdminUser } from '../../admin-utils';
-import { tokenManager, TokenManager } from '../../token-manager';
+import { TokenManager, tokenManager } from '../../token-manager';
+import { CommandParser } from '../command-parser';
+import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles CCT token management commands (admin only):
@@ -40,12 +40,14 @@ export class CctHandler implements CommandHandler {
     if (action.action === 'status') {
       const active = tokenManager.getActiveToken();
       const now = new Date();
-      const lines = tokens.map(t => {
+      const lines = tokens.map((t) => {
         const masked = TokenManager.maskToken(t.value);
         const parts = [`${t.name}=\`${masked}\``];
         if (t.name === active.name) parts.push('*(active)*');
         if (t.cooldownUntil && t.cooldownUntil > now) {
-          parts.push(`_(rate limited until ${t.cooldownUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })})_`);
+          parts.push(
+            `_(rate limited until ${t.cooldownUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })})_`,
+          );
         }
         return parts.join(' ');
       });
@@ -77,7 +79,7 @@ export class CctHandler implements CommandHandler {
           thread_ts: threadTs,
         });
       } else {
-        const available = tokens.map(t => `\`${t.name}\``).join(', ');
+        const available = tokens.map((t) => `\`${t.name}\``).join(', ');
         await say({
           text: `❌ Unknown token: \`${action.target}\`\nAvailable: ${available}`,
           thread_ts: threadTs,

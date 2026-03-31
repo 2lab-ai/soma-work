@@ -34,12 +34,17 @@ function getEnabledCategories(): Set<string> | null {
 
 function getMutedCategories(): Set<string> {
   const cats = process.env.LOG_MUTE || '';
-  return new Set(cats.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean));
+  return new Set(
+    cats
+      .split(',')
+      .map((c) => c.trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 // Cached config
 let cachedLevel: LogLevel | null = null;
-let cachedEnabled: Set<string> | null | undefined = undefined;
+let cachedEnabled: Set<string> | null | undefined;
 let cachedMuted: Set<string> | null = null;
 
 function getConfig() {

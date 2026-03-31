@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { validateWebhookUrl, validateWebhookUrlWithDns, isBlockedIp } from './webhook-url-validator';
+import { isBlockedIp, validateWebhookUrl, validateWebhookUrlWithDns } from './webhook-url-validator';
 
 describe('validateWebhookUrl', () => {
   it('accepts valid HTTPS URL', () => {

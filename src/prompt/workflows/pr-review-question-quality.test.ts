@@ -8,9 +8,10 @@
  * Red test strategy: if someone re-introduces Fix/Defer/Skip as a
  * recommended pattern (not in a "BAD" or "NEVER" context), these tests fail.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = resolve(__dirname, '../../..');
 
@@ -28,9 +29,7 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
 
     it('should NOT recommend Fix/Defer/Skip as a USE case', () => {
       // Extract only "USE this skill when" section (between USE and DO NOT)
-      const useSection = content.match(
-        /### USE this skill when:([\s\S]*?)### DO NOT use when:/,
-      );
+      const useSection = content.match(/### USE this skill when:([\s\S]*?)### DO NOT use when:/);
       expect(useSection).toBeTruthy();
       const useSectionText = useSection![1];
 
@@ -40,18 +39,14 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('should explicitly ban Fix/Defer/Skip in DO NOT section', () => {
-      const doNotSection = content.match(
-        /### DO NOT use when:([\s\S]*?)---/,
-      );
+      const doNotSection = content.match(/### DO NOT use when:([\s\S]*?)---/);
       expect(doNotSection).toBeTruthy();
       // Must mention the ban
       expect(doNotSection![1]).toMatch(/Fix\/Defer\/Skip/);
     });
 
     it('should have Fix/Defer/Skip as BAD example', () => {
-      const badSection = content.match(
-        /## Bad Examples[\s\S]*?## Good Example/,
-      );
+      const badSection = content.match(/## Bad Examples[\s\S]*?## Good Example/);
       expect(badSection).toBeTruthy();
       // Must have both: the pattern name AND the prohibition keyword together
       expect(badSection![0]).toMatch(/Fix\/Defer\/Skip.*(?:금지|절대 금지)/);
@@ -60,9 +55,7 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('Good Example choices should use Option A/B pattern, not Fix/Defer/Skip', () => {
-      const goodSection = content.match(
-        /## Good Example([\s\S]*?)## Key Principles/,
-      );
+      const goodSection = content.match(/## Good Example([\s\S]*?)## Key Principles/);
       expect(goodSection).toBeTruthy();
       const goodText = goodSection![1];
 
@@ -77,9 +70,7 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('should not allow plain text fallback for PR review context', () => {
-      expect(content).toMatch(
-        /PR review.*plain text.*금지|plain text 절대 금지/,
-      );
+      expect(content).toMatch(/PR review.*plain text.*금지|plain text 절대 금지/);
     });
   });
 
@@ -91,14 +82,10 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('should reference 구현 방식 선택, not Fix/Defer/Skip for code review', () => {
-      const reviewLine = content
-        .split('\n')
-        .find((l) => l.includes('코드 리뷰'));
+      const reviewLine = content.split('\n').find((l) => l.includes('코드 리뷰'));
       expect(reviewLine).toBeTruthy();
       expect(reviewLine).toMatch(/구현 방식 선택/);
-      expect(reviewLine).not.toMatch(
-        /Fix\/Defer\/Skip 결정 시 이 게이트로 판별$/,
-      );
+      expect(reviewLine).not.toMatch(/Fix\/Defer\/Skip 결정 시 이 게이트로 판별$/);
     });
   });
 
@@ -119,15 +106,11 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('should ban Fix/Defer/Skip pattern in questions', () => {
-      expect(content).toMatch(
-        /fix\/defer\/skip.*금지|고칠까요.*금지/i,
-      );
+      expect(content).toMatch(/fix\/defer\/skip.*금지|고칠까요.*금지/i);
     });
 
     it('should have quality checklist with 6 specific items', () => {
-      const checklist = content.match(
-        /질문 품질 자체 검증 체크리스트[\s\S]*?(?=\n\n[^-])/,
-      );
+      const checklist = content.match(/질문 품질 자체 검증 체크리스트[\s\S]*?(?=\n\n[^-])/);
       expect(checklist).toBeTruthy();
       const checklistText = checklist![0];
       const checkItems = checklistText.match(/- \[ \]/g);
@@ -149,9 +132,7 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     });
 
     it('should ban defer variants in question choices', () => {
-      expect(content).toMatch(
-        /별도 이슈로 분리.*defer.*선택지에 포함하지 않/,
-      );
+      expect(content).toMatch(/별도 이슈로 분리.*defer.*선택지에 포함하지 않/);
     });
   });
 });

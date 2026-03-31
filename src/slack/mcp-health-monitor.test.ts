@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { McpHealthMonitor } from './mcp-health-monitor';
 
 describe('McpHealthMonitor', () => {
@@ -9,11 +9,11 @@ describe('McpHealthMonitor', () => {
   beforeEach(() => {
     slackApi = { postSystemMessage: vi.fn().mockResolvedValue({}) };
     mcpManager = { reloadConfiguration: vi.fn().mockReturnValue({}) };
-    monitor = new McpHealthMonitor(
-      slackApi as any,
-      mcpManager as any,
-      { errorThreshold: 2, errorWindowMs: 1000, alertCooldownMs: 1000 }
-    );
+    monitor = new McpHealthMonitor(slackApi as any, mcpManager as any, {
+      errorThreshold: 2,
+      errorWindowMs: 1000,
+      alertCooldownMs: 1000,
+    });
   });
 
   it('alerts and reloads after threshold is reached', async () => {

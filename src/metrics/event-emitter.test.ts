@@ -1,7 +1,7 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ConversationSession } from '../types';
 import { MetricsEventEmitter } from './event-emitter';
 import { MetricsEventStore } from './event-store';
-import { ConversationSession } from '../types';
 
 // Contract tests — Scenario 2 & 3: MetricsEventEmitter + Hooks
 // Trace: docs/daily-weekly-report/trace.md
@@ -78,9 +78,7 @@ describe('MetricsEventEmitter', () => {
     await emitter.emitSessionCreated(session);
 
     const event = mockStore.append.mock.calls[0][0];
-    expect(event.metadata).toEqual(
-      expect.objectContaining({ channelId: 'C789', threadTs: '999.888' })
-    );
+    expect(event.metadata).toEqual(expect.objectContaining({ channelId: 'C789', threadTs: '999.888' }));
   });
 
   // Trace: Scenario 2, Section 5 — fire-and-forget resilience
@@ -100,9 +98,7 @@ describe('MetricsEventEmitter', () => {
     const event = mockStore.append.mock.calls[0][0];
     expect(event.eventType).toBe('turn_used');
     expect(event.userId).toBe('U123');
-    expect(event.metadata).toEqual(
-      expect.objectContaining({ conversationId: 'conv-1', role: 'user' })
-    );
+    expect(event.metadata).toEqual(expect.objectContaining({ conversationId: 'conv-1', role: 'user' }));
   });
 
   // Trace: Scenario 3, Section 3a — assistant turn event

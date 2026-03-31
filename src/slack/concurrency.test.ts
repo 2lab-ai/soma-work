@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Session Concurrency Tests
@@ -304,7 +304,7 @@ describe('Session Concurrency Control', () => {
 
       // First 4 controllers should be aborted
       expect(abortedControllers.length).toBe(4);
-      abortedControllers.forEach(c => {
+      abortedControllers.forEach((c) => {
         expect(c.signal.aborted).toBe(true);
       });
 

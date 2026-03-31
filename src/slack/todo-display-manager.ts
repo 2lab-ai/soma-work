@@ -1,17 +1,15 @@
-import { TodoManager, Todo } from '../todo-manager';
-import { ReactionManager } from './reaction-manager';
 import { Logger } from '../logger';
-import { shouldOutput, OutputFlag, LOG_DETAIL } from './output-flags';
-import { SlackApiHelper } from './slack-api-helper';
-import { ConversationSession } from '../types';
+import type { Todo, TodoManager } from '../todo-manager';
+import type { ConversationSession } from '../types';
+import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import type { ReactionManager } from './reaction-manager';
+import type { SlackApiHelper } from './slack-api-helper';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
 }
 
-export interface SayFunction {
-  (message: { text: string; thread_ts: string }): Promise<{ ts?: string }>;
-}
+export type SayFunction = (message: { text: string; thread_ts: string }) => Promise<{ ts?: string }>;
 
 /**
  * Callback to trigger a thread header re-render after todo changes.
@@ -39,7 +37,7 @@ export class TodoDisplayManager {
   constructor(
     private slackApi: SlackApiHelper,
     private todoManager: TodoManager,
-    private reactionManager: ReactionManager
+    private reactionManager: ReactionManager,
   ) {}
 
   /**
@@ -88,7 +86,7 @@ export class TodoDisplayManager {
         }
 
         // Freeze completion timestamp when all tasks done (prevents drift on re-render)
-        const allDone = newTodos.length > 0 && newTodos.every(t => t.status === 'completed');
+        const allDone = newTodos.length > 0 && newTodos.every((t) => t.status === 'completed');
         if (allDone && !session.taskListCompletedAt) {
           session.taskListCompletedAt = Date.now();
         } else if (!allDone) {
@@ -109,15 +107,11 @@ export class TodoDisplayManager {
             error: (error as Error).message,
           });
           // Fallback: post/update separate message (legacy behavior)
-          await this.legacyUpdateMessage(
-            newTodos, channel, threadTs, sessionKey, say
-          );
+          await this.legacyUpdateMessage(newTodos, channel, threadTs, sessionKey, say);
         }
       } else {
         // No render callback: use legacy separate-message approach
-        await this.legacyUpdateMessage(
-          newTodos, channel, threadTs, sessionKey, say
-        );
+        await this.legacyUpdateMessage(newTodos, channel, threadTs, sessionKey, say);
       }
 
       // Update reaction based on overall progress

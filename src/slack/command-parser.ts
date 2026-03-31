@@ -47,9 +47,11 @@ export class CommandParser {
    */
   static isAdminCommand(text: string): boolean {
     const trimmed = text.trim();
-    return /^\/?(?:accept|deny)\s+<@\w+(?:\|[^>]*)?>$/i.test(trimmed)
-      || /^\/?users$/i.test(trimmed)
-      || /^\/?config\s+\S+/i.test(trimmed);
+    return (
+      /^\/?(?:accept|deny)\s+<@\w+(?:\|[^>]*)?>$/i.test(trimmed) ||
+      /^\/?users$/i.test(trimmed) ||
+      /^\/?config\s+\S+/i.test(trimmed)
+    );
   }
 
   /**
@@ -338,8 +340,10 @@ export class CommandParser {
    * Check if text is a sessions command (with optional 'public' flag)
    */
   static isSessionsCommand(text: string): boolean {
-    return /^\/?sessions?(?:\s+(?:public|theme(?:\s*=\s*\S+)?))?$/i.test(text.trim())
-      || /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(text.trim());
+    return (
+      /^\/?sessions?(?:\s+(?:public|theme(?:\s*=\s*\S+)?))?$/i.test(text.trim()) ||
+      /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(text.trim())
+    );
   }
 
   /**
@@ -348,8 +352,7 @@ export class CommandParser {
    */
   static isSessionThemeCommand(text: string): boolean {
     const t = text.trim();
-    return /^\/?sessions?\s+theme(\s*=\s*\S+)?$/i.test(t)
-      || /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(t);
+    return /^\/?sessions?\s+theme(\s*=\s*\S+)?$/i.test(t) || /^\/?theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(t);
   }
 
   /**
@@ -441,9 +444,7 @@ export class CommandParser {
     }
 
     // Parse: set llm_chat <provider> <key> <value>
-    const setMatch = trimmed.match(
-      /^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i
-    );
+    const setMatch = trimmed.match(/^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i);
     if (setMatch) {
       return {
         action: 'set',
@@ -462,7 +463,11 @@ export class CommandParser {
     }
 
     // Fallback for any other unrecognized pattern
-    return { action: 'error', message: 'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`' };
+    return {
+      action: 'error',
+      message:
+        'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`',
+    };
   }
 
   /**
@@ -514,8 +519,7 @@ export class CommandParser {
    */
   static isPluginsCommand(text: string): boolean {
     const t = text.trim();
-    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+|\s+update)?$/i.test(t)
-      || /^\/?플러그인\s*업데이트$/i.test(t);
+    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+|\s+update)?$/i.test(t) || /^\/?플러그인\s*업데이트$/i.test(t);
   }
 
   /**
@@ -587,31 +591,55 @@ export class CommandParser {
    */
   private static readonly COMMAND_KEYWORDS = new Set([
     // Admin commands
-    'accept', 'deny', 'users', 'config',
+    'accept',
+    'deny',
+    'users',
+    'config',
     // Token management
-    'cct', 'set_cct', 'nextcct',
+    'cct',
+    'set_cct',
+    'nextcct',
     // Working directory
     'cwd',
     // MCP
-    'mcp', 'servers',
+    'mcp',
+    'servers',
     // Permissions
     'bypass',
     // Persona & Model & Verbosity
-    'persona', 'model', 'verbosity',
+    'persona',
+    'model',
+    'verbosity',
     // Sessions
-    'sessions', 'terminate', 'kill', 'end', 'new', 'onboarding', 'context', 'renew', 'close', 'link',
+    'sessions',
+    'terminate',
+    'kill',
+    'end',
+    'new',
+    'onboarding',
+    'context',
+    'renew',
+    'close',
+    'link',
     // Credentials
-    'restore', 'credentials',
+    'restore',
+    'credentials',
     // Help
-    'help', 'commands',
+    'help',
+    'commands',
     // Marketplace & Plugins
-    'marketplace', 'plugins', '플러그인',
+    'marketplace',
+    'plugins',
+    '플러그인',
     // Future: save/load (oh-my-claude skills)
-    'save', 'load',
+    'save',
+    'load',
     // Admin: show prompt / show instructions (exact two-word forms)
-    'show_prompt', 'show_instructions',
+    'show_prompt',
+    'show_instructions',
     // Notification
-    'notify', 'webhook',
+    'notify',
+    'webhook',
   ]);
 
   /**
@@ -637,12 +665,12 @@ export class CommandParser {
     // / prefix: only if the slash-root is a known keyword
     if (firstWord.startsWith('/')) {
       const slashRoot = firstWord.slice(1);
-      if (this.COMMAND_KEYWORDS.has(slashRoot)) {
+      if (CommandParser.COMMAND_KEYWORDS.has(slashRoot)) {
         return { isPotential: true, keyword: slashRoot };
       }
       if (words.length >= 2) {
         const twoWord = `${slashRoot}_${words[1]}`;
-        if (this.COMMAND_KEYWORDS.has(twoWord)) {
+        if (CommandParser.COMMAND_KEYWORDS.has(twoWord)) {
           return { isPotential: true, keyword: twoWord };
         }
       }
@@ -650,14 +678,14 @@ export class CommandParser {
     }
 
     // Plain text: ONLY exact single-word match (e.g., "help" alone, not "help me with X")
-    if (words.length === 1 && this.COMMAND_KEYWORDS.has(firstWord)) {
+    if (words.length === 1 && CommandParser.COMMAND_KEYWORDS.has(firstWord)) {
       return { isPotential: true, keyword: firstWord };
     }
 
     // Exact fixed multi-word commands (e.g., "show prompt", "show instructions")
     if (words.length === 2) {
       const twoWord = `${words[0]}_${words[1]}`;
-      if (this.COMMAND_KEYWORDS.has(twoWord)) {
+      if (CommandParser.COMMAND_KEYWORDS.has(twoWord)) {
         return { isPotential: true, keyword: twoWord };
       }
     }
@@ -681,7 +709,7 @@ export class CommandParser {
       '• `sessions public` - Show your sessions to everyone in channel',
       '• `all_sessions` or `/all_sessions` - Show all active sessions',
       '• `terminate <session-key>` - Terminate a specific session',
-      '• `close` or `/close` - Close current thread\'s session',
+      "• `close` or `/close` - Close current thread's session",
       '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
       '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
       '• `onboarding` or `/onboarding` - Run onboarding workflow anytime',

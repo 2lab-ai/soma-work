@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SlashCommandAdapter } from './slash-command-adapter';
 
 /**
@@ -54,7 +54,7 @@ describe('SlashCommandAdapter', () => {
       expect.objectContaining({
         text: 'Hello world',
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
@@ -72,7 +72,7 @@ describe('SlashCommandAdapter', () => {
         text: 'test',
         blocks,
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
@@ -110,15 +110,23 @@ describe('/soma slash command — valid subcommand routing', () => {
       text: 'help',
       user_id: 'U1',
       channel_id: 'C1',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 
     const ctx = SlashCommandAdapter.adapt(command as any, respond);
 
     const deps: any = {
-      workingDirManager: { parseSetCommand: vi.fn().mockReturnValue(null), isGetCommand: vi.fn().mockReturnValue(false) },
+      workingDirManager: {
+        parseSetCommand: vi.fn().mockReturnValue(null),
+        isGetCommand: vi.fn().mockReturnValue(false),
+      },
       mcpManager: { getPluginManager: vi.fn() },
       claudeHandler: {},
       sessionUiManager: {},
@@ -150,15 +158,23 @@ describe('/soma slash command — empty/unknown subcommand', () => {
       text: 'asdf',
       user_id: 'U1',
       channel_id: 'C1',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 
     const ctx = SlashCommandAdapter.adapt(command as any, respond);
 
     const deps: any = {
-      workingDirManager: { parseSetCommand: vi.fn().mockReturnValue(null), isGetCommand: vi.fn().mockReturnValue(false) },
+      workingDirManager: {
+        parseSetCommand: vi.fn().mockReturnValue(null),
+        isGetCommand: vi.fn().mockReturnValue(false),
+      },
       mcpManager: { getPluginManager: vi.fn() },
       claudeHandler: {},
       sessionUiManager: {},
@@ -189,8 +205,13 @@ describe('/session slash command', () => {
       text: '',
       user_id: 'U1',
       channel_id: 'C1',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 
@@ -200,7 +221,7 @@ describe('/session slash command', () => {
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
@@ -212,8 +233,13 @@ describe('/session slash command', () => {
       text: '',
       user_id: 'U094E5L4A15',
       channel_id: 'C1',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 
@@ -235,8 +261,13 @@ describe('/new slash command — thread context fallback', () => {
       text: '',
       user_id: 'U1',
       channel_id: 'C1',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 
@@ -246,7 +277,7 @@ describe('/new slash command — thread context fallback', () => {
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         response_type: 'ephemeral',
-      })
+      }),
     );
   });
 
@@ -258,8 +289,13 @@ describe('/new slash command — thread context fallback', () => {
       text: 'fix the bug',
       user_id: 'U1',
       channel_id: 'C_TEST',
-      token: 't', user_name: 'u', team_id: 'T', team_domain: 'd',
-      channel_name: 'g', api_app_id: 'A', trigger_id: 'tr',
+      token: 't',
+      user_name: 'u',
+      team_id: 'T',
+      team_domain: 'd',
+      channel_name: 'g',
+      api_app_id: 'A',
+      trigger_id: 'tr',
       response_url: 'https://hooks.slack.com/commands/xxx',
     };
 

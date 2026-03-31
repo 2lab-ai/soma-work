@@ -1,19 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { normalizeTmpPath } from './path-utils';
 
 describe('normalizeTmpPath', () => {
   // Trace: Scenario 3, Section 3a — /private/tmp → /tmp conversion
   it('converts /private/tmp/ prefix to /tmp/', () => {
-    expect(normalizeTmpPath('/private/tmp/U094E5L4A15/soma-work')).toBe(
-      '/tmp/U094E5L4A15/soma-work'
-    );
+    expect(normalizeTmpPath('/private/tmp/U094E5L4A15/soma-work')).toBe('/tmp/U094E5L4A15/soma-work');
   });
 
   // Trace: Scenario 3, Section 3a — already /tmp stays unchanged
   it('leaves /tmp/ paths unchanged', () => {
-    expect(normalizeTmpPath('/tmp/U094E5L4A15/soma-work')).toBe(
-      '/tmp/U094E5L4A15/soma-work'
-    );
+    expect(normalizeTmpPath('/tmp/U094E5L4A15/soma-work')).toBe('/tmp/U094E5L4A15/soma-work');
   });
 
   // Trace: Scenario 3, Section 5 — non /tmp paths unchanged

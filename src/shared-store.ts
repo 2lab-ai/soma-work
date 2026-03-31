@@ -1,6 +1,6 @@
 import fs from 'fs';
-import path from 'path';
 import os from 'os';
+import path from 'path';
 import { StderrLogger } from './stderr-logger.js';
 
 const logger = new StderrLogger('SharedStore');
@@ -35,7 +35,7 @@ export class SharedStore {
     this.storeDir = path.join(os.tmpdir(), 'soma-work-store');
     this.pendingDir = path.join(this.storeDir, 'pending');
     this.responseDir = path.join(this.storeDir, 'responses');
-    
+
     this.ensureDirectories();
   }
 
@@ -79,16 +79,16 @@ export class SharedStore {
       if (!fs.existsSync(filePath)) {
         return null;
       }
-      
+
       const data = await fs.promises.readFile(filePath, 'utf8');
       const approval = JSON.parse(data) as PendingApproval;
-      
+
       // Check if expired
       if (Date.now() > approval.expires_at) {
         await this.deletePendingApproval(approvalId);
         return null;
       }
-      
+
       return approval;
     } catch (error) {
       logger.error('Failed to get pending approval:', error);
@@ -117,7 +117,7 @@ export class SharedStore {
     const filePath = path.join(this.responseDir, `${approvalId}.json`);
     const startTime = Date.now();
     const pollInterval = 500; // 500ms polling interval
-    
+
     return new Promise((resolve, reject) => {
       const poll = async () => {
         try {
@@ -126,7 +126,7 @@ export class SharedStore {
             await this.cleanup(approvalId);
             resolve({
               behavior: 'deny',
-              message: 'Permission request timed out'
+              message: 'Permission request timed out',
             });
             return;
           }
@@ -135,10 +135,10 @@ export class SharedStore {
           if (fs.existsSync(filePath)) {
             const data = await fs.promises.readFile(filePath, 'utf8');
             const response = JSON.parse(data) as PermissionResponse;
-            
+
             // Cleanup files
             await this.cleanup(approvalId);
-            
+
             resolve(response);
             return;
           }
@@ -175,10 +175,7 @@ export class SharedStore {
    * Clean up all files for an approval ID
    */
   async cleanup(approvalId: string): Promise<void> {
-    await Promise.all([
-      this.deletePendingApproval(approvalId),
-      this.deletePermissionResponse(approvalId)
-    ]);
+    await Promise.all([this.deletePendingApproval(approvalId), this.deletePermissionResponse(approvalId)]);
   }
 
   /**
@@ -203,13 +200,13 @@ export class SharedStore {
     let cleaned = 0;
     try {
       const pendingFiles = await fs.promises.readdir(this.pendingDir);
-      
+
       for (const fileName of pendingFiles) {
         if (!fileName.endsWith('.json')) continue;
-        
+
         const approvalId = fileName.replace('.json', '');
         const approval = await this.getPendingApproval(approvalId);
-        
+
         if (!approval) {
           // File was already cleaned up by getPendingApproval if expired
           cleaned++;
@@ -218,7 +215,7 @@ export class SharedStore {
     } catch (error) {
       logger.error('Failed to cleanup expired approvals:', error);
     }
-    
+
     return cleaned;
   }
 
@@ -228,7 +225,7 @@ export class SharedStore {
   async getPendingCount(): Promise<number> {
     try {
       const files = await fs.promises.readdir(this.pendingDir);
-      return files.filter(f => f.endsWith('.json')).length;
+      return files.filter((f) => f.endsWith('.json')).length;
     } catch (error) {
       logger.error('Failed to get pending count:', error);
       return 0;
@@ -241,9 +238,7 @@ export class SharedStore {
   async listPendingApprovalIds(): Promise<string[]> {
     try {
       const files = await fs.promises.readdir(this.pendingDir);
-      return files
-        .filter(f => f.endsWith('.json'))
-        .map(f => f.replace('.json', ''));
+      return files.filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''));
     } catch (error) {
       logger.error('Failed to list pending approval IDs:', error);
       return [];

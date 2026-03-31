@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../user-settings-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../user-settings-store')>();
@@ -11,10 +11,10 @@ vi.mock('../user-settings-store', async (importOriginal) => {
   };
 });
 
+import type { ClaudeHandler } from '../claude-handler';
+import type { ConversationSession } from '../types';
 import { SessionUiManager } from './session-manager';
-import { SlackApiHelper } from './slack-api-helper';
-import { ClaudeHandler } from '../claude-handler';
-import { ConversationSession } from '../types';
+import type { SlackApiHelper } from './slack-api-helper';
 
 // Mock SlackApiHelper
 const createMockSlackApi = () => ({
@@ -55,7 +55,7 @@ describe('SessionUiManager', () => {
     mockClaudeHandler = createMockClaudeHandler();
     manager = new SessionUiManager(
       mockClaudeHandler as unknown as ClaudeHandler,
-      mockSlackApi as unknown as SlackApiHelper
+      mockSlackApi as unknown as SlackApiHelper,
     );
   });
 
@@ -81,23 +81,20 @@ describe('SessionUiManager', () => {
 
       expect(result.text).toBe('📋 내 세션 목록 (1개)');
       // section.text layout: session title is in section.text.text
-      const containsTitle = (b: any, title: string) =>
-        b.text?.text?.includes(title);
+      const containsTitle = (b: any, title: string) => b.text?.text?.includes(title);
       expect(result.blocks.some((b: any) => containsTitle(b, 'My Session'))).toBe(true);
       expect(result.blocks.some((b: any) => containsTitle(b, 'Other Session'))).toBe(false);
     });
 
     it('should include terminate button for each session', async () => {
-      const sessions = new Map([
-        ['session1', createMockSession({ ownerId: 'U123', title: 'My Session' })],
-      ]);
+      const sessions = new Map([['session1', createMockSession({ ownerId: 'U123', title: 'My Session' })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
 
       const result = await manager.formatUserSessionsBlocks('U123');
 
       // In the new default theme, terminate button is in an actions block
-      const actionsBlock = result.blocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      const actionsBlock = result.blocks.find(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session'),
       );
       expect(actionsBlock).toBeDefined();
       const terminateBtn = actionsBlock.elements.find((e: any) => e.action_id === 'terminate_session');
@@ -105,9 +102,7 @@ describe('SessionUiManager', () => {
     });
 
     it('should skip sessions without sessionId', async () => {
-      const sessions = new Map([
-        ['session1', createMockSession({ ownerId: 'U123', sessionId: undefined })],
-      ]);
+      const sessions = new Map([['session1', createMockSession({ ownerId: 'U123', sessionId: undefined })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
 
       const result = await manager.formatUserSessionsBlocks('U123');
@@ -125,14 +120,18 @@ describe('SessionUiManager', () => {
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123');
       // Find card section by looking for a section with session title text
-      const titleSectionIdx = result.blocks.findIndex((b: any) =>
-        b.type === 'section' && b.text?.text && !b.text.text.includes('활성 세션 없음')
+      const titleSectionIdx = result.blocks.findIndex(
+        (b: any) => b.type === 'section' && b.text?.text && !b.text.text.includes('활성 세션 없음'),
       );
       if (titleSectionIdx === -1) return { result, cardBlocks: [], allBlocks: result.blocks };
       const cardBlocks: any[] = [];
       for (let i = titleSectionIdx; i < result.blocks.length; i++) {
         const b = result.blocks[i];
-        if (b.type === 'divider' || (b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'refresh_sessions'))) break;
+        if (
+          b.type === 'divider' ||
+          (b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'refresh_sessions'))
+        )
+          break;
         cardBlocks.push(b);
       }
       return { result, cardBlocks, allBlocks: result.blocks };
@@ -150,9 +149,7 @@ describe('SessionUiManager', () => {
     it('should show model, channel, time in meta context block', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
       // Meta context is the first context block after section
-      const metaCtx = cardBlocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('`')
-      );
+      const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('`'));
       expect(metaCtx).toBeDefined();
       const metaText = metaCtx.elements[0].text;
       expect(metaText).toContain('#general');
@@ -166,64 +163,95 @@ describe('SessionUiManager', () => {
 
     it('should include 💬 스레드 button when permalink exists', async () => {
       const { allBlocks } = await getCardBlocks(createMockSession({ title: 'My Title' }));
-      const actionsBlock = allBlocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드'))
+      const actionsBlock = allBlocks.find(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드')),
       );
       expect(actionsBlock).toBeDefined();
     });
 
     it('should include model in meta context', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const metaCtx = cardBlocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('·')
-      );
+      const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('·'));
       expect(metaCtx).toBeDefined();
     });
 
     it('should include time info in meta context', async () => {
       const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const metaCtx = cardBlocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('·')
-      );
+      const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('·'));
       expect(metaCtx).toBeDefined();
     });
 
     it('should render issue link in linkHistory context when linkHistory has issues', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [{ url: 'https://github.com/org/repo/issues/42', label: '#42', type: 'issue' as const, provider: 'github' as const }],
-          prs: [], docs: [],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [
+              {
+                url: 'https://github.com/org/repo/issues/42',
+                label: '#42',
+                type: 'issue' as const,
+                provider: 'github' as const,
+              },
+            ],
+            prs: [],
+            docs: [],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('#42');
     });
 
     it('should render PR link in linkHistory context when linkHistory has PRs', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [],
-          prs: [{ url: 'https://github.com/org/repo/pull/73', label: 'PR #73', type: 'pr' as const, provider: 'github' as const }],
-          docs: [],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [],
+            prs: [
+              {
+                url: 'https://github.com/org/repo/pull/73',
+                label: 'PR #73',
+                type: 'pr' as const,
+                provider: 'github' as const,
+              },
+            ],
+            docs: [],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🔀'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('PR #73');
     });
 
     it('should render both issue and PR in linkHistory context when both exist', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [{ url: 'https://github.com/org/repo/issues/42', label: '#42', type: 'issue' as const, provider: 'github' as const }],
-          prs: [{ url: 'https://github.com/org/repo/pull/73', label: 'PR #73', type: 'pr' as const, provider: 'github' as const }],
-          docs: [],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [
+              {
+                url: 'https://github.com/org/repo/issues/42',
+                label: '#42',
+                type: 'issue' as const,
+                provider: 'github' as const,
+              },
+            ],
+            prs: [
+              {
+                url: 'https://github.com/org/repo/pull/73',
+                label: 'PR #73',
+                type: 'pr' as const,
+                provider: 'github' as const,
+              },
+            ],
+            docs: [],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
       expect(ctx).toBeDefined();
       const metaText = ctx.elements[0].text;
@@ -234,41 +262,69 @@ describe('SessionUiManager', () => {
     });
 
     it('should render doc link in linkHistory context when linkHistory has docs', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [], prs: [],
-          docs: [{ url: 'https://docs.example.com/guide', label: 'Guide', type: 'doc' as const, provider: 'unknown' as const }],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [],
+            prs: [],
+            docs: [
+              {
+                url: 'https://docs.example.com/guide',
+                label: 'Guide',
+                type: 'doc' as const,
+                provider: 'unknown' as const,
+              },
+            ],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('📄'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('Guide');
     });
 
     it('should not render linkHistory context when no linkHistory exists', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-      }));
-      const linkCtx = cardBlocks.find((b: any) =>
-        b.type === 'context' && (
-          b.elements?.[0]?.text?.includes('🎫') ||
-          b.elements?.[0]?.text?.includes('🔀') ||
-          b.elements?.[0]?.text?.includes('📄')
-        )
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+        }),
+      );
+      const linkCtx = cardBlocks.find(
+        (b: any) =>
+          b.type === 'context' &&
+          (b.elements?.[0]?.text?.includes('🎫') ||
+            b.elements?.[0]?.text?.includes('🔀') ||
+            b.elements?.[0]?.text?.includes('📄')),
       );
       expect(linkCtx).toBeUndefined();
     });
 
     it('should use dot separators between linkHistory parts', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [{ url: 'https://github.com/org/repo/issues/1', label: '#1', type: 'issue' as const, provider: 'github' as const }],
-          prs: [{ url: 'https://github.com/org/repo/pull/2', label: 'PR #2', type: 'pr' as const, provider: 'github' as const }],
-          docs: [],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [
+              {
+                url: 'https://github.com/org/repo/issues/1',
+                label: '#1',
+                type: 'issue' as const,
+                provider: 'github' as const,
+              },
+            ],
+            prs: [
+              {
+                url: 'https://github.com/org/repo/pull/2',
+                label: 'PR #2',
+                type: 'pr' as const,
+                provider: 'github' as const,
+              },
+            ],
+            docs: [],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('·');
@@ -278,8 +334,8 @@ describe('SessionUiManager', () => {
       const sessions = new Map([['s1', createMockSession({ title: 'Test' })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123', { showControls: false });
-      const terminateActions = result.blocks.filter((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      const terminateActions = result.blocks.filter(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session'),
       );
       expect(terminateActions).toHaveLength(0);
     });
@@ -288,117 +344,156 @@ describe('SessionUiManager', () => {
       const sessions = new Map([['s1', createMockSession({ title: 'Test' })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123', { showControls: false });
-      const actionsBlocks = result.blocks.filter((b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('jira_')));
+      const actionsBlocks = result.blocks.filter(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id?.startsWith('jira_')),
+      );
       expect(actionsBlocks).toHaveLength(0);
     });
 
     it('should render sleeping session card without errors', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Sleeping Session',
-        state: 'SLEEPING',
-        sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Sleeping Session',
+          state: 'SLEEPING',
+          sleepStartedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        }),
+      );
       expect(cardBlocks[0].text.text).toContain('Sleeping Session');
     });
 
     it('should render sleeping session without sleepStartedAt', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Sleeping Session',
-        state: 'SLEEPING',
-        sleepStartedAt: undefined,
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Sleeping Session',
+          state: 'SLEEPING',
+          sleepStartedAt: undefined,
+        }),
+      );
       expect(cardBlocks[0].text.text).toContain('Sleeping Session');
     });
 
     it('should prefix title with working emoji when activityState is working', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Active Work',
-        activityState: 'working',
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Active Work',
+          activityState: 'working',
+        }),
+      );
       expect(cardBlocks[0].text.text).toMatch(/^⚙️/);
     });
 
     it('should prefix title with waiting emoji when activityState is waiting', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Waiting',
-        activityState: 'waiting',
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Waiting',
+          activityState: 'waiting',
+        }),
+      );
       expect(cardBlocks[0].text.text).toMatch(/^✋/);
     });
 
     it('should not include permalink button when threadTs is missing', async () => {
-      const { allBlocks } = await getCardBlocks(createMockSession({
-        title: 'No Thread',
-        threadTs: undefined,
-      }));
-      const openBtn = allBlocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드'))
+      const { allBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'No Thread',
+          threadTs: undefined,
+        }),
+      );
+      const openBtn = allBlocks.find(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.text?.text?.includes('스레드')),
       );
       expect(openBtn).toBeUndefined();
       expect(mockSlackApi.getPermalink).not.toHaveBeenCalled();
     });
 
     it('should include owner name in session title section', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        ownerName: 'Zhuge',
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          ownerName: 'Zhuge',
+        }),
+      );
       // Owner no longer in fields but session is correctly rendered
       expect(cardBlocks[0].text.text).toContain('Test');
     });
 
     it('should use channelName in terminate confirm when title is missing', async () => {
       const { allBlocks } = await getCardBlocks(createMockSession({ title: undefined }));
-      const actionsBlock = allBlocks.find((b: any) =>
-        b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session')
+      const actionsBlock = allBlocks.find(
+        (b: any) => b.type === 'actions' && b.elements?.some((e: any) => e.action_id === 'terminate_session'),
       );
       const terminateBtn = actionsBlock.elements.find((e: any) => e.action_id === 'terminate_session');
       expect(terminateBtn.confirm.text.text).toContain('#general');
     });
 
     it('should default issue label in linkHistory context when label is missing', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [{ url: 'https://jira.example.com/browse/TEST-1', type: 'issue' as const, provider: 'jira' as const }],
-          prs: [],
-          docs: [],
-        },
-      }));
-      // Link history context is the 2nd context block (after meta context)
-      const linkCtx = cardBlocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('🎫')
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [
+              { url: 'https://jira.example.com/browse/TEST-1', type: 'issue' as const, provider: 'jira' as const },
+            ],
+            prs: [],
+            docs: [],
+          },
+        }),
       );
+      // Link history context is the 2nd context block (after meta context)
+      const linkCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
       expect(linkCtx).toBeDefined();
       expect(linkCtx.elements[0].text).toContain('jira.example.com');
     });
 
     it('should default PR label in linkHistory context when label is missing', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          prs: [{ url: 'https://github.com/org/repo/pull/1', type: 'pr' as const, provider: 'github' as const }],
-          issues: [],
-          docs: [],
-        },
-      }));
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            prs: [{ url: 'https://github.com/org/repo/pull/1', type: 'pr' as const, provider: 'github' as const }],
+            issues: [],
+            docs: [],
+          },
+        }),
+      );
       const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🔀'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text).toContain('🔀');
     });
 
     it('should keep linkHistory context text under Slack 3000 char mrkdwn limit', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({
-        title: 'Test',
-        linkHistory: {
-          issues: [{ url: 'https://jira.example.com/browse/' + 'A'.repeat(200), label: '#' + 'X'.repeat(50), type: 'issue' as const, provider: 'jira' as const }],
-          prs: [{ url: 'https://github.com/' + 'B'.repeat(200) + '/pull/999', label: 'PR #' + 'Y'.repeat(50), type: 'pr' as const, provider: 'github' as const }],
-          docs: [{ url: 'https://docs.example.com/' + 'C'.repeat(200), label: 'D'.repeat(50), type: 'doc' as const, provider: 'unknown' as const }],
-        },
-      }));
-      const ctx = cardBlocks.find((b: any) =>
-        b.type === 'context' && b.elements?.[0]?.text?.includes('🎫')
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({
+          title: 'Test',
+          linkHistory: {
+            issues: [
+              {
+                url: 'https://jira.example.com/browse/' + 'A'.repeat(200),
+                label: '#' + 'X'.repeat(50),
+                type: 'issue' as const,
+                provider: 'jira' as const,
+              },
+            ],
+            prs: [
+              {
+                url: 'https://github.com/' + 'B'.repeat(200) + '/pull/999',
+                label: 'PR #' + 'Y'.repeat(50),
+                type: 'pr' as const,
+                provider: 'github' as const,
+              },
+            ],
+            docs: [
+              {
+                url: 'https://docs.example.com/' + 'C'.repeat(200),
+                label: 'D'.repeat(50),
+                type: 'doc' as const,
+                provider: 'unknown' as const,
+              },
+            ],
+          },
+        }),
       );
+      const ctx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('🎫'));
       expect(ctx).toBeDefined();
       expect(ctx.elements[0].text.length).toBeLessThanOrEqual(3000);
     });
@@ -406,10 +501,13 @@ describe('SessionUiManager', () => {
     it('should keep total blocks within Slack 50 limit for 10 sessions', async () => {
       const sessions = new Map<string, ConversationSession>();
       for (let i = 0; i < 10; i++) {
-        sessions.set(`session${i}`, createMockSession({
-          title: `Session ${i}`,
-          lastActivity: new Date(Date.now() - i * 1000),
-        }));
+        sessions.set(
+          `session${i}`,
+          createMockSession({
+            title: `Session ${i}`,
+            lastActivity: new Date(Date.now() - i * 1000),
+          }),
+        );
       }
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
       const result = await manager.formatUserSessionsBlocks('U123');
@@ -451,7 +549,7 @@ describe('SessionUiManager', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('세션을 찾을 수 없습니다'),
-        })
+        }),
       );
     });
 
@@ -464,7 +562,7 @@ describe('SessionUiManager', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('권한이 없습니다'),
-        })
+        }),
       );
     });
 
@@ -478,23 +576,19 @@ describe('SessionUiManager', () => {
       expect(mockSay).toHaveBeenCalledWith(
         expect.objectContaining({
           text: expect.stringContaining('세션이 종료되었습니다'),
-        })
+        }),
       );
     });
 
     it('should notify original thread when different from current', async () => {
       const mockSay = vi.fn();
-      mockClaudeHandler.getSessionByKey.mockReturnValue(
-        createMockSession({ ownerId: 'U123', threadTs: '999.888' })
-      );
+      mockClaudeHandler.getSessionByKey.mockReturnValue(createMockSession({ ownerId: 'U123', threadTs: '999.888' }));
 
       await manager.handleTerminateCommand('session1', 'U123', 'C123', '111.222', mockSay);
 
-      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
-        'C123',
-        expect.stringContaining('세션이 종료되었습니다'),
-        { threadTs: '999.888' }
-      );
+      expect(mockSlackApi.postMessage).toHaveBeenCalledWith('C123', expect.stringContaining('세션이 종료되었습니다'), {
+        threadTs: '999.888',
+      });
     });
   });
 
@@ -507,7 +601,7 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         session.channelId,
         expect.stringContaining('세션 만료 예정'),
-        { threadTs: session.threadTs }
+        { threadTs: session.threadTs },
       );
       expect(result).toBe('123.456');
     });
@@ -520,7 +614,7 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
         session.channelId,
         'existing.123',
-        expect.stringContaining('세션 만료 예정')
+        expect.stringContaining('세션 만료 예정'),
       );
       expect(result).toBe('existing.123');
     });
@@ -535,7 +629,7 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.updateMessage).toHaveBeenCalledWith(
         session.channelId,
         'warning.123',
-        expect.stringContaining('세션이 종료되었습니다')
+        expect.stringContaining('세션이 종료되었습니다'),
       );
     });
 
@@ -547,7 +641,7 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         session.channelId,
         expect.stringContaining('세션이 종료되었습니다'),
-        { threadTs: session.threadTs }
+        { threadTs: session.threadTs },
       );
     });
   });
@@ -566,14 +660,12 @@ describe('SessionUiManager', () => {
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
         'C123',
         expect.stringContaining('서버 재시작'),
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 
     it('should skip sessions without sessionId', async () => {
-      const sessions = new Map([
-        ['session1', createMockSession({ sessionId: undefined })],
-      ]);
+      const sessions = new Map([['session1', createMockSession({ sessionId: undefined })]]);
       mockClaudeHandler.getAllSessions.mockReturnValue(sessions);
 
       await manager.notifyShutdown();

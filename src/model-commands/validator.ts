@@ -1,5 +1,4 @@
-import {
-  WorkflowType,
+import type {
   SaveContextResultPayload,
   SessionLink,
   SessionResourceOperation,
@@ -9,8 +8,9 @@ import {
   UserChoiceOption,
   UserChoiceQuestion,
   UserChoices,
+  WorkflowType,
 } from '../types';
-import {
+import type {
   AskUserQuestionParams,
   ContinueSessionParams,
   ModelCommandError,
@@ -18,9 +18,7 @@ import {
   SaveContextResultParams,
 } from './types';
 
-type ValidationResult =
-  | { ok: true; request: ModelCommandRunRequest }
-  | { ok: false; error: ModelCommandError };
+type ValidationResult = { ok: true; request: ModelCommandRunRequest } | { ok: false; error: ModelCommandError };
 
 const RESOURCE_TYPES: SessionResourceType[] = ['issue', 'pr', 'doc'];
 const WORKFLOW_TYPES: WorkflowType[] = [
@@ -86,11 +84,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
 
   const commandId = args.commandId;
   if (
-    commandId !== 'GET_SESSION'
-    && commandId !== 'UPDATE_SESSION'
-    && commandId !== 'ASK_USER_QUESTION'
-    && commandId !== 'CONTINUE_SESSION'
-    && commandId !== 'SAVE_CONTEXT_RESULT'
+    commandId !== 'GET_SESSION' &&
+    commandId !== 'UPDATE_SESSION' &&
+    commandId !== 'ASK_USER_QUESTION' &&
+    commandId !== 'CONTINUE_SESSION' &&
+    commandId !== 'SAVE_CONTEXT_RESULT'
   ) {
     return {
       ok: false,
@@ -155,9 +153,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
-  const saveParams = params !== undefined
-    ? params
-    : buildSaveContextFallbackParams(args);
+  const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
   const parsed = parseSaveContextResultParams(saveParams);
   if (!parsed.ok) {
     return parsed;
@@ -171,9 +167,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   };
 }
 
-function buildSaveContextFallbackParams(
-  args: Record<string, unknown>
-): Record<string, unknown> | undefined {
+function buildSaveContextFallbackParams(args: Record<string, unknown>): Record<string, unknown> | undefined {
   const fallback: Record<string, unknown> = {};
   if ('result' in args) {
     fallback.result = args.result;
@@ -188,7 +182,7 @@ function buildSaveContextFallbackParams(
 }
 
 function parseUpdateSessionRequest(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: SessionResourceUpdateRequest } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
     return invalidArgs('UPDATE_SESSION params must be an object');
@@ -231,7 +225,7 @@ function parseUpdateSessionRequest(
 }
 
 function parseSessionOperation(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: SessionResourceOperation } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
     return invalidArgs('UPDATE_SESSION operation must be an object');
@@ -239,11 +233,7 @@ function parseSessionOperation(
 
   const action = raw.action;
   const resourceType = raw.resourceType;
-  if (
-    action !== 'add'
-    && action !== 'remove'
-    && action !== 'set_active'
-  ) {
+  if (action !== 'add' && action !== 'remove' && action !== 'set_active') {
     return invalidArgs(`Unsupported operation action: ${String(action)}`);
   }
   if (!RESOURCE_TYPES.includes(resourceType as SessionResourceType)) {
@@ -294,7 +284,7 @@ function parseSessionOperation(
 }
 
 function parseAskUserQuestionParams(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: AskUserQuestionParams } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
     return invalidAskUserQuestionArgs(undefined, 'params_not_object');
@@ -305,10 +295,7 @@ function parseAskUserQuestionParams(
   }
 
   const payload = raw.payload;
-  if (
-    payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[0]
-    && payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[1]
-  ) {
+  if (payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[0] && payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[1]) {
     return invalidAskUserQuestionArgs(raw, 'invalid_payload_type');
   }
 
@@ -326,7 +313,7 @@ function parseAskUserQuestionParams(
 }
 
 function parseSaveContextResultParams(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: SaveContextResultParams } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
     return invalidArgs('SAVE_CONTEXT_RESULT params must be an object');
@@ -346,7 +333,7 @@ function parseSaveContextResultParams(
 }
 
 function parseContinueSessionParams(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: ContinueSessionParams } | { ok: false; error: ModelCommandError } {
   if (!isRecord(raw)) {
     return invalidArgs('CONTINUE_SESSION params must be an object');
@@ -423,7 +410,7 @@ function normalizeSaveContextResultFromVariants(raw: Record<string, unknown>): S
 
 function invalidAskUserQuestionArgs(
   raw: Record<string, unknown> | undefined,
-  reason: 'params_not_object' | 'missing_payload' | 'invalid_payload_type' | 'payload_schema_invalid'
+  reason: 'params_not_object' | 'missing_payload' | 'invalid_payload_type' | 'payload_schema_invalid',
 ): { ok: false; error: ModelCommandError } {
   const payloadType = raw && isRecord(raw.payload) ? raw.payload.type : undefined;
   const details = {
@@ -602,13 +589,7 @@ function normalizeSaveContextResult(raw: Record<string, unknown>): SaveContextRe
 }
 
 function toProvider(raw: unknown): SessionLink['provider'] {
-  if (
-    raw === 'github'
-    || raw === 'jira'
-    || raw === 'confluence'
-    || raw === 'linear'
-    || raw === 'unknown'
-  ) {
+  if (raw === 'github' || raw === 'jira' || raw === 'confluence' || raw === 'linear' || raw === 'unknown') {
     return raw;
   }
   return 'unknown';

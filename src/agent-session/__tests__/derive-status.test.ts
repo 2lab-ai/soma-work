@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { deriveStatus } from '../derive-status.js';
+import { describe, expect, it } from 'vitest';
 import type { EndTurnInfo } from '../agent-session-types.js';
+import { deriveStatus } from '../derive-status.js';
 
 // Trace: Scenario 1 — IAgentSession interface + deriveStatus
 
