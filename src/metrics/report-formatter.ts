@@ -101,16 +101,6 @@ interface FormattedReport {
 
 // === Visual Helpers (Bauhaus: functional only) ===
 
-function miniBar(value: number, max: number, width = 8): string {
-  const ratio = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
-  const filled = Math.round(ratio * width);
-  return '█'.repeat(filled) + '·'.repeat(width - filled);
-}
-
-function progressBar(value: number, max: number, width = 8): string {
-  return `${miniBar(value, max, width)} ${Math.round(max > 0 ? (value / max) * 100 : 0)}%`;
-}
-
 function deltaText(delta: number | undefined | null): string {
   if (delta === undefined || delta === null) return '';
   if (delta > 0) return `+${delta}%`;
@@ -125,13 +115,6 @@ function deltaArrow(delta: number | undefined | null): string {
   return '→';
 }
 
-function trendBadge(delta: number | undefined | null, trend: TrendComparison | null): string {
-  if (delta === undefined || delta === null) return '';
-  if (trend?.baselineZero === true) return ' `NEW`';
-  if (Math.abs(delta) < 5) return '';
-  return ` \`${deltaArrow(delta)}${deltaText(delta)}\``;
-}
-
 function fmt(n: number): string {
   return n.toLocaleString();
 }
@@ -140,15 +123,6 @@ function hourLabel(hour: number): string {
   const ampm = hour < 12 ? '오전' : '오후';
   const h = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
   return `${ampm} ${h}시`;
-}
-
-function codeChangeCompact(added: number, deleted: number, netLines?: number): string {
-  const net = netLines !== undefined ? netLines : (added - deleted);
-  const netSign = net >= 0 ? '+' : '';
-  if (deleted > 0) {
-    return `+${fmt(added)} / -${fmt(deleted)} (순${netSign}${fmt(net)})`;
-  }
-  return `+${fmt(added)}줄`;
 }
 
 function hasAnyEvents(breakdown: DailyBreakdown[]): boolean {
@@ -497,14 +471,6 @@ function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | nu
   }
 
   return elements;
-}
-
-/**
- * v5: Highlights — removed (no decorative content in v5).
- * Kept as stub returning null to avoid breaking call sites.
- */
-function buildHighlights(_achievements: Achievement[], _funFacts: FunFact[]): SlackBlock | null {
-  return null;
 }
 
 /**
