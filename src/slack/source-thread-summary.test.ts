@@ -101,9 +101,12 @@ describe('Scenario 4: PR merge posts summary to source thread', () => {
     const { postSourceThreadSummary } = await import('./source-thread-summary');
     await postSourceThreadSummary(mockSlackApi as any, session as any, 'merged');
 
-    const postedText = mockSlackApi.postMessage.mock.calls[0]?.[1];
-    expect(postedText).toContain('github.com/org/repo/issues/64');
-    expect(postedText).toContain('github.com/org/repo/pull/65');
+    // Block Kit: URLs are in blocks, not in fallback text
+    const callArgs = mockSlackApi.postMessage.mock.calls[0];
+    const opts = callArgs?.[2];
+    const blocksJson = JSON.stringify(opts?.blocks ?? []);
+    expect(blocksJson).toContain('github.com/org/repo/issues/64');
+    expect(blocksJson).toContain('github.com/org/repo/pull/65');
   });
 
   // Trace: S4, Sec 5 — postMessage 실패 시 throw 안 함

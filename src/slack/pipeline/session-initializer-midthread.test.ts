@@ -215,8 +215,13 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
       (call: any[]) => call[2]?.threadTs === '1711234567.000100',
     );
 
+    // Block Kit: permalink is in blocks (accessory button URL), not in fallback text
     const hasPermalinkMessage = originalThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && call[1].includes(newThreadPermalink),
+      (call: any[]) => {
+        const blocksJson = JSON.stringify(call[2]?.blocks ?? []);
+        return blocksJson.includes(newThreadPermalink) ||
+          (typeof call[1] === 'string' && call[1].includes(newThreadPermalink));
+      }
     );
 
     expect(hasPermalinkMessage).toBe(true);
@@ -239,7 +244,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     );
 
     const hasRetentionMessage = originalThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && call[1].includes('📋'),
+      (call: any[]) => typeof call[1] === 'string' && (call[1].includes('— 시작') || call[1].includes('📋'))
     );
 
     expect(hasRetentionMessage).toBe(true);
@@ -299,7 +304,10 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && call[1].includes('📋'),
+      (call: any[]) =>
+        call[2]?.threadTs === 'thread123' &&
+        typeof call[1] === 'string' &&
+        (call[1].includes('— 시작') || call[1].includes('📋'))
     );
 
     expect(retentionMessages).toHaveLength(0);
@@ -393,7 +401,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
     const originalPostMessage = mockSlackApi.postMessage;
     mockSlackApi.postMessage.mockImplementation(async (...args: any[]) => {
       const text = args[1];
-      if (typeof text === 'string' && text.includes('📋')) {
+      if (typeof text === 'string' && (text.includes('📋') || text.includes('— 시작'))) {
         callOrder.push('retention');
       }
       return { ts: 'msg123' };
@@ -436,7 +444,9 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
     // Retention message was posted to original thread
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        (call[1].includes('— 시작') || call[1].includes('📋'))
     );
     expect(retentionMessages).toHaveLength(1);
   });
@@ -458,13 +468,15 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
     // Should still post retention (without permalink)
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        (call[1].includes('— 시작') || call[1].includes('📋'))
     );
     expect(retentionMessages).toHaveLength(1);
 
-    // Should NOT contain " → " (no permalink)
-    const text = retentionMessages[0][1];
-    expect(text).not.toContain(' → https://');
+    // Block Kit: when permalink is null, no button accessory should be present
+    const blocksJson = JSON.stringify(retentionMessages[0][2]?.blocks ?? []);
+    expect(blocksJson).not.toContain('source_open_thread');
   });
 });
 
@@ -513,7 +525,10 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && call[1].includes('📋'),
+      (call: any[]) =>
+        call[2]?.threadTs === 'thread123' &&
+        typeof call[1] === 'string' &&
+        (call[1].includes('— 시작') || call[1].includes('📋'))
     );
     expect(retentionMessages).toHaveLength(0);
   });
@@ -560,10 +575,14 @@ describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('📋'),
+        call[2]?.threadTs === '1711234567.000100' &&
+        typeof call[1] === 'string' &&
+        (call[1].includes('— 시작') || call[1].includes('📋'))
     );
 
     expect(retentionMessages).toHaveLength(1);
-    expect(retentionMessages[0][1]).toContain(permalink);
+    // Block Kit: permalink is in blocks accessory button, not in fallback text
+    const blocksJson = JSON.stringify(retentionMessages[0][2]?.blocks ?? []);
+    expect(blocksJson).toContain(permalink);
   });
 });
