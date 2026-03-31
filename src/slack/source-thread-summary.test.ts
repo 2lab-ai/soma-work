@@ -182,3 +182,116 @@ describe('Scenario 5: session close posts summary to source thread', () => {
     expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('buildRequestStartBlocks', () => {
+  it('returns header and section with fields', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Test Task', workflow: 'default', ownerId: 'U123' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.text).toBe('Test Task — 시작');
+    expect(result.blocks).toHaveLength(2);
+    expect(result.blocks[0].type).toBe('header');
+    expect(result.blocks[1].type).toBe('section');
+    expect(result.blocks[1].fields.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('adds accessory button when permalink provided', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session, 'https://slack.com/archives/C1/p1');
+    const section = result.blocks[1];
+    expect(section.accessory).toBeDefined();
+    expect(section.accessory.action_id).toBe('source_open_thread');
+    expect(section.accessory.url).toBe('https://slack.com/archives/C1/p1');
+  });
+
+  it('omits accessory button when no permalink', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session, null);
+    expect(result.blocks[1].accessory).toBeUndefined();
+  });
+
+  it('truncates long titles in header block', async () => {
+    const { buildRequestStartBlocks } = await import('./source-thread-summary');
+    const longTitle = 'A'.repeat(200);
+    const session = { title: longTitle, workflow: 'default' } as any;
+    const result = buildRequestStartBlocks(session);
+    expect(result.blocks[0].text.text.length).toBeLessThanOrEqual(150);
+  });
+});
+
+describe('buildRequestCompleteBlocks', () => {
+  it('returns merged status for merged trigger', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Fix Bug', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    expect(result.text).toContain('머지 완료');
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('머지 완료');
+  });
+
+  it('returns closed status for closed trigger', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Review', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
+    expect(result.text).toContain('완료');
+    expect(result.text).not.toContain('머지');
+  });
+
+  it('includes issue and PR sections when links exist', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = {
+      title: 'Work', workflow: 'default',
+      links: {
+        issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', title: 'Bug report' },
+        pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2', title: 'Fix bug' },
+      },
+    } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    const blocksJson = JSON.stringify(result.blocks);
+    expect(blocksJson).toContain('github.com/org/repo/issues/1');
+    expect(blocksJson).toContain('github.com/org/repo/pull/2');
+    // Should have divider between hero and detail sections
+    expect(result.blocks.some((b: any) => b.type === 'divider')).toBe(true);
+    // Should have actions block with buttons
+    expect(result.blocks.some((b: any) => b.type === 'actions')).toBe(true);
+  });
+
+  it('omits divider and detail sections when no links', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
+    expect(result.blocks.some((b: any) => b.type === 'divider')).toBe(false);
+  });
+
+  it('includes executive summary in hero text', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      executiveSummary: 'All tests passing, code reviewed',
+    });
+    const heroSection = result.blocks[1];
+    expect(heroSection.text.text).toContain('All tests passing, code reviewed');
+  });
+
+  it('includes verify result in hero fields', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const session = { title: 'Task', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged', {
+      verifyResult: 'PASS',
+    });
+    const heroFields = result.blocks[1].fields;
+    const verifyField = heroFields.find((f: any) => f.text.includes('검증'));
+    expect(verifyField).toBeDefined();
+    expect(verifyField.text).toContain('PASS');
+  });
+
+  it('truncates long titles in header block', async () => {
+    const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
+    const longTitle = 'B'.repeat(200);
+    const session = { title: longTitle, workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'merged');
+    expect(result.blocks[0].text.text.length).toBeLessThanOrEqual(150);
+  });
+});

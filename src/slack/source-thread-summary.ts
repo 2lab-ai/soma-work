@@ -26,6 +26,7 @@ export function buildRequestStartBlocks(
   workThreadPermalink?: string | null
 ): { text: string; blocks: any[] } {
   const title = session.title || 'Session';
+  const safeTitle = title.length > 150 ? title.slice(0, 147) + '...' : title;
   const model = session.model ? ThreadHeaderBuilder.formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
 
@@ -59,7 +60,7 @@ export function buildRequestStartBlocks(
   return {
     text: `${title} — 시작`,
     blocks: [
-      { type: 'header', text: { type: 'plain_text', text: title } },
+      { type: 'header', text: { type: 'plain_text', text: safeTitle } },
       section,
     ],
   };
@@ -75,7 +76,6 @@ export function buildRequestStartBlocks(
  *   divider
  *   section: Issue text + fields(원인/영향)    [if issue linked]
  *   section: PR text + fields(수정/테스트)     [if PR linked]
- *   section: 다음 작업
  *   actions: PR button (primary) + Issue button + 스레드 button
  */
 export function buildRequestCompleteBlocks(
@@ -91,6 +91,7 @@ export function buildRequestCompleteBlocks(
   }
 ): { text: string; blocks: any[] } {
   const title = session.title || 'Session';
+  const safeTitle = title.length > 150 ? title.slice(0, 147) + '...' : title;
   const model = session.model ? ThreadHeaderBuilder.formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
   const statusLabel = trigger === 'merged' ? '머지 완료' : '완료';
@@ -130,7 +131,7 @@ export function buildRequestCompleteBlocks(
     : `*결론*\n${title} ${statusLabel}`;
 
   const blocks: any[] = [
-    { type: 'header', text: { type: 'plain_text', text: title } },
+    { type: 'header', text: { type: 'plain_text', text: safeTitle } },
     {
       type: 'section',
       text: { type: 'mrkdwn', text: heroText },
@@ -277,14 +278,8 @@ export async function postSourceThreadSummary(
       }
     }
 
-    // Parse turn summary for metrics
-    const turnSummary = session.actionPanel?.summaryBlocks
-      ? undefined // summaryBlocks exist but we don't parse them here
-      : undefined;
-
     const payload = buildRequestCompleteBlocks(session, trigger, {
       workThreadPermalink,
-      turnSummary,
     });
 
     await slackApi.postMessage(channel, payload.text, {
