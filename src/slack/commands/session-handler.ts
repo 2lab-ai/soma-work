@@ -65,24 +65,22 @@ export class SessionHandler implements CommandHandler {
     // Sessions command (user's sessions)
     if (CommandParser.isSessionsCommand(text)) {
       const { isPublic } = CommandParser.parseSessionsCommand(text);
+      const isDm = channel.startsWith('D');
 
-      if (isPublic) {
-        // Public: channel-visible, no kill buttons
-        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
-          user,
-          { showControls: false }
-        );
+      const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
+        user,
+        { showControls: !isPublic }
+      );
+
+      if (isPublic || isDm) {
+        // Public: channel-visible by design; DM: ephemeral unreliable, use say() directly
         await say({
           text: msgText,
           blocks,
           thread_ts: threadTs,
         });
       } else {
-        // Default: ephemeral (user-only), with kill buttons
-        const { text: msgText, blocks } = await this.deps.sessionUiManager.formatUserSessionsBlocks(
-          user,
-          { showControls: true }
-        );
+        // Channel: ephemeral (user-only) with fallback
         try {
           await this.deps.slackApi.postEphemeral(
             channel,
@@ -93,7 +91,6 @@ export class SessionHandler implements CommandHandler {
           );
         } catch (error) {
           this.logger.warn('postEphemeral failed, falling back to regular message', error);
-          // Fallback to regular message if ephemeral fails
           await say({
             text: msgText,
             blocks,

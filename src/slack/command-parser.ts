@@ -619,27 +619,43 @@ export class CommandParser {
    * Used to provide feedback for unrecognized commands
    */
   static isPotentialCommand(text: string): { isPotential: boolean; keyword?: string } {
-    const trimmed = text.trim().toLowerCase();
-    const firstWord = trimmed.split(/\s+/)[0];
+    const trimmed = text.trim();
+    if (!trimmed) return { isPotential: false };
 
-    // Starts with $ - session command
-    if (trimmed.startsWith('$')) {
+    const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
+    const words = normalized.split(' ');
+    const firstWord = words[0];
+
+    // $ prefix: only known session command roots ($, $model, $verbosity, $effort)
+    if (firstWord.startsWith('$')) {
+      if (/^\$(?:model|verbosity|effort)?(?:\s|$)/i.test(normalized)) {
+        return { isPotential: true, keyword: firstWord };
+      }
+      return { isPotential: false };
+    }
+
+    // / prefix: only if the slash-root is a known keyword
+    if (firstWord.startsWith('/')) {
+      const slashRoot = firstWord.slice(1);
+      if (this.COMMAND_KEYWORDS.has(slashRoot)) {
+        return { isPotential: true, keyword: slashRoot };
+      }
+      if (words.length >= 2) {
+        const twoWord = `${slashRoot}_${words[1]}`;
+        if (this.COMMAND_KEYWORDS.has(twoWord)) {
+          return { isPotential: true, keyword: twoWord };
+        }
+      }
+      return { isPotential: false };
+    }
+
+    // Plain text: ONLY exact single-word match (e.g., "help" alone, not "help me with X")
+    if (words.length === 1 && this.COMMAND_KEYWORDS.has(firstWord)) {
       return { isPotential: true, keyword: firstWord };
     }
 
-    // Starts with slash - likely a command attempt
-    if (trimmed.startsWith('/')) {
-      return { isPotential: true, keyword: firstWord.slice(1) };
-    }
-
-    // Check against known command keywords (single word)
-    if (this.COMMAND_KEYWORDS.has(firstWord)) {
-      return { isPotential: true, keyword: firstWord };
-    }
-
-    // Check two-word command forms (e.g., "show prompt", "show instructions")
-    const words = trimmed.split(/\s+/);
-    if (words.length >= 2) {
+    // Exact fixed multi-word commands (e.g., "show prompt", "show instructions")
+    if (words.length === 2) {
       const twoWord = `${words[0]}_${words[1]}`;
       if (this.COMMAND_KEYWORDS.has(twoWord)) {
         return { isPotential: true, keyword: twoWord };
