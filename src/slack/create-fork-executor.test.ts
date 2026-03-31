@@ -202,5 +202,42 @@ describe('createForkExecutor', () => {
       expect(result).toBeNull();
       expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(2);
     });
+
+    it('detects stale session case-insensitively', async () => {
+      mockHandler.dispatchOneShot
+        .mockRejectedValueOnce(new Error('no conversation found with session ID: abc'))
+        .mockResolvedValueOnce('Fallback OK');
+
+      const executor = createForkExecutor(mockHandler as any);
+      const result = await executor('prompt', undefined, 'abc');
+
+      expect(result).toBe('Fallback OK');
+      expect(mockHandler.dispatchOneShot).toHaveBeenCalledTimes(2);
+    });
+
+    it('creates fresh AbortController for retry when abortSignal is provided', async () => {
+      const controllers: (AbortController | undefined)[] = [];
+      mockHandler.dispatchOneShot
+        .mockImplementationOnce(async (_m: string, _s: string, _mod: string, ac: AbortController) => {
+          controllers.push(ac);
+          throw new Error('No conversation found with session ID: xyz');
+        })
+        .mockImplementationOnce(async (_m: string, _s: string, _mod: string, ac: AbortController) => {
+          controllers.push(ac);
+          return 'Fallback with signal';
+        });
+
+      const executor = createForkExecutor(mockHandler as any);
+      const ac = new AbortController();
+      const result = await executor('prompt', undefined, 'xyz', undefined, ac.signal);
+
+      expect(result).toBe('Fallback with signal');
+      expect(controllers).toHaveLength(2);
+      // Both should be AbortControllers (not undefined)
+      expect(controllers[0]).toBeInstanceOf(AbortController);
+      expect(controllers[1]).toBeInstanceOf(AbortController);
+      // They should be different instances
+      expect(controllers[0]).not.toBe(controllers[1]);
+    });
   });
 });

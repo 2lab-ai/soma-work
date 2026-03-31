@@ -65,14 +65,22 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
         // If the fork failed because the session no longer exists, retry without fork.
         // Claude SDK returns "No conversation found with session ID: ..." for stale sessions.
         const msg = firstError instanceof Error ? firstError.message : String(firstError);
-        const isStaleSession = sessionId && msg.includes('No conversation found');
+        const isStaleSession = sessionId && msg.toLowerCase().includes('no conversation found');
 
         if (isStaleSession) {
           logger.warn('Fork executor: stale sessionId, retrying without fork', {
             sessionId,
             error: msg,
           });
-          response = await attempt(undefined);
+          try {
+            response = await attempt(undefined);
+          } catch (fallbackError) {
+            logger.error('Fork executor: fallback also failed', {
+              originalError: msg,
+              fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            });
+            throw fallbackError;
+          }
         } else {
           throw firstError;
         }
