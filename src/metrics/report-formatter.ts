@@ -7,19 +7,17 @@
  * maximum information density, zero decoration waste, rule-based action alerts.
  */
 
-import {
-  Achievement,
-  type AggregatedMetrics,
-  type DailyBreakdown,
-  type DailyReport,
-  type DerivedMetrics,
-  type EnrichedDailyReport,
-  type EnrichedWeeklyReport,
-  FunFact,
-  type HourlyDistribution,
-  type TrendComparison,
-  type UserRanking,
-  type WeeklyReport,
+import type {
+  AggregatedMetrics,
+  DailyBreakdown,
+  DailyReport,
+  DerivedMetrics,
+  EnrichedDailyReport,
+  EnrichedWeeklyReport,
+  HourlyDistribution,
+  TrendComparison,
+  UserRanking,
+  WeeklyReport,
 } from './types';
 
 const MAX_RANKINGS_IN_BLOCKS = 5;
@@ -64,6 +62,27 @@ type SlackBlock = SlackHeaderBlock | SlackSectionBlock | SlackContextBlock | Sla
 
 // === Block Kit Safety Layer ===
 
+/** Sanitize user-provided text to prevent Slack mrkdwn injection and layout breakage. */
+function escapeMrkdwn(text: string): string {
+  return text
+    .replace(/[\r\n]+/g, ' ') // collapse newlines — prevent layout breakage
+    .replace(/[*_~`]/g, '') // strip mrkdwn formatting chars — prevent emphasis injection
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity. Logs a warning in dev. */
+function safeNum(n: number): number {
+  if (!Number.isFinite(n)) {
+    if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production') {
+      console.warn(`[report-formatter] safeNum received non-finite value: ${n}`);
+    }
+    return 0;
+  }
+  return n;
+}
+
 const MAX_BLOCKS = 50;
 const MAX_FIELDS = 10;
 const MAX_TEXT_LENGTH = 3000;
@@ -83,7 +102,24 @@ function truncateHeader(text: string): string {
 }
 
 function safeFields(fields: SlackTextObject[]): SlackTextObject[] {
-  return fields.slice(0, MAX_FIELDS);
+  return fields.slice(0, MAX_FIELDS).map((f) => ({
+    ...f,
+    text: truncateFieldText(f.text),
+  }));
+}
+
+const MAX_CONTEXT_ELEMENTS = 10;
+
+function safeContextElements(elements: SlackTextObject[]): SlackTextObject[] {
+  return elements.slice(0, MAX_CONTEXT_ELEMENTS);
+}
+
+/**
+ * Sanitize + truncate in correct order: escape entities first, then truncate the final payload.
+ * This prevents entity expansion from pushing text over Slack limits.
+ */
+function sanitizeMrkdwn(text: string, max = MAX_TEXT_LENGTH): string {
+  return truncateText(escapeMrkdwn(text), max);
 }
 
 function safeBlocks(blocks: SlackBlock[]): SlackBlock[] {
@@ -94,9 +130,59 @@ function safeBlocks(blocks: SlackBlock[]): SlackBlock[] {
   return [header, ...middle, footer];
 }
 
+/**
+ * Priority-based block trimming: preserves header (first) and footer (last).
+ * Drops blocks in priority order: dividers first, then middle context blocks,
+ * then middle sections — ensuring highest-value diagnostic blocks survive.
+ */
+function trimToLimit(blocks: SlackBlock[], limit: number): SlackBlock[] {
+  if (blocks.length <= limit) return blocks;
+
+  const header = blocks[0];
+  const footer = blocks[blocks.length - 1];
+  const middle = blocks.slice(1, -1);
+
+  // Assign priority: divider=0 (drop first), context=1, section=2 (keep), header=3 (keep)
+  const prioritized = middle.map((block, idx) => {
+    let priority = 2;
+    if (block.type === 'divider') priority = 0;
+    else if (block.type === 'context') priority = 1;
+    return { block, idx, priority };
+  });
+
+  // Sort by priority descending (highest priority = keep first), stable by original index
+  prioritized.sort((a, b) => b.priority - a.priority || a.idx - b.idx);
+
+  // Keep only what fits
+  const kept = prioritized.slice(0, limit - 2);
+  // Restore original order
+  kept.sort((a, b) => a.idx - b.idx);
+
+  return [header, ...kept.map((k) => k.block), footer];
+}
+
 interface FormattedReport {
   blocks: SlackBlock[];
   text: string;
+}
+
+/**
+ * Sanitize DerivedMetrics at the formatter boundary.
+ * Replaces NaN/Infinity with 0 for all numeric fields, ensuring downstream
+ * rendering never emits "NaN%" or "Infinity" in any display path.
+ */
+function safeDerived(d: DerivedMetrics): DerivedMetrics {
+  return {
+    ...d,
+    prMergeRate: safeNum(d.prMergeRate),
+    sessionCompletionRate: safeNum(d.sessionCompletionRate),
+    churnRatio: safeNum(d.churnRatio),
+    netLines: safeNum(d.netLines),
+    avgCodePerCommit: safeNum(d.avgCodePerCommit),
+    avgCodePerPr: safeNum(d.avgCodePerPr),
+    avgTurnsPerSession: safeNum(d.avgTurnsPerSession),
+    productivityScore: safeNum(d.productivityScore),
+  };
 }
 
 // === Visual Helpers (Bauhaus: functional only) ===
@@ -192,6 +278,7 @@ function metricsToSections(m: AggregatedMetrics): SlackBlock[] {
  */
 function computeGrade(d: DerivedMetrics, activeDays?: number): string {
   let score = 0;
+  let maxScore = 6; // 3 axes × 2 points each (daily baseline)
   if (d.prMergeRate >= 60) score += 2;
   else if (d.prMergeRate >= 40) score += 1;
   if (d.sessionCompletionRate >= 60) score += 2;
@@ -199,14 +286,16 @@ function computeGrade(d: DerivedMetrics, activeDays?: number): string {
   if (d.churnRatio <= 20) score += 2;
   else if (d.churnRatio <= 35) score += 1;
   if (activeDays !== undefined) {
+    maxScore = 8; // 4 axes × 2 points (weekly)
     if (activeDays >= 5) score += 2;
     else if (activeDays >= 3) score += 1;
-  } else {
-    score += 1; // neutral for daily
   }
-  if (score >= 7) return 'A';
-  if (score >= 5) return 'B';
-  if (score >= 3) return 'C';
+  // Normalize to percentage of max, then map to grade.
+  // This ensures daily (3-axis) and weekly (4-axis) are graded on the same scale.
+  const pct = (score / maxScore) * 100;
+  if (pct >= 87.5) return 'A'; // ≥7/8 or ≥5.25/6
+  if (pct >= 62.5) return 'B'; // ≥5/8 or ≥3.75/6
+  if (pct >= 37.5) return 'C'; // ≥3/8 or ≥2.25/6
   return 'D';
 }
 
@@ -270,9 +359,9 @@ function buildPipelineFlow(
 /**
  * v5: Efficiency + throughput — 2-field section.
  */
-function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays?: number): SlackBlock {
+function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, _activeDays?: number): SlackBlock {
   const unmerged = Math.max(0, m.prsCreated - m.prsMerged);
-  const commitPerPR = m.prsCreated > 0 ? Math.round((m.commitsCreated / m.prsCreated) * 100) / 100 : 0;
+  const commitPerPR = m.prsCreated > 0 ? safeNum(Math.round((m.commitsCreated / m.prsCreated) * 100) / 100) : 0;
 
   return {
     type: 'section',
@@ -280,7 +369,7 @@ function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays
       {
         type: 'mrkdwn',
         text: truncateFieldText(
-          `*효율*\n줄/커밋 ${fmt(d.avgCodePerCommit)} · 줄/PR ${fmt(d.avgCodePerPr)}\n커밋당 순증가 ${fmt(Math.round(d.netLines / Math.max(m.commitsCreated, 1)))}줄`,
+          `*효율*\n줄/커밋 ${fmt(safeNum(d.avgCodePerCommit))} · 줄/PR ${fmt(safeNum(d.avgCodePerPr))}\n커밋당 순증가 ${fmt(safeNum(Math.round(d.netLines / Math.max(m.commitsCreated, 1))))}줄`,
         ),
       },
       {
@@ -300,8 +389,8 @@ function buildEfficiencyGrid(m: AggregatedMetrics, d: DerivedMetrics, activeDays
 function buildActionAlerts(
   m: AggregatedMetrics,
   d: DerivedMetrics,
-  trend: TrendComparison | null,
-  peakHour: number | null,
+  _trend: TrendComparison | null,
+  _peakHour: number | null,
   hourlyDistribution: HourlyDistribution[],
   activeDays?: number,
 ): SlackBlock | null {
@@ -402,7 +491,7 @@ function buildDailyCadence(breakdown: DailyBreakdown[]): SlackBlock | null {
 
   return {
     type: 'context' as const,
-    elements,
+    elements: safeContextElements(elements),
   };
 }
 
@@ -414,9 +503,9 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
   const blocks: SlackBlock[] = [];
   if (rankings.length < 2) return blocks;
 
-  const displayRankings = rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
-
-  const scored = displayRankings
+  // Score ALL rankings first, THEN sort, THEN slice top N.
+  // This ensures the leaderboard reflects the true top performers, not just the first N inputs.
+  const scored = rankings
     .map((r) => {
       const score =
         r.metrics.turnsUsed +
@@ -427,17 +516,23 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
         r.metrics.prsMerged * 10;
       return { ...r, score };
     })
-    .sort((a, b) => b.score - a.score);
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.rank - b.rank || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }),
+    )
+    .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   const top = scored[0];
   const rest = scored.slice(1);
 
   // Top 1: full detail — all scoring formula components visible
   const tm = top.metrics;
-  const topLine = `1위 *${top.userName}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
+  const topLine = `1위 *${sanitizeMrkdwn(top.userName, 100)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
 
-  // Rest: compressed to single line
-  const restCompact = rest.map((r) => `${r.rank}위 *${r.userName}* ${fmt(r.score)}점`).join(' · ');
+  // Rest: use sorted index as rank (not original r.rank which may be stale after re-sorting)
+  const restCompact = rest
+    .map((r, i) => `${i + 2}위 *${sanitizeMrkdwn(r.userName, 100)}* ${fmt(r.score)}점`)
+    .join(' · ');
 
   const rankingText = truncateText(`*팀* (턴+세션+이슈×2+커밋×3+PR×5+머지×10)\n${topLine}\n${restCompact}`);
 
@@ -469,7 +564,7 @@ function buildTimeDistribution(dist: HourlyDistribution[], peakHour: number | nu
     hours: b.hours,
   }));
 
-  const maxBlock = Math.max(...blockCounts.map((b) => b.count), 1);
+  // maxBlock intentionally computed but unused — reserved for future proportional bar rendering
 
   const elements = blockCounts.map((b) => {
     const isPeak = peakHour !== null && b.hours.includes(peakHour);
@@ -548,7 +643,7 @@ function generateNarrative(
 function generateWeeklySummary(
   m: AggregatedMetrics,
   d: DerivedMetrics,
-  breakdown: DailyBreakdown[],
+  _breakdown: DailyBreakdown[],
   activeDays: number,
   trend: TrendComparison | null,
 ): string {
@@ -629,21 +724,39 @@ export class ReportFormatter {
       ...metricsToSections(report.metrics),
     ];
 
-    const displayRankings = report.rankings.slice(0, MAX_RANKINGS_IN_BLOCKS);
-    if (displayRankings.length > 0) {
+    // Sort rankings by consistent scoring formula, then take top N — same logic as buildRankings
+    const sortedRankings = [...report.rankings]
+      .sort((a, b) => {
+        const scoreOf = (r: UserRanking) =>
+          r.metrics.turnsUsed +
+          r.metrics.sessionsCreated +
+          r.metrics.issuesCreated * 2 +
+          r.metrics.commitsCreated * 3 +
+          r.metrics.prsCreated * 5 +
+          r.metrics.prsMerged * 10;
+        return (
+          scoreOf(b) - scoreOf(a) ||
+          a.rank - b.rank ||
+          a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' })
+        );
+      })
+      .slice(0, MAX_RANKINGS_IN_BLOCKS);
+    if (sortedRankings.length > 0) {
       blocks.push({ type: 'divider' });
       blocks.push({
         type: 'header',
         text: { type: 'plain_text', text: ':medal: 사용자 랭킹', emoji: true },
       });
-      for (const r of displayRankings) {
-        const medal = r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : `#${r.rank}`;
+      for (let idx = 0; idx < sortedRankings.length; idx++) {
+        const r = sortedRankings[idx];
+        const displayRank = idx + 1;
+        const medal = displayRank <= 3 ? ['🥇', '🥈', '🥉'][displayRank - 1] : `#${displayRank}`;
         blocks.push({
           type: 'section',
           text: {
             type: 'mrkdwn',
             text:
-              `${medal} *${r.userName}*\n` +
+              `${medal} *${sanitizeMrkdwn(r.userName, 100)}*\n` +
               `턴 \`${r.metrics.turnsUsed}\` · PR \`${r.metrics.prsCreated}\` · 머지 \`${r.metrics.prsMerged}\` · 커밋 \`${r.metrics.commitsCreated}\` · 코드 \`+${r.metrics.codeLinesAdded}\``,
           },
         });
@@ -664,7 +777,8 @@ export class ReportFormatter {
    * 4-field KPI grid, 2-field efficiency, time distribution, action alerts. ≤10 blocks.
    */
   formatEnrichedDaily(report: EnrichedDailyReport): FormattedReport {
-    const { metrics: m, derived: d, trend, hourlyDistribution, peakHour, achievements, funFacts } = report;
+    const { metrics: m, derived: rawD, trend, hourlyDistribution, peakHour } = report;
+    const d = safeDerived(rawD);
     const dayLabel = getDayLabel(report.date);
     const grade = computeGrade(d);
     const reportTitle = `일간 리포트 — ${report.date} (${dayLabel})`;
@@ -744,7 +858,7 @@ export class ReportFormatter {
       const timeElements = buildTimeDistribution(hourlyDistribution, peakHour);
       blocks.push({
         type: 'context',
-        elements: timeElements,
+        elements: safeContextElements(timeElements),
       });
     }
 
@@ -772,15 +886,8 @@ export class ReportFormatter {
       `생산성 ${d.productivityScore}점${trendLine ? ` · ${trendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     // v5 layout contract: daily ≤ 10 blocks.
-    // Trim strategy: keep header (first) + footer (last), remove excess from middle.
-    const finalBlocks = safeBlocks(blocks);
-    if (finalBlocks.length > V5_MAX_DAILY_BLOCKS) {
-      const footer = finalBlocks.pop()!;
-      finalBlocks.length = V5_MAX_DAILY_BLOCKS - 1;
-      finalBlocks.push(footer);
-    }
-
-    return { blocks: finalBlocks, text };
+    // Priority-based trim: drop dividers first, then context (except footer), preserve data blocks.
+    return { blocks: trimToLimit(safeBlocks(blocks), V5_MAX_DAILY_BLOCKS), text };
   }
 
   /**
@@ -791,16 +898,15 @@ export class ReportFormatter {
   formatEnrichedWeekly(report: EnrichedWeeklyReport): FormattedReport {
     const {
       metrics: m,
-      derived: d,
+      derived: rawD,
       trend,
       dailyBreakdown,
       hourlyDistribution,
       peakHour,
       activeDays,
       rankings,
-      achievements,
-      funFacts,
     } = report;
+    const d = safeDerived(rawD);
 
     const grade = computeGrade(d, activeDays);
     const weekEnd = report.weekEnd.slice(5); // "MM-DD" portion
@@ -894,15 +1000,7 @@ export class ReportFormatter {
       `생산성 ${d.productivityScore}점 · 활동일 ${activeDays}/7${weeklyTrendLine ? ` · ${weeklyTrendLine}` : ''}\n${metricsToPlainText(m, d)}`;
 
     // v5 layout contract: weekly ≤ 12 blocks.
-    // Trim strategy: keep header (first) + footer (last), remove excess from the middle.
-    // This preserves identity and attribution even when optional sections overflow.
-    const finalBlocks = safeBlocks(blocks);
-    if (finalBlocks.length > V5_MAX_WEEKLY_BLOCKS) {
-      const footer = finalBlocks.pop()!;
-      finalBlocks.length = V5_MAX_WEEKLY_BLOCKS - 1;
-      finalBlocks.push(footer);
-    }
-
-    return { blocks: finalBlocks, text };
+    // Priority-based trim: drop dividers first, then context (except footer), preserve data blocks.
+    return { blocks: trimToLimit(safeBlocks(blocks), V5_MAX_WEEKLY_BLOCKS), text };
   }
 }
