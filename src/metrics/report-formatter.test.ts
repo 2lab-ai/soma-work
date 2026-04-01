@@ -758,4 +758,178 @@ describe('ReportFormatter', () => {
     expect(allText).toContain('커밋');
     expect(allText).toContain('PR');
   });
+
+  // === Adversarial / Edge-case Tests ===
+
+  describe('adversarial inputs', () => {
+    it('NaN/Infinity derived metrics do not leak into output', () => {
+      const result = formatter.formatEnrichedDaily({
+        ...makeDailyReport(),
+        derived: {
+          productivityScore: Number.NaN,
+          prMergeRate: Number.POSITIVE_INFINITY,
+          avgCodePerPr: Number.NEGATIVE_INFINITY,
+          avgCodePerCommit: Number.NaN,
+          avgTurnsPerSession: Number.NaN,
+          sessionCompletionRate: Number.NaN,
+          netLines: Number.NaN,
+          churnRatio: Number.POSITIVE_INFINITY,
+          avgChangedLinesPerPr: 0,
+          commitPerActiveDay: 0,
+          prPerActiveDay: 0,
+        },
+        trend: null,
+        hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+        peakHour: null,
+        achievements: [],
+        funFacts: [],
+      });
+
+      const allText = JSON.stringify(result.blocks);
+      expect(allText).not.toContain('NaN');
+      expect(allText).not.toContain('Infinity');
+      expect(result.blocks.length).toBeGreaterThan(0);
+    });
+
+    it('mrkdwn injection in userName is neutralized', () => {
+      const maliciousName = '*bold* _italic_ ~strike~ `code` <@U123> <https://evil.com|click>';
+      const result = formatter.formatEnrichedWeekly({
+        ...makeWeeklyReport({
+          rankings: [
+            { userId: 'U1', userName: maliciousName, metrics: makeMetrics(), rank: 1 },
+            { userId: 'U2', userName: 'Safe', metrics: makeMetrics({ turnsUsed: 20 }), rank: 2 },
+          ],
+        }),
+        derived: {
+          productivityScore: 100,
+          prMergeRate: 50,
+          avgCodePerPr: 100,
+          avgCodePerCommit: 50,
+          avgTurnsPerSession: 5,
+          sessionCompletionRate: 60,
+          netLines: 100,
+          churnRatio: 10,
+          avgChangedLinesPerPr: 120,
+          commitPerActiveDay: 5,
+          prPerActiveDay: 2,
+        },
+        trend: null,
+        dailyBreakdown: [],
+        hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+        peakHour: null,
+        activeDays: 3,
+        achievements: [],
+        funFacts: [],
+      });
+
+      const allText = JSON.stringify(result.blocks);
+      // Raw mrkdwn control chars must not appear
+      expect(allText).not.toContain('<@U123>');
+      expect(allText).not.toContain('<https://evil.com');
+      // Should still contain the sanitized name
+      expect(allText).toContain('Safe');
+    });
+
+    it('out-of-domain grade inputs are clamped', () => {
+      // prMergeRate: -50 (invalid), sessionCompletionRate: 200 (invalid)
+      const result = formatter.formatEnrichedDaily({
+        ...makeDailyReport(),
+        derived: {
+          productivityScore: 100,
+          prMergeRate: -50,
+          avgCodePerPr: 100,
+          avgCodePerCommit: 50,
+          avgTurnsPerSession: 5,
+          sessionCompletionRate: 200,
+          netLines: 100,
+          churnRatio: -10,
+          avgChangedLinesPerPr: 120,
+          commitPerActiveDay: 5,
+          prPerActiveDay: 2,
+        },
+        trend: null,
+        hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+        peakHour: null,
+        achievements: [],
+        funFacts: [],
+      });
+
+      // Should not crash and should produce valid blocks
+      expect(result.blocks.length).toBeGreaterThan(0);
+      const allText = JSON.stringify(result.blocks);
+      // Grade should be one of A/B/C/D (not undefined or error)
+      expect(allText).toMatch(/[ABCD] ·/);
+    });
+
+    it('ranking tie-breaker produces deterministic order', () => {
+      const tiedRankings = [
+        { userId: 'U3', userName: '다영', metrics: makeMetrics(), rank: 3 },
+        { userId: 'U1', userName: '가영', metrics: makeMetrics(), rank: 1 },
+        { userId: 'U2', userName: '나영', metrics: makeMetrics(), rank: 2 },
+      ];
+      const result1 = formatter.formatWeekly(makeWeeklyReport({ rankings: tiedRankings }));
+      const result2 = formatter.formatWeekly(makeWeeklyReport({ rankings: [...tiedRankings].reverse() }));
+
+      // Same scores → same output regardless of input order
+      expect(JSON.stringify(result1.blocks)).toBe(JSON.stringify(result2.blocks));
+    });
+
+    it('Slack block limits are enforced under stress', () => {
+      // 50+ context elements should be capped at 10
+      const result = formatter.formatEnrichedWeekly({
+        ...makeWeeklyReport(),
+        derived: {
+          productivityScore: 500,
+          prMergeRate: 80,
+          avgCodePerPr: 300,
+          avgCodePerCommit: 80,
+          avgTurnsPerSession: 8,
+          sessionCompletionRate: 70,
+          netLines: 2000,
+          churnRatio: 5,
+          avgChangedLinesPerPr: 350,
+          commitPerActiveDay: 10,
+          prPerActiveDay: 3,
+        },
+        trend: {
+          sessionsCreatedDelta: 10,
+          turnsUsedDelta: 5,
+          prsCreatedDelta: 20,
+          commitsCreatedDelta: 15,
+          codeLinesAddedDelta: 30,
+          prsMergedDelta: 10,
+          productivityScoreDelta: 15,
+          baselineZero: false,
+        },
+        dailyBreakdown: Array.from({ length: 7 }, (_, i) => ({
+          date: `2026-03-${23 + i}`,
+          dayLabel: ['월', '화', '수', '목', '금', '토', '일'][i],
+          totalEvents: 100,
+          metrics: makeMetrics(),
+        })),
+        hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 10 })),
+        peakHour: 14,
+        activeDays: 7,
+        achievements: [],
+        funFacts: [],
+      });
+
+      // Block count within weekly limit
+      expect(result.blocks.length).toBeLessThanOrEqual(12);
+
+      // Context blocks: elements ≤ 10
+      for (const block of result.blocks) {
+        if (block.type === 'context') {
+          expect(block.elements.length).toBeLessThanOrEqual(10);
+        }
+      }
+
+      // Section fields ≤ 10
+      for (const block of result.blocks) {
+        if (block.type === 'section' && 'fields' in block && block.fields) {
+          expect(block.fields.length).toBeLessThanOrEqual(10);
+        }
+      }
+    });
+  });
 });

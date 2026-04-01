@@ -226,6 +226,9 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(safeNum(value), min), max);
 }
 
+/** Stable Korean-first collator for ranking tie-breaker. Handles mixed-script and numeric names. */
+const koCollator = new Intl.Collator('ko', { numeric: true, sensitivity: 'base' });
+
 // === Visual Helpers (Bauhaus: functional only) ===
 
 function deltaText(delta: number | undefined | null): string {
@@ -557,7 +560,7 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
     .map((r) => ({ ...r, score: rankingScore(r.metrics) }))
     .sort(
       (a, b) =>
-        b.score - a.score || a.rank - b.rank || a.userName.localeCompare(b.userName, 'ko', { sensitivity: 'base' }),
+        b.score - a.score || a.rank - b.rank || koCollator.compare(a.userName, b.userName),
     )
     .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
@@ -771,7 +774,7 @@ export class ReportFormatter {
         (a, b) =>
           b._score - a._score ||
           a.rank - b.rank ||
-          a.userName.localeCompare(b.userName, 'ko', { sensitivity: 'base' }),
+          koCollator.compare(a.userName, b.userName),
       )
       .slice(0, MAX_RANKINGS_IN_BLOCKS);
     if (sortedRankings.length > 0) {
