@@ -383,7 +383,7 @@ Add sub-agents to `config.json` (or `config.dev.json` on non-`main` branches):
 }
 ```
 
-Automated provisioning:
+Automated provisioning (`main` branch only — writes to `config.json`):
 ```bash
 npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
 ```

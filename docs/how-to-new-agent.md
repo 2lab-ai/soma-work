@@ -256,7 +256,7 @@ npm run build && npm run prod
 
 ```
 index.ts
-  → loadUnifiedConfig() reads config.json
+  → loadUnifiedConfig() reads config file (config.json on main, config.dev.json otherwise)
   → parseAgentsConfig() validates agent entries
   → new AgentManager(agentConfigs, mcpManager)
   → agentManager.startAll()
@@ -330,4 +330,4 @@ Agent configs (minus sensitive tokens) are passed to the MCP server via `SOMA_AG
 | "Skipping agent" in logs | Config validation failed. Check token formats and signing secret length. |
 | Agent using main bot's prompt | Agent-specific `default.prompt` not found. Verify `promptDir` path. |
 | Duplicate Socket Mode connections | Multiple soma-work instances running. Check PID lock. |
-| `agent_chat` returns "Unknown agent" | Agent name doesn't match `config.json` key. Names are case-sensitive. |
+| `agent_chat` returns "Unknown agent" | Agent name doesn't match config file key. Names are case-sensitive. |
