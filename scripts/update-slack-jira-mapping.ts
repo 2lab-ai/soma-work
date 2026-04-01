@@ -12,10 +12,10 @@
  *   npm run update-mapping
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -170,7 +170,7 @@ function saveMapping(mapping: Mapping): void {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  fs.writeFileSync(MAPPING_FILE, JSON.stringify(mapping, null, 2) + '\n');
+  fs.writeFileSync(MAPPING_FILE, `${JSON.stringify(mapping, null, 2)}\n`);
   console.log(`Mapping saved to: ${MAPPING_FILE}`);
 }
 
