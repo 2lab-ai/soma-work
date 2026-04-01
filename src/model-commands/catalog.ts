@@ -1,4 +1,11 @@
-import type { SessionLink, SessionResourceSnapshot, SessionResourceType, SessionResourceUpdateRequest } from '../types';
+import type {
+  SessionInstruction,
+  SessionInstructionOperation,
+  SessionLink,
+  SessionResourceSnapshot,
+  SessionResourceType,
+  SessionResourceUpdateRequest,
+} from '../types';
 import type {
   ContinueSessionParams,
   ModelCommandContext,
@@ -51,8 +58,34 @@ const UPDATE_SESSION_SCHEMA = {
         required: ['action', 'resourceType'],
       },
     },
+    instructionOperations: {
+      type: 'array',
+      description: 'Operations on user SSOT instructions (add/remove/clear)',
+      items: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['add', 'remove', 'clear'],
+          },
+          text: {
+            type: 'string',
+            description: 'Instruction text (required for add)',
+          },
+          source: {
+            type: 'string',
+            description: 'Who added this instruction (default: "user")',
+          },
+          id: {
+            type: 'string',
+            description: 'Instruction ID (required for remove)',
+          },
+        },
+        required: ['action'],
+      },
+    },
   },
-  // operations OR title must be present (either or both)
+  // operations OR title OR instructionOperations must be present
   additionalProperties: false,
 };
 
@@ -189,6 +222,7 @@ export function getDefaultSessionSnapshot(): SessionResourceSnapshot {
     prs: [],
     docs: [],
     active: {},
+    instructions: [],
     sequence: 0,
   };
 }
@@ -207,6 +241,7 @@ export function normalizeSessionSnapshot(snapshot: SessionResourceSnapshot | und
       pr: snapshot.active?.pr ? normalizeLink(snapshot.active.pr, 'pr') : undefined,
       doc: snapshot.active?.doc ? normalizeLink(snapshot.active.doc, 'doc') : undefined,
     },
+    instructions: Array.isArray(snapshot.instructions) ? snapshot.instructions : [],
     sequence: Number.isFinite(snapshot.sequence) ? snapshot.sequence : 0,
   };
 }
@@ -215,7 +250,7 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   const commands: ModelCommandDescriptor[] = [
     {
       id: 'GET_SESSION',
-      description: 'Read current session resources (issues/prs/docs + active + sequence)',
+      description: 'Read current session resources (issues/prs/docs + active + instructions + sequence)',
       paramsSchema: {
         type: 'object',
         properties: {},
@@ -224,7 +259,7 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     },
     {
       id: 'UPDATE_SESSION',
-      description: 'Update session resources with add/remove/set_active operations',
+      description: 'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
       paramsSchema: UPDATE_SESSION_SCHEMA,
     },
     {
@@ -339,6 +374,38 @@ export function applySessionUpdateToSnapshot(
     if (snapshot.active[activeKey]?.url !== found.url) {
       snapshot.active[activeKey] = found;
       changed = true;
+    }
+  }
+
+  // Apply instruction operations
+  for (const instrOp of request.instructionOperations ?? []) {
+    if (instrOp.action === 'add') {
+      const instruction: SessionInstruction = {
+        id: `instr_${Date.now()}_${snapshot.instructions.length}`,
+        text: instrOp.text,
+        addedAt: Date.now(),
+        source: instrOp.source || 'user',
+      };
+      snapshot.instructions.push(instruction);
+      changed = true;
+      continue;
+    }
+
+    if (instrOp.action === 'remove') {
+      const idx = snapshot.instructions.findIndex((i) => i.id === instrOp.id);
+      if (idx >= 0) {
+        snapshot.instructions.splice(idx, 1);
+        changed = true;
+      }
+      continue;
+    }
+
+    if (instrOp.action === 'clear') {
+      if (snapshot.instructions.length > 0) {
+        snapshot.instructions = [];
+        changed = true;
+      }
+      continue;
     }
   }
 

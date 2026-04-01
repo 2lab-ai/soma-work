@@ -129,6 +129,19 @@ export class SessionCommandHandler implements CommandHandler {
       lines.push(...dirLines);
     }
 
+    // User SSOT Instructions
+    if (session.instructions?.length > 0) {
+      lines.push(`*Instructions (SSOT):* ${session.instructions.length}`);
+      for (let i = 0; i < Math.min(session.instructions.length, 5); i++) {
+        const inst = session.instructions[i];
+        const preview = inst.text.length > 80 ? inst.text.slice(0, 80) + '…' : inst.text;
+        lines.push(`  ${i + 1}. ${preview}`);
+      }
+      if (session.instructions.length > 5) {
+        lines.push(`  _...and ${session.instructions.length - 5} more_`);
+      }
+    }
+
     // Uptime
     if (session.lastActivity) {
       const elapsed = Date.now() - new Date(session.lastActivity).getTime();

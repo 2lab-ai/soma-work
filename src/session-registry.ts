@@ -14,6 +14,7 @@ import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
+  SessionInstruction,
   SessionLink,
   SessionLinkHistory,
   SessionLinks,
@@ -111,6 +112,8 @@ interface SerializedSession {
       mergedAt: number;
     }>;
   };
+  // User SSOT instructions (persisted)
+  instructions?: SessionInstruction[];
 }
 
 /**
@@ -691,7 +694,37 @@ export class SessionRegistry {
       };
     }
 
-    if (applyResult.changed) {
+    // Apply instruction operations
+    let instructionChanged = false;
+    if (request.instructionOperations && request.instructionOperations.length > 0) {
+      if (!session.instructions) {
+        session.instructions = [];
+      }
+      for (const instrOp of request.instructionOperations) {
+        if (instrOp.action === 'add') {
+          session.instructions.push({
+            id: `instr_${Date.now()}_${session.instructions.length}`,
+            text: instrOp.text,
+            addedAt: Date.now(),
+            source: instrOp.source || 'user',
+          });
+          instructionChanged = true;
+        } else if (instrOp.action === 'remove') {
+          const idx = session.instructions.findIndex((i) => i.id === instrOp.id);
+          if (idx >= 0) {
+            session.instructions.splice(idx, 1);
+            instructionChanged = true;
+          }
+        } else if (instrOp.action === 'clear') {
+          if (session.instructions.length > 0) {
+            session.instructions = [];
+            instructionChanged = true;
+          }
+        }
+      }
+    }
+
+    if (applyResult.changed || instructionChanged) {
       session.linkSequence = (session.linkSequence ?? 0) + 1;
       this.saveSessions();
     }
@@ -709,6 +742,7 @@ export class SessionRegistry {
         prs: [],
         docs: [],
         active: {},
+        instructions: [],
         sequence: 0,
       };
     }
@@ -724,6 +758,7 @@ export class SessionRegistry {
         pr: session.links?.pr ? { ...session.links.pr } : undefined,
         doc: session.links?.doc ? { ...session.links.doc } : undefined,
       },
+      instructions: (session.instructions || []).map((i) => ({ ...i })),
       sequence: session.linkSequence ?? 0,
     };
   }
@@ -1307,6 +1342,8 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             // Merge code change stats
             mergeStats: session.mergeStats,
+            // User SSOT instructions (persisted)
+            instructions: session.instructions,
           });
         }
       }
@@ -1420,6 +1457,8 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
+          // User SSOT instructions (restored from disk)
+          instructions: Array.isArray(serialized.instructions) ? serialized.instructions : [],
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
