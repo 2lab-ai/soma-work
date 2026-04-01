@@ -12,10 +12,10 @@
  *   npm run update-mapping
  */
 
-import { config } from 'dotenv';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config } from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

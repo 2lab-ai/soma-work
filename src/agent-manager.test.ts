@@ -3,6 +3,7 @@
  * Scenarios: S1 (Config Parsing), S2 (Startup), S3 (Direct Chat), S6 (Prompt), S7 (Shutdown)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { McpManager } from './mcp-manager';
 
 // ─── S1: Agent Config Parsing ───────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ describe('S2 — Agent Startup Lifecycle', () => {
   // Trace: S2, Section 5, Row 3 — zero agents
   it('AgentStartup_ZeroAgents_NoError — works with no agents configured', async () => {
     const { AgentManager } = await import('./agent-manager');
-    const manager = new AgentManager({}, {} as any);
+    const manager = new AgentManager({}, {} as unknown as McpManager);
     await expect(manager.startAll()).resolves.not.toThrow();
     expect(manager.listAgents()).toHaveLength(0);
   });
@@ -144,7 +145,7 @@ describe('S2 — Agent Startup Lifecycle', () => {
       },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
     // Agents are pre-created but not started
     expect(manager.hasAgent('jangbi')).toBe(true);
     expect(manager.getAgent('jangbi')).toBeDefined();
@@ -165,7 +166,7 @@ describe('S3 — User Direct Chat with Sub-Agent', () => {
       promptDir: 'src/prompt/jangbi',
     };
 
-    const instance = new AgentInstance('jangbi', config, {} as any);
+    const instance = new AgentInstance('jangbi', config, {} as unknown as McpManager);
     expect(instance.getPromptDir()).toContain('jangbi');
   });
 
@@ -179,8 +180,8 @@ describe('S3 — User Direct Chat with Sub-Agent', () => {
       signingSecret: 'test-secret-at-least-20',
     };
 
-    const instance1 = new AgentInstance('jangbi', config, {} as any);
-    const instance2 = new AgentInstance('gwanu', config, {} as any);
+    const instance1 = new AgentInstance('jangbi', config, {} as unknown as McpManager);
+    const instance2 = new AgentInstance('gwanu', config, {} as unknown as McpManager);
 
     expect(instance1.getSessionRegistry()).not.toBe(instance2.getSessionRegistry());
   });
@@ -215,7 +216,7 @@ describe('S7 — Agent Graceful Shutdown', () => {
   // Trace: S7, Section 3a — stops all agents
   it('AgentShutdown_StopsAll — stops all agent instances', async () => {
     const { AgentManager } = await import('./agent-manager');
-    const manager = new AgentManager({}, {} as any);
+    const manager = new AgentManager({}, {} as unknown as McpManager);
     await expect(manager.stopAll()).resolves.not.toThrow();
   });
 
@@ -229,7 +230,7 @@ describe('S7 — Agent Graceful Shutdown', () => {
       b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
 
     // Force agent 'a' to throw on stop
     const agentA = manager.getAgent('a');
@@ -254,7 +255,7 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
       b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
     const agentA = manager.getAgent('a')!;
     const agentB = manager.getAgent('b')!;
     const spyA = vi.spyOn(agentA, 'start').mockResolvedValueOnce(undefined);
@@ -275,7 +276,7 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
       b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
     const spyA = vi.spyOn(manager.getAgent('a')!, 'stop').mockResolvedValueOnce(undefined);
     const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
 
@@ -294,7 +295,7 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
       b: { slackBotToken: 'xoxb-b', slackAppToken: 'xapp-b', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
     vi.spyOn(manager.getAgent('a')!, 'stop').mockRejectedValueOnce(new Error('crash'));
     const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
 
@@ -313,7 +314,7 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
       signingSecret: 'secret-20-chars-long!!',
     };
 
-    const instance = new AgentInstance('test', config, {} as any);
+    const instance = new AgentInstance('test', config, {} as unknown as McpManager);
 
     // Mock start to succeed
     const { App } = await import('@slack/bolt');
@@ -344,7 +345,7 @@ describe('S2+ — Agent Startup Error Isolation', () => {
       bad: { slackBotToken: 'xoxb-bad', slackAppToken: 'xapp-bad', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
 
     // Mock: 'good' succeeds, 'bad' throws
     const goodAgent = manager.getAgent('good');
@@ -367,7 +368,7 @@ describe('S2+ — Agent Startup Error Isolation', () => {
       jangbi: { slackBotToken: 'xoxb-j', slackAppToken: 'xapp-j', signingSecret: 'secret-20-chars-long!!' },
     };
 
-    const manager = new AgentManager(agents, {} as any);
+    const manager = new AgentManager(agents, {} as unknown as McpManager);
     expect(manager.getAgentConfig('jangbi')).toBeDefined();
     expect(manager.getAgentConfig('jangbi')?.slackBotToken).toBe('xoxb-j');
     expect(manager.getAgentConfig('nonexistent')).toBeUndefined();
