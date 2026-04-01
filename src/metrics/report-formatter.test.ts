@@ -830,6 +830,28 @@ describe('ReportFormatter', () => {
       expect(allText).toContain('Safe');
     });
 
+    it('Slack special mentions (<!channel>, <!here>, <!everyone>) are neutralized', () => {
+      const specialMentionName = '<!channel> <!here> <!everyone> <!date^1234567890^{date}|fallback>';
+      const result = formatter.formatWeekly(
+        makeWeeklyReport({
+          rankings: [
+            { userId: 'U1', userName: specialMentionName, metrics: makeMetrics(), rank: 1 },
+            { userId: 'U2', userName: 'Normal', metrics: makeMetrics({ turnsUsed: 20 }), rank: 2 },
+          ],
+        }),
+      );
+
+      const allText = JSON.stringify(result.blocks);
+      // All < and > must be escaped — no raw Slack special mentions
+      expect(allText).not.toContain('<!channel>');
+      expect(allText).not.toContain('<!here>');
+      expect(allText).not.toContain('<!everyone>');
+      expect(allText).not.toContain('<!date');
+      // Escaped versions should exist
+      expect(allText).toContain('&lt;');
+      expect(allText).toContain('&gt;');
+    });
+
     it('out-of-domain grade inputs are clamped', () => {
       // prMergeRate: -50 (invalid), sessionCompletionRate: 200 (invalid)
       const result = formatter.formatEnrichedDaily({
@@ -928,6 +950,56 @@ describe('ReportFormatter', () => {
       for (const block of result.blocks) {
         if (block.type === 'section' && 'fields' in block && block.fields) {
           expect(block.fields.length).toBeLessThanOrEqual(10);
+        }
+      }
+    });
+
+    it('all text objects respect Slack character limits', () => {
+      const result = formatter.formatEnrichedWeekly({
+        ...makeWeeklyReport({
+          rankings: Array.from({ length: 10 }, (_, i) => ({
+            userId: `U${i}`,
+            userName: 'X'.repeat(200),
+            metrics: makeMetrics(),
+            rank: i + 1,
+          })),
+        }),
+        derived: {
+          productivityScore: 500,
+          prMergeRate: 80,
+          avgCodePerPr: 300,
+          avgCodePerCommit: 80,
+          avgTurnsPerSession: 8,
+          sessionCompletionRate: 70,
+          netLines: 2000,
+          churnRatio: 5,
+          avgChangedLinesPerPr: 350,
+          commitPerActiveDay: 10,
+          prPerActiveDay: 3,
+        },
+        trend: null,
+        dailyBreakdown: [],
+        hourlyDistribution: Array.from({ length: 24 }, (_, h) => ({ hour: h, eventCount: 0 })),
+        peakHour: null,
+        activeDays: 5,
+        achievements: [],
+        funFacts: [],
+      });
+
+      for (const block of result.blocks) {
+        // Header text ≤ 150
+        if (block.type === 'header') {
+          expect(block.text.text.length).toBeLessThanOrEqual(150);
+        }
+        // Section text ≤ 3000
+        if (block.type === 'section' && block.text) {
+          expect(block.text.text.length).toBeLessThanOrEqual(3000);
+        }
+        // Section field text ≤ 2000
+        if (block.type === 'section' && 'fields' in block && block.fields) {
+          for (const f of block.fields) {
+            expect(f.text.length).toBeLessThanOrEqual(2000);
+          }
         }
       }
     });
