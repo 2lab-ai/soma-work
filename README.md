@@ -95,7 +95,7 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 
 - **Direct mention**: Users @mention sub-agents directly for specialized tasks
 - **Delegation**: Main bot delegates via `agent_chat` MCP tool
-- **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
+- **Zero-config scaling**: Add agents by editing the config file — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
 > **Note**: Direct @mention/DM handling and `agent_chat` query integration are being wired up (Phase 2). Agents currently connect via Socket Mode and receive events, but full ClaudeHandler integration is in progress.
@@ -411,8 +411,8 @@ Test coverage includes: event routing, stream processing, command parsing, permi
 | Auth errors | API keys, Socket Mode enabled, token expiration |
 | Broken formatting | Markdown → Slack mrkdwn conversion edge cases |
 | Session conflicts | Multiple instances running with same Slack token |
-| Sub-agent not starting | Verify `slackBotToken`/`slackAppToken` format in `config.json` |
-| `agent_chat` "Unknown agent" | Agent name must match `config.json` key (case-sensitive) |
+| Sub-agent not starting | Verify `slackBotToken`/`slackAppToken` format in config file (`config.json` on main, `config.dev.json` otherwise) |
+| `agent_chat` "Unknown agent" | Agent name must match config file key (case-sensitive) |
 
 ---
 
