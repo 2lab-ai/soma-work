@@ -492,6 +492,62 @@ describe('Dashboard API', () => {
     expect(bsPos).toBeLessThan(quotePos); // backslash escape first, then quote
   });
 
+  // ── Completeness: all inline handlers use correct escaping ──
+
+  it('should not have any onclick handlers with broken empty-string escaping', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const html: string = res.body;
+
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // The broken pattern before PR #280 was: doAction('' + escJs(...)
+    // Correct pattern is: doAction(\'' + escJs(...)
+    // Scan for ALL doAction/openPanel calls and ensure none use the broken pattern
+    const brokenDoAction = script.match(/doAction\(''/g);
+    const brokenOpenPanel = script.match(/openPanel\(''/g);
+    expect(brokenDoAction).toBeNull();
+    expect(brokenOpenPanel).toBeNull();
+
+    // Verify correct pattern exists for each action type
+    const correctDoAction = script.match(/doAction\(\\'/g);
+    const correctOpenPanel = script.match(/openPanel\(\\'/g);
+    expect(correctDoAction).not.toBeNull();
+    expect(correctOpenPanel).not.toBeNull();
+
+    // There should be exactly 3 doAction calls (stop, close, trash)
+    // and 1 openPanel call
+    expect(correctDoAction!.length).toBe(3);
+    expect(correctOpenPanel!.length).toBe(1);
+  });
+
+  it('should have all inline handlers escaped consistently', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // Every string literal in handler builders that uses escJs must
+    // also close with escaped quotes: \\',\\'action\\')
+    // Count action closings — each doAction has 2 escaped quote pairs (key + action)
+    const actionClosings = script.match(/\\',\\'/g);
+    expect(actionClosings).not.toBeNull();
+    // 3 actions × 1 separator each = 3 closing patterns
+    expect(actionClosings!.length).toBe(3);
+  });
+
   // ── Auth ──
 
   it('should require auth for dashboard API', async () => {
