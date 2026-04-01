@@ -17,6 +17,7 @@ import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { buildRequestStartBlocks } from '../source-thread-summary';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
@@ -773,12 +774,11 @@ export class SessionInitializer {
       if (!newThreadPermalink) {
         this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
       }
-      const linkText = newThreadPermalink ? ` → ${newThreadPermalink}` : '';
-      await this.deps.slackApi.postMessage(
-        channel,
-        `📋 요청을 확인했습니다. 새 스레드에서 작업을 진행합니다${linkText}`,
-        { threadTs },
-      );
+      const startPayload = buildRequestStartBlocks(botSession, newThreadPermalink);
+      await this.deps.slackApi.postMessage(channel, startPayload.text, {
+        threadTs,
+        blocks: startPayload.blocks,
+      });
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
