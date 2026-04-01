@@ -215,7 +215,14 @@ function safeDerived(d: DerivedMetrics): DerivedMetrics {
 // === Shared Scoring ===
 
 /** Unified ranking score formula. Single source of truth for buildRankings + legacy formatWeekly. */
-function rankingScore(m: { turnsUsed: number; sessionsCreated: number; issuesCreated: number; commitsCreated: number; prsCreated: number; prsMerged: number }): number {
+function rankingScore(m: {
+  turnsUsed: number;
+  sessionsCreated: number;
+  issuesCreated: number;
+  commitsCreated: number;
+  prsCreated: number;
+  prsMerged: number;
+}): number {
   return safeNum(
     m.turnsUsed + m.sessionsCreated + m.issuesCreated * 2 + m.commitsCreated * 3 + m.prsCreated * 5 + m.prsMerged * 10,
   );
@@ -558,10 +565,7 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
   // This ensures the leaderboard reflects the true top performers, not just the first N inputs.
   const scored = rankings
     .map((r) => ({ ...r, score: rankingScore(r.metrics) }))
-    .sort(
-      (a, b) =>
-        b.score - a.score || a.rank - b.rank || koCollator.compare(a.userName, b.userName),
-    )
+    .sort((a, b) => b.score - a.score || a.rank - b.rank || koCollator.compare(a.userName, b.userName))
     .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   const top = scored[0];
@@ -770,12 +774,7 @@ export class ReportFormatter {
     // Sort rankings using shared rankingScore() — single source of truth with buildRankings
     const sortedRankings = [...report.rankings]
       .map((r) => ({ ...r, _score: rankingScore(r.metrics) }))
-      .sort(
-        (a, b) =>
-          b._score - a._score ||
-          a.rank - b.rank ||
-          koCollator.compare(a.userName, b.userName),
-      )
+      .sort((a, b) => b._score - a._score || a.rank - b.rank || koCollator.compare(a.userName, b.userName))
       .slice(0, MAX_RANKINGS_IN_BLOCKS);
     if (sortedRankings.length > 0) {
       blocks.push({ type: 'divider' });
