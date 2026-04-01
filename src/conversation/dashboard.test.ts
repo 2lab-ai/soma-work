@@ -492,6 +492,99 @@ describe('Dashboard API', () => {
     expect(bsPos).toBeLessThan(quotePos); // backslash escape first, then quote
   });
 
+  // ── Completeness: all inline handlers use correct escaping ──
+
+  it('should not have any onclick handlers with broken empty-string escaping', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const html: string = res.body;
+
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // The broken pattern before PR #280 was: doAction('' + escJs(...)
+    // Correct pattern is: doAction(\'' + escJs(...)
+    // Scan for ALL doAction/openPanel calls and ensure none use the broken pattern
+    const brokenDoAction = script.match(/doAction\(''/g);
+    const brokenOpenPanel = script.match(/openPanel\(''/g);
+    expect(brokenDoAction).toBeNull();
+    expect(brokenOpenPanel).toBeNull();
+
+    // Verify correct pattern exists for each action type
+    const correctDoAction = script.match(/doAction\(\\'/g);
+    const correctOpenPanel = script.match(/openPanel\(\\'/g);
+    expect(correctDoAction).not.toBeNull();
+    expect(correctOpenPanel).not.toBeNull();
+
+    // There should be exactly 3 doAction calls (stop, close, trash)
+    // and 1 openPanel call
+    expect(correctDoAction!.length).toBe(3);
+    expect(correctOpenPanel!.length).toBe(1);
+  });
+
+  it('should have all inline handlers escaped consistently', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // Every string literal in handler builders that uses escJs must
+    // also close with escaped quotes: \\',\\'action\\')
+    // Count action closings — each doAction has 2 escaped quote pairs (key + action)
+    const actionClosings = script.match(/\\',\\'/g);
+    expect(actionClosings).not.toBeNull();
+    // 3 actions × 1 separator each = 3 closing patterns
+    expect(actionClosings!.length).toBe(3);
+  });
+
+  // ── Guard: detect unescaped inline handlers if new ones are added ──
+
+  it('should not contain any raw function calls in onclick without escJs protection', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // Guard: if someone adds a new onclick handler that builds strings with
+    // unescaped single quotes, this catches it.
+    // Pattern: any JS string concatenation building an onclick that uses (' or ')
+    // without a preceding backslash — this would break in rendered HTML.
+    //
+    // Valid:   doAction(\'' + escJs(s.key) + '\\',\\'stop\\')
+    // Invalid: doAction('' + s.key + '',''stop'')
+    //
+    // Check: every occurrence of "Action(" or "Panel(" in handler-building
+    // lines must be followed by \' not just '
+    const handlerCalls = script.match(/(?:doAction|openPanel|closePanel|sendCommand)\(/g);
+    if (handlerCalls) {
+      // For each unique handler function name found, verify escaping is used
+      const uniqueHandlers = [...new Set(handlerCalls.map((h: string) => h.replace('(', '')))];
+      for (const handler of uniqueHandlers) {
+        // If this handler appears in a string-building context (with quotes),
+        // it must use escaped quotes
+        const buildPattern = new RegExp(`${handler}\\(''`, 'g');
+        const broken = script.match(buildPattern);
+        expect(broken).toBeNull();
+      }
+    }
+  });
+
   // ── Auth ──
 
   it('should require auth for dashboard API', async () => {
