@@ -28,7 +28,7 @@ export class AgentManager {
 
   constructor(
     agentConfigs: Record<string, AgentConfig>,
-    private mcpManager: McpManager,
+    mcpManager: McpManager,
   ) {
     this.agentConfigs = agentConfigs;
 
