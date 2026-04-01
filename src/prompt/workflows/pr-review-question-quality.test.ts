@@ -135,4 +135,45 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
       expect(content).toMatch(/별도 이슈로 분리.*defer.*선택지에 포함하지 않/);
     });
   });
+
+  describe('pr-review.prompt — Handoff', () => {
+    let content: string;
+
+    beforeAll(() => {
+      content = readPromptFile('src/prompt/workflows/pr-review.prompt');
+    });
+
+    it('CONTINUE_SESSION prompt should require selected option info', () => {
+      // Must mention that prompt field should contain selected implementation approach
+      expect(content).toMatch(/선택된 구현 방식/);
+      // Tightened: only match the specific handoff rule instruction (no loose alternation)
+      expect(content).toMatch(/핸드오프 필수 규칙/);
+    });
+
+    it('CONTINUE_SESSION example should include handoff table columns', () => {
+      // The CONTINUE_SESSION payload example must contain the table format
+      // so fix workflow knows what structure to parse
+      expect(content).toMatch(/Finding.*선택된 옵션.*설명/);
+    });
+  });
+
+  describe('pr-fix-and-update.prompt — Option Handoff', () => {
+    let content: string;
+
+    beforeAll(() => {
+      content = readPromptFile('src/prompt/workflows/pr-fix-and-update.prompt');
+    });
+
+    it('should parse selected option from prompt field', () => {
+      expect(content).toMatch(/선택된 구현 방식/);
+      expect(content).toMatch(/Decision Gate.*다시 거치지 않/);
+    });
+
+    it('should NOT use Fix/Defer/Skip as selection choices', () => {
+      // The specific line "Fix in this PR / Defer to followup issue / Skip" must not exist
+      expect(content).not.toMatch(/Fix in this PR.*Defer to followup.*Skip/);
+      // Generic fix_now/defer pattern should not exist
+      expect(content).not.toMatch(/fix_now.*defer_to_followup/);
+    });
+  });
 });
