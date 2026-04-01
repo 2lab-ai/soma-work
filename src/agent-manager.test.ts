@@ -256,8 +256,8 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
     };
 
     const manager = new AgentManager(agents, {} as unknown as McpManager);
-    const agentA = manager.getAgent('a')!;
-    const agentB = manager.getAgent('b')!;
+    const agentA = manager.getAgent('a') as NonNullable<ReturnType<typeof manager.getAgent>>;
+    const agentB = manager.getAgent('b') as NonNullable<ReturnType<typeof manager.getAgent>>;
     const spyA = vi.spyOn(agentA, 'start').mockResolvedValueOnce(undefined);
     const spyB = vi.spyOn(agentB, 'start').mockResolvedValueOnce(undefined);
 
@@ -277,8 +277,10 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
     };
 
     const manager = new AgentManager(agents, {} as unknown as McpManager);
-    const spyA = vi.spyOn(manager.getAgent('a')!, 'stop').mockResolvedValueOnce(undefined);
-    const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
+    const agentA = manager.getAgent('a') as NonNullable<ReturnType<typeof manager.getAgent>>;
+    const agentB = manager.getAgent('b') as NonNullable<ReturnType<typeof manager.getAgent>>;
+    const spyA = vi.spyOn(agentA, 'stop').mockResolvedValueOnce(undefined);
+    const spyB = vi.spyOn(agentB, 'stop').mockResolvedValueOnce(undefined);
 
     await manager.stopAll();
 
@@ -296,8 +298,10 @@ describe('S2++ — Agent Startup Behavioral Verification', () => {
     };
 
     const manager = new AgentManager(agents, {} as unknown as McpManager);
-    vi.spyOn(manager.getAgent('a')!, 'stop').mockRejectedValueOnce(new Error('crash'));
-    const spyB = vi.spyOn(manager.getAgent('b')!, 'stop').mockResolvedValueOnce(undefined);
+    const agentA = manager.getAgent('a') as NonNullable<ReturnType<typeof manager.getAgent>>;
+    const agentB = manager.getAgent('b') as NonNullable<ReturnType<typeof manager.getAgent>>;
+    vi.spyOn(agentA, 'stop').mockRejectedValueOnce(new Error('crash'));
+    const spyB = vi.spyOn(agentB, 'stop').mockResolvedValueOnce(undefined);
 
     await manager.stopAll();
 
