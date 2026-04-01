@@ -72,12 +72,14 @@ function escapeMrkdwn(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-/** Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity. Logs a warning in dev. */
+/**
+ * Coerce a number to finite. Returns 0 for NaN, Infinity, -Infinity.
+ * Always logs a structured warning — in production too — because silent 0-coercion
+ * can mask upstream aggregation bugs in reporting code.
+ */
 function safeNum(n: number): number {
   if (!Number.isFinite(n)) {
-    if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production') {
-      console.warn(`[report-formatter] safeNum received non-finite value: ${n}`);
-    }
+    console.warn(JSON.stringify({ level: 'warn', module: 'report-formatter', fn: 'safeNum', value: String(n) }));
     return 0;
   }
   return n;
@@ -131,9 +133,11 @@ function safeBlocks(blocks: SlackBlock[]): SlackBlock[] {
 }
 
 /**
- * Priority-based block trimming: preserves header (first) and footer (last).
- * Drops blocks in priority order: dividers first, then middle context blocks,
- * then middle sections — ensuring highest-value diagnostic blocks survive.
+ * Priority-based block trimming with semantic grouping.
+ * Preserves header (first) and footer (last).
+ * A context block immediately following a section is treated as its companion
+ * and inherits the section's priority — they are dropped or kept together.
+ * Drop order: standalone dividers → standalone context → section(+companion) groups.
  */
 function trimToLimit(blocks: SlackBlock[], limit: number): SlackBlock[] {
   if (blocks.length <= limit) return blocks;
@@ -142,23 +146,46 @@ function trimToLimit(blocks: SlackBlock[], limit: number): SlackBlock[] {
   const footer = blocks[blocks.length - 1];
   const middle = blocks.slice(1, -1);
 
-  // Assign priority: divider=0 (drop first), context=1, section=2 (keep), header=3 (keep)
-  const prioritized = middle.map((block, idx) => {
-    let priority = 2;
-    if (block.type === 'divider') priority = 0;
-    else if (block.type === 'context') priority = 1;
-    return { block, idx, priority };
-  });
+  // Group: section followed by context = semantic pair (priority 2).
+  // Standalone divider = priority 0. Standalone context = priority 1. Other = priority 2.
+  const groups: { blocks: SlackBlock[]; priority: number; idx: number }[] = [];
+  let i = 0;
+  while (i < middle.length) {
+    const block = middle[i];
+    if (block.type === 'section' && i + 1 < middle.length && middle[i + 1].type === 'context') {
+      // Semantic pair: section + its companion context
+      groups.push({ blocks: [block, middle[i + 1]], priority: 2, idx: i });
+      i += 2;
+    } else if (block.type === 'divider') {
+      groups.push({ blocks: [block], priority: 0, idx: i });
+      i += 1;
+    } else if (block.type === 'context') {
+      groups.push({ blocks: [block], priority: 1, idx: i });
+      i += 1;
+    } else {
+      groups.push({ blocks: [block], priority: 2, idx: i });
+      i += 1;
+    }
+  }
 
-  // Sort by priority descending (highest priority = keep first), stable by original index
-  prioritized.sort((a, b) => b.priority - a.priority || a.idx - b.idx);
+  // Sort by priority descending, stable by original index
+  groups.sort((a, b) => b.priority - a.priority || a.idx - b.idx);
 
-  // Keep only what fits
-  const kept = prioritized.slice(0, limit - 2);
+  // Greedily keep groups until budget exhausted
+  const budget = limit - 2; // header + footer
+  const kept: { blocks: SlackBlock[]; idx: number }[] = [];
+  let used = 0;
+  for (const g of groups) {
+    if (used + g.blocks.length <= budget) {
+      kept.push({ blocks: g.blocks, idx: g.idx });
+      used += g.blocks.length;
+    }
+  }
+
   // Restore original order
   kept.sort((a, b) => a.idx - b.idx);
 
-  return [header, ...kept.map((k) => k.block), footer];
+  return [header, ...kept.flatMap((k) => k.blocks), footer];
 }
 
 interface FormattedReport {
@@ -184,6 +211,30 @@ function safeDerived(d: DerivedMetrics): DerivedMetrics {
     productivityScore: safeNum(d.productivityScore),
   };
 }
+
+// === Shared Scoring ===
+
+/** Unified ranking score formula. Single source of truth for buildRankings + legacy formatWeekly. */
+function rankingScore(m: {
+  turnsUsed: number;
+  sessionsCreated: number;
+  issuesCreated: number;
+  commitsCreated: number;
+  prsCreated: number;
+  prsMerged: number;
+}): number {
+  return safeNum(
+    m.turnsUsed + m.sessionsCreated + m.issuesCreated * 2 + m.commitsCreated * 3 + m.prsCreated * 5 + m.prsMerged * 10,
+  );
+}
+
+/** Clamp a value to [min, max]. Used for domain validation before grade computation. */
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(safeNum(value), min), max);
+}
+
+/** Stable Korean-first collator for ranking tie-breaker. Handles mixed-script and numeric names. */
+const koCollator = new Intl.Collator('ko', { numeric: true, sensitivity: 'base' });
 
 // === Visual Helpers (Bauhaus: functional only) ===
 
@@ -277,18 +328,25 @@ function metricsToSections(m: AggregatedMetrics): SlackBlock[] {
  * A: excellent flow, B: good, C: needs attention, D: action required.
  */
 function computeGrade(d: DerivedMetrics, activeDays?: number): string {
+  // Domain validation: clamp rates to [0,100] and activeDays to [0,7].
+  // Prevents corrupted upstream data from inflating/deflating grades.
+  const mergeRate = clamp(d.prMergeRate, 0, 100);
+  const completionRate = clamp(d.sessionCompletionRate, 0, 100);
+  const churn = clamp(d.churnRatio, 0, 100);
+
   let score = 0;
   let maxScore = 6; // 3 axes × 2 points each (daily baseline)
-  if (d.prMergeRate >= 60) score += 2;
-  else if (d.prMergeRate >= 40) score += 1;
-  if (d.sessionCompletionRate >= 60) score += 2;
-  else if (d.sessionCompletionRate >= 40) score += 1;
-  if (d.churnRatio <= 20) score += 2;
-  else if (d.churnRatio <= 35) score += 1;
+  if (mergeRate >= 60) score += 2;
+  else if (mergeRate >= 40) score += 1;
+  if (completionRate >= 60) score += 2;
+  else if (completionRate >= 40) score += 1;
+  if (churn <= 20) score += 2;
+  else if (churn <= 35) score += 1;
   if (activeDays !== undefined) {
+    const days = clamp(activeDays, 0, 7);
     maxScore = 8; // 4 axes × 2 points (weekly)
-    if (activeDays >= 5) score += 2;
-    else if (activeDays >= 3) score += 1;
+    if (days >= 5) score += 2;
+    else if (days >= 3) score += 1;
   }
   // Normalize to percentage of max, then map to grade.
   // This ensures daily (3-axis) and weekly (4-axis) are graded on the same scale.
@@ -506,20 +564,8 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
   // Score ALL rankings first, THEN sort, THEN slice top N.
   // This ensures the leaderboard reflects the true top performers, not just the first N inputs.
   const scored = rankings
-    .map((r) => {
-      const score =
-        r.metrics.turnsUsed +
-        r.metrics.sessionsCreated +
-        r.metrics.issuesCreated * 2 +
-        r.metrics.commitsCreated * 3 +
-        r.metrics.prsCreated * 5 +
-        r.metrics.prsMerged * 10;
-      return { ...r, score };
-    })
-    .sort(
-      (a, b) =>
-        b.score - a.score || a.rank - b.rank || a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' }),
-    )
+    .map((r) => ({ ...r, score: rankingScore(r.metrics) }))
+    .sort((a, b) => b.score - a.score || a.rank - b.rank || koCollator.compare(a.userName, b.userName))
     .slice(0, MAX_RANKINGS_IN_BLOCKS);
 
   const top = scored[0];
@@ -527,7 +573,8 @@ function buildRankings(rankings: UserRanking[]): SlackBlock[] {
 
   // Top 1: full detail — all scoring formula components visible
   const tm = top.metrics;
-  const topLine = `1위 *${sanitizeMrkdwn(top.userName, 100)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · +${fmt(tm.codeLinesAdded)}줄`;
+  const linesSign = tm.codeLinesAdded >= 0 ? '+' : '';
+  const topLine = `1위 *${sanitizeMrkdwn(top.userName, 100)}* ${fmt(top.score)}점 — 턴${tm.turnsUsed} · 세션${tm.sessionsCreated} · 이슈${tm.issuesCreated} · 커밋${tm.commitsCreated} · PR ${tm.prsCreated}→${tm.prsMerged} · ${linesSign}${fmt(tm.codeLinesAdded)}줄`;
 
   // Rest: use sorted index as rank (not original r.rank which may be stale after re-sorting)
   const restCompact = rest
@@ -724,22 +771,10 @@ export class ReportFormatter {
       ...metricsToSections(report.metrics),
     ];
 
-    // Sort rankings by consistent scoring formula, then take top N — same logic as buildRankings
+    // Sort rankings using shared rankingScore() — single source of truth with buildRankings
     const sortedRankings = [...report.rankings]
-      .sort((a, b) => {
-        const scoreOf = (r: UserRanking) =>
-          r.metrics.turnsUsed +
-          r.metrics.sessionsCreated +
-          r.metrics.issuesCreated * 2 +
-          r.metrics.commitsCreated * 3 +
-          r.metrics.prsCreated * 5 +
-          r.metrics.prsMerged * 10;
-        return (
-          scoreOf(b) - scoreOf(a) ||
-          a.rank - b.rank ||
-          a.userName.localeCompare(b.userName, 'en', { sensitivity: 'base' })
-        );
-      })
+      .map((r) => ({ ...r, _score: rankingScore(r.metrics) }))
+      .sort((a, b) => b._score - a._score || a.rank - b.rank || koCollator.compare(a.userName, b.userName))
       .slice(0, MAX_RANKINGS_IN_BLOCKS);
     if (sortedRankings.length > 0) {
       blocks.push({ type: 'divider' });
