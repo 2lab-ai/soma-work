@@ -146,7 +146,14 @@ describe('PR Review Question Quality — Regression Guard (#37)', () => {
     it('CONTINUE_SESSION prompt should require selected option info', () => {
       // Must mention that prompt field should contain selected implementation approach
       expect(content).toMatch(/선택된 구현 방식/);
-      expect(content).toMatch(/핸드오프.*필수.*규칙|prompt.*선택.*Option/);
+      // Tightened: only match the specific handoff rule instruction (no loose alternation)
+      expect(content).toMatch(/핸드오프 필수 규칙/);
+    });
+
+    it('CONTINUE_SESSION example should include handoff table columns', () => {
+      // The CONTINUE_SESSION payload example must contain the table format
+      // so fix workflow knows what structure to parse
+      expect(content).toMatch(/Finding.*선택된 옵션.*설명/);
     });
   });
 
