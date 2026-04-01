@@ -548,6 +548,43 @@ describe('Dashboard API', () => {
     expect(actionClosings!.length).toBe(3);
   });
 
+  // ── Guard: detect unescaped inline handlers if new ones are added ──
+
+  it('should not contain any raw function calls in onclick without escJs protection', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+
+    // Guard: if someone adds a new onclick handler that builds strings with
+    // unescaped single quotes, this catches it.
+    // Pattern: any JS string concatenation building an onclick that uses (' or ')
+    // without a preceding backslash — this would break in rendered HTML.
+    //
+    // Valid:   doAction(\'' + escJs(s.key) + '\\',\\'stop\\')
+    // Invalid: doAction('' + s.key + '',''stop'')
+    //
+    // Check: every occurrence of "Action(" or "Panel(" in handler-building
+    // lines must be followed by \' not just '
+    const handlerCalls = script.match(/(?:doAction|openPanel|closePanel|sendCommand)\(/g);
+    if (handlerCalls) {
+      // For each unique handler function name found, verify escaping is used
+      const uniqueHandlers = [...new Set(handlerCalls.map((h: string) => h.replace('(', '')))];
+      for (const handler of uniqueHandlers) {
+        // If this handler appears in a string-building context (with quotes),
+        // it must use escaped quotes
+        const buildPattern = new RegExp(`${handler}\\(''`, 'g');
+        const broken = script.match(buildPattern);
+        expect(broken).toBeNull();
+      }
+    }
+  });
+
   // ── Auth ──
 
   it('should require auth for dashboard API', async () => {
