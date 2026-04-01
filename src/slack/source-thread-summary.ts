@@ -89,11 +89,7 @@ function stripSlackTokens(text: string): string {
 }
 
 /** Build common metadata fields (owner + execution environment). */
-function buildMetaFields(
-  session: ConversationSession,
-  workflow: string,
-  model?: string
-): SlackField[] {
+function buildMetaFields(session: ConversationSession, workflow: string, model?: string): SlackField[] {
   const fields: SlackField[] = [];
   if (session.ownerId) {
     fields.push({ type: 'mrkdwn', text: truncate(`*담당*\n<@${session.ownerId}>`, SLACK_LIMITS.FIELD_TEXT) });
@@ -117,7 +113,7 @@ function buildLinkSection(
   url: string,
   label: string,
   title?: string,
-  contextFields?: { key: string; value: string }[]
+  contextFields?: { key: string; value: string }[],
 ): SlackSectionBlock {
   const linkText = title
     ? `*${linkType}* <${url}|${escapeMrkdwn(label)}>\n${escapeMrkdwn(title)}`
@@ -127,7 +123,7 @@ function buildLinkSection(
     text: { type: 'mrkdwn', text: safeTruncate(linkText, SLACK_LIMITS.SECTION_TEXT) },
   };
   if (contextFields && contextFields.length > 0) {
-    section.fields = contextFields.map(f => ({
+    section.fields = contextFields.map((f) => ({
       type: 'mrkdwn' as const,
       text: safeTruncate(`*${f.key}*\n${escapeMrkdwn(f.value)}`, SLACK_LIMITS.FIELD_TEXT),
     }));
@@ -145,16 +141,14 @@ function buildLinkSection(
  */
 export function buildRequestStartBlocks(
   session: ConversationSession,
-  workThreadPermalink?: string | null
+  workThreadPermalink?: string | null,
 ): { text: string; blocks: SlackBlock[] } {
   const title = session.title || 'Session';
   const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
   const model = session.model ? ThreadHeaderBuilder.formatModelName(session.model) : undefined;
   const workflow = session.workflow || 'default';
 
-  const fields: SlackField[] = [
-    { type: 'mrkdwn', text: truncate('*상태*\n시작', SLACK_LIMITS.FIELD_TEXT) },
-  ];
+  const fields: SlackField[] = [{ type: 'mrkdwn', text: truncate('*상태*\n시작', SLACK_LIMITS.FIELD_TEXT) }];
 
   fields.push(...buildMetaFields(session, workflow, model));
 
@@ -203,7 +197,7 @@ export function buildRequestCompleteBlocks(
     verifyResult?: string;
     issueContext?: { cause?: string; impact?: string };
     prContext?: { fix?: string; test?: string };
-  }
+  },
 ): { text: string; blocks: SlackBlock[] } {
   const title = session.title || 'Session';
   const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
@@ -226,7 +220,10 @@ export function buildRequestCompleteBlocks(
   heroFields.push(...buildMetaFields(session, workflow, model));
 
   if (options?.verifyResult) {
-    heroFields.push({ type: 'mrkdwn', text: safeTruncate(`*검증*\n${escapeMrkdwn(options.verifyResult)}`, SLACK_LIMITS.FIELD_TEXT) });
+    heroFields.push({
+      type: 'mrkdwn',
+      text: safeTruncate(`*검증*\n${escapeMrkdwn(options.verifyResult)}`, SLACK_LIMITS.FIELD_TEXT),
+    });
   }
 
   // Build conclusion text
@@ -235,9 +232,8 @@ export function buildRequestCompleteBlocks(
     conclusionParts.push(`*결론*\n${escapeMrkdwn(options.executiveSummary)}`);
   }
 
-  const heroText = conclusionParts.length > 0
-    ? conclusionParts.join('\n\n')
-    : `*결론*\n${escapeMrkdwn(title)} ${statusLabel}`;
+  const heroText =
+    conclusionParts.length > 0 ? conclusionParts.join('\n\n') : `*결론*\n${escapeMrkdwn(title)} ${statusLabel}`;
 
   const headerBlock: SlackHeaderBlock = { type: 'header', text: { type: 'plain_text', text: safeTitle } };
   const heroSection: SlackSectionBlock = {
@@ -296,7 +292,11 @@ export function buildRequestCompleteBlocks(
   if (hasPR) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: truncate(session.links!.pr!.label || 'PR', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
+      text: {
+        type: 'plain_text',
+        text: truncate(session.links!.pr!.label || 'PR', SLACK_LIMITS.BUTTON_TEXT),
+        emoji: true,
+      },
       url: session.links!.pr!.url,
       action_id: 'source_open_pr',
       style: 'primary',
@@ -306,7 +306,11 @@ export function buildRequestCompleteBlocks(
   if (hasIssue) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: truncate(session.links!.issue!.label || 'Issue', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
+      text: {
+        type: 'plain_text',
+        text: truncate(session.links!.issue!.label || 'Issue', SLACK_LIMITS.BUTTON_TEXT),
+        emoji: true,
+      },
       url: session.links!.issue!.url,
       action_id: 'source_open_issue',
     });
@@ -398,5 +402,4 @@ export async function postSourceThreadSummary(
 }
 
 // Re-export for testing
-export { safeText as _safeText };
-export { buildLinkSection as _buildLinkSection };
+export { buildLinkSection as _buildLinkSection, safeText as _safeText };

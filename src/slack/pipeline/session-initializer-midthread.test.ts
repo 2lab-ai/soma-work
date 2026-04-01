@@ -216,13 +216,12 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     );
 
     // Block Kit: permalink is in blocks (accessory button URL), not in fallback text
-    const hasPermalinkMessage = originalThreadMessages.some(
-      (call: any[]) => {
-        const blocksJson = JSON.stringify(call[2]?.blocks ?? []);
-        return blocksJson.includes(newThreadPermalink) ||
-          (typeof call[1] === 'string' && call[1].includes(newThreadPermalink));
-      }
-    );
+    const hasPermalinkMessage = originalThreadMessages.some((call: any[]) => {
+      const blocksJson = JSON.stringify(call[2]?.blocks ?? []);
+      return (
+        blocksJson.includes(newThreadPermalink) || (typeof call[1] === 'string' && call[1].includes(newThreadPermalink))
+      );
+    });
 
     expect(hasPermalinkMessage).toBe(true);
   });
@@ -244,7 +243,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     );
 
     const hasRetentionMessage = originalThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && (call[1].includes('— 시작') || call[1].includes('📋'))
+      (call: any[]) => typeof call[1] === 'string' && (call[1].includes('— 시작') || call[1].includes('📋')),
     );
 
     expect(hasRetentionMessage).toBe(true);
@@ -307,7 +306,7 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
       (call: any[]) =>
         call[2]?.threadTs === 'thread123' &&
         typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋'))
+        (call[1].includes('— 시작') || call[1].includes('📋')),
     );
 
     expect(retentionMessages).toHaveLength(0);
@@ -446,7 +445,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
       (call: any[]) =>
         call[2]?.threadTs === '1711234567.000100' &&
         typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋'))
+        (call[1].includes('— 시작') || call[1].includes('📋')),
     );
     expect(retentionMessages).toHaveLength(1);
   });
@@ -470,7 +469,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
       (call: any[]) =>
         call[2]?.threadTs === '1711234567.000100' &&
         typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋'))
+        (call[1].includes('— 시작') || call[1].includes('📋')),
     );
     expect(retentionMessages).toHaveLength(1);
 
@@ -528,7 +527,7 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
       (call: any[]) =>
         call[2]?.threadTs === 'thread123' &&
         typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋'))
+        (call[1].includes('— 시작') || call[1].includes('📋')),
     );
     expect(retentionMessages).toHaveLength(0);
   });
@@ -577,7 +576,7 @@ describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
       (call: any[]) =>
         call[2]?.threadTs === '1711234567.000100' &&
         typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋'))
+        (call[1].includes('— 시작') || call[1].includes('📋')),
     );
 
     expect(retentionMessages).toHaveLength(1);

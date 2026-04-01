@@ -242,7 +242,8 @@ describe('buildRequestCompleteBlocks', () => {
   it('includes issue and PR sections when links exist', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: {
         issue: { url: 'https://github.com/org/repo/issues/1', label: '#1', title: 'Bug report' },
         pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2', title: 'Fix bug' },
@@ -298,7 +299,8 @@ describe('buildRequestCompleteBlocks', () => {
   it('renders issue section without PR section when only issue linked', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: { issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' } },
     } as any;
     const result = buildRequestCompleteBlocks(session, 'merged');
@@ -311,7 +313,8 @@ describe('buildRequestCompleteBlocks', () => {
   it('renders PR section without issue section when only PR linked', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: { pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' } },
     } as any;
     const result = buildRequestCompleteBlocks(session, 'merged');
@@ -323,7 +326,8 @@ describe('buildRequestCompleteBlocks', () => {
   it('includes issue context fields when provided', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: { issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' } },
     } as any;
     const result = buildRequestCompleteBlocks(session, 'merged', {
@@ -337,7 +341,8 @@ describe('buildRequestCompleteBlocks', () => {
   it('includes PR context fields when provided', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: { pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' } },
     } as any;
     const result = buildRequestCompleteBlocks(session, 'merged', {
@@ -377,7 +382,10 @@ describe('postSourceThreadSummary edge cases', () => {
       getPermalink: vi.fn().mockResolvedValue(null),
     };
     const session = {
-      title: 'Task', channelId: 'C_NEW', threadTs: 'ts', threadRootTs: 'root-ts',
+      title: 'Task',
+      channelId: 'C_NEW',
+      threadTs: 'ts',
+      threadRootTs: 'root-ts',
       sourceThread: { channel: 'C_ORIGINAL', threadTs: '123.456' },
       links: {},
     };
@@ -522,9 +530,7 @@ describe('postSourceThreadSummary fallback paths', () => {
     };
     const { postSourceThreadSummary } = await import('./source-thread-summary');
     // Should not throw — fire-and-forget
-    await expect(
-      postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')
-    ).resolves.not.toThrow();
+    await expect(postSourceThreadSummary(mockSlackApi as any, session as any, 'merged')).resolves.not.toThrow();
   });
 
   it('postSourceThreadSummary continues when getPermalink throws', async () => {
@@ -545,7 +551,7 @@ describe('postSourceThreadSummary fallback paths', () => {
     expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
       'C_ORIGINAL',
       expect.any(String),
-      expect.objectContaining({ threadTs: '111.222' })
+      expect.objectContaining({ threadTs: '111.222' }),
     );
   });
 
@@ -650,7 +656,8 @@ describe('Block Kit truncation and escaping', () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const longPrLabel = 'P'.repeat(100);
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: { pr: { url: 'https://github.com/org/repo/pull/2', label: longPrLabel } },
     } as any;
     const result = buildRequestCompleteBlocks(session, 'merged');
@@ -708,7 +715,8 @@ describe('payload contract', () => {
   it('complete blocks with issue+PR have divider and actions', async () => {
     const { buildRequestCompleteBlocks } = await import('./source-thread-summary');
     const session = {
-      title: 'Work', workflow: 'default',
+      title: 'Work',
+      workflow: 'default',
       links: {
         issue: { url: 'https://github.com/org/repo/issues/1', label: '#1' },
         pr: { url: 'https://github.com/org/repo/pull/2', label: 'PR #2' },
@@ -806,7 +814,7 @@ describe('buildLinkSection', () => {
       'https://github.com/org/repo/issues/42',
       '#42',
       'Login broken on Safari',
-      [{ key: 'cause', value: 'Cookie handling' }]
+      [{ key: 'cause', value: 'Cookie handling' }],
     );
     expect(section.type).toBe('section');
     expect(section.text.text).toContain('Issue');
