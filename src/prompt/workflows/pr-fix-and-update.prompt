@@ -12,7 +12,7 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 - **자율 수정 (tiny/small)**: switching cost < small → 3명 다수결로 즉시 수정. 유저에게 묻지 않음.
 - **유저 확인 (medium+)**: switching cost >= medium → UIAskUserQuestion으로 수정 방안 확인
 - **Followup 이슈**: PR 범위를 벗어나는 경우 Jira 이슈 생성
-- **Skip**: 유저의 결정으로 현재 수정하지 않음
+- **보류**: 유저의 결정으로 현재 수정하지 않음 (다음 리뷰에서 재판단)
 
 ## 성공 조건
 
@@ -28,6 +28,11 @@ PR에 남겨진 미해결 대화(리뷰 커멘트)를 모두 resolve한다.
 3. 로컬에 repo clone 및 PR 브랜치 checkout (작업폴더 밑 timestamp로 repo 폴더 생성)
    clone 완료 후, 반드시 다음 JSON directive를 출력하여 세션에 작업 폴더를 등록하라 (세션 종료 시 자동 정리됨):
    {"type": "source_working_dir", "action": "add", "path": "<생성한 작업 폴더 절대 경로>"}
+
+4. `prompt` 필드에 "## 선택된 구현 방식" 섹션이 있으면:
+   - 해당 finding은 이미 유저가 구현 방향을 결정한 것이므로, Decision Gate를 다시 거치지 않는다.
+   - 선택된 Option의 내용에 따라 즉시 수정을 진행한다.
+   - 이 finding에 대해 UIAskUserQuestion을 다시 보내지 않는다.
 
 ## 작업 프로세스
 
@@ -83,7 +88,7 @@ for each feedback:
 - `user_choice_group`으로 모든 medium+ 이슈를 묶어서 질문
 - 각 이슈의 question에 `[tier ~N줄]` prefix 표기
 - 각 이슈에 현재 코드 스니펫 + 수정안 + 3명 리뷰 합의 포함
-- 선택지: Fix in this PR / Defer to followup issue / Skip
+- 선택지: 구체적 구현 방식 Option A / Option B (각 옵션은 이 PR에서의 구체적 수정 방법이어야 함. "Fix/Defer/Skip" 3택 금지.)
 
 **자율 수정 건은 이 질문에 포함하지 않는다** — 이미 처리 완료.
 
