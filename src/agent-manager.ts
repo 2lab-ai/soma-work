@@ -26,10 +26,7 @@ export class AgentManager {
   private agents = new Map<string, AgentInstance>();
   private agentConfigs: Record<string, AgentConfig>;
 
-  constructor(
-    agentConfigs: Record<string, AgentConfig>,
-    private mcpManager: McpManager,
-  ) {
+  constructor(agentConfigs: Record<string, AgentConfig>, mcpManager: McpManager) {
     this.agentConfigs = agentConfigs;
 
     // Pre-create instances (not started yet)
