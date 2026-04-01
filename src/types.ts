@@ -100,11 +100,23 @@ export interface SessionLinkHistory {
 
 export type SessionResourceType = 'issue' | 'pr' | 'doc';
 
+/**
+ * A single user instruction stored as SSOT in the session.
+ * Persisted to disk and exposed to the model via GET_SESSION.
+ */
+export interface SessionInstruction {
+  id: string; // Unique ID (e.g., "instr_1712000000000_0")
+  text: string; // The instruction content
+  addedAt: number; // Unix ms when added
+  source?: string; // Who added it (e.g., "user", "model")
+}
+
 export interface SessionResourceSnapshot {
   issues: SessionLink[];
   prs: SessionLink[];
   docs: SessionLink[];
   active: SessionLinks;
+  instructions: SessionInstruction[];
   sequence: number;
 }
 
@@ -131,9 +143,34 @@ export type SessionResourceOperation =
   | SessionResourceRemoveOperation
   | SessionResourceSetActiveOperation;
 
+/**
+ * Operations for managing user SSOT instructions in a session.
+ */
+export interface SessionInstructionAddOperation {
+  action: 'add';
+  text: string;
+  source?: string; // default: "user"
+}
+
+export interface SessionInstructionRemoveOperation {
+  action: 'remove';
+  id: string;
+}
+
+export interface SessionInstructionClearOperation {
+  action: 'clear';
+}
+
+export type SessionInstructionOperation =
+  | SessionInstructionAddOperation
+  | SessionInstructionRemoveOperation
+  | SessionInstructionClearOperation;
+
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;
   operations?: SessionResourceOperation[];
+  /** Operations on user SSOT instructions (add/remove/clear) */
+  instructionOperations?: SessionInstructionOperation[];
   /** Update session title (e.g. after linking issue or merging PR) */
   title?: string;
 }
@@ -310,6 +347,10 @@ export interface ConversationSession {
   // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
   initialInstruction?: string;
   followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
+
+  // User SSOT instructions: structured, model-readable, persisted to disk.
+  // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
+  instructions?: SessionInstruction[];
 }
 
 /**
