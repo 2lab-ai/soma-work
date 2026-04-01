@@ -11,7 +11,7 @@ export function getDirSizeBytes(dirPath: string): number {
     // du -sk outputs size in KB; multiply by 1024 for bytes
     const output = execSync(`du -sk "${dirPath}" 2>/dev/null`, { timeout: 5000, encoding: 'utf-8' });
     const kb = parseInt(output.split('\t')[0], 10);
-    return isNaN(kb) ? 0 : kb * 1024;
+    return Number.isNaN(kb) ? 0 : kb * 1024;
   } catch {
     return 0;
   }
