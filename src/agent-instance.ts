@@ -33,7 +33,7 @@ export class AgentInstance {
   constructor(
     public readonly name: string,
     private config: AgentConfig,
-    private mcpManager: McpManager,
+    _mcpManager: McpManager,
   ) {
     this.logger = new Logger(`Agent:${name}`);
     this.sessionRegistry = new SessionRegistry();
@@ -91,7 +91,7 @@ export class AgentInstance {
 
     // TODO: Wire up SlackHandler for this agent's App instance
     // For now, set up a basic message handler
-    app.event('app_mention', async ({ event, say }) => {
+    app.event('app_mention', async ({ event, say: _say }) => {
       this.logger.info(`Agent '${this.name}' received mention`, {
         user: event.user,
         channel: event.channel,
@@ -99,7 +99,7 @@ export class AgentInstance {
       // Full SlackHandler integration will be wired in Phase 2
     });
 
-    app.event('message', async ({ event, say }) => {
+    app.event('message', async ({ event, say: _say }) => {
       // Handle DMs to this agent
       if ('channel_type' in event && event.channel_type === 'im') {
         this.logger.info(`Agent '${this.name}' received DM`, {
