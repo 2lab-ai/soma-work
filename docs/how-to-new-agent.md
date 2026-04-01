@@ -36,6 +36,8 @@ User → @soma "ask jangbi to review"
 
 ## Method 1: Automated Provisioning (Recommended)
 
+> ⚠️ **`main` branch only**: This script writes to `config.json`. On non-`main` branches, the runtime reads `config.dev.json` instead (see `src/env-paths.ts`). If you're on a feature branch, use [Method 3 (Manual Setup)](#method-3-manual-setup) and edit `config.dev.json` directly, or set `SOMA_CONFIG_DIR` to override.
+
 The `provision-agent.ts` script automates Slack App creation, OAuth install, and config update.
 
 ### Step 1: Run the provisioner
@@ -55,7 +57,7 @@ npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
 2. Creates a Slack App via `apps.manifest.create` API
 3. Opens OAuth flow in browser → captures Bot Token (`xoxb-`)
 4. Prompts you to create App-Level Token (`xapp-`) manually (Slack API limitation)
-5. Updates `config.json` with the agent entry
+5. Updates `config.json` with the agent entry (⚠️ always `config.json`, not `config.dev.json`)
 6. Creates `src/prompt/<agent-name>/default.prompt`
 
 ### One-time setup for Configuration Token
@@ -77,6 +79,8 @@ npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
 ---
 
 ## Method 2: Semi-Automated (Shell Script)
+
+> ⚠️ **`main` branch only**: Like Method 1, this script writes to `config.json`. On feature branches, use [Method 3 (Manual Setup)](#method-3-manual-setup) instead.
 
 ```bash
 ./scripts/create-agent.sh <agent-name> [description]
@@ -154,9 +158,9 @@ This generates a Slack App manifest, opens the creation URL, and prompts you to 
    - **App Token** (`xapp-...`): Basic Information → App-Level Tokens → Generate with `connections:write` scope
    - **Signing Secret**: Basic Information → App Credentials
 
-### Step 2: Add to `config.json`
+### Step 2: Add to config file
 
-> **Note**: On non-`main` branches, the app reads `config.dev.json` instead of `config.json` (unless `SOMA_CONFIG_DIR` is set). Make sure you edit the correct file for your environment.
+> **Important**: The runtime reads **`config.json`** on `main` branch, but **`config.dev.json`** on all other branches (unless `SOMA_CONFIG_DIR` is set). Edit the correct file for your current branch.
 
 Add an entry under the `agents` key:
 
