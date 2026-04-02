@@ -2307,6 +2307,15 @@ function renderPanelTaskItem(t) {
     + timeHtml
     + '</div>';
 }
+let _csrfToken = '';
+
+// Fetch CSRF token on load
+(async function fetchCsrfToken() {
+  try {
+    const res = await fetch('/auth/me');
+    if (res.ok) { const data = await res.json(); _csrfToken = data.csrfToken || ''; }
+  } catch {}
+})();
 
 // ── Utility ──
 function esc(s) {
@@ -2554,7 +2563,9 @@ async function loadSessions() {
 // ── Action handler ──
 async function doAction(key, action) {
   try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/' + action, { method: 'POST' });
+    const headers = {};
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/' + action, { method: 'POST', headers });
     if (!res.ok) console.error('Action failed', action, key);
     else loadSessions();
   } catch (e) { console.error('Action error', e); }
@@ -3262,9 +3273,11 @@ async function sendCommand() {
   input.value = '';
 
   try {
+    const cmdHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
     const res = await fetch('/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: cmdHeaders,
       body: JSON.stringify({ message: msg }),
     });
     if (!res.ok) {

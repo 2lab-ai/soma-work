@@ -277,7 +277,10 @@ export function validateCsrfToken(
   const expected =
     isAdmin && !userId ? generateCsrfTokenForAdmin() : userId && exp ? generateCsrfToken(userId, exp) : '';
   if (!expected) return false;
-  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(expected);
+  if (tokenBuf.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(tokenBuf, expectedBuf);
 }
 
 // ── OAuth state helpers ──
@@ -467,14 +470,38 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     reply.send({ ok: true, redirect: '/dashboard' });
   });
 
-  // ── /auth/me — current user (JSON) ──
+  // ── /auth/me — current user (JSON) + CSRF token ──
   server.get('/auth/me', async (request, reply) => {
     const user = getDashboardUser(request);
     if (!user) {
+      // For bearer_cookie users, return admin context with CSRF
+      const cookieHeader = request.headers.cookie || '';
+      const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
+      if (cookieMatch) {
+        const cookieVal = decodeURIComponent(cookieMatch[1]);
+        if (
+          cookieVal.startsWith('bearer:') &&
+          config.conversation.viewerToken &&
+          cookieVal.slice(7) === config.conversation.viewerToken
+        ) {
+          reply.send({ user: null, isAdmin: true, csrfToken: generateCsrfTokenForAdmin() });
+          return;
+        }
+      }
       reply.status(401).send({ error: 'Not authenticated' });
       return;
     }
-    reply.send({ user });
+    // For OAuth JWT users, derive CSRF token from JWT claims
+    const cookieHeader = request.headers.cookie || '';
+    const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
+    let csrfToken = '';
+    if (cookieMatch) {
+      const payload = verifyDashboardTokenRaw(decodeURIComponent(cookieMatch[1]));
+      if (payload?.sub && payload?.exp) {
+        csrfToken = generateCsrfToken(payload.sub, payload.exp);
+      }
+    }
+    reply.send({ user, csrfToken });
   });
 
   if (anyEnabled) {

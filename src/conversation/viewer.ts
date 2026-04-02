@@ -280,6 +280,13 @@ function getViewerScript(conversationId: string): string {
   return `
     const CONVERSATION_ID = ${JSON.stringify(conversationId)};
     const loadedRawCache = {};
+    let _csrfToken = '';
+    (async function() {
+      try {
+        const r = await fetch('/auth/me');
+        if (r.ok) { const d = await r.json(); _csrfToken = d.csrfToken || ''; }
+      } catch {}
+    })();
 
     // Lazy load raw content when details element is opened
     document.querySelectorAll('.raw-details').forEach(details => {
@@ -330,9 +337,11 @@ function getViewerScript(conversationId: string): string {
       const turnIds = Array.from(checked).map(cb => cb.dataset.turnId);
 
       try {
+        const exportHeaders = { 'Content-Type': 'application/json' };
+        if (_csrfToken) exportHeaders['X-CSRF-Token'] = _csrfToken;
         const res = await fetch('/api/conversations/' + CONVERSATION_ID + '/export', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: exportHeaders,
           body: JSON.stringify({ turnIds }),
         });
 
