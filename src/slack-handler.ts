@@ -813,6 +813,7 @@ export class SlackHandler {
       ts: notificationTs || `${Date.now() / 1000}`,
       text: resumePrompt,
       synthetic: true,
+      skipDispatch: true,
     };
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.

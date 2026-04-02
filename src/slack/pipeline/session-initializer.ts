@@ -256,10 +256,10 @@ export class SessionInitializer {
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
-    // Skip dispatch entirely for synthetic events (cron jobs, auto-resume) — execute prompt directly
-    if (event.synthetic && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
-      this.logger.info('Synthetic event — skipping dispatch, using default workflow', { sessionKey });
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Synthetic (cron/auto)');
+    // skipDispatch: explicit flag to bypass workflow classification (cron, auto-resume, etc.)
+    if (event.skipDispatch && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      this.logger.info('skipDispatch — bypassing workflow classification, using default', { sessionKey });
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Direct (skipDispatch)');
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
