@@ -1,11 +1,11 @@
 ---
 name: es
-description: "Executive Summary 작성. 작업 완료 후 7섹션 구조의 의사결정용 요약 문서를 생성한다."
+description: "Trigger: when local:zwork completed."
 ---
 
 # Executive Summary
 
-작업 완료 후 이해관계자가 **이 문서 하나로 의사결정**할 수 있는 7섹션 구조의 요약 문서를 작성한다.
+작업 완료 후 이해관계자가 **이 문서 하나로 의사결정**할 수 있는 7섹션 구조의 요약 문서를 작성한다. (Slack markdownfmt + slack block kit을 이용하여 가독성 있게 작성)
 
 ## 작성 절차
 
