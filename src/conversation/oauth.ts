@@ -18,6 +18,7 @@
  *   GET /auth/me                        → Current user info (JSON)
  */
 
+import * as crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as jwt from 'jsonwebtoken';
 import { config } from '../config';
@@ -42,11 +43,22 @@ export interface DashboardUser {
   provider: 'google' | 'microsoft';
 }
 
+export type AuthMode = 'oauth_jwt' | 'bearer_header' | 'bearer_cookie' | 'none';
+
+export interface AuthContext {
+  mode: AuthMode;
+  userId?: string; // Slack user ID (normalized)
+  email?: string;
+  name?: string;
+  isAdmin: boolean; // true for bearer_header and bearer_cookie
+}
+
 interface JwtPayload {
   sub: string; // Slack user ID
   email: string;
   name: string;
   provider: string;
+  originalIat?: number;
   iat?: number;
   exp?: number;
 }
@@ -68,16 +80,33 @@ function lookupUser(email: string): { userId: string; name: string } | null {
 
 // ── JWT helpers ──
 
-function getJwtSecret(): string {
-  return config.oauth.jwtSecret || config.conversation.viewerToken || 'soma-dashboard-default-secret';
+let _ephemeralSecret: string | null = null;
+
+export function getJwtSecret(): string {
+  if (config.oauth.jwtSecret) return config.oauth.jwtSecret;
+  if (config.conversation.viewerToken) return config.conversation.viewerToken;
+
+  // When OAuth is configured but no explicit secret — generate ephemeral
+  if (isOAuthConfigured('google') || isOAuthConfigured('microsoft')) {
+    if (!_ephemeralSecret) {
+      _ephemeralSecret = crypto.randomBytes(32).toString('hex');
+      logger.warn('No DASHBOARD_JWT_SECRET configured — using ephemeral secret. Sessions will not survive restarts.');
+    }
+    return _ephemeralSecret;
+  }
+
+  // No auth configured at all — return empty (auth disabled)
+  return '';
 }
 
-function issueToken(user: DashboardUser): string {
+function issueToken(user: DashboardUser, originalIat?: number): string {
+  const now = Math.floor(Date.now() / 1000);
   const payload: JwtPayload = {
     sub: user.slackUserId,
     email: user.email,
     name: user.name,
     provider: user.provider,
+    originalIat: originalIat || now,
   };
   return jwt.sign(payload, getJwtSecret(), { expiresIn: config.oauth.jwtExpiresIn });
 }
@@ -92,6 +121,17 @@ export function verifyDashboardToken(token: string): DashboardUser | null {
       name: payload.name,
       provider: payload.provider as 'google' | 'microsoft',
     };
+  } catch {
+    return null;
+  }
+}
+
+/** Verify JWT and return raw payload (for JWT rotation logic). */
+export function verifyDashboardTokenRaw(token: string): (JwtPayload & { iat: number; exp: number }) | null {
+  try {
+    const secret = getJwtSecret();
+    if (!secret) return null;
+    return jwt.verify(token, secret) as JwtPayload & { iat: number; exp: number };
   } catch {
     return null;
   }
@@ -208,6 +248,72 @@ function clearCookieAndRedirect(reply: FastifyReply, redirectTo: string): void {
   reply.redirect(redirectTo);
 }
 
+// ── CSRF helpers ──
+
+export function generateCsrfToken(userId: string, exp: number): string {
+  const secret = getJwtSecret();
+  if (!secret) return '';
+  return crypto.createHmac('sha256', secret).update(`${userId}:${exp}`).digest('hex').slice(0, 32);
+}
+
+export function generateCsrfTokenForAdmin(): string {
+  const secret = getJwtSecret();
+  const viewerToken = config.conversation.viewerToken;
+  if (!secret || !viewerToken) return '';
+  return crypto
+    .createHmac('sha256', secret)
+    .update(`csrf:admin:${viewerToken.slice(-8)}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+export function validateCsrfToken(
+  token: string,
+  userId: string | undefined,
+  exp: number | undefined,
+  isAdmin: boolean,
+): boolean {
+  if (!token) return false;
+  const expected =
+    isAdmin && !userId ? generateCsrfTokenForAdmin() : userId && exp ? generateCsrfToken(userId, exp) : '';
+  if (!expected) return false;
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+}
+
+// ── OAuth state helpers ──
+
+export function generateOAuthState(provider: string): string {
+  return crypto.randomBytes(16).toString('hex') + ':' + provider;
+}
+
+function getOAuthStateCookieName(provider: string): string {
+  return `soma_oauth_state_${provider}`;
+}
+
+export function setOAuthStateCookie(reply: any, provider: string, state: string): void {
+  const secure = (config.conversation.viewerUrl || '').startsWith('https');
+  const cookieName = getOAuthStateCookieName(provider);
+  reply.header(
+    'Set-Cookie',
+    `${cookieName}=${encodeURIComponent(state)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`,
+  );
+}
+
+export function validateOAuthState(request: any, provider: string, stateParam: string | undefined): boolean {
+  if (!stateParam) return false;
+  const cookieName = getOAuthStateCookieName(provider);
+  const cookieHeader = request.headers.cookie || '';
+  const match = cookieHeader.match(new RegExp(`${cookieName}=([^;]+)`));
+  if (!match) return false;
+  const cookieState = decodeURIComponent(match[1]);
+  return cookieState === stateParam && stateParam.endsWith(':' + provider);
+}
+
+export function clearOAuthStateCookie(reply: any, provider: string): void {
+  const cookieName = getOAuthStateCookieName(provider);
+  reply.header('Set-Cookie', `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
 // ── Route registration ──
 
 export async function registerOAuthRoutes(server: FastifyInstance): Promise<void> {
@@ -223,6 +329,8 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   // ── Google OAuth ──
   if (googleEnabled) {
     server.get('/auth/google', async (_request, reply) => {
+      const state = generateOAuthState('google');
+      setOAuthStateCookie(reply, 'google', state);
       const params = new URLSearchParams({
         client_id: config.oauth.google.clientId,
         redirect_uri: getCallbackUrl('google'),
@@ -230,44 +338,56 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
         scope: 'openid email profile',
         access_type: 'online',
         prompt: 'select_account',
+        state,
       });
       reply.redirect(`${GOOGLE_AUTH_URL}?${params}`);
     });
 
-    server.get<{ Querystring: { code?: string; error?: string } }>('/auth/google/callback', async (request, reply) => {
-      if (request.query.error || !request.query.code) {
-        reply.redirect('/login?error=google_denied');
-        return;
-      }
+    server.get<{ Querystring: { code?: string; error?: string; state?: string } }>(
+      '/auth/google/callback',
+      async (request, reply) => {
+        if (request.query.error || !request.query.code) {
+          reply.redirect('/login?error=google_denied');
+          return;
+        }
 
-      const userInfo = await exchangeGoogleCode(request.query.code);
-      if (!userInfo) {
-        reply.redirect('/login?error=google_failed');
-        return;
-      }
+        if (!validateOAuthState(request, 'google', request.query.state)) {
+          reply.redirect('/login?error=state_mismatch');
+          return;
+        }
+        clearOAuthStateCookie(reply, 'google');
 
-      const matched = lookupUser(userInfo.email);
-      if (!matched) {
-        logger.warn('OAuth login: no Slack user matched for email', { email: userInfo.email });
-        reply.redirect('/login?error=no_match&email=' + encodeURIComponent(userInfo.email));
-        return;
-      }
+        const userInfo = await exchangeGoogleCode(request.query.code);
+        if (!userInfo) {
+          reply.redirect('/login?error=google_failed');
+          return;
+        }
 
-      const dashUser: DashboardUser = {
-        slackUserId: matched.userId,
-        email: userInfo.email,
-        name: matched.name || userInfo.name,
-        provider: 'google',
-      };
-      const token = issueToken(dashUser);
-      logger.info('OAuth login success', { provider: 'google', email: userInfo.email, slackUserId: matched.userId });
-      setCookieAndRedirect(reply, token, `/dashboard/${matched.userId}`);
-    });
+        const matched = lookupUser(userInfo.email);
+        if (!matched) {
+          logger.warn('OAuth login: no Slack user matched for email', { email: userInfo.email });
+          reply.redirect('/login?error=no_match&email=' + encodeURIComponent(userInfo.email));
+          return;
+        }
+
+        const dashUser: DashboardUser = {
+          slackUserId: matched.userId,
+          email: userInfo.email,
+          name: matched.name || userInfo.name,
+          provider: 'google',
+        };
+        const token = issueToken(dashUser);
+        logger.info('OAuth login success', { provider: 'google', email: userInfo.email, slackUserId: matched.userId });
+        setCookieAndRedirect(reply, token, `/dashboard/${matched.userId}`);
+      },
+    );
   }
 
   // ── Microsoft OAuth ──
   if (microsoftEnabled) {
     server.get('/auth/microsoft', async (_request, reply) => {
+      const state = generateOAuthState('microsoft');
+      setOAuthStateCookie(reply, 'microsoft', state);
       const params = new URLSearchParams({
         client_id: config.oauth.microsoft.clientId,
         redirect_uri: getCallbackUrl('microsoft'),
@@ -275,17 +395,24 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
         scope: 'openid email profile User.Read',
         response_mode: 'query',
         prompt: 'select_account',
+        state,
       });
       reply.redirect(`${MS_AUTH_URL}?${params}`);
     });
 
-    server.get<{ Querystring: { code?: string; error?: string } }>(
+    server.get<{ Querystring: { code?: string; error?: string; state?: string } }>(
       '/auth/microsoft/callback',
       async (request, reply) => {
         if (request.query.error || !request.query.code) {
           reply.redirect('/login?error=microsoft_denied');
           return;
         }
+
+        if (!validateOAuthState(request, 'microsoft', request.query.state)) {
+          reply.redirect('/login?error=state_mismatch');
+          return;
+        }
+        clearOAuthStateCookie(reply, 'microsoft');
 
         const userInfo = await exchangeMicrosoftCode(request.query.code);
         if (!userInfo) {
@@ -320,6 +447,24 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   // ── Logout ──
   server.get('/auth/logout', async (_request, reply) => {
     clearCookieAndRedirect(reply, '/login');
+  });
+
+  // ── Token login (server-side) — replaces client-side cookie write ──
+  server.post<{ Body: { token: string } }>('/auth/token', async (request, reply) => {
+    const { token: providedToken } = request.body || {};
+    const viewerToken = config.conversation.viewerToken;
+    if (!providedToken || !viewerToken || providedToken !== viewerToken) {
+      reply.status(401).send({ error: 'Invalid token' });
+      return;
+    }
+    logger.info('Token login success');
+    const maxAge = config.oauth.jwtExpiresIn;
+    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    reply.header(
+      'Set-Cookie',
+      `${COOKIE_NAME}=${encodeURIComponent('bearer:' + providedToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
+    );
+    reply.send({ ok: true, redirect: '/dashboard' });
   });
 
   // ── /auth/me — current user (JSON) ──
@@ -425,6 +570,7 @@ if (err) {
     'microsoft_denied': 'Microsoft sign-in was cancelled.',
     'microsoft_failed': 'Microsoft sign-in failed. Please try again.',
     'no_match': 'No matching Slack account found for ' + (params.get('email') || 'this email') + '. Contact your admin.',
+    'state_mismatch': 'Authentication state mismatch. Please try again.',
   };
   el.innerHTML = '<div class="error-msg">' + (msgs[err] || 'Authentication error.') + '</div>';
 }
@@ -432,9 +578,16 @@ if (err) {
 function loginWithToken() {
   const token = document.getElementById('token-input').value.trim();
   if (!token) return;
-  // Store token and redirect — dashboard JS will use it
-  document.cookie = '${COOKIE_NAME}=' + encodeURIComponent('bearer:' + token) + '; path=/; max-age=604800';
-  location.href = '/dashboard';
+  fetch('/auth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  }).then(r => r.json()).then(data => {
+    if (data.ok) location.href = data.redirect || '/dashboard';
+    else document.getElementById('error').innerHTML = '<div class="error-msg">Invalid token.</div>';
+  }).catch(() => {
+    document.getElementById('error').innerHTML = '<div class="error-msg">Login failed.</div>';
+  });
 }
 </script>
 </body>

@@ -5,11 +5,22 @@ import Fastify, {
   type InjectOptions,
   type LightMyRequestResponse,
 } from 'fastify';
+import * as jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { Logger } from '../logger';
 import { registerDashboardRoutes } from './dashboard';
-import { getDashboardUser, registerOAuthRoutes } from './oauth';
+import {
+  type AuthContext,
+  type AuthMode,
+  generateCsrfToken,
+  generateCsrfTokenForAdmin,
+  getDashboardUser,
+  getJwtSecret,
+  registerOAuthRoutes,
+  validateCsrfToken,
+  verifyDashboardTokenRaw,
+} from './oauth';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
@@ -17,53 +28,117 @@ import { renderConversationListPage, renderConversationViewPage } from './viewer
 const logger = new Logger('ConversationWebServer');
 
 /**
- * Validate authentication from:
- * 1. Authorization header (Bearer token) — for API clients
- * 2. JWT cookie — for browser sessions (OAuth or token-based login)
- * 3. Cookie with "bearer:" prefix — for token-based browser login
+ * Build AuthContext from request credentials.
+ * Returns null if authentication fails entirely.
+ * Auth precedence: bearer_header > oauth_jwt > bearer_cookie > none
  */
-function validateAuthToken(request: FastifyRequest): boolean {
-  const token = config.conversation.viewerToken;
+function buildAuthContext(request: FastifyRequest): AuthContext | null {
+  const viewerToken = config.conversation.viewerToken;
+  const hasOAuth = !!(config.oauth.google.clientId || config.oauth.microsoft.clientId || config.oauth.jwtSecret);
 
-  // If no token is configured and no OAuth is configured, auth is disabled (allow all)
-  if (!token && !config.oauth.google.clientId && !config.oauth.microsoft.clientId && !config.oauth.jwtSecret) {
-    return true;
+  // If no auth is configured at all, allow everyone
+  if (!viewerToken && !hasOAuth) {
+    return { mode: 'none', isAdmin: true };
   }
 
-  // 1. Check Authorization header (Bearer token)
+  // 1. Check Authorization header (Bearer token) — admin API access
   const authHeader = request.headers.authorization;
-  if (authHeader && token) {
+  if (authHeader && viewerToken) {
     const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
-    if (providedToken === token) return true;
+    if (providedToken === viewerToken) {
+      return { mode: 'bearer_header', isAdmin: true };
+    }
   }
 
   // 2. Check JWT cookie (OAuth session)
-  const dashUser = getDashboardUser(request);
-  if (dashUser) return true;
-
-  // 3. Check cookie with bearer: prefix (token-based browser login)
   const cookieHeader = request.headers.cookie || '';
   const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
   if (cookieMatch) {
     const cookieVal = decodeURIComponent(cookieMatch[1]);
-    if (cookieVal.startsWith('bearer:') && token && cookieVal.slice(7) === token) {
-      return true;
+
+    // 2a. Bearer-prefix cookie (token-based browser login)
+    if (cookieVal.startsWith('bearer:') && viewerToken && cookieVal.slice(7) === viewerToken) {
+      return { mode: 'bearer_cookie', isAdmin: true };
+    }
+
+    // 2b. JWT cookie (OAuth session)
+    const payload = verifyDashboardTokenRaw(cookieVal);
+    if (payload) {
+      return {
+        mode: 'oauth_jwt',
+        userId: payload.sub,
+        email: payload.email,
+        name: payload.name,
+        isAdmin: false,
+      };
     }
   }
 
-  // If no auth configured at all, allow
-  if (!token) return true;
+  // 3. If no viewer token configured but OAuth is, still reject
+  if (!viewerToken && hasOAuth) return null;
+  // If viewer token is set but nothing matched
+  if (viewerToken) return null;
 
-  return false;
+  return null;
+}
+
+const COOKIE_NAME = 'soma_dash_token';
+
+/**
+ * Check if JWT needs rotation and set refreshed cookie if so.
+ * Rotation window: last 15% of configured expiry, capped at 24h.
+ * Absolute max lifetime: 4x configured expiry, minimum 30 days.
+ */
+function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
+  const cookieHeader = request.headers.cookie || '';
+  const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
+  if (!cookieMatch) return;
+
+  const cookieVal = decodeURIComponent(cookieMatch[1]);
+  if (cookieVal.startsWith('bearer:')) return; // Not a JWT
+
+  const payload = verifyDashboardTokenRaw(cookieVal);
+  if (!payload || !payload.iat || !payload.exp) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const expiresIn = config.oauth.jwtExpiresIn;
+  const refreshWindow = Math.min(Math.floor(expiresIn * 0.15), 86400); // 15% of expiry, max 24h
+  const absoluteMax = Math.max(expiresIn * 4, 30 * 86400); // 4x expiry, min 30 days
+  const originalIat = (payload as any).originalIat || payload.iat;
+
+  // Force re-login if absolute max exceeded
+  if (now - originalIat > absoluteMax) return;
+
+  // Rotate if within refresh window
+  const timeUntilExpiry = payload.exp - now;
+  if (timeUntilExpiry > 0 && timeUntilExpiry <= refreshWindow) {
+    const secret = getJwtSecret();
+    if (!secret) return;
+    const newPayload = {
+      sub: payload.sub,
+      email: payload.email,
+      name: payload.name,
+      provider: (payload as any).provider,
+      originalIat,
+    };
+    const newToken = jwt.sign(newPayload, secret, { expiresIn });
+    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    reply.header(
+      'Set-Cookie',
+      `${COOKIE_NAME}=${encodeURIComponent(newToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}${secure ? '; Secure' : ''}`,
+    );
+    logger.debug('JWT rotated', { userId: payload.sub });
+  }
 }
 
 /**
- * Auth middleware - applied to routes that require authentication.
- * API requests (Accept: application/json or /api/ paths) get 401 JSON.
+ * Auth middleware — builds AuthContext, handles JWT rotation.
+ * API requests get 401 JSON on failure.
  * Browser requests get redirected to /login.
  */
 async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (!validateAuthToken(request)) {
+  const authContext = buildAuthContext(request);
+  if (!authContext) {
     const isApi = request.url.startsWith('/api/') || (request.headers.accept || '').includes('application/json');
     if (isApi) {
       reply.status(401).send({
@@ -75,12 +150,89 @@ async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
     }
     return;
   }
-  // Attach OAuth user info to request for downstream use
-  const dashUser = getDashboardUser(request);
-  if (dashUser) {
-    (request as any).dashboardUser = dashUser;
+
+  // Attach auth context
+  (request as any).authContext = authContext;
+
+  // Backward compat: also attach dashboardUser for existing code
+  if (authContext.mode === 'oauth_jwt' && authContext.userId) {
+    (request as any).dashboardUser = {
+      slackUserId: authContext.userId,
+      userId: authContext.userId,
+      email: authContext.email,
+      name: authContext.name,
+    };
+  }
+
+  // JWT rotation
+  if (authContext.mode === 'oauth_jwt') {
+    maybeRotateJwt(request, reply);
   }
 }
+
+/**
+ * CSRF middleware — validates X-CSRF-Token header for cookie-authenticated POST requests.
+ * Skips for bearer_header auth (API clients).
+ */
+async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  // Only validate on state-mutating methods
+  if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(request.method)) return;
+
+  const authContext = (request as any).authContext as AuthContext | undefined;
+  if (!authContext) return; // Will be caught by authMiddleware
+
+  // Skip CSRF for bearer_header (API clients with Authorization header)
+  if (authContext.mode === 'bearer_header' || authContext.mode === 'none') return;
+
+  const csrfHeader = (request.headers['x-csrf-token'] || '') as string;
+  const cookieHeader = request.headers.cookie || '';
+  const cookieMatch = cookieHeader.match(/soma_dash_token=([^;]+)/);
+
+  let isValid = false;
+  if (authContext.mode === 'oauth_jwt' && authContext.userId) {
+    const payload = cookieMatch ? verifyDashboardTokenRaw(decodeURIComponent(cookieMatch[1])) : null;
+    isValid = validateCsrfToken(csrfHeader, authContext.userId, payload?.exp, false);
+  } else if (authContext.mode === 'bearer_cookie') {
+    isValid = validateCsrfToken(csrfHeader, undefined, undefined, true);
+  }
+
+  if (!isValid) {
+    reply.status(403).send({ error: 'CSRF token validation failed' });
+  }
+}
+
+/**
+ * Resource authorization middleware factory.
+ * Loads a resource, checks ownership, attaches to request.
+ */
+function authorizeResource<T>(
+  loadResource: (request: FastifyRequest) => Promise<T | null>,
+  getOwnerId: (resource: T) => string,
+) {
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const authContext = (request as any).authContext as AuthContext | undefined;
+    if (!authContext) return; // authMiddleware handles this
+
+    // Admin bypass
+    if (authContext.isAdmin) return;
+
+    const resource = await loadResource(request);
+    if (!resource) {
+      reply.status(404).send({ error: 'Not found' });
+      return;
+    }
+
+    if (!authContext.userId || getOwnerId(resource) !== authContext.userId) {
+      reply.status(403).send({ error: 'Forbidden — you can only access your own resources' });
+      return;
+    }
+
+    // Attach loaded resource to avoid double-fetch
+    (request as any).authorizedResource = resource;
+  };
+}
+
+export { authMiddleware, authorizeResource, csrfMiddleware };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
@@ -145,10 +297,18 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Conversation detail page
   server.get<{ Params: { id: string } }>(
     '/conversations/:id',
-    { preHandler: [authMiddleware] },
+    {
+      preHandler: [
+        authMiddleware,
+        authorizeResource(
+          async (req: any) => getConversation(req.params.id),
+          (conv: any) => conv.ownerId,
+        ),
+      ],
+    },
     async (request, reply) => {
       try {
-        const record = await getConversation(request.params.id);
+        const record = (request as any).authorizedResource || (await getConversation(request.params.id));
         if (!record) {
           reply.status(404).send('Conversation not found');
           return;
@@ -178,10 +338,18 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Get conversation detail (JSON)
   server.get<{ Params: { id: string } }>(
     '/api/conversations/:id',
-    { preHandler: [authMiddleware] },
+    {
+      preHandler: [
+        authMiddleware,
+        authorizeResource(
+          async (req: any) => getConversation(req.params.id),
+          (conv: any) => conv.ownerId,
+        ),
+      ],
+    },
     async (request, reply) => {
       try {
-        const record = await getConversation(request.params.id);
+        const record = (request as any).authorizedResource || (await getConversation(request.params.id));
         if (!record) {
           reply.status(404).send({ error: 'Not found' });
           return;
@@ -214,7 +382,15 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Get raw content for a specific turn (lazy load)
   server.get<{ Params: { id: string; turnId: string } }>(
     '/api/conversations/:id/turns/:turnId/raw',
-    { preHandler: [authMiddleware] },
+    {
+      preHandler: [
+        authMiddleware,
+        authorizeResource(
+          async (req: any) => getConversation(req.params.id),
+          (conv: any) => conv.ownerId,
+        ),
+      ],
+    },
     async (request, reply) => {
       try {
         const raw = await getTurnRawContent(request.params.id, request.params.turnId);
@@ -233,17 +409,27 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Export selected turns as markdown
   server.post<{ Params: { id: string }; Body: { turnIds: string[] } }>(
     '/api/conversations/:id/export',
-    { preHandler: [authMiddleware] },
+    {
+      preHandler: [
+        authMiddleware,
+        csrfMiddleware,
+        authorizeResource(
+          async (req: any) => getConversation(req.params.id),
+          (conv: any) => conv.ownerId,
+        ),
+      ],
+    },
     async (request, reply) => {
       try {
-        const record = await getConversation(request.params.id);
+        const record = (request as any).authorizedResource || (await getConversation(request.params.id));
         if (!record) {
           reply.status(404).send({ error: 'Not found' });
           return;
         }
 
         const selectedIds = new Set(request.body.turnIds || []);
-        const selectedTurns = selectedIds.size > 0 ? record.turns.filter((t) => selectedIds.has(t.id)) : record.turns;
+        const selectedTurns =
+          selectedIds.size > 0 ? record.turns.filter((t: ConversationTurn) => selectedIds.has(t.id)) : record.turns;
 
         const markdown = generateMarkdownExport(record.title, record.ownerName, selectedTurns);
         reply.type('text/markdown; charset=utf-8').send(markdown);
@@ -258,7 +444,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerOAuthRoutes(server);
 
   // ---- Dashboard Routes ----
-  await registerDashboardRoutes(server, authMiddleware);
+  await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

@@ -148,10 +148,13 @@ function getAllSessions(): Map<string, any> {
 
 /** Verify the authenticated user owns the target session. Returns null if OK, or a 403 reply if not. */
 function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
-  const authUser = request.dashboardUser;
+  const authContext = request.authContext;
+  // Admin bypasses ownership check
+  if (authContext?.isAdmin) return true;
+
   const sessions = _getSessionsFn?.();
   const targetSession = sessions?.get(sessionKey);
-  if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
+  if (authContext?.userId && targetSession && targetSession.ownerId !== authContext.userId) {
     reply.status(403).send({ error: 'You can only modify your own sessions' });
     return false;
   }
@@ -416,7 +419,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void; userId?: string };
+type WsClient = { send: (data: string) => void; close: () => void; userId?: string; isAdmin?: boolean };
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -484,7 +487,7 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
       // Only send to clients belonging to the session owner (or all if owner unknown)
-      if (ownerId && client.userId && client.userId !== ownerId) continue;
+      if (ownerId && !client.isAdmin && client.userId && client.userId !== ownerId) continue;
       try {
         client.send(payload);
       } catch {
@@ -518,6 +521,7 @@ export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'clo
 export async function registerDashboardRoutes(
   server: FastifyInstance,
   authMiddleware: (req: any, reply: any) => Promise<void>,
+  csrfMiddleware?: (req: any, reply: any) => Promise<void>,
 ): Promise<void> {
   const store = new MetricsEventStore();
 
@@ -542,6 +546,12 @@ export async function registerDashboardRoutes(
       const { userId, period: rawPeriod } = request.query;
       if (!userId) {
         reply.status(400).send({ error: 'userId is required' });
+        return;
+      }
+      // RBAC: OAuth users can only view their own stats
+      const authContext = (request as any).authContext;
+      if (authContext && !authContext.isAdmin && authContext.userId && authContext.userId !== userId) {
+        reply.status(403).send({ error: 'You can only view your own stats' });
         return;
       }
       const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as
@@ -617,6 +627,12 @@ export async function registerDashboardRoutes(
         const record = await getConversation(request.params.conversationId);
         if (!record) {
           reply.status(404).send({ error: 'Conversation not found' });
+          return;
+        }
+        // RBAC: OAuth users can only view their own session details
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
+          reply.status(403).send({ error: 'You can only view your own sessions' });
           return;
         }
         // Return lightweight turn summaries (no rawContent for assistant turns)
@@ -703,7 +719,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/stop',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -723,7 +739,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/close',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -743,7 +759,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/trash',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -763,7 +779,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string }; Body: { message: string } }>(
     '/api/dashboard/session/:key/command',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       const { message } = request.body || {};
@@ -933,11 +949,12 @@ export async function registerDashboardRoutes(
         socket.close(1013, 'Max clients reached');
         return;
       }
-      const authUser = request?.dashboardUser;
+      const authContext = request?.authContext;
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
-        userId: authUser?.userId,
+        userId: authContext?.userId,
+        isAdmin: authContext?.isAdmin,
       };
       wsClients.add(client);
       logger.debug('WebSocket client connected', { total: wsClients.size });
