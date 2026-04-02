@@ -44,7 +44,7 @@ function parseCronContext(raw?: string): CronContext {
 // --- Tool handlers ---
 
 function handleCreate(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
-  const { name, expression, prompt, channel, threadTs, mode, model_type, model_name, reasoning_effort, fast_mode } = args;
+  const { name, expression, prompt, channel, threadTs, mode, model_type, model_name, reasoning_effort, fast_mode, target } = args;
 
   // Validation
   if (!name || !expression || !prompt) {
@@ -72,6 +72,15 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
   const effectiveMode = mode || 'default';
   if (effectiveMode !== 'default' && effectiveMode !== 'fastlane') {
     return { text: `Error: Invalid mode '${mode}'. Use 'default' or 'fastlane'`, isError: true };
+  }
+
+  // Validate target
+  const effectiveTarget = target || 'channel';
+  if (!['channel', 'thread', 'dm'].includes(effectiveTarget)) {
+    return { text: `Error: Invalid target '${target}'. Use 'channel', 'thread', or 'dm'`, isError: true };
+  }
+  if (effectiveTarget === 'thread' && !threadTs) {
+    return { text: 'Error: threadTs is required when target is "thread"', isError: true };
   }
 
   // Build model config
@@ -105,12 +114,14 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
       threadTs: threadTs || null,
       mode: effectiveMode === 'default' ? undefined : effectiveMode,
       modelConfig,
+      target: effectiveTarget === 'channel' ? undefined : effectiveTarget as 'thread' | 'dm',
     });
 
     const modeStr = effectiveMode === 'fastlane' ? ' | mode: fastlane' : '';
     const modelStr = modelConfig ? ` | model: ${modelConfig.type}${modelConfig.model ? `(${modelConfig.model})` : ''}` : '';
+    const targetStr = effectiveTarget !== 'channel' ? ` | target: ${effectiveTarget}` : '';
     return {
-      text: `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}\nPrompt: ${job.prompt}`,
+      text: `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}\nPrompt: ${job.prompt}`,
       isError: false,
     };
   } catch (error: any) {
@@ -170,7 +181,8 @@ function handleList(context: CronContext, storage: CronStorage): { text: string;
   const lines = jobs.map(j => {
     const modeStr = j.mode === 'fastlane' ? ' | ⚡fastlane' : '';
     const modelStr = j.modelConfig ? ` | model:${j.modelConfig.type}${j.modelConfig.model ? `(${j.modelConfig.model})` : ''}` : '';
-    return `- **${j.name}** | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
+    const targetStr = j.target ? ` | 🎯${j.target}` : '';
+    return `- **${j.name}** | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
   });
 
   return { text: `Registered cron jobs (${jobs.length}):\n${lines.join('\n')}`, isError: false };
@@ -214,6 +226,7 @@ class CronMcpServer {
               channel: { type: 'string', description: 'Target Slack channel ID. Defaults to current channel.' },
               threadTs: { type: 'string', description: 'Target thread timestamp. If omitted, uses active session or creates new thread.' },
               mode: { type: 'string', enum: ['default', 'fastlane'], description: 'Execution mode. default: queue behind busy sessions. fastlane: always create new thread immediately.' },
+              target: { type: 'string', enum: ['channel', 'thread', 'dm'], description: 'Delivery target. channel: new message in channel (default). thread: reply in existing thread (requires threadTs). dm: direct message to cron owner.' },
               model_type: { type: 'string', enum: ['default', 'fast', 'custom'], description: 'Model selection. default: use session model. fast: use sonnet. custom: specify model_name.' },
               model_name: { type: 'string', description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")' },
               reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Reasoning effort for custom model' },

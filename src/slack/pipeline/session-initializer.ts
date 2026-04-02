@@ -449,8 +449,9 @@ export class SessionInitializer {
             channel,
             threadTs,
           });
-        } else {
+        } else if (!event.synthetic) {
           // Correct channel — create bot-owned thread header and migrate session
+          // Skip for synthetic events (cron) — threadCreator already posted the root message
           const migrated = await this.createBotInitiatedThread(
             session,
             channel,
@@ -472,7 +473,7 @@ export class SessionInitializer {
         workflow: session.workflow,
         reason: !session.links?.pr?.url ? 'no PR link' : `workflow '${session.workflow}' not routable`,
       });
-      if (!skipAutoBotThread) {
+      if (!skipAutoBotThread && !event.synthetic) {
         const migrated = await this.createBotInitiatedThread(
           session,
           channel,
