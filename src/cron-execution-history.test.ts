@@ -25,11 +25,21 @@ describe('Cron Execution History', () => {
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(tmpFile); } catch {}
-    try { fs.unlinkSync(tmpFile + '.tmp'); } catch {}
-    try { fs.unlinkSync(historyFile); } catch {}
-    try { fs.unlinkSync(historyFile + '.tmp'); } catch {}
-    try { fs.rmdirSync(path.dirname(tmpFile)); } catch {}
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+    try {
+      fs.unlinkSync(tmpFile + '.tmp');
+    } catch {}
+    try {
+      fs.unlinkSync(historyFile);
+    } catch {}
+    try {
+      fs.unlinkSync(historyFile + '.tmp');
+    } catch {}
+    try {
+      fs.rmdirSync(path.dirname(tmpFile));
+    } catch {}
   });
 
   // --- S1: Record execution on cron fire ---
@@ -37,8 +47,10 @@ describe('Cron Execution History', () => {
   describe('S1: Record execution on cron fire', () => {
     it('should record successful idle injection', () => {
       storage.addExecution({
-        jobId: 'job-1', jobName: 'test-job',
-        status: 'success', executionPath: 'idle_inject',
+        jobId: 'job-1',
+        jobName: 'test-job',
+        status: 'success',
+        executionPath: 'idle_inject',
         sessionKey: 'C123-1234567890.123',
       });
       const history = storage.getExecutionHistory('test-job');
@@ -51,8 +63,10 @@ describe('Cron Execution History', () => {
 
     it('should record failed execution with error', () => {
       storage.addExecution({
-        jobId: 'job-1', jobName: 'test-job',
-        status: 'failed', executionPath: 'new_thread',
+        jobId: 'job-1',
+        jobName: 'test-job',
+        status: 'failed',
+        executionPath: 'new_thread',
         error: 'Thread creation failed',
       });
       const history = storage.getExecutionHistory('test-job');
@@ -62,8 +76,10 @@ describe('Cron Execution History', () => {
 
     it('should record queued status for busy sessions', () => {
       storage.addExecution({
-        jobId: 'job-1', jobName: 'test-job',
-        status: 'queued', executionPath: 'busy_queue',
+        jobId: 'job-1',
+        jobName: 'test-job',
+        status: 'queued',
+        executionPath: 'busy_queue',
         sessionKey: 'C123-1234567890.123',
       });
       const history = storage.getExecutionHistory('test-job');
@@ -78,7 +94,13 @@ describe('Cron Execution History', () => {
     it('should return history for a specific job', () => {
       storage.addExecution({ jobId: 'j1', jobName: 'job-a', status: 'success', executionPath: 'idle_inject' });
       storage.addExecution({ jobId: 'j2', jobName: 'job-b', status: 'success', executionPath: 'new_thread' });
-      storage.addExecution({ jobId: 'j1', jobName: 'job-a', status: 'failed', executionPath: 'new_thread', error: 'fail' });
+      storage.addExecution({
+        jobId: 'j1',
+        jobName: 'job-a',
+        status: 'failed',
+        executionPath: 'new_thread',
+        error: 'fail',
+      });
 
       const history = storage.getExecutionHistory('job-a');
       expect(history).toHaveLength(2);
@@ -115,8 +137,10 @@ describe('Cron Execution History', () => {
     it('should keep only last 20 records per job', () => {
       for (let i = 0; i < 25; i++) {
         storage.addExecution({
-          jobId: 'j1', jobName: 'test',
-          status: 'success', executionPath: 'idle_inject',
+          jobId: 'j1',
+          jobName: 'test',
+          status: 'success',
+          executionPath: 'idle_inject',
         });
       }
       const history = storage.getExecutionHistory('test');
