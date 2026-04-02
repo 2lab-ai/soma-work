@@ -64,6 +64,8 @@ export interface ModelCommandPayloadMap {
   UPDATE_SESSION: {
     session: SessionResourceSnapshot;
     appliedOperations: number;
+    /** Count of instruction operations to be applied by host (session-registry) */
+    pendingInstructionOperations: number;
     request: SessionResourceUpdateRequest;
     title?: string;
   };

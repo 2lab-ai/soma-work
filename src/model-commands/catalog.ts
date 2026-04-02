@@ -1,6 +1,4 @@
 import type {
-  SessionInstruction,
-  SessionInstructionOperation,
   SessionLink,
   SessionResourceSnapshot,
   SessionResourceType,
@@ -377,37 +375,11 @@ export function applySessionUpdateToSnapshot(
     }
   }
 
-  // Apply instruction operations
-  for (const instrOp of request.instructionOperations ?? []) {
-    if (instrOp.action === 'add') {
-      const instruction: SessionInstruction = {
-        id: `instr_${Date.now()}_${snapshot.instructions.length}`,
-        text: instrOp.text,
-        addedAt: Date.now(),
-        source: instrOp.source || 'user',
-      };
-      snapshot.instructions.push(instruction);
-      changed = true;
-      continue;
-    }
-
-    if (instrOp.action === 'remove') {
-      const idx = snapshot.instructions.findIndex((i) => i.id === instrOp.id);
-      if (idx >= 0) {
-        snapshot.instructions.splice(idx, 1);
-        changed = true;
-      }
-      continue;
-    }
-
-    if (instrOp.action === 'clear') {
-      if (snapshot.instructions.length > 0) {
-        snapshot.instructions = [];
-        changed = true;
-      }
-      continue;
-    }
-  }
+  // NOTE: Instruction operations are NOT applied here.
+  // They are applied exclusively by session-registry.ts (host-side) to avoid
+  // ID mismatch between the model response and persisted state.
+  // The instructionOperations are passed through in the request payload
+  // for the host to process.
 
   if (changed) {
     snapshot.sequence += 1;
@@ -446,6 +418,7 @@ export function runModelCommand(
       resultSnapshot = updateResult.snapshot;
     }
 
+    const instructionOps = request.params.instructionOperations ?? [];
     return {
       type: 'model_command_result',
       commandId: 'UPDATE_SESSION',
@@ -453,6 +426,9 @@ export function runModelCommand(
       payload: {
         session: resultSnapshot,
         appliedOperations: operations.length,
+        // Instruction operations are applied by the host (session-registry),
+        // not here, to ensure ID consistency. Count is informational.
+        pendingInstructionOperations: instructionOps.length,
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
