@@ -367,12 +367,9 @@ export class SlackHandler {
     // Step 5: Execute via AgentSession (Phase 3c — Issue #87)
     // For the initial mention (thread migration), activeThreadTs differs from originalThreadTs.
     // For continuation messages in the work thread, both are equal — fall back to persisted sourceThread.
-    const sourceThreadTs = activeThreadTs !== originalThreadTs
-      ? originalThreadTs
-      : sessionResult.session.sourceThread?.threadTs;
-    const sourceChannel = activeChannel !== channel
-      ? channel
-      : sessionResult.session.sourceThread?.channel;
+    const sourceThreadTs =
+      activeThreadTs !== originalThreadTs ? originalThreadTs : sessionResult.session.sourceThread?.threadTs;
+    const sourceChannel = activeChannel !== channel ? channel : sessionResult.session.sourceThread?.channel;
 
     const agentSession = this.createAgentSession(sessionResult, wrappedSay, {
       channel: activeChannel,

@@ -322,7 +322,7 @@ describe('SlackHandler', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(
       expect.objectContaining({
-        sourceThreadTs: '111.000',  // should fall back to session.sourceThread
+        sourceThreadTs: '111.000', // should fall back to session.sourceThread
         sourceChannel: 'C123',
       }),
     );
