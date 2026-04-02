@@ -6,7 +6,7 @@
  * Pattern: src/slack-handler.ts:745-762 (autoResumeSession synthetic message)
  */
 
-import { type CronJob, type CronStorage, matchesCronExpression } from './cron-storage';
+import { type CronExecutionRecord, type CronJob, type CronStorage, matchesCronExpression } from './cron-storage';
 import { Logger } from './logger';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';
@@ -121,6 +121,7 @@ export class CronScheduler {
           try {
             this.deps.storage.updateLastRun(job.id, now);
           } catch {}
+          this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
         }
       }
     } finally {
@@ -195,6 +196,7 @@ export class CronScheduler {
 
     await this.deps.messageInjector(syntheticEvent);
     this.deps.storage.updateLastRun(job.id, now);
+    this.recordExecution(job, 'success', 'idle_inject', `${session.channelId}-${session.threadTs}`);
   }
 
   /**
@@ -225,6 +227,7 @@ export class CronScheduler {
 
     // Mark as run to prevent re-queueing next tick
     this.deps.storage.updateLastRun(job.id, now);
+    this.recordExecution(job, 'queued', 'busy_queue', sessionKey);
   }
 
   /**
@@ -297,8 +300,10 @@ export class CronScheduler {
 
       await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
+      this.recordExecution(job, 'success', 'new_thread');
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
+      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message);
     }
   }
 
@@ -313,5 +318,30 @@ export class CronScheduler {
   /** Get pending queue size for a session (testing). */
   getPendingQueueSize(sessionKey: string): number {
     return this.pendingCronQueue.get(sessionKey)?.length || 0;
+  }
+
+  /**
+   * Record an execution in history. Fire-and-forget — never blocks scheduling.
+   * Trace: docs/cron-execution-history/spec.md
+   */
+  private recordExecution(
+    job: CronJob,
+    status: CronExecutionRecord['status'],
+    executionPath: CronExecutionRecord['executionPath'],
+    sessionKey?: string,
+    error?: string,
+  ): void {
+    try {
+      this.deps.storage.addExecution({
+        jobId: job.id,
+        jobName: job.name,
+        status,
+        executionPath,
+        sessionKey,
+        error,
+      });
+    } catch (err: any) {
+      logger.warn('Failed to record execution history', { name: job.name, error: err?.message });
+    }
   }
 }
