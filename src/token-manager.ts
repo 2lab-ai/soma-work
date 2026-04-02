@@ -10,7 +10,7 @@ import { Logger } from './logger';
 const logger = new Logger('TokenManager');
 
 export interface TokenEntry {
-  readonly name: string; // "cct1", "cct2", ...
+  readonly name: string; // e.g. "ai3", "ai2", or fallback "cct1"
   readonly value: string; // actual token value
   cooldownUntil: Date | null; // null = available
 }
@@ -63,15 +63,21 @@ export class TokenManager {
     const singleToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
     if (tokenList) {
-      const values = tokenList
+      const entries = tokenList
         .split(',')
         .map((t) => t.trim())
         .filter((t) => t.length > 0);
-      this.tokens = values.map((value, i) => ({
-        name: `cct${i + 1}`,
-        value,
-        cooldownUntil: null,
-      }));
+      this.tokens = entries.map((entry, i) => {
+        const eqIndex = entry.indexOf('=');
+        if (eqIndex > 0) {
+          return {
+            name: entry.slice(0, eqIndex),
+            value: entry.slice(eqIndex + 1),
+            cooldownUntil: null,
+          };
+        }
+        return { name: `cct${i + 1}`, value: entry, cooldownUntil: null };
+      });
     } else if (singleToken) {
       this.tokens = [
         {

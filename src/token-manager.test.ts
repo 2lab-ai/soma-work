@@ -18,8 +18,8 @@ describe('TokenManager', () => {
   // === Scenario 1: Token Initialization ===
 
   describe('initialize', () => {
-    // Trace: Scenario 1, Step 3
-    it('should load multiple tokens from CLAUDE_CODE_OAUTH_TOKEN_LIST', async () => {
+    // Trace: Scenario 1, Step 3 (legacy unnamed format)
+    it('should load multiple tokens with cctN fallback names', async () => {
       process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB,tokenC';
       const { tokenManager } = await import('./token-manager');
       tokenManager.initialize();
@@ -29,6 +29,30 @@ describe('TokenManager', () => {
       expect(tokens[0].name).toBe('cct1');
       expect(tokens[1].name).toBe('cct2');
       expect(tokens[2].name).toBe('cct3');
+    });
+
+    // Named token format: name=value
+    it('should load named tokens from name=value format', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai3=tokenA,ai2=tokenB,info=tokenC';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      const tokens = tokenManager.getAllTokens();
+      expect(tokens).toHaveLength(3);
+      expect(tokens[0]).toMatchObject({ name: 'ai3', value: 'tokenA' });
+      expect(tokens[1]).toMatchObject({ name: 'ai2', value: 'tokenB' });
+      expect(tokens[2]).toMatchObject({ name: 'info', value: 'tokenC' });
+    });
+
+    it('should handle mixed named and unnamed entries', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai3=tokenA,tokenB,info=tokenC';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      const tokens = tokenManager.getAllTokens();
+      expect(tokens[0].name).toBe('ai3');
+      expect(tokens[1].name).toBe('cct2');
+      expect(tokens[2].name).toBe('info');
     });
 
     // Trace: Scenario 1, Step 2
