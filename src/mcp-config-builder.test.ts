@@ -129,16 +129,16 @@ describe('McpConfigBuilder slack-mcp server', () => {
     expect(ctx.mentionTs).toBe('1700000010.000000');
   });
 
-  it('uses sourceThreadTs/sourceChannel in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {
+  it('passes both work and source thread in SLACK_MCP_CONTEXT when bot migrates to new thread', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());
     // After bot-initiated thread migration:
-    // - threadTs = NEW thread ts (where bot posts replies)
-    // - sourceThreadTs = ORIGINAL thread ts (where mention occurred)
+    // - threadTs = NEW thread ts (where bot posts replies) = work thread
+    // - sourceThreadTs = ORIGINAL thread ts (where mention occurred) = source thread
     const config = await builder.buildConfig({
       channel: 'C_NEW',
-      threadTs: '1700000099.000000', // NEW thread (empty)
+      threadTs: '1700000099.000000', // NEW thread (work)
       mentionTs: '1700000010.000000', // original mention
-      sourceThreadTs: '1700000000.000000', // ORIGINAL thread (has messages)
+      sourceThreadTs: '1700000000.000000', // ORIGINAL thread (source)
       sourceChannel: 'C_ORIGINAL',
       user: 'U123',
     });
@@ -147,10 +147,13 @@ describe('McpConfigBuilder slack-mcp server', () => {
 
     const contextStr = config.mcpServers?.['slack-mcp']?.env?.SLACK_MCP_CONTEXT;
     const ctx = JSON.parse(contextStr || '{}');
-    // Should use ORIGINAL thread, not NEW thread
-    expect(ctx.channel).toBe('C_ORIGINAL');
-    expect(ctx.threadTs).toBe('1700000000.000000');
+    // Work thread is primary (channel + threadTs)
+    expect(ctx.channel).toBe('C_NEW');
+    expect(ctx.threadTs).toBe('1700000099.000000');
     expect(ctx.mentionTs).toBe('1700000010.000000');
+    // Source thread passed separately
+    expect(ctx.sourceChannel).toBe('C_ORIGINAL');
+    expect(ctx.sourceThreadTs).toBe('1700000000.000000');
   });
 
   it('does NOT register slack-mcp server when mentionTs === threadTs (thread root)', async () => {

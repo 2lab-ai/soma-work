@@ -438,21 +438,24 @@ export class McpConfigBuilder {
    */
   private buildSlackMcpServer(slackContext: SlackContext): Record<string, any> {
     const serverPath = this.getSlackMcpServerPath();
-    // Use source thread (original thread before migration) if available,
-    // otherwise fall back to current threadTs.
-    // This is critical: after bot-initiated thread migration, threadTs points to
-    // the NEW (empty) thread, but we need to read from the ORIGINAL thread.
-    const threadTs = slackContext.sourceThreadTs || slackContext.threadTs;
-    const channel = slackContext.sourceChannel || slackContext.channel;
-    if (!threadTs) {
+    if (!slackContext.threadTs) {
       throw new Error('Cannot build slack-mcp server without threadTs');
     }
 
-    const threadContext = {
-      channel,
-      threadTs,
+    // Pass both work thread (current) and source thread (original before migration).
+    // The MCP server uses resolveThread() to let tools target either thread.
+    const threadContext: Record<string, string> = {
+      channel: slackContext.channel,
+      threadTs: slackContext.threadTs,
       mentionTs: slackContext.mentionTs ?? '',
     };
+
+    if (slackContext.sourceThreadTs) {
+      threadContext.sourceThreadTs = slackContext.sourceThreadTs;
+    }
+    if (slackContext.sourceChannel) {
+      threadContext.sourceChannel = slackContext.sourceChannel;
+    }
 
     return {
       command: 'npx',
