@@ -23,6 +23,7 @@
   "license": "ISC",
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
+    "@types/ioredis": "^4.28.10",
     "@types/node": "=24.0.4",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
@@ -31,6 +32,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.80",
     "@anthropic-ai/sdk": "^0.71.2",
+    "@clickhouse/client": "^1.18.2",
     "@fastify/websocket": "^11.2.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@slack/bolt": "=4.4.0",
@@ -38,8 +40,10 @@
     "@types/node-fetch": "=2.6.12",
     "dotenv": "=16.6.0",
     "fastify": "^5.7.2",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "=9.0.2",
     "markdown-to-slack-blocks": "^1.4.1",
+    "mongodb": "^7.1.1",
     "mysql2": "^3.20.0",
     "node-fetch": "=3.3.2"
   }
