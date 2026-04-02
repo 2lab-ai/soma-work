@@ -435,7 +435,7 @@ describe('StreamProcessor', () => {
 
       expect(result.success).toBe(true);
       expect(result.messageCount).toBe(1);
-      expect(onStatusUpdate).toHaveBeenCalledWith('working');
+      expect(onStatusUpdate).toHaveBeenCalledWith('compact_done');
     });
 
     it('should handle status compacting system message', async () => {
@@ -452,7 +452,7 @@ describe('StreamProcessor', () => {
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
-      expect(onStatusUpdate).toHaveBeenCalledWith('working');
+      expect(onStatusUpdate).toHaveBeenCalledWith('compacting');
     });
 
     it('should handle init system message without error', async () => {
