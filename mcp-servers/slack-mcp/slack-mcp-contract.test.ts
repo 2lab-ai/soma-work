@@ -221,7 +221,7 @@ describe('Scenario 5: Existing tools work after rename', () => {
   it('server version is 3.0.0', async () => {
     const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
     const source = await fs.readFile(serverPath, 'utf-8');
-    // After BaseMcpServer refactoring: super('slack-mcp', '3.0.0')
-    expect(source).toContain("'3.0.0'");
+    // After cross-thread access: super('slack-mcp', '4.0.0')
+    expect(source).toContain("'4.0.0'");
   });
 });
