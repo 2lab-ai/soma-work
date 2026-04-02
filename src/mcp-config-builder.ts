@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
-import { CONFIG_FILE } from './env-paths';
+import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -347,6 +347,7 @@ export class McpConfigBuilder {
       args: ['tsx', cronServerPath],
       env: {
         SOMA_CRON_CONTEXT: JSON.stringify(context),
+        SOMA_DATA_DIR: DATA_DIR,
       },
     };
   }
