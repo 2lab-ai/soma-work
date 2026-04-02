@@ -362,11 +362,25 @@ async function start() {
         return result.ts as string | undefined;
       };
 
+      const dmSender = async (userId: string, text: string): Promise<void> => {
+        // Open DM channel with user, then post message
+        const dmResult = await app.client.conversations.open({ users: userId });
+        const dmChannel = dmResult.channel?.id;
+        if (!dmChannel) throw new Error(`Failed to open DM channel with ${userId}`);
+        await app.client.chat.postMessage({ channel: dmChannel, text });
+      };
+
+      const threadReplier = async (channel: string, threadTs: string, text: string): Promise<void> => {
+        await app.client.chat.postMessage({ channel, text, thread_ts: threadTs });
+      };
+
       cronScheduler = new CronScheduler({
         storage: cronStorage,
         sessionRegistry: claudeHandler.getSessionRegistry(),
         messageInjector,
         threadCreator,
+        dmSender,
+        threadReplier,
       });
       cronScheduler.start();
       timing('Cron scheduler initialized');
