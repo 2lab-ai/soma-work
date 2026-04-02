@@ -3,9 +3,10 @@
  * Generates mock data to simulate realistic kanban board state.
  * Starts a real HTTP server so client-side fetch() calls work properly.
  */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { chromium } from 'playwright';
-import * as path from 'path';
-import * as fs from 'fs';
 
 async function main() {
   const outputDir = path.join(__dirname, '..', 'screenshots');
@@ -33,7 +34,12 @@ async function main() {
     conversationId: 'conv-1',
     links: {
       issue: { url: 'https://github.com/2lab-ai/soma-work/issues/330', label: '#330', title: 'Dashboard Slack UX' },
-      pr: { url: 'https://github.com/2lab-ai/soma-work/pull/331', label: '#331', title: 'feat: seamless Slack UX', status: 'open' },
+      pr: {
+        url: 'https://github.com/2lab-ai/soma-work/pull/331',
+        label: '#331',
+        title: 'feat: seamless Slack UX',
+        status: 'open',
+      },
     },
     usage: {
       totalInputTokens: 1250000,
@@ -65,7 +71,7 @@ async function main() {
     usage: {
       totalInputTokens: 520000,
       totalOutputTokens: 120000,
-      totalCostUsd: 3.80,
+      totalCostUsd: 3.8,
       contextWindow: 200000,
       currentInputTokens: 45000,
     },
@@ -89,7 +95,7 @@ async function main() {
     usage: {
       totalInputTokens: 200000,
       totalOutputTokens: 50000,
-      totalCostUsd: 1.20,
+      totalCostUsd: 1.2,
       contextWindow: 200000,
       currentInputTokens: 20000,
     },
@@ -111,13 +117,18 @@ async function main() {
     lastActivity: new Date(Date.now() - 6 * 3600000),
     conversationId: 'conv-4',
     links: {
-      pr: { url: 'https://github.com/2lab-ai/soma-work/pull/325', label: '#325', title: 'fix: cron dedup', status: 'merged' },
+      pr: {
+        url: 'https://github.com/2lab-ai/soma-work/pull/325',
+        label: '#325',
+        title: 'fix: cron dedup',
+        status: 'merged',
+      },
     },
     mergeStats: { totalLinesAdded: 89, totalLinesDeleted: 12 },
     usage: {
       totalInputTokens: 850000,
       totalOutputTokens: 200000,
-      totalCostUsd: 6.50,
+      totalCostUsd: 6.5,
       contextWindow: 200000,
       currentInputTokens: 0,
     },
@@ -143,7 +154,7 @@ async function main() {
     usage: {
       totalInputTokens: 3200000,
       totalOutputTokens: 800000,
-      totalCostUsd: 28.90,
+      totalCostUsd: 28.9,
       contextWindow: 200000,
       currentInputTokens: 150000,
     },
@@ -164,12 +175,17 @@ async function main() {
   // Navigate to real HTTP endpoint so client-side fetch() works
   await page.goto(`${baseUrl}/dashboard`);
   // Wait for sessions to load via API
-  await page.waitForFunction(() => {
-    const cards = document.querySelectorAll('.card');
-    return cards.length > 0;
-  }, { timeout: 10000 }).catch(() => {
-    console.warn('Warning: No cards rendered after 10s — taking screenshot anyway');
-  });
+  await page
+    .waitForFunction(
+      () => {
+        const cards = document.querySelectorAll('.card');
+        return cards.length > 0;
+      },
+      { timeout: 10000 },
+    )
+    .catch(() => {
+      console.warn('Warning: No cards rendered after 10s — taking screenshot anyway');
+    });
   await page.waitForTimeout(500); // Let CSS animations settle
 
   // Full page screenshot
