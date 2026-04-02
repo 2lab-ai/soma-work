@@ -6,10 +6,18 @@ const logger = new Logger('SummaryService');
  * Summary prompt template — fixed, not user-configurable.
  * Trace: docs/turn-summary-lifecycle/trace.md, S3, Section 2
  */
-export const SUMMARY_PROMPT = `현재 active issue, pr 각각에 대해 as-is to-be 형태로 리포트
-stv:verify를 해주고 active issue, pr을 종합하여 executive summary
+export const SUMMARY_PROMPT = `Based on the conversation history in this session, generate an Executive Summary.
 
-다음 유저가 내릴만한 행동을 3개 정도 제시해줘. 각각 복사하기 쉽게 코드 블럭으로 제시`;
+You MUST use ONLY the conversation history you already have — do NOT attempt to call any tools, APIs, or external services.
+
+Format:
+1. **Status**: What was accomplished in this session (1-2 sentences)
+2. **AS-IS → TO-BE**: For each active issue/PR, summarize the before/after state based on what was discussed
+3. **Key Decisions**: Any architectural or design decisions made
+4. **Next Actions**: 3 concrete next steps the user can take (each in a code block for easy copy)
+
+If the session has no meaningful work history, say so briefly — do NOT ask the user for additional context or tool access.
+Keep the summary concise and actionable. Write in the same language the conversation was conducted in.`;
 
 /**
  * Minimal session interface for summary operations.
@@ -75,18 +83,23 @@ export class SummaryService {
    */
   buildPrompt(session: SummarySessionInfo): string {
     const contextParts: string[] = [];
+
+    contextParts.push('## Session Context');
+
     if (session.links?.issue) {
-      contextParts.push(
-        `Active Issue: ${session.links.issue.url} (${session.links.issue.title || session.links.issue.label || 'untitled'})`,
-      );
+      const issue = session.links.issue;
+      contextParts.push(`- Active Issue: ${issue.title || issue.label || 'untitled'} (${issue.url})`);
     }
     if (session.links?.pr) {
-      contextParts.push(
-        `Active PR: ${session.links.pr.url} (${session.links.pr.title || session.links.pr.label || 'untitled'})`,
-      );
+      const pr = session.links.pr;
+      contextParts.push(`- Active PR: ${pr.title || pr.label || 'untitled'} (${pr.url})`);
     }
 
-    return contextParts.length > 0 ? `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}` : SUMMARY_PROMPT;
+    if (!session.links?.issue && !session.links?.pr) {
+      contextParts.push('- No active issues or PRs linked to this session');
+    }
+
+    return `${contextParts.join('\n')}\n\n${SUMMARY_PROMPT}`;
   }
 
   /**
