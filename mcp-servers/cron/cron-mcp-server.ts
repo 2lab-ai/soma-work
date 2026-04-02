@@ -103,6 +103,31 @@ function handleDelete(args: Record<string, any>, context: CronContext, storage: 
   return { text: `Cron job '${name}' deleted`, isError: false };
 }
 
+function handleHistory(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+  const { name, limit } = args;
+  const effectiveLimit = typeof limit === 'number' && limit > 0 ? limit : 10;
+
+  const history = storage.getExecutionHistory(
+    name || undefined,
+    context.user,
+    effectiveLimit,
+  );
+
+  if (history.length === 0) {
+    return { text: name ? `No execution history for '${name}'.` : 'No cron execution history.', isError: false };
+  }
+
+  const lines = history.map(r => {
+    const status = r.status === 'success' ? '✅' : r.status === 'failed' ? '❌' : '⏳';
+    const time = r.executedAt.slice(0, 19).replace('T', ' ');
+    const errPart = r.error ? ` | err: ${r.error.substring(0, 80)}` : '';
+    return `${status} ${time} | **${r.jobName}** | ${r.executionPath}${errPart}`;
+  });
+
+  const header = name ? `Execution history for '${name}'` : 'Cron execution history';
+  return { text: `${header} (${history.length}):\n${lines.join('\n')}`, isError: false };
+}
+
 function handleList(context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
   const jobs = storage.getJobsByOwner(context.user);
 
@@ -171,6 +196,17 @@ class CronMcpServer {
             properties: {},
           },
         },
+        {
+          name: 'cron_history',
+          description: 'Show execution history for cron jobs. Shows when jobs ran, whether they succeeded or failed, and the execution path (idle inject, busy queue, new thread).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Filter by cron job name. Omit for all jobs.' },
+              limit: { type: 'number', description: 'Max records to return (default: 10)' },
+            },
+          },
+        },
       ],
     }));
 
@@ -189,6 +225,9 @@ class CronMcpServer {
           break;
         case 'cron_list':
           result = handleList(this.context, this.storage);
+          break;
+        case 'cron_history':
+          result = handleHistory(args, this.context, this.storage);
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);
