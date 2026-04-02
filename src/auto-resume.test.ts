@@ -5,6 +5,8 @@
  * These tests verify the auto-resume behavior after server restart.
  * All tests should be RED (failing) until implementation is complete.
  */
+import fs from 'fs';
+import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock(import('./env-paths'), async (importOriginal) => {
@@ -49,13 +51,8 @@ function createTestHandler() {
   };
 }
 
-const RESUME_PROMPT =
-  '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
-  '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
-  '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
-  '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
-  '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
-  '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.';
+/** Load the restart prompt from the same file the production code uses */
+const RESUME_PROMPT = fs.readFileSync(path.join(__dirname, 'prompt', 'restart.prompt'), 'utf-8').trimEnd();
 
 describe('Auto-Resume: S1 — Working session auto-resumes after restart', () => {
   // Trace: S1, Section 3b-3c — notifyCrashRecovery calls handleMessage for working sessions
