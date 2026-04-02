@@ -15,6 +15,20 @@ const logger = new StderrLogger('CronStorage');
 
 // --- Types ---
 
+/** Execution mode: default queues behind active sessions; fastlane always opens a new thread. */
+export type CronMode = 'default' | 'fastlane';
+
+/** Model override config attached to a cron job. */
+export interface CronModelConfig {
+  type: 'default' | 'fast' | 'custom';
+  /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
+  model?: string;
+  /** Reasoning effort for custom type */
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  /** Fast mode for custom type */
+  fastMode?: boolean;
+}
+
 export interface CronJob {
   id: string;
   name: string;
@@ -29,11 +43,33 @@ export interface CronJob {
   lastRunMinute: string | null;
   /** @deprecated Use lastRunMinute. Kept for backward compat with existing data. */
   lastRunDate?: string | null;
+  /** Execution mode. Omitted = 'default' for backward compat. */
+  mode?: CronMode;
+  /** Model override. Omitted = 'default' (use session model). */
+  modelConfig?: CronModelConfig;
 }
 
 interface CronData {
   jobs: CronJob[];
 }
+
+// --- Execution History Types ---
+
+export interface CronExecutionRecord {
+  jobId: string;
+  jobName: string;
+  executedAt: string;
+  status: 'success' | 'failed' | 'queued';
+  executionPath: 'idle_inject' | 'busy_queue' | 'new_thread';
+  error?: string;
+  sessionKey?: string;
+}
+
+interface CronHistoryData {
+  history: CronExecutionRecord[];
+}
+
+const MAX_HISTORY_PER_JOB = 20;
 
 // --- 5-field cron expression matching ---
 
@@ -257,5 +293,104 @@ export class CronStorage {
     job.lastRunAt = now.toISOString();
     job.lastRunMinute = now.toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm
     this.save(data);
+  }
+
+  // --- Execution History ---
+
+  private get historyFilePath(): string {
+    return this.filePath.replace(/cron-jobs\.json$/, 'cron-history.json');
+  }
+
+  private loadHistory(): CronHistoryData {
+    try {
+      if (fs.existsSync(this.historyFilePath)) {
+        const raw = fs.readFileSync(this.historyFilePath, 'utf-8');
+        return JSON.parse(raw) as CronHistoryData;
+      }
+    } catch (error) {
+      logger.warn('Failed to load cron history, returning empty', error);
+    }
+    return { history: [] };
+  }
+
+  private saveHistory(data: CronHistoryData): void {
+    try {
+      const dir = path.dirname(this.historyFilePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const tmp = this.historyFilePath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+      fs.renameSync(tmp, this.historyFilePath);
+    } catch (error) {
+      logger.error('Failed to save cron history', error);
+      // Non-fatal: don't throw — history failure must not break cron execution
+    }
+  }
+
+  /**
+   * Record a cron execution. FIFO trims to MAX_HISTORY_PER_JOB per job.
+   * Trace: docs/cron-execution-history/trace.md, S1 + S3
+   */
+  addExecution(record: Omit<CronExecutionRecord, 'executedAt'>): void {
+    const data = this.loadHistory();
+
+    data.history.push({
+      ...record,
+      executedAt: new Date().toISOString(),
+    });
+
+    // S3: FIFO trim — keep only last MAX_HISTORY_PER_JOB per job
+    const byJob = new Map<string, CronExecutionRecord[]>();
+    for (const r of data.history) {
+      const arr = byJob.get(r.jobId) || [];
+      arr.push(r);
+      byJob.set(r.jobId, arr);
+    }
+
+    const trimmed: CronExecutionRecord[] = [];
+    for (const [, records] of byJob) {
+      if (records.length > MAX_HISTORY_PER_JOB) {
+        trimmed.push(...records.slice(records.length - MAX_HISTORY_PER_JOB));
+      } else {
+        trimmed.push(...records);
+      }
+    }
+
+    data.history = trimmed;
+    this.saveHistory(data);
+  }
+
+  /**
+   * Get execution history, optionally filtered by job name and/or owner.
+   * Returns most recent first. Respects limit.
+   * Trace: docs/cron-execution-history/trace.md, S2
+   */
+  getExecutionHistory(name?: string, owner?: string, limit?: number): CronExecutionRecord[] {
+    const data = this.loadHistory();
+    let results = data.history;
+
+    if (name) {
+      results = results.filter(r => r.jobName === name);
+    }
+
+    // Owner filter: match against job owner from jobs data
+    if (owner) {
+      const jobs = this.load().jobs;
+      const ownerJobIds = new Set(jobs.filter(j => j.owner === owner).map(j => j.id));
+      // Also match by jobName for deleted jobs
+      const ownerJobNames = new Set(jobs.filter(j => j.owner === owner).map(j => j.name));
+      results = results.filter(r => ownerJobIds.has(r.jobId) || ownerJobNames.has(r.jobName));
+    }
+
+    // Most recent first
+    // Most recent first — reverse preserves insertion order for same-timestamp entries
+    results = [...results].reverse();
+
+    if (limit && limit > 0) {
+      results = results.slice(0, limit);
+    }
+
+    return results;
   }
 }

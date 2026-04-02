@@ -10,6 +10,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import * as path from 'path';
 import { StderrLogger } from '../_shared/stderr-logger.js';
 import {
   CronStorage,
@@ -43,7 +44,7 @@ function parseCronContext(raw?: string): CronContext {
 // --- Tool handlers ---
 
 function handleCreate(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
-  const { name, expression, prompt, channel, threadTs } = args;
+  const { name, expression, prompt, channel, threadTs, mode, model_type, model_name, reasoning_effort, fast_mode } = args;
 
   // Validation
   if (!name || !expression || !prompt) {
@@ -67,6 +68,33 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
     return { text: `Error: Invalid channel '${targetChannel}'`, isError: true };
   }
 
+  // Validate mode
+  const effectiveMode = mode || 'default';
+  if (effectiveMode !== 'default' && effectiveMode !== 'fastlane') {
+    return { text: `Error: Invalid mode '${mode}'. Use 'default' or 'fastlane'`, isError: true };
+  }
+
+  // Build model config
+  const effectiveModelType = model_type || 'default';
+  let modelConfig: import('../_shared/cron-storage.js').CronModelConfig | undefined;
+  if (effectiveModelType !== 'default') {
+    if (effectiveModelType === 'fast') {
+      modelConfig = { type: 'fast' };
+    } else if (effectiveModelType === 'custom') {
+      if (!model_name) {
+        return { text: 'Error: model_name is required when model_type is "custom"', isError: true };
+      }
+      modelConfig = {
+        type: 'custom',
+        model: model_name,
+        reasoningEffort: reasoning_effort || undefined,
+        fastMode: fast_mode ?? undefined,
+      };
+    } else {
+      return { text: `Error: Invalid model_type '${model_type}'. Use 'default', 'fast', or 'custom'`, isError: true };
+    }
+  }
+
   try {
     const job = storage.addJob({
       name,
@@ -75,10 +103,14 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
       owner: context.user,
       channel: targetChannel,
       threadTs: threadTs || null,
+      mode: effectiveMode === 'default' ? undefined : effectiveMode,
+      modelConfig,
     });
 
+    const modeStr = effectiveMode === 'fastlane' ? ' | mode: fastlane' : '';
+    const modelStr = modelConfig ? ` | model: ${modelConfig.type}${modelConfig.model ? `(${modelConfig.model})` : ''}` : '';
     return {
-      text: `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}\nPrompt: ${job.prompt}`,
+      text: `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}\nPrompt: ${job.prompt}`,
       isError: false,
     };
   } catch (error: any) {
@@ -103,6 +135,31 @@ function handleDelete(args: Record<string, any>, context: CronContext, storage: 
   return { text: `Cron job '${name}' deleted`, isError: false };
 }
 
+function handleHistory(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+  const { name, limit } = args;
+  const effectiveLimit = typeof limit === 'number' && limit > 0 ? limit : 10;
+
+  const history = storage.getExecutionHistory(
+    name || undefined,
+    context.user,
+    effectiveLimit,
+  );
+
+  if (history.length === 0) {
+    return { text: name ? `No execution history for '${name}'.` : 'No cron execution history.', isError: false };
+  }
+
+  const lines = history.map(r => {
+    const status = r.status === 'success' ? '✅' : r.status === 'failed' ? '❌' : '⏳';
+    const time = r.executedAt.slice(0, 19).replace('T', ' ');
+    const errPart = r.error ? ` | err: ${r.error.substring(0, 80)}` : '';
+    return `${status} ${time} | **${r.jobName}** | ${r.executionPath}${errPart}`;
+  });
+
+  const header = name ? `Execution history for '${name}'` : 'Cron execution history';
+  return { text: `${header} (${history.length}):\n${lines.join('\n')}`, isError: false };
+}
+
 function handleList(context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
   const jobs = storage.getJobsByOwner(context.user);
 
@@ -110,9 +167,11 @@ function handleList(context: CronContext, storage: CronStorage): { text: string;
     return { text: 'No cron jobs registered.', isError: false };
   }
 
-  const lines = jobs.map(j =>
-    `- **${j.name}** | \`${j.expression}\` | ch:${j.channel} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`
-  );
+  const lines = jobs.map(j => {
+    const modeStr = j.mode === 'fastlane' ? ' | ⚡fastlane' : '';
+    const modelStr = j.modelConfig ? ` | model:${j.modelConfig.type}${j.modelConfig.model ? `(${j.modelConfig.model})` : ''}` : '';
+    return `- **${j.name}** | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
+  });
 
   return { text: `Registered cron jobs (${jobs.length}):\n${lines.join('\n')}`, isError: false };
 }
@@ -126,7 +185,13 @@ class CronMcpServer {
 
   constructor() {
     this.context = parseCronContext(process.env.SOMA_CRON_CONTEXT);
-    this.storage = new CronStorage();
+    // Use SOMA_DATA_DIR from parent process to align with CronScheduler's storage path.
+    // Without this, MCP subprocess uses process.cwd() which may differ from the app's DATA_DIR.
+    const dataDir = process.env.SOMA_DATA_DIR;
+    const cronFilePath = dataDir
+      ? path.join(dataDir, 'cron-jobs.json')
+      : undefined;
+    this.storage = new CronStorage(cronFilePath);
     this.server = new Server(
       { name: 'cron', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -148,6 +213,11 @@ class CronMcpServer {
               prompt: { type: 'string', description: 'Message to inject when cron fires (max 4000 chars)' },
               channel: { type: 'string', description: 'Target Slack channel ID. Defaults to current channel.' },
               threadTs: { type: 'string', description: 'Target thread timestamp. If omitted, uses active session or creates new thread.' },
+              mode: { type: 'string', enum: ['default', 'fastlane'], description: 'Execution mode. default: queue behind busy sessions. fastlane: always create new thread immediately.' },
+              model_type: { type: 'string', enum: ['default', 'fast', 'custom'], description: 'Model selection. default: use session model. fast: use sonnet. custom: specify model_name.' },
+              model_name: { type: 'string', description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")' },
+              reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Reasoning effort for custom model' },
+              fast_mode: { type: 'boolean', description: 'Enable fast mode for custom model' },
             },
             required: ['name', 'expression', 'prompt'],
           },
@@ -171,6 +241,17 @@ class CronMcpServer {
             properties: {},
           },
         },
+        {
+          name: 'cron_history',
+          description: 'Show execution history for cron jobs. Shows when jobs ran, whether they succeeded or failed, and the execution path (idle inject, busy queue, new thread).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Filter by cron job name. Omit for all jobs.' },
+              limit: { type: 'number', description: 'Max records to return (default: 10)' },
+            },
+          },
+        },
       ],
     }));
 
@@ -189,6 +270,9 @@ class CronMcpServer {
           break;
         case 'cron_list':
           result = handleList(this.context, this.storage);
+          break;
+        case 'cron_history':
+          result = handleHistory(args, this.context, this.storage);
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);

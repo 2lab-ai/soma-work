@@ -157,8 +157,14 @@ export class SessionInitializer {
     const isNewSession = !existingSession;
 
     const session = isNewSession
-      ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs)
+      ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs, event.modelOverride)
       : existingSession;
+
+    // Apply model override to existing sessions too (cron may inject into idle session)
+    if (!isNewSession && event.modelOverride && session.model !== event.modelOverride) {
+      session.model = event.modelOverride;
+      this.logger.info('Applied cron model override to existing session', { sessionKey, model: event.modelOverride });
+    }
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
@@ -250,7 +256,11 @@ export class SessionInitializer {
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
-    if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+    // Skip dispatch entirely for synthetic events (cron jobs, auto-resume) — execute prompt directly
+    if (event.synthetic && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      this.logger.info('Synthetic event — skipping dispatch, using default workflow', { sessionKey });
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Synthetic (cron/auto)');
+    } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
           session.isOnboarding = true;

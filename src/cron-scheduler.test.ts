@@ -7,7 +7,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CronScheduler, type CronSchedulerDeps, type SyntheticMessageEvent } from './cron-scheduler';
+import {
+  CronScheduler,
+  type CronSchedulerDeps,
+  resolveModelOverride,
+  type SyntheticMessageEvent,
+} from './cron-scheduler';
 import { type CronJob, CronStorage } from './cron-storage';
 import { SessionRegistry } from './session-registry';
 import { ConversationSession } from './types';
@@ -192,6 +197,7 @@ describe('CronScheduler — Idle Session Injection', () => {
 
     expect(injectedMessages[0].text).toBe('[cron:format-test] Do the thing');
     expect(injectedMessages[0].user).toBe('U123');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 });
 
@@ -260,6 +266,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
 
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].text).toContain('[cron:drain-test]');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 
   // Trace: S5, Section 3d — Contract (one per idle)
@@ -419,6 +426,7 @@ describe('CronScheduler — No Session New Thread', () => {
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].thread_ts).toBe('new-thread-ts');
     expect(injectedMessages[0].text).toContain('[cron:new-thread]');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 
   // Trace: S6, Section 5 — Sad Path
@@ -596,5 +604,204 @@ describe('CronScheduler — Hardening', () => {
     await tick1;
 
     expect(deps.messageInjector).toHaveBeenCalledTimes(1); // Only once, second tick was skipped
+  });
+});
+
+// --- Fastlane mode + Model selection ---
+describe('CronScheduler — Fastlane Mode', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-fastlane-${Date.now()}.json`);
+  });
+
+  it('fastlane mode always creates new thread even when idle session exists', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'fastlane-test',
+      expression: '* * * * *',
+      prompt: 'Execute immediately',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      mode: 'fastlane',
+    });
+
+    const { deps, createdThreads, injectedMessages } = createMockDeps(storage);
+
+    // Idle session exists — default mode would inject into it
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'existing-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'existing-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'existing-thread', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    // Should create new thread, NOT inject into existing session
+    expect(createdThreads).toHaveLength(1);
+    expect(createdThreads[0].channel).toBe('C456');
+    // Should still inject the message into the new thread
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].thread_ts).toBe('new-thread-ts');
+  });
+
+  it('fastlane mode creates new thread even when session is busy', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'fastlane-busy',
+      expression: '* * * * *',
+      prompt: 'Do not queue',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      mode: 'fastlane',
+    });
+
+    const { deps, createdThreads } = createMockDeps(storage);
+
+    // Busy session — default mode would enqueue
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'busy-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'busy-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'busy-thread', 'working');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    // Fastlane should NOT queue — should create new thread directly
+    expect(createdThreads).toHaveLength(1);
+    expect(scheduler.getPendingQueueSize('C456-busy-thread')).toBe(0);
+  });
+
+  it('default mode (no mode field) behaves as before — injects into idle session', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'default-mode',
+      expression: '* * * * *',
+      prompt: 'Normal behavior',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      // No mode field — backward compatible
+    });
+
+    const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'idle-thread');
+    deps.sessionRegistry.transitionToMain('C456', 'idle-thread', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'idle-thread', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    // Should inject into existing session, NOT create new thread
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].thread_ts).toBe('idle-thread');
+    expect(createdThreads).toHaveLength(0);
+  });
+});
+
+describe('CronScheduler — Model Override', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-model-${Date.now()}.json`);
+  });
+
+  it('fast model type sets modelOverride to sonnet', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'fast-model',
+      expression: '* * * * *',
+      prompt: 'Quick task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      modelConfig: { type: 'fast' },
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('custom model type sets modelOverride to specified model', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'custom-model',
+      expression: '* * * * *',
+      prompt: 'Custom task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      modelConfig: { type: 'custom', model: 'claude-opus-4-6-20250414' },
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toBe('claude-opus-4-6-20250414');
+  });
+
+  it('default model type has no modelOverride', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'default-model',
+      expression: '* * * * *',
+      prompt: 'Default task',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      // No modelConfig — default
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toBeUndefined();
+  });
+
+  it('model override passes through to new_thread path', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'new-thread-model',
+      expression: '* * * * *',
+      prompt: 'New thread with fast model',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      mode: 'fastlane',
+      modelConfig: { type: 'fast' },
+    });
+
+    const { deps, injectedMessages } = createMockDeps(storage);
+    // No sessions — will create new thread
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
   });
 });
