@@ -237,6 +237,9 @@ class SlackMcpServer extends BaseMcpServer {
    * Default is "work" (current session thread). "source" returns original thread before migration.
    */
   private resolveThread(thread?: string): { channel: string; threadTs: string } {
+    if (thread && thread !== 'work' && thread !== 'source') {
+      throw new Error(`Invalid thread selector: "${thread}". Must be "work" or "source".`);
+    }
     if (thread === 'source') {
       if (!this.context.sourceThreadTs) {
         throw new Error('No source thread available — this session was not created from a mid-thread mention with thread migration');

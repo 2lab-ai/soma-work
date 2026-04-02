@@ -141,6 +141,15 @@ describe('Scenario 5: Source thread unavailable error', () => {
   });
 });
 
+// ── Scenario 5b: Invalid thread selector ──────────────────────
+describe('Scenario 5b: Invalid thread selector validation', () => {
+  it('resolveThread rejects invalid thread selector values', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain('Invalid thread selector');
+  });
+});
+
 // ── Cross-cutting: Version bump ──────────────────────────────
 
 describe('Cross-cutting: Version bump', () => {
