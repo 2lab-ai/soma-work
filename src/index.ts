@@ -234,7 +234,7 @@ async function start() {
         const result = await app.client.chat.postMessage({
           channel: session.channelId,
           text: text || ' ',
-          thread_ts: typeof args === 'string' ? session.threadTs : (args?.thread_ts || session.threadTs),
+          thread_ts: typeof args === 'string' ? session.threadTs : args?.thread_ts || session.threadTs,
           blocks: typeof args === 'string' ? undefined : args?.blocks,
           attachments: typeof args === 'string' ? undefined : args?.attachments,
         });
@@ -344,7 +344,7 @@ async function start() {
           const result = await app.client.chat.postMessage({
             channel,
             text: text || ' ',
-            thread_ts: typeof args === 'string' ? threadTs : (args?.thread_ts || threadTs),
+            thread_ts: typeof args === 'string' ? threadTs : args?.thread_ts || threadTs,
             blocks: typeof args === 'string' ? undefined : args?.blocks,
             attachments: typeof args === 'string' ? undefined : args?.attachments,
           });
