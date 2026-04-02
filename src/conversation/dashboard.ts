@@ -20,6 +20,7 @@ import type { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
+import { buildThreadPermalink } from '../turn-notifier';
 import { getConversation } from './recorder';
 
 const logger = new Logger('Dashboard');
@@ -63,6 +64,8 @@ export interface KanbanSession {
   };
   /** Task list */
   tasks?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  /** Slack thread permalink */
+  slackThreadUrl?: string;
 }
 
 export interface KanbanBoard {
@@ -211,6 +214,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     tasks,
+    slackThreadUrl: s.channelId && s.threadTs ? buildThreadPermalink(s.channelId, s.threadTs) : undefined,
   };
 }
 
@@ -380,10 +384,18 @@ export function broadcastTaskUpdate(
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    // Resolve session owner for scoping
+    // Resolve session owner for scoping — iterate because sessions are keyed by
+    // sessionKey (channelId:threadTs), not conversationId (UUID)
+    let ownerId: string | undefined;
     const sessions = _getSessionsFn?.();
-    const session = sessions?.get(conversationId);
-    const ownerId = session?.ownerId;
+    if (sessions) {
+      for (const [, s] of sessions) {
+        if (s.conversationId === conversationId) {
+          ownerId = s.ownerId;
+          break;
+        }
+      }
+    }
 
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
@@ -1132,13 +1144,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .token-badge .tok-value { color: var(--accent); font-variant-numeric: tabular-nums; }
 .token-badge .tok-cost { color: var(--green); }
 .panel-turns { flex: 1; overflow-y: auto; padding: 10px 16px; scroll-behavior: smooth; }
-.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); }
+/* Slack-style turns */
+.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; }
 .turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
 .turn.assistant { background: transparent; border-left: 3px solid var(--purple); }
-.turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; justify-content: space-between; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.turn-avatar { width: 32px; height: 32px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+.user-avatar { background: var(--accent); color: #fff; }
+.bot-avatar { background: var(--purple); font-size: 16px; }
+.turn-body { flex: 1; min-width: 0; }
+.turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline; }
+.turn-name { font-weight: 700; color: var(--text-primary); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.turn-time { font-size: 11px; color: var(--text-tertiary); }
 .turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+/* Slack link on cards */
+.slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; }
+.slack-link:hover { text-decoration: underline; }
+
+/* ── DRAG & DROP ── */
+.card[draggable="true"] { cursor: grab; }
+.card[draggable="true"]:active { cursor: grabbing; }
+.card.dragging { opacity: 0.4; }
+.kanban-col.drag-over .cards { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: var(--radius); min-height: 60px; }
+.kanban-col#col-closed.drag-over .cards { outline-color: var(--yellow); }
+.kanban-col .drop-hint { display: none; text-align: center; padding: 8px; font-size: 12px; color: var(--text-tertiary); font-style: italic; }
+.kanban-col.drag-over .drop-hint { display: block; }
 
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
@@ -1454,6 +1485,11 @@ function renderCard(s, col) {
     ? ' <a class="conv-link" href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()" title="View conversation">&#x1F4DD;</a>'
     : '';
 
+  // Slack thread link
+  const slackLink = s.slackThreadUrl
+    ? ' <a class="slack-link" href="' + esc(s.slackThreadUrl) + '" target="_blank" onclick="event.stopPropagation()" title="Open in Slack">&#x1F4AC;</a>'
+    : '';
+
   // Merge stats
   const mergeHtml = s.mergeStats
     ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>'
@@ -1492,8 +1528,8 @@ function renderCard(s, col) {
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  return '<div class="' + cls + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
-    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + convLink + '</div>'
+  return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
+    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
     + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
     + linksHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
@@ -1614,7 +1650,17 @@ function connectWs() {
       } else if (msg.type === 'conversation_update') {
         // If panel is open for this conversation, append the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
-          appendTurnToPanel(msg.turn);
+          // Dedupe: skip user turns that match our optimistic send (content + within 10s)
+          if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
+              && (msg.turn.rawContent || '').trim() === _lastSentContent.trim()) {
+            _lastSentContent = '';
+            _lastSentTime = 0;
+            // Remove pending style from optimistic turn if present
+            var pending = document.querySelector('.turn.user[style*="opacity"]');
+            if (pending) pending.style.opacity = '';
+          } else {
+            appendTurnToPanel(msg.turn);
+          }
         }
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
@@ -1663,6 +1709,7 @@ function openPanel(sessionKey) {
   const linkHtml = [];
   if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
   if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
+  if (s.slackThreadUrl) linkHtml.push('<a href="' + esc(s.slackThreadUrl) + '" target="_blank">&#x1F4AC; Slack Thread</a>');
   if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
   linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
 
@@ -1715,15 +1762,25 @@ function openPanel(sessionKey) {
 
 function renderTurn(t) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  const initial = (t.userName || 'U').charAt(0).toUpperCase();
   if (t.role === 'user') {
-    return '<div class="turn user"><div class="turn-header"><span>&#x1F464; ' + esc(t.userName || 'User') + '</span><span>' + time + '</span></div>'
-      + '<div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div></div>';
+    return '<div class="turn user">'
+      + '<div class="turn-avatar user-avatar">' + initial + '</div>'
+      + '<div class="turn-body">'
+      + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
+      + '<div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
+      + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
     const body = t.summaryBody
       ? '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>'
       : '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
-    return '<div class="turn assistant"><div class="turn-header"><span>&#x1F916; Assistant</span><span>' + time + '</span></div>' + title + body + '</div>';
+    return '<div class="turn assistant">'
+      + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+      + '<div class="turn-body">'
+      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
+      + title + body
+      + '</div></div>';
   }
 }
 
@@ -1746,16 +1803,33 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && panelOpen) closePanel();
 });
 
-// ── Send command ──
+// ── Send command (optimistic UI) ──
+let _lastSentContent = '';
+let _lastSentTime = 0;
+
 async function sendCommand() {
   const input = document.getElementById('cmd-input');
   const btn = document.getElementById('cmd-send');
   const msg = input.value.trim();
   if (!msg || !panelSessionKey) return;
 
+  // Optimistic: immediately show user turn in panel
+  _lastSentContent = msg;
+  _lastSentTime = Date.now();
+  const optimisticTurn = {
+    id: 'optimistic-' + Date.now(),
+    role: 'user',
+    timestamp: Date.now(),
+    userName: 'You',
+    rawContent: msg,
+    _optimistic: true,
+  };
+  appendTurnToPanel(optimisticTurn);
+
   btn.disabled = true;
   btn.textContent = 'Sending...';
   input.disabled = true;
+  input.value = '';
 
   try {
     const res = await fetch('/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command', {
@@ -1763,26 +1837,14 @@ async function sendCommand() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg }),
     });
-    if (res.ok) {
-      input.value = '';
-      // Refresh turns after short delay
-      setTimeout(function() {
-        const s = _sessionCache[panelSessionKey];
-        if (s && s.conversationId) {
-          fetch('/api/dashboard/session/' + s.conversationId)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-              if (data.turns) {
-                const turnsEl = document.getElementById('panel-turns');
-                turnsEl.innerHTML = data.turns.map(renderTurn).join('');
-                turnsEl.scrollTop = turnsEl.scrollHeight;
-              }
-            })
-            .catch(function() {});
-        }
-      }, 800);
-    } else {
-      console.error('Command failed');
+    if (!res.ok) {
+      // Mark optimistic turn as failed
+      var lastTurn = document.querySelector('.turn.user:last-child');
+      if (lastTurn) {
+        lastTurn.style.borderColor = '#e74c3c';
+        lastTurn.style.opacity = '0.7';
+        lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" onclick="event.preventDefault();sendRetry(\\'' + escJs(msg) + '\\')">Retry</a></div>');
+      }
     }
   } catch (e) {
     console.error('Command error', e);
@@ -1793,6 +1855,74 @@ async function sendCommand() {
     input.focus();
   }
 }
+
+function sendRetry(msg) {
+  document.getElementById('cmd-input').value = msg;
+  sendCommand();
+}
+
+// ── Drag & Drop (event delegation on kanban board) ──
+var dragState = { key: null, sourceCol: null, title: '' };
+
+document.addEventListener('dragstart', function(e) {
+  var card = e.target.closest('.card[draggable="true"]');
+  if (!card) return;
+  dragState.key = card.dataset.sessionKey;
+  dragState.sourceCol = card.dataset.sourceCol;
+  var s = _sessionCache[dragState.key];
+  dragState.title = s ? s.title : '';
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragState.key);
+});
+
+document.addEventListener('dragend', function(e) {
+  var card = e.target.closest('.card');
+  if (card) card.classList.remove('dragging');
+  document.querySelectorAll('.kanban-col').forEach(function(col) { col.classList.remove('drag-over'); });
+  dragState = { key: null, sourceCol: null, title: '' };
+});
+
+document.addEventListener('dragover', function(e) {
+  var col = e.target.closest('.kanban-col');
+  if (!col || !dragState.key) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
+  col.classList.add('drag-over');
+});
+
+document.addEventListener('dragleave', function(e) {
+  var col = e.target.closest('.kanban-col');
+  if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
+});
+
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  var col = e.target.closest('.kanban-col');
+  if (!col || !dragState.key) return;
+  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
+
+  var targetCol = col.id.replace('col-', '');
+  var sourceCol = dragState.sourceCol;
+  var key = dragState.key;
+  var title = dragState.title || key;
+
+  // T6: Drag to closed column = Close
+  if (targetCol === 'closed' && sourceCol !== 'closed') {
+    if (confirm('Close session "' + title + '"?')) {
+      doAction(key, 'close');
+    }
+  }
+  // T7: Drag working card out = Stop (interrupt)
+  else if (sourceCol === 'working' && targetCol !== 'working') {
+    if (confirm('Stop (interrupt) session "' + title + '"?')) {
+      doAction(key, 'stop');
+    }
+  }
+
+  dragState = { key: null, sourceCol: null, title: '' };
+});
 
 // ── Init ──
 loadUsers();
