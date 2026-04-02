@@ -55,6 +55,28 @@ describe('TokenManager', () => {
       expect(tokens[2].name).toBe('info');
     });
 
+    it('should resolve ${VAR} references from process.env', async () => {
+      process.env.AI3_TOKEN = 'sk-ant-real-ai3';
+      process.env.AI2_TOKEN = 'sk-ant-real-ai2';
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai3=${AI3_TOKEN},ai2=${AI2_TOKEN}';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      const tokens = tokenManager.getAllTokens();
+      expect(tokens[0]).toMatchObject({ name: 'ai3', value: 'sk-ant-real-ai3' });
+      expect(tokens[1]).toMatchObject({ name: 'ai2', value: 'sk-ant-real-ai2' });
+    });
+
+    it('should keep raw value if env var not found', async () => {
+      delete process.env.MISSING_TOKEN;
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'missing=${MISSING_TOKEN}';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize();
+
+      const tokens = tokenManager.getAllTokens();
+      expect(tokens[0]).toMatchObject({ name: 'missing', value: '${MISSING_TOKEN}' });
+    });
+
     // Trace: Scenario 1, Step 2
     it('should fallback to single CLAUDE_CODE_OAUTH_TOKEN', async () => {
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
