@@ -192,6 +192,13 @@ async function start() {
     initRecorder();
     timing('Conversation recorder initialized');
 
+    // Backfill conversationIds for sessions that lost them across restarts
+    const backfilled = await claudeHandler.getSessionRegistry().backfillConversationIds();
+    if (backfilled > 0) {
+      logger.info(`Backfilled ${backfilled} session conversationIds from conversation storage`);
+    }
+    timing('ConversationId backfill complete');
+
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
