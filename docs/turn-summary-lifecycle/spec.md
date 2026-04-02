@@ -1,126 +1,105 @@
-# Turn Summary & Lifecycle — Spec
+# Turn Summary Lifecycle — Spec
 
-> STV Spec | Created: 2026-03-28
+> STV Spec | Created: 2026-03-28 | Status: Implemented (Day Pipeline removed)
 
 ## 1. Overview
 
-Turn completion 후 자동 요약, `es` 커맨드, 메시지 lifecycle 관리, Day-based 자동화 파이프라인을 soma-work에 추가한다.
+Turn Summary Lifecycle는 "세션 턴이 끝난 뒤 무슨 일이 일어나는가"를 관리하는 post-turn 인프라다.
+180초 타이머로 자동 executive summary를 생성하고, `es` 커맨드로 즉시 요약을 트리거하며,
+완료 메시지의 생명주기(추적/삭제/에러 보존)를 통합 관리한다.
 
-핵심 가치: 유저가 세션을 떠나 있어도 작업 상태를 자동 요약하여 제공하고, 스레드 내 불필요한 상태 메시지를 자동 정리하며, 복잡한 멀티 스킬 워크플로우를 한 번의 명령으로 자동 실행한다.
+핵심 원칙: **유저가 떠난 뒤에도 세션은 스스로 정리하고 요약한다.**
 
 ## 2. User Stories
 
-- As a user, I want automatic session summary after 180s of inactivity, so that I can quickly understand what happened when I return.
-- As a user, I want to type `es` to get an immediate executive summary of my session's active issues and PRs.
-- As a user, I want done/waiting messages to disappear when I give a new command, so that the thread stays clean.
-- As a user, I want to issue a single command that runs the full day0→day1→day2 pipeline automatically, so that I don't have to manually orchestrate each phase.
+- As a user, I want an automatic executive summary 180s after my last interaction, so I can review progress later
+- As a user, I want the summary cancelled if I send new input (stale summary 방지)
+- As a user, I want to trigger an immediate summary via `es` command
+- As a user, I want old completion messages cleaned up when I send new input (thread 정리)
+- As a user, I want error messages to persist even when other messages are cleaned up
 
 ## 3. Acceptance Criteria
 
-- [ ] Turn completion (done/waiting) triggers a 180s timer; if no user input arrives, a forked session executes summary.prompt and displays the result
-- [ ] Timer cancels if user sends a new command before 180s
-- [ ] `es` command triggers summary.prompt immediately via forked session
-- [ ] Summary result is appended to thread header message bottom (new `summaryBlocks` slot in ThreadSurface)
-- [ ] Summary result persists until user sends next command, then is cleared
-- [ ] done/waiting notification messages (separate thread messages) are deleted via `chat.delete` when user sends new command or clicks a decision button
-- [ ] error notification messages are NOT deleted (persist)
-- [ ] Day-based pipeline (`day0`→`day1`→`day2`) executes automatically from a single command
-- [ ] Each day-phase completes before the next begins; user confirmation requested at phase boundaries
-- [ ] Pipeline halts on unrecoverable error, reports status, and awaits user decision
+- [x] Turn 완료 후 180초 타이머 시작
+- [x] 유저 입력 시 타이머 취소
+- [x] 타이머 발화 → session fork → summary prompt 실행 → thread header에 표시
+- [x] `es` 커맨드 → 즉시 summary prompt 주입 (CONTINUE_SESSION 경유)
+- [x] 유저 새 입력 시 summary 표시 제거
+- [x] 완료 메시지(done/waiting) ts 추적, 유저 입력/버튼 클릭 시 bulk delete
+- [x] Exception 카테고리 메시지는 삭제 대상에서 제외 (에러 보존)
+- [x] Thread root message (header)는 절대 삭제 불가 (defense-in-depth protect)
+- [x] AbortController로 stale summary fork 중단
+- [x] 삭제 실패 시 re-track하여 재시도 가능
 
 ## 4. Scope
 
 ### In-Scope
-- `SummaryTimer` service: 180s countdown, cancel on user input, fork session on fire
-- `EsHandler` command handler: immediate summary trigger
-- `ThreadSurface` summary slot: append/clear summary blocks
-- Turn completion message tracking & deletion
-- `DayPipelineRunner`: sequential phase orchestration (day0→1→2)
-- Each day-phase defined as a sequence of skill invocations
+- SummaryTimer: 180초 per-session 타이머
+- SummaryService: fork executor → summary 생성 + Block Kit 표시/제거
+- EsHandler: `es` 커맨드 핸들러
+- CompletionMessageTracker: 메시지 ts 추적/삭제/보호
+- ForkExecutor: 실제 LLM summary 호출 (ClaudeHandler.dispatchOneShot)
 
 ### Out-of-Scope
-- Calendar-based scheduling (day0/1/2 are phases, not calendar days)
-- Customizable summary.prompt per user (uses fixed template)
-- Customizable timer duration per user (fixed 180s)
-- Partial pipeline execution (e.g., start from day1 only) — future enhancement
+- Day Pipeline Orchestration (구현 후 삭제됨 — #139에서 추가, #149에서 제거)
+- Summary 커스터마이징 (프롬프트 고정)
+- Summary 이력 저장
+
+### Attempted & Removed
+- **DayPipelineRunner** (`src/slack/pipeline/day-pipeline-runner.ts`): day0(debug)→day1(implement)→day2(review) 순차 파이프라인. #139에서 구현, #149에서 "mistakenly implemented, not a requested feature"로 삭제
+- **DayPipelineHandler** (`src/slack/commands/day-pipeline-handler.ts`): `autowork` 커맨드. #149에서 삭제
 
 ## 5. Architecture
 
 ### 5.1 Layer Structure
 
 ```
-User Input (Slack)
-  │
-  ├─ CommandRouter ──→ EsHandler ──→ SummaryService.execute()
-  │
-  ├─ StreamExecutor (turn complete)
-  │     ├─ TurnNotifier.notify()  (existing)
-  │     ├─ SummaryTimer.start()   (NEW)
-  │     └─ CompletionMessageTracker.track(ts)  (NEW)
-  │
-  ├─ EventRouter (new user message)
-  │     ├─ SummaryTimer.cancel()
-  │     ├─ SummaryService.clearDisplay()
-  │     └─ CompletionMessageTracker.deleteAll()
-  │
-  └─ DayPipelineRunner
-        ├─ Phase day0: stv:debug → stv:new-task
-        ├─ Phase day1: stv:new-task → stv:do-work → PR → verify loop → review → merge
-        └─ Phase day2: report → codex/gemini review (4 parallel) → fix loop → merge
+Turn Completion
+  ↓ onTurnEnd event
+SummaryTimer (180s)                         ← start/cancel per session
+  ↓ timer fires
+SummaryService                              ← buildPrompt → forkExecutor → displayOnThread
+  ↓ fork
+ForkExecutor (ClaudeHandler.dispatchOneShot) ← Real LLM call with AbortController
+  ↓ result
+ThreadSurface (actionPanel.summaryBlocks)   ← Block Kit rendering on thread header
+
+User Input / es Command
+  ↓
+SummaryTimer.cancel()                       ← Reset timer
+CompletionMessageTracker.deleteAll()        ← Cleanup old messages
+SummaryService.clearDisplay()               ← Remove summary blocks
 ```
 
-### 5.2 New Components
+### 5.2 Key Components
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `SummaryTimer` | `src/slack/summary-timer.ts` | Per-session 180s timer, cancel/fire logic |
-| `SummaryService` | `src/slack/summary-service.ts` | Fork session, execute summary.prompt, return result |
-| `EsHandler` | `src/slack/commands/es-handler.ts` | `es` command → SummaryService.execute() |
-| `CompletionMessageTracker` | `src/slack/completion-message-tracker.ts` | Track & bulk-delete done/waiting message timestamps |
-| `DayPipelineRunner` | `src/slack/pipeline/day-pipeline-runner.ts` | Sequential day0→1→2 orchestration |
-| `DayPipelineHandler` | `src/slack/commands/day-pipeline-handler.ts` | Command to start pipeline |
+| `SummaryTimer` | `src/slack/summary-timer.ts` | Per-session 180s setTimeout, start/cancel/cancelAll |
+| `SummaryService` | `src/slack/summary-service.ts` | Summary prompt building, fork execution, Block Kit display |
+| `CompletionMessageTracker` | `src/slack/completion-message-tracker.ts` | Track/delete completion messages, protect thread roots |
+| `EsHandler` | `src/slack/commands/es-handler.ts` | `es` command → inject SUMMARY_PROMPT |
+| `ForkExecutor` | `src/slack/create-fork-executor.ts` | Factory for ClaudeHandler.dispatchOneShot wrapper |
+| `ThreadSurface` | `src/slack/thread-surface.ts` | Single-writer surface for thread header rendering |
 
-### 5.3 SummaryTimer Detail
+### 5.3 Data Model
 
 ```typescript
-class SummaryTimer {
-  private timers = new Map<string, NodeJS.Timeout>(); // sessionKey → timer
+// SummaryTimer — in-memory only
+Map<sessionKey, NodeJS.Timeout>
 
-  start(sessionKey: string, callback: () => void): void {
-    this.cancel(sessionKey);
-    this.timers.set(sessionKey, setTimeout(callback, 180_000));
-  }
+// CompletionMessageTracker — in-memory only
+Map<sessionKey, Set<messageTs>>     // tracked: deletable messages
+Map<sessionKey, Set<messageTs>>     // protectedTs: undeletable (thread roots)
 
-  cancel(sessionKey: string): void {
-    const timer = this.timers.get(sessionKey);
-    if (timer) { clearTimeout(timer); this.timers.delete(sessionKey); }
-  }
+// SummaryService output → ActionPanel
+interface ActionPanel {
+  summaryBlocks?: SlackBlock[];     // Set by displayOnThread, cleared by clearDisplay
 }
 ```
 
-### 5.4 SummaryService Detail — Session Fork
+### 5.4 Summary Prompt (Fixed)
 
-```typescript
-class SummaryService {
-  async execute(session: ConversationSession, sessionKey: string): Promise<string> {
-    // 1. Fork: create temporary session with same model, working dir, links
-    // 2. Inject summary.prompt into forked session
-    // 3. Stream response, collect text
-    // 4. Terminate forked session
-    // 5. Return collected text
-  }
-
-  async displayOnThread(session: ConversationSession, sessionKey: string, summaryText: string): Promise<void> {
-    // Append summary blocks to ThreadSurface via new summaryBlocks slot
-  }
-
-  async clearDisplay(sessionKey: string): Promise<void> {
-    // Clear summaryBlocks from ThreadSurface, trigger re-render
-  }
-}
-```
-
-**summary.prompt template:**
 ```
 현재 active issue, pr 각각에 대해 as-is to-be 형태로 리포트
 stv:verify를 해주고 active issue, pr을 종합하여 executive summary
@@ -128,119 +107,86 @@ stv:verify를 해주고 active issue, pr을 종합하여 executive summary
 다음 유저가 내릴만한 행동을 3개 정도 제시해줘. 각각 복사하기 쉽게 코드 블럭으로 제시
 ```
 
-### 5.5 CompletionMessageTracker Detail
+Context prefix: active issue URL + active PR URL (from session.links)
 
-```typescript
-class CompletionMessageTracker {
-  // sessionKey → Set<messageTs>
-  private tracked = new Map<string, Set<string>>();
+### 5.5 Integration Points
 
-  track(sessionKey: string, messageTs: string, category: TurnCategory): void {
-    if (category === 'Exception') return; // errors persist
-    let set = this.tracked.get(sessionKey);
-    if (!set) { set = new Set(); this.tracked.set(sessionKey, set); }
-    set.add(messageTs);
-  }
+| Integration | Mechanism |
+|-------------|-----------|
+| Turn completion → timer start | `StreamExecutor.execute()` → `SummaryTimer.start()` |
+| User input → timer cancel | `StreamExecutor` input handler → `SummaryTimer.cancel()` |
+| User input → message cleanup | `CompletionMessageTracker.deleteAll()` fire-and-forget |
+| User input → summary clear | `SummaryService.clearDisplay()` |
+| Timer fire → fork | `SummaryService.execute(session, abortSignal)` |
+| Fork result → display | `SummaryService.displayOnThread()` → `ThreadSurface.render()` |
+| `es` command → inject | `EsHandler.execute()` returns `{ continueWithPrompt: SUMMARY_PROMPT }` |
+| Button click → cleanup | `ChoiceActionHandler` → `CompletionMessageTracker.deleteAll()` |
+| Bot-initiated init → protect | `ThreadSurface.initialize()` → `tracker.protect(sessionKey, threadRootTs)` |
 
-  async deleteAll(sessionKey: string, slackApi: SlackApiHelper, channel: string): Promise<void> {
-    const set = this.tracked.get(sessionKey);
-    if (!set || set.size === 0) return;
-    await Promise.allSettled(
-      [...set].map(ts => slackApi.deleteMessage(channel, ts))
-    );
-    this.tracked.delete(sessionKey);
-  }
-}
-```
+### 5.6 Block Kit Rendering
 
-### 5.6 DayPipelineRunner Detail
-
-```typescript
-interface DayPhase {
-  name: string; // 'day0' | 'day1' | 'day2'
-  steps: PipelineStep[];
-}
-
-interface PipelineStep {
-  skill: string;           // e.g. 'stv:debug', 'stv:new-task'
-  args?: string;
-  condition?: (ctx: PipelineContext) => boolean;
-  parallel?: PipelineStep[]; // for day2 codex/gemini reviews
-}
-
-class DayPipelineRunner {
-  private phases: DayPhase[] = [
-    {
-      name: 'day0',
-      steps: [
-        { skill: 'stv:debug' },
-        { skill: 'stv:new-task', args: 'bug jira ticket' },
-      ],
-    },
-    {
-      name: 'day1',
-      steps: [
-        { skill: 'stv:new-task', condition: ctx => !ctx.hasIssue },
-        { skill: 'stv:do-work' },
-        // PR creation handled within do-work
-        { skill: 'stv:verify', /* loop until pass */ },
-        // github-pr review + fix/update workflow
-      ],
-    },
-    {
-      name: 'day2',
-      steps: [
-        // 1. Report: what was done, jira/pr links
-        // 2. as-is/to-be + stv:verify + executive summary
-        // 3. Parallel LLM reviews (codex code, codex test, gemini code, gemini test)
-        // 4. Fix based on reviews → verify loop → merge
-      ],
-    },
-  ];
-
-  async run(session: ConversationSession): Promise<void> {
-    for (const phase of this.phases) {
-      await this.executePhase(phase, session);
-      // Request user confirmation before next phase
-    }
-  }
-}
-```
-
-### 5.7 Integration Points
-
-| Existing Component | Integration |
-|-------------------|-------------|
-| `StreamExecutor` | After turn completion: call `SummaryTimer.start()` + `CompletionMessageTracker.track()` |
-| `EventRouter` / `SlackHandler` | On new user message: call `SummaryTimer.cancel()` + `CompletionMessageTracker.deleteAll()` + `SummaryService.clearDisplay()` |
-| `ThreadSurface` | New `summaryBlocks` slot in layout, rendered after Action buttons |
-| `CommandRouter` | Register `EsHandler` + `DayPipelineHandler` |
-| `ActionHandlers` (choice button click) | Call `CompletionMessageTracker.deleteAll()` |
-| `TurnNotifier` | No changes — existing fire-and-forget notification unchanged |
+- Summary displayed as `*Executive Summary*` header + section blocks
+- Long text split at newline boundaries, max 3000 chars per section (Slack limit)
+- Divider block precedes summary content
 
 ## 6. Non-Functional Requirements
 
-- **Performance**: Summary fork session should complete within 30s. Timer operations O(1).
-- **Reliability**: Timer survives within process lifetime. Service restart clears all timers (acceptable — 180s window is short).
-- **Memory**: CompletionMessageTracker stores only message timestamps (Set<string>), minimal footprint.
-- **Concurrency**: One summary timer per session. New turn completion resets existing timer.
+- **Performance**: 180s timer is lightweight (setTimeout). Fork executor reuses existing session infrastructure
+- **Reliability**: AbortController cancels stale forks. Failed deletions re-tracked for retry. Protected timestamps never deleted
+- **Race Safety**: snapshot-then-remove pattern in deleteAll(). Abort check after await in execute()
 
 ## 7. Auto-Decisions
 
 | Decision | Tier | Rationale |
 |----------|------|-----------|
-| `EsHandler` class + `es-handler.ts` file naming | tiny | Follows existing `CommandHandler` naming convention |
-| Timer constant `180_000ms` | tiny | User specified 180 seconds |
-| Timer cancel via `clearTimeout` on user input | small | Standard JS timer pattern, ~5 lines |
-| Summary blocks as new ThreadSurface slot | small | Follows existing Choice slot pattern in ThreadSurface |
-| Error messages excluded from deletion | tiny | Single condition check on `TurnCategory === 'Exception'` |
-| DayPipelineRunner as single orchestrator class | small | Clean separation, one file, follows existing StreamExecutor pattern |
-| Pipeline command name: `pipeline` or `autowork` | tiny | Will use `autowork` — distinct from existing commands |
+| 180s timer duration | tiny | Empirically determined — enough to confirm user left |
+| Fixed summary prompt (Korean) | tiny | Product decision, not user-configurable |
+| Fire-and-forget deletion | small | Non-critical path, `.catch(() => {})` pattern |
+| Exception messages persist | small | Errors are diagnostic — user needs to see them |
+| Defense-in-depth thread root protection | small | Multiple deletion paths existed; protect at source |
+| DayPipeline removal | medium | Implemented prematurely without spec approval, removed in #149 |
 
 ## 8. Open Questions
 
-None — all decisions resolved.
+- Summary prompt customization per user/team — currently hardcoded
+- Summary result persistence/history — currently ephemeral
+- Day Pipeline Orchestration — removed, needs separate spec if revisited
 
-## 9. Next Step
+## 9. Implementation History (PRs)
+
+| PR | Date | Title | Status |
+|----|------|-------|--------|
+| [#139](https://github.com/2lab-ai/soma-work/pull/139) | 2026-03-28 | feat: turn summary lifecycle (180s timer, es cmd, message cleanup, day pipeline) | Merged |
+| [#147](https://github.com/2lab-ai/soma-work/pull/147) | 2026-03-28 | refactor: SummaryService ForkExecutor DI pattern | Merged |
+| [#149](https://github.com/2lab-ai/soma-work/pull/149) | feat: production ForkExecutor wiring + **DayPipeline cleanup** (DELETED) | Merged |
+| [#150](https://github.com/2lab-ai/soma-work/pull/150) | 2026-03-28 | fix: wire CompletionMessageTracker into ChoiceActionHandler (S8) | Merged |
+| [#208](https://github.com/2lab-ai/soma-work/pull/208) | 2026-03-30 | fix: stop deleting thread header on completion message cleanup | Merged |
+| [#226](https://github.com/2lab-ai/soma-work/pull/226) | 2026-03-30 | fix: trigger thread panel re-render after summary timer display | Merged |
+| [#229](https://github.com/2lab-ai/soma-work/pull/229) | 2026-03-30 | test: AC3 unit tests for summary timer render trigger | Merged |
+| [#232](https://github.com/2lab-ai/soma-work/pull/232) | 2026-03-30 | fix: auto executive summary gets session context via resume | Merged |
+| [#233](https://github.com/2lab-ai/soma-work/pull/233) | 2026-03-30 | fix: address codex review findings — race safety, error handling, text limits | Merged |
+| [#252](https://github.com/2lab-ai/soma-work/pull/252) | 2026-03-30 | fix: defense-in-depth protection for thread header deletion | Merged |
+| [#267](https://github.com/2lab-ai/soma-work/pull/267) | 2026-03-30 | fix: prevent stale summary race via AbortController threading | Merged |
+
+## 10. Scenarios (7, Day Pipeline excluded)
+
+| # | Scenario | Size | Status |
+|---|----------|------|--------|
+| S1 | Timer Start on Turn Completion | small | Implemented |
+| S2 | Timer Cancel on User Input | small | Implemented |
+| S3 | Timer Fire → Fork Session → Summary Display | large | Implemented |
+| S4 | ES Command → Immediate Summary | small | Implemented |
+| S5 | Summary Clear on New User Input | small | Implemented |
+| S6 | Completion Message Track/Delete | medium | Implemented |
+| S7 | Error Messages Persist | small | Implemented |
+
+### Removed Scenario
+
+| # | Scenario | Size | Status |
+|---|----------|------|--------|
+| ~~S8~~ | ~~Day Pipeline Orchestration~~ | ~~xlarge~~ | **Removed** (#139→#149) |
+
+## 11. Next Step
 
 → Proceed with Vertical Trace via `stv:trace docs/turn-summary-lifecycle/spec.md`
+→ Day Pipeline은 별도 spec이 필요하면 재설계 후 추가
