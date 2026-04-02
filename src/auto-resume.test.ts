@@ -5,8 +5,8 @@
  * These tests verify the auto-resume behavior after server restart.
  * All tests should be RED (failing) until implementation is complete.
  */
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock(import('./env-paths'), async (importOriginal) => {
