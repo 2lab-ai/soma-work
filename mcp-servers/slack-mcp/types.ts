@@ -6,6 +6,10 @@ export interface SlackMcpContext {
   channel: string;
   threadTs: string;
   mentionTs: string;
+  /** Original thread channel before bot-initiated thread migration */
+  sourceChannel?: string;
+  /** Original thread ts before bot-initiated thread migration */
+  sourceThreadTs?: string;
 }
 
 export interface ThreadMessage {
