@@ -804,9 +804,20 @@ export class SlackHandler {
       synthetic: true,
     };
 
-    const noopSay = async () => ({ ts: undefined as string | undefined });
+    // Real say — posts to Slack. noopSay silently discarded all bot output.
+    const realSay = async (args: any) => {
+      const text = typeof args === 'string' ? args : args?.text;
+      const result = await this.app.client.chat.postMessage({
+        channel: session.channelId,
+        text: text || ' ',
+        thread_ts: typeof args === 'string' ? session.threadTs : (args?.thread_ts || session.threadTs),
+        blocks: typeof args === 'string' ? undefined : args?.blocks,
+        attachments: typeof args === 'string' ? undefined : args?.attachments,
+      });
+      return { ts: result.ts as string | undefined };
+    };
 
-    await this.handleMessage(syntheticEvent, noopSay);
+    await this.handleMessage(syntheticEvent, realSay);
   }
 
   /**

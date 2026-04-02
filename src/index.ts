@@ -229,7 +229,17 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
-      const noopSay = async () => ({ ts: undefined as string | undefined });
+      const dashboardSay = async (args: any) => {
+        const text = typeof args === 'string' ? args : args?.text;
+        const result = await app.client.chat.postMessage({
+          channel: session.channelId,
+          text: text || ' ',
+          thread_ts: typeof args === 'string' ? session.threadTs : (args?.thread_ts || session.threadTs),
+          blocks: typeof args === 'string' ? undefined : args?.blocks,
+          attachments: typeof args === 'string' ? undefined : args?.attachments,
+        });
+        return { ts: result.ts as string | undefined };
+      };
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -239,7 +249,7 @@ async function start() {
           user: session.ownerId,
           ts: String(Date.now() / 1000),
         } as any,
-        noopSay,
+        dashboardSay,
       );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
     });
@@ -324,10 +334,27 @@ async function start() {
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage();
-      const noopSay = async () => ({ ts: undefined as string | undefined });
+
+      // Build a real say function that posts to Slack via chat.postMessage.
+      // noopSay caused drain output to be silently discarded — the model ran
+      // but its responses never reached the channel.
+      const makeSay = (channel: string, threadTs?: string) => {
+        return async (args: any) => {
+          const text = typeof args === 'string' ? args : args?.text;
+          const result = await app.client.chat.postMessage({
+            channel,
+            text: text || ' ',
+            thread_ts: typeof args === 'string' ? threadTs : (args?.thread_ts || threadTs),
+            blocks: typeof args === 'string' ? undefined : args?.blocks,
+            attachments: typeof args === 'string' ? undefined : args?.attachments,
+          });
+          return { ts: result.ts as string | undefined };
+        };
+      };
 
       const messageInjector = async (event: SyntheticMessageEvent) => {
-        await slackHandler.handleMessage(event as any, noopSay);
+        const say = makeSay(event.channel, event.thread_ts);
+        await slackHandler.handleMessage(event as any, say);
       };
 
       const threadCreator = async (channel: string, text: string): Promise<string | undefined> => {
