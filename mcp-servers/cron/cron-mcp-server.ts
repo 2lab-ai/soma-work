@@ -10,6 +10,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import * as path from 'path';
 import { StderrLogger } from '../_shared/stderr-logger.js';
 import {
   CronStorage,
@@ -151,7 +152,13 @@ class CronMcpServer {
 
   constructor() {
     this.context = parseCronContext(process.env.SOMA_CRON_CONTEXT);
-    this.storage = new CronStorage();
+    // Use SOMA_DATA_DIR from parent process to align with CronScheduler's storage path.
+    // Without this, MCP subprocess uses process.cwd() which may differ from the app's DATA_DIR.
+    const dataDir = process.env.SOMA_DATA_DIR;
+    const cronFilePath = dataDir
+      ? path.join(dataDir, 'cron-jobs.json')
+      : undefined;
+    this.storage = new CronStorage(cronFilePath);
     this.server = new Server(
       { name: 'cron', version: '1.0.0' },
       { capabilities: { tools: {} } }
