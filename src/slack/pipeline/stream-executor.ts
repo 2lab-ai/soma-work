@@ -663,7 +663,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
         },
         onStatusUpdate: async (status: string) => {
-          if (status === 'working') {
+          if (status === 'compacting') {
+            // Context compaction start — always visible regardless of verbosity
+            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
+          } else if (status === 'compact_done') {
+            // Context compaction end — always visible regardless of verbosity
+            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
+          } else if (status === 'working') {
             if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
               await this.deps.reactionManager.updateReaction(
                 sessionKey,
@@ -671,7 +677,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               );
             }
             if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, '컨텍스트 압축 중...');
+              await this.deps.assistantStatusManager.setStatus(channel, threadTs, '');
             }
           }
         },
