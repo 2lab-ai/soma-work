@@ -70,9 +70,11 @@ export class TokenManager {
       this.tokens = entries.map((entry, i) => {
         const eqIndex = entry.indexOf('=');
         if (eqIndex > 0) {
+          const name = entry.slice(0, eqIndex);
+          const rawValue = entry.slice(eqIndex + 1);
           return {
-            name: entry.slice(0, eqIndex),
-            value: entry.slice(eqIndex + 1),
+            name,
+            value: TokenManager.resolveEnvRef(rawValue),
             cooldownUntil: null,
           };
         }
@@ -226,6 +228,16 @@ export class TokenManager {
     if (this.tokens.length > 0) {
       process.env.CLAUDE_CODE_OAUTH_TOKEN = this.tokens[this.activeIndex].value;
     }
+  }
+
+  /** Resolve ${VAR_NAME} references from process.env */
+  static resolveEnvRef(value: string): string {
+    const match = value.match(/^\$\{(\w+)\}$/);
+    if (match) {
+      const resolved = process.env[match[1]];
+      if (resolved) return resolved;
+    }
+    return value;
   }
 
   /** Mask a token value for safe display: first 20 + last 10 chars */
