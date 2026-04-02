@@ -165,7 +165,9 @@ export interface StreamCallbacks {
   /** Update an existing message in-place (for compact tool call completion) */
   onUpdateMessage?: (channel: string, ts: string, text: string) => Promise<void>;
   onTodoUpdate?: TodoUpdateHandler;
-  onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled' | 'compacting' | 'compact_done') => Promise<void>;
+  onStatusUpdate?: (
+    status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled' | 'compacting' | 'compact_done',
+  ) => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
   getPendingForm?: (formId: string) => PendingForm | undefined;
   /** Called to invalidate old forms when a new form is created */
