@@ -27,10 +27,16 @@ export interface SyntheticMessageEvent {
   thread_ts?: string;
   ts: string;
   text: string;
-  /** Marks as synthetic — skips dispatch, treated as direct command not user input */
+  /** Marks as synthetic — treated as direct command not user input */
   synthetic?: boolean;
+  /** Skip dispatch (workflow classification) — go straight to default workflow */
+  skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /** Route context — skipAutoBotThread prevents duplicate root message creation */
+  routeContext?: {
+    skipAutoBotThread?: boolean;
+  };
 }
 
 /** Callback type for injecting messages into the handleMessage pipeline */
@@ -39,11 +45,21 @@ export type MessageInjector = (event: SyntheticMessageEvent) => Promise<void>;
 /** Callback type for creating a new bot-initiated thread */
 export type ThreadCreator = (channel: string, text: string) => Promise<string | undefined>;
 
+/** Callback type for sending a DM to a user */
+export type DmSender = (userId: string, text: string) => Promise<void>;
+
+/** Callback type for posting a reply in an existing thread */
+export type ThreadReplier = (channel: string, threadTs: string, text: string) => Promise<void>;
+
 export interface CronSchedulerDeps {
   storage: CronStorage;
   sessionRegistry: SessionRegistry;
   messageInjector: MessageInjector;
   threadCreator: ThreadCreator;
+  /** Optional: sends DM to user. Required for target='dm'. */
+  dmSender?: DmSender;
+  /** Optional: posts reply in existing thread. Required for target='thread'. */
+  threadReplier?: ThreadReplier;
 }
 
 // Get current minute string in YYYY-MM-DDTHH:mm format for dedup.
@@ -152,8 +168,24 @@ export class CronScheduler {
   /**
    * Execute a single cron job: check session state and inject or queue.
    * Fastlane mode always creates a new thread regardless of session state.
+   * Target determines delivery: channel (default), thread (reply), or dm.
    */
   private async executeJob(job: CronJob, now: Date): Promise<void> {
+    const target = job.target || 'channel';
+
+    // DM target: send directly to user, no session interaction
+    if (target === 'dm') {
+      await this.executeWithDm(job, now);
+      return;
+    }
+
+    // Thread target: post reply in existing thread, no session interaction
+    if (target === 'thread') {
+      await this.executeWithThreadReply(job, now);
+      return;
+    }
+
+    // Channel target (default): original behavior
     // Fastlane: always new thread, skip session lookup
     if (job.mode === 'fastlane') {
       await this.executeWithNewThread(job, now);
@@ -215,7 +247,9 @@ export class CronScheduler {
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
+      skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      routeContext: { skipAutoBotThread: true },
     };
 
     logger.info('Injecting cron message', {
@@ -250,7 +284,7 @@ export class CronScheduler {
     // drainQueue() pops one and re-registers if more remain.
     if (isFirstInQueue) {
       this.deps.sessionRegistry.registerOnIdle(sessionKey, () => {
-        this.drainQueue(sessionKey, now);
+        this.drainQueue(sessionKey, new Date());
       });
     }
 
@@ -290,7 +324,9 @@ export class CronScheduler {
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
+      skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      routeContext: { skipAutoBotThread: true },
     };
 
     this.deps.messageInjector(syntheticEvent).catch((err: any) => {
@@ -300,7 +336,7 @@ export class CronScheduler {
     // If more jobs remain, re-register for next idle cycle
     if (queue.length > 0) {
       this.deps.sessionRegistry.registerOnIdle(sessionKey, () => {
-        this.drainQueue(sessionKey, now);
+        this.drainQueue(sessionKey, new Date());
       });
     } else {
       this.pendingCronQueue.delete(sessionKey);
@@ -328,7 +364,9 @@ export class CronScheduler {
         ts: `${Date.now() / 1000}`,
         text: `[cron:${job.name}] ${job.prompt}`,
         synthetic: true,
+        skipDispatch: true,
         modelOverride: resolveModelOverride(job.modelConfig),
+        routeContext: { skipAutoBotThread: true },
       };
 
       await this.deps.messageInjector(syntheticEvent);
@@ -337,6 +375,56 @@ export class CronScheduler {
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message);
+    }
+  }
+
+  /**
+   * Send cron result as a DM to the job owner.
+   */
+  private async executeWithDm(job: CronJob, now: Date): Promise<void> {
+    if (!this.deps.dmSender) {
+      logger.warn('DM sender not configured, falling back to new thread', { name: job.name });
+      await this.executeWithNewThread(job, now);
+      return;
+    }
+
+    try {
+      const text = `[cron:${job.name}] ${job.prompt}`;
+      await this.deps.dmSender(job.owner, text);
+      this.deps.storage.updateLastRun(job.id, now);
+      this.recordExecution(job, 'success', 'dm');
+      logger.info('Cron DM sent', { name: job.name, owner: job.owner });
+    } catch (error: any) {
+      logger.error('Cron DM failed', { name: job.name, error: error?.message });
+      this.recordExecution(job, 'failed', 'dm', undefined, error?.message);
+    }
+  }
+
+  /**
+   * Post cron result as a reply in an existing thread.
+   */
+  private async executeWithThreadReply(job: CronJob, now: Date): Promise<void> {
+    if (!job.threadTs) {
+      logger.error('Thread target requires threadTs — cannot deliver', { name: job.name });
+      this.deps.storage.updateLastRun(job.id, now);
+      this.recordExecution(job, 'failed', 'thread_reply', undefined, 'threadTs required for thread target');
+      return;
+    }
+    if (!this.deps.threadReplier) {
+      logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
+      await this.executeWithNewThread(job, now);
+      return;
+    }
+
+    try {
+      const text = `[cron:${job.name}] ${job.prompt}`;
+      await this.deps.threadReplier(job.channel, job.threadTs, text);
+      this.deps.storage.updateLastRun(job.id, now);
+      this.recordExecution(job, 'success', 'thread_reply');
+      logger.info('Cron thread reply sent', { name: job.name, channel: job.channel, threadTs: job.threadTs });
+    } catch (error: any) {
+      logger.error('Cron thread reply failed', { name: job.name, error: error?.message });
+      this.recordExecution(job, 'failed', 'thread_reply', undefined, error?.message);
     }
   }
 
