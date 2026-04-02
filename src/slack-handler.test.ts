@@ -260,6 +260,74 @@ describe('SlackHandler', () => {
     );
   });
 
+  it('uses persisted sourceThread for continuation messages in work thread', async () => {
+    // Bug: When user sends a follow-up message in the work thread,
+    // activeThreadTs === originalThreadTs, so sourceThreadTs was set to undefined.
+    // Fix: Fall back to session.sourceThread from the persisted session.
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    // Simulate a continuation message: user posts directly in the work thread.
+    // The session already has sourceThread from the initial thread migration.
+    const sessionResult = {
+      session: {
+        ownerId: 'U123',
+        channelId: 'C123',
+        threadTs: '222.333',
+        threadRootTs: '222.333',
+        sourceThread: { channel: 'C123', threadTs: '111.000' }, // original source thread
+      },
+      sessionKey: 'C123:222.333',
+      isNewSession: false,
+      userName: 'Test User',
+      workingDirectory: '/tmp',
+      abortController: new AbortController(),
+      halted: false,
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue(sessionResult),
+    };
+    const execute = vi.fn().mockResolvedValue({ success: true, messageCount: 1 });
+    handlerAny.streamExecutor = { execute };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    // User posts in the work thread (thread_ts === work thread's ts)
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: '222.333',
+      ts: '333.444',
+      text: 'continue working',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceThreadTs: '111.000', // should fall back to session.sourceThread
+        sourceChannel: 'C123',
+      }),
+    );
+  });
+
   it('silently deletes unmanaged bot-authored message permalink sent in DM', async () => {
     const app = { client: {} } as any;
     const claudeHandler = {
