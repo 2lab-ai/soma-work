@@ -2,7 +2,7 @@
  * Contract Tests — Multi-Agent Architecture
  * Scenarios: S1 (Config Parsing), S2 (Startup), S3 (Direct Chat), S6 (Prompt), S7 (Shutdown)
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { McpManager } from './mcp-manager';
 
 // ─── S1: Agent Config Parsing ───────────────────────────────────────────────
@@ -223,7 +223,6 @@ describe('S7 — Agent Graceful Shutdown', () => {
   // Trace: S7, Section 5 — partial failure continues
   it('AgentShutdown_PartialFailure_Continues — continues stopping on failure', async () => {
     const { AgentManager } = await import('./agent-manager');
-    const { AgentInstance } = await import('./agent-instance');
 
     const agents = {
       a: { slackBotToken: 'xoxb-a', slackAppToken: 'xapp-a', signingSecret: 'secret-20-chars-long!!' },
@@ -342,7 +341,6 @@ describe('S2+ — Agent Startup Error Isolation', () => {
   // Codex review finding: startAll() error-isolation branch untested
   it('AgentStartup_FailureIsolation — failed agents removed from map', async () => {
     const { AgentManager } = await import('./agent-manager');
-    const { AgentInstance } = await import('./agent-instance');
 
     const agents = {
       good: { slackBotToken: 'xoxb-good', slackAppToken: 'xapp-good', signingSecret: 'secret-20-chars-long!!' },
