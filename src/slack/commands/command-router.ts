@@ -5,6 +5,7 @@ import { AdminHandler } from './admin-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
 import { CloseHandler } from './close-handler';
+import { CompactHandler } from './compact-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
 import { EsHandler } from './es-handler';
@@ -62,6 +63,7 @@ export class CommandRouter {
       new OnboardingHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
+      new CompactHandler(deps),
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),
