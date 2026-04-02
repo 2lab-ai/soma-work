@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentTurnResult, EndTurnInfo } from '../agent-session-types.js';
+import type { AgentTurnResult } from '../agent-session-types.js';
 import { TurnRunner } from '../turn-runner.js';
 
 // Trace: Scenario 4 — TurnRunner lifecycle
