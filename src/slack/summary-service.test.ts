@@ -205,13 +205,15 @@ describe('SummaryService', () => {
       expect(prompt).toContain(SUMMARY_PROMPT);
     });
 
-    it('buildPrompt() returns base prompt when no links', () => {
+    it('buildPrompt() includes context header and base prompt when no links', () => {
       const service = new SummaryService();
       const session = makeSession();
 
       const prompt = service.buildPrompt(session);
 
-      expect(prompt).toBe(SUMMARY_PROMPT);
+      expect(prompt).toContain('## Session Context');
+      expect(prompt).toContain('No active issues or PRs linked');
+      expect(prompt).toContain(SUMMARY_PROMPT);
     });
 
     it('default forkExecutor returns prompt text as stub', async () => {
@@ -220,7 +222,7 @@ describe('SummaryService', () => {
 
       const result = await service.execute(session);
 
-      expect(result).toBe(SUMMARY_PROMPT);
+      expect(result).toContain(SUMMARY_PROMPT);
     });
   });
 
