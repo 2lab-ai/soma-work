@@ -27,8 +27,10 @@ export interface SyntheticMessageEvent {
   thread_ts?: string;
   ts: string;
   text: string;
-  /** Marks as synthetic — skips dispatch, treated as direct command not user input */
+  /** Marks as synthetic — treated as direct command not user input */
   synthetic?: boolean;
+  /** Skip dispatch (workflow classification) — go straight to default workflow */
+  skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
@@ -245,6 +247,7 @@ export class CronScheduler {
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
+      skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
       routeContext: { skipAutoBotThread: true },
     };
@@ -321,6 +324,7 @@ export class CronScheduler {
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
+      skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
       routeContext: { skipAutoBotThread: true },
     };
@@ -360,6 +364,7 @@ export class CronScheduler {
         ts: `${Date.now() / 1000}`,
         text: `[cron:${job.name}] ${job.prompt}`,
         synthetic: true,
+        skipDispatch: true,
         modelOverride: resolveModelOverride(job.modelConfig),
         routeContext: { skipAutoBotThread: true },
       };
