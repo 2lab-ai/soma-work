@@ -165,7 +165,9 @@ export interface StreamCallbacks {
   /** Update an existing message in-place (for compact tool call completion) */
   onUpdateMessage?: (channel: string, ts: string, text: string) => Promise<void>;
   onTodoUpdate?: TodoUpdateHandler;
-  onStatusUpdate?: (status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled') => Promise<void>;
+  onStatusUpdate?: (
+    status: 'thinking' | 'working' | 'completed' | 'error' | 'cancelled' | 'compacting' | 'compact_done',
+  ) => Promise<void>;
   onPendingFormCreate?: (formId: string, form: PendingForm) => void;
   getPendingForm?: (formId: string) => PendingForm | undefined;
   /** Called to invalidate old forms when a new form is created */
@@ -923,12 +925,12 @@ export class StreamProcessor {
       });
       // #196: notify executor so compaction context can be injected on next prompt
       this.callbacks.onCompactBoundary?.(metadata);
-      await this.callbacks.onStatusUpdate?.('working');
+      await this.callbacks.onStatusUpdate?.('compact_done');
     } else if (subtype === 'status') {
       const status = message.status as string | null;
       if (status === 'compacting') {
         this.logger.info('SDK context compacting in progress');
-        await this.callbacks.onStatusUpdate?.('working');
+        await this.callbacks.onStatusUpdate?.('compacting');
       } else {
         this.logger.debug('SDK status update', { status });
       }
