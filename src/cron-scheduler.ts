@@ -284,7 +284,7 @@ export class CronScheduler {
     // drainQueue() pops one and re-registers if more remain.
     if (isFirstInQueue) {
       this.deps.sessionRegistry.registerOnIdle(sessionKey, () => {
-        this.drainQueue(sessionKey, now);
+        this.drainQueue(sessionKey, new Date());
       });
     }
 
@@ -336,7 +336,7 @@ export class CronScheduler {
     // If more jobs remain, re-register for next idle cycle
     if (queue.length > 0) {
       this.deps.sessionRegistry.registerOnIdle(sessionKey, () => {
-        this.drainQueue(sessionKey, now);
+        this.drainQueue(sessionKey, new Date());
       });
     } else {
       this.pendingCronQueue.delete(sessionKey);

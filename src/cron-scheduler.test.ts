@@ -1038,3 +1038,58 @@ describe('CronScheduler — Thread Target', () => {
     expect(injectedMessages).toHaveLength(1);
   });
 });
+
+// --- Error Path Tests ---
+describe('CronScheduler — Error Paths', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-sched-errors-${Date.now()}.json`);
+  });
+
+  it('dm sender error is caught gracefully', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'dm-error',
+      expression: '* * * * *',
+      prompt: 'DM will fail',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      target: 'dm',
+    });
+
+    const { deps } = createMockDeps(storage);
+    deps.dmSender = vi.fn(async () => {
+      throw new Error('DM channel not found');
+    });
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(deps.dmSender).toHaveBeenCalledOnce();
+  });
+
+  it('thread replier error is caught gracefully', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'thread-error',
+      expression: '* * * * *',
+      prompt: 'Thread will fail',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: 'existing-ts',
+      target: 'thread',
+    });
+
+    const { deps } = createMockDeps(storage);
+    deps.threadReplier = vi.fn(async () => {
+      throw new Error('channel_not_found');
+    });
+
+    const scheduler = new CronScheduler(deps);
+    await scheduler.tick();
+
+    expect(deps.threadReplier).toHaveBeenCalledOnce();
+  });
+});
