@@ -31,6 +31,10 @@ export interface SyntheticMessageEvent {
   synthetic?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /** Route context — skipAutoBotThread prevents duplicate root message creation */
+  routeContext?: {
+    skipAutoBotThread?: boolean;
+  };
 }
 
 /** Callback type for injecting messages into the handleMessage pipeline */
@@ -242,6 +246,7 @@ export class CronScheduler {
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      routeContext: { skipAutoBotThread: true },
     };
 
     logger.info('Injecting cron message', {
@@ -317,6 +322,7 @@ export class CronScheduler {
       text: `[cron:${job.name}] ${job.prompt}`,
       synthetic: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      routeContext: { skipAutoBotThread: true },
     };
 
     this.deps.messageInjector(syntheticEvent).catch((err: any) => {
@@ -355,6 +361,7 @@ export class CronScheduler {
         text: `[cron:${job.name}] ${job.prompt}`,
         synthetic: true,
         modelOverride: resolveModelOverride(job.modelConfig),
+        routeContext: { skipAutoBotThread: true },
       };
 
       await this.deps.messageInjector(syntheticEvent);
@@ -392,8 +399,14 @@ export class CronScheduler {
    * Post cron result as a reply in an existing thread.
    */
   private async executeWithThreadReply(job: CronJob, now: Date): Promise<void> {
-    if (!this.deps.threadReplier || !job.threadTs) {
-      logger.warn('Thread replier not configured or no threadTs, falling back to new thread', { name: job.name });
+    if (!job.threadTs) {
+      logger.error('Thread target requires threadTs — cannot deliver', { name: job.name });
+      this.deps.storage.updateLastRun(job.id, now);
+      this.recordExecution(job, 'failed', 'thread_reply', undefined, 'threadTs required for thread target');
+      return;
+    }
+    if (!this.deps.threadReplier) {
+      logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
       await this.executeWithNewThread(job, now);
       return;
     }
