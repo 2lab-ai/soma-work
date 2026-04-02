@@ -256,7 +256,11 @@ export class SessionInitializer {
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)
     // Skip dispatch if onboarding was triggered (already transitioned)
-    if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+    // skipDispatch: explicit flag to bypass workflow classification (cron, auto-resume, etc.)
+    if (event.skipDispatch && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      this.logger.info('skipDispatch — bypassing workflow classification, using default', { sessionKey });
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Direct (skipDispatch)');
+    } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
           session.isOnboarding = true;

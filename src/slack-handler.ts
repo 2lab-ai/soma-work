@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { App } from '@slack/bolt';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
@@ -686,14 +688,23 @@ export class SlackHandler {
    * Notify users whose sessions were interrupted by a crash/restart.
    * Should be called after loadSavedSessions() and after Slack app starts.
    */
-  /** Resume prompt sent to model for auto-resuming interrupted sessions */
-  private static readonly AUTO_RESUME_PROMPT =
-    '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
-    '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
-    '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
-    '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
-    '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
-    '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.';
+  /** Resume prompt sent to model for auto-resuming interrupted sessions.
+   *  Loaded from src/prompt/restart.prompt at class-load time for easy editing. */
+  private static readonly AUTO_RESUME_PROMPT = (() => {
+    try {
+      return fs.readFileSync(path.join(__dirname, 'prompt', 'restart.prompt'), 'utf-8').trimEnd();
+    } catch {
+      // Fallback in case the file is missing (e.g. in test environments)
+      return (
+        '서비스가 재시작되어 이전 작업이 중단되었다. 아래 순서로 작업을 이어가라:\n' +
+        '1. mcp__slack-mcp__get_thread_messages (offset: 0, limit: 50)으로 이 스레드의 전체 대화를 먼저 읽어라.\n' +
+        '2. 유저가 마지막으로 요청한 작업이 무엇인지 파악하라.\n' +
+        '3. 네가 마지막으로 어디까지 진행했는지 확인하라 (git status, 파일 상태 등).\n' +
+        '4. 중단된 지점부터 작업을 이어서 완료하라.\n' +
+        '5. 만약 작업 상태를 파악할 수 없으면, 유저에게 현재 상황을 설명하고 다음 단계를 물어라.'
+      );
+    }
+  })();
 
   /** Delay between processing crash-recovered sessions (ms) */
   private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
@@ -805,6 +816,7 @@ export class SlackHandler {
       ts: notificationTs || `${Date.now() / 1000}`,
       text: resumePrompt,
       synthetic: true,
+      skipDispatch: true,
     };
 
     // Real say — posts to Slack. noopSay silently discarded all bot output.

@@ -20,6 +20,9 @@ const CRON_FILE = path.join(DATA_DIR, 'cron-jobs.json');
 /** Execution mode: default queues behind active sessions; fastlane always opens a new thread. */
 export type CronMode = 'default' | 'fastlane';
 
+/** Where cron results are delivered. */
+export type CronTarget = 'channel' | 'thread' | 'dm';
+
 /** Model override config attached to a cron job. */
 export interface CronModelConfig {
   type: 'default' | 'fast' | 'custom';
@@ -49,6 +52,8 @@ export interface CronJob {
   mode?: CronMode;
   /** Model override. Omitted = 'default' (use session model). */
   modelConfig?: CronModelConfig;
+  /** Delivery target. Omitted = 'channel' (new channel message). */
+  target?: CronTarget;
 }
 
 interface CronData {
@@ -62,7 +67,7 @@ export interface CronExecutionRecord {
   jobName: string;
   executedAt: string;
   status: 'success' | 'failed' | 'queued';
-  executionPath: 'idle_inject' | 'busy_queue' | 'new_thread';
+  executionPath: 'idle_inject' | 'busy_queue' | 'new_thread' | 'dm' | 'thread_reply';
   error?: string;
   sessionKey?: string;
 }

@@ -297,6 +297,13 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a /compact command (force context compaction)
+   */
+  static isCompactCommand(text: string): boolean {
+    return /^\/?compact$/i.test(text.trim());
+  }
+
+  /**
    * Check if text is a /new command
    */
   static isNewCommand(text: string): boolean {
@@ -619,6 +626,7 @@ export class CommandParser {
     'onboarding',
     'context',
     'renew',
+    'compact',
     'close',
     'link',
     // Credentials
@@ -715,6 +723,7 @@ export class CommandParser {
       '• `onboarding` or `/onboarding` - Run onboarding workflow anytime',
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
+      '• `compact` or `/compact` - Force context compaction (for testing compression)',
       '',
       '*Links:*',
       '• `link issue <url>` - Attach issue link to current session',
