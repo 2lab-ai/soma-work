@@ -9,6 +9,8 @@ export interface MessageEvent {
   text?: string;
   /** True for auto-resume, auto-retry, and other system-generated messages (not real user input) */
   synthetic?: boolean;
+  /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */
+  modelOverride?: string;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;

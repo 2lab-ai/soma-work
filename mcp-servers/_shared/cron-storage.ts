@@ -15,6 +15,20 @@ const logger = new StderrLogger('CronStorage');
 
 // --- Types ---
 
+/** Execution mode: default queues behind active sessions; fastlane always opens a new thread. */
+export type CronMode = 'default' | 'fastlane';
+
+/** Model override config attached to a cron job. */
+export interface CronModelConfig {
+  type: 'default' | 'fast' | 'custom';
+  /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
+  model?: string;
+  /** Reasoning effort for custom type */
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  /** Fast mode for custom type */
+  fastMode?: boolean;
+}
+
 export interface CronJob {
   id: string;
   name: string;
@@ -29,6 +43,10 @@ export interface CronJob {
   lastRunMinute: string | null;
   /** @deprecated Use lastRunMinute. Kept for backward compat with existing data. */
   lastRunDate?: string | null;
+  /** Execution mode. Omitted = 'default' for backward compat. */
+  mode?: CronMode;
+  /** Model override. Omitted = 'default' (use session model). */
+  modelConfig?: CronModelConfig;
 }
 
 interface CronData {

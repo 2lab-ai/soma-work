@@ -6,7 +6,13 @@
  * Pattern: src/slack-handler.ts:745-762 (autoResumeSession synthetic message)
  */
 
-import { type CronExecutionRecord, type CronJob, type CronStorage, matchesCronExpression } from './cron-storage';
+import {
+  type CronExecutionRecord,
+  type CronJob,
+  type CronModelConfig,
+  type CronStorage,
+  matchesCronExpression,
+} from './cron-storage';
 import { Logger } from './logger';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';
@@ -21,6 +27,8 @@ export interface SyntheticMessageEvent {
   thread_ts?: string;
   ts: string;
   text: string;
+  /** Model override for cron jobs with non-default model config */
+  modelOverride?: string;
 }
 
 /** Callback type for injecting messages into the handleMessage pipeline */
@@ -41,6 +49,16 @@ export interface CronSchedulerDeps {
 // multi-fire-per-day crons (e.g. every 15 min).
 function currentMinuteStr(): string {
   return new Date().toISOString().slice(0, 16);
+}
+
+const FAST_MODEL = 'claude-sonnet-4-20250514';
+
+/** Resolve model override string from CronModelConfig. undefined = use session default. */
+export function resolveModelOverride(config?: CronModelConfig): string | undefined {
+  if (!config || config.type === 'default') return undefined;
+  if (config.type === 'fast') return FAST_MODEL;
+  if (config.type === 'custom' && config.model) return config.model;
+  return undefined;
 }
 
 export class CronScheduler {
@@ -131,8 +149,15 @@ export class CronScheduler {
 
   /**
    * Execute a single cron job: check session state and inject or queue.
+   * Fastlane mode always creates a new thread regardless of session state.
    */
   private async executeJob(job: CronJob, now: Date): Promise<void> {
+    // Fastlane: always new thread, skip session lookup
+    if (job.mode === 'fastlane') {
+      await this.executeWithNewThread(job, now);
+      return;
+    }
+
     const session = this.findSession(job.owner, job.channel, job.threadTs);
 
     if (!session) {
@@ -187,6 +212,7 @@ export class CronScheduler {
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
+      modelOverride: resolveModelOverride(job.modelConfig),
     };
 
     logger.info('Injecting cron message', {
@@ -260,6 +286,7 @@ export class CronScheduler {
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
+      modelOverride: resolveModelOverride(job.modelConfig),
     };
 
     this.deps.messageInjector(syntheticEvent).catch((err: any) => {
@@ -296,6 +323,7 @@ export class CronScheduler {
         thread_ts: rootTs,
         ts: `${Date.now() / 1000}`,
         text: `[cron:${job.name}] ${job.prompt}`,
+        modelOverride: resolveModelOverride(job.modelConfig),
       };
 
       await this.deps.messageInjector(syntheticEvent);

@@ -157,8 +157,14 @@ export class SessionInitializer {
     const isNewSession = !existingSession;
 
     const session = isNewSession
-      ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs)
+      ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs, event.modelOverride)
       : existingSession;
+
+    // Apply model override to existing sessions too (cron may inject into idle session)
+    if (!isNewSession && event.modelOverride && session.model !== event.modelOverride) {
+      session.model = event.modelOverride;
+      this.logger.info('Applied cron model override to existing session', { sessionKey, model: event.modelOverride });
+    }
 
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
