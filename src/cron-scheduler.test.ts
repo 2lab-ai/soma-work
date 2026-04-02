@@ -197,6 +197,7 @@ describe('CronScheduler — Idle Session Injection', () => {
 
     expect(injectedMessages[0].text).toBe('[cron:format-test] Do the thing');
     expect(injectedMessages[0].user).toBe('U123');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 });
 
@@ -265,6 +266,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
 
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].text).toContain('[cron:drain-test]');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 
   // Trace: S5, Section 3d — Contract (one per idle)
@@ -424,6 +426,7 @@ describe('CronScheduler — No Session New Thread', () => {
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].thread_ts).toBe('new-thread-ts');
     expect(injectedMessages[0].text).toContain('[cron:new-thread]');
+    expect(injectedMessages[0].synthetic).toBe(true);
   });
 
   // Trace: S6, Section 5 — Sad Path

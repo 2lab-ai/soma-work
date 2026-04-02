@@ -27,6 +27,8 @@ export interface SyntheticMessageEvent {
   thread_ts?: string;
   ts: string;
   text: string;
+  /** Marks as synthetic — skips dispatch, treated as direct command not user input */
+  synthetic?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
 }
@@ -212,6 +214,7 @@ export class CronScheduler {
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
+      synthetic: true,
       modelOverride: resolveModelOverride(job.modelConfig),
     };
 
@@ -286,6 +289,7 @@ export class CronScheduler {
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
       text: `[cron:${job.name}] ${job.prompt}`,
+      synthetic: true,
       modelOverride: resolveModelOverride(job.modelConfig),
     };
 
@@ -323,6 +327,7 @@ export class CronScheduler {
         thread_ts: rootTs,
         ts: `${Date.now() / 1000}`,
         text: `[cron:${job.name}] ${job.prompt}`,
+        synthetic: true,
         modelOverride: resolveModelOverride(job.modelConfig),
       };
 
