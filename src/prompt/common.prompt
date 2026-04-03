@@ -11,6 +11,5 @@
 ## 똑똑한 부하 모델(MCP)
 - 유저의 명시적 요청이 있거나, 주어진 작업의 복잡도가 일정 이상일 경우 부하 모델에게 위임한다.
   - 부하 MCP:
-    - llm_chat( model: codex ) - 제일 똑똑함
-    - llm_chat( model: gemini ) - 물어볼 만함
+    - llm_chat( model: gemini ) - 기본 부하 모델. codex 호출이 필요하면 `codex:rescue` agent를 사용하라.
 </system_prompt>
