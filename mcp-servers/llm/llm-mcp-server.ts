@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'child_process';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import { ConfigCache } from '../_shared/config-cache.js';
-import { McpClient } from '../_shared/mcp-client.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
+import type { Backend, LlmRuntime } from './runtime/types.js';
+import { CodexRuntime } from './runtime/codex-runtime.js';
+import { GeminiRuntime } from './runtime/gemini-runtime.js';
+import { FileSessionStore } from './runtime/session-store.js';
+import { randomUUID } from 'node:crypto';
 
 // ── Config ─────────────────────────────────────────────────
-
-type Backend = 'codex' | 'gemini';
 
 interface BackendConfig {
   backend: Backend;
@@ -44,41 +45,9 @@ const configCache = new ConfigCache<LlmChatFileConfig>(HARDCODED_DEFAULTS, {
   },
 });
 
-// ── Config Expansion ──────────────────────────────────────
-
-/**
- * Expand flat dot-notation config keys into nested objects and coerce types.
- * e.g. { "features.fast_mode": "true" } → { features: { fast_mode: true } }
- *
- * Stored config uses flat string keys (Record<string, string>) for simplicity,
- * but codex backend expects nested objects with proper types.
- */
-function expandConfigForCodex(flat: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(flat)) {
-    // Coerce boolean strings to actual booleans
-    const coerced = value === 'true' ? true : value === 'false' ? false : value;
-
-    if (key.includes('.')) {
-      const parts = key.split('.');
-      let target: Record<string, unknown> = result;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!(parts[i] in target) || typeof target[parts[i]] !== 'object' || target[parts[i]] === null) {
-          target[parts[i]] = {};
-        }
-        target = target[parts[i]] as Record<string, unknown>;
-      }
-      target[parts[parts.length - 1]] = coerced;
-    } else {
-      result[key] = coerced;
-    }
-  }
-  return result;
-}
-
 // ── Model Routing ──────────────────────────────────────────
 
-function routeModel(model: string): BackendConfig {
+export function routeModel(model: string): BackendConfig {
   const config = configCache.get();
 
   if (model === 'codex' || model === 'gemini') {
@@ -95,78 +64,19 @@ function routeModel(model: string): BackendConfig {
   return { backend: 'codex', model };
 }
 
-// ── Backend Client Management ──────────────────────────────
+// ── Runtimes ──────────────────────────────────────────────
 
-const clients: Record<Backend, McpClient | null> = {
-  codex: null,
-  gemini: null,
+const runtimes: Record<Backend, LlmRuntime> = {
+  codex: new CodexRuntime(),
+  gemini: new GeminiRuntime(),
 };
 
-function cliExists(command: string): boolean {
-  try {
-    execFileSync('which', [command], { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function getClient(backend: Backend): Promise<McpClient> {
-  if (clients[backend]?.isReady()) {
-    return clients[backend]!;
-  }
-
-  if (backend === 'codex' && !cliExists('codex')) {
-    throw new Error('Codex CLI not installed. Run: brew install --cask codex');
-  }
-  if (backend === 'gemini' && !cliExists('gemini')) {
-    throw new Error('Gemini CLI not installed. Run: brew install gemini-cli');
-  }
-
-  if (clients[backend]) {
-    try { await clients[backend]!.stop(); } catch { /* ignore */ }
-  }
-
-  const config = backend === 'codex'
-    ? { command: 'codex', args: ['mcp-server'] }
-    : { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
-
-  const client = new McpClient(config, `LlmMCP:${backend}`);
-  await client.start();
-  clients[backend] = client;
-  return client;
-}
-
 // ── Session Tracking ───────────────────────────────────────
+// Router owns the public session ID → backend session ID mapping.
+// Runtimes never store sessions.
+// Durable file-backed store survives server restarts (Issue #333).
 
-interface Session {
-  backend: Backend;
-  backendSessionId: string;
-}
-
-const sessions = new Map<string, Session>();
-
-function extractBackendSessionId(backend: Backend, parsed: any, rawResult?: any): string {
-  const key = backend === 'codex' ? 'threadId' : 'sessionId';
-
-  if (rawResult?.structuredContent?.[key]) return rawResult.structuredContent[key];
-  if (parsed[key]) return parsed[key];
-  if (rawResult?.[key]) return rawResult[key];
-  if (rawResult?._meta?.[key]) return rawResult._meta[key];
-
-  const text = rawResult?.content?.find((c: any) => c.type === 'text')?.text || '';
-  const match = text.match(/Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-  if (match) return match[1];
-
-  return '';
-}
-
-function storeSession(backend: Backend, parsed: any, rawResult?: any): string {
-  const backendSessionId = extractBackendSessionId(backend, parsed, rawResult);
-  if (!backendSessionId) return '';
-  sessions.set(backendSessionId, { backend, backendSessionId });
-  return backendSessionId;
-}
+const sessionStore = new FileSessionStore();
 
 // ── Server ─────────────────────────────────────────────────
 
@@ -219,12 +129,12 @@ class LlmMCPServer extends BaseMcpServer {
 
   protected override async shutdown(): Promise<void> {
     this.logger.info('Shutting down...');
-    for (const [backend, client] of Object.entries(clients)) {
-      if (client) {
-        try { await client.stop(); } catch { /* ignore */ }
-        this.logger.info(`Stopped ${backend} backend`);
-      }
-    }
+    await Promise.all(
+      Object.entries(runtimes).map(async ([name, runtime]) => {
+        try { await runtime.shutdown(); } catch { /* ignore */ }
+        this.logger.info(`Stopped ${name} runtime`);
+      }),
+    );
     process.exit(0);
   }
 
@@ -237,39 +147,37 @@ class LlmMCPServer extends BaseMcpServer {
     const route = routeModel(model);
     this.logger.info(`Routing chat to ${route.backend}`, { model, resolvedModel: route.model });
 
-    const client = await getClient(route.backend);
-    const backendArgs: Record<string, unknown> = { prompt, model: route.model };
+    const runtime = runtimes[route.backend];
+    const result = await runtime.startSession(prompt, {
+      model: route.model,
+      cwd,
+      config,
+      configOverride: route.configOverride,
+    });
 
-    if (route.backend === 'codex') {
-      if (cwd) backendArgs.cwd = cwd;
-      // Expand flat dot-notation defaults into nested objects with proper types,
-      // then let user-provided config (already in correct format) override.
-      const expandedDefaults = expandConfigForCodex(route.configOverride || {});
-      const mergedConfig = { ...expandedDefaults, ...(config || {}) };
-      if (Object.keys(mergedConfig).length > 0) {
-        backendArgs.config = mergedConfig;
-      }
-    }
-
-    // codex MCP exposes 'codex' tool, gemini MCP exposes 'chat' tool
-    const toolName = route.backend === 'codex' ? 'codex' : 'chat';
-    const result = await client.callTool(toolName, backendArgs, 600_000);
-
-    const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-    let parsed: any = {};
-    try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
-
-    const sessionId = storeSession(route.backend, parsed, result);
-
-    let responseContent = (result as any).structuredContent?.content || parsed.content || text;
-    if (typeof responseContent === 'string') {
-      responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+    // Store session — router is the sole owner (durable, Issue #333)
+    const publicId = randomUUID();
+    const now = new Date().toISOString();
+    if (result.backendSessionId) {
+      sessionStore.save({
+        publicId,
+        backend: result.backend,
+        backendSessionId: result.backendSessionId,
+        model: result.model,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
 
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ sessionId, content: responseContent, backend: route.backend, model: route.model }),
+        text: JSON.stringify({
+          sessionId: result.backendSessionId ? publicId : undefined,
+          content: result.content,
+          backend: result.backend,
+          model: result.model,
+        }),
       }],
     };
   }
@@ -278,42 +186,29 @@ class LlmMCPServer extends BaseMcpServer {
     const prompt = args.prompt as string;
     const sessionId = args.sessionId as string | undefined;
 
-    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const session = sessionId ? sessionStore.get(sessionId) : undefined;
     if (!session) {
       throw new Error(`Unknown session: ${sessionId}. Use 'chat' first to start a session.`);
     }
 
-    const client = await getClient(session.backend);
-    const backendArgs: Record<string, unknown> = { prompt };
-    if (session.backend === 'codex') {
-      backendArgs.threadId = session.backendSessionId;
+    const runtime = runtimes[session.backend];
+    const result = await runtime.resumeSession(session.backendSessionId, prompt);
+
+    // Update session: touch to refresh TTL, update backend ID if changed
+    if (result.backendSessionId && result.backendSessionId !== session.backendSessionId) {
+      sessionStore.updateBackendSessionId(session.publicId, result.backendSessionId);
     } else {
-      backendArgs.sessionId = session.backendSessionId;
-    }
-
-    // codex MCP exposes 'codex-reply' tool, gemini MCP exposes 'chat-reply' tool
-    const toolName = session.backend === 'codex' ? 'codex-reply' : 'chat-reply';
-    const result = await client.callTool(toolName, backendArgs, 600_000);
-
-    const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-    let parsed: any = {};
-    try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
-
-    const newBackendSessionId = extractBackendSessionId(session.backend, parsed, result);
-    if (newBackendSessionId && newBackendSessionId !== session.backendSessionId) {
-      sessions.delete(sessionId!);
-      sessions.set(newBackendSessionId, { backend: session.backend, backendSessionId: newBackendSessionId });
-    }
-
-    let responseContent = (result as any).structuredContent?.content || parsed.content || text;
-    if (typeof responseContent === 'string') {
-      responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+      sessionStore.touch(session.publicId);
     }
 
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ sessionId: newBackendSessionId || sessionId, content: responseContent, backend: session.backend }),
+        text: JSON.stringify({
+          sessionId: session.publicId,
+          content: result.content,
+          backend: session.backend,
+        }),
       }],
     };
   }
