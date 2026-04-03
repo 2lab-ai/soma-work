@@ -66,7 +66,7 @@ export class TodoDisplayManager {
       return;
     }
 
-    const newTodos: Todo[] = input.todos;
+    const newTodos: Todo[] = Array.isArray(input.todos) ? input.todos : [];
     const oldTodos = this.todoManager.getTodos(sessionId);
 
     // Check if there's a significant change

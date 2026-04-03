@@ -21,14 +21,16 @@ export class TodoManager {
   }
 
   updateTodos(sessionId: string, todos: Todo[]): void {
-    this.todos.set(sessionId, todos);
-    if (this._onUpdate) this._onUpdate(sessionId, todos);
+    // Defensive: Claude SDK tool output may deliver non-array at runtime
+    const safeTodos = Array.isArray(todos) ? todos : [];
+    this.todos.set(sessionId, safeTodos);
+    if (this._onUpdate) this._onUpdate(sessionId, safeTodos);
     this.logger.debug('Updated todos for session', {
       sessionId,
-      todoCount: todos.length,
-      pending: todos.filter((t) => t.status === 'pending').length,
-      inProgress: todos.filter((t) => t.status === 'in_progress').length,
-      completed: todos.filter((t) => t.status === 'completed').length,
+      todoCount: safeTodos.length,
+      pending: safeTodos.filter((t) => t.status === 'pending').length,
+      inProgress: safeTodos.filter((t) => t.status === 'in_progress').length,
+      completed: safeTodos.filter((t) => t.status === 'completed').length,
     });
   }
 
