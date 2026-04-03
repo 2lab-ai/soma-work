@@ -248,6 +248,36 @@ async function generateSummary(conversationId: string, turnId: string, content: 
 }
 
 /**
+ * Re-generate summary for a specific assistant turn (e.g. after a failed summary).
+ * Resets the summarized flag, clears stale summary data, and kicks off a new summary generation.
+ */
+export async function resummarizeTurn(conversationId: string, turnId: string): Promise<boolean> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return false;
+  const turn = record.turns.find((t) => t.id === turnId);
+  if (!turn || turn.role !== 'assistant') return false;
+
+  // Guard: rawContent is required for summary generation.
+  // Without it, clearing old summary data would cause permanent data loss.
+  if (!turn.rawContent) {
+    logger.warn(`Cannot resummarize turn ${turnId}: no rawContent available`);
+    return false;
+  }
+
+  // Reset summarized flag
+  turn.summarized = false;
+  turn.summaryTitle = undefined;
+  turn.summaryBody = undefined;
+  await serializedSave(conversationId, record);
+
+  // Re-generate summary
+  generateSummary(conversationId, turnId, turn.rawContent).catch((err) => {
+    logger.error(`Resummarize failed for turn ${turnId}`, err);
+  });
+  return true;
+}
+
+/**
  * Get conversation from cache or load from disk
  */
 async function getOrLoadConversation(id: string): Promise<ConversationRecord | null> {
@@ -286,6 +316,18 @@ export async function getTurnRawContent(conversationId: string, turnId: string):
 
   const turn = record.turns.find((t) => t.id === turnId);
   return turn?.rawContent || null;
+}
+
+/**
+ * Update the subordinate-model generated title (titleSub) for a conversation
+ */
+export async function updateConversationTitleSub(conversationId: string, titleSub: string): Promise<boolean> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return false;
+  record.titleSub = titleSub;
+  record.updatedAt = Date.now();
+  await serializedSave(conversationId, record);
+  return true;
 }
 
 /**
