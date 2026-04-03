@@ -108,6 +108,32 @@ export class ConversationStorage {
   }
 
   /**
+   * Build an index mapping channelId:threadTs → conversationId from all stored records.
+   * Used once at startup to backfill sessions that lost their conversationId.
+   */
+  async buildThreadIndex(): Promise<Map<string, string>> {
+    const index = new Map<string, string>();
+    try {
+      const files = await fs.promises.readdir(this.dataDir);
+      for (const file of files.filter((f) => f.endsWith('.json'))) {
+        try {
+          const filePath = path.join(this.dataDir, file);
+          const data = await fs.promises.readFile(filePath, 'utf-8');
+          const record = JSON.parse(data) as ConversationRecord;
+          if (record.channelId && record.threadTs) {
+            index.set(`${record.channelId}:${record.threadTs}`, record.id);
+          }
+        } catch {
+          /* skip corrupt files */
+        }
+      }
+    } catch (error) {
+      logger.error('Failed to build thread index', error);
+    }
+    return index;
+  }
+
+  /**
    * Check if a conversation exists
    */
   exists(id: string): boolean {
