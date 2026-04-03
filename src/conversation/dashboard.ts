@@ -9,10 +9,12 @@
  *   GET  /api/dashboard/stats                → User statistics (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
+ *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
+ *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
  */
 
@@ -21,7 +23,8 @@ import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { buildThreadPermalink } from '../turn-notifier';
-import { getConversation } from './recorder';
+import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
+import { generateTitle } from './title-generator';
 
 const logger = new Logger('Dashboard');
 
@@ -551,6 +554,7 @@ export async function registerDashboardRoutes(
         reply.send({
           id: record.id,
           title: record.title,
+          titleSub: record.titleSub,
           ownerName: record.ownerName,
           workflow: record.workflow,
           createdAt: record.createdAt,
@@ -560,6 +564,57 @@ export async function registerDashboardRoutes(
         });
       } catch (error) {
         logger.error('Error fetching session detail', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Resummarize a specific assistant turn
+  server.post<{ Params: { conversationId: string; turnId: string } }>(
+    '/api/dashboard/session/:conversationId/resummarize/:turnId',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const ok = await resummarizeTurn(request.params.conversationId, request.params.turnId);
+        if (!ok) {
+          reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
+          return;
+        }
+        reply.send({ ok: true });
+      } catch (error) {
+        logger.error('Error resummarizing turn', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Generate titleSub for a conversation
+  server.post<{ Params: { conversationId: string } }>(
+    '/api/dashboard/session/:conversationId/generate-title',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+
+        // Build conversation content from first few turns
+        const contentParts = record.turns.slice(0, 6).map((t) =>
+          `[${t.role}]: ${t.rawContent?.substring(0, 500) || t.summaryTitle || ''}`,
+        );
+        const content = contentParts.join('\n\n');
+
+        const titleSub = await generateTitle(content);
+        if (titleSub) {
+          await updateConversationTitleSub(record.id, titleSub);
+          reply.send({ ok: true, titleSub });
+        } else {
+          reply.status(500).send({ error: 'Title generation failed' });
+        }
+      } catch (error) {
+        logger.error('Error generating title', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -1380,7 +1435,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
   <div class="slide-panel" id="slide-panel">
     <div class="panel-header">
-      <h3 id="panel-title">Session Detail</h3>
+      <div style="flex:1;min-width:0">
+        <h3 id="panel-title">Session Detail</h3>
+        <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
+          <span id="panel-title-sub-text"></span>
+          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId)">&#x1F504;</button>
+        </div>
+      </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
     </div>
     <div class="panel-meta" id="panel-meta"></div>
@@ -1414,6 +1475,18 @@ function esc(s) {
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
+}
+async function resummarize(convId, turnId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Retrying...';
+  try {
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
+    if (!res.ok) throw new Error('Failed');
+    btn.textContent = 'Queued \u2713';
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '\uD83D\uDD04 Retry';
+  }
 }
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
@@ -1781,6 +1854,12 @@ function openPanel(sessionKey) {
 
   document.getElementById('panel-title').textContent = s.title || 'Untitled';
 
+  // TitleSub
+  var titleSubTextEl = document.getElementById('panel-title-sub-text');
+  var titleSubBtn = document.getElementById('panel-title-sub-regen');
+  titleSubTextEl.textContent = '';
+  titleSubBtn.style.display = 'none';
+
   // Meta
   const metaEl = document.getElementById('panel-meta');
   metaEl.innerHTML = [
@@ -1824,6 +1903,16 @@ function openPanel(sessionKey) {
     fetch('/api/dashboard/session/' + s.conversationId)
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        // Handle titleSub
+        var tSubText = document.getElementById('panel-title-sub-text');
+        var tSubBtn = document.getElementById('panel-title-sub-regen');
+        if (data.titleSub) {
+          tSubText.textContent = data.titleSub;
+          tSubBtn.style.display = 'inline-block';
+        } else if (s.conversationId) {
+          generateTitleSub(s.conversationId);
+        }
+
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
           return;
@@ -1865,7 +1954,7 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed</div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + esc(convId || panelConvId) + '\\',\\'' + esc(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
@@ -1919,6 +2008,27 @@ function attachRawToggleHandlers() {
         });
     });
   });
+}
+
+async function generateTitleSub(convId) {
+  var textEl = document.getElementById('panel-title-sub-text');
+  var btn = document.getElementById('panel-title-sub-regen');
+  textEl.textContent = 'Generating title...';
+  btn.style.display = 'none';
+  try {
+    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/generate-title', { method: 'POST' });
+    var data = await res.json();
+    if (data.titleSub) {
+      textEl.textContent = data.titleSub;
+      btn.style.display = 'inline-block';
+    } else {
+      textEl.textContent = 'Title generation failed';
+      btn.style.display = 'inline-block';
+    }
+  } catch(e) {
+    textEl.textContent = 'Error';
+    btn.style.display = 'inline-block';
+  }
 }
 
 function closePanel() {
