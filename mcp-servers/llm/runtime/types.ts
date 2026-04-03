@@ -10,6 +10,32 @@
 
 // ── Types ───────────────────────────────────────────────────
 
+/**
+ * SessionRecord — Durable session metadata stored by the router.
+ * Decouples the public session ID (app-owned UUID) from the backend-native ID.
+ * @see Issue #333 — Durable Session Store
+ */
+export interface SessionRecord {
+  publicId: string;          // app-owned UUID (decoupled from backend)
+  backend: Backend;
+  backendSessionId: string;  // codex threadId or gemini sessionId
+  model: string;
+  createdAt: string;         // ISO timestamp
+  updatedAt: string;         // ISO timestamp
+}
+
+/**
+ * SessionStore — Persistence abstraction for session records.
+ * @see Issue #333 — Durable Session Store
+ */
+export interface SessionStore {
+  get(publicId: string): SessionRecord | undefined;
+  save(record: SessionRecord): void;
+  updateBackendSessionId(publicId: string, newBackendSessionId: string): void;
+  delete(publicId: string): void;
+  prune(): void;  // remove expired sessions
+}
+
 export type Backend = 'codex' | 'gemini';
 
 export interface SessionOptions {

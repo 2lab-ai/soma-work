@@ -6,6 +6,8 @@ import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import type { Backend, LlmRuntime } from './runtime/types.js';
 import { CodexRuntime } from './runtime/codex-runtime.js';
 import { GeminiRuntime } from './runtime/gemini-runtime.js';
+import { FileSessionStore } from './runtime/session-store.js';
+import { randomUUID } from 'node:crypto';
 
 // ── Config ─────────────────────────────────────────────────
 
@@ -72,14 +74,9 @@ const runtimes: Record<Backend, LlmRuntime> = {
 // ── Session Tracking ───────────────────────────────────────
 // Router owns the public session ID → backend session ID mapping.
 // Runtimes never store sessions.
+// Durable file-backed store survives server restarts (Issue #333).
 
-interface Session {
-  backend: Backend;
-  backendSessionId: string;
-  model: string;
-}
-
-const sessions = new Map<string, Session>();
+const sessionStore = new FileSessionStore();
 
 // ── Server ─────────────────────────────────────────────────
 
@@ -158,12 +155,17 @@ class LlmMCPServer extends BaseMcpServer {
       configOverride: route.configOverride,
     });
 
-    // Store session — router is the sole owner
+    // Store session — router is the sole owner (durable, Issue #333)
+    const publicId = randomUUID();
+    const now = new Date().toISOString();
     if (result.backendSessionId) {
-      sessions.set(result.backendSessionId, {
+      sessionStore.save({
+        publicId,
         backend: result.backend,
         backendSessionId: result.backendSessionId,
         model: result.model,
+        createdAt: now,
+        updatedAt: now,
       });
     }
 
@@ -171,7 +173,7 @@ class LlmMCPServer extends BaseMcpServer {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          sessionId: result.backendSessionId,
+          sessionId: result.backendSessionId ? publicId : undefined,
           content: result.content,
           backend: result.backend,
           model: result.model,
@@ -184,7 +186,7 @@ class LlmMCPServer extends BaseMcpServer {
     const prompt = args.prompt as string;
     const sessionId = args.sessionId as string | undefined;
 
-    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const session = sessionId ? sessionStore.get(sessionId) : undefined;
     if (!session) {
       throw new Error(`Unknown session: ${sessionId}. Use 'chat' first to start a session.`);
     }
@@ -194,19 +196,14 @@ class LlmMCPServer extends BaseMcpServer {
 
     // Update session if backend session ID changed
     if (result.backendSessionId && result.backendSessionId !== session.backendSessionId) {
-      sessions.delete(sessionId!);
-      sessions.set(result.backendSessionId, {
-        backend: session.backend,
-        backendSessionId: result.backendSessionId,
-        model: session.model,
-      });
+      sessionStore.updateBackendSessionId(session.publicId, result.backendSessionId);
     }
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          sessionId: result.backendSessionId || sessionId,
+          sessionId: session.publicId,
           content: result.content,
           backend: session.backend,
         }),
