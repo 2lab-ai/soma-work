@@ -259,7 +259,20 @@ export class PluginManager {
 
       try {
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
-        if (result) {
+        if (result && result.securityBlocked) {
+          // Security scan blocked — restore backup (keep old version working)
+          this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
+          details.push({
+            name: pluginDisplayName,
+            status: 'security_blocked',
+            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+            oldDate: oldMeta?.fetchedAt ?? null,
+            newSha: result.sha.slice(0, 8),
+            newDate: null,
+            securityBlocked: true,
+            securityReport: result.securityReport,
+          });
+        } else if (result) {
           // Success — remove backup
           if (backedUp) {
             try {
@@ -343,6 +356,47 @@ export class PluginManager {
    */
   getResolvedPlugins(): readonly ResolvedPlugin[] {
     return this.resolved;
+  }
+
+  /**
+   * Force update a plugin that was blocked by security scan, bypassing the gate.
+   * Re-initializes the plugin system after successful install.
+   */
+  async forceUpdatePlugin(
+    pluginName: string,
+    marketplaceName: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const effectiveConfig = this.mergeDefaults();
+    const marketplaceMap = this.buildMarketplaceMap(effectiveConfig);
+    const marketplace = marketplaceMap.get(marketplaceName);
+
+    if (!marketplace) {
+      return { success: false, error: `Marketplace "${marketplaceName}" not found` };
+    }
+
+    try {
+      const result = await fetchPlugin(marketplace, pluginName, this.pluginsDir, { skipSecurity: true });
+      if (!result) {
+        return { success: false, error: `fetchPlugin returned null for ${pluginName}@${marketplaceName}` };
+      }
+
+      // Re-initialize to rebuild the resolved plugin list
+      const previous = this.resolved;
+      this.initialized = false;
+      this.resolved = [];
+      try {
+        await this.initialize();
+      } catch (error) {
+        this.resolved = previous;
+        this.initialized = true;
+        throw error;
+      }
+
+      logger.info('Force update completed', { pluginName, marketplaceName });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
   }
 
   // =========================================================================

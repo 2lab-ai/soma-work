@@ -263,6 +263,17 @@ export class ActionHandlers {
       await this.handleManagedDeleteConfirm(body, respond);
     });
 
+    // Plugin security gate force update / cancel actions
+    app.action('plugin_force_update', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handlePluginForceUpdate(body, respond);
+    });
+
+    app.action('plugin_force_cancel', async ({ ack, body, respond }) => {
+      await ack();
+      await respond({ text: '플러그인 업데이트를 취소했습니다.', replace_original: true });
+    });
+
     // 모달 핸들러
     app.view('custom_input_submit', async ({ ack, body, view }) => {
       await ack();
@@ -323,6 +334,49 @@ export class ActionHandlers {
    */
   savePendingForms(): void {
     this.formStore.saveForms();
+  }
+
+  private async handlePluginForceUpdate(body: any, respond: any): Promise<void> {
+    const rawValue = body.actions?.[0]?.value;
+    if (!rawValue) {
+      this.logger.warn('plugin_force_update action missing value');
+      return;
+    }
+
+    let pluginName: string;
+    let marketplaceName: string;
+    try {
+      const parsed = JSON.parse(rawValue);
+      pluginName = parsed.pluginName;
+      marketplaceName = parsed.marketplaceName;
+    } catch {
+      this.logger.warn('plugin_force_update action has invalid value', { rawValue });
+      return;
+    }
+
+    const pluginManager = this.ctx.mcpManager?.getPluginManager();
+    if (!pluginManager) {
+      await respond({ text: '⚠️ Plugin system is not available.', replace_original: true });
+      return;
+    }
+
+    await respond({
+      text: `🔄 *${pluginName}@${marketplaceName}* 보안 게이트를 우회하여 강제 업데이트 중...`,
+      replace_original: true,
+    });
+
+    const result = await pluginManager.forceUpdatePlugin(pluginName, marketplaceName);
+    if (result.success) {
+      await respond({
+        text: `✅ *${pluginName}@${marketplaceName}* 강제 업데이트 완료.`,
+        replace_original: true,
+      });
+    } else {
+      await respond({
+        text: `❌ *${pluginName}@${marketplaceName}* 강제 업데이트 실패: ${result.error}`,
+        replace_original: true,
+      });
+    }
   }
 
   private parseManagedDeleteValue(rawValue: string): {

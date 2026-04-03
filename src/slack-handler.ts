@@ -172,6 +172,7 @@ export class SlackHandler {
       threadPanel: this.threadPanel,
       requestCoordinator: this.requestCoordinator,
       completionMessageTracker,
+      mcpManager: this.mcpManager,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 

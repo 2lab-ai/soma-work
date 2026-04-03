@@ -156,6 +156,10 @@ export class PluginsHandler implements CommandHandler {
     try {
       const result = await pluginManager.forceRefresh();
 
+      // Check for security-blocked plugins
+      const blockedDetails = result.details.filter((d) => d.status === 'security_blocked');
+      const nonBlockedDetails = result.details.filter((d) => d.status !== 'security_blocked');
+
       const lines: string[] = [
         '✅ *플러그인 업데이트 완료*',
         '',
@@ -164,12 +168,16 @@ export class PluginsHandler implements CommandHandler {
         `• 변경없음: ${result.unchanged}개`,
       ];
 
-      // Per-plugin version details
-      if (result.details.length > 0) {
+      if (blockedDetails.length > 0) {
+        lines.push(`• 보안 차단: ${blockedDetails.length}개`);
+      }
+
+      // Per-plugin version details (non-blocked)
+      if (nonBlockedDetails.length > 0) {
         lines.push('');
         lines.push('*플러그인 상세:*');
 
-        for (const d of result.details) {
+        for (const d of nonBlockedDetails) {
           lines.push(this.formatPluginDetail(d));
         }
       }
@@ -182,7 +190,51 @@ export class PluginsHandler implements CommandHandler {
         }
       }
 
-      await say({ text: lines.join('\n'), thread_ts: threadTs });
+      // If there are security-blocked plugins, use Block Kit with buttons
+      if (blockedDetails.length > 0) {
+        const blocks: any[] = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: lines.join('\n') },
+          },
+        ];
+
+        for (const d of blockedDetails) {
+          // Parse pluginName and marketplaceName from display name "pluginName@marketplaceName"
+          const [pName, mName] = d.name.split('@');
+
+          blocks.push({ type: 'divider' });
+          blocks.push({
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `🛡️ *${d.name}*  — 보안 스캔 차단\n${d.securityReport ?? ''}`,
+            },
+          });
+          blocks.push({
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: '🔓 Force Update' },
+                style: 'danger',
+                action_id: 'plugin_force_update',
+                value: JSON.stringify({ pluginName: pName, marketplaceName: mName }),
+              },
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: '❌ Cancel' },
+                action_id: 'plugin_force_cancel',
+                value: JSON.stringify({ pluginName: pName, marketplaceName: mName }),
+              },
+            ],
+          });
+        }
+
+        await say({ text: lines.join('\n'), thread_ts: threadTs, blocks });
+      } else {
+        await say({ text: lines.join('\n'), thread_ts: threadTs });
+      }
     } catch (error) {
       await say({
         text: `❌ 플러그인 업데이트 실패: ${(error as Error).message}`,
@@ -228,6 +280,9 @@ export class PluginsHandler implements CommandHandler {
 
       case 'new':
         return `🆕 *${d.name}*  — 신규설치 \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`;
+
+      case 'security_blocked':
+        return `🛡️ *${d.name}*  — 보안 스캔 차단\n${d.securityReport ?? ''}`;
 
       case 'error':
         return `❌ *${d.name}*  — 오류: ${d.error ?? 'Unknown error'}`;

@@ -146,7 +146,7 @@ export interface CacheMeta {
 // ---------------------------------------------------------------------------
 
 /** Status of a single plugin during forceRefresh. */
-export type PluginUpdateStatus = 'updated' | 'unchanged' | 'new' | 'error';
+export type PluginUpdateStatus = 'updated' | 'unchanged' | 'new' | 'error' | 'security_blocked';
 
 /** Detailed result for a single plugin update check. */
 export interface PluginUpdateDetail {
@@ -164,6 +164,10 @@ export interface PluginUpdateDetail {
   newDate: string | null;
   /** Error message if status is 'error' */
   error?: string;
+  /** If true, the plugin was blocked by security scan */
+  securityBlocked?: boolean;
+  /** Formatted security scan report */
+  securityReport?: string;
 }
 
 /** Aggregate result from forceRefresh. */

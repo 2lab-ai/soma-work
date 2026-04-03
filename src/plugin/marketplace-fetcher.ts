@@ -24,29 +24,28 @@ const logger = new Logger('MarketplaceFetcher');
 
 /**
  * Run security scan on an installed plugin and enforce the gate policy.
- * Returns true if the plugin passed (safe to proceed), false if blocked.
- * When blocked, removes the installed plugin directory.
+ * Returns { passed: true } if safe, or { passed: false, report } if blocked.
+ * When blocked, the installed directory is NOT deleted so force-update can keep it.
  */
-function enforceSecurityGate(installedPath: string, pluginName: string): boolean {
+function enforceSecurityGate(
+  installedPath: string,
+  pluginName: string,
+): { passed: boolean; report: string } {
   const scanResult = scanPluginDirectory(installedPath, pluginName);
   if (scanResult.blocked) {
+    const report = formatScanReport(scanResult);
     logger.error('Plugin BLOCKED by security scan', {
       pluginName,
       riskLevel: scanResult.riskLevel,
       findings: scanResult.findings.length,
     });
-    logger.warn(formatScanReport(scanResult));
-    try {
-      fs.rmSync(installedPath, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-    return false;
+    logger.warn(report);
+    return { passed: false, report };
   }
   if (scanResult.findings.length > 0) {
     logger.warn(formatScanReport(scanResult));
   }
-  return true;
+  return { passed: true, report: '' };
 }
 
 export interface FetchResult {
@@ -56,6 +55,10 @@ export interface FetchResult {
   sha: string;
   /** Whether the result came from cache */
   cached: boolean;
+  /** If true, the plugin was downloaded but blocked by security scan */
+  securityBlocked?: boolean;
+  /** Formatted security scan report (only when securityBlocked) */
+  securityReport?: string;
 }
 
 /** Build a cached FetchResult for a given plugin. */
@@ -365,6 +368,7 @@ export async function fetchPlugin(
   marketplace: MarketplaceEntry,
   pluginName: string,
   pluginsDir: string,
+  options?: { skipSecurity?: boolean },
 ): Promise<FetchResult | null> {
   const ref = marketplace.ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);
@@ -431,6 +435,7 @@ export async function fetchPlugin(
         pluginEntry.externalSubdir,
         pluginEntry.externalRef,
         pluginEntry.externalSha,
+        options,
       );
       if (externalResult) return externalResult;
 
@@ -446,11 +451,16 @@ export async function fetchPlugin(
     const installedPath = installPlugin(extractedRoot, pluginEntry.path, pluginsDir, pluginName);
     if (!installedPath) return null;
 
-    // Security gate — block CRITICAL risk plugins
-    if (!enforceSecurityGate(installedPath, pluginName)) return null;
+    // Security gate — block CRITICAL risk plugins (unless skipped)
+    const sha = remoteSha || 'unknown';
+    if (!options?.skipSecurity) {
+      const gate = enforceSecurityGate(installedPath, pluginName);
+      if (!gate.passed) {
+        return { pluginPath: installedPath, sha, cached: false, securityBlocked: true, securityReport: gate.report };
+      }
+    }
 
     // Write cache metadata
-    const sha = remoteSha || 'unknown';
     const meta: CacheMeta = {
       sha,
       fetchedAt: new Date().toISOString(),
@@ -504,6 +514,7 @@ async function fetchExternalPlugin(
   subdir?: string,
   ref?: string,
   pinnedSha?: string,
+  options?: { skipSecurity?: boolean },
 ): Promise<FetchResult | null> {
   const repo = gitUrlToRepo(externalUrl);
   if (!repo) {
@@ -546,10 +557,14 @@ async function fetchExternalPlugin(
     const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
     if (!installedPath) return null;
 
-    // Security gate — block CRITICAL risk external plugins
-    if (!enforceSecurityGate(installedPath, pluginName)) return null;
-
+    // Security gate — block CRITICAL risk external plugins (unless skipped)
     const sha = remoteSha || 'unknown';
+    if (!options?.skipSecurity) {
+      const gate = enforceSecurityGate(installedPath, pluginName);
+      if (!gate.passed) {
+        return { pluginPath: installedPath, sha, cached: false, securityBlocked: true, securityReport: gate.report };
+      }
+    }
     writeCacheMeta(pluginsDir, pluginName, {
       sha,
       fetchedAt: new Date().toISOString(),
