@@ -1828,7 +1828,8 @@ function openPanel(sessionKey) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
           return;
         }
-        turnsEl.innerHTML = data.turns.map(renderTurn).join('');
+        var cid = data.id;
+        turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         turnsEl.scrollTop = turnsEl.scrollHeight;
         attachRawToggleHandlers();
       })
@@ -1848,7 +1849,7 @@ function openPanel(sessionKey) {
   panelOpen = true;
 }
 
-function renderTurn(t) {
+function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
   if (t.role === 'user') {
@@ -1869,8 +1870,9 @@ function renderTurn(t) {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
     var rawToggle = '';
-    if (t.id && panelConvId) {
-      rawToggle = '<details class="turn-raw-details" data-conv="' + esc(panelConvId) + '" data-turn="' + esc(t.id) + '">'
+    var cid = convId || panelConvId;
+    if (t.id && cid) {
+      rawToggle = '<details class="turn-raw-details" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
         + '<summary class="turn-expand-btn">Show raw response</summary>'
         + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
         + '</details>';
