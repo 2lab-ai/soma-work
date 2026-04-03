@@ -390,6 +390,21 @@ describe('Scenario 3: sourceThread storage on session', () => {
     expect(hasRetention).toBe(false);
   });
 
+  // P2 fix: channel thread should still call deleteThreadBotMessages (dispatch cleanup)
+  it('channelThread_stillDeletesDispatchClutter: deleteThreadBotMessages called for channel thread mentions', async () => {
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
+  });
+
   // Trace: S3, Sec 3b — top-level일 때 sourceThread 없음
   it('topLevel_noSourceThread: does not set sourceThread for top-level mentions', async () => {
     const event = {
