@@ -251,6 +251,14 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
+      // Echo user message to Slack immediately (before AI processing)
+      const senderName = session.ownerName || 'Dashboard';
+      app.client.chat.postMessage({
+        channel: session.channelId,
+        text: `${senderName}: ${message}`,
+        thread_ts: session.threadTs,
+      }).catch((err) => logger.warn('Dashboard echo failed', { err }));
+
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
         const result = await app.client.chat.postMessage({
