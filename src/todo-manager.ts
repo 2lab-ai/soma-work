@@ -68,11 +68,15 @@ export class TodoManager {
         if (prev.startedAt && !task.startedAt) task.startedAt = prev.startedAt;
         if (prev.completedAt && !task.completedAt) task.completedAt = prev.completedAt;
       }
-      // Stamp on status transitions
-      if (task.status === 'in_progress' && !task.startedAt) {
-        task.startedAt = now;
-      }
-      if (task.status === 'completed') {
+      // Stamp on status transitions (handle regressions too)
+      if (task.status === 'pending') {
+        // Regressed to pending — clear all timing
+        task.startedAt = undefined;
+        task.completedAt = undefined;
+      } else if (task.status === 'in_progress') {
+        if (!task.startedAt) task.startedAt = now;
+        task.completedAt = undefined; // clear stale completion on rework
+      } else if (task.status === 'completed') {
         if (!task.startedAt) task.startedAt = now; // edge case: jumped straight to completed
         if (!task.completedAt) task.completedAt = now;
       }

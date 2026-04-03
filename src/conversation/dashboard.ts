@@ -1601,7 +1601,7 @@ let _panelTasksExpanded = false;
     if (panel.classList.contains('open')) {
       panel.style.right = '0';
     } else if (!dragging) {
-      panel.style.right = '-' + panel.style.width;
+      panel.style.right = '-' + (panel.style.width || '440px');
     }
   });
   observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
