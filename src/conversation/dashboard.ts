@@ -545,6 +545,7 @@ export async function registerDashboardRoutes(
           userName: t.userName,
           summaryTitle: t.summaryTitle,
           summaryBody: t.summaryBody,
+          summarized: t.summarized,
           rawContent: t.role === 'user' ? t.rawContent : undefined,
         }));
         reply.send({
@@ -1186,6 +1187,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.turn-raw-details { margin-top: 6px; }
+.turn-raw-details summary.turn-expand-btn { cursor: pointer; color: var(--accent); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
+.turn-raw-details summary.turn-expand-btn::-webkit-details-marker { display: none; }
+.turn-raw-details summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
+.turn-raw-details[open] summary.turn-expand-btn::before { content: '\\25BC '; }
+.turn-raw-details summary.turn-expand-btn:hover { text-decoration: underline; }
+.turn-raw-content { margin-top: 6px; background: var(--surface); padding: 10px; border-radius: 6px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border: 1px solid var(--border); }
+.turn-raw-loading { color: var(--text-tertiary); font-style: italic; font-size: 11px; }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 .slack-link:hover { text-decoration: underline; opacity: 1; }
@@ -1819,8 +1828,10 @@ function openPanel(sessionKey) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
           return;
         }
-        turnsEl.innerHTML = data.turns.map(renderTurn).join('');
+        var cid = data.id;
+        turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         turnsEl.scrollTop = turnsEl.scrollHeight;
+        attachRawToggleHandlers();
       })
       .catch(function() {
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
@@ -1838,7 +1849,7 @@ function openPanel(sessionKey) {
   panelOpen = true;
 }
 
-function renderTurn(t) {
+function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
   if (t.role === 'user') {
@@ -1850,14 +1861,27 @@ function renderTurn(t) {
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
-    const body = t.summaryBody
-      ? '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>'
-      : '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
+    var body;
+    if (t.summaryBody) {
+      body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
+    } else if (t.summarized) {
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed</div>';
+    } else {
+      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
+    }
+    var rawToggle = '';
+    var cid = convId || panelConvId;
+    if (t.id && cid) {
+      rawToggle = '<details class="turn-raw-details" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
+        + '<summary class="turn-expand-btn">Show raw response</summary>'
+        + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
+        + '</details>';
+    }
     return '<div class="turn assistant">'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
-      + title + body
+      + title + body + rawToggle
       + '</div></div>';
   }
 }
@@ -1867,6 +1891,34 @@ function appendTurnToPanel(turn) {
   const wasAtBottom = turnsEl.scrollHeight - turnsEl.scrollTop <= turnsEl.clientHeight + 40;
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
+  attachRawToggleHandlers();
+}
+
+var _rawLoadedCache = {};
+function attachRawToggleHandlers() {
+  document.querySelectorAll('.turn-raw-details').forEach(function(details) {
+    if (details._rawBound) return;
+    details._rawBound = true;
+    details.addEventListener('toggle', function() {
+      if (!this.open) return;
+      var convId = this.dataset.conv;
+      var turnId = this.dataset.turn;
+      var contentDiv = this.querySelector('.turn-raw-content');
+      if (_rawLoadedCache[turnId]) {
+        contentDiv.textContent = _rawLoadedCache[turnId];
+        return;
+      }
+      fetch('/api/conversations/' + convId + '/turns/' + turnId + '/raw')
+        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function(data) {
+          _rawLoadedCache[turnId] = data.raw;
+          contentDiv.textContent = data.raw;
+        })
+        .catch(function(err) {
+          contentDiv.textContent = 'Error loading: ' + err.message;
+        });
+    });
+  });
 }
 
 function closePanel() {
@@ -1875,6 +1927,7 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  _rawLoadedCache = {};
 }
 
 document.addEventListener('keydown', function(e) {
