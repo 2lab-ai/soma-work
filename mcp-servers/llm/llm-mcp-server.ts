@@ -194,9 +194,11 @@ class LlmMCPServer extends BaseMcpServer {
     const runtime = runtimes[session.backend];
     const result = await runtime.resumeSession(session.backendSessionId, prompt);
 
-    // Update session if backend session ID changed
+    // Update session: touch to refresh TTL, update backend ID if changed
     if (result.backendSessionId && result.backendSessionId !== session.backendSessionId) {
       sessionStore.updateBackendSessionId(session.publicId, result.backendSessionId);
+    } else {
+      sessionStore.touch(session.publicId);
     }
 
     return {

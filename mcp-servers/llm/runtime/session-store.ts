@@ -4,6 +4,13 @@
  * Stores sessions as a single JSON file at ~/.soma-work/llm-sessions.json.
  * Designed for the MCP server's serialized tool-call model (sync I/O is fine).
  *
+ * Known limitations:
+ * - Single-writer assumption: if multiple llm-mcp-server processes write
+ *   concurrently, last-writer-wins. Acceptable because the MCP server is
+ *   configured as a single child process per session.
+ * - No fsync: atomic rename protects against partial writes but not
+ *   against host crashes. Acceptable for best-effort session cache.
+ *
  * @see Issue #333 — Durable Session Store
  */
 
@@ -42,6 +49,15 @@ export class FileSessionStore implements SessionStore {
     this.ensureLoaded();
     this.records!.set(record.publicId, record);
     this.pruneExcess();
+    this.flush();
+  }
+
+  /** Refresh updatedAt to prevent TTL expiry on active sessions. */
+  touch(publicId: string): void {
+    this.ensureLoaded();
+    const record = this.records!.get(publicId);
+    if (!record) return;
+    record.updatedAt = new Date().toISOString();
     this.flush();
   }
 
@@ -90,8 +106,15 @@ export class FileSessionStore implements SessionStore {
           this.records.set(r.publicId, r);
         }
       }
-    } catch {
-      // File doesn't exist or is corrupt — start fresh
+    } catch (err: any) {
+      // File doesn't exist → start fresh (expected on first run)
+      // Corrupt/unreadable → backup the bad file to prevent data loss on next flush
+      if (err?.code !== 'ENOENT') {
+        try {
+          const backupPath = this.filePath + '.corrupt.' + Date.now();
+          fs.copyFileSync(this.filePath, backupPath);
+        } catch { /* best-effort backup */ }
+      }
     }
   }
 

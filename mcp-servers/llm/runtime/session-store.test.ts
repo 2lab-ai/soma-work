@@ -98,6 +98,26 @@ describe('FileSessionStore', () => {
     store.updateBackendSessionId('nonexistent', 'new-id');
   });
 
+  // ── touch() ─────────────────────────────────────────────
+
+  it('touch refreshes updatedAt without changing other fields', () => {
+    const store = new FileSessionStore(filePath);
+    const beforeTouch = new Date(Date.now() - 1000).toISOString();
+    const record = makeRecord({ updatedAt: beforeTouch });
+    store.save(record);
+
+    store.touch(record.publicId);
+
+    const got = store.get(record.publicId);
+    expect(got!.backendSessionId).toBe(record.backendSessionId); // unchanged
+    expect(new Date(got!.updatedAt).getTime()).toBeGreaterThan(new Date(beforeTouch).getTime());
+  });
+
+  it('touch is a no-op for unknown publicId', () => {
+    const store = new FileSessionStore(filePath);
+    store.touch('nonexistent'); // should not throw
+  });
+
   // ── TTL expiry ────────────────────────────────────────────
 
   it('returns undefined for expired sessions (TTL 24h)', () => {

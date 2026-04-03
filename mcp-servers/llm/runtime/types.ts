@@ -31,6 +31,8 @@ export interface SessionRecord {
 export interface SessionStore {
   get(publicId: string): SessionRecord | undefined;
   save(record: SessionRecord): void;
+  /** Refresh updatedAt to prevent TTL expiry on active sessions. */
+  touch(publicId: string): void;
   updateBackendSessionId(publicId: string, newBackendSessionId: string): void;
   delete(publicId: string): void;
   prune(): void;  // remove expired sessions
