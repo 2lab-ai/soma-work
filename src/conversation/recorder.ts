@@ -217,10 +217,6 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
  */
 async function generateSummary(conversationId: string, turnId: string, content: string): Promise<void> {
   const summary = await summarizeResponse(content);
-  if (!summary) {
-    logger.warn(`Summary generation returned null for turn ${turnId} in conversation ${conversationId}`);
-    return;
-  }
 
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -234,13 +230,21 @@ async function generateSummary(conversationId: string, turnId: string, content: 
     return;
   }
 
-  turn.summaryTitle = summary.title;
-  turn.summaryBody = summary.body;
+  if (summary) {
+    turn.summaryTitle = summary.title;
+    turn.summaryBody = summary.body;
+  } else {
+    logger.warn(`Summary generation returned null for turn ${turnId} in conversation ${conversationId}`);
+  }
+
+  // Always mark as summarized so the UI can distinguish pending vs failed
   turn.summarized = true;
   record.updatedAt = Date.now();
 
   await serializedSave(conversationId, record);
-  logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
+  if (summary) {
+    logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
+  }
 }
 
 /**
