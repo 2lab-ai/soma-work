@@ -66,7 +66,12 @@ export interface KanbanSession {
     contextUsagePercent: number;
   };
   /** Task list */
-  tasks?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }>;
+  tasks?: Array<{
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    startedAt?: number;
+    completedAt?: number;
+  }>;
   /** Slack thread permalink */
   slackThreadUrl?: string;
 }
@@ -139,9 +144,14 @@ function requireSessionOwner(request: any, reply: any, sessionKey: string): bool
 
 // ── Task accessor ──────────────────────────────────────────────────
 
-type TaskAccessor = (
-  sessionKey: string,
-) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }> | undefined;
+type TaskAccessor = (sessionKey: string) =>
+  | Array<{
+      content: string;
+      status: 'pending' | 'in_progress' | 'completed';
+      startedAt?: number;
+      completedAt?: number;
+    }>
+  | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -366,7 +376,12 @@ export function broadcastSessionUpdate(): void {
 /** Broadcast task update to all connected WebSocket clients */
 export function broadcastTaskUpdate(
   sessionKey: string,
-  tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }>,
+  tasks: Array<{
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    startedAt?: number;
+    completedAt?: number;
+  }>,
 ): void {
   if (wsClients.size === 0) return;
   try {
