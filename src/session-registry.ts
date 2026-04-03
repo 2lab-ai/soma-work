@@ -97,6 +97,8 @@ interface SerializedSession {
   sourceThread?: { channel: string; threadTs: string };
   // Session-unique working directory for workspace isolation (#77)
   sessionWorkingDir?: string;
+  // Conversation record ID (links session to conversation history)
+  conversationId?: string;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -1299,6 +1301,8 @@ export class SessionRegistry {
             // Session workspace isolation (#77): persist session-unique cwd
             // so Claude SDK can find its conversation files after restart
             sessionWorkingDir: session.sessionWorkingDir,
+            // Conversation record ID
+            conversationId: session.conversationId,
             // Merge code change stats
             mergeStats: session.mergeStats,
           });
@@ -1410,6 +1414,8 @@ export class SessionRegistry {
             serialized.sessionWorkingDir && this.isValidSourceWorkingDirPath(serialized.sessionWorkingDir)
               ? serialized.sessionWorkingDir
               : undefined,
+          // Conversation record ID
+          conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
         };
@@ -1439,5 +1445,45 @@ export class SessionRegistry {
       this.logger.error('Failed to load sessions', error);
       return 0;
     }
+  }
+
+  /**
+   * Backfill conversationId for restored sessions that lost it.
+   * Builds an index from conversation storage files, then matches by channelId:threadTs
+   * and sourceThread (for bot-migrated sessions). Call once at startup after loadSessions().
+   */
+  async backfillConversationIds(): Promise<number> {
+    const { ConversationStorage } = await import('./conversation/storage');
+    const storage = new ConversationStorage();
+    const threadIndex = await storage.buildThreadIndex();
+    let count = 0;
+    for (const [, session] of this.sessions) {
+      if (session.conversationId) continue;
+      // Try 1: exact channelId:threadTs match
+      if (session.channelId && session.threadTs) {
+        const exactKey = `${session.channelId}:${session.threadTs}`;
+        const convId = threadIndex.get(exactKey);
+        if (convId) {
+          session.conversationId = convId;
+          count++;
+          continue;
+        }
+      }
+      // Try 2: sourceThread match (bot-migrated sessions)
+      if (session.sourceThread) {
+        const sourceKey = `${session.sourceThread.channel}:${session.sourceThread.threadTs}`;
+        const sourceConvId = threadIndex.get(sourceKey);
+        if (sourceConvId) {
+          session.conversationId = sourceConvId;
+          count++;
+          continue;
+        }
+      }
+    }
+    if (count > 0) {
+      this.saveSessions();
+      this.logger.info(`Backfilled ${count} session conversationIds`);
+    }
+    return count;
   }
 }

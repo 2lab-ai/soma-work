@@ -10,7 +10,7 @@ import {
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
 import { type ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
-import { recordAssistantTurn, recordUserTurn } from '../../conversation';
+import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -349,6 +349,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Record user turn (fire-and-forget, non-blocking)
+      // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
+      if (!session.conversationId && text && channel) {
+        try {
+          session.conversationId = createConversation(channel, session.threadTs || '', user, userName);
+          this.logger.info('Auto-created conversation for session missing conversationId', {
+            sessionKey,
+            conversationId: session.conversationId,
+          });
+        } catch (err) {
+          this.logger.error('Failed to auto-create conversation', err);
+        }
+      }
       if (session.conversationId && text) {
         recordUserTurn(session.conversationId, text, userName, user);
       }

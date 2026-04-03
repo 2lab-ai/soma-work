@@ -11,6 +11,28 @@ export interface Todo {
   activeForm?: string;
 }
 
+const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
+const VALID_PRIORITIES = new Set(['high', 'medium', 'low']);
+
+/**
+ * Validate and sanitize raw input into a Todo array.
+ * Returns null if the input is not a valid array (caller should reject).
+ * Individual malformed items are filtered out, not the whole batch.
+ */
+export function parseTodos(raw: unknown): Todo[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.filter((item): item is Todo => {
+    if (item == null || typeof item !== 'object') return false;
+    const t = item as Record<string, unknown>;
+    return (
+      typeof t.id === 'string' &&
+      typeof t.content === 'string' &&
+      VALID_STATUSES.has(t.status as string) &&
+      VALID_PRIORITIES.has(t.priority as string)
+    );
+  });
+}
+
 export class TodoManager {
   private logger = new Logger('TodoManager');
   private todos: Map<string, Todo[]> = new Map(); // sessionId -> todos
@@ -21,14 +43,24 @@ export class TodoManager {
   }
 
   updateTodos(sessionId: string, todos: Todo[]): void {
-    this.todos.set(sessionId, todos);
-    if (this._onUpdate) this._onUpdate(sessionId, todos);
+    const validated = parseTodos(todos);
+    if (validated === null) {
+      // Non-array payload — reject and preserve last-known-good state
+      this.logger.warn('updateTodos rejected non-array payload, keeping previous state', {
+        sessionId,
+        receivedType: typeof todos,
+        receivedValue: String(todos).slice(0, 200),
+      });
+      return;
+    }
+    this.todos.set(sessionId, validated);
+    if (this._onUpdate) this._onUpdate(sessionId, validated);
     this.logger.debug('Updated todos for session', {
       sessionId,
-      todoCount: todos.length,
-      pending: todos.filter((t) => t.status === 'pending').length,
-      inProgress: todos.filter((t) => t.status === 'in_progress').length,
-      completed: todos.filter((t) => t.status === 'completed').length,
+      todoCount: validated.length,
+      pending: validated.filter((t) => t.status === 'pending').length,
+      inProgress: validated.filter((t) => t.status === 'in_progress').length,
+      completed: validated.filter((t) => t.status === 'completed').length,
     });
   }
 
