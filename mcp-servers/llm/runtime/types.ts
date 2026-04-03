@@ -57,6 +57,49 @@ export interface SessionResult {
   model: string;
 }
 
+// ── Job System (Issue #334) ─────────────────────────────────
+
+export type JobKind = 'chat' | 'review' | 'task';
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type JobPhase = 'starting' | 'investigating' | 'editing' | 'verifying' | 'finalizing' | 'done';
+
+/**
+ * Job — Tracked unit of work with lifecycle and result.
+ * The router creates jobs; the JobRunner executes them asynchronously.
+ * @see Issue #334 — Persistent Job System
+ */
+export interface Job {
+  id: string;                  // e.g. "chat-m5x9k2-a3b1c2"
+  kind: JobKind;
+  status: JobStatus;
+  phase: JobPhase;
+  backend: Backend;
+  model: string;
+  sessionId?: string;          // public session ID (links to SessionRecord)
+  backendSessionId?: string;   // backend-native thread/session ID
+  promptSummary: string;       // first 120 chars of prompt
+  cwd?: string;
+  startedAt: string;           // ISO timestamp
+  completedAt?: string;        // ISO timestamp
+  logFile: string;             // path to job log
+  result?: string;             // final content (populated on completion)
+  error?: string;              // error message (populated on failure)
+  sessionSaved?: boolean;      // true once router has persisted the session for this job
+}
+
+/**
+ * JobStore — Persistence abstraction for job records.
+ * @see Issue #334 — Persistent Job System
+ */
+export interface JobStore {
+  get(jobId: string): Job | undefined;
+  getAll(): Job[];
+  getRunning(): Job[];
+  save(job: Job): void;
+  delete(jobId: string): void;
+  prune(): void;
+}
+
 export interface RuntimeCapabilities {
   supportsReview: boolean;       // #337
   supportsInterrupt: boolean;    // #334
