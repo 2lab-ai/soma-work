@@ -337,6 +337,7 @@ describe('Dashboard API', () => {
           timestamp: 1500,
           summaryTitle: 'Greeting',
           summaryBody: 'Said hello',
+          summarized: true,
           rawContent: 'Hi there, long response...',
         },
       ],
@@ -358,6 +359,7 @@ describe('Dashboard API', () => {
     // Assistant turn excludes rawContent (only summaries)
     expect(body.turns[1].rawContent).toBeUndefined();
     expect(body.turns[1].summaryTitle).toBe('Greeting');
+    expect(body.turns[1].summarized).toBe(true);
   });
 
   // ── Inline JS escaping regression (PR #280) ──

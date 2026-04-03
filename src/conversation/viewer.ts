@@ -142,7 +142,7 @@ function renderTurn(turn: ConversationTurn, index: number, conversationId: strin
           <div class="summary-body">${escapeHtml(turn.summaryBody || '')}</div>
         </div>`
         : `<div class="summary pending">
-          <em>Summary pending...</em>
+          <em>Generating summary...</em>
         </div>`;
 
     contentHtml = `
