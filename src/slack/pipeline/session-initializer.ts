@@ -118,14 +118,8 @@ export class SessionInitializer {
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
-    // Mid-thread UX: retention message + no redirect (DM threads only).
-    // Channel thread mentions use standard redirect flow to avoid accidental mid-thread treatment
-    // when a user replies to a channel message with a bot mention.
-    const isDM = channel.startsWith('D');
-    const isMidThread = isDM && thread_ts !== undefined;
-    // sourceThread tracking: always link back to the originating thread for context,
-    // regardless of mid-thread UX behavior.
-    const hasSourceThread = thread_ts !== undefined;
+    // Mid-thread mention: user mentioned bot inside an existing thread (thread_ts exists)
+    const isMidThread = thread_ts !== undefined;
 
     // Get user's display name
     const userName = await this.deps.slackApi.getUserName(user);
@@ -465,7 +459,6 @@ export class SessionInitializer {
             userName,
             effectiveWorkingDir,
             isMidThread,
-            hasSourceThread,
           );
           if (migrated) {
             return migrated;
@@ -488,7 +481,6 @@ export class SessionInitializer {
           userName,
           effectiveWorkingDir,
           isMidThread,
-          hasSourceThread,
         );
         if (migrated) {
           return migrated;
@@ -719,7 +711,6 @@ export class SessionInitializer {
     userName: string,
     workingDirectory: string,
     isMidThread: boolean = false,
-    hasSourceThread: boolean = false,
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -757,7 +748,7 @@ export class SessionInitializer {
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
     botSession.sessionWorkingDir = session.sessionWorkingDir;
-    if (hasSourceThread) {
+    if (isMidThread) {
       botSession.sourceThread = { channel, threadTs };
     }
 
