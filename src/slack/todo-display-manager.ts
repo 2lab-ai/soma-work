@@ -1,5 +1,5 @@
 import { Logger } from '../logger';
-import type { Todo, TodoManager } from '../todo-manager';
+import { type Todo, type TodoManager, parseTodos } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
 import type { ReactionManager } from './reaction-manager';
@@ -66,7 +66,14 @@ export class TodoDisplayManager {
       return;
     }
 
-    const newTodos: Todo[] = Array.isArray(input.todos) ? input.todos : [];
+    const newTodos = parseTodos(input.todos);
+    if (newTodos === null) {
+      this.logger.warn('handleTodoUpdate: input.todos is not an array, skipping', {
+        sessionKey,
+        receivedType: typeof input.todos,
+      });
+      return;
+    }
     const oldTodos = this.todoManager.getTodos(sessionId);
 
     // Check if there's a significant change
