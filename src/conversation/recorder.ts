@@ -257,6 +257,13 @@ export async function resummarizeTurn(conversationId: string, turnId: string): P
   const turn = record.turns.find((t) => t.id === turnId);
   if (!turn || turn.role !== 'assistant') return false;
 
+  // Guard: rawContent is required for summary generation.
+  // Without it, clearing old summary data would cause permanent data loss.
+  if (!turn.rawContent) {
+    logger.warn(`Cannot resummarize turn ${turnId}: no rawContent available`);
+    return false;
+  }
+
   // Reset summarized flag
   turn.summarized = false;
   turn.summaryTitle = undefined;

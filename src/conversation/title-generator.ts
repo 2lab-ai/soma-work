@@ -46,9 +46,11 @@ export async function generateTitle(conversationContent: string): Promise<string
       .filter((block) => block.type === 'text')
       .map((block) => (block as { type: 'text'; text: string }).text)
       .join('')
+      .replace(/[\r\n]+/g, ' ')
       .trim();
 
-    return text.substring(0, 80) || null;
+    // Clamp to 40 chars (matching the prompt constraint) to prevent UI overflow
+    return text.substring(0, 40) || null;
   } catch (error) {
     logger.error('Title generation failed', error);
     return null;
