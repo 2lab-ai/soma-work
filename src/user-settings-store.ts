@@ -30,6 +30,10 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 
+// Effort levels
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export const DEFAULT_EFFORT: EffortLevel = 'high';
+
 // UI display themes — 3-tier system (shared across Session List, Thread Header, Turn End, AskUser)
 export const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = (typeof SESSION_THEMES)[number];
@@ -72,6 +76,7 @@ export interface UserSettings {
   defaultModel: ModelId; // default model for new sessions
   defaultLogVerbosity?: LogVerbosity; // default log verbosity for new sessions
   sessionTheme?: SessionTheme; // UI display theme. undefined = default ('default' Rich Card)
+  defaultEffort?: EffortLevel; // default effort level for new sessions
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -400,6 +405,21 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Get user's default effort level
+   */
+  getUserDefaultEffort(userId: string): EffortLevel {
+    return this.settings[userId]?.defaultEffort ?? DEFAULT_EFFORT;
+  }
+
+  /**
+   * Set user's default effort level
+   */
+  setUserDefaultEffort(userId: string, effort: EffortLevel): void {
+    this.patchUserSettings(userId, { defaultEffort: effort });
+    logger.info('Set user default effort', { userId, effort });
   }
 
   /**

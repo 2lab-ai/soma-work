@@ -619,8 +619,8 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 3 actions × 1 separator each = 3 closing patterns
-    expect(actionClosings!.length).toBe(3);
+    // 3 doAction calls × 1 separator each + 1 resummarize call = 4 closing patterns
+    expect(actionClosings!.length).toBe(4);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
