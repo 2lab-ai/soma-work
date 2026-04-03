@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type Todo, TodoManager, parseTodos } from './todo-manager.js';
+import { parseTodos, type Todo, TodoManager } from './todo-manager.js';
 
 // --- parseTodos ---
 
@@ -33,10 +33,7 @@ describe('parseTodos', () => {
       { id: '3', content: 'Bad status', status: 'unknown', priority: 'high' },
       { id: '4', content: 'Valid too', status: 'completed', priority: 'medium' },
     ]);
-    expect(result).toEqual([
-      validTodo,
-      { id: '4', content: 'Valid too', status: 'completed', priority: 'medium' },
-    ]);
+    expect(result).toEqual([validTodo, { id: '4', content: 'Valid too', status: 'completed', priority: 'medium' }]);
   });
 
   it('returns empty array for an empty array input', () => {
@@ -44,9 +41,7 @@ describe('parseTodos', () => {
   });
 
   it('filters items with invalid priority', () => {
-    const result = parseTodos([
-      { id: '1', content: 'Bad priority', status: 'pending', priority: 'critical' },
-    ]);
+    const result = parseTodos([{ id: '1', content: 'Bad priority', status: 'pending', priority: 'critical' }]);
     expect(result).toEqual([]);
   });
 

@@ -1,5 +1,5 @@
 import { Logger } from '../logger';
-import { type Todo, type TodoManager, parseTodos } from '../todo-manager';
+import { parseTodos, type Todo, type TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
 import type { ReactionManager } from './reaction-manager';
@@ -157,7 +157,7 @@ export class TodoDisplayManager {
 
   private async createNewMessage(
     todoList: string,
-    channel: string,
+    _channel: string,
     threadTs: string,
     sessionKey: string,
     say: SayFunction,
