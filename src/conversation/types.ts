@@ -33,6 +33,7 @@ export interface ConversationRecord {
   ownerId: string; // Session owner user ID
   ownerName: string; // Session owner display name
   title?: string; // Session title (from dispatch)
+  titleSub?: string; // Subordinate model (codex) generated title
   workflow?: string; // Workflow type
   createdAt: number; // Unix ms
   updatedAt: number; // Unix ms
@@ -46,6 +47,7 @@ export interface ConversationMeta {
   id: string;
   ownerName: string;
   title?: string;
+  titleSub?: string;
   workflow?: string;
   turnCount: number;
   createdAt: number;

@@ -57,8 +57,9 @@ export class SessionCommandHandler implements CommandHandler {
     const userDefault = userSettingsStore.getUserDefaultModel(user);
     const isModelOverridden = session.model && session.model !== userDefault;
 
-    const effortLevel = session.effort || 'default';
-    const isEffortOverridden = session.effort != null;
+    const userDefaultEffort = userSettingsStore.getUserDefaultEffort(user);
+    const effortLevel = session.effort || userDefaultEffort;
+    const isEffortOverridden = session.effort != null && session.effort !== userDefaultEffort;
 
     const verbosityMask = session.logVerbosity ?? LOG_DETAIL;
     const verbosityName = getVerbosityName(verbosityMask);
@@ -215,9 +216,10 @@ export class SessionCommandHandler implements CommandHandler {
     return { handled: true };
   }
   private async showSessionEffort(ctx: CommandContext, session: any): Promise<CommandResult> {
-    const { say, threadTs } = ctx;
-    const effortLevel = session.effort || 'default';
-    const isOverridden = session.effort != null;
+    const { say, threadTs, user } = ctx;
+    const userDefaultEffort = userSettingsStore.getUserDefaultEffort(user);
+    const effortLevel = session.effort || userDefaultEffort;
+    const isOverridden = session.effort != null && session.effort !== userDefaultEffort;
 
     await say({
       text: `🧠 *Session Effort:* ${effortLevel}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
