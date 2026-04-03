@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'child_process';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import { ConfigCache } from '../_shared/config-cache.js';
-import { McpClient } from '../_shared/mcp-client.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
+import type { Backend, Job, LlmRuntime } from './runtime/types.js';
+import { CodexRuntime } from './runtime/codex-runtime.js';
+import { GeminiRuntime } from './runtime/gemini-runtime.js';
+import { FileSessionStore } from './runtime/session-store.js';
+import { FileJobStore } from './runtime/job-store.js';
+import { JobRunner } from './runtime/job-runner.js';
+import { randomUUID } from 'node:crypto';
 
 // ── Config ─────────────────────────────────────────────────
-
-type Backend = 'codex' | 'gemini';
 
 interface BackendConfig {
   backend: Backend;
@@ -44,41 +47,9 @@ const configCache = new ConfigCache<LlmChatFileConfig>(HARDCODED_DEFAULTS, {
   },
 });
 
-// ── Config Expansion ──────────────────────────────────────
-
-/**
- * Expand flat dot-notation config keys into nested objects and coerce types.
- * e.g. { "features.fast_mode": "true" } → { features: { fast_mode: true } }
- *
- * Stored config uses flat string keys (Record<string, string>) for simplicity,
- * but codex backend expects nested objects with proper types.
- */
-function expandConfigForCodex(flat: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(flat)) {
-    // Coerce boolean strings to actual booleans
-    const coerced = value === 'true' ? true : value === 'false' ? false : value;
-
-    if (key.includes('.')) {
-      const parts = key.split('.');
-      let target: Record<string, unknown> = result;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!(parts[i] in target) || typeof target[parts[i]] !== 'object' || target[parts[i]] === null) {
-          target[parts[i]] = {};
-        }
-        target = target[parts[i]] as Record<string, unknown>;
-      }
-      target[parts[parts.length - 1]] = coerced;
-    } else {
-      result[key] = coerced;
-    }
-  }
-  return result;
-}
-
 // ── Model Routing ──────────────────────────────────────────
 
-function routeModel(model: string): BackendConfig {
+export function routeModel(model: string): BackendConfig {
   const config = configCache.get();
 
   if (model === 'codex' || model === 'gemini') {
@@ -95,77 +66,37 @@ function routeModel(model: string): BackendConfig {
   return { backend: 'codex', model };
 }
 
-// ── Backend Client Management ──────────────────────────────
+// ── Runtimes & Stores ────────────────────────────────────
 
-const clients: Record<Backend, McpClient | null> = {
-  codex: null,
-  gemini: null,
+const runtimes: Record<Backend, LlmRuntime> = {
+  codex: new CodexRuntime(),
+  gemini: new GeminiRuntime(),
 };
 
-function cliExists(command: string): boolean {
-  try {
-    execFileSync('which', [command], { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
+const sessionStore = new FileSessionStore();
+const jobStore = new FileJobStore();
+const jobRunner = new JobRunner({ jobStore, runtimes });
 
-async function getClient(backend: Backend): Promise<McpClient> {
-  if (clients[backend]?.isReady()) {
-    return clients[backend]!;
-  }
+/**
+ * Persist session for a completed job exactly once.
+ * Uses the sessionSaved flag on the Job to prevent duplicate saves
+ * across status/result polling calls.
+ */
+function ensureSessionSaved(job: Job): void {
+  if (job.sessionSaved) return;
+  if (job.status !== 'completed' || !job.sessionId || !job.backendSessionId) return;
 
-  if (backend === 'codex' && !cliExists('codex')) {
-    throw new Error('Codex CLI not installed. Run: brew install --cask codex');
-  }
-  if (backend === 'gemini' && !cliExists('gemini')) {
-    throw new Error('Gemini CLI not installed. Run: brew install gemini-cli');
-  }
+  sessionStore.save({
+    publicId: job.sessionId,
+    backend: job.backend,
+    backendSessionId: job.backendSessionId,
+    model: job.model,
+    createdAt: job.startedAt,
+    updatedAt: job.completedAt ?? job.startedAt,
+  });
 
-  if (clients[backend]) {
-    try { await clients[backend]!.stop(); } catch { /* ignore */ }
-  }
-
-  const config = backend === 'codex'
-    ? { command: 'codex', args: ['mcp-server'] }
-    : { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
-
-  const client = new McpClient(config, `LlmMCP:${backend}`);
-  await client.start();
-  clients[backend] = client;
-  return client;
-}
-
-// ── Session Tracking ───────────────────────────────────────
-
-interface Session {
-  backend: Backend;
-  backendSessionId: string;
-}
-
-const sessions = new Map<string, Session>();
-
-function extractBackendSessionId(backend: Backend, parsed: any, rawResult?: any): string {
-  const key = backend === 'codex' ? 'threadId' : 'sessionId';
-
-  if (rawResult?.structuredContent?.[key]) return rawResult.structuredContent[key];
-  if (parsed[key]) return parsed[key];
-  if (rawResult?.[key]) return rawResult[key];
-  if (rawResult?._meta?.[key]) return rawResult._meta[key];
-
-  const text = rawResult?.content?.find((c: any) => c.type === 'text')?.text || '';
-  const match = text.match(/Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-  if (match) return match[1];
-
-  return '';
-}
-
-function storeSession(backend: Backend, parsed: any, rawResult?: any): string {
-  const backendSessionId = extractBackendSessionId(backend, parsed, rawResult);
-  if (!backendSessionId) return '';
-  sessions.set(backendSessionId, { backend, backendSessionId });
-  return backendSessionId;
+  job.sessionSaved = true;
+  jobStore.save(job);
 }
 
 // ── Server ─────────────────────────────────────────────────
@@ -179,14 +110,15 @@ class LlmMCPServer extends BaseMcpServer {
     return [
       {
         name: 'chat',
-        description: 'Start a new LLM chat session. Routes to codex or gemini backend based on model name.',
+        description: 'Start a new LLM chat session. Routes to codex or gemini backend based on model name. Set background=true for async execution.',
         inputSchema: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: 'The prompt to start the session with.' },
-            model: { type: 'string', description: 'Model name or alias. Use "codex", "gemini" for latest of each model. ' },
+            model: { type: 'string', description: 'Model name or alias. Use "codex", "gemini" for latest of each model.' },
             config: { type: 'object', description: 'Optional config overrides', additionalProperties: true },
             cwd: { type: 'string', description: 'Working directory' },
+            background: { type: 'boolean', description: 'If true, returns immediately with a jobId for polling via status tool.' },
           },
           required: ['prompt'],
         },
@@ -199,8 +131,41 @@ class LlmMCPServer extends BaseMcpServer {
           properties: {
             prompt: { type: 'string', description: 'The prompt to continue the conversation.' },
             sessionId: { type: 'string', description: 'The session ID from a previous chat call.' },
+            background: { type: 'boolean', description: 'If true, returns immediately with a jobId for polling via status tool.' },
           },
           required: ['prompt', 'sessionId'],
+        },
+      },
+      {
+        name: 'status',
+        description: 'Get the status of a running or recent job, or list all active jobs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string', description: 'Specific job ID. Omit to list all active jobs.' },
+          },
+        },
+      },
+      {
+        name: 'result',
+        description: 'Get the full result of a completed job.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string', description: 'The job ID to get the result for.' },
+          },
+          required: ['jobId'],
+        },
+      },
+      {
+        name: 'cancel',
+        description: 'Cancel a running or queued job.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string', description: 'The job ID to cancel.' },
+          },
+          required: ['jobId'],
         },
       },
     ];
@@ -212,6 +177,12 @@ class LlmMCPServer extends BaseMcpServer {
         return await this.handleChat(args);
       case 'chat-reply':
         return await this.handleChatReply(args);
+      case 'status':
+        return this.handleStatus(args);
+      case 'result':
+        return this.handleResult(args);
+      case 'cancel':
+        return this.handleCancel(args);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -219,101 +190,256 @@ class LlmMCPServer extends BaseMcpServer {
 
   protected override async shutdown(): Promise<void> {
     this.logger.info('Shutting down...');
-    for (const [backend, client] of Object.entries(clients)) {
-      if (client) {
-        try { await client.stop(); } catch { /* ignore */ }
-        this.logger.info(`Stopped ${backend} backend`);
-      }
+
+    // Cancel in-flight jobs gracefully
+    for (const jobId of jobRunner.getInflightIds()) {
+      jobRunner.cancel(jobId);
     }
+
+    await Promise.all(
+      Object.entries(runtimes).map(async ([name, runtime]) => {
+        try { await runtime.shutdown(); } catch { /* ignore */ }
+        this.logger.info(`Stopped ${name} runtime`);
+      }),
+    );
     process.exit(0);
   }
+
+  // ── Chat ──────────────────────────────────────────────────
 
   private async handleChat(args: Record<string, unknown>): Promise<ToolResult> {
     const prompt = args.prompt as string;
     const model = (args.model as string) || 'codex';
     const cwd = args.cwd as string | undefined;
     const config = args.config as Record<string, unknown> | undefined;
+    const background = args.background === true;
 
     const route = routeModel(model);
-    this.logger.info(`Routing chat to ${route.backend}`, { model, resolvedModel: route.model });
+    this.logger.info(`Routing chat to ${route.backend}`, { model, resolvedModel: route.model, background });
 
-    const client = await getClient(route.backend);
-    const backendArgs: Record<string, unknown> = { prompt, model: route.model };
+    const sessionOptions = {
+      model: route.model,
+      cwd,
+      config,
+      configOverride: route.configOverride,
+    };
 
-    if (route.backend === 'codex') {
-      if (cwd) backendArgs.cwd = cwd;
-      // Expand flat dot-notation defaults into nested objects with proper types,
-      // then let user-provided config (already in correct format) override.
-      const expandedDefaults = expandConfigForCodex(route.configOverride || {});
-      const mergedConfig = { ...expandedDefaults, ...(config || {}) };
-      if (Object.keys(mergedConfig).length > 0) {
-        backendArgs.config = mergedConfig;
-      }
+    // Create session upfront (so sessionId is available in the job)
+    const publicId = randomUUID();
+
+    const job = await jobRunner.startJob({
+      kind: 'chat',
+      prompt,
+      backend: route.backend,
+      model: route.model,
+      sessionOptions,
+      sessionId: publicId,
+      background,
+    });
+
+    // If synchronous (not background) and completed, save session
+    if (!background) {
+      ensureSessionSaved(job);
     }
 
-    // codex MCP exposes 'codex' tool, gemini MCP exposes 'chat' tool
-    const toolName = route.backend === 'codex' ? 'codex' : 'chat';
-    const result = await client.callTool(toolName, backendArgs, 600_000);
-
-    const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-    let parsed: any = {};
-    try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
-
-    const sessionId = storeSession(route.backend, parsed, result);
-
-    let responseContent = (result as any).structuredContent?.content || parsed.content || text;
-    if (typeof responseContent === 'string') {
-      responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+    if (background) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            jobId: job.id,
+            status: job.status,
+            sessionId: publicId,
+            message: 'Job started in background. Use status tool to poll.',
+          }),
+        }],
+      };
     }
 
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ sessionId, content: responseContent, backend: route.backend, model: route.model }),
+        text: JSON.stringify({
+          jobId: job.id,
+          sessionId: job.backendSessionId ? publicId : undefined,
+          content: job.result ?? job.error ?? '',
+          backend: job.backend,
+          model: job.model,
+        }),
       }],
     };
   }
 
+  // ── Chat Reply ────────────────────────────────────────────
+
   private async handleChatReply(args: Record<string, unknown>): Promise<ToolResult> {
     const prompt = args.prompt as string;
     const sessionId = args.sessionId as string | undefined;
+    const background = args.background === true;
 
-    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const session = sessionId ? sessionStore.get(sessionId) : undefined;
     if (!session) {
       throw new Error(`Unknown session: ${sessionId}. Use 'chat' first to start a session.`);
     }
 
-    const client = await getClient(session.backend);
-    const backendArgs: Record<string, unknown> = { prompt };
-    if (session.backend === 'codex') {
-      backendArgs.threadId = session.backendSessionId;
-    } else {
-      backendArgs.sessionId = session.backendSessionId;
+    const job = await jobRunner.startJob({
+      kind: 'chat',
+      prompt,
+      backend: session.backend,
+      model: session.model,
+      sessionOptions: { model: session.model },
+      sessionId: session.publicId,
+      backendSessionId: session.backendSessionId,
+      background,
+    });
+
+    // If synchronous and completed, update session
+    if (!background && job.status === 'completed') {
+      if (job.backendSessionId && job.backendSessionId !== session.backendSessionId) {
+        sessionStore.updateBackendSessionId(session.publicId, job.backendSessionId);
+      } else {
+        sessionStore.touch(session.publicId);
+      }
     }
 
-    // codex MCP exposes 'codex-reply' tool, gemini MCP exposes 'chat-reply' tool
-    const toolName = session.backend === 'codex' ? 'codex-reply' : 'chat-reply';
-    const result = await client.callTool(toolName, backendArgs, 600_000);
-
-    const text = (result as any).content?.find((c: any) => c.type === 'text')?.text || '';
-    let parsed: any = {};
-    try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
-
-    const newBackendSessionId = extractBackendSessionId(session.backend, parsed, result);
-    if (newBackendSessionId && newBackendSessionId !== session.backendSessionId) {
-      sessions.delete(sessionId!);
-      sessions.set(newBackendSessionId, { backend: session.backend, backendSessionId: newBackendSessionId });
-    }
-
-    let responseContent = (result as any).structuredContent?.content || parsed.content || text;
-    if (typeof responseContent === 'string') {
-      responseContent = responseContent.replace(/\n*Session ID:\s*[0-9a-f-]+\s*$/i, '').trimEnd();
+    if (background) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            jobId: job.id,
+            status: job.status,
+            sessionId: session.publicId,
+            message: 'Job started in background. Use status tool to poll.',
+          }),
+        }],
+      };
     }
 
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ sessionId: newBackendSessionId || sessionId, content: responseContent, backend: session.backend }),
+        text: JSON.stringify({
+          jobId: job.id,
+          sessionId: session.publicId,
+          content: job.result ?? job.error ?? '',
+          backend: session.backend,
+        }),
+      }],
+    };
+  }
+
+  // ── Status ────────────────────────────────────────────────
+
+  private handleStatus(args: Record<string, unknown>): ToolResult {
+    const jobId = args.jobId as string | undefined;
+
+    if (jobId) {
+      const job = jobStore.get(jobId);
+      if (!job) throw new Error(`Unknown job: ${jobId}`);
+
+      // If completed in background, save session now (idempotent via sessionSaved flag)
+      ensureSessionSaved(job);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            id: job.id,
+            kind: job.kind,
+            status: job.status,
+            phase: job.phase,
+            backend: job.backend,
+            model: job.model,
+            sessionId: job.sessionId,
+            promptSummary: job.promptSummary,
+            startedAt: job.startedAt,
+            completedAt: job.completedAt,
+            hasResult: job.status === 'completed',
+            error: job.error,
+          }),
+        }],
+      };
+    }
+
+    // List all active + recent jobs
+    const jobs = jobStore.getAll()
+      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+      .slice(0, 20)
+      .map(j => ({
+        id: j.id,
+        kind: j.kind,
+        status: j.status,
+        phase: j.phase,
+        backend: j.backend,
+        promptSummary: j.promptSummary,
+        startedAt: j.startedAt,
+        completedAt: j.completedAt,
+      }));
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ jobs, total: jobStore.getAll().length }),
+      }],
+    };
+  }
+
+  // ── Result ────────────────────────────────────────────────
+
+  private handleResult(args: Record<string, unknown>): ToolResult {
+    const jobId = args.jobId as string;
+    const job = jobStore.get(jobId);
+    if (!job) throw new Error(`Unknown job: ${jobId}`);
+
+    if (job.status === 'running' || job.status === 'queued') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            jobId: job.id,
+            status: job.status,
+            phase: job.phase,
+            message: 'Job is still running. Use status to check progress.',
+          }),
+        }],
+      };
+    }
+
+    // Save session on first result retrieval for background jobs (idempotent)
+    ensureSessionSaved(job);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          jobId: job.id,
+          status: job.status,
+          sessionId: job.sessionId,
+          content: job.result ?? null,
+          error: job.error ?? null,
+          backend: job.backend,
+          model: job.model,
+        }),
+      }],
+    };
+  }
+
+  // ── Cancel ────────────────────────────────────────────────
+
+  private handleCancel(args: Record<string, unknown>): ToolResult {
+    const jobId = args.jobId as string;
+    const job = jobRunner.cancel(jobId);
+    if (!job) throw new Error(`Unknown job: ${jobId}`);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          jobId: job.id,
+          status: job.status,
+          message: job.status === 'cancelled' ? 'Job cancelled.' : `Job already ${job.status}.`,
+        }),
       }],
     };
   }
