@@ -601,9 +601,9 @@ export async function registerDashboardRoutes(
         }
 
         // Build conversation content from first few turns
-        const contentParts = record.turns.slice(0, 6).map((t) =>
-          `[${t.role}]: ${t.rawContent?.substring(0, 500) || t.summaryTitle || ''}`,
-        );
+        const contentParts = record.turns
+          .slice(0, 6)
+          .map((t) => `[${t.role}]: ${t.rawContent?.substring(0, 500) || t.summaryTitle || ''}`);
         const content = contentParts.join('\n\n');
 
         const titleSub = await generateTitle(content);
