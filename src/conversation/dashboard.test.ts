@@ -362,6 +362,79 @@ describe('Dashboard API', () => {
     expect(body.turns[1].summarized).toBe(true);
   });
 
+  it('should return summarized:false for pending assistant turns', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce({
+      id: 'conv-pending',
+      title: 'Pending Summary',
+      ownerName: 'Bob',
+      workflow: 'default',
+      createdAt: 1000,
+      updatedAt: 2000,
+      turns: [
+        {
+          id: 't1',
+          role: 'assistant',
+          timestamp: 1000,
+          summaryTitle: undefined,
+          summaryBody: undefined,
+          summarized: false,
+          rawContent: 'Some long response...',
+        },
+      ],
+    });
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pending',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns[0].summarized).toBe(false);
+    expect(body.turns[0].summaryTitle).toBeUndefined();
+    expect(body.turns[0].summaryBody).toBeUndefined();
+    // rawContent excluded for assistant turns
+    expect(body.turns[0].rawContent).toBeUndefined();
+  });
+
+  it('should return summarized:true with no title/body for failed summary', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce({
+      id: 'conv-failed',
+      title: 'Failed Summary',
+      ownerName: 'Bob',
+      workflow: 'default',
+      createdAt: 1000,
+      updatedAt: 2000,
+      turns: [
+        {
+          id: 't1',
+          role: 'assistant',
+          timestamp: 1000,
+          summaryTitle: undefined,
+          summaryBody: undefined,
+          summarized: true,
+          rawContent: 'Some long response...',
+        },
+      ],
+    });
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-failed',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // summarized=true but no title/body → UI shows "Summary failed"
+    expect(body.turns[0].summarized).toBe(true);
+    expect(body.turns[0].summaryTitle).toBeUndefined();
+    expect(body.turns[0].summaryBody).toBeUndefined();
+  });
+
   // ── Inline JS escaping regression (PR #280) ──
 
   it('should render syntactically valid inline JavaScript', async () => {
