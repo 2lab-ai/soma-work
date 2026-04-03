@@ -328,13 +328,14 @@ describe('SlackHandler', () => {
     );
   });
 
-  it('silently deletes unmanaged bot-authored message permalink sent in DM', async () => {
+  it('admin deletes bot-authored message permalink sent in DM directly', async () => {
+    // Mock admin check
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
     const app = { client: {} } as any;
-    const claudeHandler = {
-      getAllSessions: vi.fn().mockReturnValue(new Map()),
-      getSessionKey: vi.fn().mockReturnValue('C999:111.222'),
-      getSessionByKey: vi.fn().mockReturnValue(undefined),
-    };
+    const claudeHandler = {};
     const mcpManager = {};
 
     const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
@@ -359,7 +360,7 @@ describe('SlackHandler', () => {
 
     const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
     const event = {
-      user: 'U123',
+      user: 'U_ADMIN',
       channel: 'D123',
       ts: '555.666',
       text: 'https://workspace.slack.com/archives/C999/p111222000000',
@@ -368,25 +369,22 @@ describe('SlackHandler', () => {
     await handler.handleMessage(event as any, say);
 
     expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
+    expect(mockSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'white_check_mark');
     expect(say).not.toHaveBeenCalled();
     expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+
+    // Cleanup
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
   });
 
-  it('asks confirmation before deleting managed bot-authored message permalink sent in DM', async () => {
+  it('non-admin sends delete approval request to admins when permalink sent in DM', async () => {
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
     const app = { client: {} } as any;
-    const managedSession = {
-      channelId: 'C999',
-      threadTs: '222333.000000',
-      threadRootTs: '222333.000000',
-      actionPanel: {
-        messageTs: '999.111',
-      },
-    };
-    const claudeHandler = {
-      getAllSessions: vi.fn().mockReturnValue(new Map([['s1', managedSession]])),
-      getSessionKey: vi.fn().mockReturnValue('C999:222333.000000'),
-      getSessionByKey: vi.fn().mockReturnValue(managedSession),
-    };
+    const claudeHandler = {};
     const mcpManager = {};
 
     const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
@@ -402,6 +400,8 @@ describe('SlackHandler', () => {
       deleteMessage: vi.fn().mockResolvedValue(undefined),
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
+      openDmChannel: vi.fn().mockResolvedValue('D_ADMIN'),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'admin_msg_123' }),
     };
 
     handlerAny.slackApi = mockSlackApi;
@@ -412,7 +412,7 @@ describe('SlackHandler', () => {
 
     const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
     const event = {
-      user: 'U123',
+      user: 'U_REGULAR',
       channel: 'D123',
       ts: '555.666',
       text: 'https://workspace.slack.com/archives/C999/p222333000000',
@@ -420,14 +420,66 @@ describe('SlackHandler', () => {
 
     await handler.handleMessage(event as any, say);
 
-    expect(say).toHaveBeenCalledTimes(1);
-    const posted = say.mock.calls[0][0];
-    expect(posted.blocks).toBeDefined();
-    const actions = posted.blocks.find((b: any) => b.type === 'actions');
-    expect(actions.elements.map((e: any) => e.action_id)).toEqual(
-      expect.arrayContaining(['managed_message_delete_cancel', 'managed_message_delete_confirm']),
-    );
+    // Should NOT delete directly
     expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+    // Should send approval request to admin DM
+    expect(mockSlackApi.openDmChannel).toHaveBeenCalledWith('U_ADMIN');
+    expect(mockSlackApi.postMessage).toHaveBeenCalledWith('D_ADMIN', '봇 메시지 삭제 요청', expect.objectContaining({
+      blocks: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'actions',
+          elements: expect.arrayContaining([
+            expect.objectContaining({ action_id: 'dm_delete_approve' }),
+            expect.objectContaining({ action_id: 'dm_delete_reject' }),
+          ]),
+        }),
+      ]),
+    }));
+    // Should notify the requester
+    expect(say).toHaveBeenCalledWith({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
     expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+
+    // Cleanup
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
+  it('DM message without permalink does not enter session pipeline', async () => {
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn(),
+      routeCommand: vi.fn(),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn(),
+      initialize: vi.fn(),
+    };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U123',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'hello bot',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    // Should NOT enter the pipeline at all
+    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+    expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '555.666', 'eyes');
   });
 });

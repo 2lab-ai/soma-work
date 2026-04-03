@@ -1,4 +1,5 @@
 import type { App } from '@slack/bolt';
+import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
@@ -263,6 +264,17 @@ export class ActionHandlers {
       await this.handleManagedDeleteConfirm(body, respond);
     });
 
+    // Admin approval/rejection for DM delete requests from non-admin users
+    app.action('dm_delete_approve', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleDmDeleteApprove(body, respond);
+    });
+
+    app.action('dm_delete_reject', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleDmDeleteReject(body, respond);
+    });
+
     // 모달 핸들러
     app.view('custom_input_submit', async ({ ack, body, view }) => {
       await ack();
@@ -406,5 +418,104 @@ export class ActionHandlers {
         replace_original: true,
       });
     }
+  }
+
+  /**
+   * Admin approves a DM delete request from a non-admin user.
+   */
+  private async handleDmDeleteApprove(body: any, respond: any): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseManagedDeleteValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid dm delete approve payload', { rawValue, actorId });
+      return;
+    }
+
+    if (!isAdminUser(actorId)) {
+      await respond({
+        text: '⚠️ 어드민만 삭제를 승인할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    try {
+      await this.ctx.slackApi.deleteMessage(value.targetChannel, value.targetTs);
+      await respond({
+        text: `✅ <@${actorId}>님이 삭제를 승인했습니다. 메시지가 삭제되었습니다.`,
+        replace_original: true,
+      });
+
+      // Notify the requester
+      try {
+        const requesterDm = await this.ctx.slackApi.openDmChannel(value.requesterId);
+        await this.ctx.slackApi.postMessage(requesterDm, '✅ 어드민이 삭제 요청을 승인했습니다. 메시지가 삭제되었습니다.');
+      } catch {
+        // Best-effort notification
+      }
+
+      this.logger.info('Admin approved DM delete request', {
+        adminId: actorId,
+        requesterId: value.requesterId,
+        targetChannel: value.targetChannel,
+        targetTs: value.targetTs,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to delete message after admin approval', {
+        targetChannel: value.targetChannel,
+        targetTs: value.targetTs,
+        error,
+      });
+      await respond({
+        text: '⚠️ 메시지 삭제에 실패했습니다.',
+        replace_original: true,
+      });
+    }
+  }
+
+  /**
+   * Admin rejects a DM delete request from a non-admin user.
+   */
+  private async handleDmDeleteReject(body: any, respond: any): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseManagedDeleteValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid dm delete reject payload', { rawValue, actorId });
+      return;
+    }
+
+    if (!isAdminUser(actorId)) {
+      await respond({
+        text: '⚠️ 어드민만 이 버튼을 사용할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    await respond({
+      text: `❌ <@${actorId}>님이 삭제 요청을 거절했습니다.`,
+      replace_original: true,
+    });
+
+    // Notify the requester
+    try {
+      const requesterDm = await this.ctx.slackApi.openDmChannel(value.requesterId);
+      await this.ctx.slackApi.postMessage(requesterDm, '❌ 어드민이 삭제 요청을 거절했습니다.');
+    } catch {
+      // Best-effort notification
+    }
+
+    this.logger.info('Admin rejected DM delete request', {
+      adminId: actorId,
+      requesterId: value.requesterId,
+      targetChannel: value.targetChannel,
+      targetTs: value.targetTs,
+    });
   }
 }
