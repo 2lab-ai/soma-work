@@ -135,15 +135,21 @@ function renderTurn(turn: ConversationTurn, index: number, conversationId: strin
     contentHtml = `<pre class="content">${escapeHtml(turn.rawContent)}</pre>`;
   } else {
     // Assistant: show summary with expand button
-    const summaryHtml =
-      turn.summarized && turn.summaryTitle
-        ? `<div class="summary">
+    let summaryHtml: string;
+    if (turn.summarized && turn.summaryTitle) {
+      summaryHtml = `<div class="summary">
           <div class="summary-title">${escapeHtml(turn.summaryTitle)}</div>
           <div class="summary-body">${escapeHtml(turn.summaryBody || '')}</div>
-        </div>`
-        : `<div class="summary pending">
+        </div>`;
+    } else if (turn.summarized) {
+      summaryHtml = `<div class="summary pending">
+          <em>Summary failed</em>
+        </div>`;
+    } else {
+      summaryHtml = `<div class="summary pending">
           <em>Generating summary...</em>
         </div>`;
+    }
 
     contentHtml = `
       ${summaryHtml}

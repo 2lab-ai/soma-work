@@ -1927,6 +1927,7 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  _rawLoadedCache = {};
 }
 
 document.addEventListener('keydown', function(e) {
