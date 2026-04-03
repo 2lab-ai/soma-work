@@ -265,7 +265,7 @@ async function start() {
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
       broadcastTaskUpdate(
         sessionId,
-        todos.map((t) => ({ content: t.content, status: t.status })),
+        todos.map((t) => ({ content: t.content, status: t.status, startedAt: t.startedAt, completedAt: t.completedAt })),
       );
     });
 

@@ -66,7 +66,7 @@ export interface KanbanSession {
     contextUsagePercent: number;
   };
   /** Task list */
-  tasks?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  tasks?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }>;
   /** Slack thread permalink */
   slackThreadUrl?: string;
 }
@@ -141,7 +141,7 @@ function requireSessionOwner(request: any, reply: any, sessionKey: string): bool
 
 type TaskAccessor = (
   sessionKey: string,
-) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> | undefined;
+) => Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }> | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -366,7 +366,7 @@ export function broadcastSessionUpdate(): void {
 /** Broadcast task update to all connected WebSocket clients */
 export function broadcastTaskUpdate(
   sessionKey: string,
-  tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>,
+  tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; startedAt?: number; completedAt?: number }>,
 ): void {
   if (wsClients.size === 0) return;
   try {
@@ -1119,7 +1119,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .bar-labels { display: flex; gap: 2px; margin-top: 4px; }
 .bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 600; }
 
-/* ── SLIDE PANEL — flat, structured ── */
+/* ── SLIDE PANEL — flat, structured, resizable ── */
 .slide-panel {
   position: fixed;
   top: 0; right: -440px;
@@ -1134,6 +1134,79 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
 }
 .slide-panel.open { right: 0; }
+.slide-panel.resizing { transition: none; user-select: none; }
+/* Resize handle — left edge */
+.panel-resize-handle {
+  position: absolute;
+  top: 0; left: -4px;
+  width: 8px; height: 100%;
+  cursor: col-resize;
+  z-index: 101;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.panel-resize-handle:hover,
+.panel-resize-handle.active {
+  background: var(--accent);
+  opacity: 0.4;
+}
+/* Panel tasks section */
+.panel-tasks {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.panel-tasks-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-tasks-header .tasks-progress {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.panel-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
+.panel-task-item .task-text { flex: 1; min-width: 0; }
+.panel-task-item.completed .task-text { color: var(--text-tertiary); text-decoration: line-through; opacity: 0.6; }
+.panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
+.panel-task-item.pending .task-text { color: var(--text-secondary); }
+.panel-task-item .task-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 50px;
+}
+.panel-tasks-toggle {
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+  border: none;
+  background: none;
+  font-weight: 600;
+}
+.panel-tasks-toggle:hover { text-decoration: underline; }
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -1434,6 +1507,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   <!-- Slide Panel for Session Detail -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
   <div class="slide-panel" id="slide-panel">
+    <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
         <h3 id="panel-title">Session Detail</h3>
@@ -1447,6 +1521,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
+    <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
     <div class="panel-turns" id="panel-turns">
       <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
     </div>
@@ -1466,6 +1541,165 @@ let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
 let showOlderClosed = false;
+let _panelTasksExpanded = false;
+
+// ── Panel resize — drag left edge to change width ──
+(function initPanelResize() {
+  var panel = document.getElementById('slide-panel');
+  var handle = document.getElementById('panel-resize-handle');
+  var STORAGE_KEY = 'soma-panel-width';
+  var MIN_W = 320, MAX_W_PCT = 0.8;
+
+  // Restore saved width
+  var saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    var w = parseInt(saved, 10);
+    if (w >= MIN_W && w <= window.innerWidth * MAX_W_PCT) {
+      panel.style.width = w + 'px';
+      panel.style.right = '-' + w + 'px';
+    }
+  }
+
+  var dragging = false;
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    dragging = true;
+    panel.classList.add('resizing');
+    handle.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var maxW = window.innerWidth * MAX_W_PCT;
+    var newW = window.innerWidth - e.clientX;
+    if (newW < MIN_W) newW = MIN_W;
+    if (newW > maxW) newW = maxW;
+    panel.style.width = newW + 'px';
+    if (panel.classList.contains('open')) {
+      panel.style.right = '0';
+    } else {
+      panel.style.right = '-' + newW + 'px';
+    }
+  });
+  document.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('resizing');
+    handle.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    var w = parseInt(panel.style.width, 10);
+    if (w >= MIN_W) localStorage.setItem(STORAGE_KEY, String(w));
+  });
+
+  // Patch openPanel/closePanel to use current width
+  var origRightHidden = panel.style.right;
+  var _origOpen = panel.classList.contains('open');
+  // Override slide-panel right offset on open
+  var observer = new MutationObserver(function() {
+    if (panel.classList.contains('open')) {
+      panel.style.right = '0';
+    } else if (!dragging) {
+      panel.style.right = '-' + panel.style.width;
+    }
+  });
+  observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
+})();
+
+// ── Panel tasks rendering ──
+function formatDuration(ms) {
+  if (!ms || ms <= 0) return '';
+  var sec = Math.floor(ms / 1000);
+  if (sec < 60) return sec + 's';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return min + 'm ' + (sec % 60) + 's';
+  var hr = Math.floor(min / 60);
+  return hr + 'h ' + (min % 60) + 'm';
+}
+
+function formatTaskTime(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderPanelTasks(tasks) {
+  var container = document.getElementById('panel-tasks');
+  if (!tasks || tasks.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = '';
+
+  // Sort: in_progress → pending → completed
+  var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; });
+  var pending = tasks.filter(function(t) { return t.status === 'pending'; });
+  var completed = tasks.filter(function(t) { return t.status === 'completed'; });
+
+  var total = tasks.length;
+  var doneCount = completed.length;
+  var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+  var html = '<div class="panel-tasks-header">'
+    + '<span>Tasks</span>'
+    + '<span class="tasks-progress">' + doneCount + '/' + total + ' (' + pct + '%)</span>'
+    + '</div>';
+
+  // Active + pending — always shown
+  var active = inProgress.concat(pending);
+  for (var i = 0; i < active.length; i++) {
+    html += renderPanelTaskItem(active[i]);
+  }
+
+  // Completed — show first 3, rest behind toggle
+  var COMPLETED_LIMIT = 3;
+  var visibleCompleted = _panelTasksExpanded ? completed : completed.slice(0, COMPLETED_LIMIT);
+  var hiddenCount = completed.length - COMPLETED_LIMIT;
+
+  for (var j = 0; j < visibleCompleted.length; j++) {
+    html += renderPanelTaskItem(visibleCompleted[j]);
+  }
+
+  if (hiddenCount > 0) {
+    if (_panelTasksExpanded) {
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25B2; Hide completed</button>';
+    } else {
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+function renderPanelTaskItem(t) {
+  var icon, cls;
+  if (t.status === 'completed') { icon = '&#x2705;'; cls = 'completed'; }
+  else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls = 'in_progress'; }
+  else { icon = '&#x25FB;'; cls = 'pending'; }
+
+  var timeInfo = '';
+  if (t.status === 'completed' && t.startedAt && t.completedAt) {
+    var dur = t.completedAt - t.startedAt;
+    timeInfo = formatDuration(dur);
+  } else if (t.status === 'in_progress' && t.startedAt) {
+    var elapsed = Date.now() - t.startedAt;
+    timeInfo = formatDuration(elapsed) + '...';
+  }
+
+  var timeHtml = '';
+  if (t.startedAt || t.completedAt) {
+    var parts = [];
+    if (t.startedAt) parts.push(formatTaskTime(t.startedAt));
+    if (t.completedAt) parts.push(formatTaskTime(t.completedAt));
+    timeHtml = '<div class="task-time" title="' + parts.join(' → ') + '">' + (timeInfo || parts.join('→')) + '</div>';
+  }
+
+  return '<div class="panel-task-item ' + cls + '">'
+    + '<span class="task-icon">' + icon + '</span>'
+    + '<span class="task-text">' + esc(t.content) + '</span>'
+    + timeHtml
+    + '</div>';
+}
 
 // ── Utility ──
 function esc(s) {
@@ -1643,7 +1877,13 @@ function renderCard(s, col) {
       if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
       else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls2 = 'in_progress'; }
       else { icon = '&#x25FB;'; cls2 = 'pending'; }
-      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span>' + esc(t.content.slice(0, 50)) + '</div>';
+      var durStr = '';
+      if (t.status === 'completed' && t.startedAt && t.completedAt) {
+        durStr = ' <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto;flex-shrink:0">' + formatDuration(t.completedAt - t.startedAt) + '</span>';
+      } else if (t.status === 'in_progress' && t.startedAt) {
+        durStr = ' <span style="font-size:10px;color:var(--accent);margin-left:auto;flex-shrink:0">' + formatDuration(Date.now() - t.startedAt) + '...</span>';
+      }
+      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span>' + esc(t.content.slice(0, 50)) + durStr + '</div>';
     }).join('');
     tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
   }
@@ -1807,6 +2047,10 @@ function connectWs() {
           _sessionCache[msg.sessionKey].tasks = msg.tasks;
         }
         loadSessions();
+        // Also update panel tasks if panel is open for this session
+        if (panelOpen && panelSessionKey === msg.sessionKey) {
+          renderPanelTasks(msg.tasks);
+        }
       } else if (msg.type === 'conversation_update') {
         // If panel is open for this conversation, append the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
@@ -1895,6 +2139,10 @@ function openPanel(sessionKey) {
   } else {
     tokensEl.innerHTML = '<span style="font-size:0.78em;color:var(--text-secondary)">No token data</span>';
   }
+
+  // Tasks (panel card view)
+  _panelTasksExpanded = false;
+  renderPanelTasks(s.tasks);
 
   // Conversation turns
   const turnsEl = document.getElementById('panel-turns');
