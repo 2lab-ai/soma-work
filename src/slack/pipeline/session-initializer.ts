@@ -17,7 +17,6 @@ import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
-import { buildRequestStartBlocks } from '../source-thread-summary';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
@@ -118,8 +117,10 @@ export class SessionInitializer {
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
-    // Mid-thread mention: user mentioned bot inside an existing thread (thread_ts exists)
-    const isMidThread = thread_ts !== undefined;
+    // Whether the mention originated from inside an existing thread (thread_ts exists).
+    // Used for sourceThread data linking — NOT for UX decisions.
+    // New sessions always get "new conversation" UX regardless of origin.
+    const hasSourceThread = thread_ts !== undefined;
 
     // Get user's display name
     const userName = await this.deps.slackApi.getUserName(user);
@@ -458,7 +459,7 @@ export class SessionInitializer {
             user,
             userName,
             effectiveWorkingDir,
-            isMidThread,
+            hasSourceThread,
           );
           if (migrated) {
             return migrated;
@@ -480,7 +481,7 @@ export class SessionInitializer {
           user,
           userName,
           effectiveWorkingDir,
-          isMidThread,
+          hasSourceThread,
         );
         if (migrated) {
           return migrated;
@@ -710,7 +711,7 @@ export class SessionInitializer {
     user: string,
     userName: string,
     workingDirectory: string,
-    isMidThread: boolean = false,
+    hasSourceThread: boolean = false,
   ): Promise<SessionInitResult | undefined> {
     const headerPayload = ThreadHeaderBuilder.build({
       title: session.title || session.links?.pr?.label || session.links?.issue?.label,
@@ -748,7 +749,8 @@ export class SessionInitializer {
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
     botSession.sessionWorkingDir = session.sessionWorkingDir;
-    if (isMidThread) {
+    // Store source thread for context linking (data concern only — UX is always "new conversation")
+    if (hasSourceThread) {
       botSession.sourceThread = { channel, threadTs };
     }
 
@@ -769,26 +771,16 @@ export class SessionInitializer {
     // 1. Always clean up dispatch clutter in original thread
     await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
 
-    // 2. Post redirect/context into clean thread
+    // 2. Unified redirect — same UX whether from channel or thread.
+    // Previously, thread-originating mentions got a rich retention card (📋) while
+    // channel mentions got a simple redirect (🧵). This confused users who accidentally
+    // posted in a thread (Slack UX: thread panel, accidental reply) but expected channel behavior.
+    // Now all new sessions show consistent redirect. Source thread context is preserved
+    // via sourceThread linking — completion summaries still post back on PR merge/close.
     if (shouldOutput(OutputFlag.SYSTEM, session.logVerbosity ?? LOG_DETAIL)) {
-      if (!isMidThread) {
-        await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
-      }
+      await this.deps.slackApi.postMessage(channel, '🧵 새 스레드에서 작업을 시작합니다 →', { threadTs });
       const oldThreadPermalink = await this.deps.slackApi.getPermalink(channel, threadTs);
       await this.postMigratedContextSummary(channel, rootResult.ts, oldThreadPermalink, session);
-    }
-
-    // 3. Mid-thread: post retention message AFTER delete (so it survives)
-    if (isMidThread) {
-      const newThreadPermalink = await this.deps.slackApi.getPermalink(channel, rootResult.ts);
-      if (!newThreadPermalink) {
-        this.logger.warn('Failed to get permalink for new work thread', { channel, rootTs: rootResult.ts });
-      }
-      const startPayload = buildRequestStartBlocks(botSession, newThreadPermalink);
-      await this.deps.slackApi.postMessage(channel, startPayload.text, {
-        threadTs,
-        blocks: startPayload.blocks,
-      });
     }
 
     const newSessionKey = this.deps.claudeHandler.getSessionKey(channel, rootResult.ts);
