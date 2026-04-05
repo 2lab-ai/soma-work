@@ -17,6 +17,7 @@ import {
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   setOAuthUserLookup,
+  setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   startWebServer,
   stopWebServer,
@@ -251,20 +252,29 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
-      // Dashboard bypasses Slack, so the thread lacks the user's input without this echo
-      const senderName = session.ownerName || 'Dashboard';
-      const escapedName = senderName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const escapedMessage = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const echoResult = await app.client.chat
-        .postMessage({
+      // Post the user's message to the Slack thread so it's visible,
+      // styled as a quote block with dashboard origin indicator.
+      let echoTs: string | undefined;
+      try {
+        const echoResult = await app.client.chat.postMessage({
           channel: session.channelId,
-          text: `${escapedName}: ${escapedMessage}`,
           thread_ts: session.threadTs,
-        })
-        .catch((err) => {
-          logger.warn('Dashboard echo failed', { err });
-          return undefined;
+          text: message,
+          blocks: [
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+            },
+            {
+              type: 'section',
+              text: { type: 'plain_text', text: message.slice(0, 3000) },
+            },
+          ],
         });
+        echoTs = echoResult.ts as string | undefined;
+      } catch (err) {
+        logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
+      }
 
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
@@ -284,7 +294,7 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoResult?.ts || String(Date.now() / 1000),
+          ts: echoTs || String(Date.now() / 1000),
         } as any,
         dashboardSay,
       );
@@ -345,6 +355,30 @@ async function start() {
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback((conversationId, turn) => {
       broadcastConversationUpdate(conversationId, turn);
+    });
+
+    // Connect summary generation: update session title on Slack thread header
+    setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
+      // Find the session by conversationId and update its title
+      const sessions = claudeHandler.getSessionRegistry().getAllSessions();
+      for (const [, session] of sessions) {
+        if (session.conversationId === conversationId) {
+          // Update session title with the summary title
+          claudeHandler.getSessionRegistry().updateSessionTitle(
+            session.channelId,
+            session.threadTs,
+            summaryTitle,
+          );
+          // Request re-render of the Slack thread surface
+          slackHandler.requestThreadSurfaceRender(session);
+          logger.debug('Summary title applied to session', {
+            conversationId,
+            summaryTitle,
+            sessionKey: `${session.channelId}:${session.threadTs}`,
+          });
+          break;
+        }
+      }
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { decodeSlackEntities } from '../dispatch-service';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
@@ -20,12 +21,28 @@ const writeLocks = new Map<string, Promise<void>>();
 // Optional callback fired after each turn is recorded
 let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
 
+// Optional callback fired when a summary is generated for an assistant turn.
+// Used to update session title on Slack thread header.
+let _onSummaryGenerated:
+  | ((conversationId: string, turn: ConversationTurn, summaryTitle: string) => void)
+  | null = null;
+
 /**
  * Set a callback that fires after each turn is recorded.
  * Used by the dashboard to broadcast real-time conversation updates.
  */
 export function setOnTurnRecordedCallback(fn: (conversationId: string, turn: ConversationTurn) => void): void {
   _onTurnRecorded = fn;
+}
+
+/**
+ * Set a callback that fires when summary generation completes.
+ * Used to update session title on Slack and broadcast summary to dashboard.
+ */
+export function setOnSummaryGeneratedCallback(
+  fn: (conversationId: string, turn: ConversationTurn, summaryTitle: string) => void,
+): void {
+  _onSummaryGenerated = fn;
 }
 
 /**
@@ -153,13 +170,18 @@ async function _recordUserTurnAsync(
     return;
   }
 
+  // Decode Slack HTML entities (&gt; &lt; &amp;) before storing.
+  // Slack API encodes these in message text; storing decoded form
+  // ensures the dashboard displays them correctly.
+  const decodedContent = decodeSlackEntities(content);
+
   const turn: ConversationTurn = {
     id: randomUUID(),
     role: 'user',
     timestamp: Date.now(),
     userName,
     userId,
-    rawContent: content,
+    rawContent: decodedContent,
   };
 
   record.turns.push(turn);
@@ -244,6 +266,12 @@ async function generateSummary(conversationId: string, turnId: string, content: 
   await serializedSave(conversationId, record);
   if (summary) {
     logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
+    // Broadcast the updated turn (with summary) to dashboard via WebSocket.
+    // The initial broadcast (in _recordAssistantTurnAsync) fires before summary exists;
+    // this second broadcast delivers the completed summary for live UI update.
+    if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
+    // Notify session title update (e.g., update Slack thread header)
+    if (_onSummaryGenerated) _onSummaryGenerated(conversationId, turn, summary.title);
   }
 }
 

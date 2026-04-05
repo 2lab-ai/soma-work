@@ -43,6 +43,7 @@ import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
+import type { ConversationSession } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -908,5 +909,12 @@ export class SlackHandler {
       throw new Error('Session not found');
     }
     await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
+  }
+
+  /** Request re-render of the Slack thread header (e.g. after title change) */
+  requestThreadSurfaceRender(session: ConversationSession): void {
+    this.threadPanel?.updateHeader(session).catch((err) => {
+      this.logger.debug('Failed to re-render thread surface after title update', { error: err });
+    });
   }
 }
