@@ -208,7 +208,12 @@ async function start() {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
       const lookupId = session?.sessionId || sessionKey;
       const todos = slackHandler.getTodoManager().getTodos(lookupId);
-      return todos.map((t) => ({ content: t.content, status: t.status }));
+      return todos.map((t) => ({
+        content: t.content,
+        status: t.status,
+        startedAt: t.startedAt,
+        completedAt: t.completedAt,
+      }));
     });
 
     // Connect dashboard: stop handler (abort running session)
@@ -265,7 +270,12 @@ async function start() {
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
       broadcastTaskUpdate(
         sessionId,
-        todos.map((t) => ({ content: t.content, status: t.status })),
+        todos.map((t) => ({
+          content: t.content,
+          status: t.status,
+          startedAt: t.startedAt,
+          completedAt: t.completedAt,
+        })),
       );
     });
 
