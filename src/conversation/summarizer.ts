@@ -1,5 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config';
+import { ensureValidCredentials } from '../credentials-manager';
 import { Logger } from '../logger';
 
 const logger = new Logger('Summarizer');
@@ -12,22 +13,6 @@ export interface SummaryResult {
   body: string; // 3-line summary
 }
 
-// Cache the Anthropic client
-let client: Anthropic | null = null;
-
-function getClient(): Anthropic | null {
-  if (client) return client;
-
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    logger.warn('ANTHROPIC_API_KEY not set, summarization disabled');
-    return null;
-  }
-
-  client = new Anthropic({ apiKey });
-  return client;
-}
-
 /**
  * Get the summary model from config (default: claude-haiku-4-20250414)
  */
@@ -37,11 +22,14 @@ function getSummaryModel(): string {
 
 /**
  * Summarize assistant response into a title and body.
+ * Uses Agent SDK (OAuth) — same auth path as all other Claude calls.
  * Returns null on failure (graceful degradation).
  */
 export async function summarizeResponse(content: string): Promise<SummaryResult | null> {
-  const anthropic = getClient();
-  if (!anthropic) {
+  // Validate credentials (shared with all Agent SDK calls)
+  const credentialResult = await ensureValidCredentials();
+  if (!credentialResult.valid) {
+    logger.warn('Credentials invalid, summarization disabled', { error: credentialResult.error });
     return null;
   }
 
@@ -50,29 +38,38 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
   const truncatedContent =
     content.length > maxContentLength ? content.substring(0, maxContentLength) + '\n...[truncated]' : content;
 
-  try {
-    const model = getSummaryModel();
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 256,
-      messages: [
-        {
-          role: 'user',
-          content: `Summarize this AI assistant response. Output ONLY a JSON object with "title" (1 short line, max 60 chars) and "body" (3 concise lines separated by \\n). No markdown, no code blocks, just raw JSON.
+  const prompt = `Summarize this AI assistant response. Output ONLY a JSON object with "title" (1 short line, max 60 chars) and "body" (3 concise lines separated by \\n). No markdown, no code blocks, just raw JSON.
 
 Response to summarize:
-${truncatedContent}`,
-        },
-      ],
-    });
+${truncatedContent}`;
 
-    const text = response.content
-      .filter((block) => block.type === 'text')
-      .map((block) => (block as { type: 'text'; text: string }).text)
-      .join('');
+  const options: Options = {
+    model: getSummaryModel(),
+    maxTurns: 1,
+    tools: [],
+    systemPrompt: 'You are a concise summarizer. Output only what is requested.',
+    settingSources: [],
+    plugins: [],
+    stderr: (data: string) => {
+      logger.warn('Summarizer stderr', { data: data.trimEnd() });
+    },
+  };
+
+  try {
+    let assistantText = '';
+
+    for await (const message of query({ prompt, options })) {
+      if (message.type === 'assistant' && message.message?.content) {
+        for (const block of message.message.content) {
+          if (block.type === 'text') {
+            assistantText += block.text;
+          }
+        }
+      }
+    }
 
     // Strip markdown code block wrappers (LLMs frequently add them despite instructions)
-    let cleanText = text.trim();
+    let cleanText = assistantText.trim();
     if (cleanText.startsWith('```')) {
       cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
@@ -86,7 +83,7 @@ ${truncatedContent}`,
       };
     }
 
-    logger.warn('Summarizer returned unexpected format', { text: text.substring(0, 200) });
+    logger.warn('Summarizer returned unexpected format', { text: assistantText.substring(0, 200) });
     return null;
   } catch (error) {
     logger.error('Summarization failed', error);
