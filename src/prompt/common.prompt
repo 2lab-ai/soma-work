@@ -13,4 +13,10 @@
   - 부하 MCP:
     - llm_chat( model: codex ) - 제일 똑똑함
     - llm_chat( model: gemini ) - 물어볼 만함
+
+## 구현 원칙 (Karpathy's Rules)
+- Read before you write: 코드를 쓰기 전에 기존 코드를 먼저 읽어라.
+- Scope to the request only: 요청 범위만 건드려라. 요청 밖은 손대지 마라.
+- Verify, don't assume: 추측하지 마라. 실제 코드를 읽고 검증하라.
+- Define success before starting: 시작 전에 "뭘 해야 완료인지" 먼저 정의하라.
 </system_prompt>

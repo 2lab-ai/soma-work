@@ -172,17 +172,18 @@ const ACCEPTED_USER_SETTINGS = {
  */
 
 // ============================================================
-// Scenario 1 — Mid-thread: 초기 메시지 유지 + 새 스레드 링크
+// Scenario 1 — Mid-thread: unified redirect UX (no more retention 📋)
+// Fix: thread-originating mentions now get same redirect 🧵 as channel mentions.
+// Previously, accidental thread mentions showed a confusing retention card.
 // ============================================================
-describe('Scenario 1: mid-thread mention — initial message retention', () => {
+describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
   beforeEach(() => {
     vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
     mockClaudeHandler.getSession.mockReturnValue(null);
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  // Trace (v2): S3, Sec 3b — deleteThreadBotMessages IS called for mid-thread (dispatch cleanup)
-  it('midThread_deletesDispatchClutter: deletes bot messages for mid-thread mentions (v2)', async () => {
+  it('midThread_deletesDispatchClutter: deletes bot messages for mid-thread mentions', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -196,11 +197,7 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
     expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
   });
 
-  // Trace: S1, Sec 3b — rootResult.ts → permalink → postMessage
-  it('midThread_includesNewThreadPermalink: initial message includes new thread permalink', async () => {
-    const newThreadPermalink = 'https://workspace.slack.com/archives/C123/p1739000000001000';
-    mockSlackApi.getPermalink.mockResolvedValue(newThreadPermalink);
-
+  it('midThread_postsRedirect: posts redirect 🧵 message (not retention 📋)', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -211,45 +208,22 @@ describe('Scenario 1: mid-thread mention — initial message retention', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    const originalThreadMessages = mockSlackApi.postMessage.mock.calls.filter(
+    const sourceThreadMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) => call[2]?.threadTs === '1711234567.000100',
     );
 
-    // Block Kit: permalink is in blocks (accessory button URL), not in fallback text
-    const hasPermalinkMessage = originalThreadMessages.some((call: any[]) => {
-      const blocksJson = JSON.stringify(call[2]?.blocks ?? []);
-      return (
-        blocksJson.includes(newThreadPermalink) || (typeof call[1] === 'string' && call[1].includes(newThreadPermalink))
-      );
-    });
-
-    expect(hasPermalinkMessage).toBe(true);
-  });
-
-  // Trace: S1, Sec 3b — 📋 메시지 게시 확인
-  it('midThread_retainsInitialMessage: posts retention message with intent summary', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: '1711234567.000100',
-      ts: '1711234599.000200',
-      text: '@zhugeliang 여기 내용 정리해줘',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    const originalThreadMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === '1711234567.000100',
+    // Should have redirect 🧵, not retention 📋
+    const hasRedirect = sourceThreadMessages.some(
+      (call: any[]) => typeof call[1] === 'string' && call[1].includes('🧵'),
     );
-
-    const hasRetentionMessage = originalThreadMessages.some(
+    const hasRetention = sourceThreadMessages.some(
       (call: any[]) => typeof call[1] === 'string' && (call[1].includes('— 시작') || call[1].includes('📋')),
     );
 
-    expect(hasRetentionMessage).toBe(true);
+    expect(hasRedirect).toBe(true);
+    expect(hasRetention).toBe(false);
   });
 
-  // Trace: S1, Sec 5 — getPermalink null graceful degradation
   it('midThread_permalinkNull_gracefulDegradation: handles null permalink gracefully', async () => {
     mockSlackApi.getPermalink.mockResolvedValue(null);
 
@@ -364,16 +338,15 @@ describe('Scenario 3: sourceThread storage on session', () => {
 // ============================================================
 
 // ============================================================
-// Scenario 3 (v2) — Mid-thread: delete-then-retain ordering
+// Scenario 3 (v2) — Mid-thread: delete-then-redirect ordering
 // ============================================================
-describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
+describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
   beforeEach(() => {
     vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
     mockClaudeHandler.getSession.mockReturnValue(null);
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  // Trace: S3, Sec 3b — deleteThreadBotMessages ALWAYS called (even for mid-thread)
   it('midThread_alwaysCallsDelete: deleteThreadBotMessages called for mid-thread mentions', async () => {
     const event = {
       user: 'U_EXISTING_USER',
@@ -385,23 +358,20 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    // v2: deleteThreadBotMessages is NOW called for mid-thread (dispatch cleanup)
     expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
   });
 
-  // Trace: S3, Sec 3b — delete THEN post ordering
-  it('midThread_deletesBeforeRetention: delete happens before retention message', async () => {
+  it('midThread_deletesBeforeRedirect: delete happens before redirect message', async () => {
     const callOrder: string[] = [];
 
     mockSlackApi.deleteThreadBotMessages.mockImplementation(async () => {
       callOrder.push('delete');
     });
 
-    const originalPostMessage = mockSlackApi.postMessage;
     mockSlackApi.postMessage.mockImplementation(async (...args: any[]) => {
       const text = args[1];
-      if (typeof text === 'string' && (text.includes('📋') || text.includes('— 시작'))) {
-        callOrder.push('retention');
+      if (typeof text === 'string' && text.includes('🧵')) {
+        callOrder.push('redirect');
       }
       return { ts: 'msg123' };
     });
@@ -416,17 +386,16 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    // Contract: delete MUST happen before retention post
+    // Contract: delete MUST happen before redirect post
     const deleteIdx = callOrder.indexOf('delete');
-    const retentionIdx = callOrder.indexOf('retention');
+    const redirectIdx = callOrder.indexOf('redirect');
 
     expect(deleteIdx).toBeGreaterThanOrEqual(0);
-    expect(retentionIdx).toBeGreaterThanOrEqual(0);
-    expect(deleteIdx).toBeLessThan(retentionIdx);
+    expect(redirectIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeLessThan(redirectIdx);
   });
 
-  // Trace: S3, Sec 4 — retention message posted in original thread after delete
-  it('midThread_retentionPostedAfterDelete: retention message survives deletion', async () => {
+  it('midThread_redirectPostedAfterDelete: redirect message survives deletion', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -437,45 +406,14 @@ describe('Scenario 3 (v2): mid-thread delete-then-retain ordering', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    // deleteThreadBotMessages was called first
     expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalled();
 
-    // Retention message was posted to original thread
-    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
+    // Redirect 🧵 message posted to source thread (not retention 📋)
+    const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋')),
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('🧵'),
     );
-    expect(retentionMessages).toHaveLength(1);
-  });
-
-  // Trace: S3, Sec 5 — null permalink graceful handling
-  it('midThread_permalinkNull_graceful: posts retention without link when permalink is null', async () => {
-    mockSlackApi.getPermalink.mockResolvedValue(null);
-
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: '1711234567.000100',
-      ts: '1711234599.000200',
-      text: '@zhugeliang 여기 내용 정리해줘',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    // Should still post retention (without permalink)
-    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋')),
-    );
-    expect(retentionMessages).toHaveLength(1);
-
-    // Block Kit: when permalink is null, no button accessory should be present
-    const blocksJson = JSON.stringify(retentionMessages[0][2]?.blocks ?? []);
-    expect(blocksJson).not.toContain('source_open_thread');
+    expect(redirectMessages.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -548,20 +486,16 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
 });
 
 // ============================================================
-// Scenario 5 (v2) — Mid-thread: retention message has permalink
+// Scenario 5 (v2) — Mid-thread: unified redirect (no retention)
 // ============================================================
-describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
+describe('Scenario 5 (v2): mid-thread unified redirect', () => {
   beforeEach(() => {
     vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
     mockClaudeHandler.getSession.mockReturnValue(null);
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  // Trace: S5, Sec 3b — permalink in retention message
-  it('midThread_retentionIncludesPermalink: retention message contains new thread permalink', async () => {
-    const permalink = 'https://workspace.slack.com/archives/C123/p1739000000001000';
-    mockSlackApi.getPermalink.mockResolvedValue(permalink);
-
+  it('midThread_noRetention: does not post retention 📋 card for thread-originating mentions', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -572,16 +506,20 @@ describe('Scenario 5 (v2): mid-thread retention includes permalink', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
+    // No retention 📋 messages in source thread
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
         call[2]?.threadTs === '1711234567.000100' &&
         typeof call[1] === 'string' &&
         (call[1].includes('— 시작') || call[1].includes('📋')),
     );
+    expect(retentionMessages).toHaveLength(0);
 
-    expect(retentionMessages).toHaveLength(1);
-    // Block Kit: permalink is in blocks accessory button, not in fallback text
-    const blocksJson = JSON.stringify(retentionMessages[0][2]?.blocks ?? []);
-    expect(blocksJson).toContain(permalink);
+    // Instead, redirect 🧵 is posted
+    const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
+      (call: any[]) =>
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('🧵'),
+    );
+    expect(redirectMessages.length).toBeGreaterThanOrEqual(1);
   });
 });

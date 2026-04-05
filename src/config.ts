@@ -17,9 +17,6 @@ export const config = {
     appToken: process.env.SLACK_APP_TOKEN!,
     signingSecret: process.env.SLACK_SIGNING_SECRET!,
   },
-  anthropic: {
-    apiKey: process.env.ANTHROPIC_API_KEY || '', // Optional - only needed if not using Claude subscription
-  },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
@@ -64,12 +61,7 @@ export const config = {
 };
 
 export function validateConfig() {
-  const required = [
-    'SLACK_BOT_TOKEN',
-    'SLACK_APP_TOKEN',
-    'SLACK_SIGNING_SECRET',
-    // ANTHROPIC_API_KEY is optional - only needed if not using Claude subscription
-  ];
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
 
   const missing = required.filter((key) => !process.env[key]);
 
@@ -77,12 +69,8 @@ export function validateConfig() {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  // Log if using Claude subscription vs API key
-  if (!process.env.ANTHROPIC_API_KEY) {
-    logger.info('Using Claude subscription (no API key provided)');
-  } else {
-    logger.info('Using Anthropic API key');
-  }
+  // Auth is handled exclusively via Agent SDK (OAuth)
+  logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
 }
 
 /**
@@ -150,16 +138,9 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     }
   }
 
-  // ===== 3. Anthropic API Key Validation =====
-  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
-  if (!anthropicKey) {
-    warnings.push('⚠️ ANTHROPIC_API_KEY: Not set (using Claude subscription)');
-  } else if (!anthropicKey.startsWith('sk-ant-')) {
-    warnings.push(
-      `⚠️ ANTHROPIC_API_KEY: Unusual format (expected "sk-ant-...", got "${anthropicKey.substring(0, 10)}...")`,
-    );
-  } else {
-    logger.info('ANTHROPIC_API_KEY: Format OK (sk-ant-...)');
+  // ===== 3. Auth: Agent SDK Only (no ANTHROPIC_API_KEY needed) =====
+  if (process.env.ANTHROPIC_API_KEY) {
+    warnings.push('⚠️ ANTHROPIC_API_KEY is set but unused — all auth uses Agent SDK (OAuth)');
   }
 
   // ===== 4. GitHub Configuration =====
