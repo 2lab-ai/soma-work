@@ -571,11 +571,7 @@ export class SlackHandler {
    * Send a delete approval request to admin users via DM.
    * Non-admin users cannot delete bot messages directly.
    */
-  private async sendAdminDeleteApproval(
-    event: MessageEvent,
-    target: SlackPermalinkTarget,
-    say: any,
-  ): Promise<void> {
+  private async sendAdminDeleteApproval(event: MessageEvent, target: SlackPermalinkTarget, say: any): Promise<void> {
     const adminUserIds = getAdminUsers();
     if (adminUserIds.size === 0) {
       this.logger.warn('No admin users configured for DM delete approval');

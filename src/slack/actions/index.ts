@@ -452,7 +452,10 @@ export class ActionHandlers {
       // Notify the requester
       try {
         const requesterDm = await this.ctx.slackApi.openDmChannel(value.requesterId);
-        await this.ctx.slackApi.postMessage(requesterDm, '✅ 어드민이 삭제 요청을 승인했습니다. 메시지가 삭제되었습니다.');
+        await this.ctx.slackApi.postMessage(
+          requesterDm,
+          '✅ 어드민이 삭제 요청을 승인했습니다. 메시지가 삭제되었습니다.',
+        );
       } catch {
         // Best-effort notification
       }

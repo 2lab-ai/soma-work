@@ -424,17 +424,21 @@ describe('SlackHandler', () => {
     expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
     // Should send approval request to admin DM
     expect(mockSlackApi.openDmChannel).toHaveBeenCalledWith('U_ADMIN');
-    expect(mockSlackApi.postMessage).toHaveBeenCalledWith('D_ADMIN', '봇 메시지 삭제 요청', expect.objectContaining({
-      blocks: expect.arrayContaining([
-        expect.objectContaining({
-          type: 'actions',
-          elements: expect.arrayContaining([
-            expect.objectContaining({ action_id: 'dm_delete_approve' }),
-            expect.objectContaining({ action_id: 'dm_delete_reject' }),
-          ]),
-        }),
-      ]),
-    }));
+    expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+      'D_ADMIN',
+      '봇 메시지 삭제 요청',
+      expect.objectContaining({
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'actions',
+            elements: expect.arrayContaining([
+              expect.objectContaining({ action_id: 'dm_delete_approve' }),
+              expect.objectContaining({ action_id: 'dm_delete_reject' }),
+            ]),
+          }),
+        ]),
+      }),
+    );
     // Should notify the requester
     expect(say).toHaveBeenCalledWith({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
     expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
