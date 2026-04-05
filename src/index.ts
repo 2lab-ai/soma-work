@@ -364,11 +364,7 @@ async function start() {
       for (const [, session] of sessions) {
         if (session.conversationId === conversationId) {
           // Update session title with the summary title
-          claudeHandler.getSessionRegistry().updateSessionTitle(
-            session.channelId,
-            session.threadTs,
-            summaryTitle,
-          );
+          claudeHandler.getSessionRegistry().updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
           // Request re-render of the Slack thread surface
           slackHandler.requestThreadSurfaceRender(session);
           logger.debug('Summary title applied to session', {

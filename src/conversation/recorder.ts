@@ -23,9 +23,7 @@ let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) 
 
 // Optional callback fired when a summary is generated for an assistant turn.
 // Used to update session title on Slack thread header.
-let _onSummaryGenerated:
-  | ((conversationId: string, turn: ConversationTurn, summaryTitle: string) => void)
-  | null = null;
+let _onSummaryGenerated: ((conversationId: string, turn: ConversationTurn, summaryTitle: string) => void) | null = null;
 
 /**
  * Set a callback that fires after each turn is recorded.
