@@ -10,6 +10,16 @@ import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
 import { Logger } from './logger';
 import { SessionLink, type SessionLinks, type WorkflowType } from './types';
 
+/**
+ * Decode Slack HTML entities in text.
+ * Slack API encodes &, <, > as &amp;, &lt;, &gt; in message text.
+ * IMPORTANT: &amp; must be decoded LAST to avoid double-decoding
+ * (e.g. &amp;gt; should become &gt;, not >).
+ */
+export function decodeSlackEntities(text: string): string {
+  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
 // Default dispatch model - fast and cheap for classification
 // Can be overridden via DEFAULT_DISPATCH_MODEL env var
 const FALLBACK_DISPATCH_MODEL = 'claude-haiku-4-5-20251001';
@@ -483,14 +493,15 @@ export class DispatchService {
    * Prevents mention injection (<!channel>, <@U123>) and link formatting
    */
   private sanitizeTitle(title: string): string {
-    return (
+    const cleaned =
       title
         .replace(/<[!@#][^>]*>/g, '') // Remove <!channel>, <@U123>, <#C123>
         .replace(/<[^|>]+\|([^>]+)>/g, '$1') // Convert <url|text> to text
         .replace(/<[^>]+>/g, '') // Remove remaining <url>
         .replace(/\s+/g, ' ')
-        .trim() || 'New Session'
-    );
+        .trim() || 'New Session';
+    // Decode Slack HTML entities (LLMs sometimes include them in generated titles)
+    return decodeSlackEntities(cleaned);
   }
 
   /**
@@ -499,8 +510,10 @@ export class DispatchService {
   private generateFallbackTitle(message: string): string {
     if (!message) return 'New Session';
 
+    // Decode Slack HTML entities before truncating
+    const decoded = decodeSlackEntities(message);
     // Take first 50 chars, clean up
-    const title = message.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 50);
+    const title = decoded.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 50);
 
     return title.length === 50 ? `${title}...` : title || 'New Session';
   }

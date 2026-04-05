@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
@@ -254,6 +255,7 @@ export class SessionRegistry {
       lastActivity: new Date(),
       model: sessionModel,
       logVerbosity: userSettingsStore.getUserLogVerbosityFlags(ownerId),
+      effort: userSettingsStore.getUserDefaultEffort(ownerId),
       state: 'INITIALIZING', // Start in INITIALIZING state
       activityState: 'idle',
     };
@@ -510,7 +512,7 @@ export class SessionRegistry {
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
     if (session && !session.title) {
-      session.title = title;
+      session.title = decodeSlackEntities(title);
       this.saveSessions();
     }
   }
@@ -522,7 +524,7 @@ export class SessionRegistry {
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
     if (session) {
-      session.title = title;
+      session.title = decodeSlackEntities(title);
       this.saveSessions();
     }
   }
