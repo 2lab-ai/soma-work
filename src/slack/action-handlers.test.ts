@@ -78,6 +78,8 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith(/^panel_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_cancel', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_confirm', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('dm_delete_approve', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('dm_delete_reject', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('custom_input_single', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^custom_input_multi_/, expect.any(Function));
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));

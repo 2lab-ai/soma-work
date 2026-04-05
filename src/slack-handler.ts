@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
@@ -50,7 +51,7 @@ interface SlackPermalinkTarget {
   messageTs: string;
 }
 
-interface ManagedDeleteActionValue {
+interface DmDeleteActionValue {
   requesterId: string;
   targetChannel: string;
   targetTs: string;
@@ -248,6 +249,10 @@ export class SlackHandler {
       if (handledCleanupRequest) {
         return;
       }
+      // DM messages that aren't cleanup requests should not enter the session pipeline.
+      // DMs are reserved for bot management commands (message deletion, etc.).
+      this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
+      return;
     }
 
     // Immediately acknowledge the message with eyes emoji
@@ -535,97 +540,104 @@ export class SlackHandler {
       return false;
     }
 
-    const isManaged = this.isManagedBotMessage(target.channelId, target.messageTs, targetMessage.thread_ts);
-
-    if (isManaged) {
-      const value: ManagedDeleteActionValue = {
-        requesterId: event.user,
-        targetChannel: target.channelId,
-        targetTs: target.messageTs,
-      };
-
-      await say({
-        text: '봇 관리 메시지 삭제 확인',
-        blocks: [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: '이 메시지는 봇이 관리하는 세션 메시지입니다. 정말 삭제하시겠습니까?',
-            },
-          },
-          {
-            type: 'actions',
-            elements: [
-              {
-                type: 'button',
-                action_id: 'managed_message_delete_cancel',
-                text: { type: 'plain_text', text: '취소', emoji: true },
-                value: JSON.stringify(value),
-              },
-              {
-                type: 'button',
-                action_id: 'managed_message_delete_confirm',
-                text: { type: 'plain_text', text: '삭제', emoji: true },
-                style: 'danger',
-                value: JSON.stringify(value),
-              },
-            ],
-          },
-        ],
-      });
-
-      this.logger.info('DM cleanup requires confirmation for managed bot message', {
-        requesterId: event.user,
-        targetChannel: target.channelId,
-        targetTs: target.messageTs,
-      });
+    // Admin users can delete bot messages directly
+    if (isAdminUser(event.user)) {
+      try {
+        await this.slackApi.deleteMessage(target.channelId, target.messageTs);
+        await this.slackApi.addReaction(event.channel, event.ts, 'white_check_mark');
+        this.logger.info('Admin deleted bot message via DM', {
+          adminId: event.user,
+          targetChannel: target.channelId,
+          targetTs: target.messageTs,
+        });
+      } catch (error) {
+        this.logger.warn('Admin DM cleanup failed', {
+          adminId: event.user,
+          targetChannel: target.channelId,
+          targetTs: target.messageTs,
+          error,
+        });
+        await say({ text: '⚠️ 메시지 삭제에 실패했습니다.' });
+      }
       return true;
     }
 
-    try {
-      await this.slackApi.deleteMessage(target.channelId, target.messageTs);
-      this.logger.info('DM cleanup removed unmanaged bot message', {
-        requesterId: event.user,
-        targetChannel: target.channelId,
-        targetTs: target.messageTs,
-      });
-    } catch (error) {
-      this.logger.warn('DM cleanup failed to delete unmanaged bot message', {
-        requesterId: event.user,
-        targetChannel: target.channelId,
-        targetTs: target.messageTs,
-        error,
-      });
-    }
-
+    // Non-admin users: send delete request to admins for approval
+    await this.sendAdminDeleteApproval(event, target, say);
     return true;
   }
 
-  private isManagedBotMessage(channelId: string, messageTs: string, messageThreadTs?: string): boolean {
-    const threadTs = messageThreadTs || messageTs;
-
-    const sessionKey = this.claudeHandler.getSessionKey(channelId, threadTs);
-    if (this.claudeHandler.getSessionByKey(sessionKey)) {
-      return true;
+  /**
+   * Send a delete approval request to admin users via DM.
+   * Non-admin users cannot delete bot messages directly.
+   */
+  private async sendAdminDeleteApproval(event: MessageEvent, target: SlackPermalinkTarget, say: any): Promise<void> {
+    const adminUserIds = getAdminUsers();
+    if (adminUserIds.size === 0) {
+      this.logger.warn('No admin users configured for DM delete approval');
+      await say({ text: '⚠️ 어드민이 설정되어 있지 않아 삭제 요청을 보낼 수 없습니다.' });
+      return;
     }
 
-    for (const session of this.claudeHandler.getAllSessions().values()) {
-      if (session.channelId !== channelId) {
-        continue;
-      }
-      if (session.threadRootTs === messageTs) {
-        return true;
-      }
-      if (session.actionPanel?.messageTs === messageTs) {
-        return true;
-      }
-      if (session.threadTs === threadTs) {
-        return true;
+    const value: DmDeleteActionValue = {
+      requesterId: event.user,
+      targetChannel: target.channelId,
+      targetTs: target.messageTs,
+    };
+
+    const permalink = `https://slack.com/archives/${target.channelId}/p${target.messageTs.replace('.', '')}`;
+
+    // Notify each admin
+    let notified = 0;
+    for (const adminId of adminUserIds) {
+      try {
+        const adminDmChannel = await this.slackApi.openDmChannel(adminId);
+        await this.slackApi.postMessage(adminDmChannel, '봇 메시지 삭제 요청', {
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `<@${event.user}>님이 봇 메시지 삭제를 요청했습니다.\n<${permalink}|메시지 보기>`,
+              },
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  action_id: 'dm_delete_reject',
+                  text: { type: 'plain_text', text: '거절', emoji: true },
+                  value: JSON.stringify(value),
+                },
+                {
+                  type: 'button',
+                  action_id: 'dm_delete_approve',
+                  text: { type: 'plain_text', text: '승인', emoji: true },
+                  style: 'danger',
+                  value: JSON.stringify(value),
+                },
+              ],
+            },
+          ],
+        });
+        notified++;
+      } catch (error) {
+        this.logger.warn('Failed to send delete approval request to admin', { adminId, error });
       }
     }
 
-    return false;
+    if (notified > 0) {
+      await say({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
+      this.logger.info('DM cleanup approval sent to admins', {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        adminsNotified: notified,
+      });
+    } else {
+      await say({ text: '⚠️ 어드민에게 삭제 요청을 보내지 못했습니다.' });
+    }
   }
 
   private extractSlackPermalinkTarget(event: MessageEvent): SlackPermalinkTarget | null {
