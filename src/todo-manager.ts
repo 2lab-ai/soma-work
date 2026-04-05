@@ -9,6 +9,10 @@ export interface Todo {
   dependencies?: string[];
   /** Present-continuous form shown during execution (e.g. "Running tests") */
   activeForm?: string;
+  /** Epoch ms when task transitioned to in_progress */
+  startedAt?: number;
+  /** Epoch ms when task transitioned to completed */
+  completedAt?: number;
 }
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
@@ -53,6 +57,31 @@ export class TodoManager {
       });
       return;
     }
+
+    // ── Timing: carry over / stamp startedAt & completedAt ──
+    const previous = this.todos.get(sessionId) || [];
+    const now = Date.now();
+    for (const task of validated) {
+      const prev = previous.find((p) => p.id === task.id);
+      if (prev) {
+        // Carry forward existing timestamps
+        if (prev.startedAt && !task.startedAt) task.startedAt = prev.startedAt;
+        if (prev.completedAt && !task.completedAt) task.completedAt = prev.completedAt;
+      }
+      // Stamp on status transitions (handle regressions too)
+      if (task.status === 'pending') {
+        // Regressed to pending — clear all timing
+        task.startedAt = undefined;
+        task.completedAt = undefined;
+      } else if (task.status === 'in_progress') {
+        if (!task.startedAt) task.startedAt = now;
+        task.completedAt = undefined; // clear stale completion on rework
+      } else if (task.status === 'completed') {
+        if (!task.startedAt) task.startedAt = now; // edge case: jumped straight to completed
+        if (!task.completedAt) task.completedAt = now;
+      }
+    }
+
     this.todos.set(sessionId, validated);
     if (this._onUpdate) this._onUpdate(sessionId, validated);
     this.logger.debug('Updated todos for session', {

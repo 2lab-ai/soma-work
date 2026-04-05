@@ -17,7 +17,6 @@ BASE_DIRECTORY=/tmp           # 유저별 디렉토리 기준 ({BASE_DIRECTORY}/
 
 ### Optional
 ```env
-ANTHROPIC_API_KEY=...           # Claude Code 구독 없을 때만 필요
 GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY="-----BEGIN RSA..."
 GITHUB_INSTALLATION_ID=12345678
