@@ -20,7 +20,7 @@ export async function generateTitle(conversationContent: string): Promise<string
 
   const truncated =
     conversationContent.length > 3000
-      ? conversationContent.substring(0, 3000) + '\n...[truncated]'
+      ? `${conversationContent.substring(0, 3000)}\n...[truncated]`
       : conversationContent;
 
   const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;

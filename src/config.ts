@@ -61,11 +61,7 @@ export const config = {
 };
 
 export function validateConfig() {
-  const required = [
-    'SLACK_BOT_TOKEN',
-    'SLACK_APP_TOKEN',
-    'SLACK_SIGNING_SECRET',
-  ];
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
 
   const missing = required.filter((key) => !process.env[key]);
 

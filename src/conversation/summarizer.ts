@@ -36,7 +36,7 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
   // Truncate very long content to save tokens
   const maxContentLength = 8000;
   const truncatedContent =
-    content.length > maxContentLength ? content.substring(0, maxContentLength) + '\n...[truncated]' : content;
+    content.length > maxContentLength ? `${content.substring(0, maxContentLength)}\n...[truncated]` : content;
 
   const prompt = `Summarize this AI assistant response. Output ONLY a JSON object with "title" (1 short line, max 60 chars) and "body" (3 concise lines separated by \\n). No markdown, no code blocks, just raw JSON.
 
