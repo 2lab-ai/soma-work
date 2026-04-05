@@ -3238,7 +3238,7 @@ function connectWs() {
           renderPanelTasks(msg.tasks);
         }
       } else if (msg.type === 'conversation_update') {
-        // If panel is open for this conversation, append the turn
+        // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
           if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
@@ -3249,7 +3249,14 @@ function connectWs() {
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
           } else {
-            appendTurnToPanel(msg.turn);
+            // Check if this turn already exists (e.g., summary update for existing assistant turn).
+            // If so, replace in-place instead of appending a duplicate.
+            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + msg.turn.id + '"]') : null;
+            if (existingTurn) {
+              updateTurnInPanel(existingTurn, msg.turn);
+            } else {
+              appendTurnToPanel(msg.turn);
+            }
           }
         }
       } else if (msg.type === 'session_action') {
@@ -3378,8 +3385,9 @@ function openPanel(sessionKey) {
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
+  var turnIdAttr = t.id ? ' data-turn-id="' + esc(t.id) + '"' : '';
   if (t.role === 'user') {
-    return '<div class="turn user">'
+    return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
@@ -3403,7 +3411,7 @@ function renderTurn(t, _idx, _arr, convId) {
         + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
         + '</details>';
     }
-    return '<div class="turn assistant">'
+    return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
@@ -3418,6 +3426,17 @@ function appendTurnToPanel(turn) {
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
   attachRawToggleHandlers();
+}
+
+/** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
+function updateTurnInPanel(existingEl, turn) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderTurn(turn);
+  var newEl = tmp.firstElementChild;
+  if (newEl) {
+    existingEl.replaceWith(newEl);
+    attachRawToggleHandlers();
+  }
 }
 
 var _rawLoadedCache = {};
