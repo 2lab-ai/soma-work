@@ -293,6 +293,15 @@ export class ActionHandlers {
     return this.choiceHandler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, userId);
   }
 
+  /** Delegate dashboard multi-choice form submission to ChoiceActionHandler */
+  async handleDashboardMultiChoiceAnswer(
+    sessionKey: string,
+    selections: Record<string, { choiceId: string; label: string }>,
+    userId: string,
+  ): Promise<void> {
+    return this.choiceHandler.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
+  }
+
   // 폼 상태 관리 메서드 (기존 API 호환)
   getPendingForm(formId: string): PendingChoiceFormData | undefined {
     return this.formStore.get(formId);
