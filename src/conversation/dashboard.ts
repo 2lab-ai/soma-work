@@ -766,8 +766,16 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
-      if (!choiceId || !label || !question) {
-        reply.status(400).send({ error: 'choiceId, label, and question are required' });
+      if (
+        !choiceId || typeof choiceId !== 'string' ||
+        !label || typeof label !== 'string' ||
+        !question || typeof question !== 'string'
+      ) {
+        reply.status(400).send({ error: 'choiceId, label, and question are required and must be strings' });
+        return;
+      }
+      if (choiceId.length > 100 || label.length > 500 || question.length > 2000) {
+        reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
       if (!requireSessionOwner(request, reply, key)) return;
@@ -1894,6 +1902,9 @@ function esc(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
 }
@@ -2080,7 +2091,7 @@ function renderCard(s, col) {
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
       const choiceBtns = s.pendingQuestion.choices.map(function(c) {
-        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(s.pendingQuestion.question) + '\\',this)" title="' + esc(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
+        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(s.pendingQuestion.question) + '\\',this)" title="' + escAttr(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
         + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question).slice(0, 80) + '</div>'
