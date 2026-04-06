@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Logger } from '../logger';
 import { hasCachedPlugin, readCacheMeta, writeCacheMeta } from './plugin-cache';
-import { type ScanResult, formatScanReport, scanPluginDirectory } from './security-scanner';
+import { formatScanReport, type ScanResult, scanPluginDirectory } from './security-scanner';
 import {
   type CacheMeta,
   EXTERNAL_PLUGIN_PATH,
@@ -65,7 +65,11 @@ export interface FetchOptions {
   skipSecurityGate?: boolean;
 }
 
-function failure(code: FetchFailureCode, message: string, extra?: Partial<Omit<FetchFailure, 'failed' | 'code' | 'message'>>): FetchFailure {
+function failure(
+  code: FetchFailureCode,
+  message: string,
+  extra?: Partial<Omit<FetchFailure, 'failed' | 'code' | 'message'>>,
+): FetchFailure {
   return { failed: true, code, message, ...extra };
 }
 
@@ -432,7 +436,10 @@ export async function fetchPlugin(
         pluginName,
         available: Object.keys(manifest.plugins),
       });
-      return failure('PLUGIN_NOT_IN_MANIFEST', `Plugin "${pluginName}" not found in marketplace.json. Available: ${Object.keys(manifest.plugins).join(', ')}`);
+      return failure(
+        'PLUGIN_NOT_IN_MANIFEST',
+        `Plugin "${pluginName}" not found in marketplace.json. Available: ${Object.keys(manifest.plugins).join(', ')}`,
+      );
     }
 
     // Ensure plugins dir exists
@@ -470,7 +477,7 @@ export async function fetchPlugin(
       if (securityBlock) {
         return failure('SECURITY_BLOCKED', `Plugin blocked by security scan: ${securityBlock.riskLevel} risk`, {
           riskLevel: securityBlock.riskLevel,
-          securityFindings: securityBlock.findings.map(f => ({
+          securityFindings: securityBlock.findings.map((f) => ({
             rule: f.rule,
             description: f.description,
             severity: f.severity,
@@ -582,15 +589,19 @@ async function fetchExternalPlugin(
     if (!options?.skipSecurityGate) {
       const securityBlock = enforceSecurityGate(installedPath, pluginName);
       if (securityBlock) {
-        return failure('SECURITY_BLOCKED', `External plugin blocked by security scan: ${securityBlock.riskLevel} risk`, {
-          riskLevel: securityBlock.riskLevel,
-          securityFindings: securityBlock.findings.map(f => ({
-            rule: f.rule,
-            description: f.description,
-            severity: f.severity,
-            file: f.file,
-          })),
-        });
+        return failure(
+          'SECURITY_BLOCKED',
+          `External plugin blocked by security scan: ${securityBlock.riskLevel} risk`,
+          {
+            riskLevel: securityBlock.riskLevel,
+            securityFindings: securityBlock.findings.map((f) => ({
+              rule: f.rule,
+              description: f.description,
+              severity: f.severity,
+              file: f.file,
+            })),
+          },
+        );
       }
     }
 

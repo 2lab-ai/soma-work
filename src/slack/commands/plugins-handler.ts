@@ -155,7 +155,7 @@ export class PluginsHandler implements CommandHandler {
 
     try {
       const result = await pluginManager.forceRefresh();
-      const failedDetails = result.details.filter(d => d.status === 'error' && d.failureCode);
+      const failedDetails = result.details.filter((d) => d.status === 'error' && d.failureCode);
 
       // If there are failures with structured error codes, use Block Kit UI
       if (failedDetails.length > 0) {
@@ -187,7 +187,13 @@ export class PluginsHandler implements CommandHandler {
   }
 
   /** Build simple text lines for update result (no failures). */
-  private buildUpdateResultLines(result: { total: number; updated: number; unchanged: number; errors: string[]; details: PluginUpdateDetail[] }): string[] {
+  private buildUpdateResultLines(result: {
+    total: number;
+    updated: number;
+    unchanged: number;
+    errors: string[];
+    details: PluginUpdateDetail[];
+  }): string[] {
     const lines: string[] = [
       '✅ *플러그인 업데이트 완료*',
       '',
@@ -216,7 +222,12 @@ export class PluginsHandler implements CommandHandler {
   }
 
   /** Build fallback text for Block Kit message. */
-  private buildUpdateResultText(result: { total: number; updated: number; unchanged: number; errors: string[] }): string {
+  private buildUpdateResultText(result: {
+    total: number;
+    updated: number;
+    unchanged: number;
+    errors: string[];
+  }): string {
     return `플러그인 업데이트 완료 — 총: ${result.total}, 업데이트: ${result.updated}, 에러: ${result.errors.length}`;
   }
 
@@ -233,9 +244,7 @@ export class PluginsHandler implements CommandHandler {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: hasOnlyErrors
-          ? '⚠️ *플러그인 업데이트 — 일부 실패*'
-          : '✅ *플러그인 업데이트 완료*',
+        text: hasOnlyErrors ? '⚠️ *플러그인 업데이트 — 일부 실패*' : '✅ *플러그인 업데이트 완료*',
       },
     });
 
@@ -251,7 +260,7 @@ export class PluginsHandler implements CommandHandler {
     blocks.push({ type: 'divider' });
 
     // Successful plugins (brief)
-    const successDetails = result.details.filter(d => d.status !== 'error');
+    const successDetails = result.details.filter((d) => d.status !== 'error');
     if (successDetails.length > 0) {
       for (const d of successDetails) {
         blocks.push({

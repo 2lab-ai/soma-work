@@ -94,7 +94,7 @@ export class PluginUpdateActionHandler {
       });
 
       // Find this plugin's result
-      const detail = result.details.find(d => d.name === pluginName);
+      const detail = result.details.find((d) => d.name === pluginName);
 
       if (detail && detail.status !== 'error') {
         const sha = detail.newSha || '-';
