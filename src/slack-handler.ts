@@ -877,4 +877,18 @@ export class SlackHandler {
   getTodoManager(): TodoManager {
     return this.todoManager;
   }
+
+  /** Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup */
+  async handleDashboardChoiceAnswer(
+    sessionKey: string,
+    choiceId: string,
+    label: string,
+    question: string,
+  ): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, session.ownerId);
+  }
 }
