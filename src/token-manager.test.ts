@@ -509,10 +509,18 @@ describe('TokenManager', () => {
       const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
 
       // Pre-write cooldown file
-      fs.writeFileSync(filePath, JSON.stringify({
-        cooldowns: { ai2: { until: cooldownTime.toISOString() } },
-        activeToken: 'ai3',
-      }, null, 2), 'utf-8');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            cooldowns: { ai2: { until: cooldownTime.toISOString() } },
+            activeToken: 'ai3',
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
 
       process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
       const { tokenManager } = await import('./token-manager');
@@ -530,10 +538,18 @@ describe('TokenManager', () => {
       const expiredTime = new Date(Date.now() - 3600000); // 1hr ago
       const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
 
-      fs.writeFileSync(filePath, JSON.stringify({
-        cooldowns: { ai2: { until: expiredTime.toISOString() } },
-        activeToken: 'ai2',
-      }, null, 2), 'utf-8');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            cooldowns: { ai2: { until: expiredTime.toISOString() } },
+            activeToken: 'ai2',
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
 
       process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
       const { tokenManager } = await import('./token-manager');
@@ -551,10 +567,18 @@ describe('TokenManager', () => {
       const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
 
       // ai2 is persisted as active but has cooldown
-      fs.writeFileSync(filePath, JSON.stringify({
-        cooldowns: { ai2: { until: cooldownTime.toISOString() } },
-        activeToken: 'ai2',
-      }, null, 2), 'utf-8');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            cooldowns: { ai2: { until: cooldownTime.toISOString() } },
+            activeToken: 'ai2',
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
 
       process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
       const { tokenManager } = await import('./token-manager');
@@ -592,16 +616,24 @@ describe('TokenManager', () => {
 
     it('should select earliest recovery when all tokens on cooldown at restore', async () => {
       const earlyCooldown = new Date(Date.now() + 1800000); // 30min
-      const lateCooldown = new Date(Date.now() + 3600000);  // 1hr
+      const lateCooldown = new Date(Date.now() + 3600000); // 1hr
       const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
 
-      fs.writeFileSync(filePath, JSON.stringify({
-        cooldowns: {
-          ai2: { until: lateCooldown.toISOString() },
-          ai3: { until: earlyCooldown.toISOString() },
-        },
-        activeToken: 'ai2',
-      }, null, 2), 'utf-8');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            cooldowns: {
+              ai2: { until: lateCooldown.toISOString() },
+              ai3: { until: earlyCooldown.toISOString() },
+            },
+            activeToken: 'ai2',
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
 
       process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
       const { tokenManager } = await import('./token-manager');
