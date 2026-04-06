@@ -238,11 +238,13 @@ describe('SessionInitializer — workspace wiring integration', () => {
   // ===== Bug: CWD ENOENT after sleep (PR #362) =====
 
   it('recreates sessionWorkingDir when it has been deleted (e.g. OS /tmp cleanup after sleep)', async () => {
-    const fs = await import('fs');
+    const fs = await import('node:fs');
     // Use a path that definitely does NOT exist on disk
     const deletedDir = '/tmp/U123/session_DELETED_99999999_0000';
     // Ensure it really doesn't exist
-    try { fs.rmSync(deletedDir, { recursive: true, force: true }); } catch {}
+    try {
+      fs.rmSync(deletedDir, { recursive: true, force: true });
+    } catch {}
 
     mockClaudeHandler.getSession.mockReturnValue({
       ownerId: 'U123',
@@ -265,14 +267,15 @@ describe('SessionInitializer — workspace wiring integration', () => {
     const result = await sessionInitializer.initialize(event as any, '/tmp/U123');
 
     // The returned workingDirectory must exist on disk (to prevent spawn ENOENT)
-    expect(fs.existsSync(result!.workingDirectory)).toBe(true);
+    expect(fs.existsSync(result?.workingDirectory)).toBe(true);
 
     // Cleanup
-    try { fs.rmSync(deletedDir, { recursive: true, force: true }); } catch {}
+    try {
+      fs.rmSync(deletedDir, { recursive: true, force: true });
+    } catch {}
   });
 
   it('falls back to user dir when sessionWorkingDir cannot be recreated', async () => {
-    const fs = await import('fs');
     // Use an impossible path that cannot be created
     const impossibleDir = '/dev/null/impossible_session_dir';
 
@@ -297,6 +300,6 @@ describe('SessionInitializer — workspace wiring integration', () => {
     const result = await sessionInitializer.initialize(event as any, '/tmp/U123');
 
     // Should fall back to user dir, not use the impossible path
-    expect(result!.workingDirectory).toBe('/tmp/U123');
+    expect(result?.workingDirectory).toBe('/tmp/U123');
   });
 });
