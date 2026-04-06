@@ -196,6 +196,8 @@ export interface ActionPanelState {
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];
+  /** Raw question data for dashboard rendering (set when ASK_USER_QUESTION fires, cleared on answer) */
+  pendingQuestion?: UserChoice | UserChoices;
   renderKey?: string;
   lastRenderedAt?: number;
   prStatus?: ActionPanelPRStatus;
