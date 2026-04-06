@@ -72,6 +72,10 @@ export class ChoiceActionHandler {
       // 세션 확인 및 메시지 처리
       if (session) {
         await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // Clear pending question from session (dashboard sync)
+        if (session.actionPanel) {
+          session.actionPanel.pendingQuestion = undefined;
+        }
         // Delete tracked completion messages on choice selection (S8)
         if (channel) {
           const threadRootTs = session.threadRootTs;
@@ -359,6 +363,10 @@ export class ChoiceActionHandler {
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
       await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
+      // Clear pending question from session (dashboard sync)
+      if (session.actionPanel) {
+        session.actionPanel.pendingQuestion = undefined;
+      }
       // Delete tracked completion messages on form submission (S8)
       if (channel) {
         const formThreadRootTs = session.threadRootTs;
@@ -398,6 +406,94 @@ export class ChoiceActionHandler {
         '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
       );
     }
+  }
+
+  /**
+   * Handle choice selection from the dashboard (same logic as Slack button click).
+   * Updates Slack messages, clears thread header, transitions state, and sends choice to Claude.
+   */
+  async handleChoiceFromDashboard(
+    sessionKey: string,
+    choiceId: string,
+    label: string,
+    question: string,
+    userId: string,
+  ): Promise<void> {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    const channel = session.channelId;
+    const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
+    const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+
+    this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
+
+    // Update Slack choice messages with selection confirmation
+    const completedBlocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`,
+        },
+      },
+    ];
+    const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+    for (const targetTs of targetTimestamps) {
+      try {
+        await this.ctx.slackApi.updateMessage(
+          channel,
+          targetTs,
+          `✅ *${question}*\n선택: *${choiceId}. ${label}* (대시보드)`,
+          completedBlocks,
+          [],
+        );
+      } catch (error) {
+        this.logger.warn('Failed to update choice message from dashboard', { targetTs, error });
+      }
+    }
+
+    // Clear thread header choice + pending question
+    await this.ctx.threadPanel?.clearChoice(sessionKey);
+    if (session.actionPanel) {
+      session.actionPanel.pendingQuestion = undefined;
+    }
+
+    // Delete tracked completion messages
+    if (channel) {
+      const threadRootTs = session.threadRootTs;
+      this.ctx.completionMessageTracker
+        ?.deleteAll(
+          sessionKey,
+          async (ch, ts) => {
+            if (threadRootTs && ts === threadRootTs) {
+              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)', {
+                sessionKey,
+                ts,
+                threadRootTs,
+              });
+              return;
+            }
+            try {
+              await this.ctx.slackApi.deleteMessage(ch, ts);
+            } catch {}
+          },
+          channel,
+        )
+        .catch(() => {});
+    }
+
+    // Transition waiting → working
+    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+
+    // Send choiceId as user message to Claude
+    const say = this.createSayFn(channel);
+    await this.ctx.messageHandler(
+      { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+      say,
+    );
   }
 
   private createSayFn(channel: string): SayFn {

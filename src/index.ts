@@ -8,6 +8,7 @@ import {
   broadcastSessionUpdate,
   broadcastTaskUpdate,
   initRecorder,
+  setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardSessionAccessor,
@@ -264,6 +265,12 @@ async function start() {
         dashboardSay,
       );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+    });
+
+    // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
+    setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
+      await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question);
+      logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
     });
 
     // Connect dashboard: real-time task updates
