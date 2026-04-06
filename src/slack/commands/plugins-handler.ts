@@ -283,11 +283,13 @@ export class PluginsHandler implements CommandHandler {
       });
 
       // Action buttons: Ignore always, Force Update only for SECURITY_BLOCKED
+      // Slack action_id max is 255 chars — truncate plugin name to stay within limit
+      const actionSuffix = d.name.length > 200 ? d.name.slice(0, 200) : d.name;
       const pluginValue = JSON.stringify({ pluginName: d.name, failureCode: d.failureCode });
       const elements: any[] = [
         {
           type: 'button',
-          action_id: `plugin_update_ignore_${d.name}`,
+          action_id: `plugin_update_ignore_${actionSuffix}`,
           text: { type: 'plain_text', text: '무시 (Ignore)', emoji: true },
           value: pluginValue,
         },
@@ -296,7 +298,7 @@ export class PluginsHandler implements CommandHandler {
       if (d.failureCode === 'SECURITY_BLOCKED') {
         elements.push({
           type: 'button',
-          action_id: `plugin_update_force_${d.name}`,
+          action_id: `plugin_update_force_${actionSuffix}`,
           text: { type: 'plain_text', text: '⚠️ 보안 우회 설치 (Force Update)', emoji: true },
           style: 'danger',
           value: pluginValue,

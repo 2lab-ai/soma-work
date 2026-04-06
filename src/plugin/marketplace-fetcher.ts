@@ -389,9 +389,9 @@ export async function fetchPlugin(
   const ref = marketplace.ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);
 
-  // Check if cache is current
+  // Check if cache is current (skip cache if force options provided — e.g. security gate bypass)
   const remoteSha = resolveRemoteSha(marketplace.repo, ref);
-  if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
+  if (!options?.skipSecurityGate && remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.info('Plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
     return cachedResult(pluginsDir, pluginName, remoteSha);
   }
