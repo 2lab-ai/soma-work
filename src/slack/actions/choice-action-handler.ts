@@ -8,6 +8,9 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { PendingFormStore } from './pending-form-store';
 import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
+/** Sentinel choiceId for custom text input (직접입력) */
+const CUSTOM_INPUT_CHOICE_ID = '직접입력';
+
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
@@ -321,7 +324,7 @@ export class ChoiceActionHandler {
 
     const responses = pendingForm.questions.map((q) => {
       const sel = pendingForm.selections[q.id];
-      if (sel.choiceId === '직접입력') {
+      if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
         return `${q.question}: (직접입력) ${sel.label}`;
       }
       return `${q.question}: ${sel.choiceId}. ${sel.label}`;
@@ -580,7 +583,7 @@ export class ChoiceActionHandler {
         throw new Error(`Missing answer for question: ${q.id}`);
       }
       // Validate choiceId against actual choices (skip for custom input)
-      if (sel.choiceId !== '직접입력') {
+      if (sel.choiceId !== CUSTOM_INPUT_CHOICE_ID) {
         const validIds = q.choices.map((c: { id: string }) => c.id);
         if (!validIds.includes(sel.choiceId)) {
           this.logger.warn('Dashboard multi-choice rejected — invalid choiceId', {
@@ -599,11 +602,14 @@ export class ChoiceActionHandler {
 
     this.logger.info('Dashboard multi-choice submitted', { sessionKey, selections, userId });
 
+    // Save pendingQuestion for rollback in case messageHandler fails
+    const savedPendingQuestion = session.actionPanel?.pendingQuestion;
+
     try {
       // Build combined response text (same format as Slack form submission)
       const responses = questions.map((q: { id: string; question: string }) => {
         const sel = selections[q.id];
-        if (sel.choiceId === '직접입력') {
+        if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
           return `${q.question}: (직접입력) ${sel.label}`;
         }
         return `${q.question}: ${sel.choiceId}. ${sel.label}`;
@@ -638,8 +644,15 @@ export class ChoiceActionHandler {
         }
       }
 
-      // Clear thread header + pending question
-      await this.ctx.threadPanel?.clearChoice(sessionKey);
+      // Clear thread header (non-critical — don't abort submission on failure)
+      try {
+        await this.ctx.threadPanel?.clearChoice(sessionKey);
+      } catch (clearError) {
+        this.logger.warn('Failed to clear thread panel choice (dashboard multi-choice)', {
+          sessionKey,
+          error: clearError,
+        });
+      }
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
       }
@@ -696,6 +709,10 @@ export class ChoiceActionHandler {
     } catch (error) {
       this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
       try {
+        // Restore pendingQuestion so user can retry from dashboard or Slack
+        if (session.actionPanel && savedPendingQuestion) {
+          session.actionPanel.pendingQuestion = savedPendingQuestion;
+        }
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
       } catch (rollbackError) {
         this.logger.error('Failed to rollback activity state after dashboard multi-choice error', {

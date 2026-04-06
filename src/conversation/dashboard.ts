@@ -844,8 +844,19 @@ export async function registerDashboardRoutes(
   }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware] }, async (request, reply) => {
     const { key } = request.params;
     const { selections } = request.body || {};
-    if (!selections || typeof selections !== 'object' || Object.keys(selections).length === 0) {
+    if (
+      !selections ||
+      typeof selections !== 'object' ||
+      Array.isArray(selections) ||
+      Object.keys(selections).length === 0
+    ) {
       reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
+      return;
+    }
+    // Reject payloads with too many selections (max 50 questions per form)
+    const selKeys = Object.keys(selections);
+    if (selKeys.length > 50) {
+      reply.status(400).send({ error: 'Too many selections' });
       return;
     }
     // Validate each selection entry
@@ -858,7 +869,7 @@ export async function registerDashboardRoutes(
         !sel.label ||
         typeof sel.label !== 'string'
       ) {
-        reply.status(400).send({ error: `Invalid selection for question ${qId}` });
+        reply.status(400).send({ error: 'Invalid selection entry' });
         return;
       }
       if (sel.choiceId.length > 200 || sel.label.length > 1000) {
@@ -881,6 +892,12 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: 'Session not found' });
       } else if (errMsg === 'Session is not waiting for a choice') {
         reply.status(409).send({ error: 'Session is not waiting for choices' });
+      } else if (errMsg === 'Session has no pending multi-choice question') {
+        reply.status(409).send({ error: 'Session has no pending multi-choice question' });
+      } else if (errMsg.startsWith('Missing answer for question')) {
+        reply.status(400).send({ error: errMsg });
+      } else if (errMsg === 'Invalid choice ID') {
+        reply.status(422).send({ error: 'Invalid choice ID' });
       } else {
         logger.error('Error answering multi-choice from dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -2496,7 +2513,10 @@ var _mcState = {};
 
 function renderMultiChoiceCard(s) {
   var q = s.pendingQuestion;
-  if (!q || !q.questions) return '';
+  if (!q || !q.questions) {
+    console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
+    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">\\u26A0\\uFE0F Multi-choice data unavailable</div></div>';
+  }
   var total = q.questions.length;
   var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
   var answered = 0;
@@ -2515,7 +2535,12 @@ function renderMultiChoicePanel(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
   var q = s.pendingQuestion;
-  if (!q || !q.questions) { container.style.display = 'none'; return; }
+  if (!q || !q.questions) {
+    console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
+    container.style.display = '';
+    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">\\u26A0\\uFE0F Multi-choice questions could not be loaded. Try refreshing.</p></div>';
+    return;
+  }
 
   container.style.display = '';
   var key = s.key;
@@ -2614,8 +2639,8 @@ function renderMdBasic(text) {
   s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
   // Inline code: \`code\`
   s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-  // Links: [text](url)
-  s = s.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links: [text](url) — only allow http(s) protocol to prevent javascript: XSS
+  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   // Newlines
   s = s.replace(/\\n/g, '<br>');
   return s;
@@ -2624,9 +2649,9 @@ function renderMdBasic(text) {
 function selectMc(key, qIdx, choiceId, label) {
   if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
   var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) return;
+  if (!qItem) { console.warn('selectMc: invalid question index', qIdx); return; }
 
   _mcState[key].selections[qItem.id] = { choiceId: choiceId, label: label };
 
@@ -2660,12 +2685,12 @@ function submitMcCustom(key, qIdx) {
   var input = document.getElementById('mc-custom-' + qIdx);
   if (!input) return;
   var val = input.value.trim();
-  if (!val) return;
+  if (!val) { input.style.borderColor = 'var(--red)'; return; }
   if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('submitMcCustom: stale session data', key); return; }
   var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) return;
+  if (!qItem) { console.warn('submitMcCustom: invalid question index', qIdx); return; }
 
   _mcState[key].selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
 
@@ -2684,9 +2709,17 @@ function submitMcCustom(key, qIdx) {
 
 async function submitMultiChoice(key) {
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
+    console.warn('submitMultiChoice: session data unavailable', key);
+    alert('\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.');
+    return;
+  }
   var st = _mcState[key];
-  if (!st) return;
+  if (!st) {
+    console.warn('submitMultiChoice: no selections state', key);
+    alert('\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.');
+    return;
+  }
 
   // Validate all answered
   var total = s.pendingQuestion.questions.length;
