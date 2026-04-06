@@ -10,6 +10,7 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
 import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
@@ -354,7 +355,17 @@ export class ClaudeHandler {
     }
 
     if (cwd) {
-      options.cwd = cwd;
+      if (!fs.existsSync(cwd)) {
+        this.logger.warn('Dispatch CWD does not exist, recreating', { cwd });
+        try {
+          fs.mkdirSync(cwd, { recursive: true });
+        } catch (mkdirErr) {
+          this.logger.error('Failed to recreate dispatch CWD', { cwd, error: mkdirErr });
+        }
+      }
+      if (fs.existsSync(cwd)) {
+        options.cwd = cwd;
+      }
     }
 
     const startTime = Date.now();
@@ -687,9 +698,19 @@ export class ClaudeHandler {
       this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
     }
 
-    // Set working directory
+    // Set working directory — ensure it exists to prevent ENOENT on spawn
     if (workingDirectory) {
-      options.cwd = workingDirectory;
+      if (!fs.existsSync(workingDirectory)) {
+        this.logger.warn('Working directory does not exist, recreating', { workingDirectory });
+        try {
+          fs.mkdirSync(workingDirectory, { recursive: true });
+        } catch (mkdirErr) {
+          this.logger.error('Failed to recreate working directory', { workingDirectory, error: mkdirErr });
+        }
+      }
+      if (fs.existsSync(workingDirectory)) {
+        options.cwd = workingDirectory;
+      }
     }
 
     // Resume existing session
