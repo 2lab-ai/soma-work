@@ -6,9 +6,14 @@ import { PluginManager } from './plugin-manager';
 import type { MarketplaceEntry, PluginConfig } from './types';
 
 // Mock marketplace-fetcher
-vi.mock('./marketplace-fetcher', () => ({
-  fetchPlugin: vi.fn(),
-}));
+vi.mock('./marketplace-fetcher', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./marketplace-fetcher')>();
+  return {
+    ...actual,
+    fetchPlugin: vi.fn(),
+    resolveRemoteSha: vi.fn(),
+  };
+});
 
 // Mock unified-config-loader
 vi.mock('../unified-config-loader', () => ({
@@ -147,14 +152,14 @@ describe('PluginManager', () => {
     expect(mgr.getPluginPaths()).toHaveLength(0);
   });
 
-  it('continues when fetchPlugin returns null', async () => {
+  it('continues when fetchPlugin returns a failure', async () => {
     const config: PluginConfig = {
       marketplace: [{ name: 'soma-work', repo: '2lab-ai/soma-work' }],
       plugins: ['omc@soma-work'],
       localOverrides: [path.join(tmpDir, 'local')],
     };
 
-    mockFetchPlugin.mockResolvedValueOnce(null);
+    mockFetchPlugin.mockResolvedValueOnce({ failed: true, code: 'DOWNLOAD_FAILED', message: 'test failure' });
     fs.mkdirSync(path.join(tmpDir, 'local'), { recursive: true });
 
     const mgr = new PluginManager(config, tmpDir);
