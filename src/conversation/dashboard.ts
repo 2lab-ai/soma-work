@@ -796,6 +796,8 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Session not found' });
         } else if (errMsg === 'Session is not waiting for a choice') {
           reply.status(409).send({ error: 'Session is not waiting for a choice' });
+        } else if (errMsg === 'Invalid choice ID') {
+          reply.status(422).send({ error: 'Invalid choice ID' });
         } else {
           logger.error('Error answering choice from dashboard', error);
           reply.status(500).send({ error: 'Internal Server Error' });
@@ -2171,12 +2173,20 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
       body: JSON.stringify({ choiceId: choiceId, label: label, question: question }),
     });
     if (!res.ok) {
-      console.error('Answer choice failed', key, choiceId);
-      // Re-enable buttons on failure
-      if (card) {
-        card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+      var errData = {};
+      try { errData = await res.json(); } catch(_) {}
+      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
+      console.error('Answer choice failed', key, choiceId, errMsg);
+      // Show error briefly, then re-enable buttons for retry
+      btnEl.textContent = errMsg;
+      btnEl.style.color = 'var(--red)';
+      setTimeout(function() {
+        if (card) {
+          card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+        }
         btnEl.textContent = choiceId + '. ' + label;
-      }
+        btnEl.style.color = '';
+      }, 2500);
     }
     // On success, the WebSocket session_update will re-render the board
   } catch (e) {

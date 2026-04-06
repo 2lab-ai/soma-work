@@ -434,6 +434,16 @@ export class ChoiceActionHandler {
       throw new Error('Session is not waiting for a choice');
     }
 
+    // Validate choiceId against actual pending choices to prevent arbitrary input reaching Claude
+    const pendingQ = session.actionPanel?.pendingQuestion;
+    if (pendingQ && pendingQ.type === 'user_choice' && pendingQ.choices) {
+      const validIds = pendingQ.choices.map((c: { id: string }) => c.id);
+      if (!validIds.includes(choiceId)) {
+        this.logger.warn('Dashboard choice rejected — invalid choiceId', { sessionKey, choiceId, validIds });
+        throw new Error('Invalid choice ID');
+      }
+    }
+
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
@@ -520,9 +530,17 @@ export class ChoiceActionHandler {
         say,
       );
     } catch (error) {
-      // Rollback: if we partially mutated state but failed before sending to Claude,
-      // ensure the session doesn't get stuck in an inconsistent state.
+      // Rollback: restore waiting state so the user can retry from dashboard or Slack.
+      // pendingQuestion is already cleared but activityState must not stay 'working' without a Claude stream.
       this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
+      try {
+        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      } catch (rollbackError) {
+        this.logger.error('Failed to rollback activity state after dashboard choice error', {
+          sessionKey,
+          rollbackError,
+        });
+      }
       throw error;
     }
   }
