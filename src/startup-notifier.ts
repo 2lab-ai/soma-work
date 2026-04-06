@@ -74,28 +74,8 @@ export async function notifyStartup(client: WebClient, options: StartupNotificat
     ],
   });
 
-  if (versionInfo?.releaseNotes) {
-    const isVersionChange =
-      versionInfo.previousVersion !== '0.0.0' && versionInfo.version !== versionInfo.previousVersion;
-    const rollback = versionInfo.isRollback === true;
-    const changelogLabel = rollback ? '*⏪ 롤백*' : '*📋 변경 사항*';
-    const tagTransition = rollback
-      ? ` _(${versionInfo.previousTag} → ${versionInfo.rollbackTargetTag || 'previous'})_`
-      : isVersionChange
-        ? ` _(${versionInfo.previousTag} → ${versionInfo.tag})_`
-        : '';
-
-    blocks.push(
-      { type: 'divider' },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `${changelogLabel}${tagTransition}\n\n${versionInfo.releaseNotes}`,
-        },
-      },
-    );
-  }
+  // Release notes are intentionally excluded here — they are sent by
+  // notifyRelease() (release-notifier.ts) to avoid duplicate posts.
 
   const footerParts: string[] = [];
   if (versionInfo) {
