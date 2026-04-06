@@ -224,7 +224,9 @@ export class PluginManager {
       }
 
       // Compare SHA — if identical, skip download entirely
-      if (oldMeta?.sha === remoteSha && hadCache) {
+      // But if caller provided explicit options (e.g. force update), always re-fetch
+      const hasExplicitOptions = pluginOptions?.[pluginDisplayName] != null;
+      if (!hasExplicitOptions && oldMeta?.sha === remoteSha && hadCache) {
         logger.info('Plugin already up-to-date, skipping', {
           pluginName: ref.pluginName,
           sha: remoteSha.slice(0, 8),

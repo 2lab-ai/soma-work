@@ -244,7 +244,7 @@ export class PluginsHandler implements CommandHandler {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: hasOnlyErrors ? '⚠️ *플러그인 업데이트 — 일부 실패*' : '✅ *플러그인 업데이트 완료*',
+        text: hasOnlyErrors ? '❌ *플러그인 업데이트 실패*' : '⚠️ *플러그인 업데이트 완료 (일부 실패)*',
       },
     });
 
@@ -282,26 +282,38 @@ export class PluginsHandler implements CommandHandler {
         },
       });
 
-      // Ignore / Force Update buttons
-      const pluginValue = JSON.stringify({ pluginName: d.name });
-      blocks.push({
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            action_id: `plugin_update_ignore_${d.name}`,
-            text: { type: 'plain_text', text: '무시 (Ignore)', emoji: true },
-            value: pluginValue,
-          },
-          {
-            type: 'button',
-            action_id: `plugin_update_force_${d.name}`,
-            text: { type: 'plain_text', text: '강제 업데이트 (Force Update)', emoji: true },
+      // Action buttons: Ignore always, Force Update only for SECURITY_BLOCKED
+      const pluginValue = JSON.stringify({ pluginName: d.name, failureCode: d.failureCode });
+      const elements: any[] = [
+        {
+          type: 'button',
+          action_id: `plugin_update_ignore_${d.name}`,
+          text: { type: 'plain_text', text: '무시 (Ignore)', emoji: true },
+          value: pluginValue,
+        },
+      ];
+
+      if (d.failureCode === 'SECURITY_BLOCKED') {
+        elements.push({
+          type: 'button',
+          action_id: `plugin_update_force_${d.name}`,
+          text: { type: 'plain_text', text: '⚠️ 보안 우회 설치 (Force Update)', emoji: true },
+          style: 'danger',
+          value: pluginValue,
+          confirm: {
+            title: { type: 'plain_text', text: '보안 우회 확인' },
+            text: {
+              type: 'mrkdwn',
+              text: `*${d.name}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+            },
+            confirm: { type: 'plain_text', text: '강제 설치' },
+            deny: { type: 'plain_text', text: '취소' },
             style: 'danger',
-            value: pluginValue,
           },
-        ],
-      });
+        });
+      }
+
+      blocks.push({ type: 'actions', elements });
     }
 
     return blocks;
