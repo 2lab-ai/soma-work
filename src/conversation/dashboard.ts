@@ -2639,8 +2639,10 @@ function renderMdBasic(text) {
   s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
   // Inline code: \`code\`
   s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-  // Links: [text](url) — only allow http(s) protocol to prevent javascript: XSS
-  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links: [text](url) — only allow http(s) protocol; escAttr on URL to prevent attribute injection
+  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, function(_, text, url) {
+    return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener">' + text + '</a>';
+  });
   // Newlines
   s = s.replace(/\\n/g, '<br>');
   return s;
