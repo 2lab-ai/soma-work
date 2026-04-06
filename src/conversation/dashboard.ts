@@ -767,9 +767,12 @@ export async function registerDashboardRoutes(
       const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
       if (
-        !choiceId || typeof choiceId !== 'string' ||
-        !label || typeof label !== 'string' ||
-        !question || typeof question !== 'string'
+        !choiceId ||
+        typeof choiceId !== 'string' ||
+        !label ||
+        typeof label !== 'string' ||
+        !question ||
+        typeof question !== 'string'
       ) {
         reply.status(400).send({ error: 'choiceId, label, and question are required and must be strings' });
         return;

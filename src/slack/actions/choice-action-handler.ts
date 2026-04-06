@@ -480,23 +480,33 @@ export class ChoiceActionHandler {
             sessionKey,
             async (ch, ts) => {
               if (threadRootTs && ts === threadRootTs) {
-                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)', {
-                  sessionKey,
-                  ts,
-                  threadRootTs,
-                });
+                this.logger.error(
+                  'BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)',
+                  {
+                    sessionKey,
+                    ts,
+                    threadRootTs,
+                  },
+                );
                 return;
               }
               try {
                 await this.ctx.slackApi.deleteMessage(ch, ts);
               } catch (deleteError) {
-                this.logger.warn('Failed to delete completion message (dashboard choice)', { sessionKey, ts, error: deleteError });
+                this.logger.warn('Failed to delete completion message (dashboard choice)', {
+                  sessionKey,
+                  ts,
+                  error: deleteError,
+                });
               }
             },
             channel,
           )
           .catch((deleteAllError) => {
-            this.logger.warn('Failed to delete all completion messages (dashboard choice)', { sessionKey, error: deleteAllError });
+            this.logger.warn('Failed to delete all completion messages (dashboard choice)', {
+              sessionKey,
+              error: deleteAllError,
+            });
           });
       }
 
