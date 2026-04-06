@@ -791,6 +791,10 @@ function renderDashboardPage(userId?: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>soma-work Dashboard</title>
+<script>
+// FOUC prevention — apply theme before CSS paints
+(function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
+</script>
 <style>
 /* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -819,6 +823,25 @@ function renderDashboardPage(userId?: string): string {
   --ease: cubic-bezier(0.2,0.8,0.2,1);
   --speed: 140ms;
 }
+
+/* ── LIGHT THEME — override surface & text planes ── */
+[data-theme="light"] {
+  --bg: #f8f9fb;
+  --surface: #ffffff;
+  --surface-raised: #f0f2f5;
+  --border: #e2e5ea;
+  --border-focus: #4d9de0;
+  --text: #1a1d23;
+  --text-secondary: #5a6577;
+  --text-tertiary: #8b95a5;
+  --accent: #2b7fd4;
+  --accent-hover: #2468b0;
+}
+[data-theme="light"] ::selection { background: var(--accent); color: #fff; }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
+[data-theme="light"] .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+[data-theme="light"] .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+[data-theme="light"] .panel-overlay { background: rgba(0,0,0,0.25); }
 
 html,body {
   min-height: 100%;
@@ -877,6 +900,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .nav a:hover,
 .topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+#theme-toggle {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
+}
+#theme-toggle:hover { border-color: var(--accent); transform: scale(1.1); }
 .ws-badge {
   padding: 4px 12px;
   border-radius: var(--radius);
@@ -1457,6 +1495,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select>
       <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">&#x1F319;</button>
     </div>
   </div>
 
@@ -1557,6 +1596,32 @@ let panelSessionKey = null;
 let panelConvId = null;
 let showOlderClosed = false;
 let _panelTasksExpanded = false;
+
+// ── Theme toggle — sun/moon ──
+function getPreferredTheme() {
+  var saved = localStorage.getItem('soma-theme');
+  if (saved) return saved;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.innerHTML = theme === 'light' ? '\\u2600\\uFE0F' : '\\uD83C\\uDF19';
+}
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'dark';
+  var next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('soma-theme', next);
+  applyTheme(next);
+}
+// Sync icon on load
+applyTheme(getPreferredTheme());
+// Listen for OS theme changes (if user hasn't manually chosen)
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
+  if (!localStorage.getItem('soma-theme')) {
+    applyTheme(e.matches ? 'light' : 'dark');
+  }
+});
 
 // ── Panel resize — drag left edge to change width ──
 (function initPanelResize() {
