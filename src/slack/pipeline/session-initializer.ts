@@ -253,28 +253,6 @@ export class SessionInitializer {
     }
 
     // Determine effective working directory: prefer session-unique dir over fixed user dir
-    // Guard: if sessionWorkingDir was cleaned up (e.g. macOS /tmp/ cleanup after sleep),
-    // recreate it so the SDK spawn doesn't fail with ENOENT on a stale CWD.
-    if (session.sessionWorkingDir && !fs.existsSync(session.sessionWorkingDir)) {
-      this.logger.warn('Session working directory missing (likely cleaned by OS), recreating', {
-        sessionKey,
-        missingDir: session.sessionWorkingDir,
-      });
-      try {
-        fs.mkdirSync(session.sessionWorkingDir, { recursive: true });
-        this.logger.info('Recreated session working directory', {
-          sessionKey,
-          directory: session.sessionWorkingDir,
-        });
-      } catch (mkdirErr) {
-        this.logger.error('Failed to recreate session working directory, falling back to user dir', {
-          sessionKey,
-          directory: session.sessionWorkingDir,
-          error: mkdirErr,
-        });
-        session.sessionWorkingDir = undefined;
-      }
-    }
     const effectiveWorkingDir = session.sessionWorkingDir || workingDirectory;
 
     // Dispatch for new sessions OR stuck sessions (e.g., after server restart)

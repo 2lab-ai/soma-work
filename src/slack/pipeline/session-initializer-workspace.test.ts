@@ -234,4 +234,69 @@ describe('SessionInitializer — workspace wiring integration', () => {
     // createSessionBaseDir should NOT be called for existing sessions
     expect(mockCreateSessionBaseDir).not.toHaveBeenCalled();
   });
+
+  // ===== Bug: CWD ENOENT after sleep (PR #362) =====
+
+  it('recreates sessionWorkingDir when it has been deleted (e.g. OS /tmp cleanup after sleep)', async () => {
+    const fs = await import('fs');
+    // Use a path that definitely does NOT exist on disk
+    const deletedDir = '/tmp/U123/session_DELETED_99999999_0000';
+    // Ensure it really doesn't exist
+    try { fs.rmSync(deletedDir, { recursive: true, force: true }); } catch {}
+
+    mockClaudeHandler.getSession.mockReturnValue({
+      ownerId: 'U123',
+      ownerName: 'Test User',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'idle',
+      state: 'MAIN',
+      sessionWorkingDir: deletedDir,
+    });
+
+    const event = {
+      user: 'U123',
+      channel: 'C001',
+      thread_ts: 'thread001',
+      ts: 'msg002',
+      text: 'hello after sleep',
+    };
+
+    const result = await sessionInitializer.initialize(event as any, '/tmp/U123');
+
+    // The returned workingDirectory must exist on disk (to prevent spawn ENOENT)
+    expect(fs.existsSync(result!.workingDirectory)).toBe(true);
+
+    // Cleanup
+    try { fs.rmSync(deletedDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it('falls back to user dir when sessionWorkingDir cannot be recreated', async () => {
+    const fs = await import('fs');
+    // Use an impossible path that cannot be created
+    const impossibleDir = '/proc/0/impossible_session_dir';
+
+    mockClaudeHandler.getSession.mockReturnValue({
+      ownerId: 'U123',
+      ownerName: 'Test User',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'idle',
+      state: 'MAIN',
+      sessionWorkingDir: impossibleDir,
+    });
+
+    const event = {
+      user: 'U123',
+      channel: 'C001',
+      thread_ts: 'thread001',
+      ts: 'msg002',
+      text: 'hello after sleep',
+    };
+
+    const result = await sessionInitializer.initialize(event as any, '/tmp/U123');
+
+    // Should fall back to user dir, not use the impossible path
+    expect(result!.workingDirectory).toBe('/tmp/U123');
+  });
 });
