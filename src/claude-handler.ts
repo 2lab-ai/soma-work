@@ -10,7 +10,7 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import * as fs from 'node:fs';
+import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
 import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
@@ -359,8 +359,8 @@ export class ClaudeHandler {
         this.logger.warn('Dispatch CWD does not exist, recreating', { cwd });
         try {
           fs.mkdirSync(cwd, { recursive: true });
-        } catch {
-          // proceed without cwd — SDK will use process.cwd()
+        } catch (mkdirErr) {
+          this.logger.error('Failed to recreate dispatch CWD', { cwd, error: mkdirErr });
         }
       }
       if (fs.existsSync(cwd)) {

@@ -274,7 +274,7 @@ describe('SessionInitializer — workspace wiring integration', () => {
   it('falls back to user dir when sessionWorkingDir cannot be recreated', async () => {
     const fs = await import('fs');
     // Use an impossible path that cannot be created
-    const impossibleDir = '/proc/0/impossible_session_dir';
+    const impossibleDir = '/dev/null/impossible_session_dir';
 
     mockClaudeHandler.getSession.mockReturnValue({
       ownerId: 'U123',
