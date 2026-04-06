@@ -2000,6 +2000,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
 
+    // Store raw question data on session for dashboard access (before setActivityState triggers broadcast)
+    if (session.actionPanel) {
+      session.actionPanel.pendingQuestion = question;
+    } else {
+      session.actionPanel = { pendingQuestion: question };
+    }
+
     this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
     await this.updateRuntimeStatus(session, context.sessionKey, {
       agentPhase: '입력 대기',

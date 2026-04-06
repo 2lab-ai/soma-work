@@ -74,6 +74,14 @@ export interface KanbanSession {
   }>;
   /** Slack thread permalink */
   slackThreadUrl?: string;
+  /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
+  pendingQuestion?: {
+    type: 'user_choice' | 'user_choices';
+    question: string;
+    choices?: Array<{ id: string; label: string; description?: string }>;
+    /** Multi-choice: number of questions (choices rendered in Slack only) */
+    questionCount?: number;
+  };
 }
 
 export interface KanbanBoard {
@@ -184,6 +192,13 @@ export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
 }
 
+type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
+let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
+
+export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
+  _choiceAnswerHandlerFn = fn;
+}
+
 // ── Kanban transformation ──────────────────────────────────────────
 
 function sessionToKanban(key: string, s: any): KanbanSession {
@@ -228,6 +243,25 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tasks,
     slackThreadUrl: s.channelId && s.threadTs ? buildThreadPermalink(s.channelId, s.threadTs) : undefined,
+    pendingQuestion: s.actionPanel?.pendingQuestion
+      ? s.actionPanel.pendingQuestion.type === 'user_choice'
+        ? {
+            type: 'user_choice' as const,
+            question: s.actionPanel.pendingQuestion.question,
+            choices: s.actionPanel.pendingQuestion.choices?.map((c: any) => ({
+              id: c.id,
+              label: c.label,
+              description: c.description,
+            })),
+          }
+        : s.actionPanel.pendingQuestion.type === 'user_choices'
+          ? {
+              type: 'user_choices' as const,
+              question: s.actionPanel.pendingQuestion.title || '복수 질문',
+              questionCount: s.actionPanel.pendingQuestion.questions?.length || 0,
+            }
+          : undefined // Unknown question type — skip
+      : undefined,
   };
 }
 
@@ -724,6 +758,54 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Answer choice from dashboard ──
+
+  server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
+    '/api/dashboard/session/:key/answer-choice',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { key } = request.params;
+      const { choiceId, label, question } = request.body || {};
+      if (
+        !choiceId ||
+        typeof choiceId !== 'string' ||
+        !label ||
+        typeof label !== 'string' ||
+        !question ||
+        typeof question !== 'string'
+      ) {
+        reply.status(400).send({ error: 'choiceId, label, and question are required and must be strings' });
+        return;
+      }
+      if (choiceId.length > 100 || label.length > 500 || question.length > 2000) {
+        reply.status(400).send({ error: 'Field length exceeded' });
+        return;
+      }
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_choiceAnswerHandlerFn) {
+          await _choiceAnswerHandlerFn(key, choiceId, label, question);
+        } else {
+          reply.status(501).send({ error: 'Choice answer handler not configured' });
+          return;
+        }
+        reply.send({ ok: true });
+      } catch (error) {
+        const errMsg = (error as Error).message || '';
+        if (errMsg === 'Session not found') {
+          reply.status(404).send({ error: 'Session not found' });
+        } else if (errMsg === 'Session is not waiting for a choice') {
+          reply.status(409).send({ error: 'Session is not waiting for a choice' });
+        } else if (errMsg === 'Invalid choice ID') {
+          reply.status(422).send({ error: 'Invalid choice ID' });
+        } else {
+          logger.error('Error answering choice from dashboard', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
+      }
+    },
+  );
+
   // ── HTML Dashboard ──
 
   server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
@@ -1101,6 +1183,82 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-action.btn-close:hover { border-color: var(--yellow); color: var(--yellow); background: rgba(250,204,21,0.08); }
 .btn-action.btn-trash { border-color: rgba(239,68,68,0.2); color: var(--text-tertiary); }
 .btn-action.btn-trash:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+
+/* ── PENDING QUESTION (dashboard choice buttons) ── */
+.card-question {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(246,201,14,0.06);
+  border: 1px solid rgba(246,201,14,0.2);
+  border-radius: 6px;
+}
+.card-question-text {
+  font-size: 0.78em;
+  color: var(--yellow);
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.card-question-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.btn-choice {
+  font-size: 0.72em;
+  padding: 4px 10px;
+  border: 1px solid rgba(77,157,224,0.4);
+  border-radius: 4px;
+  background: rgba(77,157,224,0.08);
+  color: var(--accent);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  line-height: 1.3;
+}
+.btn-choice:hover {
+  border-color: var(--accent);
+  background: rgba(77,157,224,0.18);
+  color: var(--text);
+}
+.btn-choice:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.card-question-multi {
+  font-size: 0.72em;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.card-question-multi a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.card-question-multi a:hover { text-decoration: underline; }
+
+/* ── PANEL PENDING QUESTION ── */
+.panel-question {
+  padding: 12px 16px;
+  background: rgba(246,201,14,0.06);
+  border-bottom: 1px solid rgba(246,201,14,0.15);
+}
+.panel-question-text {
+  font-size: 0.88em;
+  color: var(--yellow);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.panel-question-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.panel-question .btn-choice {
+  font-size: 0.82em;
+  padding: 6px 14px;
+}
 
 /* ── CHARTS — flat, geometric ── */
 .chart-row { display: flex; gap: 10px; margin-bottom: 16px; }
@@ -1536,6 +1694,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
+    <div class="panel-question" id="panel-question" style="display:none"></div>
     <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
     <div class="panel-turns" id="panel-turns">
       <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
@@ -1638,6 +1797,32 @@ function formatTaskTime(ts) {
   return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function renderPanelQuestion(s) {
+  var container = document.getElementById('panel-question');
+  if (!container) return;
+  if (!s || !s.pendingQuestion || s.activityState !== 'waiting') {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+  container.style.display = '';
+  var q = s.pendingQuestion;
+
+  if (q.type === 'user_choice' && q.choices) {
+    var btns = q.choices.map(function(c) {
+      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(c.label) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+    }).join('');
+    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
+      + '<div class="panel-question-choices">' + btns + '</div>';
+  } else if (q.type === 'user_choices') {
+    var slUrl = s.slackThreadUrl || '#';
+    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
+      + '<div class="card-question-multi">' + (q.questionCount || 0) + '&#xAC1C; &#xC9C8;&#xBB38; &mdash; <a href="' + esc(slUrl) + '" target="_blank">Slack&#xC5D0;&#xC11C; &#xB2F5;&#xBCC0;</a></div>';
+  } else {
+    container.style.display = 'none';
+  }
+}
+
 function renderPanelTasks(tasks) {
   var container = document.getElementById('panel-tasks');
   if (!tasks || tasks.length === 0) {
@@ -1721,6 +1906,9 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
@@ -1903,6 +2091,26 @@ function renderCard(s, col) {
     tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
   }
 
+  // Pending question (choice buttons for waiting sessions)
+  let questionHtml = '';
+  if (s.pendingQuestion && col === 'waiting') {
+    if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
+      const choiceBtns = s.pendingQuestion.choices.map(function(c) {
+        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(s.pendingQuestion.question) + '\\',this)" title="' + escAttr(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
+      }).join('');
+      questionHtml = '<div class="card-question">'
+        + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question).slice(0, 80) + '</div>'
+        + '<div class="card-question-choices">' + choiceBtns + '</div>'
+        + '</div>';
+    } else if (s.pendingQuestion.type === 'user_choices') {
+      var slUrl = s.slackThreadUrl || '#';
+      questionHtml = '<div class="card-question">'
+        + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question) + '</div>'
+        + '<div class="card-question-multi">' + (s.pendingQuestion.questionCount || 0) + '&#xAC1C; &#xC9C8;&#xBB38; &mdash; <a href="' + esc(slUrl) + '" target="_blank" onclick="event.stopPropagation()">Slack&#xC5D0;&#xC11C; &#xB2F5;&#xBCC0;</a></div>'
+        + '</div>';
+    }
+  }
+
   // Action buttons
   let actionBtn = '';
   if (col === 'working') {
@@ -1925,6 +2133,7 @@ function renderCard(s, col) {
     + '<div class="card-owner">' + esc(s.ownerName) + '</div>'
     + tokenHtml
     + mergeHtml
+    + questionHtml
     + tasksHtml
     + actionsHtml
     + '</div>';
@@ -1946,6 +2155,49 @@ async function doAction(key, action) {
     if (!res.ok) console.error('Action failed', action, key);
     else loadSessions();
   } catch (e) { console.error('Action error', e); }
+}
+
+// ── Answer choice from dashboard ──
+async function answerChoice(key, choiceId, label, question, btnEl) {
+  try {
+    // Disable all choice buttons in the same card to prevent double-click
+    var card = btnEl.closest('.card');
+    if (card) {
+      card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
+    }
+    btnEl.textContent = '...';
+
+    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ choiceId: choiceId, label: label, question: question }),
+    });
+    if (!res.ok) {
+      var errData = {};
+      try { errData = await res.json(); } catch(_) {}
+      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
+      console.error('Answer choice failed', key, choiceId, errMsg);
+      // Show error briefly, then re-enable buttons for retry
+      btnEl.textContent = errMsg;
+      btnEl.style.color = 'var(--red)';
+      setTimeout(function() {
+        if (card) {
+          card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+        }
+        btnEl.textContent = choiceId + '. ' + label;
+        btnEl.style.color = '';
+      }, 2500);
+    }
+    // On success, the WebSocket session_update will re-render the board
+  } catch (e) {
+    console.error('Answer choice error', e);
+    // Re-enable buttons on network error so user can retry
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    if (errCard) {
+      errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+    }
+    btnEl.textContent = choiceId + '. ' + label;
+  }
 }
 
 // ── Stats ──
@@ -2056,6 +2308,10 @@ function connectWs() {
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
         renderBoard(msg.board);
+        // Refresh panel question if panel is open (session may have transitioned)
+        if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
+          renderPanelQuestion(_sessionCache[panelSessionKey]);
+        }
       } else if (msg.type === 'task_update') {
         // Update cached session tasks and re-render
         if (_sessionCache[msg.sessionKey]) {
@@ -2154,6 +2410,9 @@ function openPanel(sessionKey) {
   } else {
     tokensEl.innerHTML = '<span style="font-size:0.78em;color:var(--text-secondary)">No token data</span>';
   }
+
+  // Pending question in panel
+  renderPanelQuestion(s);
 
   // Tasks (panel card view)
   _panelTasksExpanded = false;

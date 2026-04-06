@@ -72,6 +72,10 @@ export class ChoiceActionHandler {
       // 세션 확인 및 메시지 처리
       if (session) {
         await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // Clear pending question from session (dashboard sync)
+        if (session.actionPanel) {
+          session.actionPanel.pendingQuestion = undefined;
+        }
         // Delete tracked completion messages on choice selection (S8)
         if (channel) {
           const threadRootTs = session.threadRootTs;
@@ -359,6 +363,10 @@ export class ChoiceActionHandler {
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
       await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
+      // Clear pending question from session (dashboard sync)
+      if (session.actionPanel) {
+        session.actionPanel.pendingQuestion = undefined;
+      }
       // Delete tracked completion messages on form submission (S8)
       if (channel) {
         const formThreadRootTs = session.threadRootTs;
@@ -397,6 +405,143 @@ export class ChoiceActionHandler {
         userId,
         '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
       );
+    }
+  }
+
+  /**
+   * Handle choice selection from the dashboard (same logic as Slack button click).
+   * Updates Slack messages, clears thread header, transitions state, and sends choice to Claude.
+   */
+  async handleChoiceFromDashboard(
+    sessionKey: string,
+    choiceId: string,
+    label: string,
+    question: string,
+    userId: string,
+  ): Promise<void> {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    // Guard: only process if session is actually waiting for a choice
+    if (session.activityState !== 'waiting') {
+      this.logger.warn('Dashboard choice ignored — session not in waiting state', {
+        sessionKey,
+        activityState: session.activityState,
+        choiceId,
+      });
+      throw new Error('Session is not waiting for a choice');
+    }
+
+    // Validate choiceId against actual pending choices to prevent arbitrary input reaching Claude
+    const pendingQ = session.actionPanel?.pendingQuestion;
+    if (pendingQ && pendingQ.type === 'user_choice' && pendingQ.choices) {
+      const validIds = pendingQ.choices.map((c: { id: string }) => c.id);
+      if (!validIds.includes(choiceId)) {
+        this.logger.warn('Dashboard choice rejected — invalid choiceId', { sessionKey, choiceId, validIds });
+        throw new Error('Invalid choice ID');
+      }
+    }
+
+    const channel = session.channelId;
+    const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
+    const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+
+    this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
+
+    try {
+      // Update Slack choice messages with selection confirmation
+      const completedBlocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`,
+          },
+        },
+      ];
+      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+      for (const targetTs of targetTimestamps) {
+        try {
+          await this.ctx.slackApi.updateMessage(
+            channel,
+            targetTs,
+            `✅ *${question}*\n선택: *${choiceId}. ${label}* (대시보드)`,
+            completedBlocks,
+            [],
+          );
+        } catch (error) {
+          this.logger.warn('Failed to update choice message from dashboard', { targetTs, error });
+        }
+      }
+
+      // Clear thread header choice + pending question
+      await this.ctx.threadPanel?.clearChoice(sessionKey);
+      if (session.actionPanel) {
+        session.actionPanel.pendingQuestion = undefined;
+      }
+
+      // Delete tracked completion messages
+      if (channel) {
+        const threadRootTs = session.threadRootTs;
+        this.ctx.completionMessageTracker
+          ?.deleteAll(
+            sessionKey,
+            async (ch, ts) => {
+              if (threadRootTs && ts === threadRootTs) {
+                this.logger.error(
+                  'BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)',
+                  {
+                    sessionKey,
+                    ts,
+                    threadRootTs,
+                  },
+                );
+                return;
+              }
+              try {
+                await this.ctx.slackApi.deleteMessage(ch, ts);
+              } catch (deleteError) {
+                this.logger.warn('Failed to delete completion message (dashboard choice)', {
+                  sessionKey,
+                  ts,
+                  error: deleteError,
+                });
+              }
+            },
+            channel,
+          )
+          .catch((deleteAllError) => {
+            this.logger.warn('Failed to delete all completion messages (dashboard choice)', {
+              sessionKey,
+              error: deleteAllError,
+            });
+          });
+      }
+
+      // Transition waiting → working
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+
+      // Send choiceId as user message to Claude
+      const say = this.createSayFn(channel);
+      await this.ctx.messageHandler(
+        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+        say,
+      );
+    } catch (error) {
+      // Rollback: restore waiting state so the user can retry from dashboard or Slack.
+      // pendingQuestion is already cleared but activityState must not stay 'working' without a Claude stream.
+      this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
+      try {
+        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      } catch (rollbackError) {
+        this.logger.error('Failed to rollback activity state after dashboard choice error', {
+          sessionKey,
+          rollbackError,
+        });
+      }
+      throw error;
     }
   }
 
