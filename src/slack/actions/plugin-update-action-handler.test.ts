@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
+import type { RespondFn } from './types';
 
 // Mock admin-utils
 vi.mock('../../admin-utils', () => ({
@@ -19,12 +20,12 @@ function validValue(pluginName: string) {
 
 describe('PluginUpdateActionHandler', () => {
   let handler: PluginUpdateActionHandler;
-  let respond: ReturnType<typeof vi.fn>;
+  let respond: Mock<RespondFn>;
   let mockForceRefresh: ReturnType<typeof vi.fn>;
   let mockGetPluginManager: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    respond = vi.fn().mockResolvedValue(undefined);
+    respond = vi.fn<RespondFn>().mockResolvedValue(undefined);
     mockForceRefresh = vi.fn();
     mockGetPluginManager = vi.fn().mockReturnValue({
       forceRefresh: mockForceRefresh,
