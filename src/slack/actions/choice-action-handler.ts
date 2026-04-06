@@ -424,76 +424,97 @@ export class ChoiceActionHandler {
       throw new Error('Session not found');
     }
 
+    // Guard: only process if session is actually waiting for a choice
+    if (session.activityState !== 'waiting') {
+      this.logger.warn('Dashboard choice ignored — session not in waiting state', {
+        sessionKey,
+        activityState: session.activityState,
+        choiceId,
+      });
+      throw new Error('Session is not waiting for a choice');
+    }
+
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
     const choiceMessageTs = session.actionPanel?.choiceMessageTs;
 
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
 
-    // Update Slack choice messages with selection confirmation
-    const completedBlocks = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`,
-        },
-      },
-    ];
-    const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
-    for (const targetTs of targetTimestamps) {
-      try {
-        await this.ctx.slackApi.updateMessage(
-          channel,
-          targetTs,
-          `✅ *${question}*\n선택: *${choiceId}. ${label}* (대시보드)`,
-          completedBlocks,
-          [],
-        );
-      } catch (error) {
-        this.logger.warn('Failed to update choice message from dashboard', { targetTs, error });
-      }
-    }
-
-    // Clear thread header choice + pending question
-    await this.ctx.threadPanel?.clearChoice(sessionKey);
-    if (session.actionPanel) {
-      session.actionPanel.pendingQuestion = undefined;
-    }
-
-    // Delete tracked completion messages
-    if (channel) {
-      const threadRootTs = session.threadRootTs;
-      this.ctx.completionMessageTracker
-        ?.deleteAll(
-          sessionKey,
-          async (ch, ts) => {
-            if (threadRootTs && ts === threadRootTs) {
-              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)', {
-                sessionKey,
-                ts,
-                threadRootTs,
-              });
-              return;
-            }
-            try {
-              await this.ctx.slackApi.deleteMessage(ch, ts);
-            } catch {}
+    try {
+      // Update Slack choice messages with selection confirmation
+      const completedBlocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`,
           },
-          channel,
-        )
-        .catch(() => {});
+        },
+      ];
+      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+      for (const targetTs of targetTimestamps) {
+        try {
+          await this.ctx.slackApi.updateMessage(
+            channel,
+            targetTs,
+            `✅ *${question}*\n선택: *${choiceId}. ${label}* (대시보드)`,
+            completedBlocks,
+            [],
+          );
+        } catch (error) {
+          this.logger.warn('Failed to update choice message from dashboard', { targetTs, error });
+        }
+      }
+
+      // Clear thread header choice + pending question
+      await this.ctx.threadPanel?.clearChoice(sessionKey);
+      if (session.actionPanel) {
+        session.actionPanel.pendingQuestion = undefined;
+      }
+
+      // Delete tracked completion messages
+      if (channel) {
+        const threadRootTs = session.threadRootTs;
+        this.ctx.completionMessageTracker
+          ?.deleteAll(
+            sessionKey,
+            async (ch, ts) => {
+              if (threadRootTs && ts === threadRootTs) {
+                this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (dashboard choice)', {
+                  sessionKey,
+                  ts,
+                  threadRootTs,
+                });
+                return;
+              }
+              try {
+                await this.ctx.slackApi.deleteMessage(ch, ts);
+              } catch (deleteError) {
+                this.logger.warn('Failed to delete completion message (dashboard choice)', { sessionKey, ts, error: deleteError });
+              }
+            },
+            channel,
+          )
+          .catch((deleteAllError) => {
+            this.logger.warn('Failed to delete all completion messages (dashboard choice)', { sessionKey, error: deleteAllError });
+          });
+      }
+
+      // Transition waiting → working
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+
+      // Send choiceId as user message to Claude
+      const say = this.createSayFn(channel);
+      await this.ctx.messageHandler(
+        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+        say,
+      );
+    } catch (error) {
+      // Rollback: if we partially mutated state but failed before sending to Claude,
+      // ensure the session doesn't get stuck in an inconsistent state.
+      this.logger.error('Error processing dashboard choice', { sessionKey, choiceId, error });
+      throw error;
     }
-
-    // Transition waiting → working
-    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-
-    // Send choiceId as user message to Claude
-    const say = this.createSayFn(channel);
-    await this.ctx.messageHandler(
-      { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
-      say,
-    );
   }
 
   private createSayFn(channel: string): SayFn {

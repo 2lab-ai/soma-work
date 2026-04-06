@@ -254,11 +254,13 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               description: c.description,
             })),
           }
-        : {
-            type: 'user_choices' as const,
-            question: s.actionPanel.pendingQuestion.title || '복수 질문',
-            questionCount: s.actionPanel.pendingQuestion.questions?.length || 0,
-          }
+        : s.actionPanel.pendingQuestion.type === 'user_choices'
+          ? {
+              type: 'user_choices' as const,
+              question: s.actionPanel.pendingQuestion.title || '복수 질문',
+              questionCount: s.actionPanel.pendingQuestion.questions?.length || 0,
+            }
+          : undefined // Unknown question type — skip
       : undefined,
   };
 }
@@ -778,8 +780,15 @@ export async function registerDashboardRoutes(
         }
         reply.send({ ok: true });
       } catch (error) {
-        logger.error('Error answering choice from dashboard', error);
-        reply.status(500).send({ error: 'Internal Server Error' });
+        const errMsg = (error as Error).message || '';
+        if (errMsg === 'Session not found') {
+          reply.status(404).send({ error: 'Session not found' });
+        } else if (errMsg === 'Session is not waiting for a choice') {
+          reply.status(409).send({ error: 'Session is not waiting for a choice' });
+        } else {
+          logger.error('Error answering choice from dashboard', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
       }
     },
   );
@@ -1777,6 +1786,7 @@ function formatTaskTime(ts) {
 
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
+  if (!container) return;
   if (!s || !s.pendingQuestion || s.activityState !== 'waiting') {
     container.style.display = 'none';
     container.innerHTML = '';
@@ -2157,6 +2167,12 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
     // On success, the WebSocket session_update will re-render the board
   } catch (e) {
     console.error('Answer choice error', e);
+    // Re-enable buttons on network error so user can retry
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    if (errCard) {
+      errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+    }
+    btnEl.textContent = choiceId + '. ' + label;
   }
 }
 

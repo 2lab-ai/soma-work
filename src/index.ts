@@ -269,8 +269,13 @@ async function start() {
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
-      await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question);
-      logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
+      try {
+        await slackHandler.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question);
+        logger.info('Dashboard: choice answered', { sessionKey, choiceId, label });
+      } catch (error) {
+        logger.error('Dashboard: choice answer failed', { sessionKey, choiceId, label, error });
+        throw error; // Re-throw so the API endpoint returns the correct HTTP status
+      }
     });
 
     // Connect dashboard: real-time task updates
