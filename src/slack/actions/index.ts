@@ -282,6 +282,17 @@ export class ActionHandlers {
     });
   }
 
+  /** Delegate dashboard choice answer to ChoiceActionHandler */
+  async handleDashboardChoiceAnswer(
+    sessionKey: string,
+    choiceId: string,
+    label: string,
+    question: string,
+    userId: string,
+  ): Promise<void> {
+    return this.choiceHandler.handleChoiceFromDashboard(sessionKey, choiceId, label, question, userId);
+  }
+
   // 폼 상태 관리 메서드 (기존 API 호환)
   getPendingForm(formId: string): PendingChoiceFormData | undefined {
     return this.formStore.get(formId);
