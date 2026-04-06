@@ -1,7 +1,11 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Contract tests derived from docs/cct-token-rotation/trace.md
 // All tests should FAIL (RED) until implementation
+
+const TEST_DATA_DIR = path.join(__dirname, '../.test-data-token-manager');
 
 describe('TokenManager', () => {
   const originalEnv = process.env;
@@ -9,10 +13,18 @@ describe('TokenManager', () => {
   beforeEach(() => {
     vi.resetModules();
     process.env = { ...originalEnv };
+    // Clean test data dir
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
   });
 
   // === Scenario 1: Token Initialization ===
@@ -425,6 +437,178 @@ describe('TokenManager', () => {
       const result = parseCooldownTime('resets 11am');
       expect(result).toBeInstanceOf(Date);
       expect(result!.getHours()).toBe(11);
+    });
+
+    // === Weekly limit parsing (bug fix) ===
+
+    it('should parse weekly limit "resets Apr 7, 7pm (Asia/Seoul)"', async () => {
+      const { parseCooldownTime } = await import('./token-manager');
+      const result = parseCooldownTime("You've hit your limit · resets Apr 7, 7pm (Asia/Seoul)");
+      expect(result).toBeInstanceOf(Date);
+      expect(result!.getHours()).toBe(19);
+      expect(result!.getMinutes()).toBe(0);
+      expect(result!.getMonth()).toBe(3); // April = 3 (0-based)
+      expect(result!.getDate()).toBe(7);
+    });
+
+    it('should parse weekly limit with minutes "resets Mar 15, 3:30pm"', async () => {
+      const { parseCooldownTime } = await import('./token-manager');
+      const result = parseCooldownTime('resets Mar 15, 3:30pm');
+      expect(result).toBeInstanceOf(Date);
+      expect(result!.getHours()).toBe(15);
+      expect(result!.getMinutes()).toBe(30);
+      expect(result!.getMonth()).toBe(2); // March = 2
+      expect(result!.getDate()).toBe(15);
+    });
+
+    it('should parse weekly limit without comma "resets Jan 20 9am"', async () => {
+      const { parseCooldownTime } = await import('./token-manager');
+      const result = parseCooldownTime('resets Jan 20 9am');
+      expect(result).toBeInstanceOf(Date);
+      expect(result!.getHours()).toBe(9);
+      expect(result!.getMonth()).toBe(0); // January = 0
+      expect(result!.getDate()).toBe(20);
+    });
+
+    it('should handle weekly limit date in the past by advancing to next year', async () => {
+      const { parseCooldownTime } = await import('./token-manager');
+      // Use a date guaranteed to be in the past
+      const pastMonth = new Date();
+      pastMonth.setMonth(pastMonth.getMonth() - 2);
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const msg = `resets ${monthNames[pastMonth.getMonth()]} ${pastMonth.getDate()}, 7pm`;
+      const result = parseCooldownTime(msg);
+      expect(result).toBeInstanceOf(Date);
+      // Should be next year since the date is in the past
+      expect(result!.getFullYear()).toBeGreaterThanOrEqual(new Date().getFullYear());
+    });
+  });
+
+  // === Cooldown Persistence ===
+
+  describe('cooldown persistence', () => {
+    it('should save cooldowns to disk on rotateOnRateLimit', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(TEST_DATA_DIR);
+
+      const cooldownTime = new Date(Date.now() + 3600000);
+      tokenManager.rotateOnRateLimit('tokenA', cooldownTime);
+
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+      expect(fs.existsSync(filePath)).toBe(true);
+
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      expect(data.cooldowns.ai2).toBeDefined();
+      expect(data.cooldowns.ai2.until).toBe(cooldownTime.toISOString());
+      expect(data.activeToken).toBe('ai3');
+    });
+
+    it('should restore cooldowns from disk on initialize', async () => {
+      const cooldownTime = new Date(Date.now() + 3600000); // 1hr from now
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+
+      // Pre-write cooldown file
+      fs.writeFileSync(filePath, JSON.stringify({
+        cooldowns: { ai2: { until: cooldownTime.toISOString() } },
+        activeToken: 'ai3',
+      }, null, 2), 'utf-8');
+
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(TEST_DATA_DIR);
+
+      const tokens = tokenManager.getAllTokens();
+      // ai2 should have cooldown restored
+      expect(tokens[0].cooldownUntil).toBeInstanceOf(Date);
+      expect(tokens[0].cooldownUntil!.toISOString()).toBe(cooldownTime.toISOString());
+      // ai3 should be active (was persisted, and ai2 is on cooldown)
+      expect(tokenManager.getActiveToken().name).toBe('ai3');
+    });
+
+    it('should discard expired cooldowns on restore', async () => {
+      const expiredTime = new Date(Date.now() - 3600000); // 1hr ago
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+
+      fs.writeFileSync(filePath, JSON.stringify({
+        cooldowns: { ai2: { until: expiredTime.toISOString() } },
+        activeToken: 'ai2',
+      }, null, 2), 'utf-8');
+
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(TEST_DATA_DIR);
+
+      const tokens = tokenManager.getAllTokens();
+      // Expired cooldown should be discarded
+      expect(tokens[0].cooldownUntil).toBeNull();
+      // ai2 should still be active (restored preference, no cooldown)
+      expect(tokenManager.getActiveToken().name).toBe('ai2');
+    });
+
+    it('should pick best available token when persisted active is on cooldown', async () => {
+      const cooldownTime = new Date(Date.now() + 3600000);
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+
+      // ai2 is persisted as active but has cooldown
+      fs.writeFileSync(filePath, JSON.stringify({
+        cooldowns: { ai2: { until: cooldownTime.toISOString() } },
+        activeToken: 'ai2',
+      }, null, 2), 'utf-8');
+
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(TEST_DATA_DIR);
+
+      // ai2 on cooldown → should auto-select ai3
+      expect(tokenManager.getActiveToken().name).toBe('ai3');
+    });
+
+    it('should work without dataDir (no persistence)', async () => {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(); // no dataDir
+
+      // Should work fine without persistence
+      tokenManager.rotateOnRateLimit('tokenA', new Date(Date.now() + 3600000));
+      expect(tokenManager.getActiveToken().name).toBe('cct2');
+
+      // No file created
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('should handle corrupt cooldown file gracefully', async () => {
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+      fs.writeFileSync(filePath, 'not valid json!!!', 'utf-8');
+
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'tokenA,tokenB';
+      const { tokenManager } = await import('./token-manager');
+
+      // Should not throw, just warn and continue
+      expect(() => tokenManager.initialize(TEST_DATA_DIR)).not.toThrow();
+      expect(tokenManager.getActiveToken().name).toBe('cct1');
+    });
+
+    it('should select earliest recovery when all tokens on cooldown at restore', async () => {
+      const earlyCooldown = new Date(Date.now() + 1800000); // 30min
+      const lateCooldown = new Date(Date.now() + 3600000);  // 1hr
+      const filePath = path.join(TEST_DATA_DIR, 'token-cooldowns.json');
+
+      fs.writeFileSync(filePath, JSON.stringify({
+        cooldowns: {
+          ai2: { until: lateCooldown.toISOString() },
+          ai3: { until: earlyCooldown.toISOString() },
+        },
+        activeToken: 'ai2',
+      }, null, 2), 'utf-8');
+
+      process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = 'ai2=tokenA,ai3=tokenB';
+      const { tokenManager } = await import('./token-manager');
+      tokenManager.initialize(TEST_DATA_DIR);
+
+      // Both on cooldown → should pick ai3 (earliest recovery)
+      expect(tokenManager.getActiveToken().name).toBe('ai3');
     });
   });
 });
