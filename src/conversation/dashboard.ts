@@ -918,12 +918,12 @@ function renderDashboardPage(userId?: string): string {
   --text-tertiary: #8b95a5;
   --accent: #2b7fd4;
   --accent-hover: #2468b0;
-  /* Functional colors — WCAG AA on #f8f9fb */
-  --green: #16a34a;
-  --yellow: #ca8a04;
+  /* Functional colors — WCAG AA ≥4.5:1 on #f8f9fb */
+  --green: #15803d;
+  --yellow: #a16207;
   --red: #dc2626;
   --purple: #7c3aed;
-  --orange: #ea580c;
+  --orange: #c2410c;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
