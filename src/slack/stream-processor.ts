@@ -148,6 +148,19 @@ export interface UsageData {
   lastTurnOutputTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnCacheCreateTokens?: number;
+
+  // --- Per-model breakdown (for token_usage event) ---
+  // Raw model usage map from SDK, preserved before aggregation.
+  modelBreakdown?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUsd: number;
+    }
+  >;
 }
 
 export interface FinalResponseFooterParams {
@@ -1070,13 +1083,39 @@ export class StreamProcessor {
     let contextWindow: number | undefined;
     let modelName: string | undefined;
 
+    // Preserve per-model breakdown for token_usage event
+    const modelBreakdown: Record<
+      string,
+      {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+        costUsd: number;
+      }
+    > = {};
+
     for (const [model, usage] of Object.entries(modelUsageMap)) {
       if (usage) {
-        totalInput += usage.inputTokens || 0;
-        totalOutput += usage.outputTokens || 0;
-        totalCacheRead += usage.cacheReadInputTokens || 0;
-        totalCacheCreation += usage.cacheCreationInputTokens || 0;
-        totalCost += usage.costUSD || 0;
+        const input = usage.inputTokens || 0;
+        const output = usage.outputTokens || 0;
+        const cacheRead = usage.cacheReadInputTokens || 0;
+        const cacheCreate = usage.cacheCreationInputTokens || 0;
+        const cost = usage.costUSD || 0;
+
+        totalInput += input;
+        totalOutput += output;
+        totalCacheRead += cacheRead;
+        totalCacheCreation += cacheCreate;
+        totalCost += cost;
+
+        modelBreakdown[model] = {
+          inputTokens: input,
+          outputTokens: output,
+          cacheReadInputTokens: cacheRead,
+          cacheCreationInputTokens: cacheCreate,
+          costUsd: cost,
+        };
 
         // Extract contextWindow from SDK ModelUsage (first model with it wins,
         // typically there's only one model in a non-router setup)
@@ -1098,6 +1137,7 @@ export class StreamProcessor {
       totalCostUsd: totalCost,
       contextWindow,
       modelName,
+      modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,
     };
   }
 

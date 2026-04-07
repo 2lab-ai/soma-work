@@ -75,6 +75,8 @@ function updateSessionUsage(
       contextWindow: FALLBACK_CONTEXT_WINDOW,
       totalInputTokens: 0,
       totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
       totalCostUsd: 0,
       lastUpdated: Date.now(),
     };
@@ -107,6 +109,8 @@ function updateSessionUsage(
   // TOTAL values are ACCUMULATED (billing: use aggregate values)
   session.usage.totalInputTokens += usageData.inputTokens;
   session.usage.totalOutputTokens += usageData.outputTokens;
+  session.usage.totalCacheReadTokens += usageData.cacheReadInputTokens;
+  session.usage.totalCacheCreateTokens += usageData.cacheCreationInputTokens;
   session.usage.totalCostUsd += usageData.totalCostUsd;
   session.usage.lastUpdated = Date.now();
 }
