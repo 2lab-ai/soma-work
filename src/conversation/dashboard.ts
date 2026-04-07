@@ -876,69 +876,73 @@ export async function registerDashboardRoutes(
   server.post<{
     Params: { key: string };
     Body: { selections: Record<string, { choiceId: string; label: string }> };
-  }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] }, async (request, reply) => {
-    const { key } = request.params;
-    const { selections } = request.body || {};
-    if (
-      !selections ||
-      typeof selections !== 'object' ||
-      Array.isArray(selections) ||
-      Object.keys(selections).length === 0
-    ) {
-      reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
-      return;
-    }
-    // Reject payloads with too many selections (max 50 questions per form)
-    const selKeys = Object.keys(selections);
-    if (selKeys.length > 50) {
-      reply.status(400).send({ error: 'Too many selections' });
-      return;
-    }
-    // Validate each selection entry
-    for (const [qId, sel] of Object.entries(selections)) {
+  }>(
+    '/api/dashboard/session/:key/answer-multi-choice',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { key } = request.params;
+      const { selections } = request.body || {};
       if (
-        !sel ||
-        typeof sel !== 'object' ||
-        !sel.choiceId ||
-        typeof sel.choiceId !== 'string' ||
-        !sel.label ||
-        typeof sel.label !== 'string'
+        !selections ||
+        typeof selections !== 'object' ||
+        Array.isArray(selections) ||
+        Object.keys(selections).length === 0
       ) {
-        reply.status(400).send({ error: 'Invalid selection entry' });
+        reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
         return;
       }
-      if (sel.choiceId.length > 200 || sel.label.length > 1000) {
-        reply.status(400).send({ error: 'Selection field length exceeded' });
+      // Reject payloads with too many selections (max 50 questions per form)
+      const selKeys = Object.keys(selections);
+      if (selKeys.length > 50) {
+        reply.status(400).send({ error: 'Too many selections' });
         return;
       }
-    }
-    if (!requireSessionOwner(request, reply, key)) return;
-    try {
-      if (_multiChoiceAnswerHandlerFn) {
-        await _multiChoiceAnswerHandlerFn(key, selections);
-      } else {
-        reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
-        return;
+      // Validate each selection entry
+      for (const [qId, sel] of Object.entries(selections)) {
+        if (
+          !sel ||
+          typeof sel !== 'object' ||
+          !sel.choiceId ||
+          typeof sel.choiceId !== 'string' ||
+          !sel.label ||
+          typeof sel.label !== 'string'
+        ) {
+          reply.status(400).send({ error: 'Invalid selection entry' });
+          return;
+        }
+        if (sel.choiceId.length > 200 || sel.label.length > 1000) {
+          reply.status(400).send({ error: 'Selection field length exceeded' });
+          return;
+        }
       }
-      reply.send({ ok: true });
-    } catch (error) {
-      const errMsg = (error as Error).message || '';
-      if (errMsg === 'Session not found') {
-        reply.status(404).send({ error: 'Session not found' });
-      } else if (errMsg === 'Session is not waiting for a choice') {
-        reply.status(409).send({ error: 'Session is not waiting for choices' });
-      } else if (errMsg === 'Session has no pending multi-choice question') {
-        reply.status(409).send({ error: 'Session has no pending multi-choice question' });
-      } else if (errMsg.startsWith('Missing answer for question')) {
-        reply.status(400).send({ error: errMsg });
-      } else if (errMsg === 'Invalid choice ID') {
-        reply.status(422).send({ error: 'Invalid choice ID' });
-      } else {
-        logger.error('Error answering multi-choice from dashboard', error);
-        reply.status(500).send({ error: 'Internal Server Error' });
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_multiChoiceAnswerHandlerFn) {
+          await _multiChoiceAnswerHandlerFn(key, selections);
+        } else {
+          reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
+          return;
+        }
+        reply.send({ ok: true });
+      } catch (error) {
+        const errMsg = (error as Error).message || '';
+        if (errMsg === 'Session not found') {
+          reply.status(404).send({ error: 'Session not found' });
+        } else if (errMsg === 'Session is not waiting for a choice') {
+          reply.status(409).send({ error: 'Session is not waiting for choices' });
+        } else if (errMsg === 'Session has no pending multi-choice question') {
+          reply.status(409).send({ error: 'Session has no pending multi-choice question' });
+        } else if (errMsg.startsWith('Missing answer for question')) {
+          reply.status(400).send({ error: errMsg });
+        } else if (errMsg === 'Invalid choice ID') {
+          reply.status(422).send({ error: 'Invalid choice ID' });
+        } else {
+          logger.error('Error answering multi-choice from dashboard', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
       }
-    }
-  });
+    },
+  );
 
   // ── HTML Dashboard ──
 
