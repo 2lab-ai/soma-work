@@ -1017,6 +1017,12 @@ function renderDashboardPage(userId?: string): string {
   --text-tertiary: #8b95a5;
   --accent: #2b7fd4;
   --accent-hover: #2468b0;
+  /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
+  --green: #14783b;
+  --yellow: #a16207;
+  --red: #b91c1c;
+  --purple: #7c3aed;
+  --orange: #c2410c;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
@@ -1095,6 +1101,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   justify-content: center;
   transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
 }
+#theme-toggle::before { content: '\\1F319'; }
+[data-theme="light"] #theme-toggle::before { content: '\\2600\\FE0F'; }
 #theme-toggle:hover { border-color: var(--accent); transform: scale(1.1); }
 .ws-badge {
   padding: 4px 12px;
@@ -1966,7 +1974,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select>
       <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">&#x1F319;</button>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
   </div>
 
@@ -2078,12 +2086,17 @@ function getPreferredTheme() {
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('theme-toggle');
-  if (btn) btn.innerHTML = theme === 'light' ? '\\u2600\\uFE0F' : '\\uD83C\\uDF19';
+  if (btn) btn.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
 }
 function toggleTheme() {
   var current = document.documentElement.getAttribute('data-theme') || 'dark';
   var next = current === 'dark' ? 'light' : 'dark';
-  localStorage.setItem('soma-theme', next);
+  var osTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  if (next === osTheme) {
+    localStorage.removeItem('soma-theme');
+  } else {
+    localStorage.setItem('soma-theme', next);
+  }
   applyTheme(next);
 }
 // Sync icon on load
