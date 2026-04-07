@@ -64,7 +64,9 @@ export interface RotationResult {
  */
 export function parseCooldownTime(message: string): Date | null {
   // Groups: 1=month? 2=day? 3=hour 4=minutes? 5=am/pm
-  const match = message.match(/resets?\s+(?:([A-Za-z]+)\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+  const match = message.match(
+    /resets?\s+(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i,
+  );
   if (!match) return null;
 
   const monthStr = match[1]; // e.g. "Apr" (optional)
@@ -260,15 +262,8 @@ export class TokenManager {
     }
 
     // All tokens on cooldown — pick the one with earliest recovery
-    let earliestIndex = 0;
-    let earliestTime = this.tokens[0].cooldownUntil ?? new Date(8640000000000000);
-    for (let i = 1; i < this.tokens.length; i++) {
-      const cd = this.tokens[i].cooldownUntil;
-      if (cd && cd < earliestTime) {
-        earliestTime = cd;
-        earliestIndex = i;
-      }
-    }
+    const earliestIndex = this.findEarliestRecoveryIndex();
+    const earliestTime = this.tokens[earliestIndex].cooldownUntil ?? new Date(8640000000000000);
 
     const previousName = this.tokens[this.activeIndex].name;
     this.activeIndex = earliestIndex;
@@ -297,6 +292,20 @@ export class TokenManager {
     if (this.tokens.length > 0) {
       process.env.CLAUDE_CODE_OAUTH_TOKEN = this.tokens[this.activeIndex].value;
     }
+  }
+
+  /** Find the token index with the earliest cooldown recovery time. */
+  private findEarliestRecoveryIndex(): number {
+    let earliestIndex = 0;
+    let earliestTime = this.tokens[0].cooldownUntil ?? new Date(8640000000000000);
+    for (let i = 1; i < this.tokens.length; i++) {
+      const cd = this.tokens[i].cooldownUntil;
+      if (cd && cd < earliestTime) {
+        earliestTime = cd;
+        earliestIndex = i;
+      }
+    }
+    return earliestIndex;
   }
 
   // ── Persistence ──────────────────────────────────────────────
@@ -374,16 +383,7 @@ export class TokenManager {
         // If all on cooldown, pick earliest recovery
         const activeCd = this.tokens[this.activeIndex].cooldownUntil;
         if (activeCd && activeCd > now) {
-          let earliestIndex = 0;
-          let earliestTime = this.tokens[0].cooldownUntil ?? new Date(8640000000000000);
-          for (let i = 1; i < this.tokens.length; i++) {
-            const cd = this.tokens[i].cooldownUntil;
-            if (cd && cd < earliestTime) {
-              earliestTime = cd;
-              earliestIndex = i;
-            }
-          }
-          this.activeIndex = earliestIndex;
+          this.activeIndex = this.findEarliestRecoveryIndex();
         }
       }
 
