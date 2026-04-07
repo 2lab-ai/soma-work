@@ -63,32 +63,35 @@ describe('parseTodos', () => {
     ];
     const result = parseTodos(todoWriteInput);
     expect(result).toHaveLength(3);
-    expect(result![0]).toEqual({
-      content: 'Task A',
-      status: 'pending',
-      activeForm: 'Working on A',
-      id: '0',
-      priority: 'medium',
-    });
-    expect(result![1]).toEqual({
-      content: 'Task B',
-      status: 'in_progress',
-      activeForm: 'Working on B',
-      id: '1',
-      priority: 'medium',
-    });
-    expect(result![2]).toEqual({
-      content: 'Task C',
-      status: 'completed',
-      activeForm: 'Done with C',
-      id: '2',
-      priority: 'medium',
-    });
+    // IDs are content-hash based (stable, deterministic)
+    expect(result![0].id).toMatch(/^todo-/);
+    expect(result![0].content).toBe('Task A');
+    expect(result![0].status).toBe('pending');
+    expect(result![0].priority).toBe('medium');
+    expect(result![1].id).toMatch(/^todo-/);
+    expect(result![1].content).toBe('Task B');
+    expect(result![1].priority).toBe('medium');
+    expect(result![2].id).toMatch(/^todo-/);
+    expect(result![2].content).toBe('Task C');
+    expect(result![2].priority).toBe('medium');
+    // Same content produces same id (stable)
+    const result2 = parseTodos(todoWriteInput);
+    expect(result2![0].id).toBe(result![0].id);
   });
 
   it('preserves explicit id and priority when provided', () => {
     const result = parseTodos([{ id: 'custom-id', content: 'Test', status: 'pending', priority: 'high' }]);
     expect(result).toEqual([{ id: 'custom-id', content: 'Test', status: 'pending', priority: 'high' }]);
+  });
+
+  it('does not mutate input objects', () => {
+    const input = [
+      { content: 'Task X', status: 'pending', activeForm: 'Working on X' },
+    ];
+    const originalContent = { ...input[0] };
+    parseTodos(input);
+    // Input object should remain unchanged (no id/priority stamped onto it)
+    expect(input[0]).toEqual(originalContent);
   });
 });
 
@@ -175,12 +178,12 @@ describe('TodoManager.updateTodos', () => {
     mgr.updateTodos('sess-1', todoWritePayload);
     const stored = mgr.getTodos('sess-1');
     expect(stored).toHaveLength(2);
-    expect(stored[0].id).toBe('0');
+    expect(stored[0].id).toMatch(/^todo-/);
     expect(stored[0].priority).toBe('medium');
     expect(stored[0].content).toBe('Investigate bug');
     expect(stored[0].status).toBe('in_progress');
     expect(stored[0].startedAt).toBeDefined(); // auto-stamped
-    expect(stored[1].id).toBe('1');
+    expect(stored[1].id).toMatch(/^todo-/);
     expect(stored[1].priority).toBe('medium');
   });
 });

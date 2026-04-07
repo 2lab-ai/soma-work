@@ -312,6 +312,7 @@ async function start() {
         todos.map((t) => ({
           content: t.content,
           status: t.status,
+          activeForm: t.activeForm,
           startedAt: t.startedAt,
           completedAt: t.completedAt,
         })),

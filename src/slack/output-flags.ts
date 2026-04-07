@@ -68,7 +68,6 @@ export const LOG_COMPACT =
   LOG_MINIMAL |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
-  OutputFlag.MCP_PROGRESS |
   OutputFlag.STATUS_MESSAGE |
   OutputFlag.STATUS_REACTION |
   OutputFlag.STATUS_SPINNER |
@@ -82,9 +81,6 @@ export const LOG_DETAIL =
   LOG_COMPACT |
   OutputFlag.TOOL_DETAIL |
   OutputFlag.TOOL_RESULT |
-  OutputFlag.MCP_PROGRESS |
-  OutputFlag.TODO_UPDATE |
-  OutputFlag.TODO_REACTION |
   OutputFlag.SYSTEM;
 
 /** VERBOSE — everything including raw data */
