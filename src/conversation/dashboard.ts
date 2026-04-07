@@ -918,10 +918,10 @@ function renderDashboardPage(userId?: string): string {
   --text-tertiary: #8b95a5;
   --accent: #2b7fd4;
   --accent-hover: #2468b0;
-  /* Functional colors — WCAG AA ≥4.5:1 on #f8f9fb */
-  --green: #15803d;
+  /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
+  --green: #14783b;
   --yellow: #a16207;
-  --red: #dc2626;
+  --red: #b91c1c;
   --purple: #7c3aed;
   --orange: #c2410c;
 }
