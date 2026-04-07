@@ -7,6 +7,8 @@
 - model-command-tool을 최우선으로 사용한다. AskUserQuestion대신 UIAskUserQuestion를 사용한다.
 - git commit과 PR에 Co-Authored-By는 현재 유저를 추가한다.
   `Co-Authored-By: {{user.displayName}} <{{user.email}}>`
+  - `{{user.email}}`이 치환되지 않고 그대로 남아있으면 fallback으로 `Co-Authored-By: Z <z@2lab.ai>`를 사용하라.
+  - 이메일을 추측하거나 git config/history에서 가져오지 마라. 위 두 가지 중 하나만 사용하라.
 
 ## 똑똑한 부하 모델(MCP)
 - 유저의 명시적 요청이 있거나, 주어진 작업의 복잡도가 일정 이상일 경우 부하 모델에게 위임한다.
