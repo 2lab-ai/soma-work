@@ -598,9 +598,9 @@ describe('Dashboard API', () => {
     expect(correctOpenPanel).not.toBeNull();
 
     // There should be exactly 3 doAction calls (stop, close, trash)
-    // and 1 openPanel call
+    // and 2 openPanel calls (card click + multi-choice "답변하기" button)
     expect(correctDoAction!.length).toBe(3);
-    expect(correctOpenPanel!.length).toBe(1);
+    expect(correctOpenPanel!.length).toBe(2);
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -619,8 +619,8 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 3 doAction calls × 1 separator each + 1 resummarize call + 2 answerChoice calls × 3 separators each = 10 closing patterns
-    expect(actionClosings!.length).toBe(10);
+    // 3 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 11 closing patterns
+    expect(actionClosings!.length).toBe(11);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
@@ -692,5 +692,109 @@ describe('Dashboard API', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('Sign in');
+  });
+
+  // ── Theme toggle follow-up (Issue #370) ──
+
+  it('should include FOUC prevention script before styles', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const html: string = res.body;
+    // FOUC script must appear before <style>
+    const foucIdx = html.indexOf('<script data-fouc>');
+    const styleIdx = html.indexOf('<style>');
+    expect(foucIdx).toBeGreaterThan(-1);
+    expect(styleIdx).toBeGreaterThan(-1);
+    expect(foucIdx).toBeLessThan(styleIdx);
+    // Must set data-theme attribute
+    expect(html.substring(foucIdx, styleIdx)).toContain('data-theme');
+  });
+
+  it('should have theme toggle button with aria-label and no hardcoded emoji', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+    // Button must exist with aria-label
+    expect(html).toContain('id="theme-toggle"');
+    expect(html).toContain('aria-label="Toggle theme"');
+    // Button content must be empty — icon is rendered via CSS ::before
+    const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
+    expect(btnMatch).not.toBeNull();
+    expect(btnMatch![1].trim()).toBe('');
+  });
+
+  it('should have CSS pseudo-element rules for theme icon', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+    // CSS must define ::before for theme-toggle
+    expect(html).toContain('#theme-toggle::before');
+    expect(html).toContain('[data-theme="light"] #theme-toggle::before');
+  });
+
+  it('should have theme JS functions in inline script', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+    expect(script).toContain('function getPreferredTheme()');
+    expect(script).toContain('function applyTheme(');
+    expect(script).toContain('function toggleTheme()');
+  });
+
+  it('should have light theme functional color overrides for WCAG AA', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+    // Light theme block must override functional colors
+    const lightBlock = html.match(/\[data-theme="light"\]\s*\{([^}]+)\}/);
+    expect(lightBlock).not.toBeNull();
+    const block = lightBlock![1];
+    expect(block).toContain('--green:');
+    expect(block).toContain('--yellow:');
+    expect(block).toContain('--red:');
+    expect(block).toContain('--purple:');
+    expect(block).toContain('--orange:');
+  });
+
+  it('should auto-clear localStorage when toggled theme matches OS preference', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+    // toggleTheme must contain removeItem for auto-clear logic
+    const toggleFn = script.match(/function toggleTheme\(\)\s*\{([\s\S]*?)\n\}/);
+    expect(toggleFn).not.toBeNull();
+    expect(toggleFn![1]).toContain('removeItem');
+    expect(toggleFn![1]).toContain('osTheme');
   });
 });

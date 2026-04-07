@@ -173,6 +173,7 @@ export class SlackHandler {
       threadPanel: this.threadPanel,
       requestCoordinator: this.requestCoordinator,
       completionMessageTracker,
+      mcpManager: this.mcpManager,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -890,5 +891,17 @@ export class SlackHandler {
       throw new Error('Session not found');
     }
     await this.actionHandlers.handleDashboardChoiceAnswer(sessionKey, choiceId, label, question, session.ownerId);
+  }
+
+  /** Handle multi-choice form submission from dashboard */
+  async handleDashboardMultiChoiceAnswer(
+    sessionKey: string,
+    selections: Record<string, { choiceId: string; label: string }>,
+  ): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
   }
 }
