@@ -198,6 +198,50 @@ describe('Token Usage Aggregation', () => {
     expect(report.byDay).toHaveLength(1);
   });
 
+  it('should correctly split events at UTC/KST midnight boundary', async () => {
+    // 2026-04-07T14:59:59Z = 2026-04-07T23:59:59+09:00 (still Apr 7 KST)
+    // 2026-04-07T15:00:00Z = 2026-04-08T00:00:00+09:00 (crosses to Apr 8 KST)
+    const beforeMidnight = new Date('2026-04-07T14:59:59Z').getTime();
+    const afterMidnight = new Date('2026-04-07T15:00:00Z').getTime();
+
+    const events = [
+      makeTokenUsageEvent({ timestamp: beforeMidnight, inputTokens: 1000 }),
+      makeTokenUsageEvent({ timestamp: afterMidnight, inputTokens: 2000 }),
+    ];
+
+    const aggregator = new ReportAggregator(mockStore(events));
+    const report = await aggregator.aggregateTokenUsage('2026-04-07', '2026-04-08');
+
+    expect(report.byDay).toHaveLength(2);
+    expect(report.byDay[0].date).toBe('2026-04-07');
+    expect(report.byDay[0].totals.totalInputTokens).toBe(1000);
+    expect(report.byDay[1].date).toBe('2026-04-08');
+    expect(report.byDay[1].totals.totalInputTokens).toBe(2000);
+  });
+
+  it('should filter out non-token_usage events', async () => {
+    const events = [
+      makeTokenUsageEvent({ inputTokens: 1000, costUsd: 0.05 }),
+      // Simulate a non-token_usage event
+      {
+        id: crypto.randomUUID(),
+        timestamp: Date.now(),
+        eventType: 'turn_used' as const,
+        userId: 'U001',
+        userName: 'TestUser',
+        sessionKey: 'C1-t1',
+        metadata: { some: 'data' },
+      },
+    ];
+
+    const aggregator = new ReportAggregator(mockStore(events));
+    const report = await aggregator.aggregateTokenUsage('2026-04-07', '2026-04-07');
+
+    // Only the token_usage event should be counted
+    expect(report.totals.totalInputTokens).toBe(1000);
+    expect(report.totals.totalCostUsd).toBeCloseTo(0.05);
+  });
+
   it('should exclude assistant and unknown users from byUser', async () => {
     const events = [
       makeTokenUsageEvent({ userId: 'assistant', userName: 'assistant' }),
