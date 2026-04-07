@@ -632,10 +632,12 @@ export async function registerDashboardRoutes(
         | 'week'
         | 'month';
 
-      // Validate date format if provided
-      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        reply.status(400).send({ error: 'Invalid date format. Use YYYY-MM-DD.' });
-        return;
+      // Validate date format and semantic validity if provided
+      if (date) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date + 'T00:00:00Z').getTime())) {
+          reply.status(400).send({ error: 'Invalid date. Use YYYY-MM-DD.' });
+          return;
+        }
       }
 
       const { startDate, endDate } = date ? getDateRangeFrom(date, period) : getDateRange(period);
