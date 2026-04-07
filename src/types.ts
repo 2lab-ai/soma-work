@@ -45,6 +45,8 @@ export interface SessionUsage {
   // Cumulative session totals
   totalInputTokens: number;
   totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreateTokens: number;
   totalCostUsd: number;
 
   lastUpdated: number; // Timestamp of last update

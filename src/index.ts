@@ -61,7 +61,7 @@ async function start() {
     timing('PID lock acquired');
 
     // Initialize token manager (before preflight — tokens may be needed for API calls)
-    tokenManager.initialize();
+    tokenManager.initialize(DATA_DIR);
     timing('TokenManager initialized');
 
     // Run preflight checks
@@ -296,12 +296,23 @@ async function start() {
     );
 
     // Connect dashboard: real-time task updates
+    // TodoManager fires with sessionId, but dashboard caches by sessionKey.
+    // Resolve sessionId → sessionKey so WebSocket clients can match the update.
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
+      let sessionKey = sessionId;
+      const allSessions = claudeHandler.getSessionRegistry().getAllSessions();
+      for (const [key, session] of allSessions) {
+        if (session.sessionId === sessionId) {
+          sessionKey = key;
+          break;
+        }
+      }
       broadcastTaskUpdate(
-        sessionId,
+        sessionKey,
         todos.map((t) => ({
           content: t.content,
           status: t.status,
+          activeForm: t.activeForm,
           startedAt: t.startedAt,
           completedAt: t.completedAt,
         })),
