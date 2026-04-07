@@ -148,10 +148,13 @@ function getAllSessions(): Map<string, any> {
 
 /** Verify the authenticated user owns the target session. Returns null if OK, or a 403 reply if not. */
 function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
-  const authUser = request.dashboardUser;
+  const authContext = request.authContext;
+  // Admin bypasses ownership check
+  if (authContext?.isAdmin) return true;
+
   const sessions = _getSessionsFn?.();
   const targetSession = sessions?.get(sessionKey);
-  if (authUser && targetSession && targetSession.ownerId !== authUser.userId) {
+  if (authContext?.userId && targetSession && targetSession.ownerId !== authContext.userId) {
     reply.status(403).send({ error: 'You can only modify your own sessions' });
     return false;
   }
@@ -416,7 +419,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void; userId?: string };
+type WsClient = { send: (data: string) => void; close: () => void; userId?: string; isAdmin?: boolean };
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -485,7 +488,7 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
       // Only send to clients belonging to the session owner (or all if owner unknown)
-      if (ownerId && client.userId && client.userId !== ownerId) continue;
+      if (ownerId && !client.isAdmin && client.userId && client.userId !== ownerId) continue;
       try {
         client.send(payload);
       } catch {
@@ -519,6 +522,7 @@ export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'clo
 export async function registerDashboardRoutes(
   server: FastifyInstance,
   authMiddleware: (req: any, reply: any) => Promise<void>,
+  csrfMiddleware?: (req: any, reply: any) => Promise<void>,
 ): Promise<void> {
   const store = new MetricsEventStore();
 
@@ -543,6 +547,12 @@ export async function registerDashboardRoutes(
       const { userId, period: rawPeriod } = request.query;
       if (!userId) {
         reply.status(400).send({ error: 'userId is required' });
+        return;
+      }
+      // RBAC: OAuth users can only view their own stats
+      const authContext = (request as any).authContext;
+      if (authContext && !authContext.isAdmin && authContext.userId && authContext.userId !== userId) {
+        reply.status(403).send({ error: 'You can only view your own stats' });
         return;
       }
       const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as
@@ -620,6 +630,12 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Conversation not found' });
           return;
         }
+        // RBAC: OAuth users can only view their own session details
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
+          reply.status(403).send({ error: 'You can only view your own sessions' });
+          return;
+        }
         // Return lightweight turn summaries (no rawContent for assistant turns)
         const turns = record.turns.map((t) => ({
           id: t.id,
@@ -652,9 +668,22 @@ export async function registerDashboardRoutes(
   // Resummarize a specific assistant turn
   server.post<{ Params: { conversationId: string; turnId: string } }>(
     '/api/dashboard/session/:conversationId/resummarize/:turnId',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       try {
+        // RBAC: check conversation ownership
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin) {
+          const record = await getConversation(request.params.conversationId);
+          if (!record) {
+            reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
+            return;
+          }
+          if (authContext.userId && record.ownerId !== authContext.userId) {
+            reply.status(403).send({ error: 'You can only modify your own conversations' });
+            return;
+          }
+        }
         const ok = await resummarizeTurn(request.params.conversationId, request.params.turnId);
         if (!ok) {
           reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
@@ -671,12 +700,18 @@ export async function registerDashboardRoutes(
   // Generate titleSub for a conversation
   server.post<{ Params: { conversationId: string } }>(
     '/api/dashboard/session/:conversationId/generate-title',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       try {
         const record = await getConversation(request.params.conversationId);
         if (!record) {
           reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+        // RBAC: check conversation ownership
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
+          reply.status(403).send({ error: 'You can only modify your own conversations' });
           return;
         }
 
@@ -704,7 +739,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/stop',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -724,7 +759,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/close',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -744,7 +779,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string } }>(
     '/api/dashboard/session/:key/trash',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       if (!requireSessionOwner(request, reply, key)) return;
@@ -764,7 +799,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string }; Body: { message: string } }>(
     '/api/dashboard/session/:key/command',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       const { message } = request.body || {};
@@ -793,7 +828,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
     '/api/dashboard/session/:key/answer-choice',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
@@ -842,69 +877,73 @@ export async function registerDashboardRoutes(
   server.post<{
     Params: { key: string };
     Body: { selections: Record<string, { choiceId: string; label: string }> };
-  }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const { key } = request.params;
-    const { selections } = request.body || {};
-    if (
-      !selections ||
-      typeof selections !== 'object' ||
-      Array.isArray(selections) ||
-      Object.keys(selections).length === 0
-    ) {
-      reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
-      return;
-    }
-    // Reject payloads with too many selections (max 50 questions per form)
-    const selKeys = Object.keys(selections);
-    if (selKeys.length > 50) {
-      reply.status(400).send({ error: 'Too many selections' });
-      return;
-    }
-    // Validate each selection entry
-    for (const [qId, sel] of Object.entries(selections)) {
+  }>(
+    '/api/dashboard/session/:key/answer-multi-choice',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { key } = request.params;
+      const { selections } = request.body || {};
       if (
-        !sel ||
-        typeof sel !== 'object' ||
-        !sel.choiceId ||
-        typeof sel.choiceId !== 'string' ||
-        !sel.label ||
-        typeof sel.label !== 'string'
+        !selections ||
+        typeof selections !== 'object' ||
+        Array.isArray(selections) ||
+        Object.keys(selections).length === 0
       ) {
-        reply.status(400).send({ error: 'Invalid selection entry' });
+        reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
         return;
       }
-      if (sel.choiceId.length > 200 || sel.label.length > 1000) {
-        reply.status(400).send({ error: 'Selection field length exceeded' });
+      // Reject payloads with too many selections (max 50 questions per form)
+      const selKeys = Object.keys(selections);
+      if (selKeys.length > 50) {
+        reply.status(400).send({ error: 'Too many selections' });
         return;
       }
-    }
-    if (!requireSessionOwner(request, reply, key)) return;
-    try {
-      if (_multiChoiceAnswerHandlerFn) {
-        await _multiChoiceAnswerHandlerFn(key, selections);
-      } else {
-        reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
-        return;
+      // Validate each selection entry
+      for (const [qId, sel] of Object.entries(selections)) {
+        if (
+          !sel ||
+          typeof sel !== 'object' ||
+          !sel.choiceId ||
+          typeof sel.choiceId !== 'string' ||
+          !sel.label ||
+          typeof sel.label !== 'string'
+        ) {
+          reply.status(400).send({ error: 'Invalid selection entry' });
+          return;
+        }
+        if (sel.choiceId.length > 200 || sel.label.length > 1000) {
+          reply.status(400).send({ error: 'Selection field length exceeded' });
+          return;
+        }
       }
-      reply.send({ ok: true });
-    } catch (error) {
-      const errMsg = (error as Error).message || '';
-      if (errMsg === 'Session not found') {
-        reply.status(404).send({ error: 'Session not found' });
-      } else if (errMsg === 'Session is not waiting for a choice') {
-        reply.status(409).send({ error: 'Session is not waiting for choices' });
-      } else if (errMsg === 'Session has no pending multi-choice question') {
-        reply.status(409).send({ error: 'Session has no pending multi-choice question' });
-      } else if (errMsg.startsWith('Missing answer for question')) {
-        reply.status(400).send({ error: errMsg });
-      } else if (errMsg === 'Invalid choice ID') {
-        reply.status(422).send({ error: 'Invalid choice ID' });
-      } else {
-        logger.error('Error answering multi-choice from dashboard', error);
-        reply.status(500).send({ error: 'Internal Server Error' });
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (_multiChoiceAnswerHandlerFn) {
+          await _multiChoiceAnswerHandlerFn(key, selections);
+        } else {
+          reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
+          return;
+        }
+        reply.send({ ok: true });
+      } catch (error) {
+        const errMsg = (error as Error).message || '';
+        if (errMsg === 'Session not found') {
+          reply.status(404).send({ error: 'Session not found' });
+        } else if (errMsg === 'Session is not waiting for a choice') {
+          reply.status(409).send({ error: 'Session is not waiting for choices' });
+        } else if (errMsg === 'Session has no pending multi-choice question') {
+          reply.status(409).send({ error: 'Session has no pending multi-choice question' });
+        } else if (errMsg.startsWith('Missing answer for question')) {
+          reply.status(400).send({ error: errMsg });
+        } else if (errMsg === 'Invalid choice ID') {
+          reply.status(422).send({ error: 'Invalid choice ID' });
+        } else {
+          logger.error('Error answering multi-choice from dashboard', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
       }
-    }
-  });
+    },
+  );
 
   // ── HTML Dashboard ──
 
@@ -934,11 +973,12 @@ export async function registerDashboardRoutes(
         socket.close(1013, 'Max clients reached');
         return;
       }
-      const authUser = request?.dashboardUser;
+      const authContext = request?.authContext;
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
-        userId: authUser?.userId,
+        userId: authContext?.userId,
+        isAdmin: authContext?.isAdmin,
       };
       wsClients.add(client);
       logger.debug('WebSocket client connected', { total: wsClients.size });
@@ -2291,6 +2331,16 @@ function renderPanelTaskItem(t) {
     + timeHtml
     + '</div>';
 }
+let _csrfToken = '';
+
+// Fetch CSRF token (reusable — called on load and after JWT rotation invalidates token)
+async function refreshCsrfToken() {
+  try {
+    const res = await fetch('/auth/me');
+    if (res.ok) { const data = await res.json(); _csrfToken = data.csrfToken || ''; }
+  } catch {}
+}
+refreshCsrfToken();
 
 // ── Utility ──
 function esc(s) {
@@ -2535,10 +2585,19 @@ async function loadSessions() {
   } catch (e) { console.error('Failed to load sessions', e); }
 }
 
-// ── Action handler ──
+// ── Action handler (with CSRF retry on 403 after JWT rotation) ──
 async function doAction(key, action) {
   try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/' + action, { method: 'POST' });
+    const headers = {};
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    const url = '/api/dashboard/session/' + encodeURIComponent(key) + '/' + action;
+    let res = await fetch(url, { method: 'POST', headers });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = {};
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+    }
     if (!res.ok) console.error('Action failed', action, key);
     else loadSessions();
   } catch (e) { console.error('Action error', e); }
@@ -2554,11 +2613,17 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
     }
     btnEl.textContent = '...';
 
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ choiceId: choiceId, label: label, question: question }),
-    });
+    const choiceHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) choiceHeaders['X-CSRF-Token'] = _csrfToken;
+    const choiceUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice';
+    const choiceBody = JSON.stringify({ choiceId: choiceId, label: label, question: question });
+    let res = await fetch(choiceUrl, { method: 'POST', headers: choiceHeaders, body: choiceBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(choiceUrl, { method: 'POST', headers: retryHeaders, body: choiceBody });
+    }
     if (!res.ok) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
@@ -2818,11 +2883,17 @@ async function submitMultiChoice(key) {
   btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
 
   try {
-    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selections: st.selections }),
-    });
+    var mcHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
+    var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
+    var mcBody = JSON.stringify({ selections: st.selections });
+    var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var mcRetryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) mcRetryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(mcUrl, { method: 'POST', headers: mcRetryHeaders, body: mcBody });
+    }
     if (!res.ok) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
@@ -3246,11 +3317,17 @@ async function sendCommand() {
   input.value = '';
 
   try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg }),
-    });
+    const cmdHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
+    const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command';
+    const cmdBody = JSON.stringify({ message: msg });
+    let res = await fetch(cmdUrl, { method: 'POST', headers: cmdHeaders, body: cmdBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(cmdUrl, { method: 'POST', headers: retryHeaders, body: cmdBody });
+    }
     if (!res.ok) {
       // Mark optimistic turn as failed
       var lastTurn = document.querySelector('.turn.user:last-child');
