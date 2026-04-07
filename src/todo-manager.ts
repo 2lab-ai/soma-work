@@ -21,20 +21,39 @@ const VALID_PRIORITIES = new Set(['high', 'medium', 'low']);
 /**
  * Validate and sanitize raw input into a Todo array.
  * Returns null if the input is not a valid array (caller should reject).
- * Individual malformed items are filtered out, not the whole batch.
+ *
+ * Items with valid `content` (string) and `status` (valid enum) are kept;
+ * others are filtered out. The function never mutates its input.
+ *
+ * TodoWrite (Claude Code) sends items without `id` or `priority`.
+ * Missing `id` is derived from `content` (stable across reorders);
+ * missing or invalid `priority` defaults to 'medium'.
  */
 export function parseTodos(raw: unknown): Todo[] | null {
   if (!Array.isArray(raw)) return null;
-  return raw.filter((item): item is Todo => {
-    if (item == null || typeof item !== 'object') return false;
-    const t = item as Record<string, unknown>;
-    return (
-      typeof t.id === 'string' &&
-      typeof t.content === 'string' &&
-      VALID_STATUSES.has(t.status as string) &&
-      VALID_PRIORITIES.has(t.priority as string)
-    );
-  });
+  return raw
+    .map((item) => {
+      if (item == null || typeof item !== 'object') return null;
+      const src = item as Record<string, unknown>;
+      if (typeof src.content !== 'string' || !VALID_STATUSES.has(src.status as string)) return null;
+      // Clone to avoid mutating the caller's input
+      const t = { ...src };
+      // Stable content-based id when missing (TodoWrite omits it)
+      if (typeof t.id !== 'string') t.id = `todo-${simpleHash(src.content as string)}`;
+      // Default priority when missing or invalid (TodoWrite omits it)
+      if (!VALID_PRIORITIES.has(t.priority as string)) t.priority = 'medium';
+      return t as unknown as Todo;
+    })
+    .filter((item): item is Todo => item !== null);
+}
+
+/** Simple string hash for generating stable, deterministic todo IDs from content. */
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }
 
 export class TodoManager {

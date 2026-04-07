@@ -446,6 +446,7 @@ export function broadcastTaskUpdate(
   tasks: Array<{
     content: string;
     status: 'pending' | 'in_progress' | 'completed';
+    activeForm?: string;
     startedAt?: number;
     completedAt?: number;
   }>,
