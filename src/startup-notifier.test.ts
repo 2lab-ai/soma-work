@@ -63,6 +63,27 @@ describe('notifyStartup', () => {
     );
   });
 
+  it('does not include release notes in startup notification (handled by notifyRelease)', async () => {
+    process.env.DEFAULT_UPDATE_CHANNEL = '#deploy-updates';
+
+    const client = createMockClient();
+    client.conversations.list.mockResolvedValue({
+      channels: [{ id: 'CDEPLOY', name: 'deploy-updates' }],
+    });
+    client.chat.postMessage.mockResolvedValue({ ok: true });
+
+    await notifyStartup(client as any, {
+      loadedSessions: 5,
+      mcpNames: ['jira'],
+      versionInfo,
+    });
+
+    const call = client.chat.postMessage.mock.calls[0][0];
+    const blockTexts = JSON.stringify(call.blocks);
+    expect(blockTexts).not.toContain('변경 사항');
+    expect(blockTexts).not.toContain(versionInfo.releaseNotes);
+  });
+
   it('falls back when DEFAULT_UPDATE_CHANNEL env var is missing', async () => {
     const client = createMockClient();
     // The env file at /opt/soma-work/dev/.env may contain DEFAULT_UPDATE_CHANNEL,
