@@ -14,6 +14,7 @@ import { createConversation, recordAssistantTurn, recordUserTurn } from '../../c
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
+import { getMetricsEmitter } from '../../metrics/event-emitter';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -1778,6 +1779,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Cumulative totals
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
         totalCostUsd: 0,
         lastUpdated: Date.now(),
       };
@@ -1817,6 +1820,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
     session.usage.totalOutputTokens += usage.outputTokens;
+    session.usage.totalCacheReadTokens += usage.cacheReadInputTokens;
+    session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
@@ -1834,6 +1839,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,
     });
+
+    // Emit token_usage event for persistent tracking (fire-and-forget)
+    this.emitTokenUsageEvent(session, usage);
+  }
+
+  /**
+   * Emit token_usage metrics event for persistent JSONL tracking.
+   * Fire-and-forget — errors are logged but never block the caller.
+   */
+  private emitTokenUsageEvent(session: ConversationSession, usage: UsageData): void {
+    try {
+      const emitter = getMetricsEmitter();
+      const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+      emitter.emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
+        sessionKey,
+        conversationId: session.conversationId,
+        model: usage.modelName || session.model || 'unknown',
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        costUsd: usage.totalCostUsd,
+        modelBreakdown: usage.modelBreakdown,
+      });
+    } catch (error) {
+      this.logger.debug('Failed to emit token_usage event', {
+        error: (error as Error).message,
+      });
+    }
   }
 
   private async handleModelCommandToolResults(

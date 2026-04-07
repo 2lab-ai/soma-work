@@ -21,6 +21,7 @@
 import type { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
+import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { buildThreadPermalink } from '../turn-notifier';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
@@ -255,7 +256,12 @@ function sessionToKanban(key: string, s: any): KanbanSession {
           totalOutputTokens: s.usage.totalOutputTokens || 0,
           totalCostUsd: s.usage.totalCostUsd || 0,
           contextUsagePercent: s.usage.contextWindow
-            ? ((s.usage.currentInputTokens || 0) / s.usage.contextWindow) * 100
+            ? (((s.usage.currentInputTokens || 0) +
+                (s.usage.currentCacheReadTokens || 0) +
+                (s.usage.currentCacheCreateTokens || 0) +
+                (s.usage.currentOutputTokens || 0)) /
+                s.usage.contextWindow) *
+              100
             : 0,
         }
       : undefined,
@@ -412,6 +418,25 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
   }
   const startDate = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
   return { startDate, endDate: end };
+}
+
+/**
+ * Get date range starting from a specific date string (YYYY-MM-DD).
+ */
+function getDateRangeFrom(date: string, period: 'day' | 'week' | 'month'): { startDate: string; endDate: string } {
+  const base = new Date(date + 'T00:00:00Z');
+  switch (period) {
+    case 'day':
+      return { startDate: date, endDate: date };
+    case 'week': {
+      const end = new Date(base.getTime() + 6 * 24 * 60 * 60 * 1000);
+      return { startDate: date, endDate: end.toISOString().slice(0, 10) };
+    }
+    case 'month': {
+      const end = new Date(base.getTime() + 29 * 24 * 60 * 60 * 1000);
+      return { startDate: date, endDate: end.toISOString().slice(0, 10) };
+    }
+  }
 }
 
 // ── WebSocket broadcast ────────────────────────────────────────────
@@ -591,6 +616,29 @@ export async function registerDashboardRoutes(
         reply.send({ userId, period, days, totals } satisfies UserStats);
       } catch (error) {
         logger.error('Error computing dashboard stats', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Token usage statistics
+  server.get<{ Querystring: { period?: string; userId?: string; date?: string } }>(
+    '/api/dashboard/usage',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { period: rawPeriod, userId, date } = request.query;
+      const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as
+        | 'day'
+        | 'week'
+        | 'month';
+      const { startDate, endDate } = date ? getDateRangeFrom(date, period) : getDateRange(period);
+
+      try {
+        const aggregator = new ReportAggregator(store);
+        const report = await aggregator.aggregateTokenUsage(startDate, endDate, userId || undefined);
+        reply.send(report);
+      } catch (error) {
+        logger.error('Error computing token usage stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },

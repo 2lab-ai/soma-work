@@ -138,7 +138,7 @@ describe('snapshotFromSession', () => {
         contextWindow: 200000,
         totalInputTokens: 0,
         totalOutputTokens: 0,
-        totalCostUsd: 0,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0,
         lastUpdated: 0,
       },
     } as ConversationSession;

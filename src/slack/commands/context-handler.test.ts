@@ -72,7 +72,7 @@ describe('ContextHandler', () => {
         contextWindow: 200000,
         totalInputTokens: 3000, // Sum of all requests (1000 + 2000)
         totalOutputTokens: 1300, // Sum of all responses (500 + 800)
-        totalCostUsd: 0.05,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.05,
         lastUpdated: Date.now(),
       };
 
@@ -134,7 +134,7 @@ describe('ContextHandler', () => {
         contextWindow: 200000,
         totalInputTokens: 60000, // higher due to multiple requests
         totalOutputTokens: 15000,
-        totalCostUsd: 0.1,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.1,
         lastUpdated: Date.now(),
       };
 
@@ -164,7 +164,7 @@ describe('ContextHandler', () => {
         contextWindow: 200000,
         totalInputTokens: 200000,
         totalOutputTokens: 50000,
-        totalCostUsd: 0.5,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.5,
         lastUpdated: Date.now(),
       };
 
@@ -194,7 +194,7 @@ describe('ContextHandler', () => {
         contextWindow: 200000,
         totalInputTokens: 10000,
         totalOutputTokens: 2000,
-        totalCostUsd: 0.02,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.02,
         lastUpdated: Date.now(),
       };
 

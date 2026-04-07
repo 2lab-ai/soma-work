@@ -17,7 +17,11 @@ import {
   type HourlyDistribution,
   type MetricsEvent,
   MetricsEventType,
+  type ModelTokenUsage,
+  type TokenUsageAggregation,
+  type TokenUsageMetadata,
   type TrendComparison,
+  type UsageReport,
   type UserRanking,
   type WeeklyReport,
 } from './types';
@@ -254,6 +258,164 @@ export class ReportAggregator {
       funFacts,
     };
   }
+
+  // === Token Usage Aggregation ===
+
+  /**
+   * Aggregate token usage for a date range, optionally filtered by userId.
+   */
+  async aggregateTokenUsage(startDate: string, endDate: string, userId?: string): Promise<UsageReport> {
+    const events = await this.store.readRange(startDate, endDate);
+    const tokenEvents = events.filter((e) => e.eventType === 'token_usage' && (!userId || e.userId === userId));
+
+    const totals = aggregateTokenEvents(tokenEvents);
+    const byUser = aggregateTokenEventsByUser(tokenEvents);
+    const byDay = aggregateTokenEventsByDay(tokenEvents, startDate, endDate);
+
+    return {
+      period: determinePeriod(startDate, endDate),
+      startDate,
+      endDate,
+      totals,
+      byUser,
+      byDay,
+    };
+  }
+}
+
+// === Token Usage Helpers ===
+
+function emptyTokenUsageAggregation(): TokenUsageAggregation {
+  return {
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreateTokens: 0,
+    totalCostUsd: 0,
+    byModel: {},
+  };
+}
+
+function addModelToAggregation(agg: TokenUsageAggregation, model: string, usage: ModelTokenUsage): void {
+  if (!agg.byModel[model]) {
+    agg.byModel[model] = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
+    };
+  }
+  agg.byModel[model].inputTokens += usage.inputTokens;
+  agg.byModel[model].outputTokens += usage.outputTokens;
+  agg.byModel[model].cacheReadInputTokens += usage.cacheReadInputTokens;
+  agg.byModel[model].cacheCreationInputTokens += usage.cacheCreationInputTokens;
+  agg.byModel[model].costUsd += usage.costUsd;
+}
+
+function aggregateTokenEvents(events: MetricsEvent[]): TokenUsageAggregation {
+  const agg = emptyTokenUsageAggregation();
+  for (const e of events) {
+    const m = e.metadata as unknown as TokenUsageMetadata | undefined;
+    if (!m) continue;
+
+    agg.totalInputTokens += m.inputTokens || 0;
+    agg.totalOutputTokens += m.outputTokens || 0;
+    agg.totalCacheReadTokens += m.cacheReadInputTokens || 0;
+    agg.totalCacheCreateTokens += m.cacheCreationInputTokens || 0;
+    agg.totalCostUsd += m.costUsd || 0;
+
+    // Per-model breakdown
+    if (m.modelBreakdown) {
+      for (const [model, usage] of Object.entries(m.modelBreakdown)) {
+        addModelToAggregation(agg, model, usage);
+      }
+    } else if (m.model) {
+      addModelToAggregation(agg, m.model, {
+        inputTokens: m.inputTokens || 0,
+        outputTokens: m.outputTokens || 0,
+        cacheReadInputTokens: m.cacheReadInputTokens || 0,
+        cacheCreationInputTokens: m.cacheCreationInputTokens || 0,
+        costUsd: m.costUsd || 0,
+      });
+    }
+  }
+  return agg;
+}
+
+function aggregateTokenEventsByUser(
+  events: MetricsEvent[],
+): Record<string, TokenUsageAggregation & { userName: string }> {
+  const byUser: Record<string, TokenUsageAggregation & { userName: string }> = {};
+  for (const e of events) {
+    if (e.userId === 'assistant' || e.userId === 'unknown') continue;
+    if (!byUser[e.userId]) {
+      byUser[e.userId] = { ...emptyTokenUsageAggregation(), userName: e.userName || 'unknown' };
+    }
+    const userAgg = byUser[e.userId];
+    const m = e.metadata as unknown as TokenUsageMetadata | undefined;
+    if (!m) continue;
+
+    userAgg.totalInputTokens += m.inputTokens || 0;
+    userAgg.totalOutputTokens += m.outputTokens || 0;
+    userAgg.totalCacheReadTokens += m.cacheReadInputTokens || 0;
+    userAgg.totalCacheCreateTokens += m.cacheCreationInputTokens || 0;
+    userAgg.totalCostUsd += m.costUsd || 0;
+    // Update userName to latest
+    if (e.userName && e.userName !== 'unknown') {
+      userAgg.userName = e.userName;
+    }
+
+    if (m.modelBreakdown) {
+      for (const [model, usage] of Object.entries(m.modelBreakdown)) {
+        addModelToAggregation(userAgg, model, usage);
+      }
+    } else if (m.model) {
+      addModelToAggregation(userAgg, m.model, {
+        inputTokens: m.inputTokens || 0,
+        outputTokens: m.outputTokens || 0,
+        cacheReadInputTokens: m.cacheReadInputTokens || 0,
+        cacheCreationInputTokens: m.cacheCreationInputTokens || 0,
+        costUsd: m.costUsd || 0,
+      });
+    }
+  }
+  return byUser;
+}
+
+function aggregateTokenEventsByDay(
+  events: MetricsEvent[],
+  startDate: string,
+  endDate: string,
+): Array<{ date: string; totals: TokenUsageAggregation }> {
+  // Group events by date
+  const eventsByDate = new Map<string, MetricsEvent[]>();
+  for (const e of events) {
+    const date = timestampToDateInTz(e.timestamp);
+    if (!eventsByDate.has(date)) eventsByDate.set(date, []);
+    eventsByDate.get(date)!.push(e);
+  }
+
+  // Generate date range and aggregate each day
+  const result: Array<{ date: string; totals: TokenUsageAggregation }> = [];
+  const current = new Date(startDate + 'T00:00:00Z');
+  const end = new Date(endDate + 'T00:00:00Z');
+  while (current <= end) {
+    const date = current.toISOString().slice(0, 10);
+    const dayEvents = eventsByDate.get(date) || [];
+    result.push({ date, totals: aggregateTokenEvents(dayEvents) });
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return result;
+}
+
+function determinePeriod(startDate: string, endDate: string): 'day' | 'week' | 'month' {
+  const start = new Date(startDate + 'T00:00:00Z');
+  const end = new Date(endDate + 'T00:00:00Z');
+  const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays <= 1) return 'day';
+  if (diffDays <= 7) return 'week';
+  return 'month';
 }
 
 // === Enriched Computation Helpers ===
