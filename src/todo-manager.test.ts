@@ -85,9 +85,7 @@ describe('parseTodos', () => {
   });
 
   it('does not mutate input objects', () => {
-    const input = [
-      { content: 'Task X', status: 'pending', activeForm: 'Working on X' },
-    ];
+    const input = [{ content: 'Task X', status: 'pending', activeForm: 'Working on X' }];
     const originalContent = { ...input[0] };
     parseTodos(input);
     // Input object should remain unchanged (no id/priority stamped onto it)

@@ -77,11 +77,7 @@ export const LOG_COMPACT =
   OutputFlag.CONTEXT_EMOJI;
 
 /** DETAIL — full output (current default behaviour) */
-export const LOG_DETAIL =
-  LOG_COMPACT |
-  OutputFlag.TOOL_DETAIL |
-  OutputFlag.TOOL_RESULT |
-  OutputFlag.SYSTEM;
+export const LOG_DETAIL = LOG_COMPACT | OutputFlag.TOOL_DETAIL | OutputFlag.TOOL_RESULT | OutputFlag.SYSTEM;
 
 /** VERBOSE — everything including raw data */
 export const LOG_VERBOSE = LOG_DETAIL | OutputFlag.RAW_DATA;
