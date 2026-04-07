@@ -667,9 +667,22 @@ export async function registerDashboardRoutes(
   // Resummarize a specific assistant turn
   server.post<{ Params: { conversationId: string; turnId: string } }>(
     '/api/dashboard/session/:conversationId/resummarize/:turnId',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       try {
+        // RBAC: check conversation ownership
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin) {
+          const record = await getConversation(request.params.conversationId);
+          if (!record) {
+            reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
+            return;
+          }
+          if (authContext.userId && record.ownerId !== authContext.userId) {
+            reply.status(403).send({ error: 'You can only modify your own conversations' });
+            return;
+          }
+        }
         const ok = await resummarizeTurn(request.params.conversationId, request.params.turnId);
         if (!ok) {
           reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
@@ -686,12 +699,18 @@ export async function registerDashboardRoutes(
   // Generate titleSub for a conversation
   server.post<{ Params: { conversationId: string } }>(
     '/api/dashboard/session/:conversationId/generate-title',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       try {
         const record = await getConversation(request.params.conversationId);
         if (!record) {
           reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+        // RBAC: check conversation ownership
+        const authContext = (request as any).authContext;
+        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
+          reply.status(403).send({ error: 'You can only modify your own conversations' });
           return;
         }
 
@@ -808,7 +827,7 @@ export async function registerDashboardRoutes(
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
     '/api/dashboard/session/:key/answer-choice',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
@@ -857,7 +876,7 @@ export async function registerDashboardRoutes(
   server.post<{
     Params: { key: string };
     Body: { selections: Record<string, { choiceId: string; label: string }> };
-  }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware] }, async (request, reply) => {
+  }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] }, async (request, reply) => {
     const { key } = request.params;
     const { selections } = request.body || {};
     if (
@@ -2589,11 +2608,17 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
     }
     btnEl.textContent = '...';
 
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ choiceId: choiceId, label: label, question: question }),
-    });
+    const choiceHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) choiceHeaders['X-CSRF-Token'] = _csrfToken;
+    const choiceUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice';
+    const choiceBody = JSON.stringify({ choiceId: choiceId, label: label, question: question });
+    let res = await fetch(choiceUrl, { method: 'POST', headers: choiceHeaders, body: choiceBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(choiceUrl, { method: 'POST', headers: retryHeaders, body: choiceBody });
+    }
     if (!res.ok) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
@@ -2853,11 +2878,17 @@ async function submitMultiChoice(key) {
   btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
 
   try {
-    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selections: st.selections }),
-    });
+    var mcHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
+    var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
+    var mcBody = JSON.stringify({ selections: st.selections });
+    var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var mcRetryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) mcRetryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(mcUrl, { method: 'POST', headers: mcRetryHeaders, body: mcBody });
+    }
     if (!res.ok) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}

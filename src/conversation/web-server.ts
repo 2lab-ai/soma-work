@@ -63,6 +63,15 @@ function buildAuthContext(request: FastifyRequest): AuthContext | null {
     // 2b. JWT cookie (OAuth session)
     const payload = verifyDashboardTokenRaw(cookieVal);
     if (payload) {
+      // Enforce absolute max lifetime — reject sessions that exceeded 4x expiry (min 30 days)
+      const originalIat = (payload as any).originalIat || payload.iat;
+      const expiresIn = config.oauth.jwtExpiresIn;
+      const absoluteMax = Math.max(expiresIn * 4, 30 * 86400);
+      const now = Math.floor(Date.now() / 1000);
+      if (now - originalIat > absoluteMax) {
+        // Session exceeded absolute max — force re-login
+        return null;
+      }
       return {
         mode: 'oauth_jwt',
         userId: payload.sub,
