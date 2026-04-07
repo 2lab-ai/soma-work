@@ -598,9 +598,9 @@ describe('Dashboard API', () => {
     expect(correctOpenPanel).not.toBeNull();
 
     // There should be exactly 3 doAction calls (stop, close, trash)
-    // and 1 openPanel call
+    // and 2 openPanel calls (card click + multi-choice "답변하기" button)
     expect(correctDoAction!.length).toBe(3);
-    expect(correctOpenPanel!.length).toBe(1);
+    expect(correctOpenPanel!.length).toBe(2);
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -619,8 +619,8 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 3 doAction calls × 1 separator each + 1 resummarize call + 2 answerChoice calls × 3 separators each = 10 closing patterns
-    expect(actionClosings!.length).toBe(10);
+    // 3 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 11 closing patterns
+    expect(actionClosings!.length).toBe(11);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──

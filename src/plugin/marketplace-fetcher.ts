@@ -9,10 +9,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { Logger } from '../logger';
 import { hasCachedPlugin, readCacheMeta, writeCacheMeta } from './plugin-cache';
-import { formatScanReport, scanPluginDirectory } from './security-scanner';
+import { formatScanReport, type ScanResult, scanPluginDirectory } from './security-scanner';
 import {
   type CacheMeta,
   EXTERNAL_PLUGIN_PATH,
+  type FetchFailure,
+  type FetchFailureCode,
   type MarketplaceEntry,
   type MarketplaceManifest,
   type MarketplacePluginEntry,
@@ -24,10 +26,10 @@ const logger = new Logger('MarketplaceFetcher');
 
 /**
  * Run security scan on an installed plugin and enforce the gate policy.
- * Returns true if the plugin passed (safe to proceed), false if blocked.
+ * Returns the ScanResult if the plugin is blocked, null if it passed.
  * When blocked, removes the installed plugin directory.
  */
-function enforceSecurityGate(installedPath: string, pluginName: string): boolean {
+function enforceSecurityGate(installedPath: string, pluginName: string): ScanResult | null {
   const scanResult = scanPluginDirectory(installedPath, pluginName);
   if (scanResult.blocked) {
     logger.error('Plugin BLOCKED by security scan', {
@@ -41,12 +43,12 @@ function enforceSecurityGate(installedPath: string, pluginName: string): boolean
     } catch {
       /* ignore */
     }
-    return false;
+    return scanResult;
   }
   if (scanResult.findings.length > 0) {
     logger.warn(formatScanReport(scanResult));
   }
-  return true;
+  return null;
 }
 
 export interface FetchResult {
@@ -56,6 +58,23 @@ export interface FetchResult {
   sha: string;
   /** Whether the result came from cache */
   cached: boolean;
+}
+
+export interface FetchOptions {
+  /** Skip security gate check (for force update) */
+  skipSecurityGate?: boolean;
+}
+
+function failure(
+  code: FetchFailureCode,
+  message: string,
+  extra?: Partial<Omit<FetchFailure, 'failed' | 'code' | 'message'>>,
+): FetchFailure {
+  return { failed: true, code, message, ...extra };
+}
+
+export function isFetchFailure(result: FetchResult | FetchFailure): result is FetchFailure {
+  return 'failed' in result && result.failed === true;
 }
 
 /** Build a cached FetchResult for a given plugin. */
@@ -365,13 +384,14 @@ export async function fetchPlugin(
   marketplace: MarketplaceEntry,
   pluginName: string,
   pluginsDir: string,
-): Promise<FetchResult | null> {
+  options?: FetchOptions,
+): Promise<FetchResult | FetchFailure> {
   const ref = marketplace.ref || 'main';
   const cached = readCacheMeta(pluginsDir, pluginName);
 
-  // Check if cache is current
+  // Check if cache is current (skip cache if force options provided — e.g. security gate bypass)
   const remoteSha = resolveRemoteSha(marketplace.repo, ref);
-  if (remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
+  if (!options?.skipSecurityGate && remoteSha && cached?.sha === remoteSha && hasCachedPlugin(pluginsDir, pluginName)) {
     logger.info('Plugin cache is current', { pluginName, sha: remoteSha.slice(0, 8) });
     return cachedResult(pluginsDir, pluginName, remoteSha);
   }
@@ -399,7 +419,7 @@ export async function fetchPlugin(
       logger.warn('Download failed, falling back to stale cache', { pluginName });
       return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
     }
-    return null;
+    return failure('DOWNLOAD_FAILED', 'Failed to download marketplace tarball and no cache available');
   }
 
   try {
@@ -407,7 +427,7 @@ export async function fetchPlugin(
     const manifest = readManifest(extractedRoot);
     if (!manifest) {
       logger.error('No valid marketplace.json in repo', { repo: marketplace.repo });
-      return null;
+      return failure('MANIFEST_NOT_FOUND', 'No valid marketplace.json found in repository');
     }
 
     const pluginEntry = manifest.plugins[pluginName];
@@ -416,7 +436,10 @@ export async function fetchPlugin(
         pluginName,
         available: Object.keys(manifest.plugins),
       });
-      return null;
+      return failure(
+        'PLUGIN_NOT_IN_MANIFEST',
+        `Plugin "${pluginName}" not found in marketplace.json. Available: ${Object.keys(manifest.plugins).join(', ')}`,
+      );
     }
 
     // Ensure plugins dir exists
@@ -431,23 +454,38 @@ export async function fetchPlugin(
         pluginEntry.externalSubdir,
         pluginEntry.externalRef,
         pluginEntry.externalSha,
+        options,
       );
-      if (externalResult) return externalResult;
-
-      // Fall back to stale cache if external fetch fails
-      if (hasCachedPlugin(pluginsDir, pluginName)) {
-        logger.warn('External fetch failed, using stale cache', { pluginName });
-        return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+      if (isFetchFailure(externalResult)) {
+        // Fall back to stale cache if external fetch fails
+        if (hasCachedPlugin(pluginsDir, pluginName)) {
+          logger.warn('External fetch failed, using stale cache', { pluginName });
+          return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
+        }
+        return externalResult;
       }
-      return null;
+      return externalResult;
     }
 
     // Install plugin from marketplace tarball
     const installedPath = installPlugin(extractedRoot, pluginEntry.path, pluginsDir, pluginName);
-    if (!installedPath) return null;
+    if (!installedPath) return failure('INSTALL_FAILED', 'Failed to install plugin files');
 
     // Security gate — block CRITICAL risk plugins
-    if (!enforceSecurityGate(installedPath, pluginName)) return null;
+    if (!options?.skipSecurityGate) {
+      const securityBlock = enforceSecurityGate(installedPath, pluginName);
+      if (securityBlock) {
+        return failure('SECURITY_BLOCKED', `Plugin blocked by security scan: ${securityBlock.riskLevel} risk`, {
+          riskLevel: securityBlock.riskLevel,
+          securityFindings: securityBlock.findings.map((f) => ({
+            rule: f.rule,
+            description: f.description,
+            severity: f.severity,
+            file: f.file,
+          })),
+        });
+      }
+    }
 
     // Write cache metadata
     const sha = remoteSha || 'unknown';
@@ -504,11 +542,12 @@ async function fetchExternalPlugin(
   subdir?: string,
   ref?: string,
   pinnedSha?: string,
-): Promise<FetchResult | null> {
+  options?: FetchOptions,
+): Promise<FetchResult | FetchFailure> {
   const repo = gitUrlToRepo(externalUrl);
   if (!repo) {
     logger.error('Cannot parse external URL as GitHub repo', { externalUrl, pluginName });
-    return null;
+    return failure('EXTERNAL_URL_INVALID', `Cannot parse "${externalUrl}" as a GitHub repository URL`);
   }
 
   // Pinned SHA takes precedence over ref for deterministic installs
@@ -536,7 +575,7 @@ async function fetchExternalPlugin(
       logger.warn('External download failed, falling back to stale cache', { pluginName });
       return cachedResult(pluginsDir, pluginName, cached?.sha || 'unknown');
     }
-    return null;
+    return failure('EXTERNAL_FETCH_FAILED', `Failed to download external plugin from ${repo} (ref: ${gitRef})`);
   }
 
   try {
@@ -544,10 +583,27 @@ async function fetchExternalPlugin(
 
     // Reuse installPlugin for atomic copy-and-swap (includes tmp cleanup on error)
     const installedPath = installPlugin(extractedRoot, subdir || '.', pluginsDir, pluginName);
-    if (!installedPath) return null;
+    if (!installedPath) return failure('INSTALL_FAILED', 'Failed to install external plugin files');
 
     // Security gate — block CRITICAL risk external plugins
-    if (!enforceSecurityGate(installedPath, pluginName)) return null;
+    if (!options?.skipSecurityGate) {
+      const securityBlock = enforceSecurityGate(installedPath, pluginName);
+      if (securityBlock) {
+        return failure(
+          'SECURITY_BLOCKED',
+          `External plugin blocked by security scan: ${securityBlock.riskLevel} risk`,
+          {
+            riskLevel: securityBlock.riskLevel,
+            securityFindings: securityBlock.findings.map((f) => ({
+              rule: f.rule,
+              description: f.description,
+              severity: f.severity,
+              file: f.file,
+            })),
+          },
+        );
+      }
+    }
 
     const sha = remoteSha || 'unknown';
     writeCacheMeta(pluginsDir, pluginName, {

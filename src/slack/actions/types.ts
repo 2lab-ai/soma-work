@@ -1,4 +1,5 @@
 import type { ClaudeHandler } from '../../claude-handler';
+import type { McpManager } from '../../mcp-manager';
 import type { UserChoiceQuestion } from '../../types';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ReactionManager } from '../reaction-manager';
@@ -39,4 +40,5 @@ export interface ActionHandlerContext {
   threadPanel?: ThreadPanel;
   requestCoordinator?: RequestCoordinator;
   completionMessageTracker?: CompletionMessageTracker;
+  mcpManager?: McpManager;
 }
