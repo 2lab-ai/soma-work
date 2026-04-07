@@ -61,7 +61,7 @@ async function start() {
     timing('PID lock acquired');
 
     // Initialize token manager (before preflight — tokens may be needed for API calls)
-    tokenManager.initialize();
+    tokenManager.initialize(DATA_DIR);
     timing('TokenManager initialized');
 
     // Run preflight checks

@@ -2,12 +2,42 @@
  * TokenManager — Manages a pool of Claude Code OAuth tokens with
  * automatic rotation on rate limits and manual switching.
  *
+ * Cooldown state is persisted to disk so it survives service restarts.
  * Singleton: use the exported `tokenManager` instance.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Logger } from './logger';
 
 const logger = new Logger('TokenManager');
+
+/** Month abbreviation → 0-based month index */
+const MONTH_MAP: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+};
+
+/** Persisted cooldown state for a single token */
+interface PersistedCooldown {
+  until: string; // ISO 8601
+}
+
+/** On-disk JSON format */
+interface CooldownFileData {
+  cooldowns: Record<string, PersistedCooldown>;
+  activeToken?: string;
+}
 
 export interface TokenEntry {
   readonly name: string; // e.g. "ai3", "ai2", or fallback "cct1"
@@ -24,16 +54,26 @@ export interface RotationResult {
 }
 
 /**
- * Parse "resets Xpm" or "resets X:XXam/pm" from rate limit error messages.
- * Returns a Date for today at the parsed time, or null if no match.
+ * Parse cooldown reset time from rate limit error messages.
+ *
+ * Supported formats:
+ *   - 5-hour limit:  "resets 7pm",  "resets 7:30pm"
+ *   - Weekly limit:  "resets Apr 7, 7pm (Asia/Seoul)"
+ *
+ * Returns a Date at the parsed time (and date, if present), or null on no match.
  */
 export function parseCooldownTime(message: string): Date | null {
-  const match = message.match(/resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+  // Groups: 1=month? 2=day? 3=hour 4=minutes? 5=am/pm
+  const match = message.match(
+    /resets?\s+(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i,
+  );
   if (!match) return null;
 
-  let hours = parseInt(match[1], 10);
-  const minutes = match[2] ? parseInt(match[2], 10) : 0;
-  const period = match[3].toLowerCase();
+  const monthStr = match[1]; // e.g. "Apr" (optional)
+  const dayStr = match[2]; // e.g. "7"   (optional)
+  let hours = parseInt(match[3], 10);
+  const minutes = match[4] ? parseInt(match[4], 10) : 0;
+  const period = match[5].toLowerCase();
 
   if (period === 'pm' && hours < 12) hours += 12;
   if (period === 'am' && hours === 12) hours = 0;
@@ -42,9 +82,21 @@ export function parseCooldownTime(message: string): Date | null {
   const cooldown = new Date(now);
   cooldown.setHours(hours, minutes, 0, 0);
 
-  // If the parsed time is in the past, assume it's tomorrow
-  if (cooldown <= now) {
-    cooldown.setDate(cooldown.getDate() + 1);
+  if (monthStr && dayStr) {
+    // Weekly limit — explicit date provided
+    const monthIndex = MONTH_MAP[monthStr.toLowerCase()];
+    if (monthIndex !== undefined) {
+      cooldown.setMonth(monthIndex, parseInt(dayStr, 10));
+      // If the resulting date is in the past, it must be next year
+      if (cooldown <= now) {
+        cooldown.setFullYear(cooldown.getFullYear() + 1);
+      }
+    }
+  } else {
+    // 5-hour limit — time only, assume today (or tomorrow if past)
+    if (cooldown <= now) {
+      cooldown.setDate(cooldown.getDate() + 1);
+    }
   }
 
   return cooldown;
@@ -53,12 +105,21 @@ export function parseCooldownTime(message: string): Date | null {
 export class TokenManager {
   private tokens: TokenEntry[] = [];
   private activeIndex: number = 0;
+  private cooldownFilePath: string | null = null;
 
   /**
    * Load tokens from environment variables.
    * Priority: CLAUDE_CODE_OAUTH_TOKEN_LIST > CLAUDE_CODE_OAUTH_TOKEN
+   *
+   * If dataDir is provided, cooldown state is persisted to
+   * `${dataDir}/token-cooldowns.json` and restored on init.
    */
-  initialize(): void {
+  initialize(dataDir?: string): void {
+    // Set up persistence path (lazy — only if dataDir known)
+    if (dataDir) {
+      this.cooldownFilePath = path.join(dataDir, 'token-cooldowns.json');
+    }
+
     const tokenList = process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
     const singleToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
@@ -95,12 +156,20 @@ export class TokenManager {
     }
 
     this.activeIndex = 0;
+
+    // Restore persisted cooldown state (before choosing active token)
+    this.restoreCooldowns();
+
     this.applyToken();
 
-    logger.info(`TokenManager initialized: ${this.tokens.length} token(s) loaded, active=${this.tokens[0]?.name}`, {
-      count: this.tokens.length,
-      names: this.tokens.map((t) => t.name),
-    });
+    logger.info(
+      `TokenManager initialized: ${this.tokens.length} token(s) loaded, active=${this.tokens[this.activeIndex]?.name}`,
+      {
+        count: this.tokens.length,
+        names: this.tokens.map((t) => t.name),
+        restoredCooldowns: this.tokens.filter((t) => t.cooldownUntil !== null).map((t) => t.name),
+      },
+    );
   }
 
   getActiveToken(): TokenEntry {
@@ -122,6 +191,7 @@ export class TokenManager {
     this.activeIndex = index;
     this.tokens[index] = { ...this.tokens[index], cooldownUntil: null };
     this.applyToken();
+    this.saveCooldowns();
 
     logger.info(`Manual token switch: active=${name} (${TokenManager.maskToken(this.tokens[index].value)})`);
     return true;
@@ -142,6 +212,7 @@ export class TokenManager {
         const previousName = this.tokens[this.activeIndex].name;
         this.activeIndex = nextIndex;
         this.applyToken();
+        this.saveCooldowns();
         logger.info(`Manual next rotation: ${previousName} → ${next.name}`);
         return { name: next.name };
       }
@@ -152,6 +223,7 @@ export class TokenManager {
     const previousName = this.tokens[this.activeIndex].name;
     this.activeIndex = nextIndex;
     this.applyToken();
+    this.saveCooldowns();
     logger.info(`Manual next rotation (all cooldown): ${previousName} → ${this.tokens[nextIndex].name}`);
     return { name: this.tokens[nextIndex].name };
   }
@@ -186,25 +258,20 @@ export class TokenManager {
         const previousName = this.tokens[this.activeIndex].name;
         this.activeIndex = nextIndex;
         this.applyToken();
+        this.saveCooldowns();
         logger.info(`Token auto-rotated: ${previousName} → ${next.name}`);
         return { rotated: true, newToken: next.name };
       }
     }
 
     // All tokens on cooldown — pick the one with earliest recovery
-    let earliestIndex = 0;
-    let earliestTime = this.tokens[0].cooldownUntil ?? new Date(8640000000000000);
-    for (let i = 1; i < this.tokens.length; i++) {
-      const cd = this.tokens[i].cooldownUntil;
-      if (cd && cd < earliestTime) {
-        earliestTime = cd;
-        earliestIndex = i;
-      }
-    }
+    const earliestIndex = this.findEarliestRecoveryIndex();
+    const earliestTime = this.tokens[earliestIndex].cooldownUntil ?? new Date(8640000000000000);
 
     const previousName = this.tokens[this.activeIndex].name;
     this.activeIndex = earliestIndex;
     this.applyToken();
+    this.saveCooldowns();
 
     logger.warn(
       `All tokens on cooldown! Using ${this.tokens[earliestIndex].name} (earliest recovery: ${earliestTime.toLocaleTimeString()})`,
@@ -229,6 +296,109 @@ export class TokenManager {
       process.env.CLAUDE_CODE_OAUTH_TOKEN = this.tokens[this.activeIndex].value;
     }
   }
+
+  /** Find the token index with the earliest cooldown recovery time. */
+  private findEarliestRecoveryIndex(): number {
+    let earliestIndex = 0;
+    let earliestTime = this.tokens[0].cooldownUntil ?? new Date(8640000000000000);
+    for (let i = 1; i < this.tokens.length; i++) {
+      const cd = this.tokens[i].cooldownUntil;
+      if (cd && cd < earliestTime) {
+        earliestTime = cd;
+        earliestIndex = i;
+      }
+    }
+    return earliestIndex;
+  }
+
+  // ── Persistence ──────────────────────────────────────────────
+
+  /** Persist cooldown state + active token to disk. Atomic write (tmp + rename). */
+  private saveCooldowns(): void {
+    if (!this.cooldownFilePath) return;
+
+    try {
+      const data: CooldownFileData = { cooldowns: {}, activeToken: this.tokens[this.activeIndex]?.name };
+      for (const t of this.tokens) {
+        if (t.cooldownUntil) {
+          data.cooldowns[t.name] = { until: t.cooldownUntil.toISOString() };
+        }
+      }
+
+      const dir = path.dirname(this.cooldownFilePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const tmp = `${this.cooldownFilePath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+      fs.renameSync(tmp, this.cooldownFilePath);
+    } catch (error) {
+      logger.warn('Failed to save cooldown state', error);
+    }
+  }
+
+  /**
+   * Restore cooldown state from disk on initialize().
+   * Expired cooldowns are silently discarded.
+   * If persisted active token still has a valid (future) cooldown,
+   * the active index moves to the best available token instead.
+   */
+  private restoreCooldowns(): void {
+    if (!this.cooldownFilePath) return;
+
+    try {
+      if (!fs.existsSync(this.cooldownFilePath)) return;
+
+      const raw = fs.readFileSync(this.cooldownFilePath, 'utf-8');
+      const data = JSON.parse(raw) as CooldownFileData;
+      const now = new Date();
+      let restoredCount = 0;
+
+      for (const t of this.tokens) {
+        const persisted = data.cooldowns[t.name];
+        if (persisted) {
+          const until = new Date(persisted.until);
+          if (until > now) {
+            t.cooldownUntil = until;
+            restoredCount++;
+          }
+        }
+      }
+
+      // Restore active token preference
+      if (data.activeToken) {
+        const preferredIndex = this.tokens.findIndex((t) => t.name === data.activeToken);
+        if (preferredIndex !== -1) {
+          this.activeIndex = preferredIndex;
+        }
+      }
+
+      // If the active token is on cooldown, find the best available
+      const active = this.tokens[this.activeIndex];
+      if (active?.cooldownUntil && active.cooldownUntil > now) {
+        for (let i = 0; i < this.tokens.length; i++) {
+          const t = this.tokens[i];
+          if (t.cooldownUntil === null || t.cooldownUntil <= now) {
+            this.activeIndex = i;
+            break;
+          }
+        }
+        // If all on cooldown, pick earliest recovery
+        const activeCd = this.tokens[this.activeIndex].cooldownUntil;
+        if (activeCd && activeCd > now) {
+          this.activeIndex = this.findEarliestRecoveryIndex();
+        }
+      }
+
+      if (restoredCount > 0) {
+        logger.info(`Restored ${restoredCount} cooldown(s) from disk, active=${this.tokens[this.activeIndex]?.name}`);
+      }
+    } catch (error) {
+      logger.warn('Failed to restore cooldown state', error);
+    }
+  }
+
+  // ── Static helpers ───────────────────────────────────────────
 
   /** Resolve ${VAR_NAME} references from process.env */
   static resolveEnvRef(value: string): string {
