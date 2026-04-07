@@ -12,7 +12,6 @@ import { Logger } from '../logger';
 import { registerDashboardRoutes } from './dashboard';
 import {
   type AuthContext,
-  type AuthMode,
   generateCsrfToken,
   generateCsrfTokenForAdmin,
   getDashboardUser,
@@ -198,6 +197,7 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
 
   if (!isValid) {
     reply.status(403).send({ error: 'CSRF token validation failed' });
+    return;
   }
 }
 

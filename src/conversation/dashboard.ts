@@ -2309,13 +2309,14 @@ function renderPanelTaskItem(t) {
 }
 let _csrfToken = '';
 
-// Fetch CSRF token on load
-(async function fetchCsrfToken() {
+// Fetch CSRF token (reusable — called on load and after JWT rotation invalidates token)
+async function refreshCsrfToken() {
   try {
     const res = await fetch('/auth/me');
     if (res.ok) { const data = await res.json(); _csrfToken = data.csrfToken || ''; }
   } catch {}
-})();
+}
+refreshCsrfToken();
 
 // ── Utility ──
 function esc(s) {
@@ -2560,12 +2561,19 @@ async function loadSessions() {
   } catch (e) { console.error('Failed to load sessions', e); }
 }
 
-// ── Action handler ──
+// ── Action handler (with CSRF retry on 403 after JWT rotation) ──
 async function doAction(key, action) {
   try {
     const headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/' + action, { method: 'POST', headers });
+    const url = '/api/dashboard/session/' + encodeURIComponent(key) + '/' + action;
+    let res = await fetch(url, { method: 'POST', headers });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = {};
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+    }
     if (!res.ok) console.error('Action failed', action, key);
     else loadSessions();
   } catch (e) { console.error('Action error', e); }
@@ -3275,11 +3283,15 @@ async function sendCommand() {
   try {
     const cmdHeaders = { 'Content-Type': 'application/json' };
     if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command', {
-      method: 'POST',
-      headers: cmdHeaders,
-      body: JSON.stringify({ message: msg }),
-    });
+    const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command';
+    const cmdBody = JSON.stringify({ message: msg });
+    let res = await fetch(cmdUrl, { method: 'POST', headers: cmdHeaders, body: cmdBody });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(cmdUrl, { method: 'POST', headers: retryHeaders, body: cmdBody });
+    }
     if (!res.ok) {
       // Mark optimistic turn as failed
       var lastTurn = document.querySelector('.turn.user:last-child');
