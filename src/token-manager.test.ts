@@ -479,8 +479,8 @@ describe('TokenManager', () => {
       const msg = `resets ${monthNames[pastMonth.getMonth()]} ${pastMonth.getDate()}, 7pm`;
       const result = parseCooldownTime(msg);
       expect(result).toBeInstanceOf(Date);
-      // Should be next year since the date is in the past
-      expect(result!.getFullYear()).toBeGreaterThanOrEqual(new Date().getFullYear());
+      // The returned date must be in the future (past date → next year)
+      expect(result!.getTime()).toBeGreaterThan(Date.now());
     });
   });
 

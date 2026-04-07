@@ -191,6 +191,7 @@ export class TokenManager {
     this.activeIndex = index;
     this.tokens[index] = { ...this.tokens[index], cooldownUntil: null };
     this.applyToken();
+    this.saveCooldowns();
 
     logger.info(`Manual token switch: active=${name} (${TokenManager.maskToken(this.tokens[index].value)})`);
     return true;
@@ -211,6 +212,7 @@ export class TokenManager {
         const previousName = this.tokens[this.activeIndex].name;
         this.activeIndex = nextIndex;
         this.applyToken();
+        this.saveCooldowns();
         logger.info(`Manual next rotation: ${previousName} → ${next.name}`);
         return { name: next.name };
       }
@@ -221,6 +223,7 @@ export class TokenManager {
     const previousName = this.tokens[this.activeIndex].name;
     this.activeIndex = nextIndex;
     this.applyToken();
+    this.saveCooldowns();
     logger.info(`Manual next rotation (all cooldown): ${previousName} → ${this.tokens[nextIndex].name}`);
     return { name: this.tokens[nextIndex].name };
   }
