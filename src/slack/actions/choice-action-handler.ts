@@ -600,7 +600,12 @@ export class ChoiceActionHandler {
     const channel = session.channelId;
     const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
 
-    this.logger.info('Dashboard multi-choice submitted', { sessionKey, selections, userId });
+    this.logger.info('Dashboard multi-choice submitted', {
+      sessionKey,
+      selectionCount: Object.keys(selections).length,
+      questionIds: Object.keys(selections),
+      userId,
+    });
 
     // Save pendingQuestion for rollback in case messageHandler fails
     const savedPendingQuestion = session.actionPanel?.pendingQuestion;
