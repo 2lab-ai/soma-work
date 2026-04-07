@@ -1856,17 +1856,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     try {
       const emitter = getMetricsEmitter();
       const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
-      emitter.emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
-        sessionKey,
-        conversationId: session.conversationId,
-        model: usage.modelName || session.model || 'unknown',
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens,
-        costUsd: usage.totalCostUsd,
-        modelBreakdown: usage.modelBreakdown,
-      });
+      emitter
+        .emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
+          sessionKey,
+          conversationId: session.conversationId,
+          model: usage.modelName || session.model || 'unknown',
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          costUsd: usage.totalCostUsd,
+          modelBreakdown: usage.modelBreakdown,
+        })
+        .catch((err) => {
+          this.logger.debug('Failed to emit token_usage event (async)', {
+            error: (err as Error).message,
+          });
+        });
     } catch (error) {
       this.logger.debug('Failed to emit token_usage event', {
         error: (error as Error).message,

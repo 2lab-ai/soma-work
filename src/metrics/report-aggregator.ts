@@ -396,15 +396,15 @@ function aggregateTokenEventsByDay(
     eventsByDate.get(date)!.push(e);
   }
 
-  // Generate date range and aggregate each day
+  // Generate date range and aggregate each day (use same timezone as event grouping)
   const result: Array<{ date: string; totals: TokenUsageAggregation }> = [];
-  const current = new Date(startDate + 'T00:00:00Z');
-  const end = new Date(endDate + 'T00:00:00Z');
+  const current = new Date(startDate + 'T00:00:00+09:00');
+  const end = new Date(endDate + 'T23:59:59+09:00');
   while (current <= end) {
-    const date = current.toISOString().slice(0, 10);
+    const date = dateFormatter.format(current);
     const dayEvents = eventsByDate.get(date) || [];
     result.push({ date, totals: aggregateTokenEvents(dayEvents) });
-    current.setUTCDate(current.getUTCDate() + 1);
+    current.setDate(current.getDate() + 1);
   }
   return result;
 }
@@ -413,7 +413,7 @@ function determinePeriod(startDate: string, endDate: string): 'day' | 'week' | '
   const start = new Date(startDate + 'T00:00:00Z');
   const end = new Date(endDate + 'T00:00:00Z');
   const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays <= 1) return 'day';
+  if (diffDays <= 0) return 'day';
   if (diffDays <= 7) return 'week';
   return 'month';
 }
