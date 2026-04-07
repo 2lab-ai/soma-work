@@ -8,6 +8,9 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { PendingFormStore } from './pending-form-store';
 import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
+/** Sentinel choiceId for custom text input (직접입력) */
+const CUSTOM_INPUT_CHOICE_ID = '직접입력';
+
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
@@ -321,7 +324,7 @@ export class ChoiceActionHandler {
 
     const responses = pendingForm.questions.map((q) => {
       const sel = pendingForm.selections[q.id];
-      if (sel.choiceId === '직접입력') {
+      if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
         return `${q.question}: (직접입력) ${sel.label}`;
       }
       return `${q.question}: ${sel.choiceId}. ${sel.label}`;
@@ -537,6 +540,187 @@ export class ChoiceActionHandler {
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
       } catch (rollbackError) {
         this.logger.error('Failed to rollback activity state after dashboard choice error', {
+          sessionKey,
+          rollbackError,
+        });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Handle multi-choice form submission from the dashboard.
+   * Validates all selections, builds combined response, updates Slack, and sends to Claude.
+   */
+  async handleMultiChoiceFromDashboard(
+    sessionKey: string,
+    selections: Record<string, { choiceId: string; label: string }>,
+    userId: string,
+  ): Promise<void> {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (session.activityState !== 'waiting') {
+      this.logger.warn('Dashboard multi-choice ignored — session not in waiting state', {
+        sessionKey,
+        activityState: session.activityState,
+      });
+      throw new Error('Session is not waiting for a choice');
+    }
+
+    const pendingQ = session.actionPanel?.pendingQuestion;
+    if (!pendingQ || pendingQ.type !== 'user_choices' || !pendingQ.questions) {
+      throw new Error('Session has no pending multi-choice question');
+    }
+
+    // Validate all questions are answered
+    const questions = pendingQ.questions;
+    for (const q of questions) {
+      const sel = selections[q.id];
+      if (!sel || !sel.choiceId || !sel.label) {
+        throw new Error(`Missing answer for question: ${q.id}`);
+      }
+      // Validate choiceId against actual choices (skip for custom input)
+      if (sel.choiceId !== CUSTOM_INPUT_CHOICE_ID) {
+        const validIds = q.choices.map((c: { id: string }) => c.id);
+        if (!validIds.includes(sel.choiceId)) {
+          this.logger.warn('Dashboard multi-choice rejected — invalid choiceId', {
+            sessionKey,
+            questionId: q.id,
+            choiceId: sel.choiceId,
+            validIds,
+          });
+          throw new Error('Invalid choice ID');
+        }
+      }
+    }
+
+    const channel = session.channelId;
+    const threadTs = this.resolveSessionThreadTs(session, session.threadTs);
+
+    this.logger.info('Dashboard multi-choice submitted', {
+      sessionKey,
+      selectionCount: Object.keys(selections).length,
+      questionIds: Object.keys(selections),
+      userId,
+    });
+
+    // Save pendingQuestion for rollback in case messageHandler fails
+    const savedPendingQuestion = session.actionPanel?.pendingQuestion;
+
+    try {
+      // Build combined response text (same format as Slack form submission)
+      const responses = questions.map((q: { id: string; question: string }) => {
+        const sel = selections[q.id];
+        if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
+          return `${q.question}: (직접입력) ${sel.label}`;
+        }
+        return `${q.question}: ${sel.choiceId}. ${sel.label}`;
+      });
+      const combinedMessage = responses.join('\n');
+
+      // Update Slack form messages with completion
+      const completedBlocks = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `✅ *모든 선택 완료* _(대시보드)_\n${responses.map((r: string, i: number) => `${i + 1}. ${r}`).join('\n')}`,
+          },
+        },
+      ];
+
+      // Try to update the Slack form message(s)
+      const choiceMessageTs = session.actionPanel?.choiceMessageTs;
+      const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, choiceMessageTs, choiceMessageTs);
+      for (const targetTs of targetTimestamps) {
+        try {
+          await this.ctx.slackApi.updateMessage(
+            channel,
+            targetTs,
+            `✅ 모든 선택 완료 (대시보드)\n${responses.join('\n')}`,
+            completedBlocks,
+            [],
+          );
+        } catch (error) {
+          this.logger.warn('Failed to update multi-choice message from dashboard', { targetTs, error });
+        }
+      }
+
+      // Clear thread header (non-critical — don't abort submission on failure)
+      try {
+        await this.ctx.threadPanel?.clearChoice(sessionKey);
+      } catch (clearError) {
+        this.logger.warn('Failed to clear thread panel choice (dashboard multi-choice)', {
+          sessionKey,
+          error: clearError,
+        });
+      }
+      if (session.actionPanel) {
+        session.actionPanel.pendingQuestion = undefined;
+      }
+
+      // Delete tracked completion messages
+      if (channel) {
+        const threadRootTs = session.threadRootTs;
+        this.ctx.completionMessageTracker
+          ?.deleteAll(
+            sessionKey,
+            async (ch, ts) => {
+              if (threadRootTs && ts === threadRootTs) {
+                this.logger.error(
+                  'BLOCKED: attempted to delete thread root via completion tracker (dashboard multi-choice)',
+                  { sessionKey, ts, threadRootTs },
+                );
+                return;
+              }
+              try {
+                await this.ctx.slackApi.deleteMessage(ch, ts);
+              } catch (deleteError) {
+                this.logger.warn('Failed to delete completion message (dashboard multi-choice)', {
+                  sessionKey,
+                  ts,
+                  error: deleteError,
+                });
+              }
+            },
+            channel,
+          )
+          .catch((deleteAllError) => {
+            this.logger.warn('Failed to delete all completion messages (dashboard multi-choice)', {
+              sessionKey,
+              error: deleteAllError,
+            });
+          });
+      }
+
+      // Invalidate any pending Slack forms for this session
+      const sessionForms = this.formStore.getFormsBySession(sessionKey);
+      for (const [formId] of sessionForms) {
+        this.formStore.delete(formId);
+      }
+
+      // Transition waiting → working
+      this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
+
+      // Send combined response to Claude
+      const say = this.createSayFn(channel);
+      await this.ctx.messageHandler(
+        { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: combinedMessage },
+        say,
+      );
+    } catch (error) {
+      this.logger.error('Error processing dashboard multi-choice', { sessionKey, error });
+      try {
+        // Restore pendingQuestion so user can retry from dashboard or Slack
+        if (session.actionPanel && savedPendingQuestion) {
+          session.actionPanel.pendingQuestion = savedPendingQuestion;
+        }
+        this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+      } catch (rollbackError) {
+        this.logger.error('Failed to rollback activity state after dashboard multi-choice error', {
           sessionKey,
           rollbackError,
         });

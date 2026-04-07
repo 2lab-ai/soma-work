@@ -79,8 +79,16 @@ export interface KanbanSession {
     type: 'user_choice' | 'user_choices';
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
-    /** Multi-choice: number of questions (choices rendered in Slack only) */
+    /** Multi-choice fields */
+    questions?: Array<{
+      id: string;
+      question: string;
+      choices: Array<{ id: string; label: string; description?: string }>;
+      context?: string;
+    }>;
     questionCount?: number;
+    title?: string;
+    description?: string;
   };
 }
 
@@ -199,6 +207,16 @@ export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
   _choiceAnswerHandlerFn = fn;
 }
 
+type MultiChoiceAnswerHandler = (
+  sessionKey: string,
+  selections: Record<string, { choiceId: string; label: string }>,
+) => Promise<void>;
+let _multiChoiceAnswerHandlerFn: MultiChoiceAnswerHandler | null = null;
+
+export function setDashboardMultiChoiceAnswerHandler(fn: MultiChoiceAnswerHandler): void {
+  _multiChoiceAnswerHandlerFn = fn;
+}
+
 // ── Kanban transformation ──────────────────────────────────────────
 
 function sessionToKanban(key: string, s: any): KanbanSession {
@@ -259,6 +277,18 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               type: 'user_choices' as const,
               question: s.actionPanel.pendingQuestion.title || '복수 질문',
               questionCount: s.actionPanel.pendingQuestion.questions?.length || 0,
+              title: s.actionPanel.pendingQuestion.title,
+              description: s.actionPanel.pendingQuestion.description,
+              questions: s.actionPanel.pendingQuestion.questions?.map((q: any) => ({
+                id: q.id,
+                question: q.question,
+                choices: (q.choices || []).map((c: any) => ({
+                  id: c.id,
+                  label: c.label,
+                  description: c.description,
+                })),
+                context: q.context,
+              })),
             }
           : undefined // Unknown question type — skip
       : undefined,
@@ -806,6 +836,75 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Answer multi-choice from dashboard ──
+
+  server.post<{
+    Params: { key: string };
+    Body: { selections: Record<string, { choiceId: string; label: string }> };
+  }>('/api/dashboard/session/:key/answer-multi-choice', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const { key } = request.params;
+    const { selections } = request.body || {};
+    if (
+      !selections ||
+      typeof selections !== 'object' ||
+      Array.isArray(selections) ||
+      Object.keys(selections).length === 0
+    ) {
+      reply.status(400).send({ error: 'selections is required and must be a non-empty object' });
+      return;
+    }
+    // Reject payloads with too many selections (max 50 questions per form)
+    const selKeys = Object.keys(selections);
+    if (selKeys.length > 50) {
+      reply.status(400).send({ error: 'Too many selections' });
+      return;
+    }
+    // Validate each selection entry
+    for (const [qId, sel] of Object.entries(selections)) {
+      if (
+        !sel ||
+        typeof sel !== 'object' ||
+        !sel.choiceId ||
+        typeof sel.choiceId !== 'string' ||
+        !sel.label ||
+        typeof sel.label !== 'string'
+      ) {
+        reply.status(400).send({ error: 'Invalid selection entry' });
+        return;
+      }
+      if (sel.choiceId.length > 200 || sel.label.length > 1000) {
+        reply.status(400).send({ error: 'Selection field length exceeded' });
+        return;
+      }
+    }
+    if (!requireSessionOwner(request, reply, key)) return;
+    try {
+      if (_multiChoiceAnswerHandlerFn) {
+        await _multiChoiceAnswerHandlerFn(key, selections);
+      } else {
+        reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
+        return;
+      }
+      reply.send({ ok: true });
+    } catch (error) {
+      const errMsg = (error as Error).message || '';
+      if (errMsg === 'Session not found') {
+        reply.status(404).send({ error: 'Session not found' });
+      } else if (errMsg === 'Session is not waiting for a choice') {
+        reply.status(409).send({ error: 'Session is not waiting for choices' });
+      } else if (errMsg === 'Session has no pending multi-choice question') {
+        reply.status(409).send({ error: 'Session has no pending multi-choice question' });
+      } else if (errMsg.startsWith('Missing answer for question')) {
+        reply.status(400).send({ error: errMsg });
+      } else if (errMsg === 'Invalid choice ID') {
+        reply.status(422).send({ error: 'Invalid choice ID' });
+      } else {
+        logger.error('Error answering multi-choice from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  });
+
   // ── HTML Dashboard ──
 
   server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
@@ -873,6 +972,10 @@ function renderDashboardPage(userId?: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>soma-work Dashboard</title>
+<script data-fouc>
+// FOUC prevention — apply theme before CSS paints
+(function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
+</script>
 <style>
 /* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -901,6 +1004,25 @@ function renderDashboardPage(userId?: string): string {
   --ease: cubic-bezier(0.2,0.8,0.2,1);
   --speed: 140ms;
 }
+
+/* ── LIGHT THEME — override surface & text planes ── */
+[data-theme="light"] {
+  --bg: #f8f9fb;
+  --surface: #ffffff;
+  --surface-raised: #f0f2f5;
+  --border: #e2e5ea;
+  --border-focus: #4d9de0;
+  --text: #1a1d23;
+  --text-secondary: #5a6577;
+  --text-tertiary: #8b95a5;
+  --accent: #2b7fd4;
+  --accent-hover: #2468b0;
+}
+[data-theme="light"] ::selection { background: var(--accent); color: #fff; }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
+[data-theme="light"] .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+[data-theme="light"] .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+[data-theme="light"] .panel-overlay { background: rgba(0,0,0,0.25); }
 
 html,body {
   min-height: 100%;
@@ -959,6 +1081,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .nav a:hover,
 .topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+#theme-toggle {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
+}
+#theme-toggle:hover { border-color: var(--accent); transform: scale(1.1); }
 .ws-badge {
   padding: 4px 12px;
   border-radius: var(--radius);
@@ -1258,6 +1395,220 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-question .btn-choice {
   font-size: 0.82em;
   padding: 6px 14px;
+}
+
+/* ── MULTI-CHOICE FORM (dashboard) ── */
+.mc-form {
+  padding: 12px;
+}
+.mc-header {
+  margin-bottom: 10px;
+}
+.mc-header h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--yellow);
+  margin-bottom: 4px;
+}
+.mc-header p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.mc-progress {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+.mc-progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
+}
+.mc-progress-dot.filled {
+  background: var(--green);
+}
+.mc-progress-dot.active {
+  background: var(--yellow);
+  box-shadow: 0 0 0 2px rgba(246,201,14,0.3);
+}
+.mc-progress-text {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.mc-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mc-question {
+  background: rgba(246,201,14,0.04);
+  border: 1px solid rgba(246,201,14,0.15);
+  border-radius: 6px;
+  padding: 10px;
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+.mc-question.selected {
+  background: rgba(62,207,142,0.04);
+  border-color: rgba(62,207,142,0.25);
+}
+.mc-question.active {
+  border-color: rgba(246,201,14,0.4);
+  background: rgba(246,201,14,0.08);
+}
+.mc-q-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+.mc-q-header .mc-q-num {
+  color: var(--yellow);
+  margin-right: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.mc-q-context {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 4px;
+  border-left: 2px solid var(--border);
+}
+.mc-q-context code {
+  background: rgba(255,255,255,0.06);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: 'SF Mono','Fira Code',monospace;
+  font-size: 0.92em;
+}
+.mc-q-context strong { color: var(--text); }
+.mc-q-context em { font-style: italic; color: var(--text-secondary); }
+.mc-q-context a { color: var(--accent); text-decoration: none; }
+.mc-q-context a:hover { text-decoration: underline; }
+.mc-q-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mc-q-choices .btn-choice {
+  text-align: left;
+  width: 100%;
+  display: block;
+}
+.mc-q-selected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 600;
+}
+.mc-q-selected .mc-sel-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-q-edit-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid rgba(246,201,14,0.3);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--yellow);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.mc-q-edit-btn:hover {
+  border-color: var(--yellow);
+  background: rgba(246,201,14,0.08);
+}
+.mc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+.mc-btn-submit {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 20px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: background var(--speed) var(--ease);
+  font-family: inherit;
+  min-height: 34px;
+}
+.mc-btn-submit:hover { background: var(--accent-hover); }
+.mc-btn-submit:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
+.mc-btn-reset {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--speed) var(--ease);
+  font-family: inherit;
+  min-height: 34px;
+}
+.mc-btn-reset:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+.mc-custom-input {
+  width: 100%;
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+}
+.mc-custom-input input {
+  flex: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  font-family: inherit;
+  min-height: 28px;
+  transition: border-color var(--speed) var(--ease);
+}
+.mc-custom-input input:focus { border-color: var(--accent); }
+.mc-custom-input input::placeholder { color: var(--text-tertiary); }
+.mc-custom-input button {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid rgba(77,157,224,0.4);
+  border-radius: 4px;
+  background: rgba(77,157,224,0.08);
+  color: var(--accent);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  flex-shrink: 0;
+  min-height: 28px;
+}
+.mc-custom-input button:hover {
+  border-color: var(--accent);
+  background: rgba(77,157,224,0.18);
+  color: var(--text);
 }
 
 /* ── CHARTS — flat, geometric ── */
@@ -1615,6 +1966,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select>
       <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">&#x1F319;</button>
     </div>
   </div>
 
@@ -1717,6 +2069,32 @@ let panelConvId = null;
 let showOlderClosed = false;
 let _panelTasksExpanded = false;
 
+// ── Theme toggle — sun/moon ──
+function getPreferredTheme() {
+  var saved = localStorage.getItem('soma-theme');
+  if (saved) return saved;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.innerHTML = theme === 'light' ? '\\u2600\\uFE0F' : '\\uD83C\\uDF19';
+}
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'dark';
+  var next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('soma-theme', next);
+  applyTheme(next);
+}
+// Sync icon on load
+applyTheme(getPreferredTheme());
+// Listen for OS theme changes (if user hasn't manually chosen)
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
+  if (!localStorage.getItem('soma-theme')) {
+    applyTheme(e.matches ? 'light' : 'dark');
+  }
+});
+
 // ── Panel resize — drag left edge to change width ──
 (function initPanelResize() {
   var panel = document.getElementById('slide-panel');
@@ -1814,10 +2192,9 @@ function renderPanelQuestion(s) {
     }).join('');
     container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
       + '<div class="panel-question-choices">' + btns + '</div>';
-  } else if (q.type === 'user_choices') {
-    var slUrl = s.slackThreadUrl || '#';
-    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
-      + '<div class="card-question-multi">' + (q.questionCount || 0) + '&#xAC1C; &#xC9C8;&#xBB38; &mdash; <a href="' + esc(slUrl) + '" target="_blank">Slack&#xC5D0;&#xC11C; &#xB2F5;&#xBCC0;</a></div>';
+  } else if (q.type === 'user_choices' && q.questions) {
+    renderMultiChoicePanel(s);
+    return;
   } else {
     container.style.display = 'none';
   }
@@ -2103,11 +2480,7 @@ function renderCard(s, col) {
         + '<div class="card-question-choices">' + choiceBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
-      var slUrl = s.slackThreadUrl || '#';
-      questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question) + '</div>'
-        + '<div class="card-question-multi">' + (s.pendingQuestion.questionCount || 0) + '&#xAC1C; &#xC9C8;&#xBB38; &mdash; <a href="' + esc(slUrl) + '" target="_blank" onclick="event.stopPropagation()">Slack&#xC5D0;&#xC11C; &#xB2F5;&#xBCC0;</a></div>'
-        + '</div>';
+      questionHtml = renderMultiChoiceCard(s);
     }
   }
 
@@ -2198,6 +2571,265 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
     }
     btnEl.textContent = choiceId + '. ' + label;
   }
+}
+
+// ── Multi-choice form state ──
+var _mcState = {};
+
+function renderMultiChoiceCard(s) {
+  var q = s.pendingQuestion;
+  if (!q || !q.questions) {
+    console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
+    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">\\u26A0\\uFE0F Multi-choice data unavailable</div></div>';
+  }
+  var total = q.questions.length;
+  var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
+  var answered = 0;
+  for (var i = 0; i < q.questions.length; i++) {
+    if (st.selections[q.questions[i].id]) answered++;
+  }
+  var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
+  return '<div class="card-question">'
+    + '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>'
+    + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
+    + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '</div>';
+}
+
+function renderMultiChoicePanel(s) {
+  var container = document.getElementById('panel-question');
+  if (!container) return;
+  var q = s.pendingQuestion;
+  if (!q || !q.questions) {
+    console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
+    container.style.display = '';
+    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">\\u26A0\\uFE0F Multi-choice questions could not be loaded. Try refreshing.</p></div>';
+    return;
+  }
+
+  container.style.display = '';
+  var key = s.key;
+  if (!_mcState[key]) { _mcState[key] = { selections: {}, activeQ: 0 }; }
+  var st = _mcState[key];
+  var total = q.questions.length;
+  var answered = 0;
+  for (var i = 0; i < total; i++) {
+    if (st.selections[q.questions[i].id]) answered++;
+  }
+
+  var html = '<div class="mc-form">';
+
+  // Header
+  html += '<div class="mc-header">';
+  html += '<h4>' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</h4>';
+  if (q.description) {
+    html += '<p>' + renderMdBasic(q.description) + '</p>';
+  }
+  html += '</div>';
+
+  // Progress dots
+  html += '<div class="mc-progress">';
+  for (var d = 0; d < total; d++) {
+    var dotCls = 'mc-progress-dot';
+    if (st.selections[q.questions[d].id]) dotCls += ' filled';
+    else if (d === st.activeQ) dotCls += ' active';
+    html += '<span class="' + dotCls + '"></span>';
+  }
+  html += '<span class="mc-progress-text">' + answered + '/' + total + ' \\uC644\\uB8CC</span>';
+  html += '</div>';
+
+  // Questions
+  html += '<div class="mc-questions">';
+  for (var qi = 0; qi < total; qi++) {
+    var qItem = q.questions[qi];
+    var sel = st.selections[qItem.id];
+    var qCls = 'mc-question';
+    if (sel) qCls += ' selected';
+    if (qi === st.activeQ && !sel) qCls += ' active';
+
+    html += '<div class="' + qCls + '">';
+    html += '<div class="mc-q-header"><span class="mc-q-num">Q' + (qi + 1) + '.</span> ' + esc(qItem.question) + '</div>';
+
+    // Context (rich text)
+    if (qItem.context) {
+      html += '<div class="mc-q-context">' + renderMdBasic(qItem.context) + '</div>';
+    }
+
+    if (sel) {
+      // Show selected answer with edit button
+      html += '<div class="mc-q-selected">'
+        + '<span>\\u2705</span>'
+        + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
+        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">\\uD83D\\uDD04 \\uBCC0\\uACBD</button>'
+        + '</div>';
+    } else {
+      // Show choice buttons
+      html += '<div class="mc-q-choices">';
+      for (var ci = 0; ci < qItem.choices.length; ci++) {
+        var ch = qItem.choices[ci];
+        var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
+        html += '<button class="btn-choice" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(ch.label) + '\\')">'
+          + esc(ch.id) + '. ' + esc(ch.label) + desc + '</button>';
+      }
+      html += '</div>';
+      // Custom input
+      html += '<div class="mc-custom-input">'
+        + '<input type="text" id="mc-custom-' + qi + '" placeholder="\\uC9C1\\uC811\\uC785\\uB825..." onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
+        + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
+        + '</div>';
+    }
+
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Action buttons
+  var allAnswered = answered === total;
+  html += '<div class="mc-actions">';
+  html += '<button class="mc-btn-reset" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
+  html += '<button class="mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
+  html += '</div>';
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderMdBasic(text) {
+  if (!text) return '';
+  // Escape HTML first
+  var s = esc(text);
+  // Bold: **text**
+  s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+  // Italic: *text*
+  s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
+  // Inline code: \`code\`
+  s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+  // Links: [text](url) — only allow http(s) protocol; escAttr on URL to prevent attribute injection
+  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, function(_, text, url) {
+    return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener">' + text + '</a>';
+  });
+  // Newlines
+  s = s.replace(/\\n/g, '<br>');
+  return s;
+}
+
+function selectMc(key, qIdx, choiceId, label) {
+  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
+  var s = _sessionCache[key];
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
+  var qItem = s.pendingQuestion.questions[qIdx];
+  if (!qItem) { console.warn('selectMc: invalid question index', qIdx); return; }
+
+  _mcState[key].selections[qItem.id] = { choiceId: choiceId, label: label };
+
+  // Auto-advance to next unanswered question
+  var total = s.pendingQuestion.questions.length;
+  var nextQ = -1;
+  for (var i = 1; i <= total; i++) {
+    var idx = (qIdx + i) % total;
+    var qId = s.pendingQuestion.questions[idx].id;
+    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
+  }
+  if (nextQ >= 0) {
+    _mcState[key].activeQ = nextQ;
+  }
+
+  renderMultiChoicePanel(s);
+}
+
+function editMc(key, qIdx) {
+  if (!_mcState[key]) return;
+  var s = _sessionCache[key];
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
+  var qItem = s.pendingQuestion.questions[qIdx];
+  if (!qItem) return;
+  delete _mcState[key].selections[qItem.id];
+  _mcState[key].activeQ = qIdx;
+  renderMultiChoicePanel(s);
+}
+
+function submitMcCustom(key, qIdx) {
+  var input = document.getElementById('mc-custom-' + qIdx);
+  if (!input) return;
+  var val = input.value.trim();
+  if (!val) { input.style.borderColor = 'var(--red)'; return; }
+  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
+  var s = _sessionCache[key];
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('submitMcCustom: stale session data', key); return; }
+  var qItem = s.pendingQuestion.questions[qIdx];
+  if (!qItem) { console.warn('submitMcCustom: invalid question index', qIdx); return; }
+
+  _mcState[key].selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
+
+  // Auto-advance
+  var total = s.pendingQuestion.questions.length;
+  var nextQ = -1;
+  for (var i = 1; i <= total; i++) {
+    var idx = (qIdx + i) % total;
+    var qId = s.pendingQuestion.questions[idx].id;
+    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
+  }
+  if (nextQ >= 0) _mcState[key].activeQ = nextQ;
+
+  renderMultiChoicePanel(s);
+}
+
+async function submitMultiChoice(key) {
+  var s = _sessionCache[key];
+  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
+    console.warn('submitMultiChoice: session data unavailable', key);
+    alert('\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.');
+    return;
+  }
+  var st = _mcState[key];
+  if (!st) {
+    console.warn('submitMultiChoice: no selections state', key);
+    alert('\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.');
+    return;
+  }
+
+  // Validate all answered
+  var total = s.pendingQuestion.questions.length;
+  var answered = 0;
+  for (var i = 0; i < total; i++) {
+    if (st.selections[s.pendingQuestion.questions[i].id]) answered++;
+  }
+  if (answered < total) {
+    alert('\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')');
+    return;
+  }
+
+  // Disable submit button
+  var btns = document.querySelectorAll('.mc-btn-submit');
+  btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+
+  try {
+    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections: st.selections }),
+    });
+    if (!res.ok) {
+      var errData = {};
+      try { errData = await res.json(); } catch(_) {}
+      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
+      alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
+      btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+    } else {
+      // Success — clear state; WebSocket will re-render
+      delete _mcState[key];
+    }
+  } catch (e) {
+    console.error('submitMultiChoice error', e);
+    alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
+    btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+  }
+}
+
+function resetMultiChoice(key) {
+  _mcState[key] = { selections: {}, activeQ: 0 };
+  var s = _sessionCache[key];
+  if (s) renderMultiChoicePanel(s);
 }
 
 // ── Stats ──
@@ -2310,7 +2942,12 @@ function connectWs() {
         renderBoard(msg.board);
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
-          renderPanelQuestion(_sessionCache[panelSessionKey]);
+          var panelS = _sessionCache[panelSessionKey];
+          renderPanelQuestion(panelS);
+          // If session no longer has pending multi-choice, clear mc state
+          if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
+            if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];
+          }
         }
       } else if (msg.type === 'task_update') {
         // Update cached session tasks and re-render
