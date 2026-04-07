@@ -1,6 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
 import { isDefaultPlugin } from '../../plugin/defaults';
-import type { PluginUpdateDetail } from '../../plugin/types';
+import type { FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
@@ -155,34 +155,18 @@ export class PluginsHandler implements CommandHandler {
 
     try {
       const result = await pluginManager.forceRefresh();
+      const failedDetails = result.details.filter((d) => d.status === 'error' && d.failureCode);
 
-      const lines: string[] = [
-        '✅ *플러그인 업데이트 완료*',
-        '',
-        `• 총 플러그인: ${result.total}개`,
-        `• 업데이트: ${result.updated}개`,
-        `• 변경없음: ${result.unchanged}개`,
-      ];
-
-      // Per-plugin version details
-      if (result.details.length > 0) {
-        lines.push('');
-        lines.push('*플러그인 상세:*');
-
-        for (const d of result.details) {
-          lines.push(this.formatPluginDetail(d));
-        }
+      // If there are failures with structured error codes, use Block Kit UI
+      if (failedDetails.length > 0) {
+        const blocks = this.buildUpdateResultBlocks(result, failedDetails);
+        const fallbackText = this.buildUpdateResultText(result);
+        await say({ text: fallbackText, thread_ts: threadTs, blocks });
+      } else {
+        // No structured failures — use simple text
+        const lines = this.buildUpdateResultLines(result);
+        await say({ text: lines.join('\n'), thread_ts: threadTs });
       }
-
-      if (result.errors.length > 0) {
-        lines.push('');
-        lines.push('⚠️ *Errors:*');
-        for (const err of result.errors) {
-          lines.push(`  • ${err}`);
-        }
-      }
-
-      await say({ text: lines.join('\n'), thread_ts: threadTs });
     } catch (error) {
       await say({
         text: `❌ 플러그인 업데이트 실패: ${(error as Error).message}`,
@@ -200,6 +184,174 @@ export class PluginsHandler implements CommandHandler {
   /** Returns true when pluginRef refers to the hardcoded built-in local plugin. */
   private isBuiltInLocal(pluginRef: string): boolean {
     return pluginRef === 'local' || pluginRef.startsWith('local@');
+  }
+
+  /** Build simple text lines for update result (no failures). */
+  private buildUpdateResultLines(result: {
+    total: number;
+    updated: number;
+    unchanged: number;
+    errors: string[];
+    details: PluginUpdateDetail[];
+  }): string[] {
+    const lines: string[] = [
+      '✅ *플러그인 업데이트 완료*',
+      '',
+      `• 총 플러그인: ${result.total}개`,
+      `• 업데이트: ${result.updated}개`,
+      `• 변경없음: ${result.unchanged}개`,
+    ];
+
+    if (result.details.length > 0) {
+      lines.push('');
+      lines.push('*플러그인 상세:*');
+      for (const d of result.details) {
+        lines.push(this.formatPluginDetail(d));
+      }
+    }
+
+    if (result.errors.length > 0) {
+      lines.push('');
+      lines.push('⚠️ *Errors:*');
+      for (const err of result.errors) {
+        lines.push(`  • ${err}`);
+      }
+    }
+
+    return lines;
+  }
+
+  /** Build fallback text for Block Kit message. */
+  private buildUpdateResultText(result: {
+    total: number;
+    updated: number;
+    unchanged: number;
+    errors: string[];
+  }): string {
+    return `플러그인 업데이트 완료 — 총: ${result.total}, 업데이트: ${result.updated}, 에러: ${result.errors.length}`;
+  }
+
+  /** Build Block Kit blocks for update result with failure details and action buttons. */
+  private buildUpdateResultBlocks(
+    result: { total: number; updated: number; unchanged: number; errors: string[]; details: PluginUpdateDetail[] },
+    failedDetails: PluginUpdateDetail[],
+  ): any[] {
+    const blocks: any[] = [];
+
+    // Header
+    const hasOnlyErrors = result.updated === 0 && result.unchanged === 0;
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: hasOnlyErrors ? '❌ *플러그인 업데이트 실패*' : '⚠️ *플러그인 업데이트 완료 (일부 실패)*',
+      },
+    });
+
+    // Summary
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `• 총 플러그인: ${result.total}개  •  업데이트: ${result.updated}개  •  변경없음: ${result.unchanged}개  •  실패: ${failedDetails.length}개`,
+      },
+    });
+
+    blocks.push({ type: 'divider' });
+
+    // Successful plugins (brief)
+    const successDetails = result.details.filter((d) => d.status !== 'error');
+    if (successDetails.length > 0) {
+      for (const d of successDetails) {
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: this.formatPluginDetail(d) },
+        });
+      }
+      blocks.push({ type: 'divider' });
+    }
+
+    // Failed plugins with detailed error + action buttons
+    for (const d of failedDetails) {
+      const errorDesc = this.formatFailureDescription(d);
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `❌ *${d.name}*\n${errorDesc}`,
+        },
+      });
+
+      // Action buttons: Ignore always, Force Update only for SECURITY_BLOCKED
+      // Slack action_id max is 255 chars — truncate plugin name to stay within limit
+      const actionSuffix = d.name.length > 200 ? d.name.slice(0, 200) : d.name;
+      const pluginValue = JSON.stringify({ pluginName: d.name, failureCode: d.failureCode });
+      const elements: any[] = [
+        {
+          type: 'button',
+          action_id: `plugin_update_ignore_${actionSuffix}`,
+          text: { type: 'plain_text', text: '무시 (Ignore)', emoji: true },
+          value: pluginValue,
+        },
+      ];
+
+      if (d.failureCode === 'SECURITY_BLOCKED') {
+        elements.push({
+          type: 'button',
+          action_id: `plugin_update_force_${actionSuffix}`,
+          text: { type: 'plain_text', text: '⚠️ 보안 우회 설치 (Force Update)', emoji: true },
+          style: 'danger',
+          value: pluginValue,
+          confirm: {
+            title: { type: 'plain_text', text: '보안 우회 확인' },
+            text: {
+              type: 'mrkdwn',
+              text: `*${d.name}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+            },
+            confirm: { type: 'plain_text', text: '강제 설치' },
+            deny: { type: 'plain_text', text: '취소' },
+            style: 'danger',
+          },
+        });
+      }
+
+      blocks.push({ type: 'actions', elements });
+    }
+
+    return blocks;
+  }
+
+  /** Format a human-readable description from a failure code and details. */
+  private formatFailureDescription(d: PluginUpdateDetail): string {
+    const lines: string[] = [];
+
+    const codeDescriptions: Record<FetchFailureCode, string> = {
+      DOWNLOAD_FAILED: '마켓플레이스 다운로드 실패 (네트워크 오류 또는 인증 문제)',
+      MANIFEST_NOT_FOUND: 'marketplace.json을 찾을 수 없음 (레포 구조 변경 가능)',
+      PLUGIN_NOT_IN_MANIFEST: 'marketplace.json에 해당 플러그인이 없음',
+      INSTALL_FAILED: '플러그인 파일 설치 실패',
+      SECURITY_BLOCKED: '보안 검사에서 차단됨',
+      EXTERNAL_FETCH_FAILED: '외부 플러그인 다운로드 실패',
+      EXTERNAL_URL_INVALID: '외부 플러그인 URL 파싱 실패',
+    };
+
+    const desc = d.failureCode ? codeDescriptions[d.failureCode] : null;
+    lines.push(`> *원인:* ${desc || d.error || 'Unknown error'}`);
+    if (d.failureCode) {
+      lines.push(`> *코드:* \`${d.failureCode}\``);
+    }
+
+    // Security findings
+    if (d.securityFindings && d.securityFindings.length > 0) {
+      lines.push(`> *위험 수준:* ${d.riskLevel || 'UNKNOWN'}`);
+      lines.push('> *보안 스캔 결과:*');
+      for (const f of d.securityFindings) {
+        const fileInfo = f.file ? ` (\`${f.file}\`)` : '';
+        lines.push(`>   • [${f.severity}] ${f.rule}: ${f.description}${fileInfo}`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   /** Format a single plugin update detail for Slack display. */
