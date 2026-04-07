@@ -488,8 +488,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         logger.warn('Authentication disabled (CONVERSATION_VIEWER_TOKEN not set)');
       }
       return;
-    } catch (error: any) {
-      if (error.code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
         logger.warn(`Port ${port} in use, trying ${port + 1}...`);
         continue;
       }
