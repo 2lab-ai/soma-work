@@ -280,6 +280,14 @@ function getViewerScript(conversationId: string): string {
   return `
     const CONVERSATION_ID = ${JSON.stringify(conversationId)};
     const loadedRawCache = {};
+    let _csrfToken = '';
+    async function refreshCsrfToken() {
+      try {
+        const r = await fetch('/auth/me');
+        if (r.ok) { const d = await r.json(); _csrfToken = d.csrfToken || ''; }
+      } catch {}
+    }
+    refreshCsrfToken();
 
     // Lazy load raw content when details element is opened
     document.querySelectorAll('.raw-details').forEach(details => {
@@ -330,11 +338,17 @@ function getViewerScript(conversationId: string): string {
       const turnIds = Array.from(checked).map(cb => cb.dataset.turnId);
 
       try {
-        const res = await fetch('/api/conversations/' + CONVERSATION_ID + '/export', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ turnIds }),
-        });
+        const exportHeaders = { 'Content-Type': 'application/json' };
+        if (_csrfToken) exportHeaders['X-CSRF-Token'] = _csrfToken;
+        const exportUrl = '/api/conversations/' + CONVERSATION_ID + '/export';
+        const exportBody = JSON.stringify({ turnIds });
+        let res = await fetch(exportUrl, { method: 'POST', headers: exportHeaders, body: exportBody });
+        if (res.status === 403) {
+          await refreshCsrfToken();
+          const retryHeaders = { 'Content-Type': 'application/json' };
+          if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+          res = await fetch(exportUrl, { method: 'POST', headers: retryHeaders, body: exportBody });
+        }
 
         if (!res.ok) throw new Error('Export failed');
         const md = await res.text();
