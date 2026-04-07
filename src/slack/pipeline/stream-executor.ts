@@ -1644,7 +1644,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return undefined;
     }
 
-    const usedTokens = usage.inputTokens + usage.outputTokens;
+    const usedTokens =
+      usage.inputTokens +
+      usage.outputTokens +
+      (usage.cacheReadInputTokens ?? 0) +
+      (usage.cacheCreationInputTokens ?? 0);
     const percent = (usedTokens / contextWindow) * 100;
     return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
   }

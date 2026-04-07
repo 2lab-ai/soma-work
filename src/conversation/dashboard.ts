@@ -410,10 +410,10 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
       start = now;
       break;
     case 'week':
-      start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      start = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
       break;
     case 'month':
-      start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      start = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000);
       break;
   }
   const startDate = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
@@ -631,6 +631,13 @@ export async function registerDashboardRoutes(
         | 'day'
         | 'week'
         | 'month';
+
+      // Validate date format if provided
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        reply.status(400).send({ error: 'Invalid date format. Use YYYY-MM-DD.' });
+        return;
+      }
+
       const { startDate, endDate } = date ? getDateRangeFrom(date, period) : getDateRange(period);
 
       try {
