@@ -164,6 +164,17 @@ export interface PluginUpdateDetail {
   newDate: string | null;
   /** Error message if status is 'error' */
   error?: string;
+  /** Failure code for structured error handling */
+  failureCode?: FetchFailureCode;
+  /** Security scan findings when blocked by security gate */
+  securityFindings?: ReadonlyArray<{
+    rule: string;
+    description: string;
+    severity: string;
+    file?: string;
+  }>;
+  /** Risk level from security scan */
+  riskLevel?: string;
 }
 
 /** Aggregate result from forceRefresh. */
@@ -182,4 +193,34 @@ export interface ForceRefreshResult {
 export interface SdkPluginPath {
   type: 'local';
   path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch failure details
+// ---------------------------------------------------------------------------
+
+/** Failure codes for fetchPlugin */
+export type FetchFailureCode =
+  | 'DOWNLOAD_FAILED'
+  | 'MANIFEST_NOT_FOUND'
+  | 'PLUGIN_NOT_IN_MANIFEST'
+  | 'INSTALL_FAILED'
+  | 'SECURITY_BLOCKED'
+  | 'EXTERNAL_FETCH_FAILED'
+  | 'EXTERNAL_URL_INVALID';
+
+/** Detailed failure result from fetchPlugin */
+export interface FetchFailure {
+  readonly failed: true;
+  readonly code: FetchFailureCode;
+  readonly message: string;
+  /** Security scan details when code is SECURITY_BLOCKED */
+  readonly securityFindings?: ReadonlyArray<{
+    rule: string;
+    description: string;
+    severity: string;
+    file?: string;
+  }>;
+  /** Overall risk level from security scan */
+  readonly riskLevel?: string;
 }

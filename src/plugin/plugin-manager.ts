@@ -15,7 +15,7 @@ import { Logger } from '../logger';
 import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultMarketplace, isDefaultPlugin } from './defaults';
-import { fetchPlugin, resolveRemoteSha } from './marketplace-fetcher';
+import { type FetchOptions, fetchPlugin, isFetchFailure, resolveRemoteSha } from './marketplace-fetcher';
 import { hasCachedPlugin, readCacheMeta } from './plugin-cache';
 import type {
   ForceRefreshResult,
@@ -79,7 +79,13 @@ export class PluginManager {
 
       try {
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
-        if (result) {
+        if (isFetchFailure(result)) {
+          logger.error('Failed to fetch plugin', {
+            pluginName: ref.pluginName,
+            code: result.code,
+            message: result.message,
+          });
+        } else {
           const refStr = `${ref.pluginName}@${ref.marketplaceName}`;
           results.push({
             name: refStr,
@@ -153,7 +159,7 @@ export class PluginManager {
    *
    * Returns per-plugin detail including old/new SHA, old/new date, and status.
    */
-  async forceRefresh(): Promise<ForceRefreshResult> {
+  async forceRefresh(pluginOptions?: Record<string, FetchOptions>): Promise<ForceRefreshResult> {
     const details: PluginUpdateDetail[] = [];
     const errors: string[] = [];
 
@@ -218,7 +224,9 @@ export class PluginManager {
       }
 
       // Compare SHA — if identical, skip download entirely
-      if (oldMeta?.sha === remoteSha && hadCache) {
+      // But if caller provided explicit options (e.g. force update), always re-fetch
+      const hasExplicitOptions = pluginOptions?.[pluginDisplayName] != null;
+      if (!hasExplicitOptions && oldMeta?.sha === remoteSha && hadCache) {
         logger.info('Plugin already up-to-date, skipping', {
           pluginName: ref.pluginName,
           sha: remoteSha.slice(0, 8),
@@ -258,8 +266,26 @@ export class PluginManager {
       }
 
       try {
-        const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir);
-        if (result) {
+        const opts = pluginOptions?.[pluginDisplayName];
+        const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir, opts);
+        if (isFetchFailure(result)) {
+          // fetchPlugin failed — restore backup
+          this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
+          const msg = `[${result.code}] ${result.message}`;
+          errors.push(msg);
+          details.push({
+            name: pluginDisplayName,
+            status: 'error',
+            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
+            oldDate: oldMeta?.fetchedAt ?? null,
+            newSha: null,
+            newDate: null,
+            error: msg,
+            failureCode: result.code,
+            securityFindings: result.securityFindings,
+            riskLevel: result.riskLevel,
+          });
+        } else {
           // Success — remove backup
           if (backedUp) {
             try {
@@ -281,20 +307,6 @@ export class PluginManager {
             oldDate: oldMeta?.fetchedAt ?? null,
             newSha: result.sha.slice(0, 8),
             newDate: new Date().toISOString(),
-          });
-        } else {
-          // fetchPlugin returned null — restore backup
-          this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
-          const msg = `fetchPlugin returned null for ${pluginDisplayName}, restored previous version`;
-          errors.push(msg);
-          details.push({
-            name: pluginDisplayName,
-            status: 'error',
-            oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
-            oldDate: oldMeta?.fetchedAt ?? null,
-            newSha: null,
-            newDate: null,
-            error: msg,
           });
         }
       } catch (error) {

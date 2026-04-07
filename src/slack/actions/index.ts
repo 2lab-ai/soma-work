@@ -10,6 +10,7 @@ import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PendingFormStore } from './pending-form-store';
 import { PermissionActionHandler } from './permission-action-handler';
+import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
@@ -36,6 +37,7 @@ export class ActionHandlers {
   private channelRouteHandler: ChannelRouteActionHandler;
   private userAcceptanceHandler: UserAcceptanceActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
+  private pluginUpdateHandler: PluginUpdateActionHandler;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -103,6 +105,10 @@ export class ActionHandlers {
     });
 
     this.mcpToolPermissionHandler = new McpToolPermissionActionHandler();
+
+    this.pluginUpdateHandler = new PluginUpdateActionHandler({
+      mcpManager: ctx.mcpManager,
+    });
   }
 
   /**
@@ -252,6 +258,17 @@ export class ActionHandlers {
     app.action('channel_route_stay', async ({ ack, body, respond }) => {
       await ack();
       await this.channelRouteHandler.handleStay(body, respond);
+    });
+
+    // Plugin update actions (ignore / force update)
+    app.action(/^plugin_update_ignore_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.pluginUpdateHandler.handleIgnore(body, respond);
+    });
+
+    app.action(/^plugin_update_force_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.pluginUpdateHandler.handleForceUpdate(body, respond);
     });
 
     app.action('managed_message_delete_cancel', async ({ ack, body, respond }) => {
