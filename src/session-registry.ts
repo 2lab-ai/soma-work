@@ -9,6 +9,7 @@ import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
+import { applyInstructionOperations } from './model-commands/catalog';
 import { normalizeTmpPath } from './path-utils';
 import type {
   ActionPanelState,
@@ -694,35 +695,11 @@ export class SessionRegistry {
       };
     }
 
-    // Apply instruction operations
-    let instructionChanged = false;
-    if (request.instructionOperations && request.instructionOperations.length > 0) {
-      if (!session.instructions) {
-        session.instructions = [];
-      }
-      for (const instrOp of request.instructionOperations) {
-        if (instrOp.action === 'add') {
-          session.instructions.push({
-            id: `instr_${Date.now()}_${session.instructions.length}`,
-            text: instrOp.text,
-            addedAt: Date.now(),
-            source: instrOp.source || 'user',
-          });
-          instructionChanged = true;
-        } else if (instrOp.action === 'remove') {
-          const idx = session.instructions.findIndex((i) => i.id === instrOp.id);
-          if (idx >= 0) {
-            session.instructions.splice(idx, 1);
-            instructionChanged = true;
-          }
-        } else if (instrOp.action === 'clear') {
-          if (session.instructions.length > 0) {
-            session.instructions = [];
-            instructionChanged = true;
-          }
-        }
-      }
+    // Apply instruction operations (shared helper)
+    if (!session.instructions) {
+      session.instructions = [];
     }
+    const instructionChanged = applyInstructionOperations(session.instructions, request.instructionOperations);
 
     if (applyResult.changed || instructionChanged) {
       session.linkSequence = (session.linkSequence ?? 0) + 1;

@@ -259,7 +259,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     },
     {
       id: 'UPDATE_SESSION',
-      description: 'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
+      description:
+        'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
       paramsSchema: UPDATE_SESSION_SCHEMA,
     },
     {
@@ -378,35 +379,8 @@ export function applySessionUpdateToSnapshot(
   }
 
   // Apply instruction operations
-  for (const instrOp of request.instructionOperations ?? []) {
-    if (instrOp.action === 'add') {
-      const instruction: SessionInstruction = {
-        id: `instr_${Date.now()}_${snapshot.instructions.length}`,
-        text: instrOp.text,
-        addedAt: Date.now(),
-        source: instrOp.source || 'user',
-      };
-      snapshot.instructions.push(instruction);
-      changed = true;
-      continue;
-    }
-
-    if (instrOp.action === 'remove') {
-      const idx = snapshot.instructions.findIndex((i) => i.id === instrOp.id);
-      if (idx >= 0) {
-        snapshot.instructions.splice(idx, 1);
-        changed = true;
-      }
-      continue;
-    }
-
-    if (instrOp.action === 'clear') {
-      if (snapshot.instructions.length > 0) {
-        snapshot.instructions = [];
-        changed = true;
-      }
-      continue;
-    }
+  if (applyInstructionOperations(snapshot.instructions, request.instructionOperations)) {
+    changed = true;
   }
 
   if (changed) {
@@ -512,4 +486,56 @@ function normalizeContinuation(params: ContinueSessionParams) {
     dispatchText: params.dispatchText,
     forceWorkflow: params.forceWorkflow,
   };
+}
+
+/** Maximum number of instructions per session to prevent unbounded growth. */
+const MAX_INSTRUCTIONS = 50;
+
+let _instrCounter = 0;
+
+/**
+ * Apply instruction operations (add/remove/clear) to a mutable instructions array.
+ * Shared between catalog (snapshot) and session-registry (host-side).
+ * Returns true if any mutation occurred.
+ */
+export function applyInstructionOperations(
+  instructions: SessionInstruction[],
+  ops: SessionInstructionOperation[] | undefined,
+): boolean {
+  if (!ops || ops.length === 0) return false;
+
+  let changed = false;
+  for (const op of ops) {
+    if (op.action === 'add') {
+      if (!op.text || op.text.trim().length === 0) continue;
+      if (instructions.length >= MAX_INSTRUCTIONS) continue;
+      const now = Date.now();
+      instructions.push({
+        id: `instr_${now}_${++_instrCounter}`,
+        text: op.text.trim(),
+        addedAt: now,
+        source: op.source || 'user',
+      });
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'remove') {
+      const idx = instructions.findIndex((i) => i.id === op.id);
+      if (idx >= 0) {
+        instructions.splice(idx, 1);
+        changed = true;
+      }
+      continue;
+    }
+
+    if (op.action === 'clear') {
+      if (instructions.length > 0) {
+        instructions.length = 0;
+        changed = true;
+      }
+      continue;
+    }
+  }
+  return changed;
 }
