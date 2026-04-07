@@ -59,15 +59,15 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 /** Flags that are ALWAYS active regardless of log level */
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions + long-running status */
-export const LOG_MINIMAL = ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS;
+/** MINIMAL — final result + essential interactions + long-running status + task progress */
+export const LOG_MINIMAL =
+  ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS | OutputFlag.TODO_UPDATE | OutputFlag.TODO_REACTION;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
 export const LOG_COMPACT =
   LOG_MINIMAL |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
-  OutputFlag.MCP_PROGRESS |
   OutputFlag.STATUS_MESSAGE |
   OutputFlag.STATUS_REACTION |
   OutputFlag.STATUS_SPINNER |
@@ -77,14 +77,7 @@ export const LOG_COMPACT =
   OutputFlag.CONTEXT_EMOJI;
 
 /** DETAIL — full output (current default behaviour) */
-export const LOG_DETAIL =
-  LOG_COMPACT |
-  OutputFlag.TOOL_DETAIL |
-  OutputFlag.TOOL_RESULT |
-  OutputFlag.MCP_PROGRESS |
-  OutputFlag.TODO_UPDATE |
-  OutputFlag.TODO_REACTION |
-  OutputFlag.SYSTEM;
+export const LOG_DETAIL = LOG_COMPACT | OutputFlag.TOOL_DETAIL | OutputFlag.TOOL_RESULT | OutputFlag.SYSTEM;
 
 /** VERBOSE — everything including raw data */
 export const LOG_VERBOSE = LOG_DETAIL | OutputFlag.RAW_DATA;
