@@ -378,10 +378,9 @@ export function applySessionUpdateToSnapshot(
     }
   }
 
-  // Apply instruction operations
-  if (applyInstructionOperations(snapshot.instructions, request.instructionOperations)) {
-    changed = true;
-  }
+  // NOTE: Instruction operations are NOT applied here.
+  // They are applied host-side only (session-registry) to ensure
+  // a single source of truth for generated IDs/timestamps.
 
   if (changed) {
     snapshot.sequence += 1;
@@ -409,24 +408,23 @@ export function runModelCommand(
   }
 
   if (request.commandId === 'UPDATE_SESSION') {
-    // Apply resource operations if present
-    let resultSnapshot = session;
+    // Apply resource operations (model-side preview)
     const operations = request.params.operations ?? [];
-    if (operations.length > 0) {
-      const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
-      if (!updateResult.ok) {
-        return toRunError('UPDATE_SESSION', updateResult.error);
-      }
-      resultSnapshot = updateResult.snapshot;
+    const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
+    if (!updateResult.ok) {
+      return toRunError('UPDATE_SESSION', updateResult.error);
     }
+
+    const instructionOps = request.params.instructionOperations ?? [];
 
     return {
       type: 'model_command_result',
       commandId: 'UPDATE_SESSION',
       ok: true,
       payload: {
-        session: resultSnapshot,
+        session: updateResult.snapshot,
         appliedOperations: operations.length,
+        appliedInstructionOperations: instructionOps.length,
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
