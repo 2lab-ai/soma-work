@@ -163,7 +163,9 @@ describe('ThreadPanel', () => {
         contextWindow: 200000,
         totalInputTokens: 70000,
         totalOutputTokens: 10000,
-        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
         lastUpdated: Date.now(),
       },
     };

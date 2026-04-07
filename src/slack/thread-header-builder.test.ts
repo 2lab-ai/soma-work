@@ -109,7 +109,9 @@ describe('ThreadHeaderBuilder', () => {
       contextWindow: 1_000_000,
       totalInputTokens: 200_000,
       totalOutputTokens: 80_000,
-      totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.5,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
+      totalCostUsd: 0.5,
       lastUpdated: Date.now(),
     };
 
@@ -188,7 +190,9 @@ describe('ThreadHeaderBuilder.formatContextBar', () => {
       contextWindow: 1_000_000,
       totalInputTokens: 100_000,
       totalOutputTokens: 50_000,
-      totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
+      totalCostUsd: 0,
       lastUpdated: Date.now(),
     };
 
@@ -207,7 +211,9 @@ describe('ThreadHeaderBuilder.formatContextBar', () => {
       contextWindow: 1_000_000,
       totalInputTokens: 800_000,
       totalOutputTokens: 200_000,
-      totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
+      totalCostUsd: 0,
       lastUpdated: Date.now(),
     };
 
