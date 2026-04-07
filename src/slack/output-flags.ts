@@ -59,8 +59,9 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 /** Flags that are ALWAYS active regardless of log level */
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions + long-running status */
-export const LOG_MINIMAL = ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS;
+/** MINIMAL — final result + essential interactions + long-running status + task progress */
+export const LOG_MINIMAL =
+  ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS | OutputFlag.TODO_UPDATE | OutputFlag.TODO_REACTION;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
 export const LOG_COMPACT =
