@@ -6,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { MetricsEventStore } from './event-store';
-import type { MetricsEvent, MetricsEventType } from './types';
+import type { MetricsEvent, MetricsEventType, TokenUsageMetadata } from './types';
 
 const logger = new Logger('MetricsEventEmitter');
 
@@ -107,6 +107,19 @@ export class MetricsEventEmitter {
       conversationId,
       role,
     });
+    await this.emit(event);
+  }
+
+  // === Token Usage Tracking ===
+
+  async emitTokenUsage(userId: string, userName: string, metadata: TokenUsageMetadata): Promise<void> {
+    const event = this.buildEvent(
+      'token_usage',
+      userId,
+      userName,
+      metadata.sessionKey,
+      metadata as unknown as Record<string, unknown>,
+    );
     await this.emit(event);
   }
 
