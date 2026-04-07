@@ -40,9 +40,9 @@ describe('parseTodos', () => {
     expect(parseTodos([])).toEqual([]);
   });
 
-  it('filters items with invalid priority', () => {
+  it('defaults invalid priority to medium instead of filtering', () => {
     const result = parseTodos([{ id: '1', content: 'Bad priority', status: 'pending', priority: 'critical' }]);
-    expect(result).toEqual([]);
+    expect(result).toEqual([{ id: '1', content: 'Bad priority', status: 'pending', priority: 'medium' }]);
   });
 
   it('preserves optional fields like dependencies and activeForm', () => {
@@ -53,6 +53,43 @@ describe('parseTodos', () => {
     };
     const result = parseTodos([todoWithOptionals]);
     expect(result).toEqual([todoWithOptionals]);
+  });
+
+  it('auto-assigns id and priority when missing (TodoWrite compat)', () => {
+    const todoWriteInput = [
+      { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+      { content: 'Task B', status: 'in_progress', activeForm: 'Working on B' },
+      { content: 'Task C', status: 'completed', activeForm: 'Done with C' },
+    ];
+    const result = parseTodos(todoWriteInput);
+    expect(result).toHaveLength(3);
+    // IDs are content-hash based (stable, deterministic)
+    expect(result![0].id).toMatch(/^todo-/);
+    expect(result![0].content).toBe('Task A');
+    expect(result![0].status).toBe('pending');
+    expect(result![0].priority).toBe('medium');
+    expect(result![1].id).toMatch(/^todo-/);
+    expect(result![1].content).toBe('Task B');
+    expect(result![1].priority).toBe('medium');
+    expect(result![2].id).toMatch(/^todo-/);
+    expect(result![2].content).toBe('Task C');
+    expect(result![2].priority).toBe('medium');
+    // Same content produces same id (stable)
+    const result2 = parseTodos(todoWriteInput);
+    expect(result2![0].id).toBe(result![0].id);
+  });
+
+  it('preserves explicit id and priority when provided', () => {
+    const result = parseTodos([{ id: 'custom-id', content: 'Test', status: 'pending', priority: 'high' }]);
+    expect(result).toEqual([{ id: 'custom-id', content: 'Test', status: 'pending', priority: 'high' }]);
+  });
+
+  it('does not mutate input objects', () => {
+    const input = [{ content: 'Task X', status: 'pending', activeForm: 'Working on X' }];
+    const originalContent = { ...input[0] };
+    parseTodos(input);
+    // Input object should remain unchanged (no id/priority stamped onto it)
+    expect(input[0]).toEqual(originalContent);
   });
 });
 
@@ -127,5 +164,24 @@ describe('TodoManager.updateTodos', () => {
   it('returns empty array for unknown session', () => {
     const mgr = new TodoManager();
     expect(mgr.getTodos('nonexistent')).toEqual([]);
+  });
+
+  it('handles TodoWrite input (no id/priority) end-to-end', () => {
+    const mgr = new TodoManager();
+    const todoWritePayload = [
+      { content: 'Investigate bug', status: 'in_progress', activeForm: 'Investigating bug' },
+      { content: 'Fix the issue', status: 'pending', activeForm: 'Fixing the issue' },
+    ] as unknown as Todo[];
+
+    mgr.updateTodos('sess-1', todoWritePayload);
+    const stored = mgr.getTodos('sess-1');
+    expect(stored).toHaveLength(2);
+    expect(stored[0].id).toMatch(/^todo-/);
+    expect(stored[0].priority).toBe('medium');
+    expect(stored[0].content).toBe('Investigate bug');
+    expect(stored[0].status).toBe('in_progress');
+    expect(stored[0].startedAt).toBeDefined(); // auto-stamped
+    expect(stored[1].id).toMatch(/^todo-/);
+    expect(stored[1].priority).toBe('medium');
   });
 });

@@ -13,7 +13,8 @@ export type MetricsEventType =
   | 'code_lines_added'
   | 'pr_merged'
   | 'merge_lines_added'
-  | 'turn_used';
+  | 'turn_used'
+  | 'token_usage';
 
 export interface MetricsEvent {
   id: string;
@@ -170,4 +171,63 @@ export interface ReportConfig {
   dailyHour: number;
   weeklyDay: number;
   weeklyHour: number;
+}
+
+// ── Token Usage Tracking Types ──────────────────────────────────
+
+/**
+ * Per-model token usage breakdown.
+ * Stored in token_usage event metadata.modelBreakdown.
+ */
+export interface ModelTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * Metadata for token_usage events.
+ * Emitted once per agent-loop completion (per user message).
+ */
+export interface TokenUsageMetadata {
+  sessionKey: string;
+  conversationId?: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+  /** Per-model breakdown when multiple models are used in one loop */
+  modelBreakdown?: Record<string, ModelTokenUsage>;
+}
+
+/**
+ * Aggregated token usage for a time period.
+ */
+export interface TokenUsageAggregation {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreateTokens: number;
+  totalCostUsd: number;
+  /** Per-model aggregated usage */
+  byModel: Record<string, ModelTokenUsage>;
+}
+
+/**
+ * Usage report for API responses.
+ */
+export interface UsageReport {
+  period: 'day' | 'week' | 'month';
+  startDate: string;
+  endDate: string;
+  totals: TokenUsageAggregation;
+  byUser: Record<string, TokenUsageAggregation & { userName: string }>;
+  byDay: Array<{
+    date: string;
+    totals: TokenUsageAggregation;
+  }>;
 }

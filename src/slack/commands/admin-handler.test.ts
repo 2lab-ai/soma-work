@@ -18,6 +18,7 @@ vi.mock('../../user-settings-store', () => ({
 
 vi.mock('../../env-paths', () => ({
   ENV_FILE: '/mock/.env',
+  DATA_DIR: '/mock/data',
 }));
 
 vi.mock('../../token-manager', () => ({

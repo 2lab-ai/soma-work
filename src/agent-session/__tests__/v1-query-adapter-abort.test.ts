@@ -61,8 +61,6 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
   // Trace: Scenario 1, Section 3c→3d — continue() must use baseParams abortController
   it('continue() should pass the SAME abortController from baseParams to executor', async () => {
     const params = createMockExecuteParams();
-    const originalController = params.abortController;
-
     const adapter = new V1QueryAdapter({
       streamExecutor: mockExecutor as any,
       executeParams: params,
