@@ -11,6 +11,7 @@ import {
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardTaskAccessor,
@@ -277,6 +278,22 @@ async function start() {
         throw error; // Re-throw so the API endpoint returns the correct HTTP status
       }
     });
+
+    // Connect dashboard: multi-choice form answer handler
+    setDashboardMultiChoiceAnswerHandler(
+      async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>) => {
+        try {
+          await slackHandler.handleDashboardMultiChoiceAnswer(sessionKey, selections);
+          logger.info('Dashboard: multi-choice answered', {
+            sessionKey,
+            selectionCount: Object.keys(selections).length,
+          });
+        } catch (error) {
+          logger.error('Dashboard: multi-choice answer failed', { sessionKey, error });
+          throw error;
+        }
+      },
+    );
 
     // Connect dashboard: real-time task updates
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
