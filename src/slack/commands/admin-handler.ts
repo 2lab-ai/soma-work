@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
-import { ENV_FILE } from '../../env-paths';
+import { DATA_DIR, ENV_FILE } from '../../env-paths';
 import { tokenManager } from '../../token-manager';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
@@ -10,7 +10,7 @@ const SENSITIVE_PATTERNS = /TOKEN|SECRET|KEY|PASSWORD|PRIVATE/i;
 
 const CACHE_RESET_MAP: Partial<Record<string, () => void>> = {
   ADMIN_USERS: () => resetAdminUsersCache(),
-  CLAUDE_CODE_OAUTH_TOKEN_LIST: () => tokenManager.initialize(),
+  CLAUDE_CODE_OAUTH_TOKEN_LIST: () => tokenManager.initialize(DATA_DIR),
 };
 
 function maskSecret(value: string): string {
