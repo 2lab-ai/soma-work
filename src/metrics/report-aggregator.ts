@@ -396,7 +396,10 @@ function aggregateTokenEventsByDay(
     eventsByDate.get(date)!.push(e);
   }
 
-  // Generate date range and aggregate each day (use same timezone as event grouping)
+  // Generate date range and aggregate each day.
+  // NOTE: +09:00 (KST) is intentionally hardcoded to match REPORT_TIMEZONE ('Asia/Seoul')
+  // used by dateFormatter throughout the metrics subsystem. If REPORT_TIMEZONE changes,
+  // this offset must be updated accordingly.
   const result: Array<{ date: string; totals: TokenUsageAggregation }> = [];
   const current = new Date(startDate + 'T00:00:00+09:00');
   const end = new Date(endDate + 'T23:59:59+09:00');

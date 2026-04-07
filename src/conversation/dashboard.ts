@@ -633,8 +633,15 @@ export async function registerDashboardRoutes(
         | 'month';
 
       // Validate date format and semantic validity if provided
+      // Roundtrip check: JS normalizes "2026-04-31" → "2026-05-01", so we reject when the parsed date
+      // does not match the original string (catches impossible calendar dates).
       if (date) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date + 'T00:00:00Z').getTime())) {
+        const parsed = new Date(date + 'T00:00:00Z');
+        if (
+          !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+          Number.isNaN(parsed.getTime()) ||
+          parsed.toISOString().slice(0, 10) !== date
+        ) {
           reply.status(400).send({ error: 'Invalid date. Use YYYY-MM-DD.' });
           return;
         }
