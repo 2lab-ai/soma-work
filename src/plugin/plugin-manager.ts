@@ -317,17 +317,11 @@ export class PluginManager {
       }
     }
 
-    // Phase 2: Re-initialize to rebuild the resolved plugin list
-    const previous = this.resolved;
-    this.initialized = false;
-    this.resolved = [];
-    try {
-      await this.initialize();
-    } catch (error) {
-      this.resolved = previous;
-      this.initialized = true;
-      throw error;
-    }
+    // Phase 2: Rebuild resolved list from local cache only.
+    // We do NOT call initialize() here because Phase 1 already handled per-plugin
+    // fetch/update. Re-running initialize() would re-download plugins whose backups
+    // were just restored on failure, undoing the recovery.
+    this.rebuildResolved();
 
     const updated = details.filter((d) => d.status === 'updated' || d.status === 'new').length;
     const unchanged = details.filter((d) => d.status === 'unchanged').length;
@@ -402,6 +396,23 @@ export class PluginManager {
     }
 
     const { pluginName } = parsed;
+
+    // Verify the plugin is still in the active config — rolling back an unconfigured
+    // plugin would restore files to disk but rebuildResolved() would not include it,
+    // leaving the user with a misleading "success" message.
+    const effectiveConfig = this.mergeDefaults();
+    const configRefs = this.parsePluginRefs(effectiveConfig);
+    const isConfigured = configRefs.some((r) => r.pluginName === pluginName);
+    if (!isConfigured) {
+      return {
+        success: false,
+        pluginRef,
+        previousSha: null,
+        restoredSha: null,
+        restoredDate: null,
+        error: `Plugin "${pluginName}" is not in the current config. Add it back before rolling back.`,
+      };
+    }
 
     // Check available backups
     const backups = listBackups(this.pluginsDir, pluginName);
