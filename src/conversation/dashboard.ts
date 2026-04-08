@@ -2709,7 +2709,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
   } catch (e) {
     console.error('Answer choice error', e);
     // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (errCard) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
