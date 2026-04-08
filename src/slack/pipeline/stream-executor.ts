@@ -804,6 +804,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (!hasSdkError) {
         session.errorRetryCount = 0;
         session.fileAccessRetryCount = 0;
+        session.mcpInitRetryCount = 0;
         session.lastErrorContext = undefined;
       }
 
@@ -1011,7 +1012,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Transient errors (Slack API, rate-limit, process exit) should preserve session.
       const sessionCleared = this.shouldClearSessionOnError(error);
 
-      if (sessionCleared) {
+      if (sessionCleared && this.isMcpInitError(error)) {
+        // MCP init race: save mcpInitRetryCount BEFORE clearSessionId resets counters,
+        // then restore it after. This dedicated counter must survive session clear
+        // to prevent infinite retry loops.
+        const mcpRetryCount = session.mcpInitRetryCount ?? 0;
+        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        session.mcpInitRetryCount = mcpRetryCount; // restore after clear
+
+        if (mcpRetryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.mcpInitRetryCount = mcpRetryCount + 1;
+          retryAfterMs = StreamExecutor.MCP_INIT_RETRY_DELAY_MS;
+          session.lastErrorContext = 'MCP 서버 초기화 실패. 새 세션으로 재시도합니다.';
+          this.logger.info('MCP init race detected — retrying without resume', {
+            sessionKey,
+            attempt: mcpRetryCount + 1,
+            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('MCP init retry budget exhausted', { sessionKey, mcpRetryCount });
+          session.mcpInitRetryCount = 0;
+        }
+      } else if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
 
         if (this.isImageProcessingError(error)) {
@@ -1100,11 +1123,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
       const statusInfo = await statusPromise;
       const retryAttempt = retryAfterMs
-        ? this.isFileAccessBlockedError(error)
-          ? (session.fileAccessRetryCount ?? 0)
-          : (session.errorRetryCount ?? 0)
+        ? this.isMcpInitError(error)
+          ? (session.mcpInitRetryCount ?? 0)
+          : this.isFileAccessBlockedError(error)
+            ? (session.fileAccessRetryCount ?? 0)
+            : (session.errorRetryCount ?? 0)
         : undefined;
-      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt, retryAfterMs);
       await say({
         text: errorDetails,
         thread_ts: threadTs,
@@ -1170,6 +1195,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     if (this.isContextOverflowError(error)) {
+      return true;
+    }
+
+    // MCP init race: permission-prompt-tool not found because MCP servers
+    // haven't finished their stdio handshake on --resume. Clear session to
+    // force fresh start without --resume, eliminating the race condition.
+    // Must be checked before isRecoverableClaudeSdkError (which matches
+    // the broad "process exited with code" pattern).
+    if (this.isMcpInitError(error)) {
       return true;
     }
 
@@ -1251,6 +1285,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     ];
 
     return recoverablePatterns.some((pattern) => combined.includes(pattern));
+  }
+
+  /**
+   * Detect MCP server initialization race condition.
+   * When --resume causes immediate tool use before MCP servers finish
+   * their stdio handshake, SDK throws this error and exits with code 1.
+   * Fix: clear session (removes --resume on retry) + short retry delay.
+   */
+  private isMcpInitError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    const stderr = String(error?.stderrContent || '').toLowerCase();
+    const combined = `${message} ${stderr}`;
+    return (
+      combined.includes('--permission-prompt-tool') &&
+      combined.includes('not found') &&
+      combined.includes('available mcp tools')
+    );
   }
 
   private isRateLimitError(error: any): boolean {
@@ -1357,6 +1408,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /** Retry delay for file-access-blocked errors (shorter than rate-limit retries) */
   private static readonly FILE_ACCESS_RETRY_DELAY_MS = 5_000;
+
+  /** Retry delay for MCP server init errors (MCP servers just need seconds to connect) */
+  private static readonly MCP_INIT_RETRY_DELAY_MS = 5_000;
 
   /**
    * Summary timer callback — executes fork query and renders result to thread panel.
@@ -1470,6 +1524,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     sessionCleared: boolean,
     statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null,
     retryAttempt?: number,
+    retryAfterMs?: number,
   ): string {
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
@@ -1477,7 +1532,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const lines = [`❌ *[Bot Error]* ${errorMessage}`, '', `> *Type:* ${errorType} (${errorName})`];
 
-    if (sessionCleared) {
+    if (sessionCleared && this.isMcpInitError(error)) {
+      const willRetry = retryAttempt !== undefined && retryAttempt > 0;
+      lines.push(`> *Session:* 🔄 MCP 초기화 실패${willRetry ? ' - 새 세션으로 자동 재시도합니다.' : ''}`);
+      lines.push(`> *원인:* MCP 서버가 아직 연결되지 않은 상태에서 권한 검증이 실행되었습니다.`);
+      if (!willRetry) {
+        lines.push(`> _자동 재시도 횟수를 초과했습니다. 메시지를 보내면 계속할 수 있습니다._`);
+      }
+    } else if (sessionCleared) {
       lines.push(`> *Session:* 🔄 초기화됨 - 대화 기록이 리셋되었습니다.`);
       if (this.isImageProcessingError(error)) {
         const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`.toLowerCase();
@@ -1538,9 +1600,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Append auto-retry info
     if (retryAttempt !== undefined && retryAttempt > 0) {
-      const delayMs = this.isFileAccessBlockedError(error)
-        ? StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS
-        : StreamExecutor.ERROR_RETRY_DELAY_MS;
+      // Use actual retryAfterMs when available; fall back to error-class heuristic
+      const delayMs = retryAfterMs
+        ?? (this.isFileAccessBlockedError(error)
+          ? StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS
+          : StreamExecutor.ERROR_RETRY_DELAY_MS);
       const delaySec = delayMs / 1000;
       lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }

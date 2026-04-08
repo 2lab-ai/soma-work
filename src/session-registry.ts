@@ -986,9 +986,10 @@ export class SessionRegistry {
     // Reset activity state
     session.activityState = 'idle';
 
-    // Clear error retry state (including file-access-specific counters)
+    // Clear error retry state (including file-access-specific and MCP-init counters)
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
+    session.mcpInitRetryCount = 0;
     session.lastErrorContext = undefined;
     // Cancel any pending file-access retry timer (Issue #215)
     if (session.pendingRetryTimer) {

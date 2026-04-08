@@ -2023,4 +2023,51 @@ describe('StreamExecutor — summary abort on new input and cleanup', () => {
     expect(ac.signal.aborted).toBe(true);
     expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
   });
+
+  // ── isMcpInitError unit tests ──
+
+  it('isMcpInitError detects permission-prompt-tool not found in error message', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error(
+      'Error: MCP tool mcp__permission-prompt__permission_prompt (passed via --permission-prompt-tool) not found. Available MCP tools: none',
+    );
+    expect((executor as any).isMcpInitError(error)).toBe(true);
+  });
+
+  it('isMcpInitError detects pattern in stderrContent', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    (error as any).stderrContent =
+      'Error: MCP tool mcp__permission-prompt__permission_prompt (passed via --permission-prompt-tool) not found. Available MCP tools: none';
+    expect((executor as any).isMcpInitError(error)).toBe(true);
+  });
+
+  it('isMcpInitError returns false for unrelated errors', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('process exited with code 1');
+    expect((executor as any).isMcpInitError(error)).toBe(false);
+  });
+
+  it('isMcpInitError returns false for partial match (missing "available mcp tools")', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('--permission-prompt-tool not found');
+    expect((executor as any).isMcpInitError(error)).toBe(false);
+  });
+
+  it('shouldClearSessionOnError returns true for MCP init errors', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error(
+      'Error: MCP tool mcp__permission-prompt__permission_prompt (passed via --permission-prompt-tool) not found. Available MCP tools: none',
+    );
+    expect((executor as any).shouldClearSessionOnError(error)).toBe(true);
+  });
+
+  it('context overflow errors clear session and do NOT retry (regression)', async () => {
+    const executor = new StreamExecutor({} as any);
+    const error = new Error('prompt is too long: 200000 tokens');
+    // Should clear session
+    expect((executor as any).shouldClearSessionOnError(error)).toBe(true);
+    // Should NOT be recoverable (no auto-retry)
+    expect((executor as any).isRecoverableClaudeSdkError(error)).toBe(false);
+  });
 });

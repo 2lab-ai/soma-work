@@ -322,6 +322,12 @@ export interface ConversationSession {
   // Isolated from errorRetryCount so that prior rate-limit or transient errors
   // don't consume file-access retry budget (and vice versa).
   fileAccessRetryCount?: number;
+  // Separate retry counter for MCP server initialization errors.
+  // When --resume triggers tool use before MCP servers finish connecting,
+  // SDK throws "permission-prompt-tool not found". Session is cleared to retry
+  // without --resume, but clearSessionId() resets errorRetryCount — this
+  // dedicated counter survives that reset to prevent infinite retry loops.
+  mcpInitRetryCount?: number;
   // Error context for intelligent retry: when a non-fatal error occurs (e.g., file access blocked),
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.
