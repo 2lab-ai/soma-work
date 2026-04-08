@@ -1,6 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
 import { isDefaultPlugin } from '../../plugin/defaults';
-import type { BackupEntry, FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
+import type { BackupEntry, CacheMeta, FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
@@ -117,9 +117,10 @@ export class PluginsHandler implements CommandHandler {
       lines.push('_No additional marketplace plugins installed. Use `plugins add name@marketplace` to install._');
     } else {
       for (const ref of userPlugins) {
-        const detail = resolved.find((r) => r.name === ref);
-        const pathInfo = detail ? ` (resolved: ${detail.localPath})` : '';
-        lines.push(`\u2022 *${ref}* \u2014 Marketplace plugin${pathInfo}`);
+        const pluginName = ref.includes('@') ? ref.split('@')[0] : ref;
+        const meta: CacheMeta | null = pluginManager.getPluginMeta(pluginName);
+        const versionInfo = this.formatVersionInfo(meta);
+        lines.push(`\u2022 *${ref}* \u2014 ${versionInfo}`);
       }
     }
 
@@ -321,6 +322,21 @@ export class PluginsHandler implements CommandHandler {
   /** Returns true when pluginRef refers to the hardcoded built-in local plugin. */
   private isBuiltInLocal(pluginRef: string): boolean {
     return pluginRef === 'local' || pluginRef.startsWith('local@');
+  }
+
+  /** Format version info from cache metadata for display. */
+  private formatVersionInfo(meta: CacheMeta | null): string {
+    if (!meta) return '_메타 정보 없음_';
+    const sha = meta.sha ? `\`${meta.sha.slice(0, 8)}\`` : '`-`';
+    let date = '-';
+    if (meta.fetchedAt) {
+      try {
+        date = new Date(meta.fetchedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      } catch {
+        date = meta.fetchedAt;
+      }
+    }
+    return `${sha} (${date})`;
   }
 
   /** Build simple text lines for update result (no failures). */
