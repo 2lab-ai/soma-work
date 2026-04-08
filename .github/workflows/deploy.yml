@@ -102,8 +102,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
+          git config user.email "z@2lab.ai"
+          git config user.name "Z"
 
       - name: Version bump & release notes
         run: |
