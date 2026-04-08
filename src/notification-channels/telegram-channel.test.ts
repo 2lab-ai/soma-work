@@ -1,10 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetSlackWorkspaceUrl, setSlackWorkspaceUrl } from '../turn-notifier';
 import { TelegramChannel } from './telegram-channel';
 
 // Contract tests — Scenario 4: Telegram DM Channel
 // Trace: docs/turn-notification/trace.md
 
 describe('TelegramChannel', () => {
+  beforeEach(() => {
+    setSlackWorkspaceUrl('https://test.slack.com/');
+  });
+
+  afterEach(() => {
+    resetSlackWorkspaceUrl();
+  });
   const mockEvent = {
     category: 'UIUserAskQuestion' as const,
     userId: 'U123',
@@ -84,6 +92,6 @@ describe('TelegramChannel', () => {
     const channel = new TelegramChannel(mockSettingsStore, 'fake-token', mockFetch);
     await channel.send(mockEvent);
 
-    expect(capturedBody.text).toContain('slack.com/archives/C123');
+    expect(capturedBody.text).toContain('test.slack.com/archives/C123');
   });
 });

@@ -1,6 +1,13 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '../logger';
 
+export interface SlackAuthContext {
+  userId: string;
+  teamId: string;
+  url: string;
+  enterpriseId?: string;
+}
+
 export interface MessageOptions {
   threadTs?: string;
   blocks?: any[];
@@ -39,6 +46,7 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
 export class SlackApiHelper {
   private logger = new Logger('SlackApiHelper');
   private botUserId: string | null = null;
+  private authContext: SlackAuthContext | null = null;
 
   // Rate limiting state
   private tokens: number;
@@ -266,13 +274,29 @@ export class SlackApiHelper {
   }
 
   /**
+   * Fetch and cache the full auth context from Slack's auth.test API.
+   */
+  async getAuthContext(): Promise<SlackAuthContext> {
+    if (!this.authContext) {
+      const response = await this.enqueue(() => this.app.client.auth.test());
+      this.authContext = {
+        userId: response.user_id as string,
+        teamId: response.team_id as string,
+        url: response.url as string,
+        enterpriseId: (response as any).enterprise_id as string | undefined,
+      };
+    }
+    return this.authContext;
+  }
+
+  /**
    * 봇 사용자 ID 조회 (캐싱됨)
    */
   async getBotUserId(): Promise<string> {
     if (!this.botUserId) {
       try {
-        const response = await this.enqueue(() => this.app.client.auth.test());
-        this.botUserId = response.user_id as string;
+        const ctx = await this.getAuthContext();
+        this.botUserId = ctx.userId;
       } catch (error) {
         this.logger.error('Failed to get bot user ID', error);
         this.botUserId = '';

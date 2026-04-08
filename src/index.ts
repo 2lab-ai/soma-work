@@ -172,6 +172,17 @@ async function start() {
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
     timing('SlackHandler initialized');
 
+    // Initialize Slack workspace URL for correct thread permalinks
+    try {
+      const slackApi = slackHandler.getSlackApi();
+      const authContext = await slackApi.getAuthContext();
+      const { setSlackWorkspaceUrl } = await import('./turn-notifier');
+      setSlackWorkspaceUrl(authContext.url);
+      timing(`Slack workspace URL: ${authContext.url}`);
+    } catch (error) {
+      logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
+    }
+
     // Setup event handlers
     slackHandler.setupEventHandlers();
     timing('Event handlers setup');
