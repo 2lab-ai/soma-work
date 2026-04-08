@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setSlackWorkspaceUrl, resetSlackWorkspaceUrl } from '../turn-notifier';
+import { resetSlackWorkspaceUrl, setSlackWorkspaceUrl } from '../turn-notifier';
 import { SlackDmChannel } from './slack-dm-channel';
 
 // Contract tests — Scenario 2: Slack DM Channel
