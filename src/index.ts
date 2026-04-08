@@ -154,11 +154,8 @@ async function start() {
 
     // Initialize handlers
     const claudeHandler = new ClaudeHandler(mcpManager);
-    // Inject plugin paths if PluginManager resolved any plugins
-    const pluginPaths = pluginManager.getPluginPaths();
-    if (pluginPaths.length > 0) {
-      claudeHandler.setPluginPaths(pluginPaths);
-    }
+    // Plugin paths are now resolved dynamically via mcpManager.getPluginManager()?.getPluginPaths()
+    // inside ClaudeHandler.getEffectivePluginPaths() — no static injection needed.
     // Inject agent configs into ClaudeHandler's McpConfigBuilder
     if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
       claudeHandler.setAgentConfigs(unifiedConfig.agents);

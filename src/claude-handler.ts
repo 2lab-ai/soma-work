@@ -60,9 +60,6 @@ export class ClaudeHandler {
   private promptBuilder: PromptBuilder;
   private mcpConfigBuilder: McpConfigBuilder;
 
-  /** Plugin paths injected by PluginManager (overrides LOCAL_PLUGINS_DIR fallback) */
-  private pluginPaths: SdkPluginPath[] | null = null;
-
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
@@ -71,22 +68,18 @@ export class ClaudeHandler {
   }
 
   /**
-   * Set plugin paths from PluginManager. When set, these replace the
-   * default LOCAL_PLUGINS_DIR fallback. Empty arrays are ignored to
-   * preserve the fallback.
+   * Resolve effective plugin paths dynamically from PluginManager.
+   * Called each time a new session is created so that forceRefresh/rollback
+   * changes are immediately reflected without service restart.
    */
-  setPluginPaths(paths: SdkPluginPath[]): void {
+  private getEffectivePluginPaths(): SdkPluginPath[] {
+    const pm = this.mcpManager.getPluginManager();
+    const paths = pm?.getPluginPaths() ?? [];
     if (paths.length === 0) {
-      this.logger.debug('Empty plugin paths provided, keeping LOCAL_PLUGINS_DIR fallback');
-      return;
+      return [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }];
     }
-    // Always preserve LOCAL_PLUGINS_DIR so built-in src/local plugin is never lost
     const hasLocal = paths.some((p) => p.path === LOCAL_PLUGINS_DIR);
-    this.pluginPaths = hasLocal ? paths : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
-    this.logger.info('Plugin paths configured', {
-      count: this.pluginPaths.length,
-      paths: this.pluginPaths.map((p) => p.path),
-    });
+    return hasLocal ? paths : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
   }
 
   /**
@@ -485,7 +478,7 @@ export class ClaudeHandler {
       // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
       settingSources: ['project'],
       // Load plugins from PluginManager or fallback to local directory
-      plugins: this.pluginPaths ?? [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }],
+      plugins: this.getEffectivePluginPaths(),
     };
 
     // Get MCP configuration
