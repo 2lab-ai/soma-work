@@ -16,14 +16,17 @@ import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultMarketplace, isDefaultPlugin } from './defaults';
 import { type FetchOptions, fetchPlugin, isFetchFailure, resolveRemoteSha } from './marketplace-fetcher';
+import { backupPlugin, listBackups, pruneBackups, restorePlugin } from './plugin-backup';
 import { hasCachedPlugin, readCacheMeta } from './plugin-cache';
 import type {
+  BackupEntry,
   ForceRefreshResult,
   MarketplaceEntry,
   PluginConfig,
   PluginRef,
   PluginUpdateDetail,
   ResolvedPlugin,
+  RollbackResult,
   SdkPluginPath,
 } from './types';
 
@@ -243,22 +246,17 @@ export class PluginManager {
       }
 
       // SHA differs or no cache — need to re-download
-      // Backup existing cache so we can restore on failure
+      // Create a persistent backup before update (plugin dir + meta file)
       const pluginDir = path.join(this.pluginsDir, ref.pluginName);
-      const backupDir = `${pluginDir}.bak.${Date.now()}`;
-      const cacheDir = path.join(this.pluginsDir, '.cache');
-      const metaFile = path.join(cacheDir, `${ref.pluginName}.meta.json`);
-      const metaBackup = `${metaFile}.bak`;
-      let backedUp = false;
+      const backup = hadCache ? backupPlugin(this.pluginsDir, ref.pluginName) : null;
 
+      // Clear existing installation so fetchPlugin writes fresh
       try {
-        // Backup plugin dir and meta file before clearing
         if (fs.existsSync(pluginDir)) {
-          fs.renameSync(pluginDir, backupDir);
-          backedUp = true;
+          fs.rmSync(pluginDir, { recursive: true, force: true });
         }
+        const metaFile = path.join(this.pluginsDir, '.cache', `${ref.pluginName}.meta.json`);
         if (fs.existsSync(metaFile)) {
-          fs.copyFileSync(metaFile, metaBackup);
           fs.unlinkSync(metaFile);
         }
       } catch (err) {
@@ -269,8 +267,10 @@ export class PluginManager {
         const opts = pluginOptions?.[pluginDisplayName];
         const result = await fetchPlugin(marketplace, ref.pluginName, this.pluginsDir, opts);
         if (isFetchFailure(result)) {
-          // fetchPlugin failed — restore backup
-          this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
+          // fetchPlugin failed — restore from persistent backup
+          if (backup) {
+            restorePlugin(this.pluginsDir, ref.pluginName, backup.timestamp);
+          }
           const msg = `[${result.code}] ${result.message}`;
           errors.push(msg);
           details.push({
@@ -286,19 +286,8 @@ export class PluginManager {
             riskLevel: result.riskLevel,
           });
         } else {
-          // Success — remove backup
-          if (backedUp) {
-            try {
-              fs.rmSync(backupDir, { recursive: true, force: true });
-            } catch {
-              /* ignore */
-            }
-          }
-          try {
-            if (fs.existsSync(metaBackup)) fs.unlinkSync(metaBackup);
-          } catch {
-            /* ignore */
-          }
+          // Success — keep backup for rollback, prune old ones (keep last 3)
+          pruneBackups(this.pluginsDir, ref.pluginName, 3);
 
           details.push({
             name: pluginDisplayName,
@@ -310,8 +299,10 @@ export class PluginManager {
           });
         }
       } catch (error) {
-        // Fetch threw — restore backup
-        this.restoreBackup(backupDir, pluginDir, metaBackup, metaFile, backedUp);
+        // Fetch threw — restore from persistent backup
+        if (backup) {
+          restorePlugin(this.pluginsDir, ref.pluginName, backup.timestamp);
+        }
         const msg = `Failed to fetch ${pluginDisplayName}: ${(error as Error).message}`;
         errors.push(msg);
         details.push({
@@ -348,6 +339,146 @@ export class PluginManager {
       errors,
       details,
     };
+  }
+
+  /**
+   * Rebuild the resolved plugin list from local cache only (no remote fetch).
+   * Used after rollback to avoid re-downloading the version we just rolled back from.
+   *
+   * Iterates config refs (same order as initialize) but only includes plugins
+   * that exist on disk with valid cache meta.
+   */
+  rebuildResolved(): void {
+    const results: ResolvedPlugin[] = [];
+
+    const effectiveConfig = this.mergeDefaults();
+    const refs = this.parsePluginRefs(effectiveConfig);
+
+    for (const ref of refs) {
+      const refStr = `${ref.pluginName}@${ref.marketplaceName}`;
+      if (hasCachedPlugin(this.pluginsDir, ref.pluginName)) {
+        results.push({
+          name: refStr,
+          localPath: path.join(this.pluginsDir, ref.pluginName),
+          source: isDefaultPlugin(refStr) ? 'default' : 'marketplace',
+        });
+      } else {
+        logger.debug('Plugin not found on disk during rebuild, skipping', { pluginName: ref.pluginName });
+      }
+    }
+
+    // Local overrides
+    const overrides = this.pluginConfig.localOverrides || [];
+    for (const overridePath of overrides) {
+      results.push({
+        name: `local:${overridePath}`,
+        localPath: path.resolve(overridePath),
+        source: 'local-override',
+      });
+    }
+
+    this.resolved = Object.freeze(results);
+    this.initialized = true;
+
+    logger.info('Plugin resolved list rebuilt from local cache', { total: results.length });
+  }
+
+  /**
+   * Rollback a plugin to its most recent backup.
+   *
+   * Flow: backup current → restore previous → rebuildResolved (no fetch)
+   */
+  async rollback(pluginRef: string): Promise<RollbackResult> {
+    const parsed = parsePluginRef(pluginRef);
+    if (!parsed) {
+      return {
+        success: false,
+        pluginRef,
+        previousSha: null,
+        restoredSha: null,
+        restoredDate: null,
+        error: `Invalid plugin ref: ${pluginRef}`,
+      };
+    }
+
+    const { pluginName } = parsed;
+
+    // Check available backups
+    const backups = listBackups(this.pluginsDir, pluginName);
+    if (backups.length === 0) {
+      return {
+        success: false,
+        pluginRef,
+        previousSha: null,
+        restoredSha: null,
+        restoredDate: null,
+        error: `No backups available for ${pluginRef}`,
+      };
+    }
+
+    // Validate marketplace consistency
+    const targetBackup = backups[0];
+    if (targetBackup.marketplace !== 'unknown' && !targetBackup.marketplace.startsWith('external:')) {
+      if (targetBackup.marketplace !== parsed.marketplaceName) {
+        return {
+          success: false,
+          pluginRef,
+          previousSha: null,
+          restoredSha: null,
+          restoredDate: null,
+          error: `Backup marketplace "${targetBackup.marketplace}" does not match requested "${parsed.marketplaceName}"`,
+        };
+      }
+    }
+
+    // Read current state before rollback
+    const currentMeta = readCacheMeta(this.pluginsDir, pluginName);
+    const previousSha = currentMeta?.sha?.slice(0, 8) ?? null;
+
+    // Step 1: Backup current installation (so we can undo the rollback)
+    if (hasCachedPlugin(this.pluginsDir, pluginName)) {
+      backupPlugin(this.pluginsDir, pluginName);
+    }
+
+    // Step 2: Restore from the most recent backup
+    const restored = restorePlugin(this.pluginsDir, pluginName, targetBackup.timestamp);
+    if (!restored) {
+      return {
+        success: false,
+        pluginRef,
+        previousSha,
+        restoredSha: null,
+        restoredDate: null,
+        error: 'Failed to restore backup',
+      };
+    }
+
+    // Step 3: Rebuild resolved list without fetching
+    this.rebuildResolved();
+
+    // Step 4: Prune old backups (keep 3)
+    pruneBackups(this.pluginsDir, pluginName, 3);
+
+    logger.info('Plugin rolled back', {
+      pluginRef,
+      from: previousSha,
+      to: restored.sha.slice(0, 8),
+    });
+
+    return {
+      success: true,
+      pluginRef,
+      previousSha,
+      restoredSha: restored.sha.slice(0, 8),
+      restoredDate: restored.timestamp,
+    };
+  }
+
+  /**
+   * List available backups for a plugin.
+   */
+  getBackups(pluginName: string): BackupEntry[] {
+    return listBackups(this.pluginsDir, pluginName);
   }
 
   /**
@@ -506,28 +637,6 @@ export class PluginManager {
       map.set(entry.name, entry);
     }
     return map;
-  }
-
-  /** Restore backed-up plugin directory and meta file on fetch failure. */
-  private restoreBackup(
-    backupDir: string,
-    pluginDir: string,
-    metaBackup: string,
-    metaFile: string,
-    backedUp: boolean,
-  ): void {
-    try {
-      if (backedUp && fs.existsSync(backupDir)) {
-        if (fs.existsSync(pluginDir)) fs.rmSync(pluginDir, { recursive: true, force: true });
-        fs.renameSync(backupDir, pluginDir);
-      }
-      if (fs.existsSync(metaBackup)) {
-        fs.copyFileSync(metaBackup, metaFile);
-        fs.unlinkSync(metaBackup);
-      }
-    } catch (err) {
-      logger.error('Failed to restore plugin backup', { backupDir, error: (err as Error).message });
-    }
   }
 
   private parsePluginRefs(config: PluginConfig): PluginRef[] {
