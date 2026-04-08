@@ -1,4 +1,11 @@
-import type { SessionLink, SessionResourceSnapshot, SessionResourceType, SessionResourceUpdateRequest } from '../types';
+import type {
+  SessionInstruction,
+  SessionInstructionOperation,
+  SessionLink,
+  SessionResourceSnapshot,
+  SessionResourceType,
+  SessionResourceUpdateRequest,
+} from '../types';
 import type {
   ContinueSessionParams,
   ModelCommandContext,
@@ -51,8 +58,34 @@ const UPDATE_SESSION_SCHEMA = {
         required: ['action', 'resourceType'],
       },
     },
+    instructionOperations: {
+      type: 'array',
+      description: 'Operations on user SSOT instructions (add/remove/clear)',
+      items: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['add', 'remove', 'clear'],
+          },
+          text: {
+            type: 'string',
+            description: 'Instruction text (required for add)',
+          },
+          source: {
+            type: 'string',
+            description: 'Who added this instruction (default: "user")',
+          },
+          id: {
+            type: 'string',
+            description: 'Instruction ID (required for remove)',
+          },
+        },
+        required: ['action'],
+      },
+    },
   },
-  // operations OR title must be present (either or both)
+  // operations OR title OR instructionOperations must be present
   additionalProperties: false,
 };
 
@@ -189,6 +222,7 @@ export function getDefaultSessionSnapshot(): SessionResourceSnapshot {
     prs: [],
     docs: [],
     active: {},
+    instructions: [],
     sequence: 0,
   };
 }
@@ -207,6 +241,7 @@ export function normalizeSessionSnapshot(snapshot: SessionResourceSnapshot | und
       pr: snapshot.active?.pr ? normalizeLink(snapshot.active.pr, 'pr') : undefined,
       doc: snapshot.active?.doc ? normalizeLink(snapshot.active.doc, 'doc') : undefined,
     },
+    instructions: Array.isArray(snapshot.instructions) ? snapshot.instructions : [],
     sequence: Number.isFinite(snapshot.sequence) ? snapshot.sequence : 0,
   };
 }
@@ -215,7 +250,7 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   const commands: ModelCommandDescriptor[] = [
     {
       id: 'GET_SESSION',
-      description: 'Read current session resources (issues/prs/docs + active + sequence)',
+      description: 'Read current session resources (issues/prs/docs + active + instructions + sequence)',
       paramsSchema: {
         type: 'object',
         properties: {},
@@ -224,7 +259,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     },
     {
       id: 'UPDATE_SESSION',
-      description: 'Update session resources with add/remove/set_active operations',
+      description:
+        'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
       paramsSchema: UPDATE_SESSION_SCHEMA,
     },
     {
@@ -342,6 +378,10 @@ export function applySessionUpdateToSnapshot(
     }
   }
 
+  // NOTE: Instruction operations are NOT applied here.
+  // They are applied host-side only (session-registry) to ensure
+  // a single source of truth for generated IDs/timestamps.
+
   if (changed) {
     snapshot.sequence += 1;
   }
@@ -368,24 +408,23 @@ export function runModelCommand(
   }
 
   if (request.commandId === 'UPDATE_SESSION') {
-    // Apply resource operations if present
-    let resultSnapshot = session;
+    // Apply resource operations (model-side preview)
     const operations = request.params.operations ?? [];
-    if (operations.length > 0) {
-      const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
-      if (!updateResult.ok) {
-        return toRunError('UPDATE_SESSION', updateResult.error);
-      }
-      resultSnapshot = updateResult.snapshot;
+    const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
+    if (!updateResult.ok) {
+      return toRunError('UPDATE_SESSION', updateResult.error);
     }
+
+    const instructionOps = request.params.instructionOperations ?? [];
 
     return {
       type: 'model_command_result',
       commandId: 'UPDATE_SESSION',
       ok: true,
       payload: {
-        session: resultSnapshot,
+        session: updateResult.snapshot,
         appliedOperations: operations.length,
+        appliedInstructionOperations: instructionOps.length,
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
@@ -445,4 +484,56 @@ function normalizeContinuation(params: ContinueSessionParams) {
     dispatchText: params.dispatchText,
     forceWorkflow: params.forceWorkflow,
   };
+}
+
+/** Maximum number of instructions per session to prevent unbounded growth. */
+const MAX_INSTRUCTIONS = 50;
+
+let _instrCounter = 0;
+
+/**
+ * Apply instruction operations (add/remove/clear) to a mutable instructions array.
+ * Shared between catalog (snapshot) and session-registry (host-side).
+ * Returns true if any mutation occurred.
+ */
+export function applyInstructionOperations(
+  instructions: SessionInstruction[],
+  ops: SessionInstructionOperation[] | undefined,
+): boolean {
+  if (!ops || ops.length === 0) return false;
+
+  let changed = false;
+  for (const op of ops) {
+    if (op.action === 'add') {
+      if (!op.text || op.text.trim().length === 0) continue;
+      if (instructions.length >= MAX_INSTRUCTIONS) continue;
+      const now = Date.now();
+      instructions.push({
+        id: `instr_${now}_${++_instrCounter}`,
+        text: op.text.trim(),
+        addedAt: now,
+        source: op.source || 'user',
+      });
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'remove') {
+      const idx = instructions.findIndex((i) => i.id === op.id);
+      if (idx >= 0) {
+        instructions.splice(idx, 1);
+        changed = true;
+      }
+      continue;
+    }
+
+    if (op.action === 'clear') {
+      if (instructions.length > 0) {
+        instructions.length = 0;
+        changed = true;
+      }
+      continue;
+    }
+  }
+  return changed;
 }

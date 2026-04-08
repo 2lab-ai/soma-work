@@ -1962,9 +1962,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
 
-        // Apply resource operations if present
+        // Apply resource operations and/or instruction operations if present
+        const hasResourceOps = request.operations && request.operations.length > 0;
+        const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
-        if (request.operations && request.operations.length > 0) {
+        if (hasResourceOps || hasInstructionOps) {
           const updateResult = this.deps.claudeHandler.updateSessionResources(
             context.channel,
             context.threadTs,
@@ -1990,6 +1992,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               issueCount: updateResult.snapshot.issues.length,
               prCount: updateResult.snapshot.prs.length,
               docCount: updateResult.snapshot.docs.length,
+              instructionCount: updateResult.snapshot.instructions.length,
             });
           }
         }

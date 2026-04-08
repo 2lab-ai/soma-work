@@ -735,7 +735,7 @@ describe('model-command integration', () => {
         setActivityState: vi.fn(),
         updateSessionResources: vi.fn().mockReturnValue({
           ok: true,
-          snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 1 },
+          snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
         }),
         getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
       },
@@ -812,7 +812,7 @@ describe('model-command integration', () => {
             commandId: 'UPDATE_SESSION',
             ok: true,
             payload: {
-              session: { issues: [], prs: [], docs: [], active: {}, sequence: 2 },
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 2 },
               appliedOperations: 1,
               request: {
                 operations: [
@@ -1215,7 +1215,7 @@ describe('model-command integration', () => {
       ok: false,
       reason: 'INVALID_OPERATION',
       error: 'invalid request',
-      snapshot: { issues: [], prs: [], docs: [], active: {}, sequence: 0 },
+      snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
     });
     const executor = new StreamExecutor(deps);
     const session = createSession();
@@ -1231,7 +1231,7 @@ describe('model-command integration', () => {
             commandId: 'UPDATE_SESSION',
             ok: true,
             payload: {
-              session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 },
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
               appliedOperations: 1,
               request: {
                 operations: [
