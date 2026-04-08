@@ -50,7 +50,9 @@ export class TelegramChannel implements NotificationChannel {
     const label = getCategoryLabel(event.category);
     const title = event.sessionTitle || 'Session';
     const permalink = buildThreadPermalink(event.channel, event.threadTs);
-    const text = `${emoji} [soma-work] ${label}: ${title}\n${permalink}`;
+    const text = permalink
+      ? `${emoji} [soma-work] ${label}: ${title}\n${permalink}`
+      : `${emoji} [soma-work] ${label}: ${title}`;
 
     const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
     const body = JSON.stringify({
