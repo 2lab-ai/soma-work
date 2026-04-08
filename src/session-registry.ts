@@ -9,11 +9,13 @@ import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
+import { applyInstructionOperations } from './model-commands/catalog';
 import { normalizeTmpPath } from './path-utils';
 import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
+  SessionInstruction,
   SessionLink,
   SessionLinkHistory,
   SessionLinks,
@@ -111,6 +113,8 @@ interface SerializedSession {
       mergedAt: number;
     }>;
   };
+  // User SSOT instructions (persisted)
+  instructions?: SessionInstruction[];
 }
 
 /**
@@ -691,7 +695,13 @@ export class SessionRegistry {
       };
     }
 
-    if (applyResult.changed) {
+    // Apply instruction operations (shared helper)
+    if (!session.instructions) {
+      session.instructions = [];
+    }
+    const instructionChanged = applyInstructionOperations(session.instructions, request.instructionOperations);
+
+    if (applyResult.changed || instructionChanged) {
       session.linkSequence = (session.linkSequence ?? 0) + 1;
       this.saveSessions();
     }
@@ -709,6 +719,7 @@ export class SessionRegistry {
         prs: [],
         docs: [],
         active: {},
+        instructions: [],
         sequence: 0,
       };
     }
@@ -724,6 +735,7 @@ export class SessionRegistry {
         pr: session.links?.pr ? { ...session.links.pr } : undefined,
         doc: session.links?.doc ? { ...session.links.doc } : undefined,
       },
+      instructions: (session.instructions || []).map((i) => ({ ...i })),
       sequence: session.linkSequence ?? 0,
     };
   }
@@ -1307,6 +1319,8 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             // Merge code change stats
             mergeStats: session.mergeStats,
+            // User SSOT instructions (persisted)
+            instructions: session.instructions,
           });
         }
       }
@@ -1420,6 +1434,8 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
+          // User SSOT instructions (restored from disk)
+          instructions: Array.isArray(serialized.instructions) ? serialized.instructions : [],
         };
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
