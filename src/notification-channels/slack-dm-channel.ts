@@ -42,10 +42,6 @@ export class SlackDmChannel implements NotificationChannel {
     const label = getCategoryLabel(event.category);
     const title = event.sessionTitle || 'Session';
     const permalink = buildThreadPermalink(event.channel, event.threadTs);
-    if (!permalink) {
-      logger.warn('SlackDmChannel: workspace URL not initialized, skipping notification');
-      return;
-    }
 
     let dmChannelId: string;
     try {
@@ -57,12 +53,15 @@ export class SlackDmChannel implements NotificationChannel {
 
     try {
       const text = `${emoji} ${label} — ${title}`;
+      const mrkdwn = permalink
+        ? `${emoji} *${label}* — ${title}\n<${permalink}|스레드로 이동>`
+        : `${emoji} *${label}* — ${title}`;
       const blocks = [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `${emoji} *${label}* — ${title}\n<${permalink}|스레드로 이동>`,
+            text: mrkdwn,
           },
         },
       ];

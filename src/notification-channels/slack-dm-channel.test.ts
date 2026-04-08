@@ -88,6 +88,29 @@ describe('SlackDmChannel', () => {
     expect(callOrder).toEqual(['open', 'post']);
   });
 
+  it('sends DM without permalink when workspace URL not initialized', async () => {
+    resetSlackWorkspaceUrl(); // Clear workspace URL
+    const mockSlackApi = {
+      openDmChannel: vi.fn().mockResolvedValue('D999'),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const mockSettingsStore = {
+      getUserSettings: vi.fn().mockReturnValue({
+        notification: { slackDm: true },
+      }),
+    };
+
+    const channel = new SlackDmChannel(mockSlackApi, mockSettingsStore);
+    await channel.send(mockEvent);
+
+    expect(mockSlackApi.openDmChannel).toHaveBeenCalledWith('U123');
+    expect(mockSlackApi.postMessage).toHaveBeenCalled();
+    // Verify message was sent but without permalink
+    const blocks = mockSlackApi.postMessage.mock.calls[0][2].blocks;
+    const text = blocks[0].text.text;
+    expect(text).not.toContain('스레드로 이동');
+  });
+
   it('handles DM blocked gracefully', async () => {
     const mockSlackApi = {
       openDmChannel: vi.fn().mockRejectedValue(new Error('not_allowed_to_dm')),
