@@ -266,6 +266,7 @@ describe('McpConfigBuilder', () => {
           prs: [],
           docs: [],
           active: {},
+          instructions: [],
           sequence: 7,
         },
       },
