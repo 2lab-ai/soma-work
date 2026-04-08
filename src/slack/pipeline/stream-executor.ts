@@ -765,12 +765,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Transition activity state
-      this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
-        activeTool: undefined,
-        waitingForChoice: hasPendingChoice,
-      });
+      // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
+      // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
+      const hasContinuation = Boolean(toolContinuation);
+      if (!hasContinuation) {
+        this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
+        await this.updateRuntimeStatus(session, sessionKey, {
+          agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
+          activeTool: undefined,
+          waitingForChoice: hasPendingChoice,
+        });
+      }
 
       // Update action panel with turn summary and latest response permalink
       await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);

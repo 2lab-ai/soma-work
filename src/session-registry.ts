@@ -1390,7 +1390,7 @@ export class SessionRegistry {
           linkHistory: serialized.linkHistory,
           linkSequence: serialized.linkSequence,
           sleepStartedAt,
-          activityState: 'idle', // Always idle on restore (no active streams after restart)
+          activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
           // Clear stale messageTs/renderKey on restore — the Slack message may have been
