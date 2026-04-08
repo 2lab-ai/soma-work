@@ -20,6 +20,7 @@ import { backupPlugin, listBackups, pruneBackups, restorePlugin } from './plugin
 import { hasCachedPlugin, readCacheMeta } from './plugin-cache';
 import type {
   BackupEntry,
+  CacheMeta,
   ForceRefreshResult,
   MarketplaceEntry,
   PluginConfig,
@@ -490,6 +491,14 @@ export class PluginManager {
    */
   getBackups(pluginName: string): BackupEntry[] {
     return listBackups(this.pluginsDir, pluginName);
+  }
+
+  /**
+   * Get cache metadata for a specific plugin (SHA, fetchedAt, marketplace).
+   * Returns null if no cache metadata exists.
+   */
+  getPluginMeta(pluginName: string): CacheMeta | null {
+    return readCacheMeta(this.pluginsDir, pluginName);
   }
 
   /**
