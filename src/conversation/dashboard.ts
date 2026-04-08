@@ -269,7 +269,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
         }
       : undefined,
     tasks,
-    slackThreadUrl: s.channelId && s.threadTs ? buildThreadPermalink(s.channelId, s.threadTs) : undefined,
+    slackThreadUrl: s.channelId && s.threadTs ? buildThreadPermalink(s.channelId, s.threadTs) ?? undefined : undefined,
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {

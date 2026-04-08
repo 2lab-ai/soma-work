@@ -1,10 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setSlackWorkspaceUrl, resetSlackWorkspaceUrl } from '../turn-notifier';
 import { SlackDmChannel } from './slack-dm-channel';
 
 // Contract tests — Scenario 2: Slack DM Channel
 // Trace: docs/turn-notification/trace.md
 
 describe('SlackDmChannel', () => {
+  beforeEach(() => {
+    setSlackWorkspaceUrl('https://test.slack.com/');
+  });
+
+  afterEach(() => {
+    resetSlackWorkspaceUrl();
+  });
   const mockEvent = {
     category: 'WorkflowComplete' as const,
     userId: 'U123',

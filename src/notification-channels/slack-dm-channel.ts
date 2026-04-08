@@ -42,6 +42,10 @@ export class SlackDmChannel implements NotificationChannel {
     const label = getCategoryLabel(event.category);
     const title = event.sessionTitle || 'Session';
     const permalink = buildThreadPermalink(event.channel, event.threadTs);
+    if (!permalink) {
+      logger.warn('SlackDmChannel: workspace URL not initialized, skipping notification');
+      return;
+    }
 
     let dmChannelId: string;
     try {
