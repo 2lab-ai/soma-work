@@ -29,6 +29,7 @@ function createMockPluginManager(overrides: Record<string, any> = {}) {
   return {
     getInstalledPlugins: vi.fn().mockReturnValue([]),
     getResolvedPlugins: vi.fn().mockReturnValue([]),
+    getPluginMeta: vi.fn().mockReturnValue(null),
     addPlugin: vi.fn().mockReturnValue({ success: true }),
     removePlugin: vi.fn().mockReturnValue({ success: true }),
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -156,13 +157,35 @@ describe('PluginsHandler', () => {
       mockPluginManager.getResolvedPlugins.mockReturnValue([
         { name: 'omc@soma-work', localPath: '/path/to/omc', source: 'marketplace' },
       ]);
+      mockPluginManager.getPluginMeta.mockReturnValue({
+        sha: 'abc12345def67890',
+        fetchedAt: '2026-04-01T10:30:00.000Z',
+        marketplace: 'soma-work',
+        ref: 'main',
+      });
 
       const { ctx, say } = createContext('plugins');
       await handler.execute(ctx);
 
       const message = say.mock.calls[0][0].text;
       expect(message).toContain('omc@soma-work');
-      expect(message).toContain('/path/to/omc');
+      expect(message).toContain('abc12345');
+      expect(message).toContain('2026-04-01 10:30 UTC');
+    });
+
+    it('should show fallback when no cache meta exists', async () => {
+      mockPluginManager.getInstalledPlugins.mockReturnValue(['omc@soma-work']);
+      mockPluginManager.getResolvedPlugins.mockReturnValue([
+        { name: 'omc@soma-work', localPath: '/path/to/omc', source: 'marketplace' },
+      ]);
+      mockPluginManager.getPluginMeta.mockReturnValue(null);
+
+      const { ctx, say } = createContext('plugins');
+      await handler.execute(ctx);
+
+      const message = say.mock.calls[0][0].text;
+      expect(message).toContain('omc@soma-work');
+      expect(message).toContain('메타 정보 없음');
     });
 
     it('should show hint when no marketplace plugins installed', async () => {
