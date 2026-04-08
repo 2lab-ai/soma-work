@@ -1,6 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
 import { isDefaultPlugin } from '../../plugin/defaults';
-import type { FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
+import type { BackupEntry, FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
@@ -74,6 +74,10 @@ export class PluginsHandler implements CommandHandler {
         return this.handleRemove(parsed.pluginRef, threadTs, say);
       case 'update':
         return this.handleUpdate(ctx.user, threadTs, say);
+      case 'rollback':
+        return this.handleRollback(parsed.pluginRef, ctx.user, threadTs, say);
+      case 'backups':
+        return this.handleBackups(parsed.pluginRef, ctx.user, threadTs, say);
       default:
         return { handled: false };
     }
@@ -216,6 +220,97 @@ export class PluginsHandler implements CommandHandler {
       });
     }
 
+    return { handled: true };
+  }
+
+  private async handleRollback(
+    pluginRef: string,
+    user: string,
+    threadTs: string,
+    say: CommandContext['say'],
+  ): Promise<CommandResult> {
+    if (!isAdminUser(user)) {
+      await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const pluginManager = this.deps.mcpManager.getPluginManager();
+    if (!pluginManager) {
+      await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    await say({
+      text: `🔄 *${pluginRef}* 를 이전 버전으로 롤백 중...`,
+      thread_ts: threadTs,
+    });
+
+    try {
+      const result = await pluginManager.rollback(pluginRef);
+      if (result.success) {
+        await say({
+          text: [
+            `✅ *${pluginRef}* 롤백 완료`,
+            `• 이전: \`${result.previousSha ?? '-'}\``,
+            `• 복원: \`${result.restoredSha ?? '-'}\` (${result.restoredDate ?? '-'})`,
+          ].join('\n'),
+          thread_ts: threadTs,
+        });
+      } else {
+        await say({
+          text: `❌ 롤백 실패: ${result.error}`,
+          thread_ts: threadTs,
+        });
+      }
+    } catch (error) {
+      await say({
+        text: `❌ 롤백 실패: ${(error as Error).message}`,
+        thread_ts: threadTs,
+      });
+    }
+    return { handled: true };
+  }
+
+  private async handleBackups(
+    pluginRef: string,
+    user: string,
+    threadTs: string,
+    say: CommandContext['say'],
+  ): Promise<CommandResult> {
+    if (!isAdminUser(user)) {
+      await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const pluginManager = this.deps.mcpManager.getPluginManager();
+    if (!pluginManager) {
+      await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    // Extract bare plugin name from ref (name@marketplace → name)
+    const pluginName = pluginRef.includes('@') ? pluginRef.split('@')[0] : pluginRef;
+    const backups: BackupEntry[] = pluginManager.getBackups(pluginName);
+
+    if (backups.length === 0) {
+      await say({
+        text: `📦 *${pluginRef}* — 사용 가능한 백업이 없습니다.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    const lines = [`📦 *${pluginRef}* 백업 목록 (${backups.length}개)`, ''];
+
+    for (const b of backups) {
+      const sha = b.sha ? b.sha.slice(0, 8) : '-';
+      lines.push(`• \`${sha}\` — ${b.timestamp} (${b.marketplace})`);
+    }
+
+    lines.push('');
+    lines.push(`_\`plugins rollback ${pluginRef}\` 로 최신 백업으로 롤백 가능_`);
+
+    await say({ text: lines.join('\n'), thread_ts: threadTs });
     return { handled: true };
   }
 
