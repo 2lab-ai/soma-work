@@ -494,6 +494,7 @@ export async function fetchPlugin(
       fetchedAt: new Date().toISOString(),
       marketplace: marketplace.name,
       ref,
+      version: manifest.version,
     };
     writeCacheMeta(pluginsDir, pluginName, meta);
 

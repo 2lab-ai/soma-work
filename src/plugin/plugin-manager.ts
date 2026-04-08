@@ -182,8 +182,10 @@ export class PluginManager {
           status: 'error',
           oldSha: null,
           oldDate: null,
+          oldVersion: null,
           newSha: null,
           newDate: null,
+          newVersion: null,
           error: msg,
         });
         continue;
@@ -207,8 +209,10 @@ export class PluginManager {
             status: 'unchanged',
             oldSha: oldMeta.sha.slice(0, 8),
             oldDate: oldMeta.fetchedAt,
+            oldVersion: oldMeta.version ?? null,
             newSha: oldMeta.sha.slice(0, 8),
             newDate: oldMeta.fetchedAt,
+            newVersion: oldMeta.version ?? null,
             error: 'Cannot reach remote, keeping cached version',
           });
         } else {
@@ -219,8 +223,10 @@ export class PluginManager {
             status: 'error',
             oldSha: null,
             oldDate: null,
+            oldVersion: null,
             newSha: null,
             newDate: null,
+            newVersion: null,
             error: msg,
           });
         }
@@ -240,8 +246,10 @@ export class PluginManager {
           status: 'unchanged',
           oldSha: oldMeta.sha.slice(0, 8),
           oldDate: oldMeta.fetchedAt,
+          oldVersion: oldMeta.version ?? null,
           newSha: remoteSha.slice(0, 8),
           newDate: oldMeta.fetchedAt,
+          newVersion: oldMeta.version ?? null,
         });
         continue;
       }
@@ -279,8 +287,10 @@ export class PluginManager {
             status: 'error',
             oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
             oldDate: oldMeta?.fetchedAt ?? null,
+            oldVersion: oldMeta?.version ?? null,
             newSha: null,
             newDate: null,
+            newVersion: null,
             error: msg,
             failureCode: result.code,
             securityFindings: result.securityFindings,
@@ -290,13 +300,17 @@ export class PluginManager {
           // Success — keep backup for rollback, prune old ones (keep last 3)
           pruneBackups(this.pluginsDir, ref.pluginName, 3);
 
+          // Read new cache meta written by fetchPlugin for version info
+          const newMeta = readCacheMeta(this.pluginsDir, ref.pluginName);
           details.push({
             name: pluginDisplayName,
             status: oldMeta ? 'updated' : 'new',
             oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
             oldDate: oldMeta?.fetchedAt ?? null,
+            oldVersion: oldMeta?.version ?? null,
             newSha: result.sha.slice(0, 8),
             newDate: new Date().toISOString(),
+            newVersion: newMeta?.version ?? null,
           });
         }
       } catch (error) {
@@ -311,8 +325,10 @@ export class PluginManager {
           status: 'error',
           oldSha: oldMeta?.sha?.slice(0, 8) ?? null,
           oldDate: oldMeta?.fetchedAt ?? null,
+          oldVersion: oldMeta?.version ?? null,
           newSha: null,
           newDate: null,
+          newVersion: null,
           error: msg,
         });
       }

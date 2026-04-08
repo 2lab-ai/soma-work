@@ -327,16 +327,7 @@ export class PluginsHandler implements CommandHandler {
   /** Format version info from cache metadata for display. */
   private formatVersionInfo(meta: CacheMeta | null): string {
     if (!meta) return '_메타 정보 없음_';
-    const sha = meta.sha ? `\`${meta.sha.slice(0, 8)}\`` : '`-`';
-    let date = '-';
-    if (meta.fetchedAt) {
-      try {
-        date = new Date(meta.fetchedAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-      } catch {
-        date = meta.fetchedAt;
-      }
-    }
-    return `${sha} (${date})`;
+    return this.formatVersionLine(meta.version ?? null, meta.sha?.slice(0, 8) ?? null, meta.fetchedAt ?? null);
   }
 
   /** Build simple text lines for update result (no failures). */
@@ -512,35 +503,41 @@ export class PluginsHandler implements CommandHandler {
     return lines.join('\n');
   }
 
+  /** Format version + SHA + date into a compact string. */
+  private formatVersionLine(version: string | null, sha: string | null, date: string | null): string {
+    const v = version ?? '';
+    const s = sha ? `\`${sha}\`` : '`-`';
+    const d = this.formatDateUTC(date);
+    return v ? `${v} ${s} (${d})` : `${s} (${d})`;
+  }
+
+  /** Format ISO date to "YYYY-MM-DD HH:mm UTC". */
+  private formatDateUTC(iso: string | null): string {
+    if (!iso) return '-';
+    try {
+      return new Date(iso).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    } catch {
+      return iso;
+    }
+  }
+
   /** Format a single plugin update detail for Slack display. */
   private formatPluginDetail(d: PluginUpdateDetail): string {
-    const formatDate = (iso: string | null): string => {
-      if (!iso) return '-';
-      try {
-        const date = new Date(iso);
-        // YYYY-MM-DD HH:mm (UTC)
-        return date.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-      } catch {
-        return iso;
-      }
-    };
-
     switch (d.status) {
       case 'unchanged':
-        return `⏸️ *${d.name}*  — 변경없음 \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`;
+        return `⏸️ *${d.name}* — 변경없음 ${this.formatVersionLine(d.oldVersion, d.oldSha, d.oldDate)}`;
 
       case 'updated':
         return [
-          `🔄 *${d.name}*  — *업데이트됨*`,
-          `    기존: \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`,
-          `    최신: \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`,
+          `🔄 *${d.name}* — ${this.formatVersionLine(d.newVersion, d.newSha, d.newDate)}`,
+          `    ◦ from: ${this.formatVersionLine(d.oldVersion, d.oldSha, d.oldDate)}`,
         ].join('\n');
 
       case 'new':
-        return `🆕 *${d.name}*  — 신규설치 \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`;
+        return `🆕 *${d.name}* — 신규설치 ${this.formatVersionLine(d.newVersion, d.newSha, d.newDate)}`;
 
       case 'error':
-        return `❌ *${d.name}*  — 오류: ${d.error ?? 'Unknown error'}`;
+        return `❌ *${d.name}* — 오류: ${d.error ?? 'Unknown error'}`;
 
       default:
         return `❓ *${d.name}*`;

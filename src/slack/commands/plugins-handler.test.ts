@@ -44,24 +44,30 @@ function createMockPluginManager(overrides: Record<string, any> = {}) {
           status: 'updated',
           oldSha: 'abc12345',
           oldDate: '2026-03-01T00:00:00.000Z',
+          oldVersion: '1.0.0',
           newSha: 'def67890',
           newDate: '2026-03-29T00:00:00.000Z',
+          newVersion: '1.1.0',
         },
         {
           name: 'stv@soma-work',
           status: 'updated',
           oldSha: '11112222',
           oldDate: '2026-03-01T00:00:00.000Z',
+          oldVersion: '2.0.0',
           newSha: '33334444',
           newDate: '2026-03-29T00:00:00.000Z',
+          newVersion: '2.1.0',
         },
         {
           name: 'omc@soma-work',
           status: 'updated',
           oldSha: '55556666',
           oldDate: '2026-03-01T00:00:00.000Z',
+          oldVersion: null,
           newSha: '77778888',
           newDate: '2026-03-29T00:00:00.000Z',
+          newVersion: '3.0.0',
         },
       ],
     }),
@@ -162,6 +168,7 @@ describe('PluginsHandler', () => {
         fetchedAt: '2026-04-01T10:30:00.000Z',
         marketplace: 'soma-work',
         ref: 'main',
+        version: '1.2.3',
       });
 
       const { ctx, say } = createContext('plugins');
@@ -169,6 +176,7 @@ describe('PluginsHandler', () => {
 
       const message = say.mock.calls[0][0].text;
       expect(message).toContain('omc@soma-work');
+      expect(message).toContain('1.2.3');
       expect(message).toContain('abc12345');
       expect(message).toContain('2026-04-01 10:30 UTC');
     });
@@ -368,6 +376,10 @@ describe('PluginsHandler', () => {
       const resultMessage = say.mock.calls[1][0].text;
       expect(resultMessage).toContain('업데이트 완료');
       expect(resultMessage).toContain('3');
+      // Verify version numbers are displayed in update result
+      expect(resultMessage).toContain('1.1.0');
+      expect(resultMessage).toContain('from:');
+      expect(resultMessage).toContain('1.0.0');
     });
 
     it('should work with Korean command for admin users', async () => {

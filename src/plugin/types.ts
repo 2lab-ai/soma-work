@@ -139,6 +139,8 @@ export interface CacheMeta {
   marketplace: string;
   /** Git ref that was requested */
   ref: string;
+  /** Marketplace manifest version (e.g. "1.2.3") */
+  version?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +160,14 @@ export interface PluginUpdateDetail {
   oldSha: string | null;
   /** Previous fetch timestamp (ISO), null if newly installed */
   oldDate: string | null;
+  /** Previous version string, null if newly installed or unknown */
+  oldVersion: string | null;
   /** New commit SHA (short), null if error */
   newSha: string | null;
   /** New fetch timestamp (ISO), null if error */
   newDate: string | null;
+  /** New version string, null if error or unknown */
+  newVersion: string | null;
   /** Error message if status is 'error' */
   error?: string;
   /** Failure code for structured error handling */
