@@ -196,6 +196,41 @@ export interface SdkPluginPath {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin backup & rollback
+// ---------------------------------------------------------------------------
+
+/** A single backup snapshot of a plugin. */
+export interface BackupEntry {
+  /** Plugin name (bare name, not ref) */
+  pluginName: string;
+  /** Marketplace name from cache meta at backup time */
+  marketplace: string;
+  /** ISO timestamp when the backup was created */
+  timestamp: string;
+  /** Commit SHA at backup time */
+  sha: string;
+  /** Absolute path to the backed-up plugin directory */
+  pluginDirBackup: string;
+  /** Absolute path to the backed-up meta file (if exists) */
+  metaFileBackup: string | null;
+}
+
+/** Result of a rollback operation. */
+export interface RollbackResult {
+  success: boolean;
+  /** Plugin ref that was rolled back */
+  pluginRef: string;
+  /** SHA before rollback */
+  previousSha: string | null;
+  /** SHA after rollback (from backup) */
+  restoredSha: string | null;
+  /** Timestamp of the restored backup */
+  restoredDate: string | null;
+  /** Error message if rollback failed */
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Fetch failure details
 // ---------------------------------------------------------------------------
 

@@ -32,7 +32,9 @@ export type PluginsAction =
   | { action: 'list' }
   | { action: 'add'; pluginRef: string }
   | { action: 'remove'; pluginRef: string }
-  | { action: 'update' };
+  | { action: 'update' }
+  | { action: 'rollback'; pluginRef: string }
+  | { action: 'backups'; pluginRef: string };
 
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
@@ -526,7 +528,10 @@ export class CommandParser {
    */
   static isPluginsCommand(text: string): boolean {
     const t = text.trim();
-    return /^\/?plugins(?:\s+(?:add|remove)\s+\S+|\s+update)?$/i.test(t) || /^\/?플러그인\s*업데이트$/i.test(t);
+    return (
+      /^\/?plugins(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(t) ||
+      /^\/?플러그인\s*업데이트$/i.test(t)
+    );
   }
 
   /**
@@ -550,6 +555,18 @@ export class CommandParser {
     const removeMatch = trimmed.match(/^\/?plugins\s+remove\s+(\S+)$/i);
     if (removeMatch) {
       return { action: 'remove', pluginRef: removeMatch[1] };
+    }
+
+    // Match: plugins rollback <pluginRef>
+    const rollbackMatch = trimmed.match(/^\/?plugins\s+rollback\s+(\S+)$/i);
+    if (rollbackMatch) {
+      return { action: 'rollback', pluginRef: rollbackMatch[1] };
+    }
+
+    // Match: plugins backups <pluginRef>
+    const backupsMatch = trimmed.match(/^\/?plugins\s+backups\s+(\S+)$/i);
+    if (backupsMatch) {
+      return { action: 'backups', pluginRef: backupsMatch[1] };
     }
 
     return { action: 'list' };
