@@ -4,6 +4,48 @@ import type { FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
+// ---------------------------------------------------------------------------
+// Slack Block Kit limits — keep payloads under these or Slack returns
+// `invalid_blocks` and the entire message is dropped.
+//   - section text mrkdwn:  3000 chars
+//   - confirm dialog text:   300 chars
+//   - message blocks:         50 total
+//   - confirm dialog name budget = 300 - template overhead (~50 chars)
+// ---------------------------------------------------------------------------
+const SECTION_TEXT_MAX = 3000;
+const CONFIRM_TEXT_MAX = 300;
+const MESSAGE_BLOCKS_MAX = 50;
+const CONFIRM_NAME_MAX = 200;
+
+function truncateMrkdwn(text: string, max = SECTION_TEXT_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function truncateConfirmText(text: string, max = CONFIRM_TEXT_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Cap a blocks array at MESSAGE_BLOCKS_MAX, preserving the leading
+ * header/summary/divider blocks and replacing trailing overflow with a
+ * single "+N more" notice so users still know content was elided.
+ */
+function capBlocks(blocks: any[]): any[] {
+  if (blocks.length <= MESSAGE_BLOCKS_MAX) return blocks;
+
+  // Reserve the last slot for an overflow notice block
+  const kept = blocks.slice(0, MESSAGE_BLOCKS_MAX - 1);
+  const dropped = blocks.length - kept.length;
+  kept.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `… *${dropped}개 블록이 생략되었습니다* (Slack 메시지당 최대 ${MESSAGE_BLOCKS_MAX} blocks)`,
+    },
+  });
+  return kept;
+}
+
 /**
  * Handles `plugins` slash commands: list / add / remove.
  *
@@ -265,7 +307,7 @@ export class PluginsHandler implements CommandHandler {
       for (const d of successDetails) {
         blocks.push({
           type: 'section',
-          text: { type: 'mrkdwn', text: this.formatPluginDetail(d) },
+          text: { type: 'mrkdwn', text: truncateMrkdwn(this.formatPluginDetail(d)) },
         });
       }
       blocks.push({ type: 'divider' });
@@ -278,7 +320,7 @@ export class PluginsHandler implements CommandHandler {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `❌ *${d.name}*\n${errorDesc}`,
+          text: truncateMrkdwn(`❌ *${d.name}*\n${errorDesc}`),
         },
       });
 
@@ -296,6 +338,9 @@ export class PluginsHandler implements CommandHandler {
       ];
 
       if (d.failureCode === 'SECURITY_BLOCKED') {
+        // Confirm dialog mrkdwn `text` is capped at 300 chars by Slack — keep
+        // the plugin name short enough that the surrounding template fits.
+        const displayName = d.name.length > CONFIRM_NAME_MAX ? d.name.slice(0, CONFIRM_NAME_MAX) + '…' : d.name;
         elements.push({
           type: 'button',
           action_id: `plugin_update_force_${actionSuffix}`,
@@ -306,7 +351,9 @@ export class PluginsHandler implements CommandHandler {
             title: { type: 'plain_text', text: '보안 우회 확인' },
             text: {
               type: 'mrkdwn',
-              text: `*${d.name}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+              text: truncateConfirmText(
+                `*${displayName}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+              ),
             },
             confirm: { type: 'plain_text', text: '강제 설치' },
             deny: { type: 'plain_text', text: '취소' },
@@ -318,7 +365,7 @@ export class PluginsHandler implements CommandHandler {
       blocks.push({ type: 'actions', elements });
     }
 
-    return blocks;
+    return capBlocks(blocks);
   }
 
   /** Format a human-readable description from a failure code and details. */
