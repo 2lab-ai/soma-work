@@ -186,16 +186,73 @@ describe('SlackApiHelper', () => {
     });
   });
 
+  describe('getAuthContext', () => {
+    it('should return full auth context', async () => {
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'B123',
+        team_id: 'T456',
+        url: 'https://myworkspace.slack.com/',
+        enterprise_id: 'E789',
+      });
+
+      const ctx = await helper.getAuthContext();
+      expect(ctx).toEqual({
+        userId: 'B123',
+        teamId: 'T456',
+        url: 'https://myworkspace.slack.com/',
+        enterpriseId: 'E789',
+      });
+    });
+
+    it('should cache auth context (single API call)', async () => {
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'B123',
+        team_id: 'T456',
+        url: 'https://myworkspace.slack.com/',
+      });
+
+      await helper.getAuthContext();
+      await helper.getAuthContext();
+
+      expect(mockApp.client.auth.test).toHaveBeenCalledTimes(1);
+    });
+
+    it('should handle missing enterprise_id', async () => {
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'B123',
+        team_id: 'T456',
+        url: 'https://myworkspace.slack.com/',
+      });
+
+      const ctx = await helper.getAuthContext();
+      expect(ctx.enterpriseId).toBeUndefined();
+    });
+
+    it('should propagate error on API failure', async () => {
+      mockApp.client.auth.test.mockRejectedValue(new Error('API error'));
+
+      await expect(helper.getAuthContext()).rejects.toThrow('API error');
+    });
+  });
+
   describe('getBotUserId', () => {
-    it('should return bot user ID', async () => {
-      mockApp.client.auth.test.mockResolvedValue({ user_id: 'B123' });
+    it('should return bot user ID via getAuthContext', async () => {
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'B123',
+        team_id: 'T456',
+        url: 'https://myworkspace.slack.com/',
+      });
 
       const result = await helper.getBotUserId();
       expect(result).toBe('B123');
     });
 
     it('should cache bot user ID', async () => {
-      mockApp.client.auth.test.mockResolvedValue({ user_id: 'B123' });
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'B123',
+        team_id: 'T456',
+        url: 'https://myworkspace.slack.com/',
+      });
 
       await helper.getBotUserId();
       await helper.getBotUserId();
@@ -203,7 +260,7 @@ describe('SlackApiHelper', () => {
       expect(mockApp.client.auth.test).toHaveBeenCalledTimes(1);
     });
 
-    it('should return empty string on error', async () => {
+    it('should return empty string on error (graceful)', async () => {
       mockApp.client.auth.test.mockRejectedValue(new Error('API error'));
 
       const result = await helper.getBotUserId();

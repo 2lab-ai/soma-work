@@ -869,6 +869,11 @@ export class SlackHandler {
     this.actionHandlers.savePendingForms();
   }
 
+  /** Expose SlackApiHelper for workspace URL initialization */
+  getSlackApi(): SlackApiHelper {
+    return this.slackApi;
+  }
+
   /** Expose request coordinator for dashboard stop handler */
   getRequestCoordinator(): RequestCoordinator {
     return this.requestCoordinator;
