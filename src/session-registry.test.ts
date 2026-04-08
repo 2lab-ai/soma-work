@@ -470,10 +470,7 @@ describe('SessionRegistry persistence', () => {
         // NO activityState field — legacy format
       },
     ];
-    fs.writeFileSync(
-      path.join(TEST_DATA_DIR, 'sessions.json'),
-      JSON.stringify(sessionsData),
-    );
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(sessionsData));
 
     const reader = new SessionRegistry();
     reader.loadSessions();
