@@ -100,6 +100,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Configure git identity
+        run: |
+          git config user.email "z@2lab.ai"
+          git config user.name "Z"
+
       - name: Version bump & release notes
         run: |
           REF="${{ github.ref_name }}"
