@@ -139,6 +139,8 @@ export interface CacheMeta {
   marketplace: string;
   /** Git ref that was requested */
   ref: string;
+  /** Marketplace manifest version (e.g. "1.2.3") */
+  version?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +160,14 @@ export interface PluginUpdateDetail {
   oldSha: string | null;
   /** Previous fetch timestamp (ISO), null if newly installed */
   oldDate: string | null;
+  /** Previous version string, null if newly installed or unknown */
+  oldVersion: string | null;
   /** New commit SHA (short), null if error */
   newSha: string | null;
   /** New fetch timestamp (ISO), null if error */
   newDate: string | null;
+  /** New version string, null if error or unknown */
+  newVersion: string | null;
   /** Error message if status is 'error' */
   error?: string;
   /** Failure code for structured error handling */
@@ -193,6 +199,41 @@ export interface ForceRefreshResult {
 export interface SdkPluginPath {
   type: 'local';
   path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin backup & rollback
+// ---------------------------------------------------------------------------
+
+/** A single backup snapshot of a plugin. */
+export interface BackupEntry {
+  /** Plugin name (bare name, not ref) */
+  pluginName: string;
+  /** Marketplace name from cache meta at backup time */
+  marketplace: string;
+  /** ISO timestamp when the backup was created */
+  timestamp: string;
+  /** Commit SHA at backup time */
+  sha: string;
+  /** Absolute path to the backed-up plugin directory */
+  pluginDirBackup: string;
+  /** Absolute path to the backed-up meta file (if exists) */
+  metaFileBackup: string | null;
+}
+
+/** Result of a rollback operation. */
+export interface RollbackResult {
+  success: boolean;
+  /** Plugin ref that was rolled back */
+  pluginRef: string;
+  /** SHA before rollback */
+  previousSha: string | null;
+  /** SHA after rollback (from backup) */
+  restoredSha: string | null;
+  /** Timestamp of the restored backup */
+  restoredDate: string | null;
+  /** Error message if rollback failed */
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------

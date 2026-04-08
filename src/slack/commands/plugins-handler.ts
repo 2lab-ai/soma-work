@@ -1,8 +1,50 @@
 import { isAdminUser } from '../../admin-utils';
 import { isDefaultPlugin } from '../../plugin/defaults';
-import type { FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
+import type { BackupEntry, CacheMeta, FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+
+// ---------------------------------------------------------------------------
+// Slack Block Kit limits — keep payloads under these or Slack returns
+// `invalid_blocks` and the entire message is dropped.
+//   - section text mrkdwn:  3000 chars
+//   - confirm dialog text:   300 chars
+//   - message blocks:         50 total
+//   - confirm dialog name budget = 300 - template overhead (~50 chars)
+// ---------------------------------------------------------------------------
+const SECTION_TEXT_MAX = 3000;
+const CONFIRM_TEXT_MAX = 300;
+const MESSAGE_BLOCKS_MAX = 50;
+const CONFIRM_NAME_MAX = 200;
+
+function truncateMrkdwn(text: string, max = SECTION_TEXT_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function truncateConfirmText(text: string, max = CONFIRM_TEXT_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Cap a blocks array at MESSAGE_BLOCKS_MAX, preserving the leading
+ * header/summary/divider blocks and replacing trailing overflow with a
+ * single "+N more" notice so users still know content was elided.
+ */
+function capBlocks(blocks: any[]): any[] {
+  if (blocks.length <= MESSAGE_BLOCKS_MAX) return blocks;
+
+  // Reserve the last slot for an overflow notice block
+  const kept = blocks.slice(0, MESSAGE_BLOCKS_MAX - 1);
+  const dropped = blocks.length - kept.length;
+  kept.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `… *${dropped}개 블록이 생략되었습니다* (Slack 메시지당 최대 ${MESSAGE_BLOCKS_MAX} blocks)`,
+    },
+  });
+  return kept;
+}
 
 /**
  * Handles `plugins` slash commands: list / add / remove.
@@ -32,6 +74,10 @@ export class PluginsHandler implements CommandHandler {
         return this.handleRemove(parsed.pluginRef, threadTs, say);
       case 'update':
         return this.handleUpdate(ctx.user, threadTs, say);
+      case 'rollback':
+        return this.handleRollback(parsed.pluginRef, ctx.user, threadTs, say);
+      case 'backups':
+        return this.handleBackups(parsed.pluginRef, ctx.user, threadTs, say);
       default:
         return { handled: false };
     }
@@ -71,9 +117,10 @@ export class PluginsHandler implements CommandHandler {
       lines.push('_No additional marketplace plugins installed. Use `plugins add name@marketplace` to install._');
     } else {
       for (const ref of userPlugins) {
-        const detail = resolved.find((r) => r.name === ref);
-        const pathInfo = detail ? ` (resolved: ${detail.localPath})` : '';
-        lines.push(`\u2022 *${ref}* \u2014 Marketplace plugin${pathInfo}`);
+        const pluginName = ref.includes('@') ? ref.split('@')[0] : ref;
+        const meta: CacheMeta | null = pluginManager.getPluginMeta(pluginName);
+        const versionInfo = this.formatVersionInfo(meta);
+        lines.push(`\u2022 *${ref}* \u2014 ${versionInfo}`);
       }
     }
 
@@ -177,6 +224,97 @@ export class PluginsHandler implements CommandHandler {
     return { handled: true };
   }
 
+  private async handleRollback(
+    pluginRef: string,
+    user: string,
+    threadTs: string,
+    say: CommandContext['say'],
+  ): Promise<CommandResult> {
+    if (!isAdminUser(user)) {
+      await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const pluginManager = this.deps.mcpManager.getPluginManager();
+    if (!pluginManager) {
+      await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    await say({
+      text: `🔄 *${pluginRef}* 를 이전 버전으로 롤백 중...`,
+      thread_ts: threadTs,
+    });
+
+    try {
+      const result = await pluginManager.rollback(pluginRef);
+      if (result.success) {
+        await say({
+          text: [
+            `✅ *${pluginRef}* 롤백 완료`,
+            `• 이전: \`${result.previousSha ?? '-'}\``,
+            `• 복원: \`${result.restoredSha ?? '-'}\` (${result.restoredDate ?? '-'})`,
+          ].join('\n'),
+          thread_ts: threadTs,
+        });
+      } else {
+        await say({
+          text: `❌ 롤백 실패: ${result.error}`,
+          thread_ts: threadTs,
+        });
+      }
+    } catch (error) {
+      await say({
+        text: `❌ 롤백 실패: ${(error as Error).message}`,
+        thread_ts: threadTs,
+      });
+    }
+    return { handled: true };
+  }
+
+  private async handleBackups(
+    pluginRef: string,
+    user: string,
+    threadTs: string,
+    say: CommandContext['say'],
+  ): Promise<CommandResult> {
+    if (!isAdminUser(user)) {
+      await say({ text: '⛔ Admin only command.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    const pluginManager = this.deps.mcpManager.getPluginManager();
+    if (!pluginManager) {
+      await say({ text: 'Plugin system is not available.', thread_ts: threadTs });
+      return { handled: true };
+    }
+
+    // Extract bare plugin name from ref (name@marketplace → name)
+    const pluginName = pluginRef.includes('@') ? pluginRef.split('@')[0] : pluginRef;
+    const backups: BackupEntry[] = pluginManager.getBackups(pluginName);
+
+    if (backups.length === 0) {
+      await say({
+        text: `📦 *${pluginRef}* — 사용 가능한 백업이 없습니다.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    const lines = [`📦 *${pluginRef}* 백업 목록 (${backups.length}개)`, ''];
+
+    for (const b of backups) {
+      const sha = b.sha ? b.sha.slice(0, 8) : '-';
+      lines.push(`• \`${sha}\` — ${b.timestamp} (${b.marketplace})`);
+    }
+
+    lines.push('');
+    lines.push(`_\`plugins rollback ${pluginRef}\` 로 최신 백업으로 롤백 가능_`);
+
+    await say({ text: lines.join('\n'), thread_ts: threadTs });
+    return { handled: true };
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -184,6 +322,12 @@ export class PluginsHandler implements CommandHandler {
   /** Returns true when pluginRef refers to the hardcoded built-in local plugin. */
   private isBuiltInLocal(pluginRef: string): boolean {
     return pluginRef === 'local' || pluginRef.startsWith('local@');
+  }
+
+  /** Format version info from cache metadata for display. */
+  private formatVersionInfo(meta: CacheMeta | null): string {
+    if (!meta) return '_메타 정보 없음_';
+    return this.formatVersionLine(meta.version ?? null, meta.sha?.slice(0, 8) ?? null, meta.fetchedAt ?? null);
   }
 
   /** Build simple text lines for update result (no failures). */
@@ -265,7 +409,7 @@ export class PluginsHandler implements CommandHandler {
       for (const d of successDetails) {
         blocks.push({
           type: 'section',
-          text: { type: 'mrkdwn', text: this.formatPluginDetail(d) },
+          text: { type: 'mrkdwn', text: truncateMrkdwn(this.formatPluginDetail(d)) },
         });
       }
       blocks.push({ type: 'divider' });
@@ -278,7 +422,7 @@ export class PluginsHandler implements CommandHandler {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `❌ *${d.name}*\n${errorDesc}`,
+          text: truncateMrkdwn(`❌ *${d.name}*\n${errorDesc}`),
         },
       });
 
@@ -296,6 +440,9 @@ export class PluginsHandler implements CommandHandler {
       ];
 
       if (d.failureCode === 'SECURITY_BLOCKED') {
+        // Confirm dialog mrkdwn `text` is capped at 300 chars by Slack — keep
+        // the plugin name short enough that the surrounding template fits.
+        const displayName = d.name.length > CONFIRM_NAME_MAX ? d.name.slice(0, CONFIRM_NAME_MAX) + '…' : d.name;
         elements.push({
           type: 'button',
           action_id: `plugin_update_force_${actionSuffix}`,
@@ -306,7 +453,9 @@ export class PluginsHandler implements CommandHandler {
             title: { type: 'plain_text', text: '보안 우회 확인' },
             text: {
               type: 'mrkdwn',
-              text: `*${d.name}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+              text: truncateConfirmText(
+                `*${displayName}* 플러그인의 보안 검사를 우회하고 설치합니다.\n이 작업은 위험할 수 있습니다.`,
+              ),
             },
             confirm: { type: 'plain_text', text: '강제 설치' },
             deny: { type: 'plain_text', text: '취소' },
@@ -318,7 +467,7 @@ export class PluginsHandler implements CommandHandler {
       blocks.push({ type: 'actions', elements });
     }
 
-    return blocks;
+    return capBlocks(blocks);
   }
 
   /** Format a human-readable description from a failure code and details. */
@@ -354,35 +503,41 @@ export class PluginsHandler implements CommandHandler {
     return lines.join('\n');
   }
 
+  /** Format version + SHA + date into a compact string. */
+  private formatVersionLine(version: string | null, sha: string | null, date: string | null): string {
+    const v = version ?? '';
+    const s = sha ? `\`${sha}\`` : '`-`';
+    const d = this.formatDateUTC(date);
+    return v ? `${v} ${s} (${d})` : `${s} (${d})`;
+  }
+
+  /** Format ISO date to "YYYY-MM-DD HH:mm UTC". */
+  private formatDateUTC(iso: string | null): string {
+    if (!iso) return '-';
+    try {
+      return new Date(iso).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    } catch {
+      return iso;
+    }
+  }
+
   /** Format a single plugin update detail for Slack display. */
   private formatPluginDetail(d: PluginUpdateDetail): string {
-    const formatDate = (iso: string | null): string => {
-      if (!iso) return '-';
-      try {
-        const date = new Date(iso);
-        // YYYY-MM-DD HH:mm (UTC)
-        return date.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-      } catch {
-        return iso;
-      }
-    };
-
     switch (d.status) {
       case 'unchanged':
-        return `⏸️ *${d.name}*  — 변경없음 \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`;
+        return `⏸️ *${d.name}* — 변경없음 ${this.formatVersionLine(d.oldVersion, d.oldSha, d.oldDate)}`;
 
       case 'updated':
         return [
-          `🔄 *${d.name}*  — *업데이트됨*`,
-          `    기존: \`${d.oldSha ?? '-'}\` (${formatDate(d.oldDate)})`,
-          `    최신: \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`,
+          `🔄 *${d.name}* — ${this.formatVersionLine(d.newVersion, d.newSha, d.newDate)}`,
+          `    ◦ from: ${this.formatVersionLine(d.oldVersion, d.oldSha, d.oldDate)}`,
         ].join('\n');
 
       case 'new':
-        return `🆕 *${d.name}*  — 신규설치 \`${d.newSha ?? '-'}\` (${formatDate(d.newDate)})`;
+        return `🆕 *${d.name}* — 신규설치 ${this.formatVersionLine(d.newVersion, d.newSha, d.newDate)}`;
 
       case 'error':
-        return `❌ *${d.name}*  — 오류: ${d.error ?? 'Unknown error'}`;
+        return `❌ *${d.name}* — 오류: ${d.error ?? 'Unknown error'}`;
 
       default:
         return `❓ *${d.name}*`;

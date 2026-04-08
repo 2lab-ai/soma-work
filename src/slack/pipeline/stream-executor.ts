@@ -14,6 +14,7 @@ import { createConversation, recordAssistantTurn, recordUserTurn } from '../../c
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
+import { getMetricsEmitter } from '../../metrics/event-emitter';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -764,12 +765,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
 
       // Transition activity state
-      this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
-        activeTool: undefined,
-        waitingForChoice: hasPendingChoice,
-      });
+      // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
+      // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
+      const hasContinuation = Boolean(toolContinuation);
+      if (!hasContinuation) {
+        this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
+        await this.updateRuntimeStatus(session, sessionKey, {
+          agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
+          activeTool: undefined,
+          waitingForChoice: hasPendingChoice,
+        });
+      }
 
       // Update action panel with turn summary and latest response permalink
       await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
@@ -1643,7 +1649,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return undefined;
     }
 
-    const usedTokens = usage.inputTokens + usage.outputTokens;
+    const usedTokens =
+      usage.inputTokens +
+      usage.outputTokens +
+      (usage.cacheReadInputTokens ?? 0) +
+      (usage.cacheCreationInputTokens ?? 0);
     const percent = (usedTokens / contextWindow) * 100;
     return Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
   }
@@ -1778,6 +1788,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Cumulative totals
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
         totalCostUsd: 0,
         lastUpdated: Date.now(),
       };
@@ -1817,6 +1829,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
     session.usage.totalOutputTokens += usage.outputTokens;
+    session.usage.totalCacheReadTokens += usage.cacheReadInputTokens;
+    session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
@@ -1834,6 +1848,41 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,
     });
+
+    // Emit token_usage event for persistent tracking (fire-and-forget)
+    this.emitTokenUsageEvent(session, usage);
+  }
+
+  /**
+   * Emit token_usage metrics event for persistent JSONL tracking.
+   * Fire-and-forget — errors are logged but never block the caller.
+   */
+  private emitTokenUsageEvent(session: ConversationSession, usage: UsageData): void {
+    try {
+      const emitter = getMetricsEmitter();
+      const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+      emitter
+        .emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
+          sessionKey,
+          conversationId: session.conversationId,
+          model: usage.modelName || session.model || 'unknown',
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          costUsd: usage.totalCostUsd,
+          modelBreakdown: usage.modelBreakdown,
+        })
+        .catch((err) => {
+          this.logger.debug('Failed to emit token_usage event (async)', {
+            error: (err as Error).message,
+          });
+        });
+    } catch (error) {
+      this.logger.debug('Failed to emit token_usage event', {
+        error: (error as Error).message,
+      });
+    }
   }
 
   private async handleModelCommandToolResults(
@@ -1918,9 +1967,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
 
-        // Apply resource operations if present
+        // Apply resource operations and/or instruction operations if present
+        const hasResourceOps = request.operations && request.operations.length > 0;
+        const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
-        if (request.operations && request.operations.length > 0) {
+        if (hasResourceOps || hasInstructionOps) {
           const updateResult = this.deps.claudeHandler.updateSessionResources(
             context.channel,
             context.threadTs,
@@ -1946,6 +1997,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               issueCount: updateResult.snapshot.issues.length,
               prCount: updateResult.snapshot.prs.length,
               docCount: updateResult.snapshot.docs.length,
+              instructionCount: updateResult.snapshot.instructions.length,
             });
           }
         }

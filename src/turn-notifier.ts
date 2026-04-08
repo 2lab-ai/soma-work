@@ -90,11 +90,33 @@ export function getCategoryLabel(category: TurnCategory): string {
   return CATEGORY_LABEL[category];
 }
 
+// --- Slack workspace URL singleton (set once at startup) ---
+
+let _workspaceUrl: string | undefined;
+
+/** Set the Slack workspace base URL (from auth.test().url). Call once at startup. */
+export function setSlackWorkspaceUrl(url: string): void {
+  _workspaceUrl = url.endsWith('/') ? url : url + '/';
+}
+
+/** Get the cached workspace URL (undefined if not initialized). */
+export function getSlackWorkspaceUrl(): string | undefined {
+  return _workspaceUrl;
+}
+
+/** Reset workspace URL — for test isolation only. */
+export function resetSlackWorkspaceUrl(): void {
+  _workspaceUrl = undefined;
+}
+
 // --- Shared helpers ---
 
 /** Build a Slack thread permalink from channel ID and thread timestamp. */
-export function buildThreadPermalink(channel: string, threadTs: string): string {
-  return `https://slack.com/archives/${channel}/p${threadTs.replace('.', '')}`;
+export function buildThreadPermalink(channel: string, threadTs: string): string | null {
+  if (!_workspaceUrl) {
+    return null;
+  }
+  return `${_workspaceUrl}archives/${channel}/p${threadTs.replace('.', '')}`;
 }
 
 /** Mask a URL for safe logging: `https://hooks.slack.com/***` */

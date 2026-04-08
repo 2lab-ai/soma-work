@@ -154,11 +154,8 @@ async function start() {
 
     // Initialize handlers
     const claudeHandler = new ClaudeHandler(mcpManager);
-    // Inject plugin paths if PluginManager resolved any plugins
-    const pluginPaths = pluginManager.getPluginPaths();
-    if (pluginPaths.length > 0) {
-      claudeHandler.setPluginPaths(pluginPaths);
-    }
+    // Plugin paths are now resolved dynamically via mcpManager.getPluginManager()?.getPluginPaths()
+    // inside ClaudeHandler.getEffectivePluginPaths() — no static injection needed.
     // Inject agent configs into ClaudeHandler's McpConfigBuilder
     if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
       claudeHandler.setAgentConfigs(unifiedConfig.agents);
@@ -171,6 +168,17 @@ async function start() {
 
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
     timing('SlackHandler initialized');
+
+    // Initialize Slack workspace URL for correct thread permalinks
+    try {
+      const slackApi = slackHandler.getSlackApi();
+      const authContext = await slackApi.getAuthContext();
+      const { setSlackWorkspaceUrl } = await import('./turn-notifier');
+      setSlackWorkspaceUrl(authContext.url);
+      timing(`Slack workspace URL: ${authContext.url}`);
+    } catch (error) {
+      logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
+    }
 
     // Setup event handlers
     slackHandler.setupEventHandlers();
