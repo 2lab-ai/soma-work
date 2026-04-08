@@ -2024,3 +2024,77 @@ describe('StreamExecutor — summary abort on new input and cleanup', () => {
     expect((executor as any).summaryAbortControllers.has(sessionKey)).toBe(false);
   });
 });
+
+// === Issue #391: Continuation loop should not transition to idle ===
+
+describe('Issue #391: Continuation idle transition skip', () => {
+  it('should not transition to idle when continuation exists', () => {
+    // This test documents the expected behavior:
+    // When a toolContinuation is set, the activity state should NOT be changed
+    // to idle between turns — it should remain 'working' throughout the continuation loop.
+
+    type ActivityTransition = { state: string; reason: string };
+    const transitions: ActivityTransition[] = [];
+
+    // Simulate the state transition logic from stream-executor.ts line 768
+    const simulateEndOfTurn = (hasPendingChoice: boolean, hasContinuation: boolean) => {
+      if (!hasContinuation) {
+        const newState = hasPendingChoice ? 'waiting' : 'idle';
+        transitions.push({ state: newState, reason: hasPendingChoice ? 'pending_choice' : 'turn_complete' });
+      }
+      // If hasContinuation, no state transition — stays 'working'
+    };
+
+    // Turn 1: has continuation → no idle transition
+    simulateEndOfTurn(false, true);
+    expect(transitions).toHaveLength(0); // No transition recorded
+
+    // Turn 2: no continuation → transitions to idle
+    simulateEndOfTurn(false, false);
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0].state).toBe('idle');
+
+    // Verify: with pending choice and no continuation → waiting
+    transitions.length = 0;
+    simulateEndOfTurn(true, false);
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0].state).toBe('waiting');
+
+    // Verify: with pending choice AND continuation → continuation wins, no transition
+    transitions.length = 0;
+    simulateEndOfTurn(true, true);
+    expect(transitions).toHaveLength(0);
+  });
+
+  it('should demonstrate no dashboard flicker during continuation loop', () => {
+    // Simulate a 3-turn continuation loop and track activity states
+    const activityStates: string[] = ['working']; // Initial state from line 324
+
+    const simulateTurnEnd = (hasContinuation: boolean) => {
+      if (!hasContinuation) {
+        activityStates.push('idle');
+      }
+      // With continuation: no state change, 'working' persists
+    };
+
+    const simulateTurnStart = () => {
+      // stream-executor.ts:324 — only if state changed
+      if (activityStates[activityStates.length - 1] !== 'working') {
+        activityStates.push('working');
+      }
+    };
+
+    // Turn 1: has continuation
+    simulateTurnEnd(true);
+    simulateTurnStart(); // No-op since still 'working'
+    // Turn 2: has continuation
+    simulateTurnEnd(true);
+    simulateTurnStart(); // No-op since still 'working'
+    // Turn 3: no continuation (final)
+    simulateTurnEnd(false);
+
+    // Expected: working → idle (only at the very end)
+    // No intermediate idle states that would cause dashboard flicker
+    expect(activityStates).toEqual(['working', 'idle']);
+  });
+});

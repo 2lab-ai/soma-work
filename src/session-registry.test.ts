@@ -416,4 +416,88 @@ describe('SessionRegistry persistence', () => {
 
     expect(session.pendingRetryTimer).toBeUndefined();
   });
+
+  // === Issue #391: Preserve activityState on restart ===
+
+  it('preserves working activityState across save/load', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C391', '171.391a');
+    session.sessionId = 'session-391a';
+    session.activityState = 'working';
+    session.state = 'MAIN';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C391', '171.391a');
+
+    expect(restored).toBeDefined();
+    expect(restored!.activityState).toBe('working');
+  });
+
+  it('preserves waiting activityState across save/load', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C391', '171.391b');
+    session.sessionId = 'session-391b';
+    session.activityState = 'waiting';
+    session.state = 'MAIN';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C391', '171.391b');
+
+    expect(restored).toBeDefined();
+    expect(restored!.activityState).toBe('waiting');
+  });
+
+  it('defaults to idle when activityState is missing from serialized data', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const sessionsData = [
+      {
+        key: 'C391-171.391c',
+        ownerId: 'U123',
+        ownerName: 'Tester',
+        channelId: 'C391',
+        threadTs: '171.391c',
+        sessionId: 'session-391c',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        // NO activityState field — legacy format
+      },
+    ];
+    fs.writeFileSync(
+      path.join(TEST_DATA_DIR, 'sessions.json'),
+      JSON.stringify(sessionsData),
+    );
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C391', '171.391c');
+
+    expect(restored).toBeDefined();
+    expect(restored!.activityState).toBe('idle');
+  });
+
+  it('crash recovery still detects working sessions after activityState preservation', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C391', '171.391d');
+    session.sessionId = 'session-391d';
+    session.activityState = 'working';
+    session.state = 'MAIN';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+
+    const recovered = reader.getCrashRecoveredSessions();
+    expect(recovered.length).toBe(1);
+    expect(recovered[0].activityState).toBe('working');
+    expect(recovered[0].sessionKey).toBe('C391-171.391d');
+  });
 });
