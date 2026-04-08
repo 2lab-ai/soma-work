@@ -53,12 +53,15 @@ export class SlackDmChannel implements NotificationChannel {
 
     try {
       const text = `${emoji} ${label} — ${title}`;
+      const mrkdwn = permalink
+        ? `${emoji} *${label}* — ${title}\n<${permalink}|스레드로 이동>`
+        : `${emoji} *${label}* — ${title}`;
       const blocks = [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `${emoji} *${label}* — ${title}\n<${permalink}|스레드로 이동>`,
+            text: mrkdwn,
           },
         },
       ];
