@@ -77,7 +77,7 @@ export class ChoiceActionHandler {
 
       // 세션 확인 및 메시지 처리
       if (session) {
-        await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // clearChoice already fired above (line 75); only clear pending question here
         // Clear pending question from session (dashboard sync)
         if (session.actionPanel) {
           session.actionPanel.pendingQuestion = undefined;
@@ -389,8 +389,7 @@ export class ChoiceActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
-      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
-      // Clear pending question from session (dashboard sync)
+      // clearChoice already fired in handleFormSubmit; only clear pending question here
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
       }
