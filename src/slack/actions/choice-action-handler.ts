@@ -74,7 +74,9 @@ export class ChoiceActionHandler {
         // Clear action panel choice immediately (thread header buttons)
         this.ctx.threadPanel
           ?.clearChoice(sessionKey)
-          .catch((err: unknown) => this.logger.debug('Failed to clear choice panel (user choice)', { sessionKey, error: err }));
+          .catch((err: unknown) =>
+            this.logger.debug('Failed to clear choice panel (user choice)', { sessionKey, error: err }),
+          );
       }
 
       // 세션 확인 및 메시지 처리
@@ -254,7 +256,9 @@ export class ChoiceActionHandler {
       // Clear action panel choice immediately (thread header buttons)
       this.ctx.threadPanel
         ?.clearChoice(sessionKey)
-        .catch((err: unknown) => this.logger.debug('Failed to clear choice panel (form submit)', { sessionKey, error: err }));
+        .catch((err: unknown) =>
+          this.logger.debug('Failed to clear choice panel (form submit)', { sessionKey, error: err }),
+        );
 
       const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
