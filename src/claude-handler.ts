@@ -652,6 +652,18 @@ export class ClaudeHandler {
       this.logger.debug('Using session effort', { effort: session.effort });
     }
 
+    // Set thinking config (adaptive reasoning toggle)
+    {
+      const thinkingEnabled =
+        session?.thinkingEnabled ??
+        (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : true);
+      if (!thinkingEnabled) {
+        options.thinking = { type: 'disabled' };
+        this.logger.debug('Thinking disabled for session');
+      }
+      // When enabled, don't set thinking — SDK defaults to adaptive for Opus 4.6+
+    }
+
     // Build system prompt with persona and workflow
     // Use session owner for user variable resolution (Co-Authored-By attribution)
     // Falls back to current user if no session exists yet

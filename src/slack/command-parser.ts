@@ -21,7 +21,9 @@ export type SessionCommandAction =
   | { type: 'info' }
   | { type: 'model'; action: 'status' | 'set'; model?: string }
   | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
-  | { type: 'effort'; action: 'status' | 'set'; level?: string };
+  | { type: 'effort'; action: 'status' | 'set'; level?: string }
+  | { type: 'thinking'; action: 'status' | 'set'; value?: string }
+  | { type: 'thinking_summary'; action: 'status' | 'set'; value?: string };
 
 export type MarketplaceAction =
   | { action: 'list' }
@@ -577,7 +579,7 @@ export class CommandParser {
    * Matches: $, $model, $model opus, $verbosity, $verbosity compact
    */
   static isSessionCommand(text: string): boolean {
-    return /^\$(?:model|verbosity|effort)?(?:\s+\S+)?$/i.test(text.trim());
+    return /^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/i.test(text.trim());
   }
 
   /**
@@ -605,6 +607,21 @@ export class CommandParser {
       return effortMatch[1]
         ? { type: 'effort', action: 'set', level: effortMatch[1] }
         : { type: 'effort', action: 'status' };
+    }
+
+    // $thinking_summary must be checked before $thinking (longer prefix first)
+    const thinkingSummaryMatch = trimmed.match(/^\$thinking_summary(?:\s+(\S+))?$/i);
+    if (thinkingSummaryMatch) {
+      return thinkingSummaryMatch[1]
+        ? { type: 'thinking_summary', action: 'set', value: thinkingSummaryMatch[1] }
+        : { type: 'thinking_summary', action: 'status' };
+    }
+
+    const thinkingMatch = trimmed.match(/^\$thinking(?:\s+(\S+))?$/i);
+    if (thinkingMatch) {
+      return thinkingMatch[1]
+        ? { type: 'thinking', action: 'set', value: thinkingMatch[1] }
+        : { type: 'thinking', action: 'status' };
     }
 
     return { type: 'info' };
@@ -679,9 +696,9 @@ export class CommandParser {
     const words = normalized.split(' ');
     const firstWord = words[0];
 
-    // $ prefix: only known session command roots ($, $model, $verbosity, $effort)
+    // $ prefix: only known session command roots ($, $model, $verbosity, $effort, $thinking, $thinking_summary)
     if (firstWord.startsWith('$')) {
-      if (/^\$(?:model|verbosity|effort)?(?:\s|$)/i.test(normalized)) {
+      if (/^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s|$)/i.test(normalized)) {
         return { isPotential: true, keyword: firstWord };
       }
       return { isPotential: false };
@@ -782,6 +799,10 @@ export class CommandParser {
       '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
       '• `$verbosity` - Show session verbosity',
       '• `$verbosity <level>` - Change verbosity for this session only',
+      '• `$thinking` - Show extended thinking (adaptive reasoning) status',
+      '• `$thinking on|off` - Toggle extended thinking for this session',
+      '• `$thinking_summary` - Show thinking summary display status',
+      '• `$thinking_summary on|off` - Toggle thinking output display for this session',
       '',
       '*Marketplace:*',
       '• `marketplace` or `/marketplace` - Show registered marketplaces',

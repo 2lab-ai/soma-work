@@ -36,6 +36,8 @@ export interface StreamContext {
   say: SayFunction;
   /** Verbosity bitmask — controls which output types are shown */
   logVerbosity?: number;
+  /** Whether thinking output is shown in Slack (independent of verbosity). Default: true */
+  showThinking?: boolean;
 }
 
 /**
@@ -375,6 +377,9 @@ export class StreamProcessor {
    * Extract and output thinking/reasoning content from assistant message
    */
   private async handleThinkingContent(content: any[], context: StreamContext): Promise<void> {
+    // Respect per-session/user showThinking toggle (independent of verbosity)
+    if (context.showThinking === false) return;
+
     const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (thinkingMode === 'hidden') return;
 

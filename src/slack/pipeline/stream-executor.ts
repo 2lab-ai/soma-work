@@ -439,7 +439,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         confluenceUrl: channelInfo?.confluenceUrl,
       };
 
-      // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
+      // Create stream context — logVerbosity/showThinking are getters so mid-stream changes apply
       const streamContext: StreamContext = {
         channel,
         threadTs,
@@ -447,6 +447,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionId: session?.sessionId,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
+        },
+        get showThinking() {
+          return session.showThinking ?? userSettingsStore.getUserShowThinking(user);
         },
         say: async (msg) => {
           const result = await say({
