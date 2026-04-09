@@ -850,6 +850,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // Rich fields
             persona: userSettingsStore.getUserPersona(session.ownerId || user),
             model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
+            effort: session.effort || userSettingsStore.getUserDefaultEffort(session.ownerId || user),
             startedAt: requestStartedAt,
             contextUsagePercent: contextUsagePercentAfter,
             contextUsageDelta:

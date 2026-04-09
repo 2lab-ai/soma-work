@@ -32,6 +32,7 @@ export interface TurnCompletionEvent {
   // Trace: docs/rich-turn-notification/trace.md, Scenario 1
   persona?: string;
   model?: string;
+  effort?: string;
   startedAt?: Date;
   contextUsagePercent?: number;
   contextUsageDelta?: number;
