@@ -53,13 +53,16 @@ case "$TOOL_NAME" in
         LOCK_ATTEMPTS=0
         while ! mkdir "$LOCK_DIR" 2>/dev/null; do
           LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
-          [[ $LOCK_ATTEMPTS -ge 50 ]] && break
+          if [[ $LOCK_ATTEMPTS -ge 50 ]]; then
+            echo "⚠️ todo-guard: lock timeout in TodoWrite, marker not set" >&2
+            exit 0
+          fi
           sleep 0.01
         done
+        trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
         COUNT=$(jq -r '.count // 0' "$STATE_FILE" 2>/dev/null || echo "0")
         NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
         echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
-        rmdir "$LOCK_DIR" 2>/dev/null
       else
         echo "⚠️ todo-guard: TodoWrite with empty/invalid payload — marker not set" >&2
       fi
