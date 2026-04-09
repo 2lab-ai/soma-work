@@ -10,8 +10,8 @@
  * Issue: #401
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // ── Resolve DATA_DIR (simplified from env-paths.ts) ─────────────────
 
@@ -21,7 +21,7 @@ function resolveDataDir(): string {
   }
   const root = process.cwd();
   try {
-    const { execSync } = require('child_process');
+    const { execSync } = require('node:child_process');
     const branch = execSync('git branch --show-current', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     return path.join(root, branch === 'main' ? 'data' : 'data.dev');
   } catch {
@@ -50,9 +50,9 @@ interface ArchivedSession {
   workflow?: string;
   lastActivity: string;
   links?: { issue?: { url: string; label?: string }; pr?: { url: string; label?: string; status?: string } };
-  linkHistory?: { issues: any[]; prs: any[]; docs: any[] };
+  linkHistory?: { issues: unknown[]; prs: unknown[]; docs: unknown[] };
   instructions?: Array<{ id: string; text: string; addedAt: number; source?: string }>;
-  mergeStats?: { totalLinesAdded: number; totalLinesDeleted: number; mergedPRs: any[] };
+  mergeStats?: { totalLinesAdded: number; totalLinesDeleted: number; mergedPRs: unknown[] };
   usage?: { totalInputTokens: number; totalOutputTokens: number; totalCostUsd: number };
   finalState?: string;
   finalActivityState?: string;
@@ -108,7 +108,7 @@ function formatDate(unixMs: number): string {
 
 function truncate(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
-  return s.slice(0, maxLen - 3) + '...';
+  return `${s.slice(0, maxLen - 3)}...`;
 }
 
 function padRight(s: string, len: number): string {
@@ -154,8 +154,8 @@ function listSessions(args: string[]): void {
   // Apply filters
   if (filterUser) archives = archives.filter((a) => a.ownerId === filterUser || a.ownerName === filterUser);
   if (filterModel) archives = archives.filter((a) => a.model === filterModel);
-  if (sinceDate) archives = archives.filter((a) => a.archivedAt >= sinceDate!);
-  if (untilDate) archives = archives.filter((a) => a.archivedAt <= untilDate!);
+  if (sinceDate) archives = archives.filter((a) => a.archivedAt >= (sinceDate as number));
+  if (untilDate) archives = archives.filter((a) => a.archivedAt <= (untilDate as number));
 
   archives = archives.slice(0, limit);
 
@@ -203,8 +203,9 @@ function showSession(args: string[]): void {
   }
 
   // Find the most recent archive matching this key
-  const prefix = sanitizedKey + '_';
-  const matchingFiles = fs.readdirSync(ARCHIVES_DIR)
+  const prefix = `${sanitizedKey}_`;
+  const matchingFiles = fs
+    .readdirSync(ARCHIVES_DIR)
     .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
     .sort()
     .reverse();
@@ -243,7 +244,9 @@ function showSession(args: string[]): void {
     console.log(`\nIssue: ${archived.links.issue.label || ''} — ${archived.links.issue.url}`);
   }
   if (archived.links?.pr) {
-    console.log(`PR: ${archived.links.pr.label || ''} (${archived.links.pr.status || 'unknown'}) — ${archived.links.pr.url}`);
+    console.log(
+      `PR: ${archived.links.pr.label || ''} (${archived.links.pr.status || 'unknown'}) — ${archived.links.pr.url}`,
+    );
   }
 
   if (archived.mergeStats) {
