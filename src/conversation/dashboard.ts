@@ -2671,8 +2671,8 @@ async function doAction(key, action) {
 // ── Answer choice from dashboard ──
 async function answerChoice(key, choiceId, label, question, btnEl) {
   try {
-    // Disable all choice buttons in the same card to prevent double-click
-    var card = btnEl.closest('.card');
+    // Disable all choice buttons in the same card or panel to prevent double-click
+    var card = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (card) {
       card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
     }
@@ -2709,7 +2709,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
   } catch (e) {
     console.error('Answer choice error', e);
     // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (errCard) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
@@ -2943,9 +2943,15 @@ async function submitMultiChoice(key) {
     return;
   }
 
-  // Disable submit button
+  // Disable ALL interactive elements in the multi-choice form to prevent further clicks
   var btns = document.querySelectorAll('.mc-btn-submit');
   btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+  var mcForm = document.querySelector('.mc-form');
+  if (mcForm) {
+    mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
+    mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = true; });
+    mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+  }
 
   try {
     var mcHeaders = { 'Content-Type': 'application/json' };
@@ -2965,6 +2971,11 @@ async function submitMultiChoice(key) {
       var errMsg = errData.error || 'Failed (status ' + res.status + ')';
       alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
       btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+      if (mcForm) {
+        mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+        mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+        mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      }
     } else {
       // Success — clear state; WebSocket will re-render
       delete _mcState[key];
@@ -2973,6 +2984,11 @@ async function submitMultiChoice(key) {
     console.error('submitMultiChoice error', e);
     alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
     btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+    if (mcForm) {
+      mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+      mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+      mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+    }
   }
 }
 
