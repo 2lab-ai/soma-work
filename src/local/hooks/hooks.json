@@ -1,5 +1,5 @@
 {
-  "description": "ohmyclaude hooks: Ralph Wiggum stop hook + auto call tracking",
+  "description": "ohmyclaude hooks: Ralph Wiggum stop hook + auto call tracking + todo guard",
   "hooks": {
     "Stop": [
       {
@@ -7,11 +7,24 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/todo-guard-cleanup.sh"
           }
         ]
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/todo-guard.sh"
+          }
+        ]
+      },
       {
         "matcher": "Task",
         "hooks": [
