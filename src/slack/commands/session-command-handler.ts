@@ -1,4 +1,10 @@
-import { MODEL_ALIASES, type ModelId, userSettingsStore } from '../../user-settings-store';
+import {
+  DEFAULT_SHOW_THINKING,
+  DEFAULT_THINKING_ENABLED,
+  MODEL_ALIASES,
+  type ModelId,
+  userSettingsStore,
+} from '../../user-settings-store';
 import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
 import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '../output-flags';
@@ -46,6 +52,14 @@ export class SessionCommandHandler implements CommandHandler {
         return parsed.action === 'set'
           ? this.setSessionEffort(ctx, session, parsed.level!)
           : this.showSessionEffort(ctx, session);
+      case 'thinking':
+        return parsed.action === 'set'
+          ? this.setSessionThinking(ctx, session, parsed.value!)
+          : this.showSessionThinking(ctx, session);
+      case 'thinking_summary':
+        return parsed.action === 'set'
+          ? this.setSessionThinkingSummary(ctx, session, parsed.value!)
+          : this.showSessionThinkingSummary(ctx, session);
     }
   }
 
@@ -66,12 +80,22 @@ export class SessionCommandHandler implements CommandHandler {
     const userVerbosity = userSettingsStore.getUserDefaultLogVerbosity(user);
     const isVerbosityOverridden = verbosityName !== userVerbosity;
 
+    const userThinkingDefault = userSettingsStore.getUserThinkingEnabled(user);
+    const thinkingEnabled = session.thinkingEnabled ?? userThinkingDefault;
+    const isThinkingOverridden = session.thinkingEnabled != null && session.thinkingEnabled !== userThinkingDefault;
+
+    const userShowThinkingDefault = userSettingsStore.getUserShowThinking(user);
+    const showThinking = session.showThinking ?? userShowThinkingDefault;
+    const isShowThinkingOverridden = session.showThinking != null && session.showThinking !== userShowThinkingDefault;
+
     const lines: string[] = [
       '📋 *Session Info*',
       '',
       `*Model:* ${modelDisplay} (\`${modelId}\`)${isModelOverridden ? ' ⚡' : ''}`,
       `*Effort:* ${effortLevel}${isEffortOverridden ? ' ⚡' : ''}`,
       `*Verbosity:* ${verbosityName}${isVerbosityOverridden ? ' ⚡' : ''}`,
+      `*Thinking:* ${thinkingEnabled ? 'ON (adaptive)' : 'OFF'}${isThinkingOverridden ? ' ⚡' : ''}`,
+      `*Thinking Summary:* ${showThinking ? 'ON' : 'OFF'}${isShowThinkingOverridden ? ' ⚡' : ''}`,
     ];
 
     if (session.ownerName || session.ownerId) {
@@ -259,6 +283,74 @@ export class SessionCommandHandler implements CommandHandler {
     const warning = normalized === 'max' ? '\n_⚠️ `max` requires API key — will fail on Claude.ai subscription_' : '';
     await say({
       text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`$effort high\` to restore default._`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async showSessionThinking(ctx: CommandContext, session: any): Promise<CommandResult> {
+    const { say, threadTs, user } = ctx;
+    const userDefault = userSettingsStore.getUserThinkingEnabled(user);
+    const current = session.thinkingEnabled ?? userDefault;
+    const isOverridden = session.thinkingEnabled != null && session.thinkingEnabled !== userDefault;
+
+    await say({
+      text: `🧠 *Extended Thinking:* ${current ? 'ON (adaptive)' : 'OFF'}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async setSessionThinking(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
+    const { say, threadTs } = ctx;
+    const normalized = input.toLowerCase();
+
+    if (!['on', 'off', 'true', 'false', 'enable', 'disable'].includes(normalized)) {
+      await say({
+        text: '❌ Usage: `$thinking on` or `$thinking off`',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    const enabled = ['on', 'true', 'enable'].includes(normalized);
+    session.thinkingEnabled = enabled;
+    await say({
+      text: `⚡ *Extended Thinking:* ${enabled ? 'ON (adaptive)' : 'OFF'}\n_Takes effect on next message._`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async showSessionThinkingSummary(ctx: CommandContext, session: any): Promise<CommandResult> {
+    const { say, threadTs, user } = ctx;
+    const userDefault = userSettingsStore.getUserShowThinking(user);
+    const current = session.showThinking ?? userDefault;
+    const isOverridden = session.showThinking != null && session.showThinking !== userDefault;
+
+    await say({
+      text: `💭 *Thinking Summary Display:* ${current ? 'ON' : 'OFF'}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
+      thread_ts: threadTs,
+    });
+    return { handled: true };
+  }
+
+  private async setSessionThinkingSummary(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
+    const { say, threadTs } = ctx;
+    const normalized = input.toLowerCase();
+
+    if (!['on', 'off', 'true', 'false', 'enable', 'disable'].includes(normalized)) {
+      await say({
+        text: '❌ Usage: `$thinking_summary on` or `$thinking_summary off`',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    const show = ['on', 'true', 'enable'].includes(normalized);
+    session.showThinking = show;
+    await say({
+      text: `⚡ *Thinking Summary Display:* ${show ? 'ON' : 'OFF'}\n_Takes effect immediately._`,
       thread_ts: threadTs,
     });
     return { handled: true };

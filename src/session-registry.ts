@@ -1494,7 +1494,6 @@ export class SessionRegistry {
         if (sourceConvId) {
           session.conversationId = sourceConvId;
           count++;
-          continue;
         }
       }
     }

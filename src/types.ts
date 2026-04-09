@@ -296,6 +296,10 @@ export interface ConversationSession {
   logVerbosity?: number;
   // Effort level for Claude thinking (low/medium/high/max)
   effort?: 'low' | 'medium' | 'high' | 'max';
+  // Whether extended thinking (adaptive reasoning) is enabled for this session
+  thinkingEnabled?: boolean;
+  // Whether thinking output is shown in Slack for this session
+  showThinking?: boolean;
   // Thread model: user-initiated (default) or bot-initiated (bot creates root message)
   threadModel?: 'user-initiated' | 'bot-initiated';
   // For bot-initiated threads: the root message ts (used for chat.update)
