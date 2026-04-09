@@ -451,6 +451,13 @@ export class SessionRegistry {
     session.activityState = state;
     session.activityStateChangedAt = Date.now();
 
+    // Notify dashboard WebSocket clients (was missing — caused stale dashboard state)
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch {
+      /* fire-and-forget */
+    }
+
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)

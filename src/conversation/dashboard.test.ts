@@ -597,9 +597,9 @@ describe('Dashboard API', () => {
     expect(correctDoAction).not.toBeNull();
     expect(correctOpenPanel).not.toBeNull();
 
-    // There should be exactly 3 doAction calls (stop, close, trash)
+    // There should be exactly 4 doAction calls (stop, close for idle/waiting, close for sleeping, trash for archived)
     // and 2 openPanel calls (card click + multi-choice "답변하기" button)
-    expect(correctDoAction!.length).toBe(3);
+    expect(correctDoAction!.length).toBe(4);
     expect(correctOpenPanel!.length).toBe(2);
   });
 
@@ -619,8 +619,8 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 3 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 11 closing patterns
-    expect(actionClosings!.length).toBe(11);
+    // 4 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 12 closing patterns
+    expect(actionClosings!.length).toBe(12);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
