@@ -408,7 +408,8 @@ class SlackMcpServer extends BaseMcpServer {
       const currentRestored = this.restoreCodeBlocks(current, codeBlocks);
 
       if (currentRestored.length + restored.length + 2 > MAX_SECTION_LEN && currentRestored) {
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: currentRestored.trim() } });
+        // Flush via pushHardSplit so oversized non-final paragraphs are split correctly
+        this.pushHardSplit(currentRestored.trim(), blocks, MAX_SECTION_LEN, MAX_BLOCKS);
         current = para;
         if (blocks.length >= MAX_BLOCKS) break;
       } else {
