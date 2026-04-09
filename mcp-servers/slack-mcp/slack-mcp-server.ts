@@ -128,16 +128,12 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'send_thread_message',
-        description: [
-          'Post a text message to a Slack thread.',
-          'Use thread param to target the work thread (default) or original source thread.',
-          'This allows posting status updates or summaries back to the original conversation.',
-        ].join('\n'),
+        description: 'Reply to the current conversation thread. Supports markdown formatting (bold, italic, code, links, headings).',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            text: { type: 'string', description: 'Message text to post' },
-            thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source" (original thread before migration)' },
+            text: { type: 'string', description: 'Message text (markdown supported — converted to Slack mrkdwn automatically)' },
+            thread: { type: 'string', description: '"work" (default) or "source" (original thread before migration)' },
           },
           required: ['text'],
         },
@@ -337,6 +333,129 @@ class SlackMcpServer extends BaseMcpServer {
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   }
 
+  // ── Markdown → Slack mrkdwn ─────────────────────────────
+
+  /**
+   * Convert standard markdown to Slack mrkdwn format.
+   * Preserves code blocks/inline code, converts bold/italic/links/headings.
+   *
+   * Mapping:  markdown **bold** / __bold__  →  Slack *bold*
+   *           markdown _italic_             →  Slack _italic_ (no-op)
+   *           markdown *italic*             →  left as-is (Slack renders as bold — known limitation)
+   */
+  private formatToMrkdwn(text: string): string {
+    const preserved: string[] = [];
+
+    // Extract code blocks and inline code to protect from formatting
+    let processed = text
+      .replace(/```[\s\S]*?```/g, (match) => {
+        const idx = preserved.length;
+        // Strip language tag from fenced code blocks
+        const cleaned = match.replace(/^```\w*\n/, '```\n');
+        preserved.push(cleaned);
+        return `\x00P${idx}\x00`;
+      })
+      .replace(/`[^`]+`/g, (match) => {
+        const idx = preserved.length;
+        preserved.push(match);
+        return `\x00P${idx}\x00`;
+      });
+
+    // Markdown → Slack mrkdwn conversions
+    processed = processed
+      .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*
+      .replace(/__(.+?)__/g, '*$1*')                    // __bold__ → *bold* (md bold, not italic)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')   // [text](url) → <url|text>
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');            // # heading → *heading*
+
+    // Restore preserved code
+    for (let i = 0; i < preserved.length; i++) {
+      processed = processed.replace(`\x00P${i}\x00`, preserved[i]);
+    }
+
+    return processed;
+  }
+
+  /**
+   * Build Slack section blocks from mrkdwn text.
+   * Splits on paragraph boundaries when text exceeds 3000-char section limit.
+   * Protects fenced code blocks from being split across sections.
+   */
+  private buildMrkdwnBlocks(mrkdwn: string): Array<Record<string, unknown>> {
+    const MAX_SECTION_LEN = 3000;
+    const MAX_BLOCKS = 50;
+
+    if (mrkdwn.length <= MAX_SECTION_LEN) {
+      return [{ type: 'section', text: { type: 'mrkdwn', text: mrkdwn } }];
+    }
+
+    // Protect code blocks from paragraph splitting by replacing with placeholders
+    const codeBlocks: string[] = [];
+    const withPlaceholders = mrkdwn.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(match);
+      return `\x01CB${idx}\x01`;
+    });
+
+    // Split on paragraph boundaries
+    const paragraphs = withPlaceholders.split(/\n\n+/);
+    const blocks: Array<Record<string, unknown>> = [];
+    let current = '';
+
+    for (const para of paragraphs) {
+      // Restore code blocks in this paragraph for length calculation
+      const restored = this.restoreCodeBlocks(para, codeBlocks);
+      const currentRestored = this.restoreCodeBlocks(current, codeBlocks);
+
+      if (currentRestored.length + restored.length + 2 > MAX_SECTION_LEN && currentRestored) {
+        // Flush via pushHardSplit so oversized non-final paragraphs are split correctly
+        this.pushHardSplit(currentRestored.trim(), blocks, MAX_SECTION_LEN, MAX_BLOCKS);
+        current = para;
+        if (blocks.length >= MAX_BLOCKS) break;
+      } else {
+        current += (current ? '\n\n' : '') + para;
+      }
+    }
+
+    // Flush remaining content — hard-split if it exceeds section limit
+    if (current && blocks.length < MAX_BLOCKS) {
+      const finalText = this.restoreCodeBlocks(current, codeBlocks).trim();
+      this.pushHardSplit(finalText, blocks, MAX_SECTION_LEN, MAX_BLOCKS);
+    }
+
+    return blocks;
+  }
+
+  /** Restore code-block placeholders. */
+  private restoreCodeBlocks(text: string, codeBlocks: string[]): string {
+    let result = text;
+    for (let i = 0; i < codeBlocks.length; i++) {
+      result = result.replace(`\x01CB${i}\x01`, codeBlocks[i]);
+    }
+    return result;
+  }
+
+  /** Hard-split text that exceeds maxLen on newline boundaries, never truncating. */
+  private pushHardSplit(
+    text: string,
+    blocks: Array<Record<string, unknown>>,
+    maxLen: number,
+    maxBlocks: number,
+  ): void {
+    let remaining = text;
+    while (remaining.length > 0 && blocks.length < maxBlocks) {
+      if (remaining.length <= maxLen) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining } });
+        break;
+      }
+      // Find last newline within limit for clean break
+      let splitAt = remaining.lastIndexOf('\n', maxLen);
+      if (splitAt <= 0) splitAt = maxLen; // no newline found — hard break at limit
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining.slice(0, splitAt) } });
+      remaining = remaining.slice(splitAt).replace(/^\n/, '');
+    }
+  }
+
   // ── send_thread_message ────────────────────────────────
 
   private async handleSendThreadMessage(args: {
@@ -347,10 +466,14 @@ class SlackMcpServer extends BaseMcpServer {
     const resolved = this.resolveThread(args.thread);
     this.logger.info('Sending message', { thread: args.thread || 'work', channel: resolved.channel });
 
+    const mrkdwn = this.formatToMrkdwn(args.text);
+    const blocks = this.buildMrkdwnBlocks(mrkdwn);
+
     const result = await this.slack.chat.postMessage({
       channel: resolved.channel,
       thread_ts: resolved.threadTs,
-      text: args.text,
+      text: mrkdwn,    // fallback for notifications
+      blocks,           // rich rendering
     });
 
     return {
