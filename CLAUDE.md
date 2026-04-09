@@ -1,123 +1,94 @@
-# soma-work
+# Soma Work - Bot Workflow Rules
 
-Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 TypeScript 봇.
+## 배포 시 릴리즈 노트 자동 생성 (GitHub Issue)
 
-## Issue Tracking
+develop 브랜치를 dev2 또는 stage에 배포할 때마다 아래 절차를 반드시 수행한다.
 
-`bd`로 태스크 관리. `bd ready`로 작업 확인, `bd update <id> --status in_progress`로 시작, `bd close <id> --reason "근거"`로 완료.
-상세 규칙은 `.claude/rules/issuetracking.md` 참조.
+### 절차
+1. 마지막 배포 태그/커밋과 현재 커밋 간 `git log --oneline` 및 `git diff --stat`를 분석
+2. 운영자 체감 변경사항만 선별 (내부 리팩토링, 코드 정리, CI 설정 변경 등 제외)
+3. `GucciAdminService/Config/SiteMenuStruct.yaml`의 Path 필드에서 LinkUrl 매핑
+4. **GitHub Issue를 생성하여 릴리즈 노트를 기록한다** (insightquest-io/Gucci 리포)
 
-## Slack Reference
+### GitHub Issue 생성 규칙
 
-- Slack UI/API/AI 앱 구현 기준 문서는 `docs/slack-block-kit.md`.
-- Slack Block Kit payload 필드를 추가하거나 변경할 때는 `docs/slack-block-kit.md`의 제약과 공식 링크를 먼저 확인.
+**Issue 제목**: `[{환경}] Release Note {YYYY-MM-DD}`
+- 예: `[dev2] Release Note 2026-04-09`
 
-## Architecture
+**Issue 라벨**: `release-note`, `{환경}` (dev2 / stage / prod)
 
-**Facade Pattern** — 복잡한 서브시스템을 단순한 인터페이스로 제공:
+**Issue 본문 템플릿**:
+```markdown
+## Release Note — {YYYY-MM-DD}
 
-| Facade | 역할 | 위임 대상 |
-|--------|------|----------|
-| `SlackHandler` | Slack 이벤트 처리 | `EventRouter`, `CommandRouter`, `StreamProcessor` |
-| `ClaudeHandler` | Claude SDK 통합 | `SessionRegistry`, `PromptBuilder`, `McpConfigBuilder` |
-| `McpManager` | MCP 서버 관리 | `ConfigLoader`, `ServerFactory`, `InfoFormatter` |
+**Environment**: {dev2 | stage | prod}
+**Deploy commit**: {short SHA} (`{branch}`)
+**Previous deploy**: {short SHA}
 
-**Pipeline**: `InputProcessor` → `SessionInitializer` (dispatch + onboarding + channel routing) → `StreamExecutor`
+### Changes
 
-### Module Layout
+| Category | Title | Description | LinkUrl |
+|----------|-------|-------------|---------|
+| 🆕 New | ... | ... | /path |
+| ✨ Improved | ... | ... | /path |
+| 🔧 Fixed | ... | ... | /path |
 
-```
-src/
-├── slack/           # Slack 모듈 (SRP 분리)
-│   ├── actions/     # 인터랙티브 액션 핸들러 (8개)
-│   ├── pipeline/    # 스트림 처리 파이프라인
-│   ├── commands/    # 슬래시 명령어 핸들러 (16개)
-│   ├── directives/  # 채널/세션 링크 디렉티브
-│   └── formatters/  # 출력 포맷터
-├── conversation/    # 대화 기록 및 리플레이
-├── model-commands/  # 모델 커맨드 카탈로그 & 검증
-├── mcp/             # MCP 서버 관리
-├── github/          # GitHub App 인증 + Git 자격증명
-├── permission/      # Slack 권한 프롬프트
-├── prompt/          # 시스템 프롬프트 + 워크플로우 (9개)
-├── persona/         # 봇 페르소나 (12개)
-└── local/           # Claude Code SDK 로컬 플러그인
-```
+### Commits included
+- {commit hash} {message}
+- ...
 
-## Design Decisions
+<details>
+<summary>API Payload (JSON)</summary>
 
-1. **Facade Pattern**: 복잡한 서브시스템을 단순한 인터페이스로 제공
-2. **Single Responsibility**: 각 모듈이 하나의 책임만 담당
-3. **Pipeline Architecture**: 입력 전처리 → 세션 초기화 → 스트림 실행
-4. **Append-Only Messages**: Slack 메시지 편집 대신 새 메시지 추가
-5. **Session-Based Context**: 대화별 세션 유지
-6. **Hierarchical CWD**: Thread > Channel > User 우선순위
-7. **Workflow Dispatch**: 입력 분류 → 전문 워크플로우 프롬프트 적용
-8. **Dependency Injection**: 테스트 용이성을 위한 의존성 주입
+\`\`\`json
+{AddReleaseNoteReq JSON}
+\`\`\`
 
-## Testing (TDD Required)
-
-**모든 코드 변경은 Red-Green-Refactor TDD 프로세스 필수.**
-
-### 워크플로우
-
-1. **RED**: 실패하는 테스트 작성 → `npx vitest run` → 테스트 실패 확인
-2. **GREEN**: 최소한의 구현 → `npx vitest run` → 테스트 통과 확인
-3. **REFACTOR**: 코드 정리 → 테스트 여전히 통과 확인
-
-### Push 규칙
-
-- TDD 증명(RED→GREEN 로그) 없으면 `git push` 금지
-- 커밋 전 반드시: `npx tsc --noEmit && npx vitest run`
-- 새 기능/버그 수정 시 테스트가 먼저 존재해야 함
-
-### Mock 전략
-
-- **Slack Mock**: `src/test-utils/mock-slack-api.ts` — SlackApiHelper mock factory
-- **Model Mock**: `src/test-utils/mock-claude-handler.ts` — ClaudeHandler mock factory
-- **Session Mock**: `src/test-utils/mock-session.ts` — Session mock factory
-- 모든 기능은 Mock 기반 e2e 테스트 커버리지 확보 목표
-
-## Deployment
-
-main 머지 시 자동 배포 없음. 명시적 브랜치 push로만 배포된다.
-
-| 명령 | 대상 환경 | 배포 호스트 |
-|------|----------|------------|
-| `git push origin main:deploy/dev` | dev | mac-mini dev, oudwood-512 dev |
-| `git push origin main:deploy/prod` | prod (main) | mac-mini main |
-
-수동 트리거도 가능:
-```bash
-gh workflow run deploy --ref main -f confirm=deploy
+</details>
 ```
 
-## Key Gotchas
+### 릴리즈 노트 항목 작성 규칙
 
-- **듀얼 인스턴스 금지**: 같은 Slack 토큰으로 여러 인스턴스 실행 시 메시지 중복/충돌. 개발은 `npm start`만 사용.
-- **고정 작업 디렉토리**: 각 유저별 `{BASE_DIRECTORY}/{userId}/` 고정. 유저가 직접 설정 불가 (보안 격리).
-- **Git push multi-account**: `GITHUB_TOKEN`이 bot 토큰이라 push 불가 시:
-  ```bash
-  ICEDAC_TOKEN=$(gh auth token --user icedac)
-  git push "https://icedac:${ICEDAC_TOKEN}@github.com/OWNER/REPO.git" BRANCH
-  ```
-- **Permission MCP Server**: `mcp-config-builder.ts`에서 `__filename` 기반 동적 확장자 사용 (.ts dev / .js prod). 하드코딩 금지.
+**제목 (Title)**
+- 명사형 마무리, 15자 이내
+- 카테고리와 중복되는 동사 제외 (New인데 "추가" 쓰지 않음)
+- 개발 용어 금지 (API, 엔드포인트, 리팩토링 등)
 
-## Slack Commands
+**설명 (Description)** - 카테고리별 패턴:
+- New (0): `[메뉴 경로]에서 [무엇을] [할 수 있습니다]`
+- Improved (1): `[메뉴 경로]에서 [기존 방식]이 [변경 방식]으로 변경됩니다`
+- Fixed (2): `[메뉴 경로]에서 [증상] 문제를 수정했습니다`
 
-| 명령 | 설명 |
-|------|------|
-| `cwd` | 현재 작업 디렉토리 |
-| `mcp` / `mcp reload` | MCP 서버 목록 / 리로드 |
-| `bypass [on/off]` | 권한 프롬프트 우회 |
-| `persona [name]` | 페르소나 변경 |
-| `model [name]` | 모델 변경 (sonnet/opus/haiku) |
-| `sessions` | 활성 세션 목록 |
-| `new` / `renew` | 세션 초기화 / 갱신 |
-| `close` | 현재 스레드 세션 종료 |
-| `context` | 컨텍스트 윈도우 상태 |
-| `restore` | 세션 복원 |
-| `link [url]` | 세션에 이슈/PR/문서 링크 첨부 |
-| `onboarding` | 온보딩 워크플로우 실행 |
-| `verbosity [level]` | 출력 상세도 설정 |
-| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) |
+**LinkUrl**: SiteMenuStruct.yaml의 Path 필드와 매핑
+
+**Category**: 0=New, 1=Improved, 2=Fixed
+
+### JSON Payload 형식
+```json
+{
+  "ReleaseNote": {
+    "Version": "YYYY.MM.DD",
+    "CreatedAt": "ISO8601",
+    "UpdatedAt": null,
+    "Items": [
+      {
+        "Category": 0,
+        "Title": "15자 이내 명사형",
+        "Description": "카테고리별 패턴에 따른 설명",
+        "LinkUrl": "/menu/path",
+        "Order": 0
+      }
+    ]
+  }
+}
+```
+
+### API 연동 (네트워크 접근 가능 시)
+- Endpoint: `POST /api/Internal/ReleaseNotes`
+- Header: `X-API-KEY: {ADMIN_INGEST_AUTH_KEY}`
+- Body: 위 JSON 형식
+- 현재 네트워크 격리 상태이므로 Issue 내 JSON payload로 대체
+
+### 선별 기준
+- 포함: UI 변경, 새 기능, 설정 항목 추가/변경, 버그 수정
+- 제외: 리팩토링, 코드 정리, 테스트 추가, CI/CD 변경, 내부 구조 변경, 주석 수정
