@@ -128,16 +128,12 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'send_thread_message',
-        description: [
-          'Post a text message to a Slack thread.',
-          'Use thread param to target the work thread (default) or original source thread.',
-          'This allows posting status updates or summaries back to the original conversation.',
-        ].join('\n'),
+        description: 'Reply to the current conversation thread. Supports markdown formatting (bold, italic, code, links, headings).',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            text: { type: 'string', description: 'Message text to post' },
-            thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source" (original thread before migration)' },
+            text: { type: 'string', description: 'Message text (markdown supported — converted to Slack mrkdwn automatically)' },
+            thread: { type: 'string', description: '"work" (default) or "source" (original thread before migration)' },
           },
           required: ['text'],
         },
@@ -337,6 +333,81 @@ class SlackMcpServer extends BaseMcpServer {
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   }
 
+  // ── Markdown → Slack mrkdwn ─────────────────────────────
+
+  /**
+   * Convert standard markdown to Slack mrkdwn format.
+   * Preserves code blocks/inline code, converts bold/italic/links/headings.
+   */
+  private formatToMrkdwn(text: string): string {
+    const preserved: string[] = [];
+
+    // Extract code blocks and inline code to protect from formatting
+    let processed = text
+      .replace(/```[\s\S]*?```/g, (match) => {
+        const idx = preserved.length;
+        // Strip language tag from fenced code blocks
+        const cleaned = match.replace(/^```\w*\n/, '```\n');
+        preserved.push(cleaned);
+        return `\x00P${idx}\x00`;
+      })
+      .replace(/`[^`]+`/g, (match) => {
+        const idx = preserved.length;
+        preserved.push(match);
+        return `\x00P${idx}\x00`;
+      });
+
+    // Markdown → Slack mrkdwn conversions
+    processed = processed
+      .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*
+      .replace(/__(.+?)__/g, '_$1_')                    // __italic__ → _italic_
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')   // [text](url) → <url|text>
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');            // # heading → *heading*
+
+    // Restore preserved code
+    for (let i = 0; i < preserved.length; i++) {
+      processed = processed.replace(`\x00P${i}\x00`, preserved[i]);
+    }
+
+    return processed;
+  }
+
+  /**
+   * Build Slack section blocks from mrkdwn text.
+   * Splits on paragraph boundaries when text exceeds 3000-char section limit.
+   */
+  private buildMrkdwnBlocks(mrkdwn: string): Array<Record<string, unknown>> {
+    const MAX_SECTION_LEN = 3000;
+    const MAX_BLOCKS = 50;
+
+    if (mrkdwn.length <= MAX_SECTION_LEN) {
+      return [{ type: 'section', text: { type: 'mrkdwn', text: mrkdwn } }];
+    }
+
+    // Split on paragraph boundaries for long text
+    const paragraphs = mrkdwn.split(/\n\n+/);
+    const blocks: Array<Record<string, unknown>> = [];
+    let current = '';
+
+    for (const para of paragraphs) {
+      if (current.length + para.length + 2 > MAX_SECTION_LEN && current) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current.trim() } });
+        current = para;
+        if (blocks.length >= MAX_BLOCKS) break;
+      } else {
+        current += (current ? '\n\n' : '') + para;
+      }
+    }
+
+    if (current && blocks.length < MAX_BLOCKS) {
+      // If a single paragraph exceeds limit, truncate
+      const chunk = current.trim().slice(0, MAX_SECTION_LEN);
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: chunk } });
+    }
+
+    return blocks;
+  }
+
   // ── send_thread_message ────────────────────────────────
 
   private async handleSendThreadMessage(args: {
@@ -347,10 +418,14 @@ class SlackMcpServer extends BaseMcpServer {
     const resolved = this.resolveThread(args.thread);
     this.logger.info('Sending message', { thread: args.thread || 'work', channel: resolved.channel });
 
+    const mrkdwn = this.formatToMrkdwn(args.text);
+    const blocks = this.buildMrkdwnBlocks(mrkdwn);
+
     const result = await this.slack.chat.postMessage({
       channel: resolved.channel,
       thread_ts: resolved.threadTs,
-      text: args.text,
+      text: mrkdwn,    // fallback for notifications
+      blocks,           // rich rendering
     });
 
     return {
