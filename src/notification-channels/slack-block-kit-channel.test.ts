@@ -70,7 +70,21 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
         .join('\n');
 
       expect(allText).toContain('`default`');
-      expect(allText).toContain('`opus-4.6`');
+      expect(allText).toContain('opus-4.6');
+    });
+
+    it('renders effort next to model when effort is present', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeRichEvent({ effort: 'high' }));
+
+      const call = api.postMessage.mock.calls[0];
+      const blocks = call[2].attachments[0].blocks;
+      const allText = blocks
+        .map((b: any) => b.elements?.map((e: any) => e.text).join('') ?? b.text?.text ?? '')
+        .join('\n');
+
+      expect(allText).toContain('`opus-4.6 | high`');
     });
   });
 
