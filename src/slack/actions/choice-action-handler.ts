@@ -46,6 +46,7 @@ export class ChoiceActionHandler {
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
       // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
+      // Immediately replace buttons to prevent double-click on other options
       if (channel) {
         const completedBlocks = [
           {
@@ -57,24 +58,30 @@ export class ChoiceActionHandler {
           },
         ];
         const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
-        for (const targetTs of targetTimestamps) {
-          try {
-            await this.ctx.slackApi.updateMessage(
-              channel,
-              targetTs,
-              `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-              completedBlocks,
-              [], // 기존 attachments(버튼) 제거
-            );
-          } catch (error) {
-            this.logger.warn('Failed to update choice message', { targetTs, error });
-          }
-        }
+        await Promise.all(
+          targetTimestamps.map((targetTs) =>
+            this.ctx.slackApi
+              .updateMessage(
+                channel,
+                targetTs,
+                `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+                completedBlocks,
+                [], // 기존 attachments(버튼) 제거
+              )
+              .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error })),
+          ),
+        );
+        // Clear action panel choice immediately (thread header buttons)
+        this.ctx.threadPanel
+          ?.clearChoice(sessionKey)
+          .catch((err: unknown) =>
+            this.logger.debug('Failed to clear choice panel (user choice)', { sessionKey, error: err }),
+          );
       }
 
       // 세션 확인 및 메시지 처리
       if (session) {
-        await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // clearChoice already fired above (line 75); only clear pending question here
         // Clear pending question from session (dashboard sync)
         if (session.actionPanel) {
           session.actionPanel.pendingQuestion = undefined;
@@ -228,6 +235,31 @@ export class ChoiceActionHandler {
         return;
       }
 
+      // ── Immediately replace form with "submitting" indicator ──
+      // Slack buttons cannot be disabled; replace the entire message to prevent further clicks
+      if (channel && messageTs) {
+        const submittingBlocks = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: '⏳ *제출 처리 중...*' },
+          },
+        ];
+        const immediateTargets = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs);
+        await Promise.all(
+          immediateTargets.map((ts) =>
+            this.ctx.slackApi
+              .updateMessage(channel, ts, '⏳ 제출 처리 중...', submittingBlocks, [])
+              .catch((err: unknown) => this.logger.debug('Failed to show submitting state', { ts, error: err })),
+          ),
+        );
+      }
+      // Clear action panel choice immediately (thread header buttons)
+      this.ctx.threadPanel
+        ?.clearChoice(sessionKey)
+        .catch((err: unknown) =>
+          this.logger.debug('Failed to clear choice panel (form submit)', { sessionKey, error: err }),
+        );
+
       const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
@@ -365,8 +397,7 @@ export class ChoiceActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
-      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
-      // Clear pending question from session (dashboard sync)
+      // clearChoice already fired in handleFormSubmit; only clear pending question here
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
       }
