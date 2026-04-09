@@ -33,9 +33,40 @@ SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 
 # ── Always-exempt tools (prevent deadlock) ──
-# ToolSearch: required to load deferred tool schemas (e.g. TodoWrite itself)
-# Without this, ToolSearch is blocked → can't load TodoWrite schema → deadlock
-[[ "$TOOL_NAME" == "ToolSearch" ]] && exit 0
+# These tools must never be blocked or counted — blocking them creates a deadlock:
+#   ToolSearch blocked → can't load TodoWrite schema → can't call TodoWrite → all tools stuck
+# They exit before touching any state files, locks, or counters.
+case "$TOOL_NAME" in
+  ToolSearch)
+    # Required to load deferred tool schemas (e.g. TodoWrite itself)
+    exit 0
+    ;;
+  TodoWrite)
+    # The tool this guard enforces — blocking it is self-defeating
+    # Set marker only if payload contains a valid (non-empty) todos array
+    if [[ -n "$SESSION_ID" ]]; then
+      TODO_LEN=$(echo "$HOOK_INPUT" | jq '.tool_input.todos | if type == "array" then length else 0 end' 2>/dev/null || echo "0")
+      if [[ "$TODO_LEN" -gt 0 ]]; then
+        SAFE_ID=$(echo "$SESSION_ID" | tr -cd '[:alnum:]_-')
+        STATE_FILE="$STATE_DIR/session_${SAFE_ID}.todo_guard.json"
+        LOCK_DIR="$STATE_DIR/session_${SAFE_ID}.todo_guard.lock"
+        LOCK_ATTEMPTS=0
+        while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+          LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+          [[ $LOCK_ATTEMPTS -ge 50 ]] && break
+          sleep 0.01
+        done
+        COUNT=$(jq -r '.count // 0' "$STATE_FILE" 2>/dev/null || echo "0")
+        NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
+        echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
+        rmdir "$LOCK_DIR" 2>/dev/null
+      else
+        echo "⚠️ todo-guard: TodoWrite with empty/invalid payload — marker not set" >&2
+      fi
+    fi
+    exit 0
+    ;;
+esac
 
 # ── Fail-open: no session_id → skip ──
 if [[ -z "$SESSION_ID" ]]; then
@@ -47,16 +78,6 @@ fi
 SAFE_ID=$(echo "$SESSION_ID" | tr -cd '[:alnum:]_-')
 STATE_FILE="$STATE_DIR/session_${SAFE_ID}.todo_guard.json"
 LOCK_DIR="$STATE_DIR/session_${SAFE_ID}.todo_guard.lock"
-
-# ── Check if TodoWrite with valid payload ──
-IS_TODO_WRITE=false
-if [[ "$TOOL_NAME" == "TodoWrite" ]]; then
-  # Validate: tool_input.todos must be a non-empty array
-  TODO_LEN=$(echo "$HOOK_INPUT" | jq '.tool_input.todos | if type == "array" then length else 0 end' 2>/dev/null || echo "0")
-  if [[ "$TODO_LEN" -gt 0 ]]; then
-    IS_TODO_WRITE=true
-  fi
-fi
 
 # ── Acquire lock (mkdir-based, same pattern as call-tracker.sh) ──
 LOCK_ATTEMPTS=0
@@ -81,15 +102,6 @@ else
 fi
 
 NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
-
-# ── TodoWrite → always pass; set marker only if valid payload ──
-# TodoWrite must never be blocked by its own guard (self-defeating)
-if [[ "$TOOL_NAME" == "TodoWrite" ]]; then
-  if [[ "$IS_TODO_WRITE" == "true" ]]; then
-    echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
-  fi
-  exit 0
-fi
 
 # ── Already has todos → pass ──
 if [[ "$TODO_EXISTS" == "true" ]]; then

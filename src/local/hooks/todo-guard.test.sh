@@ -308,6 +308,52 @@ assert_json_field "Session A count=4" "$TEST_STATE_DIR/session_session_a.todo_gu
 assert_json_field "Session B count=1" "$TEST_STATE_DIR/session_session_b.todo_guard.json" ".count" "1"
 echo ""
 
+# ── Test 15: session_id 없을 때 ToolSearch → 통과 + 상태 파일 미생성 ──
+echo "Test 15: session_id 없는 ToolSearch → 통과, 상태 파일 미생성"
+setup
+echo '{"tool_name":"ToolSearch"}' | bash "$TEST_STATE_DIR/hook.sh" 2>/dev/null
+assert_exit "ToolSearch without session_id passes" 0 $?
+# 상태 파일이 생성되지 않았는지 확인
+STATE_FILES=$(ls "$TEST_STATE_DIR"/session_*.json 2>/dev/null | wc -l)
+TOTAL=$((TOTAL + 1))
+if [[ "$STATE_FILES" -eq 0 ]]; then
+  echo -e "  ${GREEN}✓${NC} No state files created"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}✗${NC} State files unexpectedly created ($STATE_FILES found)"
+  FAIL=$((FAIL + 1))
+fi
+echo ""
+
+# ── Test 16: 깨진 state 파일에서도 exempt 도구 통과 ──
+echo "Test 16: 깨진 state 파일에서도 ToolSearch/TodoWrite 통과"
+setup
+# 깨진 JSON을 state 파일에 작성
+echo "NOT VALID JSON {{{{" > "$TEST_STATE_DIR/session_test16.todo_guard.json"
+run "$(make_input "test16" "ToolSearch")"
+assert_exit "ToolSearch passes with corrupted state" 0 $?
+run "$(make_input "test16" "TodoWrite" '{"todos":[{"content":"task","status":"pending","activeForm":"working"}]}')"
+assert_exit "TodoWrite passes with corrupted state" 0 $?
+echo ""
+
+# ── Test 17: 빈 TodoWrite 연속 호출 → 카운터 불변 + 일반 도구 threshold 차단 ──
+echo "Test 17: 빈 TodoWrite 연속 호출 → 카운터 불변, 일반 도구는 차단"
+setup
+for i in 1 2 3 4; do
+  run "$(make_input "test17" "Read")" >/dev/null
+done
+# 빈 TodoWrite 5번 연속 호출
+for i in 1 2 3 4 5; do
+  run "$(make_input "test17" "TodoWrite" '{"todos":[]}')"
+  assert_exit "Empty TodoWrite $i passes" 0 $?
+done
+# 카운터는 4로 유지 (빈 TodoWrite가 카운터를 증가시키지 않음)
+assert_json_field "count still 4 after empty TodoWrites" "$TEST_STATE_DIR/session_test17.todo_guard.json" ".count" "4"
+# 다음 일반 도구 호출은 5번째이므로 차단
+run "$(make_input "test17" "Edit")"
+assert_exit "Regular tool blocked at threshold" 2 $?
+echo ""
+
 # ═══════════════════════════════════════
 teardown
 echo -e "${YELLOW}═══ Results ═══${NC}"
