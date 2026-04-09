@@ -532,7 +532,6 @@ export function applyInstructionOperations(
         instructions.length = 0;
         changed = true;
       }
-      continue;
     }
   }
   return changed;
