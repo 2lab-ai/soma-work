@@ -11,6 +11,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { applyInstructionOperations } from './model-commands/catalog';
 import { normalizeTmpPath } from './path-utils';
+import { getArchiveStore } from './session-archive';
 import type {
   ActionPanelState,
   ActivityState,
@@ -1127,6 +1128,9 @@ export class SessionRegistry {
       .emitSessionClosed(session, sessionKey)
       .catch((err) => this.logger.debug('metrics emit failed', err));
 
+    // Archive session metadata to disk before deletion (#401)
+    getArchiveStore().archive(session, sessionKey, 'terminated');
+
     this.cleanupSourceWorkingDirs(session);
     this.clearOnIdleCallbacks(sessionKey); // Clean up any pending cron callbacks
     this.sessions.delete(sessionKey);
@@ -1168,6 +1172,9 @@ export class SessionRegistry {
               this.logger.error('Failed to send sleep expiry message', error);
             }
           }
+          // Archive session metadata to disk before deletion (#401)
+          getArchiveStore().archive(session, key, 'sleep_expired');
+
           this.cleanupSourceWorkingDirs(session);
           this.clearOnIdleCallbacks(key); // Clean up any pending cron callbacks
           this.sessions.delete(key);
@@ -1333,6 +1340,45 @@ export class SessionRegistry {
   }
 
   /**
+   * Archive a serialized session during loadSessions() when it's being discarded (#401).
+   * Creates a minimal ConversationSession from serialized data to pass to the archive store.
+   */
+  private archiveSerializedOnLoad(
+    serialized: SerializedSession,
+    lastActivity: Date,
+    reason: 'terminated' | 'sleep_expired',
+  ): void {
+    try {
+      // Skip if already archived (prevents duplicates on repeated restarts)
+      if (getArchiveStore().exists(serialized.key)) return;
+
+      const session: ConversationSession = {
+        ownerId: serialized.ownerId || serialized.userId,
+        ownerName: serialized.ownerName,
+        userId: serialized.userId,
+        channelId: serialized.channelId,
+        threadTs: serialized.threadTs,
+        sessionId: serialized.sessionId,
+        isActive: false,
+        lastActivity,
+        title: serialized.title,
+        model: serialized.model,
+        state: serialized.state || 'MAIN',
+        workflow: serialized.workflow || 'default',
+        links: serialized.links,
+        linkHistory: serialized.linkHistory,
+        conversationId: serialized.conversationId,
+        mergeStats: serialized.mergeStats,
+        instructions: serialized.instructions,
+        activityState: serialized.activityState || 'idle',
+      };
+      getArchiveStore().archive(session, serialized.key, reason);
+    } catch (err) {
+      this.logger.debug('Failed to archive session during load', { key: serialized.key, error: err });
+    }
+  }
+
+  /**
    * Load sessions from file after restart
    */
   loadSessions(): number {
@@ -1358,7 +1404,8 @@ export class SessionRegistry {
         if (serialized.state === 'SLEEPING') {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1;
           if (sleepAge >= MAX_SLEEP_DURATION) {
-            // Cleanup sourceWorkingDirs before discarding expired session
+            // Archive expired session before discarding (#401)
+            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -1366,7 +1413,8 @@ export class SessionRegistry {
           // For active sessions: check against 24h timeout
           const sessionAge = now - lastActivity.getTime();
           if (sessionAge >= maxAge) {
-            // Cleanup sourceWorkingDirs before discarding expired session
+            // Archive expired session before discarding (#401)
+            this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }

@@ -23,6 +23,7 @@ import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
+import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
@@ -305,6 +306,56 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   };
 }
 
+// Dashboard archive display window: 48 hours
+const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Convert an ArchivedSession to KanbanSession for the closed column.
+ * Trace: Scenario 3, Section 3a transformation
+ */
+export function archivedToKanban(archived: ArchivedSession): KanbanSession {
+  return {
+    key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
+    title: archived.title || 'Untitled',
+    ownerName: archived.ownerName || archived.ownerId || 'unknown',
+    ownerId: archived.ownerId || '',
+    workflow: archived.workflow || 'default',
+    model: archived.model || 'unknown',
+    channelId: archived.channelId,
+    threadTs: archived.threadTs,
+    activityState: 'idle', // Archived sessions are not active
+    sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
+    terminated: true,
+    conversationId: archived.conversationId,
+    lastActivity: archived.lastActivity,
+    issueUrl: archived.links?.issue?.url,
+    issueLabel: archived.links?.issue?.label,
+    issueTitle: archived.links?.issue?.title,
+    prUrl: archived.links?.pr?.url,
+    prLabel: archived.links?.pr?.label,
+    prTitle: archived.links?.pr?.title,
+    prStatus: archived.links?.pr?.status,
+    mergeStats: archived.mergeStats
+      ? {
+          totalLinesAdded: archived.mergeStats.totalLinesAdded,
+          totalLinesDeleted: archived.mergeStats.totalLinesDeleted,
+        }
+      : undefined,
+    tokenUsage: archived.usage
+      ? {
+          totalInputTokens: archived.usage.totalInputTokens || 0,
+          totalOutputTokens: archived.usage.totalOutputTokens || 0,
+          totalCostUsd: archived.usage.totalCostUsd || 0,
+          contextUsagePercent: 0, // No active context for archived sessions
+        }
+      : undefined,
+    slackThreadUrl:
+      archived.channelId && archived.threadTs
+        ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
+        : undefined,
+  };
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
@@ -316,8 +367,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
     const kanban = sessionToKanban(key, session);
 
-    // Closed: terminated or SLEEPING state
-    if (session.terminated === true || session.state === 'SLEEPING') {
+    // Closed: SLEEPING state (terminated sessions are handled via archive below)
+    if (session.state === 'SLEEPING') {
       board.closed.push(kanban);
     } else {
       switch (kanban.activityState) {
@@ -332,6 +383,17 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
           break;
       }
     }
+  }
+
+  // Add recently archived sessions to closed column (#401)
+  try {
+    const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
+    for (const archived of archives) {
+      if (userId && archived.ownerId !== userId) continue;
+      board.closed.push(archivedToKanban(archived));
+    }
+  } catch (err) {
+    logger.debug('Failed to load archived sessions for dashboard', err);
   }
 
   // Sort each column by lastActivity desc
@@ -2671,8 +2733,8 @@ async function doAction(key, action) {
 // ── Answer choice from dashboard ──
 async function answerChoice(key, choiceId, label, question, btnEl) {
   try {
-    // Disable all choice buttons in the same card to prevent double-click
-    var card = btnEl.closest('.card');
+    // Disable all choice buttons in the same card or panel to prevent double-click
+    var card = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (card) {
       card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
     }
@@ -2709,7 +2771,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
   } catch (e) {
     console.error('Answer choice error', e);
     // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (errCard) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
@@ -2943,9 +3005,15 @@ async function submitMultiChoice(key) {
     return;
   }
 
-  // Disable submit button
+  // Disable ALL interactive elements in the multi-choice form to prevent further clicks
   var btns = document.querySelectorAll('.mc-btn-submit');
   btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+  var mcForm = document.querySelector('.mc-form');
+  if (mcForm) {
+    mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
+    mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = true; });
+    mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+  }
 
   try {
     var mcHeaders = { 'Content-Type': 'application/json' };
@@ -2965,6 +3033,11 @@ async function submitMultiChoice(key) {
       var errMsg = errData.error || 'Failed (status ' + res.status + ')';
       alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
       btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+      if (mcForm) {
+        mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+        mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+        mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      }
     } else {
       // Success — clear state; WebSocket will re-render
       delete _mcState[key];
@@ -2973,6 +3046,11 @@ async function submitMultiChoice(key) {
     console.error('submitMultiChoice error', e);
     alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
     btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+    if (mcForm) {
+      mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+      mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+      mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+    }
   }
 }
 
