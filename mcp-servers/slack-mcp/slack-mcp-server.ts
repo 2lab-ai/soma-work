@@ -338,6 +338,10 @@ class SlackMcpServer extends BaseMcpServer {
   /**
    * Convert standard markdown to Slack mrkdwn format.
    * Preserves code blocks/inline code, converts bold/italic/links/headings.
+   *
+   * Mapping:  markdown **bold** / __bold__  →  Slack *bold*
+   *           markdown _italic_             →  Slack _italic_ (no-op)
+   *           markdown *italic*             →  left as-is (Slack renders as bold — known limitation)
    */
   private formatToMrkdwn(text: string): string {
     const preserved: string[] = [];
@@ -360,7 +364,7 @@ class SlackMcpServer extends BaseMcpServer {
     // Markdown → Slack mrkdwn conversions
     processed = processed
       .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*
-      .replace(/__(.+?)__/g, '_$1_')                    // __italic__ → _italic_
+      .replace(/__(.+?)__/g, '*$1*')                    // __bold__ → *bold* (md bold, not italic)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')   // [text](url) → <url|text>
       .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');            // # heading → *heading*
 
@@ -375,6 +379,7 @@ class SlackMcpServer extends BaseMcpServer {
   /**
    * Build Slack section blocks from mrkdwn text.
    * Splits on paragraph boundaries when text exceeds 3000-char section limit.
+   * Protects fenced code blocks from being split across sections.
    */
   private buildMrkdwnBlocks(mrkdwn: string): Array<Record<string, unknown>> {
     const MAX_SECTION_LEN = 3000;
@@ -384,14 +389,26 @@ class SlackMcpServer extends BaseMcpServer {
       return [{ type: 'section', text: { type: 'mrkdwn', text: mrkdwn } }];
     }
 
-    // Split on paragraph boundaries for long text
-    const paragraphs = mrkdwn.split(/\n\n+/);
+    // Protect code blocks from paragraph splitting by replacing with placeholders
+    const codeBlocks: string[] = [];
+    const withPlaceholders = mrkdwn.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(match);
+      return `\x01CB${idx}\x01`;
+    });
+
+    // Split on paragraph boundaries
+    const paragraphs = withPlaceholders.split(/\n\n+/);
     const blocks: Array<Record<string, unknown>> = [];
     let current = '';
 
     for (const para of paragraphs) {
-      if (current.length + para.length + 2 > MAX_SECTION_LEN && current) {
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: current.trim() } });
+      // Restore code blocks in this paragraph for length calculation
+      const restored = this.restoreCodeBlocks(para, codeBlocks);
+      const currentRestored = this.restoreCodeBlocks(current, codeBlocks);
+
+      if (currentRestored.length + restored.length + 2 > MAX_SECTION_LEN && currentRestored) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: currentRestored.trim() } });
         current = para;
         if (blocks.length >= MAX_BLOCKS) break;
       } else {
@@ -399,13 +416,43 @@ class SlackMcpServer extends BaseMcpServer {
       }
     }
 
+    // Flush remaining content — hard-split if it exceeds section limit
     if (current && blocks.length < MAX_BLOCKS) {
-      // If a single paragraph exceeds limit, truncate
-      const chunk = current.trim().slice(0, MAX_SECTION_LEN);
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: chunk } });
+      const finalText = this.restoreCodeBlocks(current, codeBlocks).trim();
+      this.pushHardSplit(finalText, blocks, MAX_SECTION_LEN, MAX_BLOCKS);
     }
 
     return blocks;
+  }
+
+  /** Restore code-block placeholders. */
+  private restoreCodeBlocks(text: string, codeBlocks: string[]): string {
+    let result = text;
+    for (let i = 0; i < codeBlocks.length; i++) {
+      result = result.replace(`\x01CB${i}\x01`, codeBlocks[i]);
+    }
+    return result;
+  }
+
+  /** Hard-split text that exceeds maxLen on newline boundaries, never truncating. */
+  private pushHardSplit(
+    text: string,
+    blocks: Array<Record<string, unknown>>,
+    maxLen: number,
+    maxBlocks: number,
+  ): void {
+    let remaining = text;
+    while (remaining.length > 0 && blocks.length < maxBlocks) {
+      if (remaining.length <= maxLen) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining } });
+        break;
+      }
+      // Find last newline within limit for clean break
+      let splitAt = remaining.lastIndexOf('\n', maxLen);
+      if (splitAt <= 0) splitAt = maxLen; // no newline found — hard break at limit
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining.slice(0, splitAt) } });
+      remaining = remaining.slice(splitAt).replace(/^\n/, '');
+    }
   }
 
   // ── send_thread_message ────────────────────────────────
