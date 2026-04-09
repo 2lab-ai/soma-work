@@ -1349,6 +1349,9 @@ export class SessionRegistry {
     reason: 'terminated' | 'sleep_expired',
   ): void {
     try {
+      // Skip if already archived (prevents duplicates on repeated restarts)
+      if (getArchiveStore().exists(serialized.key)) return;
+
       const session: ConversationSession = {
         ownerId: serialized.ownerId || serialized.userId,
         ownerName: serialized.ownerName,

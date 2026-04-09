@@ -315,7 +315,7 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
  */
 export function archivedToKanban(archived: ArchivedSession): KanbanSession {
   return {
-    key: archived.sessionKey,
+    key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
     title: archived.title || 'Untitled',
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
     ownerId: archived.ownerId || '',
