@@ -10,6 +10,7 @@ const logger = new Logger('UserSettingsStore');
 // Available models
 export const AVAILABLE_MODELS = [
   'claude-opus-4-6',
+  'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
@@ -19,7 +20,8 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number];
 
 // Model aliases for user-friendly input
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  sonnet: 'claude-sonnet-4-5-20250929',
+  sonnet: 'claude-sonnet-4-6',
+  'sonnet-4.6': 'claude-sonnet-4-6',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   opus: 'claude-opus-4-6',
   'opus-4.6': 'claude-opus-4-6',
@@ -33,6 +35,12 @@ export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 // Effort levels
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 export const DEFAULT_EFFORT: EffortLevel = 'high';
+
+// Thinking (adaptive reasoning) toggle
+export const DEFAULT_THINKING_ENABLED = true;
+
+// Thinking summary (show thinking output in Slack) toggle
+export const DEFAULT_SHOW_THINKING = true;
 
 // UI display themes — 3-tier system (shared across Session List, Thread Header, Turn End, AskUser)
 export const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
@@ -77,6 +85,10 @@ export interface UserSettings {
   defaultLogVerbosity?: LogVerbosity; // default log verbosity for new sessions
   sessionTheme?: SessionTheme; // UI display theme. undefined = default ('default' Rich Card)
   defaultEffort?: EffortLevel; // default effort level for new sessions
+  /** Whether extended thinking (adaptive reasoning) is enabled for new sessions. Default: true */
+  thinkingEnabled?: boolean;
+  /** Whether thinking output is shown in Slack. Default: true */
+  showThinking?: boolean;
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -423,6 +435,36 @@ export class UserSettingsStore {
   }
 
   /**
+   * Get user's thinking enabled setting (adaptive reasoning)
+   */
+  getUserThinkingEnabled(userId: string): boolean {
+    return this.settings[userId]?.thinkingEnabled ?? DEFAULT_THINKING_ENABLED;
+  }
+
+  /**
+   * Set user's thinking enabled setting
+   */
+  setUserThinkingEnabled(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { thinkingEnabled: enabled });
+    logger.info('Set user thinking enabled', { userId, enabled });
+  }
+
+  /**
+   * Get user's show thinking setting (display thinking in Slack)
+   */
+  getUserShowThinking(userId: string): boolean {
+    return this.settings[userId]?.showThinking ?? DEFAULT_SHOW_THINKING;
+  }
+
+  /**
+   * Set user's show thinking setting
+   */
+  setUserShowThinking(userId: string, show: boolean): void {
+    this.patchUserSettings(userId, { showThinking: show });
+    logger.info('Set user show thinking', { userId, show });
+  }
+
+  /**
    * Get user's UI theme. Returns stored theme or DEFAULT_THEME.
    * Automatically migrates legacy A-L themes to 3-tier system.
    */
@@ -518,6 +560,8 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: ModelId): string {
     switch (model) {
+      case 'claude-sonnet-4-6':
+        return 'Sonnet 4.6';
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
       case 'claude-opus-4-6':
