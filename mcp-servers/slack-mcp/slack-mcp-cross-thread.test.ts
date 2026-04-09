@@ -112,7 +112,7 @@ describe('Scenario 4: Send message to source thread', () => {
   it('send_thread_message has thread parameter', async () => {
     const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
     const source = await fs.readFile(serverPath, 'utf-8');
-    expect(source).toMatch(/send_thread_message[\s\S]*?thread[\s\S]*?source.*work/);
+    expect(source).toMatch(/send_thread_message[\s\S]*?thread[\s\S]*?work[\s\S]*?source/);
   });
 });
 
@@ -147,6 +147,43 @@ describe('Scenario 5b: Invalid thread selector validation', () => {
     const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
     const source = await fs.readFile(serverPath, 'utf-8');
     expect(source).toContain('Invalid thread selector');
+  });
+});
+
+// ── Scenario 6: send_thread_message mrkdwn formatting ────────
+
+describe('Scenario 6: send_thread_message mrkdwn formatting', () => {
+  it('handleSendThreadMessage uses formatToMrkdwn for text conversion', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain('formatToMrkdwn');
+  });
+
+  it('handleSendThreadMessage sends blocks to chat.postMessage', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toContain('buildMrkdwnBlocks');
+    // Verify blocks are passed to postMessage
+    expect(source).toMatch(/chat\.postMessage\(\{[\s\S]*?blocks/);
+  });
+
+  it('formatToMrkdwn converts **bold** to *bold*', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toMatch(/\*\*.*\*\*.*\*.*\*/);
+  });
+
+  it('formatToMrkdwn converts markdown links to Slack format', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    // Converts [text](url) → <url|text>
+    expect(source).toMatch(/\\\[.*\\\].*\\\(.*\\\).*<.*\|/);
+  });
+
+  it('buildMrkdwnBlocks produces section blocks with mrkdwn type', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    expect(source).toMatch(/type:\s*'section'[\s\S]*?type:\s*'mrkdwn'/);
   });
 });
 
