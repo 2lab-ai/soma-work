@@ -7,6 +7,7 @@
  */
 
 import { Logger } from './logger.js';
+import type { EffortLevel } from './user-settings-store.js';
 
 const logger = new Logger('TurnNotifier');
 
@@ -32,7 +33,7 @@ export interface TurnCompletionEvent {
   // Trace: docs/rich-turn-notification/trace.md, Scenario 1
   persona?: string;
   model?: string;
-  effort?: string;
+  effort?: EffortLevel;
   startedAt?: Date;
   contextUsagePercent?: number;
   contextUsageDelta?: number;
