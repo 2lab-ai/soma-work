@@ -8,8 +8,8 @@
  * Archive failure never blocks session termination (fire-and-forget with logging).
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import type {
@@ -172,9 +172,10 @@ export class SessionArchiveStore {
    */
   private findLatestArchive(sessionKey: string): string | null {
     if (!fs.existsSync(this.archiveDir)) return null;
-    const prefix = sanitizeKey(sessionKey) + '_';
+    const prefix = `${sanitizeKey(sessionKey)}_`;
     try {
-      const files = fs.readdirSync(this.archiveDir)
+      const files = fs
+        .readdirSync(this.archiveDir)
         .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
         .sort()
         .reverse(); // newest first (lexicographic sort on timestamp suffix)
@@ -197,7 +198,7 @@ export class SessionArchiveStore {
       const archived = sessionToArchive(session, sessionKey, reason);
       const data = JSON.stringify(archived, null, 2);
       const finalPath = this.filePath(sessionKey, archived.archivedAt);
-      const tmpPath = finalPath + '.tmp';
+      const tmpPath = `${finalPath}.tmp`;
 
       // Atomic write: tmp → rename
       fs.writeFileSync(tmpPath, data, 'utf-8');
@@ -208,7 +209,7 @@ export class SessionArchiveStore {
       logger.error('Failed to archive session', { sessionKey, error: err });
       // Clean up orphaned tmp file (best-effort)
       try {
-        const tmpPath = this.filePath(sessionKey, Date.now()) + '.tmp';
+        const tmpPath = `${this.filePath(sessionKey, Date.now())}.tmp`;
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       } catch {
         /* ignore cleanup errors */
@@ -278,10 +279,7 @@ export class SessionArchiveStore {
   /**
    * Internal: read and filter archive files with optional mtime pre-filtering.
    */
-  private listWithFilter(
-    predicate: (archived: ArchivedSession) => boolean,
-    mtimeCutoffMs?: number,
-  ): ArchivedSession[] {
+  private listWithFilter(predicate: (archived: ArchivedSession) => boolean, mtimeCutoffMs?: number): ArchivedSession[] {
     const results: ArchivedSession[] = [];
 
     try {

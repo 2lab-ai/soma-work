@@ -4,15 +4,15 @@
  * Issue: #401
  */
 
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-archive-test',
 }));
 
-import { SessionArchiveStore, type ArchivedSession } from './session-archive';
+import { type ArchivedSession, SessionArchiveStore } from './session-archive';
 import type { ConversationSession } from './types';
 
 const TEST_DATA_DIR = '/tmp/soma-work-archive-test';
@@ -55,8 +55,8 @@ describe('SessionArchiveStore', () => {
 
     const archived = store.load('C123-456.789');
     expect(archived).not.toBeNull();
-    expect(archived!.sessionKey).toBe('C123-456.789');
-    expect(archived!.archiveReason).toBe('terminated');
+    expect(archived?.sessionKey).toBe('C123-456.789');
+    expect(archived?.archiveReason).toBe('terminated');
   });
 
   // Trace: Scenario 1, Section 3a transformation — all metadata preserved
@@ -80,14 +80,14 @@ describe('SessionArchiveStore', () => {
     store.archive(session, 'C0AK-123.456', 'terminated');
     const archived = store.load('C0AK-123.456');
 
-    expect(archived!.ownerId).toBe('U001');
-    expect(archived!.ownerName).toBe('Zhuge');
-    expect(archived!.conversationId).toBe('conv-001');
-    expect(archived!.model).toBe('claude-opus-4-6');
-    expect(archived!.links?.issue?.url).toBe('https://github.com/issues/1');
-    expect(archived!.mergeStats?.totalLinesAdded).toBe(100);
-    expect(archived!.instructions).toHaveLength(1);
-    expect(archived!.archivedAt).toBeGreaterThan(0);
+    expect(archived?.ownerId).toBe('U001');
+    expect(archived?.ownerName).toBe('Zhuge');
+    expect(archived?.conversationId).toBe('conv-001');
+    expect(archived?.model).toBe('claude-opus-4-6');
+    expect(archived?.links?.issue?.url).toBe('https://github.com/issues/1');
+    expect(archived?.mergeStats?.totalLinesAdded).toBe(100);
+    expect(archived?.instructions).toHaveLength(1);
+    expect(archived?.archivedAt).toBeGreaterThan(0);
   });
 
   // Trace: Scenario 1, Section 5 — archive failure does not block terminate
@@ -129,7 +129,7 @@ describe('SessionArchiveStore', () => {
 
     store.archive(session1, 'C123-456.789', 'terminated');
     // Small delay to ensure different timestamp
-    const files1 = fs.readdirSync(TEST_ARCHIVES_DIR).filter((f) => f.startsWith('C123-456.789_'));
+    const _files1 = fs.readdirSync(TEST_ARCHIVES_DIR).filter((f) => f.startsWith('C123-456.789_'));
 
     store.archive(session2, 'C123-456.789', 'terminated');
     const files2 = fs.readdirSync(TEST_ARCHIVES_DIR).filter((f) => f.startsWith('C123-456.789_'));
@@ -152,7 +152,7 @@ describe('SessionArchiveStore', () => {
 
     const archived = store.load('C123-456.789');
     expect(archived).not.toBeNull();
-    expect(archived!.archiveReason).toBe('sleep_expired');
+    expect(archived?.archiveReason).toBe('sleep_expired');
   });
 
   // Trace: Scenario 2, Section 3a — reason field is correct
@@ -162,8 +162,8 @@ describe('SessionArchiveStore', () => {
     store.archive(session, 'C123-456.789', 'sleep_expired');
 
     const archived = store.load('C123-456.789');
-    expect(archived!.archiveReason).toBe('sleep_expired');
-    expect(archived!.finalState).toBe('SLEEPING');
+    expect(archived?.archiveReason).toBe('sleep_expired');
+    expect(archived?.finalState).toBe('SLEEPING');
   });
 
   // Trace: Scenario 2, Section 5 — archive failure does not block expiry
@@ -198,10 +198,7 @@ describe('SessionArchiveStore', () => {
       channelId: 'C000',
       lastActivity: new Date().toISOString(),
     };
-    fs.writeFileSync(
-      path.join(TEST_ARCHIVES_DIR, 'C123-old.789.json'),
-      JSON.stringify(oldArchive),
-    );
+    fs.writeFileSync(path.join(TEST_ARCHIVES_DIR, 'C123-old.789.json'), JSON.stringify(oldArchive));
 
     const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
     const recent = store.listRecent(48 * 60 * 60 * 1000);
@@ -234,11 +231,11 @@ describe('SessionArchiveStore', () => {
 
     const archived = store.load('C0AK-123.456');
     expect(archived).not.toBeNull();
-    expect(archived!.sessionKey).toBe('C0AK-123.456');
-    expect(archived!.title).toBe('Test');
-    expect(archived!.model).toBe('claude-opus-4-6');
-    expect(archived!.ownerId).toBe('U001');
-    expect(archived!.ownerName).toBe('Zhuge');
+    expect(archived?.sessionKey).toBe('C0AK-123.456');
+    expect(archived?.title).toBe('Test');
+    expect(archived?.model).toBe('claude-opus-4-6');
+    expect(archived?.ownerId).toBe('U001');
+    expect(archived?.ownerName).toBe('Zhuge');
   });
 
   // Trace: Scenario 3, Section 5 — missing archive dir returns empty
