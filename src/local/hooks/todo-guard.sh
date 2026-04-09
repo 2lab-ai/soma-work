@@ -32,6 +32,11 @@ fi
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 
+# ── Always-exempt tools (prevent deadlock) ──
+# ToolSearch: required to load deferred tool schemas (e.g. TodoWrite itself)
+# Without this, ToolSearch is blocked → can't load TodoWrite schema → deadlock
+[[ "$TOOL_NAME" == "ToolSearch" ]] && exit 0
+
 # ── Fail-open: no session_id → skip ──
 if [[ -z "$SESSION_ID" ]]; then
   echo "⚠️ todo-guard: session_id missing, skipping check" >&2
@@ -77,9 +82,12 @@ fi
 
 NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
 
-# ── TodoWrite with valid payload → mark and pass ──
-if [[ "$IS_TODO_WRITE" == "true" ]]; then
-  echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
+# ── TodoWrite → always pass; set marker only if valid payload ──
+# TodoWrite must never be blocked by its own guard (self-defeating)
+if [[ "$TOOL_NAME" == "TodoWrite" ]]; then
+  if [[ "$IS_TODO_WRITE" == "true" ]]; then
+    echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
+  fi
   exit 0
 fi
 
