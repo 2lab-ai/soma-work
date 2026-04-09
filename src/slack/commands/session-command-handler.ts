@@ -94,7 +94,7 @@ export class SessionCommandHandler implements CommandHandler {
       `*Model:* ${modelDisplay} (\`${modelId}\`)${isModelOverridden ? ' ⚡' : ''}`,
       `*Effort:* ${effortLevel}${isEffortOverridden ? ' ⚡' : ''}`,
       `*Verbosity:* ${verbosityName}${isVerbosityOverridden ? ' ⚡' : ''}`,
-      `*Thinking:* ${thinkingEnabled ? 'ON (adaptive)' : 'OFF'}${isThinkingOverridden ? ' ⚡' : ''}`,
+      `*Thinking:* ${thinkingEnabled ? 'ON' : 'OFF'}${isThinkingOverridden ? ' ⚡' : ''}`,
       `*Thinking Summary:* ${showThinking ? 'ON' : 'OFF'}${isShowThinkingOverridden ? ' ⚡' : ''}`,
     ];
 
@@ -295,7 +295,7 @@ export class SessionCommandHandler implements CommandHandler {
     const isOverridden = session.thinkingEnabled != null && session.thinkingEnabled !== userDefault;
 
     await say({
-      text: `🧠 *Extended Thinking:* ${current ? 'ON (adaptive)' : 'OFF'}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
+      text: `🧠 *Extended Thinking:* ${current ? 'ON' : 'OFF'}${isOverridden ? '\n⚡ _Overridden for this session_' : ''}`,
       thread_ts: threadTs,
     });
     return { handled: true };
@@ -316,7 +316,7 @@ export class SessionCommandHandler implements CommandHandler {
     const enabled = ['on', 'true', 'enable'].includes(normalized);
     session.thinkingEnabled = enabled;
     await say({
-      text: `⚡ *Extended Thinking:* ${enabled ? 'ON (adaptive)' : 'OFF'}\n_Takes effect on next message._`,
+      text: `⚡ *Extended Thinking:* ${enabled ? 'ON' : 'OFF'}\n_Takes effect on next message._`,
       thread_ts: threadTs,
     });
     return { handled: true };

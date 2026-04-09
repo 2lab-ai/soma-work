@@ -87,6 +87,10 @@ interface SerializedSession {
   logVerbosity?: number;
   // Effort level for Claude thinking
   effort?: 'low' | 'medium' | 'high' | 'max';
+  // Extended thinking (adaptive reasoning) toggle
+  thinkingEnabled?: boolean;
+  // Thinking summary display toggle
+  showThinking?: boolean;
   // Action panel state
   actionPanel?: ActionPanelState;
   // Bot-initiated thread metadata
@@ -1306,6 +1310,8 @@ export class SessionRegistry {
             activityState: session.activityState,
             logVerbosity: session.logVerbosity,
             effort: session.effort,
+            thinkingEnabled: session.thinkingEnabled,
+            showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
@@ -1393,6 +1399,8 @@ export class SessionRegistry {
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
+          thinkingEnabled: serialized.thinkingEnabled,
+          showThinking: serialized.showThinking,
           // Clear stale messageTs/renderKey on restore — the Slack message may have been
           // deleted while the service was down, causing endless `message_not_found` errors
           // when ThreadSurface tries to chat.update a ghost message.
