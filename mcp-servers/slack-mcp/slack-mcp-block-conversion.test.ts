@@ -95,7 +95,11 @@ describe('send_thread_message Block Kit conversion: source structure', () => {
 
   it('has Slack block-rejection retry with mrkdwn fallback', async () => {
     const source = await fs.readFile(serverPath, 'utf-8');
-    expect(source).toMatch(/invalid_blocks|invalid_attachments/);
+    // Must handle all known Slack block errors (aligned with stream-processor)
+    expect(source).toMatch(/invalid_blocks/);
+    expect(source).toMatch(/invalid_attachments/);
+    expect(source).toMatch(/too_many_blocks/);
+    expect(source).toMatch(/invalid_blocks_format/);
     expect(source).toMatch(/Slack rejected blocks.*retrying/);
   });
 

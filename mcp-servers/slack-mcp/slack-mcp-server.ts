@@ -496,7 +496,7 @@ class SlackMcpServer extends BaseMcpServer {
     } catch (sendErr: any) {
       // Retry with mrkdwn fallback only on Slack block-validation errors
       const slackError = sendErr?.data?.error || sendErr?.message || '';
-      const isBlockError = /invalid_blocks|invalid_attachments/i.test(slackError);
+      const isBlockError = /invalid_blocks|invalid_attachments|too_many_blocks|invalid_blocks_format/i.test(slackError);
 
       if (isBlockError) {
         this.logger.warn('Slack rejected blocks, retrying with mrkdwn fallback', { error: slackError });
@@ -574,6 +574,12 @@ class SlackMcpServer extends BaseMcpServer {
       if (block.type === 'table') {
         const rows = block.rows as any[][];
         if (!rows || rows.length === 0) return block;
+        if (rows.length > MAX_TABLE_ROWS || (rows[0] && rows[0].length > MAX_TABLE_COLS)) {
+          this.logger.warn('Table truncated to Slack limits', {
+            originalRows: rows.length, maxRows: MAX_TABLE_ROWS,
+            originalCols: rows[0]?.length ?? 0, maxCols: MAX_TABLE_COLS,
+          });
+        }
         const truncRows = rows.slice(0, MAX_TABLE_ROWS).map((r) => (r as any[]).slice(0, MAX_TABLE_COLS));
         return { ...block, rows: truncRows };
       }
