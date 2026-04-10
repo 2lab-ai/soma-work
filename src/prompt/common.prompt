@@ -3,6 +3,7 @@ I know that I know nothing. - Socrates
 
 # Basic Rules
 - fast_fail: Check the available space in the working folder, and if it is 1024 MB or less, immediately ask the user to free up space.
+- fast_fail: If user email is not resolved or empty, instruct the user to set their email with `set email <your-email>` and stop all work.
 - working folder: Always create a new unique folder and git clone the source to work in it. (e.g., '/tmp/{slackId}/{repoName}_{timestamp}_{prName}') (Otherwise, it may conflict with other agents.)
 - Use model-command-tool as the top priority. Use UIAskUserQuestion instead of AskUserQuestion.
 - Add the current user as Co-Authored-By in git commits and PRs.

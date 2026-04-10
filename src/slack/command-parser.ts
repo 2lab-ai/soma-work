@@ -38,6 +38,8 @@ export type PluginsAction =
   | { action: 'rollback'; pluginRef: string }
   | { action: 'backups'; pluginRef: string };
 
+export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
+
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
   | { action: 'deny'; targetUser: string }
@@ -434,6 +436,38 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an email command (set email / show email)
+   */
+  static isEmailCommand(text: string): boolean {
+    return /^\/?(?:set|show)\s+email\b/i.test(text.trim());
+  }
+
+  /**
+   * Parse email command
+   */
+  static parseEmailCommand(text: string): EmailAction {
+    const trimmed = text.trim();
+
+    if (/^\/?show\s+email\s*$/i.test(trimmed)) {
+      return { action: 'status' };
+    }
+
+    const setMatch = trimmed.match(/^\/?set\s+email\s+(\S+)\s*$/i);
+    if (setMatch) {
+      // Strip Slack's mailto auto-link: <mailto:x@y|x@y> → x@y
+      let email = setMatch[1];
+      const mailtoMatch = email.match(/^<mailto:[^|]+\|([^>]+)>$/);
+      if (mailtoMatch) {
+        email = mailtoMatch[1];
+      }
+      return { action: 'set', email };
+    }
+
+    // "set email" with no argument → show status
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
@@ -676,6 +710,9 @@ export class CommandParser {
     // Future: save/load (oh-my-claude skills)
     'save',
     'load',
+    // Email
+    'set_email',
+    'show_email',
     // Admin: show prompt / show instructions (exact two-word forms)
     'show_prompt',
     'show_instructions',
@@ -772,6 +809,10 @@ export class CommandParser {
       '• `bypass` or `/bypass` - Show permission bypass status',
       '• `bypass on` or `/bypass on` - Enable permission bypass',
       '• `bypass off` or `/bypass off` - Disable permission bypass',
+      '',
+      '*Email:*',
+      '• `show email` - Show your configured email',
+      '• `set email <email>` - Set your email (used for Co-Authored-By in commits)',
       '',
       '*Persona:*',
       '• `persona` or `/persona` - Show current persona',

@@ -955,4 +955,77 @@ describe('CommandParser', () => {
       expect(CommandParser.isShowInstructionsCommand('show instructions extra')).toBe(false);
     });
   });
+
+  // ── Email command tests ──
+  describe('isEmailCommand', () => {
+    it('should match "set email x@y.com"', () => {
+      expect(CommandParser.isEmailCommand('set email x@y.com')).toBe(true);
+    });
+
+    it('should match "show email"', () => {
+      expect(CommandParser.isEmailCommand('show email')).toBe(true);
+    });
+
+    it('should match "/set email x@y.com"', () => {
+      expect(CommandParser.isEmailCommand('/set email x@y.com')).toBe(true);
+    });
+
+    it('should match "/show email"', () => {
+      expect(CommandParser.isEmailCommand('/show email')).toBe(true);
+    });
+
+    it('should not match "set something"', () => {
+      expect(CommandParser.isEmailCommand('set something')).toBe(false);
+    });
+
+    it('should not match "email me"', () => {
+      expect(CommandParser.isEmailCommand('email me')).toBe(false);
+    });
+
+    it('should not match "show prompt"', () => {
+      expect(CommandParser.isEmailCommand('show prompt')).toBe(false);
+    });
+  });
+
+  describe('parseEmailCommand', () => {
+    it('should return status for "show email"', () => {
+      expect(CommandParser.parseEmailCommand('show email')).toEqual({ action: 'status' });
+    });
+
+    it('should return status for "/show email"', () => {
+      expect(CommandParser.parseEmailCommand('/show email')).toEqual({ action: 'status' });
+    });
+
+    it('should return set with email for "set email user@example.com"', () => {
+      expect(CommandParser.parseEmailCommand('set email user@example.com')).toEqual({
+        action: 'set',
+        email: 'user@example.com',
+      });
+    });
+
+    it('should return set with email for "/set email user@example.com"', () => {
+      expect(CommandParser.parseEmailCommand('/set email user@example.com')).toEqual({
+        action: 'set',
+        email: 'user@example.com',
+      });
+    });
+
+    it('should strip Slack mailto auto-link', () => {
+      expect(CommandParser.parseEmailCommand('set email <mailto:x@y.com|x@y.com>')).toEqual({
+        action: 'set',
+        email: 'x@y.com',
+      });
+    });
+
+    it('should strip Slack mailto with different display text', () => {
+      expect(CommandParser.parseEmailCommand('set email <mailto:alice@corp.com|alice@corp.com>')).toEqual({
+        action: 'set',
+        email: 'alice@corp.com',
+      });
+    });
+
+    it('should return status for "set email" with no argument', () => {
+      expect(CommandParser.parseEmailCommand('set email')).toEqual({ action: 'status' });
+    });
+  });
 });
