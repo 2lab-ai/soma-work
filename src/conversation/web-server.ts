@@ -8,6 +8,7 @@ import Fastify, {
 import * as jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
+import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
 import { registerDashboardRoutes } from './dashboard';
 import {
@@ -460,6 +461,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     reply.send({ status: 'ok', service: 'conversation-viewer' });
   });
 
+  // Hook routes (no auth — localhost only)
+  await registerHookRoutes(server);
+
   // Root redirect
   server.get('/', async (_request, reply) => {
     reply.redirect('/dashboard');
@@ -504,6 +508,13 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
  */
 export async function stopWebServer(): Promise<void> {
   if (server) {
+    // Flush hook state before closing
+    try {
+      const { hookState } = await import('../hooks');
+      hookState.flushSync();
+    } catch {
+      // Hook module may not be loaded
+    }
     await server.close();
     server = null;
     activePort = null;
