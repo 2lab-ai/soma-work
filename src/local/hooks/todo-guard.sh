@@ -1,14 +1,14 @@
 #!/bin/bash
-# todo-guard.sh — PreToolUse hook: TodoWrite 미호출 시 강제 차단
+# todo-guard.sh — PreToolUse hook: blocks execution when TodoWrite has not been called
 #
-# 동작:
-#   1. 세션당 tool call 카운터를 파일로 관리
-#   2. TodoWrite 호출 시 마커 설정 → 이후 모든 tool call 통과
-#   3. 카운터 >= N (기본 5) 이고 마커 없으면 차단 + 피드백
+# Behavior:
+#   1. Manages a per-session tool call counter via file
+#   2. Sets a marker on TodoWrite call → all subsequent tool calls pass
+#   3. Blocks with feedback if counter >= N (default 5) and no marker
 #
-# 안전 정책: 파싱 실패/session_id 누락 시 통과 (fail-open + 경고 로그)
+# Safety policy: passes on parse failure/missing session_id (fail-open + warning log)
 #
-# 상태 파일: /tmp/claude-calls/session_{id}.todo_guard.json
+# State file: /tmp/claude-calls/session_{id}.todo_guard.json
 #   {"count": N, "todo_exists": false, "last_updated": "..."}
 
 set -uo pipefail
@@ -117,11 +117,11 @@ echo "{\"count\":$COUNT,\"todo_exists\":false,\"last_updated\":\"$NOW\"}" > "$ST
 
 # ── Check threshold ──
 if [[ $COUNT -ge $THRESHOLD ]]; then
-  echo "⚠️ TodoWrite 없이 ${THRESHOLD}회 이상 tool call이 감지되었습니다." >&2
-  echo "먼저 TodoWrite로 태스크를 등록하세요." >&2
+  echo "⚠️ Detected ${THRESHOLD} or more tool calls without TodoWrite." >&2
+  echo "Please register your tasks with TodoWrite first." >&2
   echo "" >&2
-  echo "TodoWrite 예시:" >&2
-  echo '  TodoWrite({ todos: [{ content: "작업 내용", status: "pending", activeForm: "작업 중" }] })' >&2
+  echo "TodoWrite example:" >&2
+  echo '  TodoWrite({ todos: [{ content: "Task description", status: "pending", activeForm: "In progress" }] })' >&2
   exit 2
 fi
 

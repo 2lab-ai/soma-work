@@ -1,8 +1,8 @@
 #!/bin/bash
-# todo-guard.test.sh — todo-guard.sh 훅 테스트
+# todo-guard.test.sh — Tests for todo-guard.sh hook
 #
-# 실행: bash src/local/hooks/todo-guard.test.sh
-# 종료 코드: 0 = 전체 통과, 1 = 실패 있음
+# Run: bash src/local/hooks/todo-guard.test.sh
+# Exit code: 0 = all passed, 1 = has failures
 
 set -uo pipefail
 
@@ -123,8 +123,8 @@ assert_file_not_exists() {
 echo -e "${YELLOW}═══ todo-guard.sh Tests ═══${NC}"
 echo ""
 
-# ── Test 1: 4회 호출 → 전부 통과 ──
-echo "Test 1: 4회 호출 → 전부 통과"
+# ── Test 1: 4 calls → all pass ──
+echo "Test 1: 4 calls → all pass"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test1" "Read")"
@@ -132,8 +132,8 @@ for i in 1 2 3 4; do
 done
 echo ""
 
-# ── Test 2: 5회 호출 → 5번째에서 차단 ──
-echo "Test 2: 5회 호출 → 5번째에서 차단"
+# ── Test 2: 5 calls → blocked on 5th ──
+echo "Test 2: 5 calls → blocked on 5th"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test2" "Bash")"
@@ -143,8 +143,8 @@ run "$(make_input "test2" "Edit")"
 assert_exit "Call 5 blocked" 2 $?
 echo ""
 
-# ── Test 3: 6회 호출 → 5번째 이후 계속 차단 ──
-echo "Test 3: 6회 호출 → 5번째 이후 계속 차단"
+# ── Test 3: 6 calls → blocked from 5th onward ──
+echo "Test 3: 6 calls → blocked from 5th onward"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test3" "Grep")" >/dev/null
@@ -155,8 +155,8 @@ run "$(make_input "test3" "Write")"
 assert_exit "Call 6 still blocked" 2 $?
 echo ""
 
-# ── Test 4: 5번째가 TodoWrite → 마커 + 이후 통과 ──
-echo "Test 4: 5번째가 TodoWrite → 마커 생성 + 이후 통과"
+# ── Test 4: 5th call is TodoWrite → marker set + subsequent calls pass ──
+echo "Test 4: 5th call is TodoWrite → marker set + subsequent calls pass"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test4" "Read")" >/dev/null
@@ -170,76 +170,76 @@ run "$(make_input "test4" "Bash")"
 assert_exit "Call 7 passes (todos exist)" 0 $?
 echo ""
 
-# ── Test 5: 빈 TodoWrite → 마커 미생성이지만 통과 ──
-echo "Test 5: 빈 TodoWrite (todos: []) → 마커 미생성, but always passes"
+# ── Test 5: Empty TodoWrite → marker not set but call passes ──
+echo "Test 5: Empty TodoWrite (todos: []) → marker not set, but always passes"
 setup
 for i in 1 2 3; do
   run "$(make_input "test5" "Read")" >/dev/null
 done
 run "$(make_input "test5" "TodoWrite" '{"todos":[]}')"
 assert_exit "Empty TodoWrite passes (always exempt)" 0 $?
-# 빈 TodoWrite는 카운터에 포함되지 않으므로 count=3 유지
+# Empty TodoWrite is not counted, so count stays at 3
 assert_json_field "count is 3" "$TEST_STATE_DIR/session_test5.todo_guard.json" ".count" "3"
 run "$(make_input "test5" "Read")" >/dev/null
 run "$(make_input "test5" "Edit")"
 assert_exit "Call 5 blocked (empty TodoWrite didn't set marker)" 2 $?
 echo ""
 
-# ── Test 5b: ToolSearch → 항상 통과, 카운터 미증가 ──
-echo "Test 5b: ToolSearch → 항상 통과 (deadlock 방지)"
+# ── Test 5b: ToolSearch → always passes, counter not incremented ──
+echo "Test 5b: ToolSearch → always passes (deadlock prevention)"
 setup
 for i in 1 2 3 4 5; do
   run "$(make_input "test5b" "Read")" >/dev/null
 done
-# threshold 초과 상태에서 ToolSearch 호출
+# ToolSearch call after threshold exceeded
 run "$(make_input "test5b" "ToolSearch")"
 assert_exit "ToolSearch passes even after threshold" 0 $?
-# ToolSearch는 상태 파일을 건드리지 않으므로 count는 5 유지
+# ToolSearch does not touch state file, so count stays at 5
 assert_json_field "count unchanged at 5" "$TEST_STATE_DIR/session_test5b.todo_guard.json" ".count" "5"
 echo ""
 
-# ── Test 5c: ToolSearch → 카운터에 포함되지 않음 ──
-echo "Test 5c: ToolSearch는 카운터에 포함되지 않음"
+# ── Test 5c: ToolSearch → not counted toward threshold ──
+echo "Test 5c: ToolSearch is not counted toward threshold"
 setup
 for i in 1 2 3; do
   run "$(make_input "test5c" "Read")" >/dev/null
 done
-# ToolSearch 여러 번 호출
+# Multiple ToolSearch calls
 for i in 1 2 3 4 5; do
   run "$(make_input "test5c" "ToolSearch")"
   assert_exit "ToolSearch $i passes" 0 $?
 done
-# count는 여전히 3이어야 함
+# Count should still be 3
 assert_json_field "count still 3 after ToolSearch calls" "$TEST_STATE_DIR/session_test5c.todo_guard.json" ".count" "3"
-# 4번째 일반 호출도 통과해야 함 (count=4 < threshold=5)
+# 4th regular call should also pass (count=4 < threshold=5)
 run "$(make_input "test5c" "Bash")"
 assert_exit "Call 4 passes (ToolSearch didn't count)" 0 $?
 echo ""
 
-# ── Test 6: malformed stdin → 통과 ──
-echo "Test 6: malformed stdin → 통과 (fail-open)"
+# ── Test 6: malformed stdin → passes ──
+echo "Test 6: malformed stdin → passes (fail-open)"
 setup
 echo "not json at all" | bash "$TEST_STATE_DIR/hook.sh" 2>/dev/null
 assert_exit "Malformed stdin passes" 0 $?
 echo ""
 
-# ── Test 7: session_id 없음 → 통과 ──
-echo "Test 7: session_id 없음 → 통과"
+# ── Test 7: no session_id → passes ──
+echo "Test 7: no session_id → passes"
 setup
 echo '{"tool_name":"Edit"}' | bash "$TEST_STATE_DIR/hook.sh" 2>/dev/null
 assert_exit "No session_id passes" 0 $?
 echo ""
 
-# ── Test 8: 마커 있는 상태 → 즉시 통과 ──
-echo "Test 8: 기존 마커 있는 상태 → 즉시 통과"
+# ── Test 8: existing marker → immediate pass ──
+echo "Test 8: existing marker → immediate pass"
 setup
 echo '{"count":10,"todo_exists":true,"last_updated":"2026-04-09T00:00:00Z"}' > "$TEST_STATE_DIR/session_test8.todo_guard.json"
 run "$(make_input "test8" "Bash")"
 assert_exit "Passes with existing marker" 0 $?
 echo ""
 
-# ── Test 9: 차단 시 피드백 메시지 ──
-echo "Test 9: 차단 시 피드백 메시지 출력"
+# ── Test 9: feedback message on block ──
+echo "Test 9: feedback message on block"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test9" "Read")" >/dev/null
@@ -249,8 +249,8 @@ assert_contains "Contains TodoWrite mention" "TodoWrite" "$STDERR"
 assert_contains "Contains threshold mention" "5" "$STDERR"
 echo ""
 
-# ── Test 10: cleanup hook → 상태 파일 삭제 ──
-echo "Test 10: cleanup hook → 상태 파일 삭제"
+# ── Test 10: cleanup hook → state file deleted ──
+echo "Test 10: cleanup hook → state file deleted"
 setup
 echo '{"count":3,"todo_exists":false}' > "$TEST_STATE_DIR/session_test10.todo_guard.json"
 mkdir -p "$TEST_STATE_DIR/session_test10.todo_guard.lock"
@@ -259,8 +259,8 @@ assert_file_not_exists "State file deleted" "$TEST_STATE_DIR/session_test10.todo
 assert_file_not_exists "Lock dir deleted" "$TEST_STATE_DIR/session_test10.todo_guard.lock"
 echo ""
 
-# ── Test 11: 커스텀 threshold (N=3) ──
-echo "Test 11: 커스텀 threshold (N=3)"
+# ── Test 11: custom threshold (N=3) ──
+echo "Test 11: custom threshold (N=3)"
 setup
 for i in 1 2; do
   run "$(make_input "test11" "Read")" 3
@@ -270,8 +270,8 @@ run "$(make_input "test11" "Edit")" 3
 assert_exit "Call 3 blocked (threshold=3)" 2 $?
 echo ""
 
-# ── Test 12: 동시성 — 5개 동시 호출 → 카운터 정확히 5 ──
-echo "Test 12: 동시성 — 5개 동시 호출 → 카운터 정확히 5"
+# ── Test 12: concurrency — 5 simultaneous calls → counter exactly 5 ──
+echo "Test 12: concurrency — 5 simultaneous calls → counter exactly 5"
 setup
 for i in 1 2 3 4 5; do
   echo "$(make_input "test12" "Read")" | bash "$TEST_STATE_DIR/hook.sh" 2>/dev/null &
@@ -288,8 +288,8 @@ else
 fi
 echo ""
 
-# ── Test 13: TodoWrite 없이 호출 → 카운터 정확성 ──
-echo "Test 13: 카운터 정확성 — 3회 호출 후 count=3"
+# ── Test 13: counter accuracy — 3 calls then count=3 ──
+echo "Test 13: counter accuracy — 3 calls then count=3"
 setup
 for i in 1 2 3; do
   run "$(make_input "test13" "Glob")" >/dev/null
@@ -297,8 +297,8 @@ done
 assert_json_field "count is 3" "$TEST_STATE_DIR/session_test13.todo_guard.json" ".count" "3"
 echo ""
 
-# ── Test 14: 서로 다른 세션은 독립 ──
-echo "Test 14: 세션 격리 — 다른 세션 카운터 독립"
+# ── Test 14: different sessions are independent ──
+echo "Test 14: session isolation — different session counters are independent"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "session_a" "Read")" >/dev/null
@@ -308,12 +308,12 @@ assert_json_field "Session A count=4" "$TEST_STATE_DIR/session_session_a.todo_gu
 assert_json_field "Session B count=1" "$TEST_STATE_DIR/session_session_b.todo_guard.json" ".count" "1"
 echo ""
 
-# ── Test 15: session_id 없을 때 ToolSearch → 통과 + 상태 파일 미생성 ──
-echo "Test 15: session_id 없는 ToolSearch → 통과, 상태 파일 미생성"
+# ── Test 15: no session_id + ToolSearch → passes + no state file created ──
+echo "Test 15: ToolSearch without session_id → passes, no state file created"
 setup
 echo '{"tool_name":"ToolSearch"}' | bash "$TEST_STATE_DIR/hook.sh" 2>/dev/null
 assert_exit "ToolSearch without session_id passes" 0 $?
-# 상태 파일이 생성되지 않았는지 확인
+# Verify no state file was created
 STATE_FILES=$(ls "$TEST_STATE_DIR"/session_*.json 2>/dev/null | wc -l)
 TOTAL=$((TOTAL + 1))
 if [[ "$STATE_FILES" -eq 0 ]]; then
@@ -325,10 +325,10 @@ else
 fi
 echo ""
 
-# ── Test 16: 깨진 state 파일에서도 exempt 도구 통과 ──
-echo "Test 16: 깨진 state 파일에서도 ToolSearch/TodoWrite 통과"
+# ── Test 16: corrupted state file + exempt tools → pass ──
+echo "Test 16: corrupted state file + ToolSearch/TodoWrite still pass"
 setup
-# 깨진 JSON을 state 파일에 작성
+# Write corrupted JSON to state file
 echo "NOT VALID JSON {{{{" > "$TEST_STATE_DIR/session_test16.todo_guard.json"
 run "$(make_input "test16" "ToolSearch")"
 assert_exit "ToolSearch passes with corrupted state" 0 $?
@@ -336,20 +336,20 @@ run "$(make_input "test16" "TodoWrite" '{"todos":[{"content":"task","status":"pe
 assert_exit "TodoWrite passes with corrupted state" 0 $?
 echo ""
 
-# ── Test 17: 빈 TodoWrite 연속 호출 → 카운터 불변 + 일반 도구 threshold 차단 ──
-echo "Test 17: 빈 TodoWrite 연속 호출 → 카운터 불변, 일반 도구는 차단"
+# ── Test 17: consecutive empty TodoWrite → counter unchanged + regular tool blocked ──
+echo "Test 17: consecutive empty TodoWrite → counter unchanged, regular tool blocked"
 setup
 for i in 1 2 3 4; do
   run "$(make_input "test17" "Read")" >/dev/null
 done
-# 빈 TodoWrite 5번 연속 호출
+# 5 consecutive empty TodoWrite calls
 for i in 1 2 3 4 5; do
   run "$(make_input "test17" "TodoWrite" '{"todos":[]}')"
   assert_exit "Empty TodoWrite $i passes" 0 $?
 done
-# 카운터는 4로 유지 (빈 TodoWrite가 카운터를 증가시키지 않음)
+# Counter stays at 4 (empty TodoWrite doesn't increment counter)
 assert_json_field "count still 4 after empty TodoWrites" "$TEST_STATE_DIR/session_test17.todo_guard.json" ".count" "4"
-# 다음 일반 도구 호출은 5번째이므로 차단
+# Next regular tool call is the 5th, so it gets blocked
 run "$(make_input "test17" "Edit")"
 assert_exit "Regular tool blocked at threshold" 2 $?
 echo ""

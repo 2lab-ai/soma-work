@@ -79,7 +79,7 @@ Explain all workflows with "when to use" + "how to trigger":
    - Use: write Confluence doc from PR changes
    - Trigger example: `https://xxx.atlassian.net/wiki/... https://github.com/org/repo/pull/123`
 8. **deploy**
-   - Use: source→target deployment flow
+   - Use: source to target deployment flow
    - Trigger example: `repo main -> prod`
 
 Keep each explanation to 1-2 lines and ask if user wants a demo message template.
@@ -87,15 +87,15 @@ Keep each explanation to 1-2 lines and ask if user wants a demo message template
 ### 5. `new` vs `renew` Deep Guide
 Must explain in detail with clear comparison:
 - `new`: discard current conversation context and start fresh in same thread
-  - Example: `new 이 PR만 새로 리뷰해줘`
+  - Example: `new Just review this PR from scratch`
 - `renew`: save current context, reset session, load saved context, then continue
-  - Example: `renew 지금까지 논의 저장하고 다음 액션만 정리해줘`
+  - Example: `renew Save the discussion so far and summarize next actions only`
 - When to use:
   - `new`: topic changed completely
   - `renew`: topic same, but context window is running low
 
 Also explain context indicators:
-- Action panel shows remaining context as `📦 남은 XX%`
+- Action panel shows remaining context as `Remaining XX%`
 - `context` command shows detailed token/cost info
 
 ### 6. Practice (renew encouraged)
@@ -105,7 +105,7 @@ Use **UIAskUserQuestion**:
 
 If user picks **Try renew now**:
 - Give one copy-paste command:
-  - `renew 지금까지 설정 상태를 저장하고, 온보딩을 마무리해줘`
+  - `renew Save current setup status and wrap up onboarding`
 - Explicitly ask them to run it in the current thread.
 - After they return, acknowledge and continue onboarding completion.
 
@@ -128,11 +128,11 @@ If user picks **Try new now**:
 
 ### Welcome Message Example (Korean)
 
-안녕하세요! 반갑습니다. 저는 AI 코딩 어시스턴트입니다.
+Hello! Nice to meet you. I'm your AI coding assistant.
 
-PR 리뷰, Jira 이슈 분석, 코드 브레인스토밍 등을 도와드릴 수 있어요.
+I can help with PR reviews, Jira issue analysis, code brainstorming, and more.
 
-처음이시네요! 빠른 설정을 진행해 드릴게요.
+Since this is your first time, let me help you get set up.
 
 ---
 
