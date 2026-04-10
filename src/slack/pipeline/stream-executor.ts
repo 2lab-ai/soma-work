@@ -1067,7 +1067,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           session.lastErrorContext = undefined;
         }
       } else {
-        this.logger.warn('Recoverable error - session preserved', {
+        const isRecoverable = this.isRecoverableClaudeSdkError(error);
+        this.logger.warn(isRecoverable ? 'Recoverable error - session preserved' : 'Unknown error - session preserved (default policy)', {
           sessionKey,
           errorMessage: error.message,
         });
@@ -1083,24 +1084,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.tryRotateToken(error, queryTokenValue);
         }
 
-        // Auto-retry: if recoverable and retry budget remains, signal caller to retry
-        const retryCount = session.errorRetryCount ?? 0;
-        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
-          session.errorRetryCount = retryCount + 1;
-          retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
-          this.logger.info('Scheduling auto-retry on recoverable error', {
-            sessionKey,
-            attempt: retryCount + 1,
-            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
-            delayMs: retryAfterMs,
-          });
-        } else {
-          this.logger.warn('Auto-retry budget exhausted', {
-            sessionKey,
-            retryCount,
-          });
-          // Reset for next error sequence
-          session.errorRetryCount = 0;
+        // Auto-retry only for known recoverable errors.
+        // Unknown errors are preserved but not auto-retried — the user
+        // decides whether to continue or `/reset`.
+        if (isRecoverable) {
+          const retryCount = session.errorRetryCount ?? 0;
+          if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+            session.errorRetryCount = retryCount + 1;
+            retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
+            this.logger.info('Scheduling auto-retry on recoverable error', {
+              sessionKey,
+              attempt: retryCount + 1,
+              maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+              delayMs: retryAfterMs,
+            });
+          } else {
+            this.logger.warn('Auto-retry budget exhausted', {
+              sessionKey,
+              retryCount,
+            });
+            // Reset for next error sequence
+            session.errorRetryCount = 0;
+          }
         }
       }
 
@@ -1198,10 +1203,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return false;
     }
 
-    // Issue #118: Unknown errors should clear session as safe default.
-    // Preserving a broken session causes infinite retry loops (3x auto-retry
-    // with same broken sessionId). Cost of clearing (context loss) < infinite error loop.
-    return true;
+    // Default: preserve session. Unknown errors are treated as recoverable
+    // so the user can continue the conversation. If the session is truly
+    // broken, the user can manually reset via `/reset` or the bot will
+    // detect it on the next turn (isInvalidResumeSessionError).
+    return false;
   }
 
   private isContextOverflowError(error: any): boolean {
@@ -1243,6 +1249,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const recoverablePatterns = [
       "you've hit your limit",
+      'out of extra usage',
       'rate limit',
       'too many requests',
       '429',
@@ -1271,6 +1278,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const combined = `${message} ${stderr}`;
     return (
       combined.includes("you've hit your limit") ||
+      combined.includes('out of extra usage') ||
       combined.includes('rate limit') ||
       combined.includes('too many requests') ||
       combined.includes('429')
@@ -1518,6 +1526,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+      // For unknown (non-recoverable-pattern) errors preserved by default,
+      // hint the user that they can manually reset if things look broken.
+      if (!this.isRecoverableClaudeSdkError(error) && !this.isSlackApiError(error)) {
+        lines.push(`> _문제가 계속되면 \`/reset\` 으로 세션을 초기화할 수 있습니다._`);
+      }
     }
 
     // Issue #122: Append SDK stderr details so users can see the actual error cause
