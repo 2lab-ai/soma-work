@@ -386,14 +386,40 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
   }
 
   // Add recently archived sessions to closed column (#401)
+  // Dedup: skip archives that overlap with a live session (same thread or same conversationId).
+  // This prevents ghost cards when:
+  //   - A bot-initiated thread terminates the source session (conversationId match)
+  //   - A user sends a message to a terminated thread, creating a new session (thread key match)
   try {
+    const liveThreadKeys = new Set<string>();
+    const liveConversationIds = new Set<string>();
+    for (const [, s] of sessions.entries()) {
+      if (!s.sessionId) continue;
+      if (s.trashed === true) continue;
+      if (s.channelId && s.threadTs) liveThreadKeys.add(`${s.channelId}:${s.threadTs}`);
+      if (s.conversationId) liveConversationIds.add(s.conversationId);
+    }
+
     const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
     for (const archived of archives) {
       if (userId && archived.ownerId !== userId) continue;
+      // Skip if a live session exists in the same thread
+      if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
+        logger.debug('Skipping archive (thread overlap with live session)', { archivedKey: archived.sessionKey });
+        continue;
+      }
+      // Skip if a live session shares the same conversationId (bot-initiated migration)
+      if (archived.conversationId && liveConversationIds.has(archived.conversationId)) {
+        logger.debug('Skipping archive (conversationId overlap with live session)', {
+          archivedKey: archived.sessionKey,
+          conversationId: archived.conversationId,
+        });
+        continue;
+      }
       board.closed.push(archivedToKanban(archived));
     }
   } catch (err) {
-    logger.debug('Failed to load archived sessions for dashboard', err);
+    logger.warn('Failed to load archived sessions for dashboard — closed column may be incomplete', err);
   }
 
   // Sort each column by lastActivity desc
@@ -2197,7 +2223,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <div class="kanban-col" id="col-closed">
         <div class="kanban-col-header">
           <span class="closed-dot"></span>
-          <h3>&#xC885;&#xB8CC;</h3>
+          <h3>&#xB3D9;&#xBA74;</h3>
           <span class="count" id="count-closed">0</span>
         </div>
         <div class="cards" id="cards-closed"></div>
@@ -2682,7 +2708,10 @@ function renderCard(s, col) {
   } else if (col === 'waiting' || col === 'idle') {
     actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
   } else if (col === 'closed') {
-    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>';
+    // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
+    actionBtn = s.terminated
+      ? '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>'
+      : '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
