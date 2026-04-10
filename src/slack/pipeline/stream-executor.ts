@@ -423,6 +423,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
 
+      // Fast-fail: block model invocation when user email is not configured.
+      // After auto-fetch above, if email is still empty/undefined the user must set it manually.
+      const resolvedEmail = userSettingsStore.getUserEmail(user);
+      if (!resolvedEmail) {
+        await say({
+          text: `⚠️ *이메일이 설정되지 않았습니다.*\n\n이 기능을 사용하려면 이메일 설정이 필요합니다.\n\`set email <your-email>\` 명령으로 이메일을 설정해주세요.\n\n예시: \`set email you@company.com\``,
+          thread_ts: threadTs,
+        });
+        this.logger.warn('Blocked model invocation: user email not configured', { user });
+        return { success: false, messageCount: 0 };
+      }
+
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(this.deps.slackApi.getClient(), channel);
       // Fetch structured repo info from channel registry (parsed from channel description)
