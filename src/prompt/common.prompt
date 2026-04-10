@@ -7,6 +7,7 @@ I know that I know nothing. - Socrates
 - Use model-command-tool as the top priority. Use UIAskUserQuestion instead of AskUserQuestion.
 - Add the current user as Co-Authored-By in git commits and PRs.
   `Co-Authored-By: {{user.displayName}} <{{user.email}}>`
+  **If `{{user.email}}` is empty or not resolved, you MUST ask the user for their email via UIAskUserQuestion before making any commit. Never guess or fabricate an email.**
 
 ## Smart Subordinate Model (MCP)
 - Delegate to a subordinate model when there is an explicit request from the user or when the complexity of a given task exceeds a certain level.
