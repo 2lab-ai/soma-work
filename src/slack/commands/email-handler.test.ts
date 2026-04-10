@@ -45,12 +45,7 @@ describe('EmailHandler', () => {
       expect(handler.canHandle(text)).toBe(true);
     });
 
-    it.each([
-      'hello',
-      'email me',
-      'set something',
-      'show prompt',
-    ])('rejects "%s"', (text) => {
+    it.each(['hello', 'email me', 'set something', 'show prompt'])('rejects "%s"', (text) => {
       expect(handler.canHandle(text)).toBe(false);
     });
   });
