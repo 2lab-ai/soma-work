@@ -171,6 +171,12 @@ export class StreamExecutor {
    * On new user input, abort() is called to cancel the running fork and prevent stale display.
    */
   private summaryAbortControllers = new Map<string, AbortController>();
+  /**
+   * Tracks users whose empty-sentinel email was already re-attempted this process lifetime.
+   * Prevents repeated Slack API calls when users:read.email scope is genuinely missing,
+   * while allowing a single retry per deploy (to pick up newly-added scopes).
+   */
+  private static emailRetryAttempted = new Set<string>();
 
   constructor(private deps: StreamExecutorDeps) {}
 
@@ -408,9 +414,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
       }
 
-      // Auto-fetch user profile (email + displayName) from Slack if not cached
-      // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
-      if (userSettingsStore.getUserEmail(user) === undefined) {
+      // Auto-fetch user profile (email + displayName) from Slack if not cached.
+      // Also retry once per process lifetime when email is empty sentinel ('')
+      // — the users:read.email scope may have been added since the last fetch.
+      const cachedEmail = userSettingsStore.getUserEmail(user);
+      const isEmptyRetry = cachedEmail === '' && !StreamExecutor.emailRetryAttempted.has(user);
+      if (cachedEmail === undefined || isEmptyRetry) {
+        if (isEmptyRetry) {
+          StreamExecutor.emailRetryAttempted.add(user);
+          this.logger.debug('Retrying email fetch for user with empty sentinel', { user });
+        }
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
           // Store email or empty sentinel to prevent re-fetching when scope is missing
