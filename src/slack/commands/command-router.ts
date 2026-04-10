@@ -8,6 +8,7 @@ import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
+import { EmailHandler } from './email-handler';
 import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
@@ -53,6 +54,7 @@ export class CommandRouter {
       new PluginsHandler(deps),
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
+      new EmailHandler(),
       new PersonaHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
