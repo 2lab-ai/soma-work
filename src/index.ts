@@ -253,9 +253,10 @@ async function start() {
       }
       // Echo user message to Slack immediately (before AI processing)
       const senderName = session.ownerName || 'Dashboard';
-      app.client.chat.postMessage({
+      const escapedMessage = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      await app.client.chat.postMessage({
         channel: session.channelId,
-        text: `${senderName}: ${message}`,
+        text: `${senderName}: ${escapedMessage}`,
         thread_ts: session.threadTs,
       }).catch((err) => logger.warn('Dashboard echo failed', { err }));
 
