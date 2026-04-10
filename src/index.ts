@@ -255,11 +255,16 @@ async function start() {
       const senderName = session.ownerName || 'Dashboard';
       const escapedName = senderName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const escapedMessage = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const echoResult = await app.client.chat.postMessage({
-        channel: session.channelId,
-        text: `${escapedName}: ${escapedMessage}`,
-        thread_ts: session.threadTs,
-      }).catch((err) => { logger.warn('Dashboard echo failed', { err }); return undefined; });
+      const echoResult = await app.client.chat
+        .postMessage({
+          channel: session.channelId,
+          text: `${escapedName}: ${escapedMessage}`,
+          thread_ts: session.threadTs,
+        })
+        .catch((err) => {
+          logger.warn('Dashboard echo failed', { err });
+          return undefined;
+        });
 
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
