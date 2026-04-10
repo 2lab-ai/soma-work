@@ -1111,6 +1111,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // Reset for next error sequence
             session.errorRetryCount = 0;
           }
+        } else {
+          // Unknown errors: reset retry budget so a subsequent recoverable
+          // error starts fresh (not with a partially consumed budget).
+          session.errorRetryCount = 0;
         }
       }
 
@@ -1208,10 +1212,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return false;
     }
 
-    // Default: preserve session. Unknown errors are treated as recoverable
-    // so the user can continue the conversation. If the session is truly
-    // broken, the user can manually reset via `/reset` or the bot will
-    // detect it on the next turn (isInvalidResumeSessionError).
+    // Default: preserve session. Unknown errors keep the session alive
+    // so the user can continue the conversation or manually reset via
+    // `/reset`. If the session is truly broken, the bot will detect it
+    // on the next turn (isInvalidResumeSessionError). Unknown errors
+    // are NOT auto-retried — only known recoverable patterns get retries.
     return false;
   }
 

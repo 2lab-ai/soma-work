@@ -636,6 +636,36 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* ✅ 유지됨');
   });
 
+  // "out of extra usage" in stderrContent (common case: error.message = "process exited with code 1")
+  it('preserves session when "out of extra usage" appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = Object.assign(new Error('process exited with code 1'), {
+      stderrContent: "You're out of extra usage · resets 3pm (Asia/Seoul)",
+    });
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // Unknown error resets errorRetryCount so subsequent recoverable errors start fresh
+  it('resets errorRetryCount on unknown preserved error', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { errorRetryCount: 2 } as any;
+    const error = new Error('Some completely unexpected error');
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(session.errorRetryCount).toBe(0);
+  });
+
   // Issue #118: S3 — Existing recoverable errors must still be preserved
   it.each([
     "You've hit your limit",
