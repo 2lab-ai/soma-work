@@ -420,21 +420,22 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
-  it('clears session for unrelated errors containing partial image-related words (safe default)', async () => {
+  it('preserves session for unrelated errors containing partial image-related words', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
-    // "invalid image_url" is NOT an image processing error, but unknown errors
-    // now clear session as safe default (Issue #118)
+    // "invalid image_url" is NOT an image processing error — unknown errors
+    // now preserve session (user can /reset if needed)
     const error = new Error('invalid image_url field in API request');
 
     await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
-    // Issue #118: Unknown errors now clear session (safe default)
-    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    // Unknown errors preserve session — user decides whether to reset
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+    expect(payload.text).toContain('/reset');
   });
 
   it('clears session for image error even when message also matches recoverable patterns', async () => {
@@ -604,8 +605,8 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
   });
 
-  // Issue #118: S2 — Unknown errors should clear session (safe default)
-  it('clears session on completely unrecognized error (safe default)', async () => {
+  // Unknown errors now preserve session — user can /reset if needed
+  it('preserves session on completely unrecognized error (default policy)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -613,15 +614,62 @@ describe('Abort handling', () => {
 
     await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
 
-    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('Session:* 🔄 초기화됨');
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+    expect(payload.text).toContain('/reset');
+  });
+
+  // "out of extra usage" is treated as rate limit — session preserved + token rotation
+  it('preserves session and triggers token rotation on "out of extra usage" error', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error("You're out of extra usage · resets 3pm (Asia/Seoul)");
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // "out of extra usage" in stderrContent (common case: error.message = "process exited with code 1")
+  it('preserves session when "out of extra usage" appears only in stderrContent', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = Object.assign(new Error('process exited with code 1'), {
+      stderrContent: "You're out of extra usage · resets 3pm (Asia/Seoul)",
+    });
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  // Unknown error resets errorRetryCount so subsequent recoverable errors start fresh
+  it('resets errorRetryCount on unknown preserved error', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { errorRetryCount: 2 } as any;
+    const error = new Error('Some completely unexpected error');
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(session.errorRetryCount).toBe(0);
   });
 
   // Issue #118: S3 — Existing recoverable errors must still be preserved
   it.each([
     "You've hit your limit",
+    "You're out of extra usage · resets 3pm (Asia/Seoul)",
     'rate limit exceeded',
     'temporarily unavailable',
     'timed out waiting for response',
