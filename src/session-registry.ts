@@ -450,12 +450,13 @@ export class SessionRegistry {
 
     session.activityState = state;
     session.activityStateChangedAt = Date.now();
+    this.logger.debug('Activity state changed', { sessionKey, state });
 
     // Notify dashboard WebSocket clients (was missing — caused stale dashboard state)
     try {
       this.onActivityStateChangeCallback?.();
-    } catch {
-      /* fire-and-forget */
+    } catch (err) {
+      this.logger.debug('Activity state change callback failed', { sessionKey, state, error: err });
     }
 
     if (state === 'idle') {

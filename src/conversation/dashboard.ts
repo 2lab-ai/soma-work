@@ -404,14 +404,22 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     for (const archived of archives) {
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
-      if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`))
+      if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
+        logger.debug('Skipping archive (thread overlap with live session)', { archivedKey: archived.sessionKey });
         continue;
+      }
       // Skip if a live session shares the same conversationId (bot-initiated migration)
-      if (archived.conversationId && liveConversationIds.has(archived.conversationId)) continue;
+      if (archived.conversationId && liveConversationIds.has(archived.conversationId)) {
+        logger.debug('Skipping archive (conversationId overlap with live session)', {
+          archivedKey: archived.sessionKey,
+          conversationId: archived.conversationId,
+        });
+        continue;
+      }
       board.closed.push(archivedToKanban(archived));
     }
   } catch (err) {
-    logger.debug('Failed to load archived sessions for dashboard', err);
+    logger.warn('Failed to load archived sessions for dashboard — closed column may be incomplete', err);
   }
 
   // Sort each column by lastActivity desc
