@@ -1068,10 +1068,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       } else {
         const isRecoverable = this.isRecoverableClaudeSdkError(error);
-        this.logger.warn(isRecoverable ? 'Recoverable error - session preserved' : 'Unknown error - session preserved (default policy)', {
-          sessionKey,
-          errorMessage: error.message,
-        });
+        this.logger.warn(
+          isRecoverable
+            ? 'Recoverable error - session preserved'
+            : 'Unknown error - session preserved (default policy)',
+          {
+            sessionKey,
+            errorMessage: error.message,
+          },
+        );
 
         // Clear stale file-access state — this is a different error class now,
         // so the model should not receive outdated "avoid file X" guidance,
