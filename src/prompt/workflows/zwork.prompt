@@ -2,12 +2,12 @@
 
 # zwork Workflow
 
-`local:zwork` 스킬을 사용한다. 절대로 자의적인 판단으로 아무것도 스킵하지말고 `local:zwork`의 절차대로 진행한다.
+Use the `local:zwork` skill. Never skip anything based on your own judgment — follow the `local:zwork` procedure exactly as specified.
 
-- 유저가 다시 `zwork`를 보내거나 `zwork`대로 해달라고 요청하면 local:zwork 스킬을 다시 읽고 다시 해당 스킬을 절차대로 처음부터 다시 진행한다. 자의적으로 스킵하면 바로 된장 발릴테니까 유저의 지시에 대해 의도를 명확히 파악하고 절차대로 진행한다.
+- If the user sends `zwork` again or requests to proceed according to `zwork`, re-read the local:zwork skill and restart the procedure from the beginning. Skipping steps on your own will have serious consequences, so make sure you clearly understand the user's intent and follow the procedure step by step.
 
- 
-## 스킬 활용
+
+## Skills Used
 
 - stv:new-task
 - stv:debug

@@ -5,31 +5,31 @@ description: "Trigger: when local:zwork completed."
 
 # Executive Summary
 
-작업 완료 후 이해관계자가 **이 문서 하나로 의사결정**할 수 있는 7섹션 구조의 요약 문서를 작성한다. (Slack markdownfmt + slack block kit을 이용하여 가독성 있게 작성)
+After work completion, produce a 7-section summary document that allows stakeholders to **make decisions based on this single document**. (Write with readable formatting using Slack markdownfmt + Slack Block Kit)
 
-## 작성 절차
+## Writing Procedure
 
-1. `./reference/executive-summary-template.md`를 읽고 구조를 파악한다.
-2. `./reference/executive-summary-example.md`를 읽고 톤과 깊이를 파악한다.
-3. 현재 세션의 작업 내역(이슈, PR, 커밋, 리뷰)을 수집한다.
-4. 템플릿 구조에 맞춰 Executive Summary를 작성한다.
+1. Read `./reference/executive-summary-template.md` and understand the structure.
+2. Read `./reference/executive-summary-example.md` and understand the tone and depth.
+3. Collect the current session's work history (issues, PRs, commits, reviews).
+4. Write the Executive Summary following the template structure.
 
-## 7섹션 필수 구조
+## 7-Section Required Structure
 
-| # | 섹션 | 핵심 |
-|---|------|------|
-| 0 | SSOT | 유저의 원문 지시 + 이슈/PR 링크와 현재 상태 |
-| 1 | 문제 배경 | Impact Chain + 비즈니스 영향 |
-| 2 | 근본 원인 분석 | 장애 포인트 테이블 + 코드 결함 AS-IS/TO-BE |
-| 3 | 수정 내역 | PR별 변경/파일/효과/리뷰 테이블 |
-| 4 | STV Verify 결과 | Spec 항목별 검증 + Verdict |
-| 5 | 타임라인 | UTC 시각별 이벤트 |
-| 6 | 리스크 및 후속 조치 | 상태 아이콘(✅/⚠️/🔶) + 조치 |
-| 7 | AS-IS → TO-BE 종합 | 항목별 이전/이후 비교 |
+| # | Section | Key Focus |
+|---|---------|-----------|
+| 0 | SSOT | User's original instruction verbatim + issue/PR links with current status |
+| 1 | Problem Background | Impact Chain + business impact |
+| 2 | Root Cause Analysis | Failure point table + code defect AS-IS/TO-BE |
+| 3 | Fix History | Per-PR table of changes/files/effects/reviews |
+| 4 | STV Verify Results | Per-spec item verification + Verdict |
+| 5 | Timeline | Events by UTC time |
+| 6 | Risks and Follow-up Actions | Status icons (✅/⚠️/🔶) + actions |
+| 7 | AS-IS → TO-BE Summary | Before/after comparison by item |
 
-## 작성 규칙
+## Writing Rules
 
-- **테이블 나열 금지** — 각 섹션은 서사(narrative)로 연결되어야 한다.
-- **모든 이슈/PR 링크 포함** — 각각의 현재 상태(Open/Merged/QA 등)를 명시한다.
-- **유저 마찰 최소화** — 이 문서를 읽고 바로 다음 행동을 판단할 수 있어야 한다.
-- SSOT 섹션의 유저 원문은 **절대 요약하지 않는다** — 그대로 인용한다.
+- **No table-only listings** — each section must be connected with narrative.
+- **Include all issue/PR links** — specify the current status of each (Open/Merged/QA, etc.).
+- **Minimize user friction** — the reader should be able to determine their next action immediately after reading this document.
+- **Never summarize** the user's original text in the SSOT section — quote it verbatim.

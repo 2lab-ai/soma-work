@@ -2,62 +2,62 @@
 
 # PR Documentation to Confluence Workflow
 
-PR 변경 사항을 Confluence에 문서화하는 워크플로우. 다양한 이해관계자를 위한 맞춤형 문서를 생성한다.
+A workflow for documenting PR changes to Confluence. Generates tailored documentation for various stakeholder groups.
 
-## 트리거 패턴
+## Trigger Pattern
 ```
 <Confluence_Parent_URL> <PR_URL>
 ```
 
-예시:
+Example:
 ```
 https://example.atlassian.net/wiki/spaces/TEAM/pages/123456/ChangeLogs https://github.com/org/repo/pull/123
 ```
 
-## 자동 수행 사항
+## Automatic Steps
 
-### 1. 입력 파싱
-- PR URL에서 owner, repo, pull_number 추출
-- Confluence URL에서 cloudId, spaceId, parentPageId 추출
+### 1. Input Parsing
+- Extract owner, repo, pull_number from the PR URL
+- Extract cloudId, spaceId, parentPageId from the Confluence URL
 
-### 2. PR 정보 수집
+### 2. PR Information Gathering
 ```
-/github-pr <PR_URL>  # PR 메타데이터, 리뷰, 코멘트, 변경 파일 포함 (토큰 효율적)
-gh pr diff <PR_NUM>  # 상세 diff (코드 레벨 분석용)
+/github-pr <PR_URL>  # PR metadata, reviews, comments, changed files included (token-efficient)
+gh pr diff <PR_NUM>  # Detailed diff (for code-level analysis)
 ```
 
-### 3. 이해관계자 분류
-UIAskUserQuestion으로 문서화 대상 이해관계자 그룹을 확인:
-- **API Consumer**: API 사용자 (외부 개발자, 프론트엔드팀 등)
-- **Implementation**: 구현 담당자 (백엔드팀, 코드 리뷰어 등)
-- **Business**: 비즈니스 이해관계자 (PM, 기획자 등)
-- **Operations**: 운영팀 (DevOps, SRE 등)
+### 3. Stakeholder Classification
+Use UIAskUserQuestion to confirm the target stakeholder groups for documentation:
+- **API Consumer**: API users (external developers, frontend team, etc.)
+- **Implementation**: Implementation owners (backend team, code reviewers, etc.)
+- **Business**: Business stakeholders (PM, product planners, etc.)
+- **Operations**: Operations team (DevOps, SRE, etc.)
 
-### 4. 문서 구조 생성
-각 이해관계자 그룹별로 섹션을 나눠 Confluence 페이지 생성:
+### 4. Document Structure Generation
+Create a Confluence page with sections divided by stakeholder group:
 
 ```markdown
 # [PR #{number}] {PR Title}
 
-## 개요
+## Overview
 - **PR**: {PR URL}
-- **작성일**: {date}
-- **작성자**: {author}
+- **Date**: {date}
+- **Author**: {author}
 
 ---
 
 ## Part 1: {Stakeholder Group 1 Name}
 
-{해당 그룹에 필요한 내용만 포함}
+{Include only content relevant to this group}
 
 ---
 
 ## Part 2: {Stakeholder Group 2 Name}
 
-{해당 그룹에 필요한 내용만 포함}
+{Include only content relevant to this group}
 ```
 
-### 5. Confluence 페이지 생성
+### 5. Confluence Page Creation
 ```
 mcp__jira__createConfluencePage
 - cloudId: {extracted from URL}
@@ -68,18 +68,18 @@ mcp__jira__createConfluencePage
 - contentFormat: "markdown"
 ```
 
-## 문서 템플릿 가이드
+## Document Template Guide
 
-### API Consumer용 템플릿
+### API Consumer Template
 ```markdown
-## API 변경 사항
+## API Changes
 
-### 새로운 API
-| Endpoint | Method | 설명 |
-|----------|--------|------|
-| /api/v1/xxx | POST | 설명 |
+### New APIs
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /api/v1/xxx | POST | Description |
 
-### 요청/응답 예시
+### Request/Response Examples
 ```json
 // Request
 { ... }
@@ -89,61 +89,61 @@ mcp__jira__createConfluencePage
 ```
 
 ### Breaking Changes
-- 없음 / 있음 (상세 설명)
+- None / Yes (detailed description)
 
 ### Migration Guide
-1. 단계 1
-2. 단계 2
+1. Step 1
+2. Step 2
 ```
 
-### Implementation용 템플릿
+### Implementation Template
 ```markdown
-## 구현 상세
+## Implementation Details
 
-### 변경된 파일
-| 파일 | 변경 유형 | 요약 |
-|------|----------|------|
-| path/to/file | Added/Modified | 설명 |
+### Changed Files
+| File | Change Type | Summary |
+|------|------------|---------|
+| path/to/file | Added/Modified | Description |
 
-### 아키텍처 변경
-- 새로운 컴포넌트/서비스 추가
-- 의존성 변경
+### Architecture Changes
+- New components/services added
+- Dependency changes
 
-### 주요 로직 변경
-1. 변경 포인트 1
-2. 변경 포인트 2
+### Key Logic Changes
+1. Change point 1
+2. Change point 2
 
-### 테스트
-- 단위 테스트: O/X
-- 통합 테스트: O/X
+### Tests
+- Unit tests: Yes/No
+- Integration tests: Yes/No
 ```
 
-## 출력 형식
+## Output Format
 
-### 📄 문서 생성 완료
+### 📄 Documentation Complete
 
-**Confluence 페이지**: {생성된 페이지 URL}
+**Confluence page**: {created page URL}
 
-#### 문서 구조
-- Part 1: {그룹명} - {요약}
-- Part 2: {그룹명} - {요약}
+#### Document Structure
+- Part 1: {group name} - {summary}
+- Part 2: {group name} - {summary}
 
-#### 다음 단계
-UIAskUserQuestion으로 추가 작업 확인:
-- 문서 수정 필요
-- 다른 이해관계자 그룹 추가
-- 완료
+#### Next Steps
+Use UIAskUserQuestion to confirm additional actions:
+- Revise documentation
+- Add another stakeholder group
+- Done
 
 ---
 
-## 예제 문서 포맷
+## Example Document Format
 
 ```
 {{include:./workflows/examples/PTN-1978-summary.md}}
 ```
 
-## 🔄 다음 단계 안내
+## 🔄 Next Steps
 
-문서 작성 완료 후:
-- 문서 링크를 세션에 연결: "`link doc <url>` 명령으로 Confluence 문서를 세션에 연결할 수 있습니다."
-- 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."
+After documentation is complete:
+- Link the document to the session: "You can link the Confluence document to the session using the `link doc <url>` command."
+- If the work is complete: "You can close the session using the `close` command."

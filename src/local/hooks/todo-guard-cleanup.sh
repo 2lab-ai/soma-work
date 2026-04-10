@@ -1,7 +1,7 @@
 #!/bin/bash
-# todo-guard-cleanup.sh — Stop hook: 세션 종료 시 todo-guard 상태 파일 정리
+# todo-guard-cleanup.sh — Stop hook: cleans up todo-guard state files on session end
 #
-# Stop hook에서 호출되어 세션별 todo-guard 상태 파일을 삭제합니다.
+# Called from the stop hook to delete per-session todo-guard state files.
 
 set -uo pipefail
 
