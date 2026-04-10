@@ -361,6 +361,25 @@ class SlackMcpServer extends BaseMcpServer {
         return `\x00P${idx}\x00`;
       });
 
+    // Convert markdown tables to code blocks (Slack mrkdwn has no table support)
+    processed = processed.replace(
+      /(?:^|\n)((?:\|[^\n]+\|\n?)+)/g,
+      (_match, tableBlock: string) => {
+        const lines = tableBlock.trim().split('\n');
+        // Remove separator rows (|---|---|)
+        const dataLines = lines.filter((line) => !/^\|[\s-:|]+\|$/.test(line));
+        if (dataLines.length === 0) return _match;
+        return '\n```\n' + dataLines.join('\n') + '\n```\n';
+      },
+    );
+
+    // Protect newly created code blocks from further formatting
+    processed = processed.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = preserved.length;
+      preserved.push(match);
+      return `\x00P${idx}\x00`;
+    });
+
     // Markdown → Slack mrkdwn conversions
     processed = processed
       .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*

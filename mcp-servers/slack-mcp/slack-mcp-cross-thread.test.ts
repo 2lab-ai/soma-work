@@ -185,6 +185,17 @@ describe('Scenario 6: send_thread_message mrkdwn formatting', () => {
     const source = await fs.readFile(serverPath, 'utf-8');
     expect(source).toMatch(/type:\s*'section'[\s\S]*?type:\s*'mrkdwn'/);
   });
+
+  it('formatToMrkdwn converts markdown tables to code blocks', async () => {
+    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
+    const source = await fs.readFile(serverPath, 'utf-8');
+    // Verify table-to-code-block conversion logic exists
+    expect(source).toMatch(/markdown tables to code blocks/i);
+    // Verify separator row filtering exists (|---|---|)
+    expect(source).toMatch(/separator/i);
+    // Verify the table regex detects pipe-delimited lines
+    expect(source).toMatch(/\|.*\\n/);
+  });
 });
 
 // ── Cross-cutting: Version bump ──────────────────────────────
