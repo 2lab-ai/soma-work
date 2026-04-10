@@ -565,7 +565,8 @@ class SlackMcpServer extends BaseMcpServer {
 
     const rawBlocks = libMarkdownToBlocks(markdown) as Array<Record<string, unknown>>;
     if (!rawBlocks || rawBlocks.length === 0) {
-      return { blocks: [], fallbackText, overflow: [] };
+      // No rich blocks produced — fall back to mrkdwn section blocks
+      return { blocks: this.buildMrkdwnBlocks(fallbackText), fallbackText, overflow: [] };
     }
 
     // Sanitize blocks (table row/col limits, header truncation)
@@ -574,11 +575,7 @@ class SlackMcpServer extends BaseMcpServer {
         const rows = block.rows as any[][];
         if (!rows || rows.length === 0) return block;
         const truncRows = rows.slice(0, MAX_TABLE_ROWS).map((r) => (r as any[]).slice(0, MAX_TABLE_COLS));
-        return {
-          ...block,
-          rows: truncRows,
-          ...(block.column_settings ? { column_settings: (block.column_settings as any[]).slice(0, MAX_TABLE_COLS) } : {}),
-        };
+        return { ...block, rows: truncRows };
       }
       if (block.type === 'header') {
         const text = (block.text as any)?.text || '';
