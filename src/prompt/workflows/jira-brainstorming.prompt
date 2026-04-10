@@ -2,106 +2,106 @@
 
 # Jira Brainstorming Workflow
 
-이 세션은 **Jira 이슈 분석 및 브레인스토밍** 전용이다. 실제 구현이나 PR 생성은 이 워크플로우의 범위가 아니다.
+This session is dedicated to **Jira issue analysis and brainstorming**. Actual implementation or PR creation is outside the scope of this workflow.
 
-## 자동 수행 사항
-1. Jira 이슈 링크에서 issue key 추출
-2. `mcp__jira__getJiraIssue`로 이슈 상세 조회
-3. 관련 repo 추측 및 소스 코드 분석
-4. 구현 방향 브레인스토밍
-5. 세션 링크(`issue`, `pr`)를 확인하고 결과에 자동 반영
+## Automatic Steps
+1. Extract the issue key from the Jira issue link
+2. Retrieve issue details using `mcp__jira__getJiraIssue`
+3. Infer the relevant repo and analyze source code
+4. Brainstorm implementation approaches
+5. Check session links (`issue`, `pr`) and automatically reflect them in the results
 
-## 작업 프로세스
+## Work Process
 
-### 1. 이슈 컨텍스트 파악
-- 이슈 제목, 설명, 댓글 모두 읽기
-- Acceptance Criteria 확인
-- 관련 이슈/에픽 확인
+### 1. Understand Issue Context
+- Read the issue title, description, and all comments
+- Review the Acceptance Criteria
+- Check related issues/epics
 
-### 2. 코드베이스 분석
-- 관련 repo 식별 (모르면 유저에게 질문)
-- 해당 repo clone 후 관련 소스 분석
-- 현재 구조와 패턴 파악
+### 2. Codebase Analysis
+- Identify the relevant repo (ask the user if unknown)
+- Clone the repo and analyze the related source code
+- Understand the current structure and patterns
 
-### 3. 구현 옵션 도출
-- 가능한 구현 접근 방식 2-3개 제시
-- 각 접근 방식의 장단점 분석
-- 코드 레벨에서 어떻게 변경되는지 구체적으로 설명
+### 3. Derive Implementation Options
+- Present 2-3 possible implementation approaches
+- Analyze the pros and cons of each approach
+- Explain specifically how the code would change at the code level
 
-### 4. 다음 단계 선택 준비
-- 분석이 끝나면 "새 세션에서 ..." 문장만 남기지 말고 `UIAskUserQuestion`으로 즉시 다음 행동을 선택받는다.
-- 질문에는 현재 세션 링크 정보를 포함한다.
-  - issue 링크가 있으면 반드시 포함
-  - 이미 연결된 PR 링크가 있으면 함께 포함
+### 4. Prepare for Next Step Selection
+- Once the analysis is complete, instead of just leaving a "in a new session..." message, use `UIAskUserQuestion` to immediately prompt for the next action.
+- Include current session link information in the question.
+  - Always include the issue link if available
+  - Include the linked PR URL if one already exists
 
-## 출력 형식
+## Output Format
 
-### 📋 이슈 요약
-- **제목**: ...
-- **타입**: Bug/Story/Task
-- **우선순위**: ...
+### 📋 Issue Summary
+- **Title**: ...
+- **Type**: Bug/Story/Task
+- **Priority**: ...
 - **Acceptance Criteria**: ...
 
-### 🔍 관련 코드 분석
-| 파일 | 역할 |
+### 🔍 Related Code Analysis
+| File | Role |
 |------|------|
-| `path/to/file.ts` | 현재 XXX 처리하는 메인 로직 |
-| `path/to/another.ts` | 관련 유틸리티 |
+| `path/to/file.ts` | Main logic currently handling XXX |
+| `path/to/another.ts` | Related utility |
 
-현재 구조 설명:
+Current structure description:
 ```
-[간단한 아키텍처 다이어그램 또는 설명]
+[Brief architecture diagram or description]
 ```
 
-### 💡 구현 옵션
+### 💡 Implementation Options
 
-#### 옵션 A: [접근 방식 이름]
-- **설명**: ...
-- **장점**: ...
-- **단점**: ...
-- **영향 범위**: 수정할 파일 목록
+#### Option A: [Approach Name]
+- **Description**: ...
+- **Pros**: ...
+- **Cons**: ...
+- **Scope of impact**: List of files to modify
 
-#### 옵션 B: [접근 방식 이름]
-- **설명**: ...
-- **장점**: ...
-- **단점**: ...
-- **영향 범위**: ...
+#### Option B: [Approach Name]
+- **Description**: ...
+- **Pros**: ...
+- **Cons**: ...
+- **Scope of impact**: ...
 
-### ❓ 추가 확인 필요
-- 유저에게 확인받아야 할 사항들
-- 결정에 따라 달라지는 부분들
+### ❓ Further Clarification Needed
+- Items that need user confirmation
+- Areas that vary depending on the decision
 
-## 🔄 다음 단계 안내
+## 🔄 Next Steps
 
-브레인스토밍 완료 후, 먼저 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+After brainstorming is complete, first automatically update session links (not displayed to user):
 ```json
 {
   "type": "session_links",
-  "issue": "Jira 이슈 URL",
-  "pr": "연결된 PR URL (있을 때만)"
+  "issue": "Jira issue URL",
+  "pr": "Linked PR URL (only if available)"
 }
 ```
 
-그 다음 `UIAskUserQuestion`으로 다음 단계를 선택받는다:
+Then use `UIAskUserQuestion` to prompt for the next step:
 ```json
 {
   "type": "UIAskUserQuestion",
-  "question": "다음 단계로 무엇을 진행할까요? (연결된 링크: issue=<Jira URL>, pr=<PR URL 또는 없음>)",
+  "question": "What would you like to do next? (Linked: issue=<Jira URL>, pr=<PR URL or none>)",
   "options": [
     {
-      "label": "Implementation Spec 작성 (권장)",
+      "label": "Create Implementation Spec (Recommended)",
       "value": "plan",
-      "description": "jira-planning 워크플로우로 구현 계획을 먼저 확정"
+      "description": "Finalize the implementation plan via the jira-planning workflow"
     },
     {
-      "label": "바로 구현 시작",
+      "label": "Start implementation now",
       "value": "fix",
-      "description": "jira-create-pr 워크플로우로 PR 생성/구현 진행"
+      "description": "Create PR/proceed with implementation via the jira-create-pr workflow"
     },
     {
-      "label": "여기서 종료",
+      "label": "End here",
       "value": "close",
-      "description": "브레인스토밍 결과만 남기고 세션 종료"
+      "description": "Keep the brainstorming results and close the session"
     }
   ]
 }

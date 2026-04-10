@@ -3,119 +3,119 @@
 ## 0. SSOT
 - SSOT
 ```
-@Z [2026/03/30 11:52 AM] @사마중달 (Beta) 리서치 잡
-의도:
-- bonus scan이랑 vsports polling 등 병렬 실행할 수 있는 일들에 대한 서비스 분리 작업. 대부분 db read only 문맥을 주면 좋을듯 함
-- 생각
-  - 별도 bg worker jobs executers
-  - 스케쥴된 일들을 주기적으로 실행하고 결과를 settlements_service api 호출로 종료함
-  - replicated ro db에만 직접 접근 가능함
-@Z [2026/03/30 12:49 PM] approve 했으니 니가 마무리해
+@Z [2026/03/30 11:52 AM] @사마중달 (Beta) Research job
+Intent:
+- Service separation work for tasks that can run in parallel, such as bonus scan and vsports polling. Providing a db read-only context for most of them would be ideal
+- Thoughts
+  - Separate bg worker jobs executors
+  - Periodically execute scheduled tasks and finalize by calling the settlements_service API
+  - Can only directly access the replicated ro db
+@Z [2026/03/30 12:49 PM] I approved it, so you wrap it up
 ```
 - PTN-3231: https://insightquest.atlassian.net/browse/PTN-3231 - QA
 - PR #1462: https://github.com/devinsightquest/Gucci/pull/1462 - Merged
 - PR #1455: https://github.com/devinsightquest/Gucci/pull/1455 - Merged
 
-## 1. 문제 배경
+## 1. Problem Background
 
-**{어떤 시스템/파이프라인}**에서 **{무엇이 어떻게 안 되는지}** 장애가 {발견/의심}되었다.
+A failure was {discovered/suspected} in **{system/pipeline}** where **{what is failing and how}**.
 
 **Impact Chain**:
 ```
-{시작 서비스/메서드}
-  → {중간 처리}
-    → {장애 발생 지점} (여기서 차단!)
-      → {다운스트림 영향 1}
-        → {다운스트림 영향 2}
+{Starting service/method}
+  → {Intermediate processing}
+    → {Failure point} (blocked here!)
+      → {Downstream impact 1}
+        → {Downstream impact 2}
 ```
 
-**비즈니스 영향**:
-- **{영향 1}**: {구체적 설명}
-- **{영향 2}**: {구체적 설명}
-- **{영향 3}**: {구체적 설명}
+**Business Impact**:
+- **{Impact 1}**: {Specific description}
+- **{Impact 2}**: {Specific description}
+- **{Impact 3}**: {Specific description}
 
-## 2. 근본 원인 분석
+## 2. Root Cause Analysis
 
-### 이슈 장애 포인트 ({N}개)
+### Issue Failure Points ({N} total)
 
-| # | 장애 포인트 | 위치 | 진단 |
-|---|------------|------|------|
-| 1 | {포인트 설명} | {파일:라인} | {확인 필요 / 🔴 코드 결함 확인} |
+| # | Failure Point | Location | Diagnosis |
+|---|---------------|----------|-----------|
+| 1 | {Point description} | {file:line} | {Needs verification / 🔴 Code defect confirmed} |
 | ... | ... | ... | ... |
 
-### 발견된 코드 결함 {N}건
+### Code Defects Found: {N}
 
-**결함 A — {결함 이름} (Root Cause)**
+**Defect A — {Defect name} (Root Cause)**
 
-{무엇이 왜 잘못되었는지 1~2문장}
+{1-2 sentence explanation of what went wrong and why}
 
 ```
-❌ AS-IS: {현재 코드/동작}
-✅ TO-BE: {수정된 코드/동작}
+❌ AS-IS: {Current code/behavior}
+✅ TO-BE: {Fixed code/behavior}
 ```
 
-{결함의 메커니즘 상세 설명}
+{Detailed explanation of the defect mechanism}
 
-**결함 B — {결함 이름}**
+**Defect B — {Defect name}**
 
-{설명}
+{Description}
 
-## 3. 수정 내역
+## 3. Fix History
 
-### PR #{번호} — {제목} ({MERGED/OPEN} {날짜})
+### PR #{number} — {title} ({MERGED/OPEN} {date})
 
-| 항목 | 내용 |
-|------|------|
-| **변경** | {무엇을 어떻게 변경했는지} |
-| **파일** | {파일명} (+{N} -{N}) |
-| **효과** | {이 변경으로 무엇이 복원/개선되는지} |
-| **리뷰** | {리뷰어 / approve 상태} |
+| Item | Details |
+|------|---------|
+| **Change** | {What was changed and how} |
+| **Files** | {filename} (+{N} -{N}) |
+| **Effect** | {What this change restores/improves} |
+| **Review** | {Reviewer / approval status} |
 
-### PR #{번호} — {제목} ({MERGED/OPEN} {날짜})
+### PR #{number} — {title} ({MERGED/OPEN} {date})
 
-| 항목 | 내용 |
-|------|------|
-| **변경** | {무엇을 어떻게 변경했는지} |
-| **파일** | {파일명} (+{N} -{N}) |
-| **품질** | {리뷰 점수 / 루프 횟수} |
-| **리뷰** | {리뷰어 / approve 상태} |
+| Item | Details |
+|------|---------|
+| **Change** | {What was changed and how} |
+| **Files** | {filename} (+{N} -{N}) |
+| **Quality** | {Review score / loop count} |
+| **Review** | {Reviewer / approval status} |
 
-## 4. STV Verify 결과
+## 4. STV Verify Results
 
-| Spec Item | Status | 검증 방법 |
-|-----------|--------|-----------|
-| {스펙 항목 1} | ✅/❌ | {어떻게 검증했는지} |
-| {스펙 항목 2} | ✅/❌ | {어떻게 검증했는지} |
+| Spec Item | Status | Verification Method |
+|-----------|--------|---------------------|
+| {Spec item 1} | ✅/❌ | {How it was verified} |
+| {Spec item 2} | ✅/❌ | {How it was verified} |
 | ... | ... | ... |
 
-**Verdict: {PASS / PARTIAL / GAP_DETECTED / FAIL}** — {N}/{N} spec 항목 충족, Gap {N}건
+**Verdict: {PASS / PARTIAL / GAP_DETECTED / FAIL}** — {N}/{N} spec items satisfied, {N} gaps
 
-## 5. 타임라인
+## 5. Timeline
 
-| 시각 (UTC) | 이벤트 |
-|-----------|--------|
-| {MM/DD HH:MM} | {이슈 발견/생성} |
-| {MM/DD HH:MM} | {분석 완료 / 핵심 발견} |
-| {MM/DD HH:MM} | {PR 생성} |
-| {MM/DD HH:MM} | {리뷰/승인} |
+| Time (UTC) | Event |
+|------------|-------|
+| {MM/DD HH:MM} | {Issue discovered/created} |
+| {MM/DD HH:MM} | {Analysis complete / key finding} |
+| {MM/DD HH:MM} | {PR created} |
+| {MM/DD HH:MM} | {Review/approval} |
 | {MM/DD HH:MM} | **{PR MERGED}** |
-| {MM/DD HH:MM} | {배포} |
+| {MM/DD HH:MM} | {Deployment} |
 
-## 6. 리스크 및 후속 조치
+## 6. Risks and Follow-up Actions
 
-| 항목 | 상태 | 조치 |
-|------|------|------|
-| **{이미 발생한 피해}** | ⚠️ 미확인 | {확인/복구 방법} |
-| **{배포 상태}** | ✅/🔶 | {어떤 환경에 반영됐는지, 다음 배포 일정} |
-| **{모니터링}** | 🔶 권장 | {어떤 로그/메트릭을 봐야 하는지, 정상/이상 기준} |
-| **{미확인 장애 포인트}** | 🔶 미확인 | {런타임 확인 필요한 항목, 설정 기반 이슈} |
-| **{Jira 이슈 상태}** | {상태} | {후속 QA/검증 필요 사항} |
+| Item | Status | Action |
+|------|--------|--------|
+| **{Existing damage}** | ⚠️ Unverified | {Verification/recovery method} |
+| **{Deployment status}** | ✅/🔶 | {Which environments it has been deployed to, next deployment schedule} |
+| **{Monitoring}** | 🔶 Recommended | {Which logs/metrics to watch, normal/abnormal criteria} |
+| **{Unverified failure points}** | 🔶 Unverified | {Items requiring runtime verification, configuration-based issues} |
+| **{Jira issue status}** | {Status} | {Follow-up QA/verification needs} |
 
-## 7. AS-IS → TO-BE 종합
+## 7. AS-IS → TO-BE Summary
 
-| 구분 | AS-IS | TO-BE |
-|------|-------|-------|
-| **{항목 1}** | {이전 상태} | ✅ {수정 후 상태} |
-| **{항목 2}** | {이전 상태} | ✅ {수정 후 상태} |
-| **{항목 3}** | {이전 상태} | ✅ {수정 후 상태} |
+| Category | AS-IS | TO-BE |
+|----------|-------|-------|
+| **{Item 1}** | {Previous state} | ✅ {State after fix} |
+| **{Item 2}** | {Previous state} | ✅ {State after fix} |
+| **{Item 3}** | {Previous state} | ✅ {State after fix} |
 | ... | ... | ... |

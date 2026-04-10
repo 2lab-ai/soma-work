@@ -35,9 +35,9 @@
 
 | Item | Description |
 |------|-------------|
-| **What** | 암호화폐 입금 시 보너스를 예약하고 자동으로 적용하는 시스템 |
-| **Why** | 사용자가 입금 주소 요청 시 보너스를 미리 예약하여 입금 완료 시 자동 지급 |
-| **How** | CAS(Compare-And-Swap) 패턴 + FOR UPDATE 락 + 24시간 만료 + Settlement 연동 |
+| **What** | A system that reserves bonuses on cryptocurrency deposits and applies them automatically |
+| **Why** | Pre-reserve a bonus when a user requests a deposit address, so it is automatically granted upon deposit completion |
+| **How** | CAS (Compare-And-Swap) pattern + FOR UPDATE lock + 24-hour expiry + Settlement integration |
 | **Impact** | +1,834 / -25 lines (core logic), 23 files |
 | **Quality** | Multi-Agent Review 95.3/100 (GPT-5.2, Gemini-3-Pro, Opus-4.5) |
 
@@ -45,7 +45,7 @@
 ```
 User Request → Reserve Bonus → Deposit Detected → Claim+Bind → Deposit Confirmed → Settlement
      │              │                  │                │                │               │
-     └─ opBonusNo   └─ wallet.Pending  └─ OnDetected    └─ tx.Claimed    └─ OnConfirmed  └─ UserBonus 생성
+     └─ opBonusNo   └─ wallet.Pending  └─ OnDetected    └─ tx.Claimed    └─ OnConfirmed  └─ UserBonus created
 ```
 
 ---
@@ -101,7 +101,7 @@ User Request → Reserve Bonus → Deposit Detected → Claim+Bind → Deposit C
 │                    │ TryProcessClaimedBonusAsync            │               │
 │                    │ → SettlementService.DepositApproval    │               │
 │                    │ → TryProcessCryptoDepositBonusAsync    │               │
-│                    │ → UserBonus 생성 + 활성화              │               │
+│                    │ → UserBonus creation + activation      │               │
 │                    └────────────────────────────────────────┘               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -111,21 +111,21 @@ User Request → Reserve Bonus → Deposit Detected → Claim+Bind → Deposit C
 
 #### 1. CAS (Compare-And-Swap) Pattern with Atomic Bind
 ```csharp
-// Single DB transaction으로 bonus claim + tx bind 동시 수행
-wallet.PendingBonusNo → tx.ClaimedBonusNo  // 원자적 전환
-wallet.PendingBonusNo = null               // 동시에 정리
+// Performs bonus claim + tx bind atomically in a single DB transaction
+wallet.PendingBonusNo → tx.ClaimedBonusNo  // Atomic transfer
+wallet.PendingBonusNo = null               // Cleared simultaneously
 ```
 
 #### 2. Full Idempotency Guarantee
-- tx에 이미 `ClaimedBonusNo` 있으면 → 성공 반환 (중복 claim 없음)
-- wallet reservation이 이미 정리된 상태에서 retry → 성공 반환
-- 동일 bonus 재예약 시 expiry 시간만 반환 (refresh 가능)
+- If `ClaimedBonusNo` already exists on the tx -> return success (no duplicate claim)
+- If wallet reservation is already cleared and a retry occurs -> return success
+- If the same bonus is re-reserved, only the expiry time is returned (refresh possible)
 
 #### 3. 24-Hour Expiry with Timestamp Validation
 ```csharp
 private static readonly TimeSpan BonusReservationExpiry = TimeSpan.FromHours(24);
 
-// [P2] PendingBonusRequestedAt null 체크 - 데이터 무결성 문제로 처리
+// [P2] PendingBonusRequestedAt null check - treated as a data integrity issue
 if (!wallet.PendingBonusRequestedAt.HasValue) {
     // Invalid reservation - clear and fail
 }
@@ -134,21 +134,21 @@ if (!wallet.PendingBonusRequestedAt.HasValue) {
 #### 4. Defense-in-Depth Validation
 | Check | Purpose |
 |-------|---------|
-| `tx.CryptoWalletNo == cryptoWalletNo` | 소유권 검증 |
-| `tx.Type == TransactionType.Deposit` | 타입 검증 (출금 tx에 bonus 바인딩 방지) |
-| `now - wallet.PendingBonusRequestedAt <= 24h` | 만료 검증 |
-| `wallet.PendingBonusRequestedAt <= tx.CreatedAt` | 새 예약 보호 (idempotent cleanup 시) |
-| `string.IsNullOrWhiteSpace(transactionId)` | transactionId 필수화 |
+| `tx.CryptoWalletNo == cryptoWalletNo` | Ownership verification |
+| `tx.Type == TransactionType.Deposit` | Type verification (prevent bonus binding to withdrawal tx) |
+| `now - wallet.PendingBonusRequestedAt <= 24h` | Expiry verification |
+| `wallet.PendingBonusRequestedAt <= tx.CreatedAt` | New reservation protection (during idempotent cleanup) |
+| `string.IsNullOrWhiteSpace(transactionId)` | Enforce required transactionId |
 
 ### Key Files & Responsibilities
 
 | File | Role | Lines Changed |
 |------|------|---------------|
-| `CryptoStoreService.Wallets.cs` | 보너스 예약/클레임/바인드 핵심 로직 | +433 |
-| `DepositProcessingModule.cs` | 감지/확인 시 보너스 처리 오케스트레이션 | +189/-16 |
-| `UserContext.Impl.Bonus.Impl.Accumulate.cs` | Crypto 입금 보너스 Settlement 연동 | +140 |
-| `crypto_deposit_wallet.cs` | Entity 확장 | +11 |
-| `crypto_transaction.cs` | Entity 확장 | +11 |
+| `CryptoStoreService.Wallets.cs` | Core logic for bonus reservation/claim/bind | +433 |
+| `DepositProcessingModule.cs` | Orchestration for bonus processing on detect/confirm | +189/-16 |
+| `UserContext.Impl.Bonus.Impl.Accumulate.cs` | Crypto deposit bonus Settlement integration | +140 |
+| `crypto_deposit_wallet.cs` | Entity extension | +11 |
+| `crypto_transaction.cs` | Entity extension | +11 |
 
 ---
 
@@ -167,7 +167,7 @@ if (!wallet.PendingBonusRequestedAt.HasValue) {
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `opBonusNo` | `int` | Optional | 예약할 입금 보너스 번호 (OpBonus.No) |
+| `opBonusNo` | `int` | Optional | Deposit bonus number to reserve (OpBonus.No) |
 
 #### New Response Fields
 
@@ -180,7 +180,7 @@ if (!wallet.PendingBonusRequestedAt.HasValue) {
 
   // PTN-1978 New Fields
   "PendingBonusNo": 123,
-  "BonusTitle": "첫 입금 10%",
+  "BonusTitle": "First Deposit 10%",
   "BonusExpiresAt": "2026-01-08T15:00:00Z",
 
   // Existing Fields (PTN-1969)
@@ -221,7 +221,7 @@ GET /api/CryptoWallet/deposit?network=TRC20
 GET /api/CryptoWallet/deposit?opBonusNo=456  # Existing: 123 reserved, not expired
 ```
 
-**Result**: 새 예약(456) **거부**. 기존 예약(123)이 유효하면 새 보너스로 덮어쓰지 않음.
+**Result**: New reservation (456) **rejected**. If the existing reservation (123) is still valid, it will not be overwritten with a new bonus.
 
 #### Scenario 4: Same Bonus Re-request
 ```http
@@ -229,18 +229,18 @@ GET /api/CryptoWallet/deposit?opBonusNo=123  # Already reserved
 ```
 
 **Result**:
-- 만료 전: 기존 만료 시간 반환 (재예약 없음)
-- 만료 후: 갱신 후 새 만료 시간 반환
+- Before expiry: Returns the existing expiry time (no re-reservation)
+- After expiry: Refreshes and returns a new expiry time
 
 ### Input Validation
 
 | Input | Behavior |
 |-------|----------|
-| `opBonusNo=123` (positive) | 정상 처리, 보너스 예약 시도 |
-| `opBonusNo=0` | 무시, 보너스 없이 처리 |
-| `opBonusNo=-1` (negative) | 무시, 보너스 없이 처리 |
+| `opBonusNo=123` (positive) | Normal processing, bonus reservation attempted |
+| `opBonusNo=0` | Ignored, processed without bonus |
+| `opBonusNo=-1` (negative) | Ignored, processed without bonus |
 | `opBonusNo=abc` (non-numeric) | **400 Bad Request** |
-| `opBonusNo` omitted | 보너스 없이 처리 (기존 동작) |
+| `opBonusNo` omitted | Processed without bonus (existing behavior) |
 
 ### Bonus Lifecycle
 
@@ -259,17 +259,17 @@ GET /api/CryptoWallet/deposit?opBonusNo=123  # Already reserved
 │        │ (24h expiry)      │ (on detect)       │ (on confirm)      │
 │        ▼                   ▼                   ▼                   │
 │    Auto Expire         Atomic Claim+Bind   DepositApproval API     │
-│                        in single DB TX     → Prize 계산 → UserBonus │
+│                        in single DB TX     → Prize calculation → UserBonus │
 │                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Important Considerations
 
-1. **Caching Disabled**: `ResponseCache(NoStore=true)` - 보너스 예약은 부작용이 있으므로 캐싱 안 함
-2. **Full Idempotency**: 동일 요청 재시도 시 동일한 결과 보장
-3. **Conflict Handling**: 다른 보너스가 이미 예약되어 있고 만료 전이면 새 예약 거부
-4. **transactionId 필수화**: bonus claim 시 tx binding 없이 claim만 하면 bonus loss 발생하므로 차단
+1. **Caching Disabled**: `ResponseCache(NoStore=true)` - Bonus reservation has side effects, so caching is disabled
+2. **Full Idempotency**: Guaranteed identical results on identical request retries
+3. **Conflict Handling**: If a different bonus is already reserved and not expired, the new reservation is rejected
+4. **Required transactionId**: Claiming a bonus without tx binding would cause bonus loss, so it is blocked
 
 ---
 
@@ -280,13 +280,13 @@ GET /api/CryptoWallet/deposit?opBonusNo=123  # Already reserved
 #### `crypto_deposit_wallet.cs` (+11 lines)
 ```csharp
 /// <summary>
-/// 대기 중인 입금 보너스 번호 (OpBonus.No)
-/// 암호화폐 입금 시 적용할 보너스 - GetDepositAddress 호출 시 설정됨
+/// Pending deposit bonus number (OpBonus.No)
+/// Bonus to apply on cryptocurrency deposit - set during GetDepositAddress call
 /// </summary>
 public int? PendingBonusNo { get; set; }
 
 /// <summary>
-/// 보너스 요청 시간 - 만료 검증용 (기본 24시간)
+/// Bonus request timestamp - for expiry validation (default 24 hours)
 /// </summary>
 public DateTime? PendingBonusRequestedAt { get; set; }
 ```
@@ -294,13 +294,13 @@ public DateTime? PendingBonusRequestedAt { get; set; }
 #### `crypto_transaction.cs` (+11 lines)
 ```csharp
 /// <summary>
-/// 클레임된 입금 보너스 번호 (OpBonus.No)
-/// OnDetectedAsync에서 crypto_deposit_wallet.PendingBonusNo를 CAS로 클레임하여 저장
+/// Claimed deposit bonus number (OpBonus.No)
+/// Stored by CAS-claiming crypto_deposit_wallet.PendingBonusNo in OnDetectedAsync
 /// </summary>
 public int? ClaimedBonusNo { get; set; }
 
 /// <summary>
-/// 보너스 처리 완료 여부 - SettlementService.DepositApproval 호출 후 true
+/// Whether bonus processing is complete - set to true after SettlementService.DepositApproval call
 /// </summary>
 public bool BonusProcessed { get; set; } = false;
 ```
@@ -314,7 +314,7 @@ public bool BonusProcessed { get; set; } = false;
 public async Task<SetPendingBonusResult> SetPendingBonusAsync(
     int userNo, CryptoNetworkType network, int opBonusNo, CancellationToken ct)
 {
-    // 1. Lock wallet with FOR UPDATE (race condition 방지)
+    // 1. Lock wallet with FOR UPDATE (prevent race conditions)
     var wallet = await db.crypto_deposit_wallet
         .FromSqlInterpolated($"SELECT * FROM crypto_deposit_wallet WHERE ... FOR UPDATE")
         .FirstOrDefaultAsync(ct);
@@ -322,9 +322,9 @@ public async Task<SetPendingBonusResult> SetPendingBonusAsync(
     // 2. Check existing reservation
     if (wallet.PendingBonusNo.HasValue) {
         if (wallet.PendingBonusNo == opBonusNo) {
-            // Same bonus: 만료됐으면 refresh, 아니면 기존 expiry 반환
+            // Same bonus: refresh if expired, otherwise return existing expiry
         } else {
-            // Different bonus: 기존이 만료 전이면 거부
+            // Different bonus: reject if existing reservation has not expired
         }
     }
 
@@ -346,26 +346,26 @@ public async Task<ClaimBonusResult> TryClaimAndBindBonusAtomicAsync(
         .FromSqlInterpolated($"... WHERE No = {cryptoWalletNo} FOR UPDATE")
         .FirstOrDefaultAsync(ct);
 
-    var now = DateTime.UtcNow;  // Lock 획득 후 timestamp 캡처
+    var now = DateTime.UtcNow;  // Capture timestamp after acquiring lock
 
     // 2. Lock Transaction (FOR UPDATE)
     var lockedTx = await db.crypto_transaction
         .FromSqlInterpolated($"... WHERE TransactionId = {transactionId} FOR UPDATE")
         .FirstOrDefaultAsync(ct);
 
-    // 3. Idempotency: tx에 이미 ClaimedBonusNo 있으면 성공 반환
+    // 3. Idempotency: if tx already has ClaimedBonusNo, return success
     if (lockedTx?.ClaimedBonusNo.HasValue == true &&
         lockedTx.CryptoWalletNo == cryptoWalletNo &&
         lockedTx.Type == Deposit) {
-        // [P1] 타임스탬프 비교해서 새 예약 보호
+        // [P1] Compare timestamps to protect new reservations
         if (wallet.PendingBonusNo == lockedTx.ClaimedBonusNo &&
             wallet.PendingBonusRequestedAt <= lockedTx.CreatedAt) {
-            wallet.PendingBonusNo = null;  // 중복 예약 정리
+            wallet.PendingBonusNo = null;  // Clean up duplicate reservation
         }
         return Success(lockedTx.ClaimedBonusNo);
     }
 
-    // 4. [P2] Data integrity: PendingBonusRequestedAt null이면 무효 처리
+    // 4. [P2] Data integrity: treat as invalid if PendingBonusRequestedAt is null
     if (!wallet.PendingBonusRequestedAt.HasValue) {
         // Clear invalid reservation
         return Fail;
@@ -392,7 +392,7 @@ public async Task<ClaimBonusResult> TryClaimAndBindBonusAtomicAsync(
 [Obsolete("Use TryClaimAndBindBonusAtomicAsync with transactionId instead", error: true)]
 public Task<ClaimBonusResult> TryClaimAnyPendingBonusAsync(...)
 {
-    // [P1] transactionId 없이 claim만 하면 bonus loss 발생
+    // [P1] Claiming without transactionId causes bonus loss
     throw new NotSupportedException(...);
 }
 ```
@@ -414,11 +414,11 @@ if (!row.ClaimedBonusNo.HasValue && !string.IsNullOrWhiteSpace(effectiveAddress)
 
 **OnConfirmedAsync Changes**
 ```csharp
-// 1. Re-fetch fresh row (stale data 방지)
+// 1. Re-fetch fresh row (prevent stale data)
 var (_, confirmedFreshRow) = await _store.TryGetByHashAsync(txHash, ct);
 var currentRow = confirmedFreshRow ?? row;
 
-// 2. Last-chance bonus binding (이전 시도 실패 시)
+// 2. Last-chance bonus binding (if previous attempts failed)
 if (!currentRow.ClaimedBonusNo.HasValue) {
     await TryClaimAndBindBonusAsync(currentRow.ToAddress, currentRow.TransactionId, ct);
 }
@@ -429,14 +429,14 @@ if (currentRow.ClaimedBonusNo.HasValue && !currentRow.BonusProcessed) {
 }
 ```
 
-**TryProcessClaimedBonusAsync** - Settlement 연동
+**TryProcessClaimedBonusAsync** - Settlement Integration
 ```csharp
 private async Task TryProcessClaimedBonusAsync(TransactionRow row, CancellationToken ct)
 {
-    // SettlementService.DepositApproval 호출
+    // Call SettlementService.DepositApproval
     var response = await _settlementFactory.Create().DepositApproval(new() {
-        BankTransactionNo = 0,  // Crypto는 bank_transaction 없음
-        UserPendingBonusNo = row.ClaimedBonusNo  // OpBonusNo로 해석됨
+        BankTransactionNo = 0,  // Crypto has no bank_transaction
+        UserPendingBonusNo = row.ClaimedBonusNo  // Interpreted as OpBonusNo
     });
 
     if (response.ResultCode == Success || response.ResultCode == NotFound) {
@@ -449,47 +449,47 @@ private async Task TryProcessClaimedBonusAsync(TransactionRow row, CancellationT
 
 #### `UserContext.Impl.Bonus.Impl.Accumulate.cs` (+140 lines)
 
-**TryProcessCryptoDepositBonusAsync** - Crypto 전용 보너스 처리
+**TryProcessCryptoDepositBonusAsync** - Crypto-Specific Bonus Processing
 ```csharp
 /// <summary>
-/// PTN-1978: Crypto 입금 보너스 직접 처리 (user_pending_bonus 없이 OpBonusNo로 처리)
+/// PTN-1978: Direct crypto deposit bonus processing (processes via OpBonusNo without user_pending_bonus)
 /// </summary>
 private async Task<ResultCode> TryProcessCryptoDepositBonusAsync(
     BankTransaction bankTransaction, int opBonusNo)
 {
-    // 1. OpBonus 조회 및 검증
+    // 1. Look up and validate OpBonus
     var opBonus = OpBonusManager.Instance.GetOpBonus(opBonusNo);
     if (opBonus?.DepositBonus == null) return Success;
 
-    // 2. Eligibility 검사
+    // 2. Eligibility check
     var eligibilityContext = await BuildDepositEligibilityContextAsync(opBonus, bankTransaction);
     if (!opBonus.DepositBonus.IsEligible(eligibilityContext)) return Success;
 
-    // 3. Prize 계산
+    // 3. Prize calculation
     var calculatedPrize = opBonus.CalculateInitialPrize(eligibilityContext);
     if (calculatedPrize <= 0) return Success;
 
-    // 4. 가상 PendingBonus 생성 (DB 저장 없이 메모리에서만)
+    // 4. Create virtual PendingBonus (in-memory only, no DB persistence)
     var virtualPendingBonus = new UserPendingBonus { Prize = calculatedPrize, ... };
 
-    // 5. UserBonus 생성 및 적용
+    // 5. Create and apply UserBonus
     await ApplyCryptoDepositBonusAsync(bankTransaction, virtualPendingBonus, opBonus);
 }
 ```
 
-**ApplyCryptoDepositBonusAsync** - UserBonus 생성 (bank_transaction 연결 없이)
+**ApplyCryptoDepositBonusAsync** - UserBonus Creation (Without bank_transaction Link)
 ```csharp
 private async Task<ResultCode> ApplyCryptoDepositBonusAsync(...)
 {
-    // UserBonus 생성
+    // Create UserBonus
     await UpsertDepositUserBonusAsync(virtualPendingBonus, bankTransaction, opBonus);
 
-    // bank_transaction 연결은 No > 0인 경우만 (Crypto는 bank_transaction 없음)
+    // Only link bank_transaction if No > 0 (Crypto has no bank_transaction)
     if (bankTransaction.No > 0) {
         await AppendDepositAppliedBonusAsync(...);
     }
 
-    // 보너스 활성화
+    // Activate bonus
     await TryActivateDepositUserBonusAsync();
 }
 ```
@@ -499,7 +499,7 @@ private async Task<ResultCode> ApplyCryptoDepositBonusAsync(...)
 #### `DepositController.cs` (GucciCryptoService) (+29/-1)
 ```csharp
 [HttpGet("address")]
-[ResponseCache(NoStore = true)]  // 보너스 예약은 부작용 있으므로 캐싱 비활성화
+[ResponseCache(NoStore = true)]  // Disable caching since bonus reservation has side effects
 public async Task<ActionResult<DepositAddressResponse>> GetDepositAddress(
     CryptoAssetType asset,
     int? opBonusNo)  // New parameter
@@ -507,7 +507,7 @@ public async Task<ActionResult<DepositAddressResponse>> GetDepositAddress(
     if (opBonusNo.HasValue && opBonusNo.Value > 0) {
         var bonusResult = await _cryptoStore.SetPendingBonusAsync(userNo, network, opBonusNo.Value, ct);
         if (!bonusResult.Success) {
-            // [P3] 보너스 예약 실패 시 API 응답에 메시지 포함
+            // [P3] Include message in API response on bonus reservation failure
             response.Message = "Bonus reservation failed. Another bonus may be pending.";
         }
     }
@@ -521,7 +521,7 @@ public async Task<ActionResult<DepositAddressResponse>> GetDepositAddress(
 public async Task GetDepositAddress(
     string network = "TRC20",
     string asset = "USDT",
-    int? opBonusNo = null)  // New parameter - GCS로 전달
+    int? opBonusNo = null)  // New parameter - forwarded to GCS
 ```
 
 ### Database Schema Changes
@@ -529,14 +529,14 @@ public async Task GetDepositAddress(
 #### crypto_deposit_wallet
 | Column | Type | Default | Description |
 |--------|------|---------|-------------|
-| `PendingBonusNo` | `int?` | NULL | 예약된 보너스 번호 |
-| `PendingBonusRequestedAt` | `datetime(6)?` | NULL | 예약 시각 (만료 검증용) |
+| `PendingBonusNo` | `int?` | NULL | Reserved bonus number |
+| `PendingBonusRequestedAt` | `datetime(6)?` | NULL | Reservation timestamp (for expiry validation) |
 
 #### crypto_transaction
 | Column | Type | Default | Description |
 |--------|------|---------|-------------|
-| `ClaimedBonusNo` | `int?` | NULL | 클레임된 보너스 번호 |
-| `BonusProcessed` | `tinyint(1)` | 0 | Settlement 처리 완료 플래그 |
+| `ClaimedBonusNo` | `int?` | NULL | Claimed bonus number |
+| `BonusProcessed` | `tinyint(1)` | 0 | Settlement processing complete flag |
 
 ---
 
@@ -568,34 +568,33 @@ public async Task GetDepositAddress(
 
 | Priority | Fix | Description |
 |----------|-----|-------------|
-| **[P0]** | Transaction ownership validation | tx.CryptoWalletNo 일치 검증 |
-| **[P0]** | Same-bonus idempotent fix | 새 예약 보호를 위한 timestamp 비교 |
-| **[P1]** | transactionId 필수화 | claim without bind 차단 |
-| **[P1]** | Deprecated TryClaimAnyPendingBonusAsync | error: true로 컴파일 타임 차단 |
-| **[P2]** | PendingBonusRequestedAt null 처리 | 데이터 무결성 문제로 간주 |
-| **[P3]** | API failure notification | 보너스 예약 실패 시 사용자에게 메시지 |
+| **[P0]** | Transaction ownership validation | Verify tx.CryptoWalletNo match |
+| **[P0]** | Same-bonus idempotent fix | Timestamp comparison to protect new reservations |
+| **[P1]** | Enforce required transactionId | Block claim without bind |
+| **[P1]** | Deprecated TryClaimAnyPendingBonusAsync | Compile-time block with error: true |
+| **[P2]** | PendingBonusRequestedAt null handling | Treated as data integrity issue |
+| **[P3]** | API failure notification | Message to user on bonus reservation failure |
 
 ### Key Design Patterns
 
 | Pattern | Implementation |
 |---------|----------------|
-| CAS (Compare-And-Swap) | `wallet.PendingBonusNo → tx.ClaimedBonusNo` 원자적 전환 |
+| CAS (Compare-And-Swap) | Atomic transfer `wallet.PendingBonusNo → tx.ClaimedBonusNo` |
 | Pessimistic Locking | `SELECT ... FOR UPDATE` on wallet + tx |
 | Idempotency | tx already has bonus → success, retry-safe |
-| Defense-in-Depth | ownership + type + expiry + timestamp 다중 검증 |
-| Fresh Row Re-fetch | confirm 전 최신 데이터 재조회 |
+| Defense-in-Depth | Multiple validations: ownership + type + expiry + timestamp |
+| Fresh Row Re-fetch | Re-query latest data before confirm |
 
 ### Remaining Work
 
 - [x] ~~Full SettlementService.DepositApproval integration~~ → **Completed**
-- [x] ~~TryProcessCryptoDepositBonusAsync 구현~~ → **Completed**
+- [x] ~~TryProcessCryptoDepositBonusAsync implementation~~ → **Completed**
 
 ### Known Limitations
 
-1. **bank_transaction 없음**: Crypto 입금은 bank_transaction 레코드가 없으므로 `bankTransaction.No = 0`으로 처리
-2. **user_pending_bonus 없음**: Crypto는 OpBonusNo를 직접 사용, 가상 PendingBonus 생성
+1. **No bank_transaction**: Crypto deposits have no bank_transaction record, so `bankTransaction.No = 0` is used
+2. **No user_pending_bonus**: Crypto uses OpBonusNo directly, creating a virtual PendingBonus
 
 ---
 
 *Generated: 2026-01-08*
-

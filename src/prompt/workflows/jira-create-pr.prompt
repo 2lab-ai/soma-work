@@ -2,61 +2,61 @@
 
 # Jira Create PR Workflow
 
-이 세션은 **Jira 이슈 기반 PR 생성** 전용이다. Implementation Spec을 기반으로 `Red -> Green -> Refactor` phase를 순차 실행한다.
+This session is dedicated to **creating a PR based on a Jira issue**. It sequentially executes the `Red -> Green -> Refactor` phases based on the Implementation Spec.
 
-## 전제 조건
-- Jira 이슈에 **승인된 Implementation Spec**이 있어야 함
-- Spec이 없으면 `jira-planning` 워크플로우를 먼저 진행하라고 안내
+## Prerequisites
+- The Jira issue must have an **approved Implementation Spec**
+- If no Spec exists, direct the user to proceed with the `jira-planning` workflow first
 
-## 자동 수행 사항
-1. Jira 이슈에서 Implementation Spec 확인
-2. 관련 repo clone
-3. 이슈 키로 새 브랜치 생성
-4. Red phase 진행 (실패 테스트 + 최소 뼈대)
-5. Green phase 진행 여부를 `user_choice`로 확인
-6. Green 진행 시 구현 완료 및 테스트 통과
-7. Refactor 진행 여부를 `user_choice`로 확인
-8. Refactor 진행 시 코드 정리 + PR 마무리
+## Automatic Steps
+1. Verify the Implementation Spec on the Jira issue
+2. Clone the relevant repo
+3. Create a new branch using the issue key
+4. Proceed with the Red phase (failing tests + minimal skeleton)
+5. Confirm whether to proceed with the Green phase via `user_choice`
+6. If Green proceeds, complete implementation and pass tests
+7. Confirm whether to proceed with the Refactor phase via `user_choice`
+8. If Refactor proceeds, clean up code + finalize the PR
 
-## 브랜치 네이밍
+## Branch Naming
 ```
 feature/[ISSUE-KEY]-short-description
-예: feature/PTN-123-add-user-auth
+e.g.: feature/PTN-123-add-user-auth
 ```
 
-## Phase 정의
+## Phase Definitions
 
-### Red phase (스캐폴드)
-- 실패하는 테스트를 먼저 작성한다.
-- 최소 구현 뼈대를 추가하되 테스트는 아직 실패 상태로 둔다.
-- PR은 `WIP` 또는 `Draft` 상태로 올린다.
-- 자연스러운 중단 지점: "PR 뼈대 생성 완료"
+### Red Phase (Scaffold)
+- Write failing tests first.
+- Add a minimal implementation skeleton, but keep tests in a failing state.
+- Submit the PR in `WIP` or `Draft` status.
+- Natural stopping point: "PR skeleton created"
 
-### Green phase (구현 완료)
-- Red에서 만든 실패 테스트를 모두 통과시키는 최소 구현을 완성한다.
-- `test`, `build`를 실행해 회귀 없이 통과를 확인한다.
-- 자연스러운 중단 지점: "기능 구현 완료, 리팩터링 전"
+### Green Phase (Implementation Complete)
+- Complete the minimal implementation to pass all failing tests from the Red phase.
+- Run `test` and `build` to confirm everything passes without regressions.
+- Natural stopping point: "Feature implementation complete, before refactoring"
 
-### Refactor phase (정리/출시 준비)
-- 중복 제거, 네이밍 개선, 구조 정리, 테스트 가독성 개선을 수행한다.
-- PR 본문/체크리스트/변경 요약을 최종 상태로 갱신한다.
-- 자연스러운 중단 지점: "리뷰 요청 가능한 상태"
+### Refactor Phase (Cleanup/Release Prep)
+- Remove duplication, improve naming, restructure code, and improve test readability.
+- Update the PR body/checklist/change summary to its final state.
+- Natural stopping point: "Ready for review"
 
-## 작업 프로세스
+## Work Process
 
-### 1. Spec 확인
-- Jira 이슈 조회
-- Implementation Spec 존재 여부 확인
-- Spec이 없으면: "Implementation Spec이 없습니다. `/plan` 또는 jira-planning 워크플로우로 먼저 Spec을 작성해주세요."
+### 1. Verify Spec
+- Retrieve the Jira issue
+- Check whether an Implementation Spec exists
+- If no Spec: "No Implementation Spec found. Please create a Spec first using `/plan` or the jira-planning workflow."
 
-### 2. 브랜치 생성
+### 2. Create Branch
 ```bash
 git checkout -b feature/[ISSUE-KEY]-description
 ```
 
-### 3. Red phase 실행
-- 실패하는 테스트 작성 (Red)
-- 최소 구현 뼈대 작성 (테스트는 실패 상태 유지)
+### 3. Execute Red Phase
+- Write failing tests (Red)
+- Write the minimal implementation skeleton (keep tests failing)
 
 ```bash
 git add .
@@ -70,34 +70,34 @@ Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push -u origin feature/[ISSUE-KEY]-description
 ```
 
-### 4. PR 생성 (Red 결과 반영)
-`gh pr create` 또는 `mcp__github__create_pull_request` 사용. 기본 상태는 `Draft`를 권장한다.
+### 4. Create PR (Reflecting Red Results)
+Use `gh pr create` or `mcp__github__create_pull_request`. `Draft` status is recommended by default.
 
-PR 생성 직후 세션 링크를 자동 업데이트한다 (유저에게 표시되지 않음):
+Automatically update session links immediately after PR creation (not displayed to user):
 ```json
 {
   "type": "session_links",
-  "jira": "Jira 이슈 URL",
-  "pr": "생성된 PR URL"
+  "jira": "Jira issue URL",
+  "pr": "Created PR URL"
 }
 ```
 
-Red phase 완료 후, 유저에게 Green 진행 여부를 확인한다:
+After the Red phase is complete, confirm with the user whether to proceed with Green:
 ```json
 {
   "type": "user_choice",
-  "question": "Red phase(PR 뼈대)가 완료되었습니다. Green phase로 구현을 계속할까요?",
+  "question": "The Red phase (PR skeleton) is complete. Would you like to continue with the Green phase?",
   "options": [
-    {"id": "1", "label": "Green 진행", "description": "실제 로직 구현 후 테스트 통과까지 진행"},
-    {"id": "2", "label": "여기서 중단", "description": "현재 Draft PR 상태로 종료"}
+    {"id": "1", "label": "Proceed with Green", "description": "Implement actual logic and pass all tests"},
+    {"id": "2", "label": "Stop here", "description": "End with current Draft PR status"}
   ]
 }
 ```
 
-### 5. Green phase 실행 (유저가 Green 진행 선택 시)
-- 실제 로직 구현
-- 실패 테스트 통과 확인
-- 빌드/테스트 실행
+### 5. Execute Green Phase (If User Chooses to Proceed)
+- Implement actual logic
+- Verify failing tests now pass
+- Run build/tests
 
 ```bash
 npm test
@@ -109,22 +109,22 @@ Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 
-Green phase 완료 후 Refactor 진행 여부를 확인한다:
+After the Green phase is complete, confirm whether to proceed with Refactor:
 ```json
 {
   "type": "user_choice",
-  "question": "Green phase가 완료되었습니다. Refactor phase까지 진행할까요?",
+  "question": "The Green phase is complete. Would you like to proceed with the Refactor phase?",
   "options": [
-    {"id": "1", "label": "Refactor 진행", "description": "구조 정리/가독성 개선 후 PR 완성"},
-    {"id": "2", "label": "여기서 중단", "description": "구현 완료 상태로 종료"}
+    {"id": "1", "label": "Proceed with Refactor", "description": "Clean up structure/improve readability and finalize PR"},
+    {"id": "2", "label": "Stop here", "description": "End with implementation complete status"}
   ]
 }
 ```
 
-### 6. Refactor phase 실행 (유저가 Refactor 진행 선택 시)
-- 코드 단순화/중복 제거/네이밍 개선
-- 테스트 재실행
-- PR 본문 상태를 `WIP`에서 완료 상태로 갱신
+### 6. Execute Refactor Phase (If User Chooses to Proceed)
+- Simplify code/remove duplication/improve naming
+- Re-run tests
+- Update PR body status from `WIP` to complete
 
 ```bash
 npm test
@@ -136,20 +136,20 @@ Co-Authored-By: {{user.displayName}} <{{user.email}}>"
 git push
 ```
 
-## PR 본문 상태 가이드
+## PR Body Status Guide
 
-### Red까지만 완료된 경우
+### Red Only Completed
 - Status: `WIP (Red complete, Green pending)`
 
-### Green 완료된 경우
+### Green Completed
 - Status: `Implementation complete (Refactor optional)`
 
-### Refactor 완료된 경우
+### Refactor Completed
 - Status: `Ready for review`
 
-## 🔄 다음 단계 안내
+## 🔄 Next Steps
 
-phase 진행이 종료되면, 유저에게 다음 단계를 안내:
-- **PR 리뷰 요청**: "리뷰를 받으려면 새 세션에서 PR 링크를 입력하세요."
-- **문서 작성**: "API 변경이 포함된 경우, Confluence 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
-- PR 링크는 `session_links` JSON directive로 자동 연결됨
+When the phase progression ends, guide the user on the next steps:
+- **Request PR review**: "To get a review, enter the PR link in a new session."
+- **Write documentation**: "If API changes are included, to write Confluence documentation, enter the Confluence link + PR link in a new session."
+- The PR link is automatically connected via the `session_links` JSON directive

@@ -2,85 +2,85 @@
 
 # Jira Planning Workflow
 
-이 세션은 **Jira 이슈 구현 계획 수립** 전용이다. Implementation Spec을 작성하고 유저 승인을 받는 것이 목표다.
+This session is dedicated to **creating an implementation plan for a Jira issue**. The goal is to draft an Implementation Spec and obtain user approval.
 
-## 자동 수행 사항
-1. Jira 이슈 링크에서 issue key 추출
-2. 이슈 상세 조회 및 분석
-3. 관련 repo 분석
-4. Implementation Spec Draft 작성
-5. 유저 승인 후 Jira에 기록
+## Automatic Steps
+1. Extract the issue key from the Jira issue link
+2. Retrieve and analyze issue details
+3. Analyze the relevant repo
+4. Draft the Implementation Spec
+5. Record it in Jira after user approval
 
-## 작업 프로세스
+## Work Process
 
-### 1. 이슈 분석
-- 이슈 내용 상세 분석
-- 기존에 작성된 Spec이 있는지 확인 (이미 있으면 그것을 활용)
+### 1. Issue Analysis
+- Analyze the issue content in detail
+- Check if an existing Spec has already been written (if so, use it)
 
-### 2. 코드베이스 분석
-- 관련 repo 식별 (모르면 유저에게 질문)
-- 현재 코드 구조 파악
-- 영향 범위 분석
+### 2. Codebase Analysis
+- Identify the relevant repo (ask the user if unknown)
+- Understand the current code structure
+- Analyze the scope of impact
 
-### 3. Implementation Spec Draft 작성
-- 아래 형식에 맞춰 작성
-- **[DRAFT]** 태그 포함
+### 3. Draft Implementation Spec
+- Write according to the format below
+- Include the **[DRAFT]** tag
 
-### 4. 유저 승인 프로세스
-- Spec을 유저에게 설명
-- 수정 필요시 반영
-- 승인받으면 Jira에 확정 기록 (Draft 태그 제거)
+### 4. User Approval Process
+- Present the Spec to the user
+- Incorporate any requested changes
+- Once approved, finalize the record in Jira (remove the Draft tag)
 
-## Implementation Spec 형식
+## Implementation Spec Format
 
 ```markdown
 ## Implementation Spec [DRAFT]
 
-### 목표
-- 이 이슈가 해결하려는 문제
-- 완료 기준
+### Objective
+- The problem this issue aims to solve
+- Completion criteria
 
-### 변경 범위
-| 파일 | 변경 내용 |
-|------|----------|
-| `path/to/file.ts` | XXX 로직 추가 |
-| `path/to/new-file.ts` | 신규 생성 |
+### Scope of Changes
+| File | Change Description |
+|------|-------------------|
+| `path/to/file.ts` | Add XXX logic |
+| `path/to/new-file.ts` | New file |
 
-### 구현 단계
-1. **Step 1**: [구체적인 작업]
-   - 관련 파일: ...
-   - 예상 소요: ...
-2. **Step 2**: [구체적인 작업]
+### Implementation Steps
+1. **Step 1**: [Specific task]
+   - Related files: ...
+   - Estimated effort: ...
+2. **Step 2**: [Specific task]
    ...
 
-### 테스트 계획
-- **단위 테스트**: 테스트할 함수/모듈
-- **통합 테스트**: 테스트할 시나리오
-- **수동 테스트**: 확인할 동작
+### Test Plan
+- **Unit tests**: Functions/modules to test
+- **Integration tests**: Scenarios to test
+- **Manual tests**: Behaviors to verify
 
-### 예상 영향
-- 기존 기능에 미치는 영향
-- Breaking change 여부
-- 마이그레이션 필요 여부
+### Expected Impact
+- Impact on existing functionality
+- Whether there are breaking changes
+- Whether migration is needed
 
-### 리스크
-- 식별된 리스크와 대응 방안
+### Risks
+- Identified risks and mitigation strategies
 ```
 
-## 유저 승인 후 Jira 코멘트 형식
+## Jira Comment Format After User Approval
 
 ```
-✅ Implementation Spec 확정 (유저 승인 완료)
+✅ Implementation Spec Finalized (User Approved)
 
-[Spec 내용 - DRAFT 태그 제거]
+[Spec content - DRAFT tag removed]
 
 ---
 Approved by: @username
 Date: YYYY-MM-DD
 ```
 
-## 🔄 다음 단계 안내
+## 🔄 Next Steps
 
-Spec 승인 후, 유저에게 다음 단계를 안내:
-- **PR 생성**: "Spec이 승인되었습니다. PR을 만들려면 새 세션에서 `fix` + 이슈 링크를 입력하세요."
-- 이슈 링크가 세션에 연결되지 않았다면: "`link issue <url>` 명령으로 이슈를 세션에 연결할 수 있습니다."
+After the Spec is approved, guide the user on the next steps:
+- **Create PR**: "The Spec has been approved. To create a PR, enter `fix` + the issue link in a new session."
+- If the issue link is not connected to the session: "You can link the issue to the session using the `link issue <url>` command."
