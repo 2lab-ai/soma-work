@@ -8,23 +8,18 @@
  *   import type { ResponseSession, InputEvent } from './view';
  */
 
-// Core types
+// Input
 export type {
-  ActionItem,
-  AttachmentBlock,
-  ContentBlock,
-  ConversationTarget,
-  FeatureSet,
-  FileData,
-  FormBlock,
-  FormField,
-  FormFieldOption,
-  FormSpec,
-  MessageHandle,
-  Platform,
-  StatusBlock,
-  TextBlock,
-} from './types.js';
+  AckFn,
+  ActionInputEvent,
+  CommandInputEvent,
+  FileUploadInputEvent,
+  FormSubmitInputEvent,
+  InputAdapter,
+  InputEvent,
+  InputHandler,
+  MessageInputEvent,
+} from './input.js';
 
 // Response session
 export type { ResponseSession, StatusDetail } from './response-session.js';
@@ -42,16 +37,20 @@ export type {
 } from './surface.js';
 
 export { hasModals, isEditable, isReactable, isThreadable } from './surface.js';
-
-// Input
+// Core types
 export type {
-  AckFn,
-  ActionInputEvent,
-  CommandInputEvent,
-  FileUploadInputEvent,
-  FormSubmitInputEvent,
-  InputAdapter,
-  InputEvent,
-  InputHandler,
-  MessageInputEvent,
-} from './input.js';
+  ActionItem,
+  AttachmentBlock,
+  ContentBlock,
+  ConversationTarget,
+  FeatureSet,
+  FileData,
+  FormBlock,
+  FormField,
+  FormFieldOption,
+  FormSpec,
+  MessageHandle,
+  Platform,
+  StatusBlock,
+  TextBlock,
+} from './types.js';

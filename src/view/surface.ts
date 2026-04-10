@@ -18,14 +18,7 @@
  */
 
 import type { ResponseSession } from './response-session.js';
-import type {
-  ContentBlock,
-  ConversationTarget,
-  FeatureSet,
-  FormSpec,
-  MessageHandle,
-  Platform,
-} from './types.js';
+import type { ContentBlock, ConversationTarget, FeatureSet, FormSpec, MessageHandle, Platform } from './types.js';
 
 // ─── Core (required for all platforms) ───────────────────────────
 
@@ -75,10 +68,7 @@ export interface Threadable {
    * Create a new thread/sub-conversation from a root message.
    * Returns a new ConversationTarget scoped to the thread.
    */
-  createThread(
-    target: ConversationTarget,
-    rootBlocks: readonly ContentBlock[],
-  ): Promise<ConversationTarget>;
+  createThread(target: ConversationTarget, rootBlocks: readonly ContentBlock[]): Promise<ConversationTarget>;
 }
 
 // ─── Reactable ───────────────────────────────────────────────────

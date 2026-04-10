@@ -62,12 +62,7 @@ export interface MessageHandle {
  * Controllers compose arrays of these to build messages.
  * ViewSurface adapters render them into platform-native formats.
  */
-export type ContentBlock =
-  | TextBlock
-  | AttachmentBlock
-  | ActionsBlock
-  | StatusBlock
-  | FormBlock;
+export type ContentBlock = TextBlock | AttachmentBlock | ActionsBlock | StatusBlock | FormBlock;
 
 /** Plain or formatted text. */
 export interface TextBlock {
