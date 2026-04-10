@@ -2,15 +2,71 @@
  * StreamExecutor tests - focusing on continuation pattern
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
+    getUserEmail: vi.fn().mockReturnValue(undefined),
+    setUserEmail: vi.fn(),
+    ensureUserExists: vi.fn(),
+    getUserJiraAccountId: vi.fn(),
+    getUserJiraName: vi.fn(),
+    getUserBypassPermission: vi.fn().mockReturnValue(false),
+    getUserDefaultLogVerbosity: vi.fn().mockReturnValue('detail'),
+    getUserLogVerbosityFlags: vi.fn().mockReturnValue(0),
+    getUserSettings: vi.fn().mockReturnValue(undefined),
+    getUserPersona: vi.fn().mockReturnValue('default'),
+    getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-4-6'),
+    getUserDefaultEffort: vi.fn().mockReturnValue('high'),
+    getUserShowThinking: vi.fn().mockReturnValue(true),
   },
 }));
 
+vi.mock('../../channel-description-cache', () => ({
+  getChannelDescription: vi.fn().mockResolvedValue(''),
+}));
+
+vi.mock('../../channel-registry', () => ({
+  getChannel: vi.fn().mockReturnValue(undefined),
+}));
+
+vi.mock('../../claude-usage', () => ({
+  fetchClaudeUsageSnapshot: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('../../conversation', () => ({
+  createConversation: vi.fn().mockReturnValue('conv_1'),
+  recordAssistantTurn: vi.fn(),
+  recordUserTurn: vi.fn(),
+}));
+
+vi.mock('../../mcp-config-builder', () => ({
+  isMidThreadMention: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../../metrics/event-emitter', () => ({
+  getMetricsEmitter: vi.fn().mockReturnValue({
+    emit: vi.fn(),
+  }),
+}));
+
+vi.mock('../../session/compaction-context-builder', () => ({
+  buildCompactionContext: vi.fn().mockReturnValue(null),
+  snapshotFromSession: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock('../../token-manager', () => ({
+  tokenManager: {
+    getAllTokens: vi.fn().mockReturnValue([]),
+    getActiveToken: vi.fn().mockReturnValue(''),
+    rotateOnRateLimit: vi.fn().mockReturnValue({ rotated: false }),
+  },
+  parseCooldownTime: vi.fn(),
+}));
+
 import type { Continuation } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import { type ExecuteResult, StreamExecutor } from './stream-executor';
 
 describe('Continuation type', () => {
@@ -2144,5 +2200,126 @@ describe('Issue #391: Continuation idle transition skip', () => {
     // Expected: working → idle (only at the very end)
     // No intermediate idle states that would cause dashboard flicker
     expect(activityStates).toEqual(['working', 'idle']);
+  });
+});
+
+describe('Email guard in execute()', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function createFullDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        runQuery: vi.fn(),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+      },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+      },
+      actionHandlers: {},
+      requestCoordinator: {
+        removeController: vi.fn(),
+      },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: '', displayName: '' }),
+        getClient: vi.fn().mockReturnValue({}),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  function createMinimalParams(say: ReturnType<typeof vi.fn>) {
+    return {
+      session: {
+        sessionId: 'sess_1',
+        ownerId: 'U_TEST',
+        logVerbosity: 'detail',
+        usage: {},
+      },
+      sessionKey: 'C123:thread123',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C123',
+      threadTs: 'thread123',
+      user: 'U_TEST',
+      say,
+    } as any;
+  }
+
+  it('returns { success: false, messageCount: 0 } and calls say() when getUserEmail returns empty string', async () => {
+    // getUserEmail returns '' (empty sentinel = email scope missing, user must set manually)
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+
+    const deps = createFullDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = createMinimalParams(say);
+
+    const result = await executor.execute(params);
+
+    expect(result.success).toBe(false);
+    expect(result.messageCount).toBe(0);
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('이메일이 설정되지 않았습니다'),
+        thread_ts: 'thread123',
+      }),
+    );
+  });
+
+  it('returns { success: false, messageCount: 0 } and calls say() when getUserEmail returns undefined', async () => {
+    // getUserEmail returns undefined (never fetched, auto-fetch also fails to get email)
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue(undefined);
+    // Auto-fetch from Slack also returns no email
+    const deps = createFullDeps();
+    deps.slackApi.getUserProfile.mockResolvedValue({ email: undefined, displayName: '' });
+
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = createMinimalParams(say);
+
+    const result = await executor.execute(params);
+
+    expect(result.success).toBe(false);
+    expect(result.messageCount).toBe(0);
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('set email'),
+      }),
+    );
   });
 });
