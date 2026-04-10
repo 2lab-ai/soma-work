@@ -416,6 +416,15 @@ describe('TokenManager', () => {
       expect(result!.getMinutes()).toBe(0);
     });
 
+    // "out of extra usage" format — same cooldown parsing as "hit your limit"
+    it('should parse "out of extra usage · resets 3pm"', async () => {
+      const { parseCooldownTime } = await import('./token-manager');
+      const result = parseCooldownTime("You're out of extra usage · resets 3pm (Asia/Seoul)");
+      expect(result).toBeInstanceOf(Date);
+      expect(result!.getHours()).toBe(15);
+      expect(result!.getMinutes()).toBe(0);
+    });
+
     // Trace: Scenario 4, Step 2 "7:30pm"
     it('should parse "resets 7:30pm"', async () => {
       const { parseCooldownTime } = await import('./token-manager');
