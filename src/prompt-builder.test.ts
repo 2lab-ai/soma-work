@@ -55,9 +55,9 @@ describe('PromptBuilder', () => {
 
       expect(prompt).toBeDefined();
       expect(typeof prompt).toBe('string');
-      expect(prompt).toContain('CI 체크');
-      expect(prompt).toContain('1분');
-      expect(prompt).toContain('머지 체크');
+      expect(prompt).toContain('CI check');
+      expect(prompt).toContain('1 minute');
+      expect(prompt).toContain('merge check');
       expect(prompt).toContain('AS-IS');
       expect(prompt).toContain('TO-BE');
       expect(prompt).toContain('CONTINUE_SESSION');

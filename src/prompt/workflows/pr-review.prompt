@@ -1,83 +1,83 @@
 {{include:./common.prompt}}
 
-**작업 시작 전 반드시 Tasks로 전체 할일 목록을 정의하고 진행한다.**
+**Before starting work, you must define the full task list using Tasks and then proceed.**
 
 # PR Review Workflow
 
-PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류하여:
-- **tiny/small 이슈**: 자율 수정 방향 결정 (3명 다수결) → 유저에게 묻지 않음
-- **medium+ 이슈**: UIAskUserQuestion으로 유저에게 구체적으로 질문
+Perform a PR review and classify findings by switching cost:
+- **tiny/small issues**: Autonomous decision on fix approach (3-agent majority vote) — do not ask the user
+- **medium+ issues**: Ask the user specific questions via UIAskUserQuestion
 
-목표: **유저가 한번만 결정하면 바로 fix 워크플로우로 넘어갈 수 있게.**
+Goal: **The user should only need to make one round of decisions before moving to the fix workflow.**
 
-## 성공 조건
+## Success Criteria
 
-- 모든 리뷰 내용이 **switching cost tier로 분류**되고, 각각 PR에 **코드 라인이 포함된 리뷰 커멘트**로 남아야 함
-- tiny/small 이슈: 자율 결정 완료 (Auto-Decision 로그 포함)
-- medium+ 이슈: UIAskUserQuestion으로 유저에게 질문 — **각 이슈별 [tier ~N줄] 표기 + 리뷰 합의 포함**
-- **중요**: 각 이슈를 개별적으로 질문해야 함. "P0 이슈들을 어떻게 처리할까요?" 같은 모호한 질문은 불가
-- P0/P1 이슈가 없으면 PR을 Approve 처리
-- 리뷰가 정리된 뒤에는 **CI 체크 루프**를 반드시 수행해야 함
-- 머지는 **merge gate 질문**을 통해서만 가능하며, direct merge shortcut은 사용하지 않음
+- All review findings must be **classified by switching cost tier**, and each must be posted as a **review comment with code line references** on the PR
+- tiny/small issues: Autonomous decision completed (with Auto-Decision log included)
+- medium+ issues: Ask the user via UIAskUserQuestion — **each issue must include [tier ~N lines] label + review consensus**
+- **Important**: Each issue must be asked about individually. Vague questions like "How should we handle the P0 issues?" are not allowed
+- If there are no P0/P1 issues, Approve the PR
+- After the review is finalized, a **CI check loop** must be performed
+- Merging is only allowed through a **merge gate question** — do not use direct merge shortcuts
 
-## 자동 수행 사항
-1. PR 링크에서 owner, repo, pull_number 추출
-2. `/github-pr` 스킬로 PR 데이터 수집 (토큰 효율적)
-   - PR 메타데이터, 리뷰, 코멘트, 변경 파일 모두 포함
-   - 불필요한 필드 제거되어 컨텍스트 절약
+## Automatic Steps
+1. Extract owner, repo, pull_number from the PR link
+2. Collect PR data using the `/github-pr` skill (token-efficient)
+   - Includes PR metadata, reviews, comments, and changed files
+   - Unnecessary fields are removed to save context
 
-3. **이슈 연결 (필수)**
-   PR에서 연관 이슈를 다음 순서로 탐색한다. **첫 번째로 발견된 이슈를 채택**하고 나머지 단계는 건너뛴다.
+3. **Issue Linking (Required)**
+   Search for related issues from the PR in the following order. **Adopt the first issue found** and skip the remaining steps.
 
-   a. PR body에서 closing keyword 패턴:
+   a. Closing keyword patterns in the PR body:
       - `close(s|d)?`, `fix(es|ed)?`, `resolve(s|d)?` + `#N` → GitHub issue
       - `close(s|d)?`, `fix(es|ed)?`, `resolve(s|d)?` + `owner/repo#N` → cross-repo GitHub issue
-      - 알려진 Jira 프로젝트 키 패턴 (예: `PTN-\d+`, `PROJ-\d+`) → Jira issue key
-        주의: `[A-Z]{2,}-\d+` 같은 범용 패턴은 `UTF-8`, `SHA-256` 등과 오탐하므로,
-        Jira URL(`atlassian.net`, `jira.`) 근처에서 발견되거나 프로젝트 키 목록과 매칭되는 경우만 채택한다.
+      - Known Jira project key patterns (e.g., `PTN-\d+`, `PROJ-\d+`) → Jira issue key
+        Note: Generic patterns like `[A-Z]{2,}-\d+` can produce false positives with strings like `UTF-8`, `SHA-256`, etc.
+        Only adopt matches found near Jira URLs (`atlassian.net`, `jira.`) or matching a known project key list.
 
-   b. PR 브랜치명에서 이슈 키:
+   b. Issue key from PR branch name:
       - `feature/PROJ-123-xxx` → PROJ-123
       - `fix/PROJ-456` → PROJ-456
 
-   c. PR title에서 이슈 키:
+   c. Issue key from PR title:
       - `[PROJ-123] Add feature` → PROJ-123
 
-   d. 위 모두에서 이슈를 찾지 못하면:
-      → `local:UIAskUserQuestion`으로 이슈 링크 요청
-      "이 PR에 연결된 이슈를 찾을 수 없습니다. 이슈 링크(Jira 또는 GitHub)를 입력해주세요."
-      → 유저가 입력하면 세션에 연결
-      → 유저가 "없음"을 선택하면 이슈 없이 진행 (경고 로그를 PR 리뷰 본문 상단에 기재)
-        **이슈 없음 시**: 이후 "이슈 기반 검증" 단계(step 6)는 전체 스킵한다.
+   d. If no issue is found from any of the above:
+      → Request an issue link via `local:UIAskUserQuestion`
+      "Unable to find an issue linked to this PR. Please provide an issue link (Jira or GitHub)."
+      → If the user provides one, link it to the session
+      → If the user selects "None", proceed without an issue (log a warning at the top of the PR review body)
+        **When there is no issue**: Skip the entire "Issue-based verification" step (step 6) below.
 
-   e. 이슈를 찾으면:
-      - Jira: `mcp__jira__getJiraIssue`로 상세 조회 / GitHub: `mcp__github__get_issue`로 조회
-      - Acceptance Criteria를 리뷰 기준에 추가
-      - 세션에 issue link 등록:
+   e. When an issue is found:
+      - Jira: Query details via `mcp__jira__getJiraIssue` / GitHub: Query via `mcp__github__get_issue`
+      - Add Acceptance Criteria to the review criteria
+      - Register the issue link in the session:
         ```json
         {
           "commandId": "UPDATE_SESSION",
           "params": {
-            "links": { "add": { "issue": "<이슈 URL>" } },
-            "title": "[ISSUE-KEY] PR 제목 요약 (60자 이내)"
+            "links": { "add": { "issue": "<issue URL>" } },
+            "title": "[ISSUE-KEY] PR title summary (60 chars or less)"
           }
         }
         ```
-      - 세션 타이틀에 이슈 키 반영
+      - Reflect the issue key in the session title
 
-4. 소스 clone
-현재 타임스탬프를 이용하여 항상 유니크한 작업 폴더를 생성한다. (예: '$WORKING_DIR/20260101_1532_projalpha_pr_123')
-해당 작업 폴더에 소스를 받는다.
-소스를 받은 후, 반드시 다음 JSON directive를 출력하여 세션에 작업 폴더를 등록하라 (세션 종료 시 자동 정리됨):
-{"type": "source_working_dir", "action": "add", "path": "<생성한 작업 폴더 절대 경로>"}
-너는 리뷰어가 아니라 리뷰어 에이전트 코디네이터고 리뷰어들이 바로 리뷰할 수 있도록 소스와 diff만 준비한다. 지금 리뷰하지 않는다.
+4. Clone Source
+Always create a unique working folder using the current timestamp. (e.g., '$WORKING_DIR/20260101_1532_projalpha_pr_123')
+Clone the source into that working folder.
+After cloning, you must output the following JSON directive to register the working folder with the session (automatically cleaned up when the session ends):
+{"type": "source_working_dir", "action": "add", "path": "<absolute path of the created working folder>"}
+You are not a reviewer — you are a reviewer agent coordinator. Your job is to prepare the source and diff so that the reviewers can begin their review immediately. Do not review anything yourself at this point.
 
-## 리뷰 프로세스
+## Review Process
 
-### 1. review-pr skill 실행
-소스가 있는 작업폴더 기준으로 `review-pr` skill을 실행
+### 1. Run the review-pr skill
+Run the `review-pr` skill from the working folder containing the source
 
-입력 예시:
+Input example:
 ```json
 {
   "workspace_path": "/path/to/repo",
@@ -86,8 +86,8 @@ PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류�
 }
 ```
 
-### 2. review-pr 결과(JSON) 수신
-`review-pr` 결과는 아래 형태를 기준으로 파싱한다:
+### 2. Receive review-pr results (JSON)
+Parse the `review-pr` results based on the following format:
 ```json
 {
   "summary": {
@@ -107,101 +107,101 @@ PR 리뷰를 수행하고, 리뷰 내용을 switching cost 기반으로 분류�
 }
 ```
 
-### 3. 결과 파싱 및 정규화
-- priority가 없거나 알 수 없으면 `P2`로 보정한다.
-- `file` 또는 `line`이 없는 finding은 "general finding"으로 분류하고, PR 본문 요약에는 포함하되 라인 코멘트는 생략한다.
-- `(file, line, title)`이 동일한 finding은 중복 제거한다.
-- 파싱 실패 시 `review-pr`를 1회 재시도하고, 재시도도 실패하면 원문을 보존해 수동 분류한다.
+### 3. Parse and Normalize Results
+- If priority is missing or unrecognized, default it to `P2`.
+- Findings without `file` or `line` are classified as "general findings" — include them in the PR body summary but omit line comments.
+- Deduplicate findings with identical `(file, line, title)`.
+- If parsing fails, retry `review-pr` once. If the retry also fails, preserve the raw text for manual classification.
 
-### 4. 이슈 분류 — Priority + Switching Cost Tier
+### 4. Issue Classification — Priority + Switching Cost Tier
 
-각 finding에 대해 두 가지를 분류한다:
+Classify each finding along two dimensions:
 
-**Priority (심각도)**:
-| Priority | 설명 | 조건 |
-|----------|------|------|
-| P0 | Drop everything | 릴리즈/운영 블로킹. 입력과 무관하게 발생 |
-| P1 | Urgent | 다음 사이클 내 수정 필요 |
-| P2 | Normal | 언젠가 수정 |
+**Priority (Severity)**:
+| Priority | Description | Criteria |
+|----------|-------------|----------|
+| P0 | Drop everything | Blocks release/production. Occurs regardless of input |
+| P1 | Urgent | Must be fixed within the next cycle |
+| P2 | Normal | Should be fixed eventually |
 | P3 | Low | Nice to have |
 
-**Switching Cost Tier (수정 범위)** — `decision-gate` Skill 참조:
-| Tier   | Lines  | 예시 |
-|--------|--------|------|
-| tiny   | ~5     | 오타, 상수, 한줄 수정 |
-| small  | ~20    | 한 함수, 한 파일 수정 |
-| medium | ~50    | 여러 파일, 인터페이스 변경 |
-| large  | ~100   | 횡단 관심사, 스키마 변경 |
-| xlarge | ~500   | 아키텍처 전환 |
+**Switching Cost Tier (Scope of change)** — Refer to the `decision-gate` Skill:
+| Tier   | Lines  | Examples |
+|--------|--------|----------|
+| tiny   | ~5     | Typo, constant, one-line fix |
+| small  | ~20    | Single function, single file change |
+| medium | ~50    | Multiple files, interface change |
+| large  | ~100   | Cross-cutting concern, schema change |
+| xlarge | ~500   | Architecture migration |
 
-### 5. 이슈 기반 검증 (이슈가 연결된 경우)
+### 5. Issue-Based Verification (when an issue is linked)
 
-이슈의 Acceptance Criteria가 확인된 경우, 아래 항목을 추가로 검증하고 결과를 finding 목록에 **추가**한다:
-- PR 변경이 이슈의 Acceptance Criteria를 충족하는가? → 미충족 항목은 **P1** finding
-- 이슈에서 요구하지 않은 범위 외 변경(scope creep)이 있는가? → **P2** finding
-- 이슈의 우선순위와 PR의 변경 규모가 비례하는가?
+If the issue's Acceptance Criteria have been identified, perform the following additional checks and **add** the results to the findings list:
+- Does the PR change satisfy the issue's Acceptance Criteria? → Unmet items become **P1** findings
+- Are there out-of-scope changes (scope creep) not required by the issue? → **P2** findings
+- Is the scale of PR changes proportional to the issue's priority?
 
-이슈가 연결되지 않은 경우("없음" 선택) 이 단계를 스킵한다.
+If no issue is linked (user selected "None"), skip this step.
 
-### 6. Decision Gate — 자율 처리 vs 유저 질문 분류
+### 6. Decision Gate — Autonomous Handling vs User Question Classification
 
-step 3(review-pr)과 step 5(이슈 기반 검증)에서 나온 **모든 finding**을 대상으로 분류한다:
+Classify **all findings** from step 3 (review-pr) and step 5 (issue-based verification):
 
 ```
 for each finding:
-  if switching_cost < small (~20줄):
-    → [자율 결정] 3명 다수결로 수정 방향 결정
-    → oracle-reviewer + oracle-gemini-reviewer 병렬 호출
-    → 2/3 이상 동의하는 방향으로 확정
-    → Auto-Decision 로그 기록
-    → 유저에게 묻지 않음
+  if switching_cost < small (~20 lines):
+    → [Autonomous Decision] Determine fix approach by 3-agent majority vote
+    → Call oracle-reviewer + oracle-gemini-reviewer in parallel
+    → Confirm the approach agreed upon by 2/3 or more
+    → Record Auto-Decision log
+    → Do not ask the user
 
-  elif switching_cost >= medium (~50줄):
-    → [유저 질문] 반드시 `local:UIAskUserQuestion` Skill 사용 (plain text 출력 금지)
-    → `mcp__model-command__run` → `ASK_USER_QUESTION`으로 전송
-    → 3명 리뷰 결과 + 추천안 포함
-    → [tier ~N줄] 표기 필수
-    → ⚠️ "고칠까요? (fix/defer/skip)" 류 질문 금지 — "어떤 방식으로 고칠까요? (Option A / Option B)" 형태여야 함
+  elif switching_cost >= medium (~50 lines):
+    → [User Question] Must use `local:UIAskUserQuestion` Skill (plain text output is forbidden)
+    → Send via `mcp__model-command__run` → `ASK_USER_QUESTION`
+    → Include review results from all 3 agents + recommendation
+    → [tier ~N lines] label is required
+    → Warning: Questions like "Should we fix this? (fix/defer/skip)" are forbidden — must be in the form "How should we fix this? (Option A / Option B)"
 ```
 
-**자율 결정 로그 포맷** (리뷰 결과에 포함):
+**Auto-Decision Log Format** (included in review results):
 ```markdown
-### Auto-Decision: [P2] 변수명 미스매치 [tiny ~5줄]
-- **결정**: 즉시 수정
-- **투표**: Codex ✅ / oracle-reviewer ✅ / oracle-gemini ✅ (3/3)
-- **근거**: 단순 rename, 리스크 없음
+### Auto-Decision: [P2] Variable name mismatch [tiny ~5 lines]
+- **Decision**: Fix immediately
+- **Vote**: Codex ✅ / oracle-reviewer ✅ / oracle-gemini ✅ (3/3)
+- **Rationale**: Simple rename, no risk
 ```
 
-### 7. 최종 판정
-- P0 또는 P1 이슈 있음 → **REQUEST_CHANGES**
-- P0, P1 없음 → **APPROVE**
-- `general finding`만 있고 P0/P1이 없으면 **APPROVE** 가능 (요약 코멘트로 안내)
+### 7. Final Verdict
+- P0 or P1 issues exist → **REQUEST_CHANGES**
+- No P0 or P1 issues → **APPROVE**
+- If only `general findings` exist and there are no P0/P1 → **APPROVE** is possible (provide guidance via summary comment)
 
-### 8. GitHub에 리뷰 제출
-`mcp__github__create_pull_request_review` 사용:
-- 반드시 **실제 코드 라인**을 참조하여 각 이슈별 커멘트
-- skill 결과에 라인이 없으면 직접 diff에서 라인을 찾아 보정 후 커멘트
-- 라인 참조가 끝내 불가능한 항목은 리뷰 본문의 "General Findings" 섹션에 별도 기재
+### 8. Submit Review on GitHub
+Use `mcp__github__create_pull_request_review`:
+- Each issue must have a comment **referencing the actual code line**
+- If the skill result lacks a line number, find the correct line in the diff and add the comment
+- Items where line references are ultimately unavailable should be listed separately in the "General Findings" section of the review body
 
-## CI 체크
+## CI Check
 
-리뷰 결과가 정리된 뒤에는 아래 루프를 **반드시** 수행한다.
+After the review results are finalized, the following loop **must** be performed.
 
-1. 현재 PR의 CI / check / workflow 상태를 조회한다.
-2. 상태가 `queued`, `pending`, `in_progress` 이면 유저에게 현재 상태를 짧게 알리고 **정확히 1분 대기 후 다시 조회**한다.
-3. 상태가 `failure`, `cancelled`, `timed_out` 등 실패 계열이면:
-   - 실패한 check 이름, 실패 이유, 현재 머지 불가 이유를 먼저 요약한다.
-   - 이 실패를 고치기 위한 변경 범위를 다시 switching cost로 분류한다.
-   - tiny/small이면 자율 수정 가능 여부를 판단한다.
-   - medium+이면 반드시 decision gate를 거쳐 `local:UIAskUserQuestion`으로 유저에게 선택을 받는다.
-4. 유저 또는 자율 결정으로 **이 PR에서 바로 고친다**가 확정되면 `mcp__model-command__run` 으로 `CONTINUE_SESSION`을 호출해 현재 스레드에서 fix 워크플로우로 전환한다.
+1. Query the current PR's CI / check / workflow status.
+2. If the status is `queued`, `pending`, or `in_progress`, briefly inform the user of the current status and **wait exactly 1 minute before re-querying**.
+3. If the status is a failure type such as `failure`, `cancelled`, or `timed_out`:
+   - First, summarize the failed check name, failure reason, and why the PR currently cannot be merged.
+   - Classify the scope of changes needed to fix this failure by switching cost.
+   - If tiny/small, determine whether autonomous fixing is possible.
+   - If medium+, the decision gate must be used and the user must choose via `local:UIAskUserQuestion`.
+4. Once the user or autonomous decision confirms **fix it in this PR**, call `mcp__model-command__run` with `CONTINUE_SESSION` to transition to the fix workflow within the current thread.
 
-`CONTINUE_SESSION` 규칙:
+`CONTINUE_SESSION` rules:
 ```json
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "new fix <PR_URL>\n\n## 선택된 구현 방식\n| # | Finding | 선택된 옵션 | 설명 |\n|---|---------|------------|------|\n| 1 | [P1] 이슈제목 | Option A: ... | 추천 2/3, 근거... |",
+    "prompt": "new fix <PR_URL>\n\n## Selected Implementation Approach\n| # | Finding | Selected Option | Description |\n|---|---------|----------------|-------------|\n| 1 | [P1] Issue title | Option A: ... | Recommended 2/3, rationale... |",
     "resetSession": true,
     "dispatchText": "<PR_URL>",
     "forceWorkflow": "pr-fix-and-update"
@@ -209,42 +209,42 @@ for each finding:
 }
 ```
 
-⚠️ **핸드오프 필수 규칙**: `prompt` 필드에는 PR URL 뒤에 반드시 유저가 선택한 구현 방식 정보를 포함해야 한다.
-- 각 medium+ finding에 대해: finding 제목, 선택된 Option (A or B), Option의 label과 description
-- 자율 처리된 tiny/small 건의 결정 요약도 간략히 포함
-- 이 정보가 없으면 fix 워크플로우가 동일한 질문을 반복하여 UX가 파괴된다.
+Warning: **Handoff Required Rule**: The `prompt` field must include the user's selected implementation approach information after the PR URL.
+- For each medium+ finding: finding title, selected Option (A or B), Option label and description
+- Also briefly include decision summaries for autonomously handled tiny/small items
+- Without this information, the fix workflow will repeat the same questions, destroying the UX.
 
-중요 규칙:
-- CI 상태를 모르면 머지 체크로 넘어가지 않는다.
-- 실패 요약 없이 "CI가 깨졌으니 고칠까요?"처럼 모호하게 묻지 않는다.
-- fix 후에는 다시 현재 PR 기준으로 **동일한 PR review workflow를 반복**한다.
+Important rules:
+- Do not proceed to the merge check without knowing the CI status.
+- Do not ask vague questions like "CI is broken, should we fix it?" without a failure summary.
+- After a fix, **repeat the same PR review workflow** for the current PR.
 
-## 머지 체크
+## Merge Check
 
-아래 조건이 모두 만족될 때만 merge gate 질문을 보여준다.
-- unresolved review finding 없음
-- 필요한 approve 가 확보됨
-- CI 상태가 성공임
-- PR이 실제로 mergeable 함
+Only show the merge gate question when all of the following conditions are met.
+- No unresolved review findings
+- Required approvals have been obtained
+- CI status is successful
+- PR is actually mergeable
 
-merge gate 질문 전에 유저에게 아래 문맥을 **풀문장으로** 전달한다.
-1. 이 PR의 **AS-IS**
-2. 이 PR의 **TO-BE**
-3. 이 PR이 필요한 이유
-4. 누가 Approve 했는지, 왜 지금 머지 가능한지
-5. 현재 CI 상태와 머지 가능 여부
+Before the merge gate question, convey the following context to the user **in full sentences**.
+1. The **AS-IS** of this PR
+2. The **TO-BE** of this PR
+3. Why this PR is needed
+4. Who approved it and why it can be merged now
+5. Current CI status and merge eligibility
 
-그 다음 `local:UIAskUserQuestion`으로 정확히 아래 3개 선택지만 보여준다.
-- `merge_now`: 지금 머지한다
-- `rerun_review`: 다시 PR 리뷰 워크플로우를 실행한다
-- `wait_for_other_review`: 다른 유저 리뷰를 더 기다린다
+Then use `local:UIAskUserQuestion` to present exactly these 3 options.
+- `merge_now`: Merge now
+- `rerun_review`: Re-run the PR review workflow
+- `wait_for_other_review`: Wait for additional reviewer feedback
 
-선택 후 처리 규칙:
-- `merge_now`: 현재 워크플로우 안에서 머지를 진행한다
-- `rerun_review`: 아래 payload로 `CONTINUE_SESSION`을 호출해 현재 PR의 `pr-review`를 다시 시작한다
-- `wait_for_other_review`: 머지하지 않고 종료한다
+Post-selection handling rules:
+- `merge_now`: Proceed with the merge within the current workflow
+- `rerun_review`: Call `CONTINUE_SESSION` with the payload below to restart `pr-review` for the current PR
+- `wait_for_other_review`: End without merging
 
-`rerun_review`용 `CONTINUE_SESSION`:
+`rerun_review` `CONTINUE_SESSION`:
 ```json
 {
   "commandId": "CONTINUE_SESSION",
@@ -257,92 +257,92 @@ merge gate 질문 전에 유저에게 아래 문맥을 **풀문장으로** 전�
 }
 ```
 
-중요:
-- 머지는 유저가 merge gate에서 명시적으로 선택한 뒤에만 수행한다.
-- direct merge 버튼이나 shortcut을 우회 경로로 사용하지 않는다.
-- approver 정보나 CI 정보가 비어 있으면 merge gate를 열지 않는다.
+Important:
+- Only merge after the user explicitly selects it from the merge gate.
+- Do not use direct merge buttons or shortcuts as a bypass path.
+- Do not open the merge gate if approver information or CI information is missing.
 
-## 출력 형식
+## Output Format
 
-### 📊 리뷰 요약
-| Priority | Count | 자율 처리 | 유저 결정 필요 |
-|----------|-------|----------|--------------|
-| P0 | N | X건 | Y건 |
-| P1 | N | X건 | Y건 |
-| P2 | N | X건 | Y건 |
-| P3 | N | X건 | Y건 |
+### Review Summary
+| Priority | Count | Autonomous | User Decision Required |
+|----------|-------|------------|----------------------|
+| P0 | N | X items | Y items |
+| P1 | N | X items | Y items |
+| P2 | N | X items | Y items |
+| P3 | N | X items | Y items |
 
-### ✅ 자율 처리 완료 (tiny/small — 유저 확인 불필요)
+### Autonomous Handling Complete (tiny/small — no user confirmation needed)
 
-| # | 이슈 | Tier | 결정 | 투표 |
-|---|------|------|------|------|
-| 1 | [P2] 변수명 오타 | tiny ~5줄 | 즉시 수정 | 3/3 |
-| 2 | [P3] 누락된 null check | small ~15줄 | 즉시 수정 | 2/3 |
+| # | Issue | Tier | Decision | Vote |
+|---|-------|------|----------|------|
+| 1 | [P2] Variable name typo | tiny ~5 lines | Fix immediately | 3/3 |
+| 2 | [P3] Missing null check | small ~15 lines | Fix immediately | 2/3 |
 
-### 🔍 유저 결정 필요 (medium+)
+### User Decision Required (medium+)
 
-각 이슈를 `decision-gate` 포맷으로 상세 기술한 뒤, **반드시 `local:UIAskUserQuestion` Skill로 질문을 전송한다.**
-plain text로 질문을 출력하는 것은 **금지**한다. 반드시 `mcp__model-command__run` → `ASK_USER_QUESTION`으로 전송.
+Describe each issue in detail using the `decision-gate` format, then **send the question via the `local:UIAskUserQuestion` Skill.**
+Outputting questions as plain text is **forbidden**. They must be sent via `mcp__model-command__run` → `ASK_USER_QUESTION`.
 
-#### 질문 품질 자체 검증 체크리스트 (전송 전 반드시 통과):
-- [ ] `mcp__model-command__run` (ASK_USER_QUESTION)으로 전송하는가? (**plain text 금지**)
-- [ ] "고칠까요?" / "Fix/Defer/Skip" 같은 예/아니오 질문이 **아닌가**? (이런 질문은 **명시적으로 금지**)
-- [ ] **"어떤 방식으로 고칠 것인가"** — 2개 이상의 구체적 구현 대안이 있는가?
-- [ ] 각 대안에 파일/줄수/트레이드오프가 있는가?
-- [ ] 3명 리뷰 합의가 포함되어 있는가?
-- [ ] `[tier ~N줄]` prefix가 있는가?
+#### Question Quality Self-Check Checklist (must pass before sending):
+- [ ] Sending via `mcp__model-command__run` (ASK_USER_QUESTION)? (**plain text forbidden**)
+- [ ] Is the question **NOT** a yes/no question like "Should we fix this?" / "Fix/Defer/Skip"? (such questions are **explicitly forbidden**)
+- [ ] **"How should we fix this?"** — Are there 2 or more concrete implementation alternatives?
+- [ ] Does each alternative include file/line count/trade-offs?
+- [ ] Is the 3-agent review consensus included?
+- [ ] Does it have a `[tier ~N lines]` prefix?
 
-P1 이상 이슈에 "고칠까 말까"는 물어볼 필요가 없다. **당연히 고치는 것이다.** 유저에게 물어야 하는 건 **구현 방향에 대한 구체적 기술 결정**이다.
+For P1+ issues, there is no need to ask "whether to fix it or not." **It must be fixed.** What you need to ask the user is **a specific technical decision about the implementation approach**.
 
-#### [P1] [medium ~50줄] 이슈 제목
-- **파일**: `path/to/file.ts:42`
-- **현재 코드**:
+#### [P1] [medium ~50 lines] Issue Title
+- **File**: `path/to/file.ts:42`
+- **Current code**:
 ```lang
-// 문제 코드
+// problematic code
 ```
-- **문제**: 설명 + 실제 영향
-- **구현 옵션 A** (추천 2/3):
+- **Problem**: Description + actual impact
+- **Implementation Option A** (recommended 2/3):
 ```suggestion
-// 수정된 코드 A
+// fixed code A
 ```
-→ 장점/단점/영향 범위
-- **구현 옵션 B**:
+→ Pros/Cons/Impact scope
+- **Implementation Option B**:
 ```suggestion
-// 수정된 코드 B
+// fixed code B
 ```
-→ 장점/단점/영향 범위
-- **변경 범위**: N파일, ~M줄
-- **🤖 리뷰 합의 (X/3)**:
-  - Codex: Option A — [이유]
-  - oracle-reviewer: Option A — [이유]
-  - oracle-gemini: Option B — [이유]
+→ Pros/Cons/Impact scope
+- **Scope of change**: N files, ~M lines
+- **Review Consensus (X/3)**:
+  - Codex: Option A — [reason]
+  - oracle-reviewer: Option A — [reason]
+  - oracle-gemini: Option B — [reason]
 
-→ 위 내용을 `local:UIAskUserQuestion`으로 전송 (선택지: Option A / Option B — 모든 선택지는 이 PR에서의 구체적 구현 방식이어야 함. "별도 이슈로 분리" 같은 defer 변형은 선택지에 포함하지 않는다.)
+→ Send the above via `local:UIAskUserQuestion` (options: Option A / Option B — all options must be concrete implementation approaches for this PR. Do not include defer variants like "Split into a separate issue" as options.)
 
-### ✅ Overall Correctness
+### Overall Correctness
 **APPROVE** / **REQUEST_CHANGES**
 
-근거: ...
+Rationale: ...
 
 ---
 
-## 워크플로우 전환 (Handoff)
+## Workflow Transition (Handoff)
 
-리뷰 중 fix 전환이 필요한 경우:
+When a fix transition is needed during review:
 
-1. **자율 처리 건 (tiny/small)**은 바로 fix 범위에 포함할 수 있다.
-2. **유저 결정 건 (medium+)**은 `local:UIAskUserQuestion`으로 질문한다.
-3. 유저가 구현 방식을 선택하면 `CONTINUE_SESSION`으로 `pr-fix-and-update`로 즉시 전환한다.
-   이때 `prompt` 필드에 선택된 Option 정보를 반드시 포함한다 (위 CONTINUE_SESSION 규칙 참조).
-4. fix 워크플로우가 끝나면 다시 `pr-review`로 자동 복귀한다고 가정하고 이어서 사고한다.
+1. **Autonomously handled items (tiny/small)** can be directly included in the fix scope.
+2. **User decision items (medium+)** are asked via `local:UIAskUserQuestion`.
+3. Once the user selects an implementation approach, immediately transition to `pr-fix-and-update` via `CONTINUE_SESSION`.
+   The `prompt` field must include the selected Option information (see CONTINUE_SESSION rules above).
+4. Assume that the fix workflow will automatically return to `pr-review` when complete, and continue reasoning accordingly.
 
-## 🔄 다음 단계 안내
+## Next Steps
 
-리뷰 완료 후:
-- **수정 필요 시**: 새 세션을 열라고 안내하지 말고, 가능하면 현재 스레드에서 `CONTINUE_SESSION`으로 fix workflow를 연결한다.
-- **문서 필요 시**: "API 변경 문서를 작성하려면 새 세션에서 Confluence 링크 + PR 링크를 입력하세요."
-- 세션에 PR이 연결되지 않았다면: "`link pr <url>` 명령으로 PR을 세션에 연결할 수 있습니다."
-- 작업이 완료되었으면: "`close` 명령으로 세션을 종료할 수 있습니다."
+After review is complete:
+- **When fixes are needed**: Do not tell the user to open a new session. If possible, connect to the fix workflow via `CONTINUE_SESSION` within the current thread.
+- **When documentation is needed**: "To write documentation for API changes, enter the Confluence link + PR link in a new session."
+- If no PR is linked to the session: "You can link a PR to the session using the `link pr <url>` command."
+- If the work is complete: "You can close the session using the `close` command."
 
 <review_guideline>
 {{include:./review_prompt.md}}
