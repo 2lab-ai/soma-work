@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContinuationHandler } from '../agent-session-types.js';
 import { TurnResultCollector } from '../turn-result-collector.js';
+import type { StreamExecutorLike } from '../v1-query-adapter.js';
 import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 // Trace: Scenario 2 — V1QueryAdapter.startWithContinuation()
@@ -31,8 +32,13 @@ function createCollectorWithContinuation(continuation: any = null) {
 }
 
 describe('V1QueryAdapter.startWithContinuation', () => {
-  let mockExecutor: any;
-  let mockRunner: any;
+  let mockExecutor: StreamExecutorLike;
+  let mockRunner: {
+    begin: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    finish: ReturnType<typeof vi.fn>;
+    fail: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     mockRunner = {

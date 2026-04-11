@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  checkDangerousCommand,
-  isCrossUserAccess,
-  isDangerousCommand,
-  isSshCommand,
-} from './dangerous-command-filter';
+import { checkDangerousCommand, isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {
@@ -168,8 +163,6 @@ describe('isCrossUserAccess', () => {
   });
 
   it('allows when all paths belong to current user', () => {
-    expect(
-      isCrossUserAccess('cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', CURRENT_USER),
-    ).toBe(false);
+    expect(isCrossUserAccess('cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', CURRENT_USER)).toBe(false);
   });
 });

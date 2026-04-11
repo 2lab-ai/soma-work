@@ -14,7 +14,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
 import { isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
-import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -26,6 +25,7 @@ import {
   loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
