@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TurnResultCollector } from '../turn-result-collector.js';
+import type { StreamExecutorLike } from '../v1-query-adapter.js';
 import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 // Trace: Ghost Session Fix, Scenario 1 — AbortController Unification (P0)
@@ -47,7 +48,7 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
     const originalController = params.abortController;
 
     const adapter = new V1QueryAdapter({
-      streamExecutor: mockExecutor as any,
+      streamExecutor: mockExecutor as StreamExecutorLike,
       executeParams: params,
     });
 
@@ -62,7 +63,7 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
   it('continue() should pass the SAME abortController from baseParams to executor', async () => {
     const params = createMockExecuteParams();
     const adapter = new V1QueryAdapter({
-      streamExecutor: mockExecutor as any,
+      streamExecutor: mockExecutor as StreamExecutorLike,
       executeParams: params,
     });
 
@@ -84,7 +85,7 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
     const registeredController = params.abortController;
 
     const adapter = new V1QueryAdapter({
-      streamExecutor: mockExecutor as any,
+      streamExecutor: mockExecutor as StreamExecutorLike,
       executeParams: params,
     });
 
@@ -107,7 +108,7 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
     const params = createMockExecuteParams();
 
     const adapter = new V1QueryAdapter({
-      streamExecutor: mockExecutor as any,
+      streamExecutor: mockExecutor as StreamExecutorLike,
       executeParams: params,
     });
 
