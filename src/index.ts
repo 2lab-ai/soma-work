@@ -293,6 +293,9 @@ async function start() {
         });
         return { ts: result.ts as string | undefined };
       };
+      if (!echoTs) {
+        logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+      }
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -300,11 +303,7 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: (() => {
-            if (echoTs) return echoTs;
-            logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
-            return String(Date.now() / 1000);
-          })(),
+          ts: echoTs || String(Date.now() / 1000),
         } as any,
         dashboardSay,
       );
@@ -363,9 +362,7 @@ async function start() {
     });
 
     // Connect dashboard: real-time conversation turn updates
-    setOnTurnRecordedCallback((conversationId, turn) => {
-      broadcastConversationUpdate(conversationId, turn);
-    });
+    setOnTurnRecordedCallback(broadcastConversationUpdate);
 
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
