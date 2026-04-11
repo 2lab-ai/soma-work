@@ -17,6 +17,7 @@ const DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; description: string }
   // Destructive file operations
   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s|.*--recursive)/, description: 'recursive delete' },
   { pattern: /\brm\s+-[a-zA-Z]*f/, description: 'force delete' },
+  { pattern: /\brm\s+.*--force/, description: 'force delete (--force)' },
 
   // System-level operations
   { pattern: /\bshutdown\b/, description: 'system shutdown' },
