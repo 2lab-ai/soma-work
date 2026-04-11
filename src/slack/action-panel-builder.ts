@@ -177,10 +177,10 @@ export class ActionPanelBuilder {
     });
     if (metricsCtx) blocks.push(metricsCtx);
 
-    // 3. Choice slot (when waiting for user input)
-    if (isQuestionPending && params.choiceBlocks) {
+    // 3. Choice slot (when waiting for user input) — show link to standalone choice message
+    if (isQuestionPending) {
       blocks.push({ type: 'divider' });
-      blocks.push(...ActionPanelBuilder.buildChoiceSlotBlocks(params.choiceBlocks));
+      blocks.push(ActionPanelBuilder.buildChoiceLinkSection(params.choiceMessageLink));
     }
 
     // 4. Divider + action rows (with close button merged)
@@ -457,6 +457,31 @@ export class ActionPanelBuilder {
     return true;
   }
 
+  /**
+   * Build a section that links to the standalone choice message instead of
+   * embedding interactive choice buttons directly in the thread header.
+   * This avoids Slack's handler-binding issue in Threads panel / notifications.
+   */
+  private static buildChoiceLinkSection(choiceMessageLink?: string): any {
+    const section: any = {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '❓ 질문에 답변해 주세요' },
+    };
+    if (choiceMessageLink) {
+      section.accessory = {
+        type: 'button',
+        text: { type: 'plain_text', text: '질문 보기', emoji: true },
+        url: choiceMessageLink,
+        action_id: 'panel_choice_link',
+      };
+    }
+    return section;
+  }
+
+  /**
+   * @deprecated No longer used for embedding in the header panel.
+   * Kept as a helper for potential future use.
+   */
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
     if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
       return [
