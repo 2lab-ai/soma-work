@@ -251,6 +251,21 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
+      // Dashboard bypasses Slack, so the thread lacks the user's input without this echo
+      const senderName = session.ownerName || 'Dashboard';
+      const escapedName = senderName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const escapedMessage = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const echoResult = await app.client.chat
+        .postMessage({
+          channel: session.channelId,
+          text: `${escapedName}: ${escapedMessage}`,
+          thread_ts: session.threadTs,
+        })
+        .catch((err) => {
+          logger.warn('Dashboard echo failed', { err });
+          return undefined;
+        });
+
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
         const result = await app.client.chat.postMessage({
@@ -269,7 +284,7 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: String(Date.now() / 1000),
+          ts: echoResult?.ts || String(Date.now() / 1000),
         } as any,
         dashboardSay,
       );
