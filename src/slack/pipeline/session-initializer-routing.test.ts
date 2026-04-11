@@ -36,6 +36,7 @@ vi.mock('../../channel-registry', () => ({
   }),
   getChannel: vi.fn().mockReturnValue(null),
   getAllChannels: vi.fn().mockReturnValue([]),
+  registerChannel: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../../dispatch-service', () => ({
@@ -72,6 +73,8 @@ describe('SessionInitializer - channel routing advisory', () => {
   let sessionRef: any;
   const mockCheckRepoChannelMatch = vi.mocked(channelRegistry.checkRepoChannelMatch);
   const mockGetAllChannels = vi.mocked(channelRegistry.getAllChannels);
+  const mockGetChannel = vi.mocked(channelRegistry.getChannel);
+  const mockRegisterChannel = vi.mocked(channelRegistry.registerChannel);
   const originalDefaultUpdateChannel = process.env.DEFAULT_UPDATE_CHANNEL;
 
   beforeEach(() => {
@@ -127,6 +130,7 @@ describe('SessionInitializer - channel routing advisory', () => {
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
       deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+      getClient: vi.fn().mockReturnValue({}),
     };
 
     mockMessageValidator = {
@@ -287,6 +291,88 @@ describe('SessionInitializer - channel routing advisory', () => {
     expect(String(migratedContextCall?.[1] || '')).toContain('PR #1');
     expect(result.session.threadModel).toBe('bot-initiated');
     expect(result.session.threadRootTs).toBe('msg123');
+  });
+
+  it('registers channel on-the-fly when not in registry before checking repo match', async () => {
+    // Channel not in registry initially
+    mockGetChannel.mockReturnValue(undefined);
+    // After registerChannel, checkRepoChannelMatch returns correct
+    mockRegisterChannel.mockResolvedValue({
+      id: 'C123',
+      name: 'workspace-soma-work',
+      purpose: 'https://github.com/acme/repo',
+      topic: '',
+      repos: ['acme/repo'],
+      joinedAt: Date.now(),
+    });
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: true,
+      suggestedChannels: [],
+      reason: 'matched',
+    } as any);
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // registerChannel should have been called with the Slack client and channel ID
+    expect(mockRegisterChannel).toHaveBeenCalledWith({}, 'C123');
+    // Should NOT show no_mapping advisory (channel was registered successfully)
+    const noMappingCall = mockSlackApi.postMessage.mock.calls.find(
+      (call: any[]) => {
+        const blocks = call[2]?.blocks;
+        if (!Array.isArray(blocks)) return false;
+        return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
+      },
+    );
+    expect(noMappingCall).toBeUndefined();
+  });
+
+  it('falls through to no_mapping when registerChannel fails to find repo', async () => {
+    // Channel not in registry
+    mockGetChannel.mockReturnValue(undefined);
+    // registerChannel succeeds but finds no repos
+    mockRegisterChannel.mockResolvedValue({
+      id: 'C123',
+      name: 'general',
+      purpose: '',
+      topic: '',
+      repos: [],
+      joinedAt: Date.now(),
+    });
+    // Still no mapping after registration
+    mockCheckRepoChannelMatch.mockReturnValue({
+      correct: false,
+      suggestedChannels: [],
+      reason: 'no_mapping',
+    } as any);
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    expect(mockRegisterChannel).toHaveBeenCalledWith({}, 'C123');
+    // Should still show fallback advisory
+    const noMappingCall = mockSlackApi.postMessage.mock.calls.find(
+      (call: any[]) => {
+        const blocks = call[2]?.blocks;
+        if (!Array.isArray(blocks)) return false;
+        return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
+      },
+    );
+    expect(noMappingCall).toBeDefined();
   });
 
   afterEach(() => {
