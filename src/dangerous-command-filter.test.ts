@@ -132,6 +132,7 @@ describe('isCrossUserAccess', () => {
       ['cat /tmp/U094E5L4A15/../U09F1M5MML1/file.txt', 'path traversal via ..'],
       ['ls /tmp/U094E5L4A15/../../etc/passwd', 'traversal out of /tmp entirely'],
       ['cat /private/tmp/U094E5L4A15/../U09F1M5MML1/secret', 'macOS path traversal'],
+      ['ls /tmp/W012ABC3DEF/files', 'Enterprise Grid W-prefixed user ID'],
     ])('detects: %s (%s)', (command) => {
       expect(isCrossUserAccess(command, CURRENT_USER)).toBe(true);
     });

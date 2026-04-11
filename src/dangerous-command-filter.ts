@@ -64,7 +64,8 @@ export function isDangerousCommand(command: string): boolean {
  * Enforces per-user filesystem isolation — always deny, regardless of bypass mode.
  *
  * Matches both /tmp/{userId} and /private/tmp/{userId} (macOS normalization).
- * Slack user IDs follow pattern: U + uppercase alphanumeric (e.g., U094E5L4A15).
+ * Slack user IDs follow pattern: [UW] + uppercase alphanumeric (e.g., U094E5L4A15).
+ * Enterprise Grid uses W-prefixed IDs — both must be covered.
  */
 export function isCrossUserAccess(command: string, currentUserId: string): boolean {
   // Reject any /tmp/ path containing traversal segments — prevents escaping
@@ -73,7 +74,7 @@ export function isCrossUserAccess(command: string, currentUserId: string): boole
     return true;
   }
 
-  const tmpPathPattern = /(?:\/private)?\/tmp\/(U[A-Z0-9]+)\b/g;
+  const tmpPathPattern = /(?:\/private)?\/tmp\/([UW][A-Z0-9]+)\b/g;
   let match: RegExpExecArray | null;
   while ((match = tmpPathPattern.exec(command)) !== null) {
     if (match[1] !== currentUserId) {

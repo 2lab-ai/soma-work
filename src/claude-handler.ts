@@ -751,7 +751,7 @@ export class ClaudeHandler {
       // permission prompts even in bypass mode, because SDK treats only cwd as allowed.
       if (slackContext?.user && isSafePathSegment(slackContext.user)) {
         const userRootDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-        options.additionalDirectories = [userRootDir];
+        options.additionalDirectories = [...(options.additionalDirectories || []), userRootDir];
       }
     }
 
