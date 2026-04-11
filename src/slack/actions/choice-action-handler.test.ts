@@ -286,13 +286,7 @@ describe('ChoiceActionHandler', () => {
 
     messageHandler.mockRejectedValueOnce(new Error('messageHandler exploded'));
 
-    await handler.completeMultiChoiceForm(
-      pendingForm as any,
-      'U123',
-      'C123',
-      'thread-root',
-      'panel-message-ts',
-    );
+    await handler.completeMultiChoiceForm(pendingForm as any, 'U123', 'C123', 'thread-root', 'panel-message-ts');
 
     // Should have been set to 'working' first, then rolled back to 'waiting'
     expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');

@@ -152,9 +152,7 @@ describe('ActionPanelBuilder', () => {
     expect(embeddedChoice).toBeUndefined();
 
     // Instead, a link section with "질문에 답변해 주세요" text should appear
-    const linkSection = payload.blocks.find(
-      (b) => b.type === 'section' && b.text?.text === '❓ 질문에 답변해 주세요',
-    );
+    const linkSection = payload.blocks.find((b) => b.type === 'section' && b.text?.text === '❓ 질문에 답변해 주세요');
     expect(linkSection).toBeDefined();
 
     // Link button should point to the choice message permalink
@@ -183,9 +181,7 @@ describe('ActionPanelBuilder', () => {
     });
 
     // Link section text should still appear
-    const linkSection = payload.blocks.find(
-      (b) => b.type === 'section' && b.text?.text === '❓ 질문에 답변해 주세요',
-    );
+    const linkSection = payload.blocks.find((b) => b.type === 'section' && b.text?.text === '❓ 질문에 답변해 주세요');
     expect(linkSection).toBeDefined();
 
     // No accessory button when there's no permalink
