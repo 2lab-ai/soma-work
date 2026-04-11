@@ -324,13 +324,11 @@ describe('SessionInitializer - channel routing advisory', () => {
     // registerChannel should have been called with the Slack client and channel ID
     expect(mockRegisterChannel).toHaveBeenCalledWith({}, 'C123');
     // Should NOT show no_mapping advisory (channel was registered successfully)
-    const noMappingCall = mockSlackApi.postMessage.mock.calls.find(
-      (call: any[]) => {
-        const blocks = call[2]?.blocks;
-        if (!Array.isArray(blocks)) return false;
-        return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
-      },
-    );
+    const noMappingCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) => {
+      const blocks = call[2]?.blocks;
+      if (!Array.isArray(blocks)) return false;
+      return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
+    });
     expect(noMappingCall).toBeUndefined();
   });
 
@@ -365,13 +363,11 @@ describe('SessionInitializer - channel routing advisory', () => {
 
     expect(mockRegisterChannel).toHaveBeenCalledWith({}, 'C123');
     // Should still show fallback advisory
-    const noMappingCall = mockSlackApi.postMessage.mock.calls.find(
-      (call: any[]) => {
-        const blocks = call[2]?.blocks;
-        if (!Array.isArray(blocks)) return false;
-        return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
-      },
-    );
+    const noMappingCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) => {
+      const blocks = call[2]?.blocks;
+      if (!Array.isArray(blocks)) return false;
+      return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
+    });
     expect(noMappingCall).toBeDefined();
   });
 
