@@ -59,6 +59,25 @@ export function isDangerousCommand(command: string): boolean {
 }
 
 /**
+ * Cross-user directory access detection.
+ * Detects commands that reference another user's /tmp/{userId}/ directory.
+ * Enforces per-user filesystem isolation — always deny, regardless of bypass mode.
+ *
+ * Matches both /tmp/{userId} and /private/tmp/{userId} (macOS normalization).
+ * Slack user IDs follow pattern: U + uppercase alphanumeric (e.g., U094E5L4A15).
+ */
+export function isCrossUserAccess(command: string, currentUserId: string): boolean {
+  const tmpPathPattern = /(?:\/private)?\/tmp\/(U[A-Z0-9]+)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = tmpPathPattern.exec(command)) !== null) {
+    if (match[1] !== currentUserId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * SSH command patterns — matches `ssh`, `scp`, `sftp`, `rsync` over SSH.
  * These commands allow remote server access and must be restricted to admin users.
  */
