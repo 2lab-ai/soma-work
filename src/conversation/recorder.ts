@@ -260,12 +260,24 @@ async function generateSummary(conversationId: string, turnId: string, content: 
   // Always broadcast the updated turn (with summary or failure) to dashboard via WebSocket.
   // The initial broadcast (in _recordAssistantTurnAsync) fires before summary exists;
   // this second broadcast delivers the completed/failed summary for live UI update.
-  if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
+  if (_onTurnRecorded) {
+    try {
+      _onTurnRecorded(conversationId, turn);
+    } catch (err) {
+      logger.warn('onTurnRecorded callback failed', { conversationId, turnId, error: err });
+    }
+  }
 
   if (summary) {
     logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
     // Notify session title update (e.g., update Slack thread header)
-    if (_onSummaryGenerated) _onSummaryGenerated(conversationId, turn, summary.title);
+    if (_onSummaryGenerated) {
+      try {
+        _onSummaryGenerated(conversationId, turn, summary.title);
+      } catch (err) {
+        logger.warn('onSummaryGenerated callback failed', { conversationId, turnId, error: err });
+      }
+    }
   }
 }
 

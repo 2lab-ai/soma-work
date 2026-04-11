@@ -254,12 +254,18 @@ async function start() {
       }
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
+      // Validate required fields before attempting Slack echo — fail fast on programming errors
+      if (!session.channelId || !session.threadTs) {
+        logger.error('Dashboard echo: missing channelId or threadTs', { sessionKey, channelId: session.channelId, threadTs: session.threadTs });
+        return;
+      }
+
       let echoTs: string | undefined;
       try {
         const echoResult = await app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
-          text: message,
+          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
           blocks: [
             {
               type: 'context',
@@ -267,7 +273,7 @@ async function start() {
             },
             {
               type: 'section',
-              text: { type: 'plain_text', text: message.slice(0, 3000) },
+              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
             },
           ],
         });
@@ -294,7 +300,11 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoTs || String(Date.now() / 1000),
+          ts: (() => {
+            if (echoTs) return echoTs;
+            logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+            return String(Date.now() / 1000);
+          })(),
         } as any,
         dashboardSay,
       );

@@ -618,6 +618,11 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
       }
     }
 
+    if (!ownerId) {
+      logger.debug('No session for broadcast, skipping');
+      return;
+    }
+
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
@@ -3254,7 +3259,7 @@ function connectWs() {
           } else {
             // Check if this turn already exists (e.g., summary update for existing assistant turn).
             // If so, replace in-place instead of appending a duplicate.
-            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + msg.turn.id + '"]') : null;
+            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
             if (existingTurn) {
               updateTurnInPanel(existingTurn, msg.turn);
             } else {
@@ -3439,6 +3444,8 @@ function updateTurnInPanel(existingEl, turn) {
   if (newEl) {
     existingEl.replaceWith(newEl);
     attachRawToggleHandlers();
+  } else {
+    console.warn('updateTurnInPanel: no element for turn', turn.id);
   }
 }
 
