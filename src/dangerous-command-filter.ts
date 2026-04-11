@@ -97,3 +97,16 @@ const SSH_PATTERNS: ReadonlyArray<RegExp> = [/\bssh\b/, /\bscp\b/, /\bsftp\b/, /
 export function isSshCommand(command: string): boolean {
   return SSH_PATTERNS.some((pattern) => pattern.test(command));
 }
+
+/**
+ * Bypass mode permission decision for Bash commands.
+ * Returns 'allow' for non-dangerous commands, 'ask' for dangerous ones.
+ *
+ * CRITICAL: This returns explicit decisions ('allow'/'ask') instead of deferring.
+ * When permissionPromptToolName is set (always in Slack context), a deferred
+ * decision causes the SDK to route through the permission MCP tool, triggering
+ * Slack permission prompts even in bypass mode. Explicit decisions prevent this.
+ */
+export function bypassBashPermissionDecision(command: string): 'allow' | 'ask' {
+  return isDangerousCommand(command) ? 'ask' : 'allow';
+}

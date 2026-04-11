@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDangerousCommand, isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import { bypassBashPermissionDecision, checkDangerousCommand, isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {
@@ -164,5 +164,44 @@ describe('isCrossUserAccess', () => {
 
   it('allows when all paths belong to current user', () => {
     expect(isCrossUserAccess('cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', CURRENT_USER)).toBe(false);
+  });
+});
+
+describe('bypassBashPermissionDecision', () => {
+  describe('returns "allow" for non-dangerous commands', () => {
+    it.each([
+      ['mkdir -p /tmp/U094E5L4A15/workdir', 'mkdir'],
+      ['git clone https://github.com/repo.git', 'git clone'],
+      ['npm install', 'npm install'],
+      ['ls -la', 'ls'],
+      ['cat file.txt', 'cat'],
+      ['echo hello', 'echo'],
+      ['npx vitest run', 'vitest'],
+      ['git push origin main', 'git push'],
+      ['cp file1 file2', 'cp'],
+      ['', 'empty command'],
+    ])('allows: %s (%s)', (command) => {
+      expect(bypassBashPermissionDecision(command)).toBe('allow');
+    });
+  });
+
+  describe('returns "ask" for dangerous commands', () => {
+    it.each([
+      ['kill 1234', 'kill'],
+      ['kill -9 1234', 'kill with signal'],
+      ['pkill node', 'pkill'],
+      ['killall python', 'killall'],
+      ['rm -rf /tmp/dir', 'rm -rf'],
+      ['rm -f file.txt', 'rm -f'],
+      ['shutdown now', 'shutdown'],
+      ['reboot', 'reboot'],
+      ['dd if=/dev/zero of=/dev/sda', 'dd'],
+    ])('asks: %s (%s)', (command) => {
+      expect(bypassBashPermissionDecision(command)).toBe('ask');
+    });
+  });
+
+  it('returns "ask" for compound commands containing dangerous parts', () => {
+    expect(bypassBashPermissionDecision('mkdir -p /tmp/dir && kill 1234')).toBe('ask');
   });
 });
