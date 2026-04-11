@@ -13,7 +13,12 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
-import { bypassBashPermissionDecision, isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import {
+  bypassBashPermissionDecision,
+  isCrossUserAccess,
+  isDangerousCommand,
+  isSshCommand,
+} from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';

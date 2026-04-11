@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { bypassBashPermissionDecision, checkDangerousCommand, isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import {
+  bypassBashPermissionDecision,
+  checkDangerousCommand,
+  isCrossUserAccess,
+  isDangerousCommand,
+  isSshCommand,
+} from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {
