@@ -62,16 +62,22 @@ export class SessionActionHandler {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
-      // Update UI to closed state before terminating
+      // Mark session as inactive BEFORE abort/render to prevent race conditions.
+      // Stream executor abort handlers may re-render the surface; isActive=false
+      // ensures buildCombinedBlocks treats it as closed even without the override.
+      session.isActive = false;
+
+      // Abort active AI request BEFORE rendering closed state.
+      // This ensures abort-triggered re-renders see isActive=false.
+      this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+      // Update UI to closed state
       await this.updateSessionUiAsClosed(session);
 
       // Fire-and-forget: must not block session termination sequence
       postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch((err) =>
         this.logger.error('Unexpected escape from postSourceThreadSummary', err),
       );
-
-      // Abort active AI request before deleting session
-      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -141,11 +147,14 @@ export class SessionActionHandler {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
-      // Update UI to closed state before terminating
-      await this.updateSessionUiAsClosed(session);
+      // Mark session as inactive BEFORE abort/render to prevent race conditions.
+      session.isActive = false;
 
-      // Abort active AI request before deleting session
+      // Abort active AI request BEFORE rendering closed state.
       this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+      // Update UI to closed state
+      await this.updateSessionUiAsClosed(session);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -267,11 +276,14 @@ export class SessionActionHandler {
         await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
       }
 
-      // Update UI to closed state before terminating
-      await this.updateSessionUiAsClosed(session);
+      // Mark session as inactive BEFORE abort/render to prevent race conditions.
+      session.isActive = false;
 
-      // Abort active AI request before deleting session
+      // Abort active AI request BEFORE rendering closed state.
       this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+      // Update UI to closed state
+      await this.updateSessionUiAsClosed(session);
 
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);

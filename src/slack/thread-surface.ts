@@ -516,7 +516,7 @@ export class ThreadSurface {
     sessionKey: string,
     overrides?: { closed?: boolean },
   ): any[] {
-    const isClosed = overrides?.closed || !session.isActive;
+    const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
