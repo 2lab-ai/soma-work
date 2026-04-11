@@ -401,7 +401,15 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     }
 
     const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
-    for (const archived of archives) {
+    // Fix #438: Sort archives newest-first so the most recent interaction in a
+    // thread/conversation wins during dedup (older terminated duplicates are dropped)
+    const sortedArchives = [...archives].sort((a, b) => b.archivedAt - a.archivedAt);
+    const seenArchiveConversationIds = new Set<string>();
+    const seenArchiveThreadKeys = new Set<string>();
+    for (const archived of sortedArchives) {
+      // Fix #438: Skip archives without sessionId — these sessions were terminated
+      // before any Claude interaction (e.g., bot-thread migration source sessions)
+      if (!archived.sessionId) continue;
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
       if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
@@ -416,6 +424,20 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
         });
         continue;
       }
+      // Fix #438: Archive-to-archive dedup — skip if we've already seen a newer archive
+      // with the same conversationId or thread key
+      if (archived.conversationId && seenArchiveConversationIds.has(archived.conversationId)) {
+        continue;
+      }
+      const archiveThreadKey = archived.channelId && archived.threadTs
+        ? `${archived.channelId}:${archived.threadTs}`
+        : null;
+      if (archiveThreadKey && seenArchiveThreadKeys.has(archiveThreadKey)) {
+        continue;
+      }
+      // Track this archive for future dedup
+      if (archived.conversationId) seenArchiveConversationIds.add(archived.conversationId);
+      if (archiveThreadKey) seenArchiveThreadKeys.add(archiveThreadKey);
       board.closed.push(archivedToKanban(archived));
     }
   } catch (err) {
