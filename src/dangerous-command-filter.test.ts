@@ -129,6 +129,9 @@ describe('isCrossUserAccess', () => {
       ['git clone repo /tmp/U09F1M5MML1/repo', 'clone into another user dir'],
       ['cp /tmp/U094E5L4A15/a.txt /tmp/U09F1M5MML1/b.txt', 'copy to another user dir'],
       ['ls /private/tmp/U09F1M5MML1/', 'macOS /private/tmp path'],
+      ['cat /tmp/U094E5L4A15/../U09F1M5MML1/file.txt', 'path traversal via ..'],
+      ['ls /tmp/U094E5L4A15/../../etc/passwd', 'traversal out of /tmp entirely'],
+      ['cat /private/tmp/U094E5L4A15/../U09F1M5MML1/secret', 'macOS path traversal'],
     ])('detects: %s (%s)', (command) => {
       expect(isCrossUserAccess(command, CURRENT_USER)).toBe(true);
     });

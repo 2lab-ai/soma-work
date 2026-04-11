@@ -67,6 +67,12 @@ export function isDangerousCommand(command: string): boolean {
  * Slack user IDs follow pattern: U + uppercase alphanumeric (e.g., U094E5L4A15).
  */
 export function isCrossUserAccess(command: string, currentUserId: string): boolean {
+  // Reject any /tmp/ path containing traversal segments — prevents escaping
+  // own directory via /tmp/U094E5L4A15/../U09F1M5MML1/
+  if (/(?:\/private)?\/tmp\/[^\s]*\.\./.test(command)) {
+    return true;
+  }
+
   const tmpPathPattern = /(?:\/private)?\/tmp\/(U[A-Z0-9]+)\b/g;
   let match: RegExpExecArray | null;
   while ((match = tmpPathPattern.exec(command)) !== null) {
