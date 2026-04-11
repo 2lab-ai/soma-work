@@ -586,7 +586,12 @@ export class ClaudeHandler {
         ],
       });
 
-      // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
+      // Bypass mode Bash gate: explicitly approve non-dangerous commands, escalate dangerous ones.
+      // CRITICAL: Return 'allow' instead of { continue: true } for non-dangerous commands.
+      // When permissionPromptToolName is set (always in Slack context), { continue: true }
+      // defers to SDK's permission check which routes through the permission MCP tool,
+      // causing Slack permission prompts even in bypass mode. Explicit 'allow' makes the
+      // decision at hook level, preventing SDK from invoking permissionPromptToolName.
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
           matcher: 'Bash',
@@ -609,7 +614,13 @@ export class ClaudeHandler {
                 };
               }
 
-              return { continue: true };
+              // Non-dangerous: explicitly allow at hook level to bypass permissionPromptToolName routing
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'allow',
+                },
+              };
             },
           ],
         });
