@@ -429,9 +429,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
       if (archived.conversationId && seenArchiveConversationIds.has(archived.conversationId)) {
         continue;
       }
-      const archiveThreadKey = archived.channelId && archived.threadTs
-        ? `${archived.channelId}:${archived.threadTs}`
-        : null;
+      const archiveThreadKey =
+        archived.channelId && archived.threadTs ? `${archived.channelId}:${archived.threadTs}` : null;
       if (archiveThreadKey && seenArchiveThreadKeys.has(archiveThreadKey)) {
         continue;
       }
