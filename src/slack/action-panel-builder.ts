@@ -460,22 +460,19 @@ export class ActionPanelBuilder {
   /**
    * Build a section that links to the standalone choice message instead of
    * embedding interactive choice buttons directly in the thread header.
-   * This avoids Slack's handler-binding issue in Threads panel / notifications.
+   *
+   * Uses a plain mrkdwn link instead of a button element — Slack URL buttons
+   * are still interactive elements that may be suppressed in Threads panel /
+   * notifications, whereas mrkdwn links always render.
    */
   private static buildChoiceLinkSection(choiceMessageLink?: string): any {
-    const section: any = {
+    const text = choiceMessageLink
+      ? `❓ 질문에 답변해 주세요 — <${choiceMessageLink}|질문 보기>`
+      : '❓ 질문에 답변해 주세요';
+    return {
       type: 'section',
-      text: { type: 'mrkdwn', text: '❓ 질문에 답변해 주세요' },
+      text: { type: 'mrkdwn', text },
     };
-    if (choiceMessageLink) {
-      section.accessory = {
-        type: 'button',
-        text: { type: 'plain_text', text: '질문 보기', emoji: true },
-        url: choiceMessageLink,
-        action_id: 'panel_choice_link',
-      };
-    }
-    return section;
   }
 
   /**
