@@ -17,6 +17,7 @@ import {
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   setOAuthUserLookup,
+  setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   startWebServer,
   stopWebServer,
@@ -251,20 +252,39 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
-      // Dashboard bypasses Slack, so the thread lacks the user's input without this echo
-      const senderName = session.ownerName || 'Dashboard';
-      const escapedName = senderName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const escapedMessage = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const echoResult = await app.client.chat
-        .postMessage({
-          channel: session.channelId,
-          text: `${escapedName}: ${escapedMessage}`,
-          thread_ts: session.threadTs,
-        })
-        .catch((err) => {
-          logger.warn('Dashboard echo failed', { err });
-          return undefined;
+      // Post the user's message to the Slack thread so it's visible,
+      // styled as a quote block with dashboard origin indicator.
+      // Validate required fields before attempting Slack echo — fail fast on programming errors
+      if (!session.channelId || !session.threadTs) {
+        logger.error('Dashboard echo: missing channelId or threadTs', {
+          sessionKey,
+          channelId: session.channelId,
+          threadTs: session.threadTs,
         });
+        return;
+      }
+
+      let echoTs: string | undefined;
+      try {
+        const echoResult = await app.client.chat.postMessage({
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+          blocks: [
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+            },
+            {
+              type: 'section',
+              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+            },
+          ],
+        });
+        echoTs = echoResult.ts as string | undefined;
+      } catch (err) {
+        logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
+      }
 
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
@@ -277,6 +297,9 @@ async function start() {
         });
         return { ts: result.ts as string | undefined };
       };
+      if (!echoTs) {
+        logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+      }
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -284,7 +307,7 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoResult?.ts || String(Date.now() / 1000),
+          ts: echoTs || String(Date.now() / 1000),
         } as any,
         dashboardSay,
       );
@@ -343,8 +366,38 @@ async function start() {
     });
 
     // Connect dashboard: real-time conversation turn updates
-    setOnTurnRecordedCallback((conversationId, turn) => {
-      broadcastConversationUpdate(conversationId, turn);
+    setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Connect summary generation: update session title on Slack thread header
+    setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
+      const registry = claudeHandler.getSessionRegistry();
+      const allSessions = registry.getAllSessions();
+      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
+      if (!session) {
+        logger.warn('Summary generated but no active session found', {
+          conversationId,
+          summaryTitle,
+          totalActiveSessions: allSessions.size,
+        });
+        return;
+      }
+      // Guard: only overwrite title when it hasn't been deliberately set
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
+      if (session.title && session.title !== session.conversationId) {
+        logger.debug('Skipping summary title — session already has a deliberate title', {
+          conversationId,
+          existingTitle: session.title,
+          summaryTitle,
+        });
+        return;
+      }
+      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
+      slackHandler.requestThreadSurfaceRender(session);
+      logger.debug('Summary title applied to session', {
+        conversationId,
+        summaryTitle,
+        sessionKey: `${session.channelId}:${session.threadTs}`,
+      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login

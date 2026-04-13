@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { checkDangerousCommand, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import {
+  bypassBashPermissionDecision,
+  checkDangerousCommand,
+  isCrossUserAccess,
+  isDangerousCommand,
+  isSshCommand,
+} from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
   describe('detects dangerous patterns', () => {
@@ -15,6 +21,8 @@ describe('isDangerousCommand', () => {
       ['rm -f file.txt', 'rm -f'],
       ['rm -rfi dir/', 'rm with -r and -f combined'],
       ['rm --recursive dir/', 'rm --recursive'],
+      ['rm --force file.txt', 'rm --force'],
+      ['rm file.txt --force', 'rm with trailing --force'],
       ['shutdown now', 'shutdown'],
       ['sudo shutdown -h now', 'sudo shutdown'],
       ['reboot', 'reboot'],
@@ -110,5 +118,99 @@ describe('checkDangerousCommand', () => {
     const result = checkDangerousCommand('git status');
     expect(result.isDangerous).toBe(false);
     expect(result.matchedPatterns).toHaveLength(0);
+  });
+});
+
+describe('isCrossUserAccess', () => {
+  const CURRENT_USER = 'U094E5L4A15';
+
+  describe('detects cross-user directory access', () => {
+    it.each([
+      ['cd /tmp/U09F1M5MML1/session_123', 'cd into another user dir'],
+      ['cat /tmp/U09F1M5MML1/file.txt', 'read another user file'],
+      ['mkdir -p /tmp/UOTHER123/workdir', 'create dir under another user'],
+      ['git clone repo /tmp/U09F1M5MML1/repo', 'clone into another user dir'],
+      ['cp /tmp/U094E5L4A15/a.txt /tmp/U09F1M5MML1/b.txt', 'copy to another user dir'],
+      ['ls /private/tmp/U09F1M5MML1/', 'macOS /private/tmp path'],
+      ['cat /tmp/U094E5L4A15/../U09F1M5MML1/file.txt', 'path traversal via ..'],
+      ['ls /tmp/U094E5L4A15/../../etc/passwd', 'traversal out of /tmp entirely'],
+      ['cat /private/tmp/U094E5L4A15/../U09F1M5MML1/secret', 'macOS path traversal'],
+      ['ls /tmp/W012ABC3DEF/files', 'Enterprise Grid W-prefixed user ID'],
+    ])('detects: %s (%s)', (command) => {
+      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(true);
+    });
+  });
+
+  describe('allows same-user directory access', () => {
+    it.each([
+      ['cd /tmp/U094E5L4A15/session_123', 'cd into own session dir'],
+      ['mkdir -p /tmp/U094E5L4A15/soma-work_xxx', 'create sibling dir'],
+      ['cat /tmp/U094E5L4A15/file.txt', 'read own file'],
+      ['ls /private/tmp/U094E5L4A15/', 'macOS /private/tmp own path'],
+      ['cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', 'copy within own dir'],
+    ])('allows: %s (%s)', (command) => {
+      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(false);
+    });
+  });
+
+  describe('allows commands without /tmp user paths', () => {
+    it.each([
+      ['git status', 'git status'],
+      ['npm install', 'npm install'],
+      ['ls -la /home/user', 'non-tmp path'],
+      ['cat /etc/hosts', 'system file'],
+      ['echo hello', 'echo'],
+      ['mkdir -p /tmp/workdir', 'tmp without user ID pattern'],
+    ])('allows: %s (%s)', (command) => {
+      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(false);
+    });
+  });
+
+  it('detects cross-user in compound commands', () => {
+    expect(isCrossUserAccess('cd /tmp/U094E5L4A15 && cat /tmp/U09F1M5MML1/file', CURRENT_USER)).toBe(true);
+  });
+
+  it('allows when all paths belong to current user', () => {
+    expect(isCrossUserAccess('cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', CURRENT_USER)).toBe(false);
+  });
+});
+
+describe('bypassBashPermissionDecision', () => {
+  describe('returns "allow" for non-dangerous commands', () => {
+    it.each([
+      ['mkdir -p /tmp/U094E5L4A15/workdir', 'mkdir'],
+      ['git clone https://github.com/repo.git', 'git clone'],
+      ['npm install', 'npm install'],
+      ['ls -la', 'ls'],
+      ['cat file.txt', 'cat'],
+      ['echo hello', 'echo'],
+      ['npx vitest run', 'vitest'],
+      ['git push origin main', 'git push'],
+      ['cp file1 file2', 'cp'],
+      ['', 'empty command'],
+    ])('allows: %s (%s)', (command) => {
+      expect(bypassBashPermissionDecision(command)).toBe('allow');
+    });
+  });
+
+  describe('returns "ask" for dangerous commands', () => {
+    it.each([
+      ['kill 1234', 'kill'],
+      ['kill -9 1234', 'kill with signal'],
+      ['pkill node', 'pkill'],
+      ['killall python', 'killall'],
+      ['rm -rf /tmp/dir', 'rm -rf'],
+      ['rm -f file.txt', 'rm -f'],
+      ['rm --force file.txt', 'rm --force'],
+      ['shutdown now', 'shutdown'],
+      ['reboot', 'reboot'],
+      ['dd if=/dev/zero of=/dev/sda', 'dd'],
+    ])('asks: %s (%s)', (command) => {
+      expect(bypassBashPermissionDecision(command)).toBe('ask');
+    });
+  });
+
+  it('returns "ask" for compound commands containing dangerous parts', () => {
+    expect(bypassBashPermissionDecision('mkdir -p /tmp/dir && kill 1234')).toBe('ask');
   });
 });
