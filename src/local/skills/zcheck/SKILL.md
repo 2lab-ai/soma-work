@@ -32,8 +32,10 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 ## Step 3: Request Approve
 
-`local:UIAskUserQuestion`으로 approve 요청. 리뷰 코멘트 해결 수, CI 상태, 변경 범위, PR 링크 포함.
 
+1. 유저애게 이슈와 approve를 요청할 PR 링크를 보낸다
+`local:UIAskUserQuestion`으로 approve 요청. 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
+ 
 ## Invariants
 
 - Unresolved 코멘트 있으면 approve 요청 금지.
