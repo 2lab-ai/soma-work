@@ -7,6 +7,7 @@ import { V1QueryAdapter } from '../v1-query-adapter.js';
 
 function createMockExecuteParams() {
   return {
+    // biome-ignore lint/suspicious/noExplicitAny: test mock
     session: {} as any,
     sessionKey: 'C1-171.100',
     userName: 'testuser',
