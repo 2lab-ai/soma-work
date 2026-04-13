@@ -20,12 +20,26 @@ const writeLocks = new Map<string, Promise<void>>();
 // Optional callback fired after each turn is recorded
 let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
 
+// Optional callback fired when a summary is generated for an assistant turn.
+// Used to update session title on Slack thread header.
+let _onSummaryGenerated: ((conversationId: string, turn: ConversationTurn, summaryTitle: string) => void) | null = null;
+
 /**
  * Set a callback that fires after each turn is recorded.
  * Used by the dashboard to broadcast real-time conversation updates.
  */
 export function setOnTurnRecordedCallback(fn: (conversationId: string, turn: ConversationTurn) => void): void {
   _onTurnRecorded = fn;
+}
+
+/**
+ * Set a callback that fires when summary generation completes.
+ * Used to update session title on Slack and broadcast summary to dashboard.
+ */
+export function setOnSummaryGeneratedCallback(
+  fn: (conversationId: string, turn: ConversationTurn, summaryTitle: string) => void,
+): void {
+  _onSummaryGenerated = fn;
 }
 
 /**
@@ -242,8 +256,28 @@ async function generateSummary(conversationId: string, turnId: string, content: 
   record.updatedAt = Date.now();
 
   await serializedSave(conversationId, record);
+
+  // Always broadcast the updated turn (with summary or failure) to dashboard via WebSocket.
+  // The initial broadcast (in _recordAssistantTurnAsync) fires before summary exists;
+  // this second broadcast delivers the completed/failed summary for live UI update.
+  if (_onTurnRecorded) {
+    try {
+      _onTurnRecorded(conversationId, turn);
+    } catch (err) {
+      logger.warn('onTurnRecorded callback failed', { conversationId, turnId, error: err });
+    }
+  }
+
   if (summary) {
     logger.debug(`Summary generated for turn ${turnId}: "${summary.title}"`);
+    // Notify session title update (e.g., update Slack thread header)
+    if (_onSummaryGenerated) {
+      try {
+        _onSummaryGenerated(conversationId, turn, summary.title);
+      } catch (err) {
+        logger.warn('onSummaryGenerated callback failed', { conversationId, turnId, error: err });
+      }
+    }
   }
 }
 
