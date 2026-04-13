@@ -1,5 +1,5 @@
 /**
- * Controller Module — Agent orchestration layer (Issue #410, #411)
+ * Controller Module — Agent orchestration layer (Issue #410, #411, #413)
  */
 
 // Agent executor — platform-agnostic turn execution (Issue #411)
@@ -30,5 +30,9 @@ export {
   type PipelineEventHandler,
   type PipelineResult,
 } from './message-pipeline.js';
+// OpenAI implementation (Issue #413)
+export { type OpenAIClientInterface, OpenAIProvider } from './openai-provider.js';
+// Provider registry — multi-provider management (Issue #413)
+export { type ProviderName, ProviderRegistry } from './provider-registry.js';
 // Session controller
 export { SessionController, type SessionRegistryLike } from './session-controller.js';
