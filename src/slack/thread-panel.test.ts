@@ -273,12 +273,17 @@ describe('ThreadPanel', () => {
     await panel.create(session, 'C123:choice-thread');
 
     expect(slackApi.getPermalink).toHaveBeenCalledTimes(1);
-    // Choice blocks are restored in the panel (without message preview)
+    // Choice buttons are no longer embedded in the header — a link section is shown instead
     const blocks = getPostedBlocks(slackApi);
     const mirroredActionBlock = blocks.find(
       (block: any) => block.type === 'actions' && block.elements?.some((el: any) => el.action_id === 'user_choice_1'),
     );
-    expect(mirroredActionBlock).toBeDefined();
+    expect(mirroredActionBlock).toBeUndefined();
+    // Verify link section is present instead
+    const linkSection = blocks.find(
+      (block: any) => block.type === 'section' && block.text?.text?.includes('질문에 답변해 주세요'),
+    );
+    expect(linkSection).toBeDefined();
   });
 
   it('keeps existing thread choiceMessageTs when attachChoice is called without sourceMessageTs', async () => {
