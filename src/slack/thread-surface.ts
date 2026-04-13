@@ -516,7 +516,7 @@ export class ThreadSurface {
     sessionKey: string,
     overrides?: { closed?: boolean },
   ): any[] {
-    const isClosed = overrides?.closed || !session.isActive;
+    const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
@@ -633,7 +633,8 @@ export class ThreadSurface {
   private buildFallbackText(session: ConversationSession, overrides?: { closed?: boolean }): string {
     const title = session.title || 'Session';
     const owner = session.ownerName || session.ownerId || '';
-    const closed = overrides?.closed ? ' [종료됨]' : '';
+    const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
+    const closed = isClosed ? ' [종료됨]' : '';
     return `${owner} — ${title}${closed}`;
   }
 
