@@ -256,7 +256,11 @@ async function start() {
       // styled as a quote block with dashboard origin indicator.
       // Validate required fields before attempting Slack echo — fail fast on programming errors
       if (!session.channelId || !session.threadTs) {
-        logger.error('Dashboard echo: missing channelId or threadTs', { sessionKey, channelId: session.channelId, threadTs: session.threadTs });
+        logger.error('Dashboard echo: missing channelId or threadTs', {
+          sessionKey,
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+        });
         return;
       }
 
@@ -369,7 +373,21 @@ async function start() {
       const registry = claudeHandler.getSessionRegistry();
       const session = [...registry.getAllSessions().values()].find((s) => s.conversationId === conversationId);
       if (!session) {
-        logger.warn('Summary generated but no active session found', { conversationId, summaryTitle });
+        logger.warn('Summary generated but no active session found', {
+          conversationId,
+          summaryTitle,
+          totalActiveSessions: registry.getAllSessions().size,
+        });
+        return;
+      }
+      // Guard: only overwrite title when it hasn't been deliberately set
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
+      if (session.title && session.title !== session.conversationId) {
+        logger.debug('Skipping summary title — session already has a deliberate title', {
+          conversationId,
+          existingTitle: session.title,
+          summaryTitle,
+        });
         return;
       }
       registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
