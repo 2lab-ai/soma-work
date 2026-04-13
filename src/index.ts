@@ -366,27 +366,19 @@ async function start() {
 
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
-      // Find the session by conversationId and update its title
-      const sessions = claudeHandler.getSessionRegistry().getAllSessions();
-      let matched = false;
-      for (const [, session] of sessions) {
-        if (session.conversationId === conversationId) {
-          matched = true;
-          // Update session title with the summary title
-          claudeHandler.getSessionRegistry().updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
-          // Request re-render of the Slack thread surface
-          slackHandler.requestThreadSurfaceRender(session);
-          logger.debug('Summary title applied to session', {
-            conversationId,
-            summaryTitle,
-            sessionKey: `${session.channelId}:${session.threadTs}`,
-          });
-          break;
-        }
+      const registry = claudeHandler.getSessionRegistry();
+      const session = [...registry.getAllSessions().values()].find((s) => s.conversationId === conversationId);
+      if (!session) {
+        logger.warn('Summary generated but no active session found', { conversationId, summaryTitle });
+        return;
       }
-      if (!matched) {
-        logger.warn('Summary generated but no active session found for conversationId', { conversationId, summaryTitle });
-      }
+      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
+      slackHandler.requestThreadSurfaceRender(session);
+      logger.debug('Summary title applied to session', {
+        conversationId,
+        summaryTitle,
+        sessionKey: `${session.channelId}:${session.threadTs}`,
+      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login
