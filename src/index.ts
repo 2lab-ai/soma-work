@@ -371,12 +371,13 @@ async function start() {
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
       const registry = claudeHandler.getSessionRegistry();
-      const session = [...registry.getAllSessions().values()].find((s) => s.conversationId === conversationId);
+      const allSessions = registry.getAllSessions();
+      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
       if (!session) {
         logger.warn('Summary generated but no active session found', {
           conversationId,
           summaryTitle,
-          totalActiveSessions: registry.getAllSessions().size,
+          totalActiveSessions: allSessions.size,
         });
         return;
       }
