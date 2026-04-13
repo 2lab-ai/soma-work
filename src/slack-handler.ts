@@ -914,7 +914,11 @@ export class SlackHandler {
   /** Request re-render of the Slack thread header (e.g. after title change) */
   requestThreadSurfaceRender(session: ConversationSession): void {
     this.threadPanel?.updateHeader(session).catch((err) => {
-      this.logger.warn('Failed to re-render thread surface after title update', { error: err });
+      this.logger.warn('Failed to re-render thread surface after title update', {
+        error: err,
+        channelId: session.channelId,
+        threadTs: session.threadTs,
+      });
     });
   }
 }

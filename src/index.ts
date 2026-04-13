@@ -368,8 +368,10 @@ async function start() {
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
       // Find the session by conversationId and update its title
       const sessions = claudeHandler.getSessionRegistry().getAllSessions();
+      let matched = false;
       for (const [, session] of sessions) {
         if (session.conversationId === conversationId) {
+          matched = true;
           // Update session title with the summary title
           claudeHandler.getSessionRegistry().updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
           // Request re-render of the Slack thread surface
@@ -381,6 +383,9 @@ async function start() {
           });
           break;
         }
+      }
+      if (!matched) {
+        logger.warn('Summary generated but no active session found for conversationId', { conversationId, summaryTitle });
       }
     });
 

@@ -619,16 +619,22 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     }
 
     if (!ownerId) {
-      logger.debug('No session for broadcast, skipping');
-      return;
+      // No active session — broadcast only to admin clients so archived session
+      // updates (e.g., resummarize) still reach the admin dashboard without
+      // leaking to non-owner clients.
+      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
     }
 
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
-      // Only send to clients belonging to the session owner (or all if owner unknown)
-      if (ownerId && !client.isAdmin && client.userId && client.userId !== ownerId) continue;
+      if (!ownerId) {
+        // When owner is unknown, only admin clients receive the update
+        if (!client.isAdmin) continue;
+      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+        continue;
+      }
       try {
         client.send(payload);
       } catch {
