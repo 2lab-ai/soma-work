@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { getAdminUsers } from '../../admin-utils';
-import { checkRepoChannelMatch, getAllChannels, getChannel } from '../../channel-registry';
+import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { getDispatchService } from '../../dispatch-service';
@@ -361,6 +361,13 @@ export class SessionInitializer {
     });
 
     if (shouldRoute && prUrl) {
+      // Fallback: if current channel isn't in the registry (missed by scanChannels),
+      // register it on-the-fly via conversations.info before checking repo-channel match.
+      if (!getChannel(channel)) {
+        this.logger.info('🔀 Channel not in registry, registering on-the-fly', { channel });
+        await registerChannel(this.deps.slackApi.getClient(), channel);
+      }
+
       const routeCheck = checkRepoChannelMatch(prUrl, channel);
 
       this.logger.info('🔀 Channel routing result', {
