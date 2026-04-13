@@ -13,7 +13,7 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
-import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import { isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -25,6 +25,7 @@ import {
   loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
@@ -557,6 +558,34 @@ export class ClaudeHandler {
         });
       }
 
+      // Cross-user directory isolation: deny Bash commands that access another user's
+      // /tmp/{userId}/ directory. Always enforced regardless of bypass mode.
+      preToolUseHooks.push({
+        matcher: 'Bash',
+        hooks: [
+          async (input: HookInput): Promise<HookJSONOutput> => {
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+            if (isCrossUserAccess(command, slackContext.user)) {
+              this.logger.warn('Cross-user directory access denied', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+
+            return { continue: true };
+          },
+        ],
+      });
+
       // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
@@ -715,6 +744,14 @@ export class ClaudeHandler {
       }
       if (fs.existsSync(workingDirectory)) {
         options.cwd = workingDirectory;
+      }
+
+      // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.
+      // Without this, sibling directories (e.g., /tmp/{userId}/soma-work_xxx/) trigger
+      // permission prompts even in bypass mode, because SDK treats only cwd as allowed.
+      if (slackContext?.user && isSafePathSegment(slackContext.user)) {
+        const userRootDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+        options.additionalDirectories = [...(options.additionalDirectories || []), userRootDir];
       }
     }
 
