@@ -137,18 +137,30 @@ describe('ActionPanelBuilder', () => {
 
   // Context percentage tests removed — context is now displayed in thread header badge only.
 
-  it('shows choice blocks in panel when choice is pending', () => {
+  it('shows choice link section (not interactive choice blocks) when choice is pending', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-5',
       workflow: 'default',
       waitingForChoice: true,
       choiceBlocks: [{ type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } }],
+      choiceMessageLink: 'https://workspace.slack.com/archives/C123/p999',
       contextRemainingPercent: 73,
     });
 
-    // Choice blocks are rendered in the panel
-    const choiceSection = payload.blocks.find((b) => b.type === 'section' && b.text?.text === '❓ *질문*');
-    expect(choiceSection).toBeDefined();
+    // Actual choice blocks should NOT be embedded in the panel
+    const embeddedChoice = payload.blocks.find((b) => b.type === 'section' && b.text?.text === '❓ *질문*');
+    expect(embeddedChoice).toBeUndefined();
+
+    // Instead, a mrkdwn link section (no interactive element) should appear
+    const linkSection = payload.blocks.find(
+      (b) => b.type === 'section' && b.text?.text?.includes('질문에 답변해 주세요'),
+    );
+    expect(linkSection).toBeDefined();
+
+    // Plain mrkdwn link — no button accessory (avoids Slack interactive element suppression)
+    expect(linkSection.accessory).toBeUndefined();
+    expect(linkSection.text.text).toContain('https://workspace.slack.com/archives/C123/p999');
+    expect(linkSection.text.text).toContain('질문 보기');
 
     // Workflow buttons are hidden (only close button remains)
     const actionsBlocks = payload.blocks.filter((block) => block.type === 'actions');
@@ -159,8 +171,25 @@ describe('ActionPanelBuilder', () => {
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('🟡 *입력 대기*');
     expect(statusText).toContain('_질문 응답 필요_');
+  });
 
-    // Context% moved to thread header badge
+  it('shows choice text section without permalink when choiceMessageLink is absent', () => {
+    const payload = ActionPanelBuilder.build({
+      sessionKey: 'session-5b',
+      workflow: 'default',
+      waitingForChoice: true,
+      choiceBlocks: [{ type: 'section', text: { type: 'mrkdwn', text: '❓ *질문*' } }],
+    });
+
+    // Link section text should still appear (without URL)
+    const linkSection = payload.blocks.find(
+      (b) => b.type === 'section' && b.text?.text?.includes('질문에 답변해 주세요'),
+    );
+    expect(linkSection).toBeDefined();
+
+    // No URL in text when permalink is absent
+    expect(linkSection.text.text).toBe('❓ 질문에 답변해 주세요');
+    expect(linkSection.accessory).toBeUndefined();
   });
 
   it('renders closed state with hero + divider + summary grid + footer', () => {
