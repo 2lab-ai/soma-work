@@ -92,6 +92,7 @@ export class ActionHandlers {
       claudeHandler: ctx.claudeHandler,
       messageHandler: ctx.messageHandler,
       requestCoordinator: ctx.requestCoordinator,
+      threadPanel: ctx.threadPanel,
     });
 
     this.channelRouteHandler = new ChannelRouteActionHandler({
