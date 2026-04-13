@@ -401,7 +401,15 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     }
 
     const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
-    for (const archived of archives) {
+    // Fix #438: Sort archives newest-first so the most recent interaction in a
+    // thread/conversation wins during dedup (older terminated duplicates are dropped)
+    const sortedArchives = [...archives].sort((a, b) => b.archivedAt - a.archivedAt);
+    const seenArchiveConversationIds = new Set<string>();
+    const seenArchiveThreadKeys = new Set<string>();
+    for (const archived of sortedArchives) {
+      // Fix #438: Skip archives without sessionId — these sessions were terminated
+      // before any Claude interaction (e.g., bot-thread migration source sessions)
+      if (!archived.sessionId) continue;
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
       if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
@@ -416,6 +424,19 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
         });
         continue;
       }
+      // Fix #438: Archive-to-archive dedup — skip if we've already seen a newer archive
+      // with the same conversationId or thread key
+      if (archived.conversationId && seenArchiveConversationIds.has(archived.conversationId)) {
+        continue;
+      }
+      const archiveThreadKey =
+        archived.channelId && archived.threadTs ? `${archived.channelId}:${archived.threadTs}` : null;
+      if (archiveThreadKey && seenArchiveThreadKeys.has(archiveThreadKey)) {
+        continue;
+      }
+      // Track this archive for future dedup
+      if (archived.conversationId) seenArchiveConversationIds.add(archived.conversationId);
+      if (archiveThreadKey) seenArchiveThreadKeys.add(archiveThreadKey);
       board.closed.push(archivedToKanban(archived));
     }
   } catch (err) {
@@ -597,12 +618,23 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
       }
     }
 
+    if (!ownerId) {
+      // No active session — broadcast only to admin clients so archived session
+      // updates (e.g., resummarize) still reach the admin dashboard without
+      // leaking to non-owner clients.
+      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
+    }
+
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
-      // Only send to clients belonging to the session owner (or all if owner unknown)
-      if (ownerId && !client.isAdmin && client.userId && client.userId !== ownerId) continue;
+      if (!ownerId) {
+        // When owner is unknown, only admin clients receive the update
+        if (!client.isAdmin) continue;
+      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+        continue;
+      }
       try {
         client.send(payload);
       } catch {
@@ -2496,6 +2528,9 @@ async function refreshCsrfToken() {
 refreshCsrfToken();
 
 // ── Utility ──
+function decodeSlackEntities(s) {
+  return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
@@ -3217,7 +3252,7 @@ function connectWs() {
           renderPanelTasks(msg.tasks);
         }
       } else if (msg.type === 'conversation_update') {
-        // If panel is open for this conversation, append the turn
+        // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
           if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
@@ -3228,7 +3263,14 @@ function connectWs() {
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
           } else {
-            appendTurnToPanel(msg.turn);
+            // Check if this turn already exists (e.g., summary update for existing assistant turn).
+            // If so, replace in-place instead of appending a duplicate.
+            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
+            if (existingTurn) {
+              updateTurnInPanel(existingTurn, msg.turn);
+            } else {
+              appendTurnToPanel(msg.turn);
+            }
           }
         }
       } else if (msg.type === 'session_action') {
@@ -3357,12 +3399,13 @@ function openPanel(sessionKey) {
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
+  var turnIdAttr = t.id ? ' data-turn-id="' + esc(t.id) + '"' : '';
   if (t.role === 'user') {
-    return '<div class="turn user">'
+    return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + '<div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
+      + '<div class="turn-content">' + esc(decodeSlackEntities((t.rawContent || '').slice(0, 500))) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
@@ -3382,7 +3425,7 @@ function renderTurn(t, _idx, _arr, convId) {
         + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
         + '</details>';
     }
-    return '<div class="turn assistant">'
+    return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
@@ -3397,6 +3440,19 @@ function appendTurnToPanel(turn) {
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
   attachRawToggleHandlers();
+}
+
+/** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
+function updateTurnInPanel(existingEl, turn) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderTurn(turn);
+  var newEl = tmp.firstElementChild;
+  if (newEl) {
+    existingEl.replaceWith(newEl);
+    attachRawToggleHandlers();
+  } else {
+    console.warn('updateTurnInPanel: no element for turn', turn.id);
+  }
 }
 
 var _rawLoadedCache = {};

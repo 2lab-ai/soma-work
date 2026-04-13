@@ -177,6 +177,124 @@ describe('ChoiceActionHandler', () => {
     );
   });
 
+  it('rolls back session to waiting when messageHandler throws in handleUserChoice', async () => {
+    const sessionKey = 'C123:thread-root';
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C123',
+      actionPanel: {
+        choiceMessageTs: 'thread-choice-message-ts',
+      },
+    });
+
+    messageHandler.mockRejectedValueOnce(new TypeError('Cannot read properties of undefined'));
+
+    const body = {
+      actions: [
+        {
+          value: JSON.stringify({
+            sessionKey,
+            choiceId: '1',
+            label: 'Option A',
+            question: 'Pick one?',
+          }),
+        },
+      ],
+      user: { id: 'U123' },
+      channel: { id: 'C123' },
+      message: { ts: 'panel-message-ts' },
+    };
+
+    await handler.handleUserChoice(body);
+
+    // Should have been set to 'working' first, then rolled back to 'waiting'
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'waiting');
+    // The last call should be the rollback to 'waiting'
+    const calls = claudeHandler.setActivityStateByKey.mock.calls;
+    expect(calls[calls.length - 1]).toEqual([sessionKey, 'waiting']);
+  });
+
+  it('uses session.channelId as fallback when body.channel is undefined in handleUserChoice', async () => {
+    const sessionKey = 'C123:thread-root';
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C123',
+      actionPanel: {
+        choiceMessageTs: 'thread-choice-message-ts',
+      },
+    });
+
+    const body = {
+      actions: [
+        {
+          value: JSON.stringify({
+            sessionKey,
+            choiceId: '2',
+            label: 'Option B',
+            question: 'Pick one?',
+          }),
+        },
+      ],
+      user: { id: 'U123' },
+      // No channel property — simulates the bug scenario
+      message: { ts: 'panel-message-ts' },
+    };
+
+    await handler.handleUserChoice(body);
+
+    // Should still call messageHandler using the session's channelId
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C123',
+        thread_ts: 'thread-root',
+        text: '2',
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('rolls back session to waiting when messageHandler throws in completeMultiChoiceForm', async () => {
+    const sessionKey = 'C123:thread-root';
+    const pendingForm = {
+      formId: 'form-rollback',
+      sessionKey,
+      channel: 'C123',
+      threadTs: 'thread-root',
+      messageTs: 'thread-form-message-ts',
+      questions: [
+        {
+          id: 'q1',
+          question: 'Strategy?',
+          choices: [{ id: '1', label: 'Quick fix' }],
+        },
+      ],
+      selections: {
+        q1: { choiceId: '1', label: 'Quick fix' },
+      },
+      createdAt: Date.now(),
+    };
+
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C123',
+      actionPanel: {},
+    });
+
+    messageHandler.mockRejectedValueOnce(new Error('messageHandler exploded'));
+
+    await handler.completeMultiChoiceForm(pendingForm as any, 'U123', 'C123', 'thread-root', 'panel-message-ts');
+
+    // Should have been set to 'working' first, then rolled back to 'waiting'
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'waiting');
+    const calls = claudeHandler.setActivityStateByKey.mock.calls;
+    expect(calls[calls.length - 1]).toEqual([sessionKey, 'waiting']);
+  });
+
   it('syncs panel multi-choice selection back to thread choice message', async () => {
     const sessionKey = 'C123:thread-root';
     formStore.set('form-2', {

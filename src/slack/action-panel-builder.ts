@@ -177,10 +177,10 @@ export class ActionPanelBuilder {
     });
     if (metricsCtx) blocks.push(metricsCtx);
 
-    // 3. Choice slot (when waiting for user input)
-    if (isQuestionPending && params.choiceBlocks) {
+    // 3. Choice slot (when waiting for user input) — show link to standalone choice message
+    if (isQuestionPending) {
       blocks.push({ type: 'divider' });
-      blocks.push(...ActionPanelBuilder.buildChoiceSlotBlocks(params.choiceBlocks));
+      blocks.push(ActionPanelBuilder.buildChoiceLinkSection(params.choiceMessageLink));
     }
 
     // 4. Divider + action rows (with close button merged)
@@ -457,6 +457,28 @@ export class ActionPanelBuilder {
     return true;
   }
 
+  /**
+   * Build a section that links to the standalone choice message instead of
+   * embedding interactive choice buttons directly in the thread header.
+   *
+   * Uses a plain mrkdwn link instead of a button element — Slack URL buttons
+   * are still interactive elements that may be suppressed in Threads panel /
+   * notifications, whereas mrkdwn links always render.
+   */
+  private static buildChoiceLinkSection(choiceMessageLink?: string): any {
+    const text = choiceMessageLink
+      ? `❓ 질문에 답변해 주세요 — <${choiceMessageLink}|질문 보기>`
+      : '❓ 질문에 답변해 주세요';
+    return {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    };
+  }
+
+  /**
+   * @deprecated No longer used for embedding in the header panel.
+   * Kept as a helper for potential future use.
+   */
   private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
     if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
       return [
