@@ -13,7 +13,12 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
-import { isCrossUserAccess, isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import {
+  bypassBashPermissionDecision,
+  isCrossUserAccess,
+  isDangerousCommand,
+  isSshCommand,
+} from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -586,7 +591,13 @@ export class ClaudeHandler {
         ],
       });
 
-      // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
+      // Bypass mode Bash gate: explicitly approve non-dangerous commands, escalate dangerous ones.
+      // CRITICAL: Return 'allow' instead of { continue: true } for non-dangerous commands.
+      // When permissionPromptToolName is set (always in Slack context), { continue: true }
+      // defers to SDK's permission check which routes through the permission MCP tool,
+      // causing Slack permission prompts even in bypass mode. Explicit 'allow' makes the
+      // decision at hook level, preventing SDK from invoking permissionPromptToolName.
+      // See bypassBashPermissionDecision() for the extracted, testable decision logic.
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
           matcher: 'Bash',
@@ -596,20 +607,21 @@ export class ClaudeHandler {
               const toolRecord = tool_input as Record<string, unknown> | undefined;
               const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-              if (isDangerousCommand(command)) {
+              const decision = bypassBashPermissionDecision(command);
+
+              if (decision === 'ask') {
                 this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
                   command: command.substring(0, 100),
                   user: slackContext.user,
                 });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'ask',
-                  },
-                };
               }
 
-              return { continue: true };
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: decision,
+                },
+              };
             },
           ],
         });
