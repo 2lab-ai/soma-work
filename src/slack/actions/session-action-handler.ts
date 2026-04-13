@@ -31,6 +31,23 @@ export class SessionActionHandler {
   constructor(private ctx: SessionActionContext) {}
 
   /**
+   * Common session close sequence: emoji → deactivate → abort → render closed UI.
+   * Ordering guarantees:
+   * 1. Expiry emoji (while session data is still intact)
+   * 2. session.isActive = false (one-way flag, prevents re-render race)
+   * 3. abortSession (abort-triggered re-renders see isActive=false)
+   * 4. updateSessionUiAsClosed (renders definitive closed state)
+   */
+  private async beginSessionClose(sessionKey: string, session: ConversationSession): Promise<void> {
+    if (session.threadTs) {
+      await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
+    }
+    session.isActive = false;
+    this.ctx.requestCoordinator?.abortSession(sessionKey);
+    await this.updateSessionUiAsClosed(session);
+  }
+
+  /**
    * Handle close session confirm button (from /close command)
    */
   async handleCloseConfirm(body: any, respond: RespondFn): Promise<void> {
@@ -57,21 +74,12 @@ export class SessionActionHandler {
         return;
       }
 
-      // Add zzz emoji before termination (while session still has data)
-      if (session.threadTs) {
-        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
-      }
-
-      // Update UI to closed state before terminating
-      await this.updateSessionUiAsClosed(session);
+      await this.beginSessionClose(sessionKey, session);
 
       // Fire-and-forget: must not block session termination sequence
       postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch((err) =>
         this.logger.error('Unexpected escape from postSourceThreadSummary', err),
       );
-
-      // Abort active AI request before deleting session
-      this.ctx.requestCoordinator?.abortSession(sessionKey);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -136,16 +144,7 @@ export class SessionActionHandler {
         return;
       }
 
-      // Add zzz emoji before termination
-      if (session.threadTs) {
-        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
-      }
-
-      // Update UI to closed state before terminating
-      await this.updateSessionUiAsClosed(session);
-
-      // Abort active AI request before deleting session
-      this.ctx.requestCoordinator?.abortSession(sessionKey);
+      await this.beginSessionClose(sessionKey, session);
 
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
       if (success) {
@@ -262,16 +261,7 @@ export class SessionActionHandler {
         return;
       }
 
-      // Add zzz emoji before termination
-      if (session.threadTs) {
-        await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
-      }
-
-      // Update UI to closed state before terminating
-      await this.updateSessionUiAsClosed(session);
-
-      // Abort active AI request before deleting session
-      this.ctx.requestCoordinator?.abortSession(sessionKey);
+      await this.beginSessionClose(sessionKey, session);
 
       const channelName = await this.ctx.slackApi.getChannelName(session.channelId);
       const success = this.ctx.claudeHandler.terminateSession(sessionKey);
