@@ -9,6 +9,9 @@
   `Co-Authored-By: {{user.displayName}} <{{user.email}}>`
   If `{{user.email}}` is empty or unresolved, you MUST ask the user for their email via UIAskUserQuestion before making any commit. Never guess or fabricate an email.
 
+## GitHub Workflows
+- Bot tokens cannot modify `.github/workflows/`. Use `gh` CLI instead.
+
 ## Smart Subordinate Model (MCP)
 Delegate to a subordinate model only when the user explicitly requests it or when task complexity clearly justifies it.
 
