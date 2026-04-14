@@ -1,5 +1,6 @@
 import './env-paths';
 import { App } from '@slack/bolt';
+import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
@@ -145,6 +146,23 @@ async function start() {
       }
     }
 
+    // Initialize A2T service (audio-to-text transcription, non-critical)
+    try {
+      const a2tConfig = unifiedConfig.a2t || {};
+      if (a2tConfig.enabled !== false) {
+        const a2t = await initA2tService(a2tConfig);
+        if (a2t) {
+          timing(`A2T service initialized (${a2t.getStatus().state})`);
+        } else {
+          timing('A2T service unavailable (Python/faster-whisper not installed)');
+        }
+      } else {
+        timing('A2T service disabled by configuration');
+      }
+    } catch (error) {
+      logger.warn('Failed to start A2T service (non-critical)', error);
+    }
+
     // Initialize AgentManager if agents are configured (Trace: docs/multi-agent/trace.md, S2)
     let agentManager: import('./agent-manager').AgentManager | undefined;
     if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
@@ -170,13 +188,17 @@ async function start() {
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
     timing('SlackHandler initialized');
 
-    // Initialize Slack workspace URL for correct thread permalinks
+    // Initialize Slack workspace URL and bot display name
     try {
       const slackApi = slackHandler.getSlackApi();
       const authContext = await slackApi.getAuthContext();
       const { setSlackWorkspaceUrl } = await import('./turn-notifier');
       setSlackWorkspaceUrl(authContext.url);
-      timing(`Slack workspace URL: ${authContext.url}`);
+      if (authContext.botName) {
+        const { setBotDisplayName } = await import('./slack/tool-formatter');
+        setBotDisplayName(authContext.botName);
+      }
+      timing(`Slack workspace URL: ${authContext.url}, bot: ${authContext.botName ?? 'unknown'}`);
     } catch (error) {
       logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
     }
@@ -590,6 +612,9 @@ async function start() {
         // Save pending forms for persistence
         slackHandler.savePendingForms();
         logger.info('Pending forms saved successfully');
+
+        // Stop A2T service
+        await shutdownA2tService();
 
         // Stop sub-agents (Trace: docs/multi-agent/trace.md, S7)
         if (agentManager) {

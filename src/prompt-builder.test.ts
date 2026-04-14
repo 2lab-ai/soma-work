@@ -12,6 +12,12 @@ vi.mock('./user-settings-store', () => ({
 vi.mock('./env-paths', () => ({
   SYSTEM_PROMPT_FILE: '/tmp/test.system.prompt',
   CONFIG_FILE: '/tmp/prompt-builder-test-nonexistent/config.json',
+  DATA_DIR: '/tmp/prompt-builder-test-data',
+}));
+
+// Mock user-memory-store to avoid filesystem access in prompt-builder tests
+vi.mock('./user-memory-store', () => ({
+  formatMemoryForPrompt: vi.fn().mockReturnValue(''),
 }));
 
 import { PromptBuilder } from './prompt-builder';

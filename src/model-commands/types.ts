@@ -14,7 +14,9 @@ export type ModelCommandId =
   | 'UPDATE_SESSION'
   | 'ASK_USER_QUESTION'
   | 'CONTINUE_SESSION'
-  | 'SAVE_CONTEXT_RESULT';
+  | 'SAVE_CONTEXT_RESULT'
+  | 'SAVE_MEMORY'
+  | 'GET_MEMORY';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -48,12 +50,21 @@ export interface SaveContextResultParams {
 
 export interface ContinueSessionParams extends Continuation {}
 
+export interface SaveMemoryParams {
+  action: 'add' | 'replace' | 'remove';
+  target: 'memory' | 'user';
+  content?: string;
+  old_text?: string;
+}
+
 export interface ModelCommandParamsMap {
   GET_SESSION: undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
   ASK_USER_QUESTION: AskUserQuestionParams;
   CONTINUE_SESSION: ContinueSessionParams;
   SAVE_CONTEXT_RESULT: SaveContextResultParams;
+  SAVE_MEMORY: SaveMemoryParams;
+  GET_MEMORY: undefined;
 }
 
 export interface ModelCommandPayloadMap {
@@ -76,6 +87,18 @@ export interface ModelCommandPayloadMap {
   };
   SAVE_CONTEXT_RESULT: {
     saveResult: SaveContextResultPayload;
+  };
+  SAVE_MEMORY: {
+    ok: boolean;
+    message: string;
+  };
+  GET_MEMORY: {
+    memory: string[];
+    user: string[];
+    memoryChars: number;
+    memoryLimit: number;
+    userChars: number;
+    userLimit: number;
   };
 }
 

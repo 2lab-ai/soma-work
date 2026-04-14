@@ -48,6 +48,8 @@ export const OutputFlag = {
   SYSTEM: 1 << 18,
   /** Raw model response data (debug) */
   RAW_DATA: 1 << 19,
+  /** Skill invocation announcement (shown even in minimal) */
+  SKILL_INVOCATION: 1 << 20,
 } as const;
 
 export type OutputFlagValue = (typeof OutputFlag)[keyof typeof OutputFlag];
@@ -59,9 +61,14 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 /** Flags that are ALWAYS active regardless of log level */
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions + long-running status + task progress */
+/** MINIMAL — final result + essential interactions + long-running status + task progress + skill announcements */
 export const LOG_MINIMAL =
-  ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.MCP_PROGRESS | OutputFlag.TODO_UPDATE | OutputFlag.TODO_REACTION;
+  ALWAYS |
+  OutputFlag.FINAL_RESULT |
+  OutputFlag.MCP_PROGRESS |
+  OutputFlag.TODO_UPDATE |
+  OutputFlag.TODO_REACTION |
+  OutputFlag.SKILL_INVOCATION;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
 export const LOG_COMPACT =
