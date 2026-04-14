@@ -378,6 +378,10 @@ export class ToolFormatter {
       }
       default:
         if (toolName.startsWith('mcp__')) {
+          // SAVE_MEMORY meme: "X will remember that" (Telltale Games style)
+          if (toolName === 'mcp__model-command__run' && input?.commandId === 'SAVE_MEMORY') {
+            return "🧠 *'제갈공명'은(는) 이것을 기억할 것입니다.*";
+          }
           const parts = toolName.split('__');
           const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
           const params = ToolFormatter.formatCompactParams(input);

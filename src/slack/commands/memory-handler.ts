@@ -1,8 +1,4 @@
-import {
-  clearAllMemory,
-  formatMemoryForDisplay,
-  removeMemoryByIndex,
-} from '../../user-memory-store';
+import { clearAllMemory, formatMemoryForDisplay, removeMemoryByIndex } from '../../user-memory-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 

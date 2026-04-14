@@ -6,6 +6,7 @@ import type {
   SessionResourceType,
   SessionResourceUpdateRequest,
 } from '../types';
+import { addMemory, loadMemory, removeMemory, replaceMemory } from '../user-memory-store';
 import type {
   ContinueSessionParams,
   ModelCommandContext,
@@ -15,12 +16,6 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
-import {
-  addMemory,
-  loadMemory,
-  removeMemory,
-  replaceMemory,
-} from '../user-memory-store';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
   issue: 'issues',
@@ -515,7 +510,10 @@ export function runModelCommand(
       result = addMemory(context.user, params.target, params.content);
     } else if (params.action === 'replace') {
       if (!params.old_text || !params.content) {
-        return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'old_text and content are required for replace' });
+        return toRunError('SAVE_MEMORY', {
+          code: 'INVALID_ARGS',
+          message: 'old_text and content are required for replace',
+        });
       }
       result = replaceMemory(context.user, params.target, params.old_text, params.content);
     } else if (params.action === 'remove') {

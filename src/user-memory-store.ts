@@ -255,12 +255,16 @@ export function formatMemoryForDisplay(userId: string): string {
 
   if (mem.entries.length > 0) {
     const list = mem.entries.map((e, i) => `${i + 1}. ${e}`).join('\n');
-    parts.push(`📝 *MEMORY* (${mem.entries.length} entries, ${mem.percentUsed}% -- ${mem.totalChars}/${mem.charLimit} chars)\n${list}`);
+    parts.push(
+      `📝 *MEMORY* (${mem.entries.length} entries, ${mem.percentUsed}% -- ${mem.totalChars}/${mem.charLimit} chars)\n${list}`,
+    );
   }
 
   if (usr.entries.length > 0) {
     const list = usr.entries.map((e, i) => `${i + 1}. ${e}`).join('\n');
-    parts.push(`👤 *USER PROFILE* (${usr.entries.length} entries, ${usr.percentUsed}% -- ${usr.totalChars}/${usr.charLimit} chars)\n${list}`);
+    parts.push(
+      `👤 *USER PROFILE* (${usr.entries.length} entries, ${usr.percentUsed}% -- ${usr.totalChars}/${usr.charLimit} chars)\n${list}`,
+    );
   }
 
   return parts.join('\n\n');
