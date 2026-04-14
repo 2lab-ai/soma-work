@@ -66,7 +66,9 @@ export class PromptHandler implements CommandHandler {
 
     if (truncated) {
       // Upload full prompt as a text file instead of truncating
-      await this.deps.slackApi.postSystemMessage(channel, `${header}\n\n📎 Full prompt attached as file.`, { threadTs });
+      await this.deps.slackApi.postSystemMessage(channel, `${header}\n\n📎 Full prompt attached as file.`, {
+        threadTs,
+      });
 
       try {
         await this.deps.slackApi.getClient().filesUploadV2({
@@ -78,7 +80,7 @@ export class PromptHandler implements CommandHandler {
         });
       } catch (err) {
         this.logger.error('Failed to upload prompt file, falling back to truncated display', { error: err });
-        const displayPrompt = prompt.slice(0, MAX_DISPLAY) + '\n\n... (truncated)';
+        const displayPrompt = `${prompt.slice(0, MAX_DISPLAY)}\n\n... (truncated)`;
         await this.deps.slackApi.postSystemMessage(
           channel,
           `⚠️ File upload failed. Showing first ${MAX_DISPLAY.toLocaleString()} chars.\n\n\`\`\`\n${displayPrompt}\n\`\`\``,
