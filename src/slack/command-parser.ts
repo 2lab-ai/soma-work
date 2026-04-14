@@ -6,6 +6,7 @@ export type CctAction = { action: 'status' } | { action: 'set'; target: string }
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
+export type MemoryAction = { action: 'show' } | { action: 'clear'; index?: number };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
@@ -185,6 +186,31 @@ export class CommandParser {
     if (enableActions.includes(action)) return 'on';
     if (disableActions.includes(action)) return 'off';
     return 'status';
+  }
+
+  /**
+   * Check if text is a memory command
+   */
+  static isMemoryCommand(text: string): boolean {
+    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?))?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse memory command
+   */
+  static parseMemoryCommand(text: string): MemoryAction {
+    const trimmed = text.trim();
+
+    if (/^\/?memory\s+clear\s+(\d+)$/i.test(trimmed)) {
+      const match = trimmed.match(/^\/?memory\s+clear\s+(\d+)$/i);
+      return { action: 'clear', index: parseInt(match![1], 10) };
+    }
+
+    if (/^\/?memory\s+clear$/i.test(trimmed)) {
+      return { action: 'clear' };
+    }
+
+    return { action: 'show' };
   }
 
   /**
@@ -681,6 +707,8 @@ export class CommandParser {
     'servers',
     // Permissions
     'bypass',
+    // Memory
+    'memory',
     // Persona & Model & Verbosity
     'persona',
     'model',
