@@ -938,7 +938,6 @@ export class SessionRegistry {
       // Clear error retry state so fresh session doesn't inherit exhausted budgets
       session.errorRetryCount = 0;
       session.fileAccessRetryCount = 0;
-      session.blocksTooLongRetryCount = 0;
       session.lastErrorContext = undefined;
       // Cancel any pending file-access retry timer (Issue #215)
       if (session.pendingRetryTimer) {
@@ -1003,7 +1002,6 @@ export class SessionRegistry {
     // Clear error retry state (including file-access-specific counters)
     session.errorRetryCount = 0;
     session.fileAccessRetryCount = 0;
-    session.blocksTooLongRetryCount = 0;
     session.lastErrorContext = undefined;
     // Cancel any pending file-access retry timer (Issue #215)
     if (session.pendingRetryTimer) {
