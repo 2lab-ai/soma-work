@@ -71,8 +71,8 @@ export class A2tService {
   private config: Required<A2tConfig>;
   private rl: readline.Interface | null = null;
   private pendingResponse: {
-    resolve: (value: any) => void;
-    reject: (reason: any) => void;
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
 
@@ -127,17 +127,17 @@ export class A2tService {
       throw new Error(this.getStatusMessage());
     }
 
-    const response = await this.sendRequest({ type: 'transcribe', path: audioPath });
+    const response = (await this.sendRequest({ type: 'transcribe', path: audioPath })) as Record<string, unknown>;
 
     if (response.type === 'error') {
-      throw new Error(response.error);
+      throw new Error(String(response.error));
     }
 
     return {
-      text: response.text || '',
-      language: response.language || 'unknown',
-      languageProbability: response.language_probability ?? 0,
-      duration: response.duration ?? 0,
+      text: (response.text as string) || '',
+      language: (response.language as string) || 'unknown',
+      languageProbability: (response.language_probability as number) ?? 0,
+      duration: (response.duration as number) ?? 0,
     };
   }
 
@@ -287,7 +287,7 @@ export class A2tService {
 
   // ── Internal ───────────────────────────────────────────
 
-  private sendRequest(request: object): Promise<any> {
+  private sendRequest(request: object): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (this.pendingResponse) {
         reject(new Error('A2T service is busy with another request'));
