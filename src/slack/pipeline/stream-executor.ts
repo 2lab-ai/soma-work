@@ -457,6 +457,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
+        botUserId: await this.deps.slackApi.getBotUserId(),
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
