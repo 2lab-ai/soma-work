@@ -326,6 +326,9 @@ export interface ConversationSession {
   // Isolated from errorRetryCount so that prior rate-limit or transient errors
   // don't consume file-access retry budget (and vice versa).
   fileAccessRetryCount?: number;
+  // Separate retry counter for blocks-too-long errors.
+  // Isolated so that other error types don't consume this budget.
+  blocksTooLongRetryCount?: number;
   // Error context for intelligent retry: when a non-fatal error occurs (e.g., file access blocked),
   // the error message is stored here so the retry prompt can include it, allowing the model
   // to adapt its approach instead of repeating the same failed action.

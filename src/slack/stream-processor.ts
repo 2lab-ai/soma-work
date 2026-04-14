@@ -1224,7 +1224,8 @@ export class StreamProcessor {
         slackError === 'invalid_blocks' ||
         slackError === 'invalid_attachments' ||
         slackError === 'too_many_blocks' ||
-        slackError === 'invalid_blocks_format';
+        slackError === 'invalid_blocks_format' ||
+        slackError === 'msg_blocks_too_long';
 
       if (isBlockKitError) {
         this.logger.warn('Block Kit rendering failed, falling back to plain text', {

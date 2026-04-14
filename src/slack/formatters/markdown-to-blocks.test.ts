@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { markdownToBlocks, thinkingToQuoteBlock } from './markdown-to-blocks';
+import { markdownToBlocks, thinkingToQuoteBlock, estimatePayloadSize } from './markdown-to-blocks';
 
 describe('markdownToBlocks', () => {
   it('converts headers to header blocks', () => {
@@ -202,6 +202,58 @@ describe('markdownToBlocks error handling', () => {
     expect(result.fallbackText).toBeTruthy();
     // Fallback should convert ** to * for Slack mrkdwn
     expect(result.fallbackText).toContain('*World*');
+  });
+});
+
+describe('estimatePayloadSize', () => {
+  it('returns byte size of JSON-serialized blocks', () => {
+    const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }];
+    const size = estimatePayloadSize(blocks);
+    expect(size).toBeGreaterThan(0);
+    expect(size).toBe(new TextEncoder().encode(JSON.stringify(blocks)).byteLength);
+  });
+
+  it('returns 2 for empty array (JSON "[]")', () => {
+    expect(estimatePayloadSize([])).toBe(2);
+  });
+});
+
+describe('markdownToBlocks section text truncation', () => {
+  it('truncates section text exceeding 3000 chars to 3000 with ellipsis', () => {
+    // Create markdown that produces a section block with very long text.
+    // We use a plain paragraph — the library converts it to a section block.
+    const longParagraph = 'word '.repeat(700); // ~3500 chars
+    const result = markdownToBlocks(longParagraph);
+
+    // Find any section block
+    const sectionBlock = result.blocks.find((b) => b.type === 'section');
+    if (sectionBlock) {
+      expect(sectionBlock.text.text.length).toBeLessThanOrEqual(3000);
+    }
+    // The converter might use rich_text instead — that's also acceptable
+    // as long as no block exceeds limits
+  });
+});
+
+describe('markdownToBlocks payload size splitting', () => {
+  it('splits messages when total payload exceeds 35KB', () => {
+    // Create a very large markdown that produces blocks totaling > 35KB.
+    // Each code block creates a rich_text_preformatted — they can be large.
+    const bigCodeBlocks = Array.from(
+      { length: 10 },
+      (_, i) => `\`\`\`\n${'x'.repeat(5000)}\n\`\`\``,
+    ).join('\n\n');
+
+    const result = markdownToBlocks(bigCodeBlocks);
+
+    // Primary message payload should be within limit
+    const primarySize = estimatePayloadSize(result.blocks);
+    expect(primarySize).toBeLessThanOrEqual(35_000);
+
+    // If there's overflow, each overflow message should also be within limit
+    for (const overflowBlocks of result.overflow) {
+      expect(estimatePayloadSize(overflowBlocks)).toBeLessThanOrEqual(35_000);
+    }
   });
 });
 

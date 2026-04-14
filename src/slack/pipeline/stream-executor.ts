@@ -824,6 +824,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (!hasSdkError) {
         session.errorRetryCount = 0;
         session.fileAccessRetryCount = 0;
+        session.blocksTooLongRetryCount = 0;
         session.lastErrorContext = undefined;
       }
 
@@ -971,6 +972,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private static readonly MAX_ERROR_RETRIES = 3;
   /** Delay in ms before auto-retry on recoverable errors */
   private static readonly ERROR_RETRY_DELAY_MS = 30_000;
+  /** Delay in ms before auto-retry on blocks-too-long errors (fast retry since model just needs to shorten) */
+  private static readonly BLOCKS_TOO_LONG_RETRY_DELAY_MS = 3_000;
 
   /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
@@ -1046,6 +1049,36 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey,
             errorType: error.name || 'unknown',
           });
+        }
+      } else if (this.isBlocksTooLongError(error)) {
+        // Blocks too long: preserve session and inject error context so the model
+        // can generate a shorter response on retry.
+        const errorContext =
+          'Slack 메시지 블록 크기 제한을 초과했습니다 (msg_blocks_too_long). ' +
+          '응답을 더 짧고 간결하게 작성해주세요. 긴 코드 블록은 핵심 부분만 포함하고, ' +
+          '불필요한 설명은 생략하세요. 최대 20블록 이내로 줄여주세요.';
+
+        session.lastErrorContext = errorContext;
+
+        this.logger.warn('Blocks too long - session preserved with error context for shorter retry', {
+          sessionKey,
+          errorMessage: error.message,
+        });
+
+        // Reuse fileAccessRetryCount pattern with isolated counter
+        const retryCount = session.blocksTooLongRetryCount ?? 0;
+        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+          session.blocksTooLongRetryCount = retryCount + 1;
+          retryAfterMs = StreamExecutor.BLOCKS_TOO_LONG_RETRY_DELAY_MS;
+          this.logger.info('Scheduling blocks-too-long retry with error context', {
+            sessionKey,
+            attempt: retryCount + 1,
+            delayMs: retryAfterMs,
+          });
+        } else {
+          this.logger.warn('Blocks-too-long retry budget exhausted', { sessionKey, retryCount });
+          session.blocksTooLongRetryCount = 0;
+          session.lastErrorContext = undefined;
         }
       } else if (this.isFileAccessBlockedError(error)) {
         // File access blocked: preserve session and inject error context so the
@@ -1136,9 +1169,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
       const statusInfo = await statusPromise;
       const retryAttempt = retryAfterMs
-        ? this.isFileAccessBlockedError(error)
-          ? (session.fileAccessRetryCount ?? 0)
-          : (session.errorRetryCount ?? 0)
+        ? this.isBlocksTooLongError(error)
+          ? (session.blocksTooLongRetryCount ?? 0)
+          : this.isFileAccessBlockedError(error)
+            ? (session.fileAccessRetryCount ?? 0)
+            : (session.errorRetryCount ?? 0)
         : undefined;
       const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
       await say({
@@ -1364,6 +1399,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Instead of crashing, we preserve the session and inject error context so the
    * model knows which file/resource is inaccessible.
    */
+  /**
+   * Detect Slack msg_blocks_too_long errors.
+   * Triggered when the serialized blocks payload exceeds Slack's size limit.
+   */
+  private isBlocksTooLongError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    const slackErrorCode = String(error?.data?.error || '').toLowerCase();
+    return slackErrorCode === 'msg_blocks_too_long' || message.includes('msg_blocks_too_long');
+  }
+
   private isFileAccessBlockedError(error: any): boolean {
     const message = String(error?.message || '').toLowerCase();
     const stderr = String(error?.stderrContent || '').toLowerCase();
@@ -1491,6 +1536,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       'no_permission',
       'not_in_channel',
       'msg_too_long',
+      'msg_blocks_too_long',
       'invalid_arguments',
       'missing_scope',
       'token_revoked',
@@ -1532,6 +1578,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       } else {
         lines.push(`> _다음 메시지부터 새 세션으로 시작됩니다._`);
+      }
+    } else if (this.isBlocksTooLongError(error)) {
+      const willRetry = retryAttempt !== undefined && retryAttempt > 0;
+      lines.push(`> *Session:* ✅ 유지됨${willRetry ? ' - 짧은 응답으로 자동 재시도합니다.' : ''}`);
+      lines.push(`> *원인:* 응답이 Slack 메시지 블록 크기 제한을 초과했습니다.`);
+      if (willRetry) {
+        lines.push(`> _모델에게 더 짧은 응답을 요청하여 재시도합니다._`);
+      } else {
+        lines.push(`> _자동 재시도 횟수를 초과했습니다. 메시지를 보내면 계속할 수 있습니다._`);
       }
     } else if (this.isFileAccessBlockedError(error)) {
       const blockedPath = this.extractBlockedPath(error);
