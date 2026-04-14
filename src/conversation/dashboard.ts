@@ -23,6 +23,7 @@ import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
+import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
@@ -305,6 +306,56 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   };
 }
 
+// Dashboard archive display window: 48 hours
+const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Convert an ArchivedSession to KanbanSession for the closed column.
+ * Trace: Scenario 3, Section 3a transformation
+ */
+export function archivedToKanban(archived: ArchivedSession): KanbanSession {
+  return {
+    key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
+    title: archived.title || 'Untitled',
+    ownerName: archived.ownerName || archived.ownerId || 'unknown',
+    ownerId: archived.ownerId || '',
+    workflow: archived.workflow || 'default',
+    model: archived.model || 'unknown',
+    channelId: archived.channelId,
+    threadTs: archived.threadTs,
+    activityState: 'idle', // Archived sessions are not active
+    sessionState: archived.archiveReason === 'sleep_expired' ? 'SLEEPING' : 'TERMINATED',
+    terminated: true,
+    conversationId: archived.conversationId,
+    lastActivity: archived.lastActivity,
+    issueUrl: archived.links?.issue?.url,
+    issueLabel: archived.links?.issue?.label,
+    issueTitle: archived.links?.issue?.title,
+    prUrl: archived.links?.pr?.url,
+    prLabel: archived.links?.pr?.label,
+    prTitle: archived.links?.pr?.title,
+    prStatus: archived.links?.pr?.status,
+    mergeStats: archived.mergeStats
+      ? {
+          totalLinesAdded: archived.mergeStats.totalLinesAdded,
+          totalLinesDeleted: archived.mergeStats.totalLinesDeleted,
+        }
+      : undefined,
+    tokenUsage: archived.usage
+      ? {
+          totalInputTokens: archived.usage.totalInputTokens || 0,
+          totalOutputTokens: archived.usage.totalOutputTokens || 0,
+          totalCostUsd: archived.usage.totalCostUsd || 0,
+          contextUsagePercent: 0, // No active context for archived sessions
+        }
+      : undefined,
+    slackThreadUrl:
+      archived.channelId && archived.threadTs
+        ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
+        : undefined,
+  };
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
@@ -316,8 +367,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
     const kanban = sessionToKanban(key, session);
 
-    // Closed: terminated or SLEEPING state
-    if (session.terminated === true || session.state === 'SLEEPING') {
+    // Closed: SLEEPING state (terminated sessions are handled via archive below)
+    if (session.state === 'SLEEPING') {
       board.closed.push(kanban);
     } else {
       switch (kanban.activityState) {
@@ -332,6 +383,64 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
           break;
       }
     }
+  }
+
+  // Add recently archived sessions to closed column (#401)
+  // Dedup: skip archives that overlap with a live session (same thread or same conversationId).
+  // This prevents ghost cards when:
+  //   - A bot-initiated thread terminates the source session (conversationId match)
+  //   - A user sends a message to a terminated thread, creating a new session (thread key match)
+  try {
+    const liveThreadKeys = new Set<string>();
+    const liveConversationIds = new Set<string>();
+    for (const [, s] of sessions.entries()) {
+      if (!s.sessionId) continue;
+      if (s.trashed === true) continue;
+      if (s.channelId && s.threadTs) liveThreadKeys.add(`${s.channelId}:${s.threadTs}`);
+      if (s.conversationId) liveConversationIds.add(s.conversationId);
+    }
+
+    const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
+    // Fix #438: Sort archives newest-first so the most recent interaction in a
+    // thread/conversation wins during dedup (older terminated duplicates are dropped)
+    const sortedArchives = [...archives].sort((a, b) => b.archivedAt - a.archivedAt);
+    const seenArchiveConversationIds = new Set<string>();
+    const seenArchiveThreadKeys = new Set<string>();
+    for (const archived of sortedArchives) {
+      // Fix #438: Skip archives without sessionId — these sessions were terminated
+      // before any Claude interaction (e.g., bot-thread migration source sessions)
+      if (!archived.sessionId) continue;
+      if (userId && archived.ownerId !== userId) continue;
+      // Skip if a live session exists in the same thread
+      if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
+        logger.debug('Skipping archive (thread overlap with live session)', { archivedKey: archived.sessionKey });
+        continue;
+      }
+      // Skip if a live session shares the same conversationId (bot-initiated migration)
+      if (archived.conversationId && liveConversationIds.has(archived.conversationId)) {
+        logger.debug('Skipping archive (conversationId overlap with live session)', {
+          archivedKey: archived.sessionKey,
+          conversationId: archived.conversationId,
+        });
+        continue;
+      }
+      // Fix #438: Archive-to-archive dedup — skip if we've already seen a newer archive
+      // with the same conversationId or thread key
+      if (archived.conversationId && seenArchiveConversationIds.has(archived.conversationId)) {
+        continue;
+      }
+      const archiveThreadKey =
+        archived.channelId && archived.threadTs ? `${archived.channelId}:${archived.threadTs}` : null;
+      if (archiveThreadKey && seenArchiveThreadKeys.has(archiveThreadKey)) {
+        continue;
+      }
+      // Track this archive for future dedup
+      if (archived.conversationId) seenArchiveConversationIds.add(archived.conversationId);
+      if (archiveThreadKey) seenArchiveThreadKeys.add(archiveThreadKey);
+      board.closed.push(archivedToKanban(archived));
+    }
+  } catch (err) {
+    logger.warn('Failed to load archived sessions for dashboard — closed column may be incomplete', err);
   }
 
   // Sort each column by lastActivity desc
@@ -509,12 +618,23 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
       }
     }
 
+    if (!ownerId) {
+      // No active session — broadcast only to admin clients so archived session
+      // updates (e.g., resummarize) still reach the admin dashboard without
+      // leaking to non-owner clients.
+      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
+    }
+
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
     for (const client of wsClients) {
-      // Only send to clients belonging to the session owner (or all if owner unknown)
-      if (ownerId && !client.isAdmin && client.userId && client.userId !== ownerId) continue;
+      if (!ownerId) {
+        // When owner is unknown, only admin clients receive the update
+        if (!client.isAdmin) continue;
+      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+        continue;
+      }
       try {
         client.send(payload);
       } catch {
@@ -2135,7 +2255,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <div class="kanban-col" id="col-closed">
         <div class="kanban-col-header">
           <span class="closed-dot"></span>
-          <h3>&#xC885;&#xB8CC;</h3>
+          <h3>&#xB3D9;&#xBA74;</h3>
           <span class="count" id="count-closed">0</span>
         </div>
         <div class="cards" id="cards-closed"></div>
@@ -2408,6 +2528,9 @@ async function refreshCsrfToken() {
 refreshCsrfToken();
 
 // ── Utility ──
+function decodeSlackEntities(s) {
+  return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
@@ -2620,7 +2743,10 @@ function renderCard(s, col) {
   } else if (col === 'waiting' || col === 'idle') {
     actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
   } else if (col === 'closed') {
-    actionBtn = '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>';
+    // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
+    actionBtn = s.terminated
+      ? '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>'
+      : '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
@@ -2671,8 +2797,8 @@ async function doAction(key, action) {
 // ── Answer choice from dashboard ──
 async function answerChoice(key, choiceId, label, question, btnEl) {
   try {
-    // Disable all choice buttons in the same card to prevent double-click
-    var card = btnEl.closest('.card');
+    // Disable all choice buttons in the same card or panel to prevent double-click
+    var card = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (card) {
       card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
     }
@@ -2709,7 +2835,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
   } catch (e) {
     console.error('Answer choice error', e);
     // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices');
+    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
     if (errCard) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
@@ -2943,9 +3069,15 @@ async function submitMultiChoice(key) {
     return;
   }
 
-  // Disable submit button
+  // Disable ALL interactive elements in the multi-choice form to prevent further clicks
   var btns = document.querySelectorAll('.mc-btn-submit');
   btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+  var mcForm = document.querySelector('.mc-form');
+  if (mcForm) {
+    mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
+    mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = true; });
+    mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+  }
 
   try {
     var mcHeaders = { 'Content-Type': 'application/json' };
@@ -2965,6 +3097,11 @@ async function submitMultiChoice(key) {
       var errMsg = errData.error || 'Failed (status ' + res.status + ')';
       alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
       btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+      if (mcForm) {
+        mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+        mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+        mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+      }
     } else {
       // Success — clear state; WebSocket will re-render
       delete _mcState[key];
@@ -2973,6 +3110,11 @@ async function submitMultiChoice(key) {
     console.error('submitMultiChoice error', e);
     alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
     btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
+    if (mcForm) {
+      mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
+      mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
+      mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+    }
   }
 }
 
@@ -3110,7 +3252,7 @@ function connectWs() {
           renderPanelTasks(msg.tasks);
         }
       } else if (msg.type === 'conversation_update') {
-        // If panel is open for this conversation, append the turn
+        // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
           if (msg.turn.role === 'user' && _lastSentContent && (Date.now() - _lastSentTime) < 10000
@@ -3121,7 +3263,14 @@ function connectWs() {
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
           } else {
-            appendTurnToPanel(msg.turn);
+            // Check if this turn already exists (e.g., summary update for existing assistant turn).
+            // If so, replace in-place instead of appending a duplicate.
+            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
+            if (existingTurn) {
+              updateTurnInPanel(existingTurn, msg.turn);
+            } else {
+              appendTurnToPanel(msg.turn);
+            }
           }
         }
       } else if (msg.type === 'session_action') {
@@ -3250,12 +3399,13 @@ function openPanel(sessionKey) {
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
+  var turnIdAttr = t.id ? ' data-turn-id="' + esc(t.id) + '"' : '';
   if (t.role === 'user') {
-    return '<div class="turn user">'
+    return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + '<div class="turn-content">' + esc((t.rawContent || '').slice(0, 500)) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
+      + '<div class="turn-content">' + esc(decodeSlackEntities((t.rawContent || '').slice(0, 500))) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
@@ -3275,7 +3425,7 @@ function renderTurn(t, _idx, _arr, convId) {
         + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
         + '</details>';
     }
-    return '<div class="turn assistant">'
+    return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
@@ -3290,6 +3440,19 @@ function appendTurnToPanel(turn) {
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
   attachRawToggleHandlers();
+}
+
+/** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
+function updateTurnInPanel(existingEl, turn) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderTurn(turn);
+  var newEl = tmp.firstElementChild;
+  if (newEl) {
+    existingEl.replaceWith(newEl);
+    attachRawToggleHandlers();
+  } else {
+    console.warn('updateTurnInPanel: no element for turn', turn.id);
+  }
 }
 
 var _rawLoadedCache = {};

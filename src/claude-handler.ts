@@ -13,7 +13,12 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
-import { isDangerousCommand, isSshCommand } from './dangerous-command-filter';
+import {
+  bypassBashPermissionDecision,
+  isCrossUserAccess,
+  isDangerousCommand,
+  isSshCommand,
+} from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -25,6 +30,7 @@ import {
   loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
@@ -557,7 +563,41 @@ export class ClaudeHandler {
         });
       }
 
-      // Dangerous command interceptor: escalate to Slack permission UI in bypass mode
+      // Cross-user directory isolation: deny Bash commands that access another user's
+      // /tmp/{userId}/ directory. Always enforced regardless of bypass mode.
+      preToolUseHooks.push({
+        matcher: 'Bash',
+        hooks: [
+          async (input: HookInput): Promise<HookJSONOutput> => {
+            const { tool_input } = input as { tool_input: unknown };
+            const toolRecord = tool_input as Record<string, unknown> | undefined;
+            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+            if (isCrossUserAccess(command, slackContext.user)) {
+              this.logger.warn('Cross-user directory access denied', {
+                command: command.substring(0, 100),
+                user: slackContext.user,
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+
+            return { continue: true };
+          },
+        ],
+      });
+
+      // Bypass mode Bash gate: explicitly approve non-dangerous commands, escalate dangerous ones.
+      // CRITICAL: Return 'allow' instead of { continue: true } for non-dangerous commands.
+      // When permissionPromptToolName is set (always in Slack context), { continue: true }
+      // defers to SDK's permission check which routes through the permission MCP tool,
+      // causing Slack permission prompts even in bypass mode. Explicit 'allow' makes the
+      // decision at hook level, preventing SDK from invoking permissionPromptToolName.
+      // See bypassBashPermissionDecision() for the extracted, testable decision logic.
       if (mcpConfig.userBypass) {
         preToolUseHooks.push({
           matcher: 'Bash',
@@ -567,20 +607,21 @@ export class ClaudeHandler {
               const toolRecord = tool_input as Record<string, unknown> | undefined;
               const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-              if (isDangerousCommand(command)) {
+              const decision = bypassBashPermissionDecision(command);
+
+              if (decision === 'ask') {
                 this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
                   command: command.substring(0, 100),
                   user: slackContext.user,
                 });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'ask',
-                  },
-                };
               }
 
-              return { continue: true };
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: decision,
+                },
+              };
             },
           ],
         });
@@ -652,6 +693,18 @@ export class ClaudeHandler {
       this.logger.debug('Using session effort', { effort: session.effort });
     }
 
+    // Set thinking config (adaptive reasoning toggle)
+    {
+      const thinkingEnabled =
+        session?.thinkingEnabled ??
+        (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : true);
+      if (!thinkingEnabled) {
+        options.thinking = { type: 'disabled' };
+        this.logger.debug('Thinking disabled for session');
+      }
+      // When enabled, don't set thinking — SDK defaults to adaptive for Opus 4.6+
+    }
+
     // Build system prompt with persona and workflow
     // Use session owner for user variable resolution (Co-Authored-By attribution)
     // Falls back to current user if no session exists yet
@@ -703,6 +756,14 @@ export class ClaudeHandler {
       }
       if (fs.existsSync(workingDirectory)) {
         options.cwd = workingDirectory;
+      }
+
+      // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.
+      // Without this, sibling directories (e.g., /tmp/{userId}/soma-work_xxx/) trigger
+      // permission prompts even in bypass mode, because SDK treats only cwd as allowed.
+      if (slackContext?.user && isSafePathSegment(slackContext.user)) {
+        const userRootDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+        options.additionalDirectories = [...(options.additionalDirectories || []), userRootDir];
       }
     }
 

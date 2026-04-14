@@ -11,6 +11,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { applyInstructionOperations } from './model-commands/catalog';
 import { normalizeTmpPath } from './path-utils';
+import { getArchiveStore } from './session-archive';
 import type {
   ActionPanelState,
   ActivityState,
@@ -87,6 +88,10 @@ interface SerializedSession {
   logVerbosity?: number;
   // Effort level for Claude thinking
   effort?: 'low' | 'medium' | 'high' | 'max';
+  // Extended thinking (adaptive reasoning) toggle
+  thinkingEnabled?: boolean;
+  // Thinking summary display toggle
+  showThinking?: boolean;
   // Action panel state
   actionPanel?: ActionPanelState;
   // Bot-initiated thread metadata
@@ -445,6 +450,14 @@ export class SessionRegistry {
 
     session.activityState = state;
     session.activityStateChangedAt = Date.now();
+    this.logger.debug('Activity state changed', { sessionKey, state });
+
+    // Notify dashboard WebSocket clients (was missing — caused stale dashboard state)
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.debug('Activity state change callback failed', { sessionKey, state, error: err });
+    }
 
     if (state === 'idle') {
       this.saveSessions();
@@ -1127,6 +1140,9 @@ export class SessionRegistry {
       .emitSessionClosed(session, sessionKey)
       .catch((err) => this.logger.debug('metrics emit failed', err));
 
+    // Archive session metadata to disk before deletion (#401)
+    getArchiveStore().archive(session, sessionKey, 'terminated');
+
     this.cleanupSourceWorkingDirs(session);
     this.clearOnIdleCallbacks(sessionKey); // Clean up any pending cron callbacks
     this.sessions.delete(sessionKey);
@@ -1168,6 +1184,9 @@ export class SessionRegistry {
               this.logger.error('Failed to send sleep expiry message', error);
             }
           }
+          // Archive session metadata to disk before deletion (#401)
+          getArchiveStore().archive(session, key, 'sleep_expired');
+
           this.cleanupSourceWorkingDirs(session);
           this.clearOnIdleCallbacks(key); // Clean up any pending cron callbacks
           this.sessions.delete(key);
@@ -1306,6 +1325,8 @@ export class SessionRegistry {
             activityState: session.activityState,
             logVerbosity: session.logVerbosity,
             effort: session.effort,
+            thinkingEnabled: session.thinkingEnabled,
+            showThinking: session.showThinking,
             actionPanel: session.actionPanel ? { ...session.actionPanel } : undefined,
             threadModel: session.threadModel,
             threadRootTs: session.threadRootTs,
@@ -1329,6 +1350,45 @@ export class SessionRegistry {
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
     } catch (error) {
       this.logger.error('Failed to save sessions', error);
+    }
+  }
+
+  /**
+   * Archive a serialized session during loadSessions() when it's being discarded (#401).
+   * Creates a minimal ConversationSession from serialized data to pass to the archive store.
+   */
+  private archiveSerializedOnLoad(
+    serialized: SerializedSession,
+    lastActivity: Date,
+    reason: 'terminated' | 'sleep_expired',
+  ): void {
+    try {
+      // Skip if already archived (prevents duplicates on repeated restarts)
+      if (getArchiveStore().exists(serialized.key)) return;
+
+      const session: ConversationSession = {
+        ownerId: serialized.ownerId || serialized.userId,
+        ownerName: serialized.ownerName,
+        userId: serialized.userId,
+        channelId: serialized.channelId,
+        threadTs: serialized.threadTs,
+        sessionId: serialized.sessionId,
+        isActive: false,
+        lastActivity,
+        title: serialized.title,
+        model: serialized.model,
+        state: serialized.state || 'MAIN',
+        workflow: serialized.workflow || 'default',
+        links: serialized.links,
+        linkHistory: serialized.linkHistory,
+        conversationId: serialized.conversationId,
+        mergeStats: serialized.mergeStats,
+        instructions: serialized.instructions,
+        activityState: serialized.activityState || 'idle',
+      };
+      getArchiveStore().archive(session, serialized.key, reason);
+    } catch (err) {
+      this.logger.debug('Failed to archive session during load', { key: serialized.key, error: err });
     }
   }
 
@@ -1358,7 +1418,8 @@ export class SessionRegistry {
         if (serialized.state === 'SLEEPING') {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1;
           if (sleepAge >= MAX_SLEEP_DURATION) {
-            // Cleanup sourceWorkingDirs before discarding expired session
+            // Archive expired session before discarding (#401)
+            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -1366,7 +1427,8 @@ export class SessionRegistry {
           // For active sessions: check against 24h timeout
           const sessionAge = now - lastActivity.getTime();
           if (sessionAge >= maxAge) {
-            // Cleanup sourceWorkingDirs before discarding expired session
+            // Archive expired session before discarding (#401)
+            this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
@@ -1393,6 +1455,8 @@ export class SessionRegistry {
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
           effort: serialized.effort,
+          thinkingEnabled: serialized.thinkingEnabled,
+          showThinking: serialized.showThinking,
           // Clear stale messageTs/renderKey on restore — the Slack message may have been
           // deleted while the service was down, causing endless `message_not_found` errors
           // when ThreadSurface tries to chat.update a ghost message.
@@ -1494,7 +1558,6 @@ export class SessionRegistry {
         if (sourceConvId) {
           session.conversationId = sourceConvId;
           count++;
-          continue;
         }
       }
     }

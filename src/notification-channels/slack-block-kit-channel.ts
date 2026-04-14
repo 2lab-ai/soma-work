@@ -90,10 +90,13 @@ export class SlackBlockKitChannel implements NotificationChannel {
       },
     ];
 
-    // context1: persona | model | startedAt
+    // context1: persona | model | effort | startedAt
     const identParts: string[] = [];
     if (event.persona) identParts.push(`\`${event.persona}\``);
-    if (event.model) identParts.push(`\`${event.model}\``);
+    if (event.model) {
+      const modelStr = event.effort ? `${event.model} | ${event.effort}` : event.model;
+      identParts.push(`\`${modelStr}\``);
+    }
     if (event.startedAt) identParts.push(this.formatClock(event.startedAt));
     if (identParts.length > 0) {
       blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: identParts.join(' | ') }] });
@@ -153,7 +156,10 @@ export class SlackBlockKitChannel implements NotificationChannel {
     ];
 
     const parts: string[] = [];
-    if (event.model) parts.push(`\`${event.model}\``);
+    if (event.model) {
+      const modelStr = event.effort ? `${event.model} | ${event.effort}` : event.model;
+      parts.push(`\`${modelStr}\``);
+    }
     if (typeof event.contextUsagePercent === 'number') {
       parts.push(`Ctx ${event.contextUsagePercent.toFixed(1)}%`);
     }
@@ -173,7 +179,10 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
   private buildMinimalBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
     const parts: string[] = [`${emoji} ${label}`];
-    if (event.model) parts.push(event.model);
+    if (event.model) {
+      const modelStr = event.effort ? `${event.model} | ${event.effort}` : event.model;
+      parts.push(modelStr);
+    }
     if (typeof event.contextUsagePercent === 'number') parts.push(`${event.contextUsagePercent.toFixed(1)}%`);
     if (event.durationMs) parts.push(this.formatElapsed(event.durationMs));
 

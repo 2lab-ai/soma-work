@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import fetch from 'node-fetch';
 import * as os from 'os';
 import * as path from 'path';
+import { getA2tService } from './a2t/a2t-service';
 import { config } from './config';
 import { Logger } from './logger';
 
@@ -38,10 +39,9 @@ export class FileHandler {
   }
 
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
-    // Media files (video/audio) only need metadata — skip download entirely.
-    // This ensures large media files are still acknowledged instead of silently dropped.
-    if (this.isVideoFile(file.mimetype, file.name) || this.isAudioFile(file.mimetype, file.name)) {
-      this.logger.info('Media file detected, skipping download (metadata only)', {
+    // Video files: metadata only (no transcription support).
+    if (this.isVideoFile(file.mimetype, file.name)) {
+      this.logger.info('Video file detected, skipping download (metadata only)', {
         name: file.name,
         mimetype: file.mimetype,
       });
@@ -51,10 +51,36 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: false,
         isText: false,
-        isVideo: this.isVideoFile(file.mimetype, file.name),
-        isAudio: this.isAudioFile(file.mimetype, file.name),
+        isVideo: true,
+        isAudio: false,
         size: file.size || 0,
       };
+    }
+
+    // Audio files: download if A2T service is available for transcription.
+    // Falls back to metadata-only when A2T is not ready.
+    if (this.isAudioFile(file.mimetype, file.name)) {
+      const a2t = getA2tService();
+      if (!a2t?.isReady()) {
+        this.logger.info('Audio file detected, A2T not available — metadata only', {
+          name: file.name,
+          a2tStatus: a2t?.getStatusMessage() || 'not initialized',
+        });
+        return {
+          path: '',
+          name: file.name,
+          mimetype: file.mimetype,
+          isImage: false,
+          isText: false,
+          isVideo: false,
+          isAudio: true,
+          size: file.size || 0,
+        };
+      }
+      // A2T ready — fall through to download the audio file
+      this.logger.info('Audio file detected, A2T available — downloading for transcription', {
+        name: file.name,
+      });
     }
 
     // Check file size limit (50MB)
@@ -275,13 +301,42 @@ export class FileHandler {
           prompt += `Size: ${file.size} bytes\n`;
           prompt += `Path: ${file.path}\n`;
           prompt += `Note: This is an image file. Use the Read tool to view it (Claude Code supports reading images natively).\n`;
-        } else if (file.isVideo || file.isAudio) {
-          // Same structural prevention as images: omit path to prevent AI from attempting Read on binary media.
-          const mediaCategory = file.isVideo ? 'video' : 'audio';
-          prompt += `\n## Media: ${file.name}\n`;
+        } else if (file.isVideo) {
+          prompt += `\n## Video: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;
           prompt += `Size: ${file.size} bytes\n`;
-          prompt += `Note: This is a ${mediaCategory} file. The file path is intentionally withheld. Acknowledge the file by name and metadata.\n`;
+          prompt += `Note: This is a video file. The file path is intentionally withheld. Acknowledge the file by name and metadata.\n`;
+        } else if (file.isAudio) {
+          prompt += `\n## Audio: ${file.name}\n`;
+          prompt += `File type: ${file.mimetype}\n`;
+          prompt += `Size: ${file.size} bytes\n`;
+
+          // Attempt A2T transcription if file was downloaded (has path)
+          if (file.path) {
+            const a2t = getA2tService();
+            if (a2t?.isReady()) {
+              try {
+                const result = await a2t.transcribe(file.path);
+                prompt += `Language: ${result.language} (${(result.languageProbability * 100).toFixed(1)}%)\n`;
+                prompt += `Duration: ${result.duration.toFixed(1)}s\n`;
+                prompt += `Transcription:\n\`\`\`\n${result.text}\n\`\`\`\n`;
+                this.logger.info('Audio transcribed successfully', {
+                  name: file.name,
+                  language: result.language,
+                  duration: result.duration,
+                  textLength: result.text.length,
+                });
+              } catch (error) {
+                this.logger.error('Audio transcription failed', { name: file.name, error });
+                prompt += `Note: Transcription failed: ${(error as Error).message}\n`;
+              }
+            } else {
+              prompt += `Note: A2T service not available — ${a2t?.getStatusMessage() || 'not initialized'}. Voice content could not be transcribed.\n`;
+            }
+          } else {
+            const a2t = getA2tService();
+            prompt += `Note: This is an audio file. ${a2t ? a2t.getStatusMessage() : 'A2T service not loaded — voice transcription unavailable.'}\n`;
+          }
         } else if (file.isText) {
           prompt += `\n## File: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;

@@ -12,6 +12,12 @@ vi.mock('./user-settings-store', () => ({
 vi.mock('./env-paths', () => ({
   SYSTEM_PROMPT_FILE: '/tmp/test.system.prompt',
   CONFIG_FILE: '/tmp/prompt-builder-test-nonexistent/config.json',
+  DATA_DIR: '/tmp/prompt-builder-test-data',
+}));
+
+// Mock user-memory-store to avoid filesystem access in prompt-builder tests
+vi.mock('./user-memory-store', () => ({
+  formatMemoryForPrompt: vi.fn().mockReturnValue(''),
 }));
 
 import { PromptBuilder } from './prompt-builder';
@@ -55,9 +61,9 @@ describe('PromptBuilder', () => {
 
       expect(prompt).toBeDefined();
       expect(typeof prompt).toBe('string');
-      expect(prompt).toContain('CI 체크');
-      expect(prompt).toContain('1분');
-      expect(prompt).toContain('머지 체크');
+      expect(prompt).toContain('CI check');
+      expect(prompt).toContain('1 minute');
+      expect(prompt).toContain('merge check');
       expect(prompt).toContain('AS-IS');
       expect(prompt).toContain('TO-BE');
       expect(prompt).toContain('CONTINUE_SESSION');

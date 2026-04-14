@@ -8,6 +8,7 @@ import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
+import { EmailHandler } from './email-handler';
 import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
@@ -15,6 +16,7 @@ import { LinkHandler } from './link-handler';
 import { LlmChatHandler } from './llm-chat-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
+import { MemoryHandler } from './memory-handler';
 import { ModelHandler } from './model-handler';
 import { NewHandler } from './new-handler';
 import { NotifyHandler } from './notify-handler';
@@ -53,7 +55,9 @@ export class CommandRouter {
       new PluginsHandler(deps),
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
+      new EmailHandler(),
       new PersonaHandler(),
+      new MemoryHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
       new NotifyHandler(),

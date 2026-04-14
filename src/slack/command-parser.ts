@@ -6,6 +6,7 @@ export type CctAction = { action: 'status' } | { action: 'set'; target: string }
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
+export type MemoryAction = { action: 'show' } | { action: 'clear'; index?: number };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
@@ -21,7 +22,9 @@ export type SessionCommandAction =
   | { type: 'info' }
   | { type: 'model'; action: 'status' | 'set'; model?: string }
   | { type: 'verbosity'; action: 'status' | 'set'; level?: string }
-  | { type: 'effort'; action: 'status' | 'set'; level?: string };
+  | { type: 'effort'; action: 'status' | 'set'; level?: string }
+  | { type: 'thinking'; action: 'status' | 'set'; value?: string }
+  | { type: 'thinking_summary'; action: 'status' | 'set'; value?: string };
 
 export type MarketplaceAction =
   | { action: 'list' }
@@ -35,6 +38,8 @@ export type PluginsAction =
   | { action: 'update' }
   | { action: 'rollback'; pluginRef: string }
   | { action: 'backups'; pluginRef: string };
+
+export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
 
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
@@ -181,6 +186,31 @@ export class CommandParser {
     if (enableActions.includes(action)) return 'on';
     if (disableActions.includes(action)) return 'off';
     return 'status';
+  }
+
+  /**
+   * Check if text is a memory command
+   */
+  static isMemoryCommand(text: string): boolean {
+    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?))?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse memory command
+   */
+  static parseMemoryCommand(text: string): MemoryAction {
+    const trimmed = text.trim();
+
+    if (/^\/?memory\s+clear\s+(\d+)$/i.test(trimmed)) {
+      const match = trimmed.match(/^\/?memory\s+clear\s+(\d+)$/i);
+      return { action: 'clear', index: parseInt(match![1], 10) };
+    }
+
+    if (/^\/?memory\s+clear$/i.test(trimmed)) {
+      return { action: 'clear' };
+    }
+
+    return { action: 'show' };
   }
 
   /**
@@ -432,6 +462,38 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an email command (set email / show email)
+   */
+  static isEmailCommand(text: string): boolean {
+    return /^\/?(?:set|show)\s+email\b/i.test(text.trim());
+  }
+
+  /**
+   * Parse email command
+   */
+  static parseEmailCommand(text: string): EmailAction {
+    const trimmed = text.trim();
+
+    if (/^\/?show\s+email\s*$/i.test(trimmed)) {
+      return { action: 'status' };
+    }
+
+    const setMatch = trimmed.match(/^\/?set\s+email\s+(\S+)\s*$/i);
+    if (setMatch) {
+      // Strip Slack's mailto auto-link: <mailto:x@y|x@y> → x@y
+      let email = setMatch[1];
+      const mailtoMatch = email.match(/^<mailto:[^|]+\|([^>]+)>$/);
+      if (mailtoMatch) {
+        email = mailtoMatch[1];
+      }
+      return { action: 'set', email };
+    }
+
+    // "set email" with no argument → show status
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
@@ -577,7 +639,7 @@ export class CommandParser {
    * Matches: $, $model, $model opus, $verbosity, $verbosity compact
    */
   static isSessionCommand(text: string): boolean {
-    return /^\$(?:model|verbosity|effort)?(?:\s+\S+)?$/i.test(text.trim());
+    return /^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/i.test(text.trim());
   }
 
   /**
@@ -607,6 +669,21 @@ export class CommandParser {
         : { type: 'effort', action: 'status' };
     }
 
+    // $thinking_summary must be checked before $thinking (longer prefix first)
+    const thinkingSummaryMatch = trimmed.match(/^\$thinking_summary(?:\s+(\S+))?$/i);
+    if (thinkingSummaryMatch) {
+      return thinkingSummaryMatch[1]
+        ? { type: 'thinking_summary', action: 'set', value: thinkingSummaryMatch[1] }
+        : { type: 'thinking_summary', action: 'status' };
+    }
+
+    const thinkingMatch = trimmed.match(/^\$thinking(?:\s+(\S+))?$/i);
+    if (thinkingMatch) {
+      return thinkingMatch[1]
+        ? { type: 'thinking', action: 'set', value: thinkingMatch[1] }
+        : { type: 'thinking', action: 'status' };
+    }
+
     return { type: 'info' };
   }
 
@@ -630,6 +707,8 @@ export class CommandParser {
     'servers',
     // Permissions
     'bypass',
+    // Memory
+    'memory',
     // Persona & Model & Verbosity
     'persona',
     'model',
@@ -659,6 +738,9 @@ export class CommandParser {
     // Future: save/load (oh-my-claude skills)
     'save',
     'load',
+    // Email
+    'set_email',
+    'show_email',
     // Admin: show prompt / show instructions (exact two-word forms)
     'show_prompt',
     'show_instructions',
@@ -679,9 +761,9 @@ export class CommandParser {
     const words = normalized.split(' ');
     const firstWord = words[0];
 
-    // $ prefix: only known session command roots ($, $model, $verbosity, $effort)
+    // $ prefix: only known session command roots ($, $model, $verbosity, $effort, $thinking, $thinking_summary)
     if (firstWord.startsWith('$')) {
-      if (/^\$(?:model|verbosity|effort)?(?:\s|$)/i.test(normalized)) {
+      if (/^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s|$)/i.test(normalized)) {
         return { isPotential: true, keyword: firstWord };
       }
       return { isPotential: false };
@@ -756,6 +838,10 @@ export class CommandParser {
       '• `bypass on` or `/bypass on` - Enable permission bypass',
       '• `bypass off` or `/bypass off` - Disable permission bypass',
       '',
+      '*Email:*',
+      '• `show email` - Show your configured email',
+      '• `set email <email>` - Set your email (used for Co-Authored-By in commits)',
+      '',
       '*Persona:*',
       '• `persona` or `/persona` - Show current persona',
       '• `persona list` or `/persona list` - List available personas',
@@ -782,6 +868,10 @@ export class CommandParser {
       '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
       '• `$verbosity` - Show session verbosity',
       '• `$verbosity <level>` - Change verbosity for this session only',
+      '• `$thinking` - Show extended thinking (adaptive reasoning) status',
+      '• `$thinking on|off` - Toggle extended thinking for this session',
+      '• `$thinking_summary` - Show thinking summary display status',
+      '• `$thinking_summary on|off` - Toggle thinking output display for this session',
       '',
       '*Marketplace:*',
       '• `marketplace` or `/marketplace` - Show registered marketplaces',

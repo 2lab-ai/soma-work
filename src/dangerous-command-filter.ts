@@ -17,6 +17,7 @@ const DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; description: string }
   // Destructive file operations
   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s|.*--recursive)/, description: 'recursive delete' },
   { pattern: /\brm\s+-[a-zA-Z]*f/, description: 'force delete' },
+  { pattern: /\brm\s+.*--force/, description: 'force delete (--force)' },
 
   // System-level operations
   { pattern: /\bshutdown\b/, description: 'system shutdown' },
@@ -59,6 +60,32 @@ export function isDangerousCommand(command: string): boolean {
 }
 
 /**
+ * Cross-user directory access detection.
+ * Detects commands that reference another user's /tmp/{userId}/ directory.
+ * Enforces per-user filesystem isolation — always deny, regardless of bypass mode.
+ *
+ * Matches both /tmp/{userId} and /private/tmp/{userId} (macOS normalization).
+ * Slack user IDs follow pattern: [UW] + uppercase alphanumeric (e.g., U094E5L4A15).
+ * Enterprise Grid uses W-prefixed IDs — both must be covered.
+ */
+export function isCrossUserAccess(command: string, currentUserId: string): boolean {
+  // Reject any /tmp/ path containing traversal segments — prevents escaping
+  // own directory via /tmp/U094E5L4A15/../U09F1M5MML1/
+  if (/(?:\/private)?\/tmp\/[^\s]*\.\./.test(command)) {
+    return true;
+  }
+
+  const tmpPathPattern = /(?:\/private)?\/tmp\/([UW][A-Z0-9]+)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = tmpPathPattern.exec(command)) !== null) {
+    if (match[1] !== currentUserId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * SSH command patterns — matches `ssh`, `scp`, `sftp`, `rsync` over SSH.
  * These commands allow remote server access and must be restricted to admin users.
  */
@@ -70,4 +97,17 @@ const SSH_PATTERNS: ReadonlyArray<RegExp> = [/\bssh\b/, /\bscp\b/, /\bsftp\b/, /
  */
 export function isSshCommand(command: string): boolean {
   return SSH_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+/**
+ * Bypass mode permission decision for Bash commands.
+ * Returns 'allow' for non-dangerous commands, 'ask' for dangerous ones.
+ *
+ * CRITICAL: This returns explicit decisions ('allow'/'ask') instead of deferring.
+ * When permissionPromptToolName is set (always in Slack context), a deferred
+ * decision causes the SDK to route through the permission MCP tool, triggering
+ * Slack permission prompts even in bypass mode. Explicit decisions prevent this.
+ */
+export function bypassBashPermissionDecision(command: string): 'allow' | 'ask' {
+  return isDangerousCommand(command) ? 'ask' : 'allow';
 }

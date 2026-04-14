@@ -2,91 +2,91 @@
 
 # Deploy Workflow
 
-이 세션은 `source branch -> target environment branch` 배포를 자동으로 진행한다.
-핵심 목표는 다음 4가지다.
+This session automatically performs deployment from `source branch -> target environment branch`.
+The four core objectives are:
 
-1. 유저 입력에서 배포 대상(repo/source/target)을 정확히 파싱
-2. 각 repo별로 clone -> PR 생성 -> merge 흐름을 안전하게 실행
-3. 충돌/리스크를 감지해 안전하게 분기 처리
-4. 배포 완료 후 릴리즈 노트를 채널 루트에 별도 게시
+1. Accurately parse the deployment target (repo/source/target) from user input
+2. Safely execute the clone -> PR creation -> merge flow for each repo
+3. Detect conflicts/risks and handle them safely with branching logic
+4. Post release notes separately to the channel root after deployment completes
 
-## 트리거 입력 파싱 규칙
+## Trigger Input Parsing Rules
 
-아래 형식을 우선 지원한다.
+The following formats are supported as primary inputs.
 
 - `Gucci develop -> dev2`
 - `deploy Gucci develop -> dev2`
 - `Gucci,Prada develop -> dev2`
 - `owner/gucci develop -> dev2`
-- `gucci deploy/develop -> dev2` (`deploy/` prefix 자동 제거)
+- `gucci deploy/develop -> dev2` (`deploy/` prefix automatically removed)
 
-### 파싱 알고리즘
+### Parsing Algorithm
 
-1. `->` 기준으로 source/target을 먼저 분리한다.
-2. 좌측 토큰에서 repo 목록 + source를 추출한다.
-3. repo는 쉼표(,) 기준 복수 파싱한다.
-4. source가 `deploy/`로 시작하면 prefix를 제거한다.
-5. repo 이름은 아래 우선순위로 정규화한다.
-   - 이미 `owner/repo` 형태면 그대로 사용
-   - 아니면 채널 컨텍스트/세션 링크/대화 맥락에서 `owner/repo` 후보 매칭
-   - 매칭 불가 시 유저에게 확인 질문
+1. Split source/target using `->` as the delimiter.
+2. Extract the repo list + source from the left-side tokens.
+3. Parse multiple repos using comma (,) as the delimiter.
+4. If the source starts with `deploy/`, remove the prefix.
+5. Normalize the repo name using the following priority:
+   - If already in `owner/repo` format, use as-is
+   - Otherwise, match `owner/repo` candidates from the channel context/session links/conversation context
+   - If no match is found, ask the user for confirmation
 
-### 채널 컨텍스트 사용 규칙
+### Channel Context Usage Rules
 
-채널 설명, 최근 대화, 세션 링크(issue/pr/doc)에서 repo full name 후보를 찾는다.
+Find repo full name candidates from the channel description, recent conversations, and session links (issue/pr/doc).
 
-- 예: 채널 설명에 `2lab-ai/gucci`가 있으면 `Gucci` -> `2lab-ai/gucci`로 매핑
-- 다수 후보가 나오면 자동 선택하지 말고 질문한다
+- e.g.: If the channel description contains `2lab-ai/gucci`, map `Gucci` -> `2lab-ai/gucci`
+- If multiple candidates are found, ask rather than auto-selecting
 
-## 실행 전 확인 (필수)
+## Pre-Execution Confirmation (Required)
 
-실행 전에 반드시 `local:UIAskUserQuestion`으로 확인한다.
+A confirmation must be obtained via `local:UIAskUserQuestion` before execution.
 
-질문에 반드시 아래 정보를 포함한다.
+The question must include the following information:
 
-- repo 목록(정규화된 full name)
-- source branch
-- target branch
-- 실행 순서(복수 repo일 경우)
+- Repo list (normalized full names)
+- Source branch
+- Target branch
+- Execution order (if multiple repos)
 
-옵션 예시:
+Example options:
 
-1. `배포 진행`
-2. `대상 수정`
-3. `중단`
+1. `Proceed with deployment`
+2. `Modify target`
+3. `Cancel`
 
-`대상 수정` 또는 `중단`이면 절대 배포를 진행하지 않는다.
+If `Modify target` or `Cancel` is selected, never proceed with the deployment.
 
-## 실행 프로세스
+## Execution Process
 
-복수 repo면 **순차 실행**한다. (동시 실행 금지)
+For multiple repos, execute **sequentially** (no concurrent execution).
 
-### 1) 사전 검증
+### 1) Pre-Validation
 
-- 각 repo 접근 가능 여부 확인
-- source/target branch 존재 여부 확인
-- target branch 보호/머지 정책 확인
+- Verify access to each repo
+- Verify that source/target branches exist
+- Check target branch protection/merge policies
 
-검증 실패 시 즉시 중단하고 원인을 명확히 보고한다.
+If validation fails, stop immediately and clearly report the cause.
 
-### 2) 작업 브랜치 준비
+### 2) Prepare Working Branch
 
-repo마다 다음 흐름으로 진행한다.
+Proceed with the following flow for each repo:
 
-1. clone 또는 기존 clone 최신화
-2. `target` 최신 상태 fetch
-3. `source` 최신 상태 fetch
-4. `target` 기준 deploy 작업 브랜치 생성
-   - 예: `deploy/{source}-to-{target}-{YYYYMMDDHHmm}`
+1. Clone or update existing clone
+2. Fetch latest `target`
+3. Fetch latest `source`
+4. Create a deploy working branch based on `target`
+   - e.g.: `deploy/{source}-to-{target}-{YYYYMMDDHHmm}`
 
-### 3) 변경 병합 + PR 생성
+### 3) Merge Changes + Create PR
 
-1. 작업 브랜치에 `source`를 merge
-2. 충돌 없으면 push
-3. `base=target`, `head=deploy branch`로 PR 생성
-4. PR 본문에 목적/범위/검증 항목 작성
+1. Merge `source` into the working branch
+2. If no conflicts, push
+3. Create a PR with `base=target`, `head=deploy branch`
+4. Include purpose/scope/verification items in the PR body
 
-PR 생성 직후 session link를 남긴다.
+Leave a session link immediately after PR creation.
 
 ```json
 {
@@ -95,82 +95,82 @@ PR 생성 직후 session link를 남긴다.
 }
 ```
 
-### 4) 검증 후 merge
+### 4) Verify and Merge
 
-머지 전에 최소 아래를 점검한다.
+Check at least the following before merging:
 
-- CI/check 상태
-- merge 가능 여부(conflict, policy)
-- 배포 대상 branch(base)가 올바른지
+- CI/check status
+- Merge eligibility (conflict, policy)
+- Whether the deployment target branch (base) is correct
 
-문제 없으면 PR merge를 수행한다.
+If there are no issues, proceed with the PR merge.
 
-## 충돌 처리 정책
+## Conflict Handling Policy
 
-### Trivial conflict (자동 해결 허용)
+### Trivial Conflict (Auto-Resolution Allowed)
 
-아래는 자동 해결 가능:
+The following can be auto-resolved:
 
-- lockfile 단순 재생성 충돌
-- changelog/release note 파일의 단순 append 충돌
-- version bump 숫자만 다른 충돌(의도 명확한 경우)
+- Simple lockfile regeneration conflicts
+- Simple append conflicts in changelog/release note files
+- Version bump conflicts where only the number differs (when the intent is clear)
 
-자동 해결 후에는 변경 요약을 반드시 보고한다.
+After auto-resolution, always report a summary of the changes.
 
-### Complex conflict (자동 해결 금지)
+### Complex Conflict (Auto-Resolution Prohibited)
 
-아래는 자동 해결 금지:
+The following must not be auto-resolved:
 
-- 로직 코드 충돌
-- 설정/인프라 정책 충돌
-- 어떤 쪽이 정답인지 문맥 의존적인 충돌
+- Logic code conflicts
+- Configuration/infrastructure policy conflicts
+- Context-dependent conflicts where the correct choice is ambiguous
 
-이 경우:
+In this case:
 
-1. 충돌 원인과 선택지(2~3개) 정리
-2. 각 선택지의 리스크 설명
-3. `local:UIAskUserQuestion`으로 유저 결정 요청
-4. 응답 전까지 머지 중단
+1. Summarize the conflict cause and present 2-3 options
+2. Explain the risks of each option
+3. Request user decision via `local:UIAskUserQuestion`
+4. Halt the merge until a response is received
 
-## 금지 명령
+## Prohibited Commands
 
-아래 명령은 절대 사용하지 않는다.
+The following commands must never be used:
 
 - `git push --force`
 - `git push --force-with-lease`
 - `git reset --hard`
 - `git checkout -- <path>`
-- 히스토리를 파괴하는 rebase 강제 전략
+- Forced rebase strategies that destroy history
 
-## 출력 규칙
+## Output Rules
 
-각 repo 처리 결과를 아래 형식으로 요약한다.
+Summarize the results for each repo in the following format:
 
-- repo
-- source -> target
+- Repo
+- Source -> target
 - PR URL
-- merge 결과(success/fail)
-- 실패 시 원인/다음 액션
+- Merge result (success/fail)
+- Cause of failure / next action (if failed)
 
-복수 repo는 표나 리스트로 분리해 가독성 있게 보고한다.
+For multiple repos, present results as a table or list for readability.
 
 ---
 
-## Release Notes 생성/게시 (필수)
+## Release Notes Generation/Posting (Required)
 
-배포 머지 완료 후, 각 repo별 릴리즈 노트를 생성한다.
+After the deployment merge is complete, generate release notes for each repo.
 
-### 노트 생성 기준
+### Note Generation Criteria
 
-1. merge 직전 target 기준점과 merge 직후 target을 비교한다.
-2. `target branch diff` 기반으로 변경 요약을 만든다.
-3. 아래 항목을 반드시 포함한다.
-   - 배포 대상(repo/source/target)
-   - 커밋 요약(중요 커밋 중심)
-   - 변경 파일(핵심 파일 위주)
-   - 주요 변경 사항(기능/수정/리스크)
+1. Compare the target before and after the merge.
+2. Create a change summary based on the `target branch diff`.
+3. Must include the following items:
+   - Deployment target (repo/source/target)
+   - Commit summary (focusing on important commits)
+   - Changed files (key files only)
+   - Major changes (features/fixes/risks)
 
-### 권장 포맷
+### Recommended Format
 
 ```markdown
 ## Release Notes - {repo}
@@ -178,31 +178,30 @@ PR 생성 직후 session link를 남긴다.
 - Target: `{target}`
 - PR: {pr_url}
 
-### 주요 변경 사항
+### Major Changes
 - ...
 
-### 커밋 요약
+### Commit Summary
 - {sha} {message}
 
-### 변경 파일 (핵심)
+### Changed Files (Key)
 - path/to/file1
 - path/to/file2
 ```
 
-### 채널 루트 게시 규칙
+### Channel Root Posting Rules
 
-릴리즈 노트는 스레드가 아닌 **채널 루트**에 별도 게시해야 한다.
-아래 `channel_message` directive를 사용한다.
+Release notes must be posted separately to the **channel root**, not in a thread.
+Use the following `channel_message` directive:
 
 ```json
 {
   "type": "channel_message",
-  "text": "릴리즈 노트 본문"
+  "text": "Release notes body"
 }
 ```
 
-필수 조건:
+Required conditions:
 
-- `text`에는 최종 릴리즈 노트 전체를 넣는다.
-- 채널 게시 후 스레드에는 "채널 릴리즈 노트 게시 완료"를 간단히 보고한다.
-
+- `text` must contain the full final release notes.
+- After posting to the channel, briefly report "Channel release notes posted" in the thread.

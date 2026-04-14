@@ -36,6 +36,10 @@ export interface StreamContext {
   say: SayFunction;
   /** Verbosity bitmask — controls which output types are shown */
   logVerbosity?: number;
+  /** Whether thinking output is shown in Slack (independent of verbosity). Default: true */
+  showThinking?: boolean;
+  /** Bot's Slack user ID (used for skill invocation RPG announcements as `<@BOT_ID>`) */
+  botUserId?: string;
 }
 
 /**
@@ -375,6 +379,9 @@ export class StreamProcessor {
    * Extract and output thinking/reasoning content from assistant message
    */
   private async handleThinkingContent(content: any[], context: StreamContext): Promise<void> {
+    // Respect per-session/user showThinking toggle (independent of verbosity)
+    if (context.showThinking === false) return;
+
     const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (thinkingMode === 'hidden') return;
 
@@ -427,6 +434,18 @@ export class StreamProcessor {
     const todoTool = content.find((part: any) => part.type === 'tool_use' && part.name === 'TodoWrite');
     if (todoTool && this.callbacks.onTodoUpdate) {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
+    }
+
+    // Emit RPG-style skill invocation announcement (shown even in minimal)
+    if (this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
+      for (const part of content) {
+        if (part.type === 'tool_use' && part.name === 'Skill') {
+          const skillName = part.input?.skill || part.input?.name || 'unknown';
+          const casterName = context.botUserId ? `<@${context.botUserId}>` : 'AI';
+          const rpgMsg = ToolFormatter.formatSkillInvocationRPG(skillName, casterName);
+          await context.say({ text: rpgMsg, thread_ts: context.threadTs });
+        }
+      }
     }
 
     // Track Task tool inputs for TaskOutput correlation
@@ -1219,7 +1238,8 @@ export class StreamProcessor {
         slackError === 'invalid_blocks' ||
         slackError === 'invalid_attachments' ||
         slackError === 'too_many_blocks' ||
-        slackError === 'invalid_blocks_format';
+        slackError === 'invalid_blocks_format' ||
+        slackError === 'msg_blocks_too_long';
 
       if (isBlockKitError) {
         this.logger.warn('Block Kit rendering failed, falling back to plain text', {

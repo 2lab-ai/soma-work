@@ -36,16 +36,17 @@ export class ChoiceActionHandler {
       const valueData = JSON.parse(action.value);
       const { sessionKey, choiceId, label, question } = valueData;
       const userId = body.user?.id;
-      const channel = body.channel?.id;
+      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
       const fallbackThreadTs = body.message?.thread_ts || messageTs;
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
       const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
       // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
+      // Immediately replace buttons to prevent double-click on other options
       if (channel) {
         const completedBlocks = [
           {
@@ -57,24 +58,30 @@ export class ChoiceActionHandler {
           },
         ];
         const targetTimestamps = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, completionMessageTs);
-        for (const targetTs of targetTimestamps) {
-          try {
-            await this.ctx.slackApi.updateMessage(
-              channel,
-              targetTs,
-              `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
-              completedBlocks,
-              [], // 기존 attachments(버튼) 제거
-            );
-          } catch (error) {
-            this.logger.warn('Failed to update choice message', { targetTs, error });
-          }
-        }
+        await Promise.all(
+          targetTimestamps.map((targetTs) =>
+            this.ctx.slackApi
+              .updateMessage(
+                channel,
+                targetTs,
+                `✅ *${question}*\n선택: *${choiceId}. ${label}*`,
+                completedBlocks,
+                [], // 기존 attachments(버튼) 제거
+              )
+              .catch((error: unknown) => this.logger.warn('Failed to update choice message', { targetTs, error })),
+          ),
+        );
+        // Clear action panel choice immediately (thread header buttons)
+        this.ctx.threadPanel
+          ?.clearChoice(sessionKey)
+          .catch((err: unknown) =>
+            this.logger.debug('Failed to clear choice panel (user choice)', { sessionKey, error: err }),
+          );
       }
 
       // 세션 확인 및 메시지 처리
       if (session) {
-        await this.ctx.threadPanel?.clearChoice(sessionKey);
+        // clearChoice already fired above (line 75); only clear pending question here
         // Clear pending question from session (dashboard sync)
         if (session.actionPanel) {
           session.actionPanel.pendingQuestion = undefined;
@@ -105,11 +112,20 @@ export class ChoiceActionHandler {
         }
         // Transition waiting→working when user responds to a choice
         this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
-        const say = this.createSayFn(channel);
-        await this.ctx.messageHandler(
-          { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
-          say,
-        );
+        try {
+          const say = this.createSayFn(channel);
+          await this.ctx.messageHandler(
+            { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
+            say,
+          );
+        } catch (handlerError) {
+          this.logger.error('Choice handler failed, rolling back to waiting', { sessionKey, error: handlerError });
+          try {
+            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+          } catch (rollbackError) {
+            this.logger.error('Failed to rollback activity state', { sessionKey, rollbackError });
+          }
+        }
       } else {
         this.logger.warn('Session not found for user choice', { sessionKey });
         await this.ctx.slackApi.postEphemeral(
@@ -129,7 +145,8 @@ export class ChoiceActionHandler {
       const valueData = JSON.parse(action.value);
       const { formId, sessionKey, questionId, choiceId, label } = valueData;
       const userId = body.user?.id;
-      const channel = body.channel?.id;
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
 
       this.logger.info('Multi-choice selection', { formId, questionId, choiceId, label, userId });
@@ -162,9 +179,10 @@ export class ChoiceActionHandler {
     try {
       const action = body.actions[0];
       const valueData = JSON.parse(action.value);
-      const { formId, questionId } = valueData;
+      const { formId, questionId, sessionKey } = valueData;
       const userId = body.user?.id;
-      const channel = body.channel?.id;
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
 
       this.logger.info('Edit choice requested', { formId, questionId, userId });
@@ -199,7 +217,8 @@ export class ChoiceActionHandler {
       const valueData = JSON.parse(action.value);
       const { formId, sessionKey } = valueData;
       const userId = body.user?.id;
-      const channel = body.channel?.id;
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
 
       this.logger.info('Form submit requested', { formId, userId });
@@ -228,9 +247,34 @@ export class ChoiceActionHandler {
         return;
       }
 
+      // ── Immediately replace form with "submitting" indicator ──
+      // Slack buttons cannot be disabled; replace the entire message to prevent further clicks
+      if (channel && messageTs) {
+        const submittingBlocks = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: '⏳ *제출 처리 중...*' },
+          },
+        ];
+        const immediateTargets = this.resolveChoiceSyncMessageTs(sessionKey, messageTs, pendingForm.messageTs);
+        await Promise.all(
+          immediateTargets.map((ts) =>
+            this.ctx.slackApi
+              .updateMessage(channel, ts, '⏳ 제출 처리 중...', submittingBlocks, [])
+              .catch((err: unknown) => this.logger.debug('Failed to show submitting state', { ts, error: err })),
+          ),
+        );
+      }
+      // Clear action panel choice immediately (thread header buttons)
+      this.ctx.threadPanel
+        ?.clearChoice(sessionKey)
+        .catch((err: unknown) =>
+          this.logger.debug('Failed to clear choice panel (form submit)', { sessionKey, error: err }),
+        );
+
       const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
-      const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
-      const threadTs = this.resolveSessionThreadTs(session, fallbackThreadTs);
+      const sessionForThread = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+      const threadTs = this.resolveSessionThreadTs(sessionForThread, fallbackThreadTs);
 
       // 제출 처리
       await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
@@ -246,9 +290,10 @@ export class ChoiceActionHandler {
     try {
       const action = body.actions[0];
       const valueData = JSON.parse(action.value);
-      const { formId } = valueData;
+      const { formId, sessionKey } = valueData;
       const userId = body.user?.id;
-      const channel = body.channel?.id;
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const channel = body.channel?.id || session?.channelId;
       const messageTs = body.message?.ts;
 
       this.logger.info('Form reset requested', { formId, userId });
@@ -365,8 +410,7 @@ export class ChoiceActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
-      await this.ctx.threadPanel?.clearChoice(pendingForm.sessionKey);
-      // Clear pending question from session (dashboard sync)
+      // clearChoice already fired in handleFormSubmit; only clear pending question here
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
       }
@@ -396,11 +440,26 @@ export class ChoiceActionHandler {
       }
       // Transition waiting→working when user submits form
       this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'working');
-      const say = this.createSayFn(channel);
-      await this.ctx.messageHandler(
-        { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
-        say,
-      );
+      try {
+        const say = this.createSayFn(channel);
+        await this.ctx.messageHandler(
+          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
+          say,
+        );
+      } catch (handlerError) {
+        this.logger.error('Multi-choice handler failed, rolling back to waiting', {
+          sessionKey: pendingForm.sessionKey,
+          error: handlerError,
+        });
+        try {
+          this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
+        } catch (rollbackError) {
+          this.logger.error('Failed to rollback activity state', {
+            sessionKey: pendingForm.sessionKey,
+            rollbackError,
+          });
+        }
+      }
     } else {
       this.logger.warn('Session not found for multi-choice completion', { sessionKey: pendingForm.sessionKey });
       await this.ctx.slackApi.postEphemeral(

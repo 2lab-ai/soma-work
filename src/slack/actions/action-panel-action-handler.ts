@@ -3,11 +3,14 @@ import type { ClaudeHandler } from '../../claude-handler';
 import { mergeGitHubPR } from '../../link-metadata-fetcher';
 import { Logger } from '../../logger';
 import type { ConversationSession } from '../../types';
+import { userSettingsStore } from '../../user-settings-store';
 import { ActionPanelBuilder } from '../action-panel-builder';
 import { ContextWindowManager } from '../context-window-manager';
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { postSourceThreadSummary } from '../source-thread-summary';
+import { ThreadHeaderBuilder } from '../thread-header-builder';
+import type { ThreadPanel } from '../thread-panel';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 
 interface PanelActionContext {
@@ -15,6 +18,7 @@ interface PanelActionContext {
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
   requestCoordinator?: RequestCoordinator;
+  threadPanel?: ThreadPanel;
 }
 
 type PanelAction =
@@ -341,28 +345,29 @@ export class ActionPanelActionHandler {
   }
 
   private async handleClose(sessionKey: string, session: ConversationSession, respond: RespondFn): Promise<void> {
-    // Update action panel to closed state BEFORE terminating (session is deleted on terminate)
-    if (session.actionPanel?.messageTs) {
+    // Mark session as inactive BEFORE abort/render to prevent race conditions.
+    // Stream executor abort handlers may re-render the surface; isActive=false
+    // ensures buildCombinedBlocks treats it as closed even without the override.
+    session.isActive = false;
+
+    // Abort active AI request BEFORE rendering closed state.
+    this.ctx.requestCoordinator?.abortSession(sessionKey);
+
+    // Update surface to closed state BEFORE terminating (session is deleted on terminate).
+    // Delegate to ThreadPanel (single-writer) which renders combined header + panel blocks.
+    if (this.ctx.threadPanel) {
       try {
-        const panelPayload = ActionPanelBuilder.build({
-          sessionKey,
-          workflow: session.workflow,
-          closed: true,
-          contextRemainingPercent: this.getContextRemainingPercent(session),
-          prStatus: session.actionPanel.prStatus ? { ...session.actionPanel.prStatus } : undefined,
-          turnSummary: session.actionPanel.turnSummary,
-          latestResponseLink: session.actionPanel.latestResponseLink,
-        });
-        await this.ctx.slackApi.updateMessage(
-          session.channelId,
-          session.actionPanel.messageTs,
-          panelPayload.text,
-          panelPayload.blocks,
-        );
+        await this.ctx.threadPanel.close(session, sessionKey);
       } catch (error) {
-        // Non-blocking: panel update failure shouldn't prevent termination
+        // Fall back to direct update below
+        this.updateSurfaceDirect(session, sessionKey);
       }
+    } else {
+      await this.updateSurfaceDirect(session, sessionKey);
     }
+
+    // Fire-and-forget: post source thread summary
+    postSourceThreadSummary(this.ctx.slackApi, session, 'closed').catch(() => {});
 
     const success = this.ctx.claudeHandler.terminateSession(sessionKey);
     if (success) {
@@ -377,6 +382,36 @@ export class ActionPanelActionHandler {
         text: '❌ 세션 종료에 실패했습니다.',
         replace_original: false,
       });
+    }
+  }
+
+  /**
+   * Fallback: update surface message directly with combined header + panel blocks.
+   * Used when threadPanel is not available.
+   */
+  private async updateSurfaceDirect(session: ConversationSession, sessionKey: string): Promise<void> {
+    if (!session.actionPanel?.messageTs) return;
+    try {
+      const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+      const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
+      const panelPayload = ActionPanelBuilder.build({
+        sessionKey,
+        workflow: session.workflow,
+        closed: true,
+        contextRemainingPercent: this.getContextRemainingPercent(session),
+        prStatus: session.actionPanel.prStatus ? { ...session.actionPanel.prStatus } : undefined,
+        turnSummary: session.actionPanel.turnSummary,
+        latestResponseLink: session.actionPanel.latestResponseLink,
+      });
+      const combinedBlocks = [...(headerPayload.blocks || []), ...panelPayload.blocks];
+      await this.ctx.slackApi.updateMessage(
+        session.channelId,
+        session.actionPanel.messageTs,
+        panelPayload.text,
+        combinedBlocks,
+      );
+    } catch (error) {
+      // Non-blocking: surface update failure shouldn't prevent termination
     }
   }
 

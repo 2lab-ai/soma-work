@@ -30,6 +30,11 @@ vi.mock('./viewer', () => ({
   renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
 }));
 
+const mockListRecent = vi.fn().mockReturnValue([]);
+vi.mock('../session-archive', () => ({
+  getArchiveStore: () => ({ listRecent: mockListRecent }),
+}));
+
 const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
 describe('Dashboard API', () => {
@@ -597,9 +602,9 @@ describe('Dashboard API', () => {
     expect(correctDoAction).not.toBeNull();
     expect(correctOpenPanel).not.toBeNull();
 
-    // There should be exactly 3 doAction calls (stop, close, trash)
+    // There should be exactly 4 doAction calls (stop, close for idle/waiting, close for sleeping, trash for archived)
     // and 2 openPanel calls (card click + multi-choice "답변하기" button)
-    expect(correctDoAction!.length).toBe(3);
+    expect(correctDoAction!.length).toBe(4);
     expect(correctOpenPanel!.length).toBe(2);
   });
 
@@ -619,8 +624,8 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 3 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 11 closing patterns
-    expect(actionClosings!.length).toBe(11);
+    // 4 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 12 closing patterns
+    expect(actionClosings!.length).toBe(12);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
@@ -796,5 +801,280 @@ describe('Dashboard API', () => {
     expect(toggleFn).not.toBeNull();
     expect(toggleFn![1]).toContain('removeItem');
     expect(toggleFn![1]).toContain('osTheme');
+  });
+});
+
+describe('Ghost session filtering (#438)', () => {
+  let injectWebServer: any;
+  let setDashboardSessionAccessor: any;
+  let startWebServer: any;
+  let stopWebServer: any;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockListRecent.mockReturnValue([]);
+    mockConfig.conversation.viewerToken = 'test-token';
+
+    const webServer = await import('./web-server');
+    startWebServer = webServer.startWebServer;
+    stopWebServer = webServer.stopWebServer;
+    injectWebServer = webServer.injectWebServer;
+
+    const dashboard = await import('./dashboard');
+    setDashboardSessionAccessor = dashboard.setDashboardSessionAccessor;
+
+    await startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    await stopWebServer();
+  });
+
+  it('should filter out archives without sessionId', async () => {
+    setDashboardSessionAccessor(() => new Map());
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: Date.now(),
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t1',
+        // no sessionId — ghost session
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't1',
+        title: 'Untitled',
+        model: 'default',
+        workflow: 'unknown',
+        lastActivity: new Date().toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(0);
+  });
+
+  it('should show archives with sessionId', async () => {
+    setDashboardSessionAccessor(() => new Map());
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: Date.now(),
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t1',
+        sessionId: 'sid-valid',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't1',
+        title: 'Real Session',
+        model: 'claude-opus-4-6',
+        workflow: 'jira-create-pr',
+        lastActivity: new Date().toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(1);
+    expect(body.board.closed[0].title).toBe('Real Session');
+  });
+
+  it('should dedup archives by conversationId (newer wins)', async () => {
+    setDashboardSessionAccessor(() => new Map());
+    const now = Date.now();
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: now - 1000, // older
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t1',
+        sessionId: 'sid-old',
+        conversationId: 'conv-shared',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't1',
+        title: 'Old Session',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now - 1000).toISOString(),
+      },
+      {
+        archivedAt: now, // newer
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t2',
+        sessionId: 'sid-new',
+        conversationId: 'conv-shared',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't2',
+        title: 'New Session',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now).toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(1);
+    expect(body.board.closed[0].title).toBe('New Session');
+  });
+
+  it('should dedup archives by thread key (newer wins)', async () => {
+    setDashboardSessionAccessor(() => new Map());
+    const now = Date.now();
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: now - 2000, // older
+        archiveReason: 'terminated',
+        sessionKey: 'key-old',
+        sessionId: 'sid-old',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't-shared',
+        title: 'Old Thread Session',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now - 2000).toISOString(),
+      },
+      {
+        archivedAt: now, // newer
+        archiveReason: 'terminated',
+        sessionKey: 'key-new',
+        sessionId: 'sid-new',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't-shared',
+        title: 'New Thread Session',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now).toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(1);
+    expect(body.board.closed[0].title).toBe('New Thread Session');
+  });
+
+  it('should still filter archives overlapping with live sessions', async () => {
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t-live', {
+      sessionId: 'sid-live',
+      title: 'Live Session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      threadTs: 't-live',
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date(),
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: Date.now(),
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t-live',
+        sessionId: 'sid-archived',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't-live', // same thread as live session
+        title: 'Archived Overlap',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date().toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(0);
+  });
+
+  it('should not produce false positives — different archives both appear', async () => {
+    setDashboardSessionAccessor(() => new Map());
+    const now = Date.now();
+    mockListRecent.mockReturnValue([
+      {
+        archivedAt: now,
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t1',
+        sessionId: 'sid-1',
+        conversationId: 'conv-a',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C1',
+        threadTs: 't1',
+        title: 'Session A',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now).toISOString(),
+      },
+      {
+        archivedAt: now - 1000,
+        archiveReason: 'terminated',
+        sessionKey: 'C2:t2',
+        sessionId: 'sid-2',
+        conversationId: 'conv-b',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: 'C2',
+        threadTs: 't2',
+        title: 'Session B',
+        model: 'claude-opus-4-6',
+        workflow: 'default',
+        lastActivity: new Date(now - 1000).toISOString(),
+      },
+    ]);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.board.closed).toHaveLength(2);
+    const titles = body.board.closed.map((c: any) => c.title);
+    expect(titles).toContain('Session A');
+    expect(titles).toContain('Session B');
   });
 });

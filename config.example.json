@@ -25,6 +25,14 @@
       }
     }
   },
+  "a2t": {
+    "enabled": true,
+    "model": "large-v3-turbo",
+    "device": "auto",
+    "computeType": "auto",
+    "minMemoryMb": 2000,
+    "pythonPath": "python3"
+  },
   "plugin": {
     "marketplace": [
       {

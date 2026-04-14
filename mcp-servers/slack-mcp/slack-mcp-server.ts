@@ -22,6 +22,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { WebClient } from '@slack/web-api';
 
+import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import type { SlackMcpContext, GetThreadMessagesResult } from './types.js';
@@ -128,16 +129,12 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'send_thread_message',
-        description: [
-          'Post a text message to a Slack thread.',
-          'Use thread param to target the work thread (default) or original source thread.',
-          'This allows posting status updates or summaries back to the original conversation.',
-        ].join('\n'),
+        description: 'Reply to the current conversation thread. Supports markdown formatting (bold, italic, code, links, headings).',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            text: { type: 'string', description: 'Message text to post' },
-            thread: { type: 'string', description: 'Which thread to post to: "work" (default) or "source" (original thread before migration)' },
+            text: { type: 'string', description: 'Message text (markdown supported — converted to Slack mrkdwn automatically)' },
+            thread: { type: 'string', description: '"work" (default) or "source" (original thread before migration)' },
           },
           required: ['text'],
         },
@@ -337,6 +334,129 @@ class SlackMcpServer extends BaseMcpServer {
     return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
   }
 
+  // ── Markdown → Slack mrkdwn ─────────────────────────────
+
+  /**
+   * Convert standard markdown to Slack mrkdwn format.
+   * Preserves code blocks/inline code, converts bold/italic/links/headings.
+   *
+   * Mapping:  markdown **bold** / __bold__  →  Slack *bold*
+   *           markdown _italic_             →  Slack _italic_ (no-op)
+   *           markdown *italic*             →  left as-is (Slack renders as bold — known limitation)
+   */
+  private formatToMrkdwn(text: string): string {
+    const preserved: string[] = [];
+
+    // Extract code blocks and inline code to protect from formatting
+    let processed = text
+      .replace(/```[\s\S]*?```/g, (match) => {
+        const idx = preserved.length;
+        // Strip language tag from fenced code blocks
+        const cleaned = match.replace(/^```\w*\n/, '```\n');
+        preserved.push(cleaned);
+        return `\x00P${idx}\x00`;
+      })
+      .replace(/`[^`]+`/g, (match) => {
+        const idx = preserved.length;
+        preserved.push(match);
+        return `\x00P${idx}\x00`;
+      });
+
+    // Markdown → Slack mrkdwn conversions
+    processed = processed
+      .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*
+      .replace(/__(.+?)__/g, '*$1*')                    // __bold__ → *bold* (md bold, not italic)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')   // [text](url) → <url|text>
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');            // # heading → *heading*
+
+    // Restore preserved code
+    for (let i = 0; i < preserved.length; i++) {
+      processed = processed.replace(`\x00P${i}\x00`, preserved[i]);
+    }
+
+    return processed;
+  }
+
+  /**
+   * Build Slack section blocks from mrkdwn text.
+   * Splits on paragraph boundaries when text exceeds 3000-char section limit.
+   * Protects fenced code blocks from being split across sections.
+   */
+  private buildMrkdwnBlocks(mrkdwn: string): Array<Record<string, unknown>> {
+    const MAX_SECTION_LEN = 3000;
+    const MAX_BLOCKS = 50;
+
+    if (mrkdwn.length <= MAX_SECTION_LEN) {
+      return [{ type: 'section', text: { type: 'mrkdwn', text: mrkdwn } }];
+    }
+
+    // Protect code blocks from paragraph splitting by replacing with placeholders
+    const codeBlocks: string[] = [];
+    const withPlaceholders = mrkdwn.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(match);
+      return `\x01CB${idx}\x01`;
+    });
+
+    // Split on paragraph boundaries
+    const paragraphs = withPlaceholders.split(/\n\n+/);
+    const blocks: Array<Record<string, unknown>> = [];
+    let current = '';
+
+    for (const para of paragraphs) {
+      // Restore code blocks in this paragraph for length calculation
+      const restored = this.restoreCodeBlocks(para, codeBlocks);
+      const currentRestored = this.restoreCodeBlocks(current, codeBlocks);
+
+      if (currentRestored.length + restored.length + 2 > MAX_SECTION_LEN && currentRestored) {
+        // Flush via pushHardSplit so oversized non-final paragraphs are split correctly
+        this.pushHardSplit(currentRestored.trim(), blocks, MAX_SECTION_LEN, MAX_BLOCKS);
+        current = para;
+        if (blocks.length >= MAX_BLOCKS) break;
+      } else {
+        current += (current ? '\n\n' : '') + para;
+      }
+    }
+
+    // Flush remaining content — hard-split if it exceeds section limit
+    if (current && blocks.length < MAX_BLOCKS) {
+      const finalText = this.restoreCodeBlocks(current, codeBlocks).trim();
+      this.pushHardSplit(finalText, blocks, MAX_SECTION_LEN, MAX_BLOCKS);
+    }
+
+    return blocks;
+  }
+
+  /** Restore code-block placeholders. */
+  private restoreCodeBlocks(text: string, codeBlocks: string[]): string {
+    let result = text;
+    for (let i = 0; i < codeBlocks.length; i++) {
+      result = result.replace(`\x01CB${i}\x01`, codeBlocks[i]);
+    }
+    return result;
+  }
+
+  /** Hard-split text that exceeds maxLen on newline boundaries, never truncating. */
+  private pushHardSplit(
+    text: string,
+    blocks: Array<Record<string, unknown>>,
+    maxLen: number,
+    maxBlocks: number,
+  ): void {
+    let remaining = text;
+    while (remaining.length > 0 && blocks.length < maxBlocks) {
+      if (remaining.length <= maxLen) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining } });
+        break;
+      }
+      // Find last newline within limit for clean break
+      let splitAt = remaining.lastIndexOf('\n', maxLen);
+      if (splitAt <= 0) splitAt = maxLen; // no newline found — hard break at limit
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: remaining.slice(0, splitAt) } });
+      remaining = remaining.slice(splitAt).replace(/^\n/, '');
+    }
+  }
+
   // ── send_thread_message ────────────────────────────────
 
   private async handleSendThreadMessage(args: {
@@ -347,11 +467,68 @@ class SlackMcpServer extends BaseMcpServer {
     const resolved = this.resolveThread(args.thread);
     this.logger.info('Sending message', { thread: args.thread || 'work', channel: resolved.channel });
 
-    const result = await this.slack.chat.postMessage({
-      channel: resolved.channel,
-      thread_ts: resolved.threadTs,
-      text: args.text,
-    });
+    // Convert markdown to rich Block Kit blocks (native tables, headers, rich_text)
+    let blocks: Array<Record<string, unknown>>;
+    let fallbackText: string;
+    let overflow: Array<Array<Record<string, unknown>>> = [];
+
+    try {
+      const converted = this.convertMarkdownToBlocks(args.text);
+      blocks = converted.blocks;
+      fallbackText = converted.fallbackText;
+      overflow = converted.overflow;
+    } catch (err) {
+      // Fallback: use mrkdwn pipeline if Block Kit conversion fails
+      this.logger.warn('markdownToBlocks failed, using mrkdwn fallback', { error: String(err) });
+      fallbackText = this.formatToMrkdwn(args.text);
+      blocks = this.buildMrkdwnBlocks(fallbackText);
+    }
+
+    // Primary send with rich blocks
+    let result;
+    try {
+      result = await this.slack.chat.postMessage({
+        channel: resolved.channel,
+        thread_ts: resolved.threadTs,
+        text: fallbackText,
+        blocks,
+      });
+    } catch (sendErr: any) {
+      // Retry with mrkdwn fallback only on Slack block-validation errors
+      const slackError = sendErr?.data?.error || sendErr?.message || '';
+      const isBlockError = /invalid_blocks|invalid_attachments|too_many_blocks|invalid_blocks_format/i.test(slackError);
+
+      if (isBlockError) {
+        this.logger.warn('Slack rejected blocks, retrying with mrkdwn fallback', { error: slackError });
+        const mrkdwn = this.formatToMrkdwn(args.text);
+        const fallbackBlocks = this.buildMrkdwnBlocks(mrkdwn);
+        result = await this.slack.chat.postMessage({
+          channel: resolved.channel,
+          thread_ts: resolved.threadTs,
+          text: mrkdwn,
+          blocks: fallbackBlocks,
+        });
+        overflow = []; // No overflow on fallback path
+      } else {
+        throw sendErr;
+      }
+    }
+
+    // Send overflow messages (extra tables/content beyond single-message limits)
+    const overflowTs: string[] = [];
+    for (const overflowBlocks of overflow) {
+      try {
+        const ovResult = await this.slack.chat.postMessage({
+          channel: resolved.channel,
+          thread_ts: resolved.threadTs,
+          text: '(continued)',
+          blocks: overflowBlocks,
+        });
+        overflowTs.push(ovResult.ts || '');
+      } catch (err) {
+        this.logger.warn('Overflow message send failed', { error: String(err) });
+      }
+    }
 
     return {
       content: [{
@@ -361,9 +538,84 @@ class SlackMcpServer extends BaseMcpServer {
           channel: resolved.channel,
           thread_ts: resolved.threadTs,
           message_ts: result.ts || '',
+          ...(overflowTs.length > 0 ? { overflow_ts: overflowTs } : {}),
         }),
       }],
     };
+  }
+
+  /**
+   * Convert markdown to Slack Block Kit blocks using the markdown-to-slack-blocks library.
+   * Same pipeline as sayWithBlockKit() in stream-processor — produces native table, header,
+   * and rich_text blocks instead of section+mrkdwn.
+   *
+   * Handles: tables → native table blocks, headings → header blocks,
+   * code → rich_text preformatted, lists/quotes → rich_text elements.
+   */
+  private convertMarkdownToBlocks(markdown: string): {
+    blocks: Array<Record<string, unknown>>;
+    fallbackText: string;
+    overflow: Array<Array<Record<string, unknown>>>;
+  } {
+    const MAX_BLOCKS = 45;
+    const MAX_TABLE_ROWS = 100;
+    const MAX_TABLE_COLS = 20;
+    const MAX_HEADER_LEN = 150;
+    const fallbackText = this.formatToMrkdwn(markdown);
+
+    const rawBlocks = libMarkdownToBlocks(markdown) as Array<Record<string, unknown>>;
+    if (!rawBlocks || rawBlocks.length === 0) {
+      // No rich blocks produced — fall back to mrkdwn section blocks
+      return { blocks: this.buildMrkdwnBlocks(fallbackText), fallbackText, overflow: [] };
+    }
+
+    // Sanitize blocks (table row/col limits, header truncation)
+    const sanitized = rawBlocks.map((block) => {
+      if (block.type === 'table') {
+        const rows = block.rows as any[][];
+        if (!rows || rows.length === 0) return block;
+        if (rows.length > MAX_TABLE_ROWS || (rows[0] && rows[0].length > MAX_TABLE_COLS)) {
+          this.logger.warn('Table truncated to Slack limits', {
+            originalRows: rows.length, maxRows: MAX_TABLE_ROWS,
+            originalCols: rows[0]?.length ?? 0, maxCols: MAX_TABLE_COLS,
+          });
+        }
+        const truncRows = rows.slice(0, MAX_TABLE_ROWS).map((r) => (r as any[]).slice(0, MAX_TABLE_COLS));
+        return { ...block, rows: truncRows };
+      }
+      if (block.type === 'header') {
+        const text = (block.text as any)?.text || '';
+        if (text.length > MAX_HEADER_LEN) {
+          return { ...block, text: { ...(block.text as any), text: text.slice(0, MAX_HEADER_LEN - 3) + '...' } };
+        }
+      }
+      return block;
+    });
+
+    // Split: max 1 table per message, max MAX_BLOCKS blocks per message
+    const tableCount = sanitized.filter((b) => b.type === 'table').length;
+    if (sanitized.length <= MAX_BLOCKS && tableCount <= 1) {
+      return { blocks: sanitized, fallbackText, overflow: [] };
+    }
+
+    const messages: Array<Array<Record<string, unknown>>> = [];
+    let current: Array<Record<string, unknown>> = [];
+    let curTables = 0;
+
+    for (const block of sanitized) {
+      const isTable = block.type === 'table';
+      if ((current.length >= MAX_BLOCKS) || (isTable && curTables >= 1)) {
+        if (current.length > 0) messages.push(current);
+        current = [];
+        curTables = 0;
+      }
+      current.push(block);
+      if (isTable) curTables++;
+    }
+    if (current.length > 0) messages.push(current);
+
+    const [primary, ...overflow] = messages;
+    return { blocks: primary || [], fallbackText, overflow };
   }
 
   // ── download_thread_file ─────────────────────────────

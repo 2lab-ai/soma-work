@@ -1,5 +1,5 @@
 {
-  "description": "ohmyclaude hooks: Ralph Wiggum stop hook + auto call tracking",
+  "description": "ohmyclaude hooks: HTTP proxy to soma-work service + Ralph Wiggum stop hook",
   "hooks": {
     "Stop": [
       {
@@ -7,46 +7,32 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hook-proxy.sh cleanup"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Task",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/call-tracker.sh pre"
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/call-tracker.sh pre"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hook-proxy.sh pre_tool_use"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Task",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/call-tracker.sh post"
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/call-tracker.sh post"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hook-proxy.sh post_tool_use"
           }
         ]
       }

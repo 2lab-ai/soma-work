@@ -1,5 +1,6 @@
 import './env-paths';
 import { App } from '@slack/bolt';
+import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
@@ -17,6 +18,7 @@ import {
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   setOAuthUserLookup,
+  setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   startWebServer,
   stopWebServer,
@@ -144,6 +146,23 @@ async function start() {
       }
     }
 
+    // Initialize A2T service (audio-to-text transcription, non-critical)
+    try {
+      const a2tConfig = unifiedConfig.a2t || {};
+      if (a2tConfig.enabled !== false) {
+        const a2t = await initA2tService(a2tConfig);
+        if (a2t) {
+          timing(`A2T service initialized (${a2t.getStatus().state})`);
+        } else {
+          timing('A2T service unavailable (Python/faster-whisper not installed)');
+        }
+      } else {
+        timing('A2T service disabled by configuration');
+      }
+    } catch (error) {
+      logger.warn('Failed to start A2T service (non-critical)', error);
+    }
+
     // Initialize AgentManager if agents are configured (Trace: docs/multi-agent/trace.md, S2)
     let agentManager: import('./agent-manager').AgentManager | undefined;
     if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
@@ -169,13 +188,17 @@ async function start() {
     const slackHandler = new SlackHandler(app, claudeHandler, mcpManager);
     timing('SlackHandler initialized');
 
-    // Initialize Slack workspace URL for correct thread permalinks
+    // Initialize Slack workspace URL and bot display name
     try {
       const slackApi = slackHandler.getSlackApi();
       const authContext = await slackApi.getAuthContext();
       const { setSlackWorkspaceUrl } = await import('./turn-notifier');
       setSlackWorkspaceUrl(authContext.url);
-      timing(`Slack workspace URL: ${authContext.url}`);
+      if (authContext.botName) {
+        const { setBotDisplayName } = await import('./slack/tool-formatter');
+        setBotDisplayName(authContext.botName);
+      }
+      timing(`Slack workspace URL: ${authContext.url}, bot: ${authContext.botName ?? 'unknown'}`);
     } catch (error) {
       logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
     }
@@ -251,6 +274,40 @@ async function start() {
         logger.warn('Dashboard command: session not found', { sessionKey });
         return;
       }
+      // Post the user's message to the Slack thread so it's visible,
+      // styled as a quote block with dashboard origin indicator.
+      // Validate required fields before attempting Slack echo — fail fast on programming errors
+      if (!session.channelId || !session.threadTs) {
+        logger.error('Dashboard echo: missing channelId or threadTs', {
+          sessionKey,
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+        });
+        return;
+      }
+
+      let echoTs: string | undefined;
+      try {
+        const echoResult = await app.client.chat.postMessage({
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+          blocks: [
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+            },
+            {
+              type: 'section',
+              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+            },
+          ],
+        });
+        echoTs = echoResult.ts as string | undefined;
+      } catch (err) {
+        logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
+      }
+
       const dashboardSay = async (args: any) => {
         const text = typeof args === 'string' ? args : args?.text;
         const result = await app.client.chat.postMessage({
@@ -262,6 +319,9 @@ async function start() {
         });
         return { ts: result.ts as string | undefined };
       };
+      if (!echoTs) {
+        logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+      }
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -269,7 +329,7 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: String(Date.now() / 1000),
+          ts: echoTs || String(Date.now() / 1000),
         } as any,
         dashboardSay,
       );
@@ -328,8 +388,38 @@ async function start() {
     });
 
     // Connect dashboard: real-time conversation turn updates
-    setOnTurnRecordedCallback((conversationId, turn) => {
-      broadcastConversationUpdate(conversationId, turn);
+    setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Connect summary generation: update session title on Slack thread header
+    setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
+      const registry = claudeHandler.getSessionRegistry();
+      const allSessions = registry.getAllSessions();
+      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
+      if (!session) {
+        logger.warn('Summary generated but no active session found', {
+          conversationId,
+          summaryTitle,
+          totalActiveSessions: allSessions.size,
+        });
+        return;
+      }
+      // Guard: only overwrite title when it hasn't been deliberately set
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
+      if (session.title && session.title !== session.conversationId) {
+        logger.debug('Skipping summary title — session already has a deliberate title', {
+          conversationId,
+          existingTitle: session.title,
+          summaryTitle,
+        });
+        return;
+      }
+      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
+      slackHandler.requestThreadSurfaceRender(session);
+      logger.debug('Summary title applied to session', {
+        conversationId,
+        summaryTitle,
+        sessionKey: `${session.channelId}:${session.threadTs}`,
+      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login
@@ -522,6 +612,9 @@ async function start() {
         // Save pending forms for persistence
         slackHandler.savePendingForms();
         logger.info('Pending forms saved successfully');
+
+        // Stop A2T service
+        await shutdownA2tService();
 
         // Stop sub-agents (Trace: docs/multi-agent/trace.md, S7)
         if (agentManager) {

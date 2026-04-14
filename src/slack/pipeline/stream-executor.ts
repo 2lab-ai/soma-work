@@ -399,15 +399,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isOwner: session.ownerId === user,
       });
 
-      // Add thinking reaction + native spinner (gated by verbosity)
-      // (Status message removed — progress is now shown in ThreadSurface)
-      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
-        await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
-      }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
-      }
-
       // Auto-fetch user profile (email + displayName) from Slack if not cached
       // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
       if (userSettingsStore.getUserEmail(user) === undefined) {
@@ -421,6 +412,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         } catch (e) {
           this.logger.debug('Failed to fetch user profile from Slack', { user, error: e });
         }
+      }
+
+      // Fast-fail: block model invocation when user email is not configured.
+      // Placed BEFORE spinner/reaction to avoid dangling UI state on early return.
+      const resolvedEmail = userSettingsStore.getUserEmail(user);
+      if (!resolvedEmail) {
+        await say({
+          text: `⚠️ *이메일이 설정되지 않았습니다.*\n\n이 기능을 사용하려면 이메일 설정이 필요합니다.\n\`set email <your-email>\` 명령으로 이메일을 설정해주세요.\n\n예시: \`set email you@company.com\``,
+          thread_ts: threadTs,
+        });
+        this.logger.warn('Blocked model invocation: user email not configured', { user });
+        return { success: false, messageCount: 0 };
+      }
+
+      // Add thinking reaction + native spinner (gated by verbosity)
+      // (Status message removed — progress is now shown in ThreadSurface)
+      if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
+        await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
+      }
+      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
+        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
       }
 
       // Create Slack context for permission prompts + channel description for system prompt
@@ -439,14 +451,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         confluenceUrl: channelInfo?.confluenceUrl,
       };
 
-      // Create stream context — logVerbosity is a getter so mid-stream $verbosity changes apply
+      // Create stream context — logVerbosity/showThinking are getters so mid-stream changes apply
       const streamContext: StreamContext = {
         channel,
         threadTs,
         sessionKey,
         sessionId: session?.sessionId,
+        botUserId: await this.deps.slackApi.getBotUserId(),
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
+        },
+        get showThinking() {
+          return session.showThinking ?? userSettingsStore.getUserShowThinking(user);
         },
         say: async (msg) => {
           const result = await say({
@@ -850,6 +866,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // Rich fields
             persona: userSettingsStore.getUserPersona(session.ownerId || user),
             model: session.model || userSettingsStore.getUserDefaultModel(session.ownerId || user),
+            // Show effective effort (SDK defaults to 'high' when unset, matching getUserDefaultEffort)
+            effort: session.effort ?? userSettingsStore.getUserDefaultEffort(session.ownerId || user),
             startedAt: requestStartedAt,
             contextUsagePercent: contextUsagePercentAfter,
             contextUsageDelta:
@@ -1062,10 +1080,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           session.lastErrorContext = undefined;
         }
       } else {
-        this.logger.warn('Recoverable error - session preserved', {
-          sessionKey,
-          errorMessage: error.message,
-        });
+        const isRecoverable = this.isRecoverableClaudeSdkError(error);
+        this.logger.warn(
+          isRecoverable
+            ? 'Recoverable error - session preserved'
+            : 'Unknown error - session preserved (default policy)',
+          {
+            sessionKey,
+            errorMessage: error.message,
+          },
+        );
 
         // Clear stale file-access state — this is a different error class now,
         // so the model should not receive outdated "avoid file X" guidance,
@@ -1078,23 +1102,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.tryRotateToken(error, queryTokenValue);
         }
 
-        // Auto-retry: if recoverable and retry budget remains, signal caller to retry
-        const retryCount = session.errorRetryCount ?? 0;
-        if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
-          session.errorRetryCount = retryCount + 1;
-          retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
-          this.logger.info('Scheduling auto-retry on recoverable error', {
-            sessionKey,
-            attempt: retryCount + 1,
-            maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
-            delayMs: retryAfterMs,
-          });
+        // Auto-retry only for known recoverable errors.
+        // Unknown errors are preserved but not auto-retried — the user
+        // decides whether to continue or `/reset`.
+        if (isRecoverable) {
+          const retryCount = session.errorRetryCount ?? 0;
+          if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+            session.errorRetryCount = retryCount + 1;
+            retryAfterMs = StreamExecutor.ERROR_RETRY_DELAY_MS;
+            this.logger.info('Scheduling auto-retry on recoverable error', {
+              sessionKey,
+              attempt: retryCount + 1,
+              maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+              delayMs: retryAfterMs,
+            });
+          } else {
+            this.logger.warn('Auto-retry budget exhausted', {
+              sessionKey,
+              retryCount,
+            });
+            // Reset for next error sequence
+            session.errorRetryCount = 0;
+          }
         } else {
-          this.logger.warn('Auto-retry budget exhausted', {
-            sessionKey,
-            retryCount,
-          });
-          // Reset for next error sequence
+          // Unknown errors: reset retry budget so a subsequent recoverable
+          // error starts fresh (not with a partially consumed budget).
           session.errorRetryCount = 0;
         }
       }
@@ -1193,10 +1225,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return false;
     }
 
-    // Issue #118: Unknown errors should clear session as safe default.
-    // Preserving a broken session causes infinite retry loops (3x auto-retry
-    // with same broken sessionId). Cost of clearing (context loss) < infinite error loop.
-    return true;
+    // Default: preserve session. Unknown errors keep the session alive
+    // so the user can continue the conversation or manually reset via
+    // `/reset`. If the session is truly broken, the bot will detect it
+    // on the next turn (isInvalidResumeSessionError). Unknown errors
+    // are NOT auto-retried — only known recoverable patterns get retries.
+    return false;
   }
 
   private isContextOverflowError(error: any): boolean {
@@ -1238,6 +1272,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const recoverablePatterns = [
       "you've hit your limit",
+      'out of extra usage',
       'rate limit',
       'too many requests',
       '429',
@@ -1266,6 +1301,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const combined = `${message} ${stderr}`;
     return (
       combined.includes("you've hit your limit") ||
+      combined.includes('out of extra usage') ||
       combined.includes('rate limit') ||
       combined.includes('too many requests') ||
       combined.includes('429')
@@ -1456,6 +1492,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       'no_permission',
       'not_in_channel',
       'msg_too_long',
+      'msg_blocks_too_long',
       'invalid_arguments',
       'missing_scope',
       'token_revoked',
@@ -1513,6 +1550,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
     } else {
       lines.push(`> *Session:* ✅ 유지됨 - 대화를 계속할 수 있습니다.`);
+      // For unknown (non-recoverable-pattern) errors preserved by default,
+      // hint the user that they can manually reset if things look broken.
+      if (!this.isRecoverableClaudeSdkError(error) && !this.isSlackApiError(error)) {
+        lines.push(`> _문제가 계속되면 \`/reset\` 으로 세션을 초기화할 수 있습니다._`);
+      }
     }
 
     // Issue #122: Append SDK stderr details so users can see the actual error cause
