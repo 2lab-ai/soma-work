@@ -13,7 +13,14 @@ import type {
   ModelCommandError,
   ModelCommandRunRequest,
   ModelCommandRunResponse,
+  SaveMemoryParams,
 } from './types';
+import {
+  addMemory,
+  loadMemory,
+  removeMemory,
+  replaceMemory,
+} from '../user-memory-store';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
   issue: 'issues',
@@ -181,6 +188,31 @@ const SAVE_CONTEXT_RESULT_SCHEMA = {
   required: ['result'],
 };
 
+const SAVE_MEMORY_SCHEMA = {
+  type: 'object',
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['add', 'replace', 'remove'],
+      description: 'add: append new entry, replace: update existing, remove: delete entry',
+    },
+    target: {
+      type: 'string',
+      enum: ['memory', 'user'],
+      description: 'memory: agent notes (env facts, conventions), user: user profile (preferences, style)',
+    },
+    content: {
+      type: 'string',
+      description: 'Text to save (required for add/replace)',
+    },
+    old_text: {
+      type: 'string',
+      description: 'Substring to match existing entry (required for replace/remove)',
+    },
+  },
+  required: ['action', 'target'],
+};
+
 const CONTINUE_SESSION_SCHEMA = {
   type: 'object',
   properties: {
@@ -274,6 +306,22 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       paramsSchema: CONTINUE_SESSION_SCHEMA,
     },
   ];
+
+  if (context.user) {
+    commands.push(
+      {
+        id: 'SAVE_MEMORY',
+        description:
+          'Save persistent memory across sessions. Use for: user preferences, environment details, tool quirks, stable conventions. Do NOT save: task progress, session outcomes, temporary state.',
+        paramsSchema: SAVE_MEMORY_SCHEMA,
+      },
+      {
+        id: 'GET_MEMORY',
+        description: 'Read current persistent memory and user profile entries',
+        paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    );
+  }
 
   if (context.renewState === 'pending_save') {
     commands.push({
@@ -450,6 +498,59 @@ export function runModelCommand(
       ok: true,
       payload: {
         continuation: normalizeContinuation(request.params),
+      },
+    };
+  }
+
+  if (request.commandId === 'SAVE_MEMORY') {
+    if (!context.user) {
+      return toRunError('SAVE_MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const params = request.params as SaveMemoryParams;
+    let result;
+    if (params.action === 'add') {
+      if (!params.content) {
+        return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'content is required for add' });
+      }
+      result = addMemory(context.user, params.target, params.content);
+    } else if (params.action === 'replace') {
+      if (!params.old_text || !params.content) {
+        return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'old_text and content are required for replace' });
+      }
+      result = replaceMemory(context.user, params.target, params.old_text, params.content);
+    } else if (params.action === 'remove') {
+      if (!params.old_text) {
+        return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'old_text is required for remove' });
+      }
+      result = removeMemory(context.user, params.target, params.old_text);
+    } else {
+      return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
+    }
+    return {
+      type: 'model_command_result',
+      commandId: 'SAVE_MEMORY',
+      ok: true,
+      payload: { ok: result.ok, message: result.message },
+    };
+  }
+
+  if (request.commandId === 'GET_MEMORY') {
+    if (!context.user) {
+      return toRunError('GET_MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const mem = loadMemory(context.user, 'memory');
+    const usr = loadMemory(context.user, 'user');
+    return {
+      type: 'model_command_result',
+      commandId: 'GET_MEMORY',
+      ok: true,
+      payload: {
+        memory: mem.entries,
+        user: usr.entries,
+        memoryChars: mem.totalChars,
+        memoryLimit: mem.charLimit,
+        userChars: usr.totalChars,
+        userLimit: usr.charLimit,
       },
     };
   }

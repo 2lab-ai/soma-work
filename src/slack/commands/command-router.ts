@@ -13,6 +13,7 @@ import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
+import { MemoryHandler } from './memory-handler';
 import { LlmChatHandler } from './llm-chat-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
@@ -56,6 +57,7 @@ export class CommandRouter {
       new BypassHandler(),
       new EmailHandler(),
       new PersonaHandler(),
+      new MemoryHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
       new NotifyHandler(),

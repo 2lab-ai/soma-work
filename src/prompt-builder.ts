@@ -392,6 +392,19 @@ export class PromptBuilder {
       }
     }
 
+    // Inject persistent memory (after persona, before variable processing)
+    if (userId) {
+      const { formatMemoryForPrompt } = require('./user-memory-store');
+      const memoryBlock = formatMemoryForPrompt(userId);
+      if (memoryBlock) {
+        const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
+        systemPrompt = systemPrompt
+          ? `${systemPrompt}\n\n${guidance}\n${memoryBlock}`
+          : `${guidance}\n${memoryBlock}`;
+        this.logger.debug('Injected persistent memory', { user: userId });
+      }
+    }
+
     // Process runtime variables (e.g., {{llm_chat_config}}, {{user.email}})
     // Done last so dynamic config values are always current
     if (systemPrompt) {
