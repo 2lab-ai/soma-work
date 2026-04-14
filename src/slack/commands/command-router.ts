@@ -16,6 +16,7 @@ import { LinkHandler } from './link-handler';
 import { LlmChatHandler } from './llm-chat-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
+import { MemoryHandler } from './memory-handler';
 import { ModelHandler } from './model-handler';
 import { NewHandler } from './new-handler';
 import { NotifyHandler } from './notify-handler';
@@ -56,6 +57,7 @@ export class CommandRouter {
       new BypassHandler(),
       new EmailHandler(),
       new PersonaHandler(),
+      new MemoryHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
       new NotifyHandler(),

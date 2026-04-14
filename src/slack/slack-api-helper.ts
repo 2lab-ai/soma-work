@@ -6,6 +6,8 @@ export interface SlackAuthContext {
   teamId: string;
   url: string;
   enterpriseId?: string;
+  /** Bot's Slack username/handle (from auth.test response) */
+  botName?: string;
 }
 
 export interface MessageOptions {
@@ -284,6 +286,7 @@ export class SlackApiHelper {
         teamId: response.team_id as string,
         url: response.url as string,
         enterpriseId: (response as any).enterprise_id as string | undefined,
+        botName: response.user as string | undefined,
       };
     }
     return this.authContext;

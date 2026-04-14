@@ -4,6 +4,14 @@
 import { McpCallTracker } from '../mcp-call-tracker';
 import type { RenderMode } from './output-flags';
 
+// Bot display name for tool notifications (set once at startup via setBotDisplayName)
+let _botDisplayName = 'Soma';
+
+/** Set the bot's display name for tool notifications (call once at startup). */
+export function setBotDisplayName(name: string): void {
+  _botDisplayName = name;
+}
+
 export interface ToolResult {
   toolName?: string;
   toolUseId: string;
@@ -378,6 +386,10 @@ export class ToolFormatter {
       }
       default:
         if (toolName.startsWith('mcp__')) {
+          // SAVE_MEMORY meme: "X will remember that" (Telltale Games style)
+          if (toolName === 'mcp__model-command__run' && input?.commandId === 'SAVE_MEMORY') {
+            return `🧠 *'${_botDisplayName}'은(는) 이것을 기억할 것입니다.*`;
+          }
           const parts = toolName.split('__');
           const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
           const params = ToolFormatter.formatCompactParams(input);
@@ -526,6 +538,18 @@ export class ToolFormatter {
     }
 
     return parts.join('\n\n');
+  }
+
+  /**
+   * Format Skill invocation as RPG-style announcement.
+   * ~20% critical hit chance with bold damage number.
+   */
+  static formatSkillInvocationRPG(skillName: string, casterName: string): string {
+    const isCritical = Math.random() < 0.2;
+    const damage = isCritical ? Math.floor(Math.random() * 150) + 100 : Math.floor(Math.random() * 100) + 30;
+    const dmgText = isCritical ? `*${damage}*` : `${damage}`;
+    const suffix = isCritical ? ' 크리티컬!' : '!';
+    return `> '${casterName}'가 '${skillName}'을 발동했습니다. 데미지 ${dmgText}${suffix}`;
   }
 
   /** Format a compact completion line for in-place tool message update */
