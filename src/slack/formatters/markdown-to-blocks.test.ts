@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { markdownToBlocks, thinkingToQuoteBlock, estimatePayloadSize } from './markdown-to-blocks';
+import { estimatePayloadSize, markdownToBlocks, thinkingToQuoteBlock } from './markdown-to-blocks';
 
 describe('markdownToBlocks', () => {
   it('converts headers to header blocks', () => {
@@ -239,10 +239,7 @@ describe('markdownToBlocks payload size splitting', () => {
   it('splits messages when total payload exceeds 35KB', () => {
     // Create a very large markdown that produces blocks totaling > 35KB.
     // Each code block creates a rich_text_preformatted — they can be large.
-    const bigCodeBlocks = Array.from(
-      { length: 10 },
-      (_, i) => `\`\`\`\n${'x'.repeat(5000)}\n\`\`\``,
-    ).join('\n\n');
+    const bigCodeBlocks = Array.from({ length: 10 }, (_, i) => `\`\`\`\n${'x'.repeat(5000)}\n\`\`\``).join('\n\n');
 
     const result = markdownToBlocks(bigCodeBlocks);
 
