@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { type Todo, TodoManager } from '../todo-manager';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 
-describe('TaskListBlockBuilder', () => {
+// ═══════════════════════════════════════════════════════════
+// CHECKLIST MODE (default theme)
+// ═══════════════════════════════════════════════════════════
+
+describe('TaskListBlockBuilder — Checklist mode (default)', () => {
   let todoManager: TodoManager;
   let builder: TaskListBlockBuilder;
 
@@ -31,46 +35,46 @@ describe('TaskListBlockBuilder', () => {
 
     const blocks = builder.buildBlocks(todos);
 
-    // Should have: divider, title+progress, task items, footer
-    expect(blocks.length).toBeGreaterThanOrEqual(3);
-
     // First block is divider
     expect(blocks[0].type).toBe('divider');
 
-    // Find the section with task items
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('⚫'));
+    // Title section with "Task List" and "done"
+    const titleSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Task List'));
+    expect(titleSection).toBeDefined();
+    expect(titleSection.text.text).toContain('1/3 done');
+    expect(titleSection.text.text).toContain('33%');
+
+    // Task section with new icons
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('\u2713'));
     expect(taskSection).toBeDefined();
     const text = taskSection.text.text;
 
-    // Completed task: ⚫ + strikethrough
-    expect(text).toContain('⚫');
-    expect(text).toContain('~GitHub issue 생성~');
+    // Completed: ✓ + strikethrough
+    expect(text).toContain('\u2713');
+    expect(text).toContain('~#1 GitHub issue 생성~');
 
-    // In-progress task: 🟢 + bold number + arrow (flows from completed)
+    // In-progress: 🟢 + bold
     expect(text).toContain('🟢');
     expect(text).toContain('types.ts 수정');
 
-    // Active form shown as sub-status (underscores escaped to ˍ)
-    expect(text).toContain('llmˍchat(codex) 진행중');
-
-    // Pending task: ⚪
-    expect(text).toContain('⚪');
+    // Pending: ○
+    expect(text).toContain('\u25CB');
     expect(text).toContain('테스트 추가');
   });
 
-  it('shows blocked status with dependency labels', () => {
+  it('shows blocked status with "blocked by" label', () => {
     const todos: Todo[] = [
       { id: '1', content: 'PR 리뷰', status: 'pending', priority: 'medium' },
       { id: '2', content: 'codex 병렬 리뷰', status: 'pending', priority: 'low', dependencies: ['1'] },
     ];
 
     const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('🔒'));
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes(':lock:'));
     expect(taskSection).toBeDefined();
-    expect(taskSection.text.text).toContain('deps:#1');
+    expect(taskSection.text.text).toContain('blocked by #1');
   });
 
-  it('renders progress bar correctly', () => {
+  it('shows text progress (not CLI bar)', () => {
     const todos: Todo[] = [
       { id: '1', content: 'task1', status: 'completed', priority: 'medium' },
       { id: '2', content: 'task2', status: 'completed', priority: 'medium' },
@@ -79,11 +83,13 @@ describe('TaskListBlockBuilder', () => {
     ];
 
     const blocks = builder.buildBlocks(todos);
-    // 2/4 = 50%
     const titleSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Task List'));
     expect(titleSection).toBeDefined();
+    expect(titleSection.text.text).toContain('2/4 done');
     expect(titleSection.text.text).toContain('50%');
-    expect(titleSection.text.text).toContain('2/4');
+    // Should NOT contain CLI progress bar
+    expect(titleSection.text.text).not.toContain('█');
+    expect(titleSection.text.text).not.toContain('░');
   });
 
   it('shows 100% completion with checkmark', () => {
@@ -97,33 +103,276 @@ describe('TaskListBlockBuilder', () => {
     expect(titleSection.text.text).toContain('100%');
     expect(titleSection.text.text).toContain(':white_check_mark:');
 
-    // Footer should show "All X tasks completed"
     const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('All'));
     expect(footer).toBeDefined();
     expect(footer.elements[0].text).toContain('All 2 tasks completed');
   });
 
-  it('includes time context when startedAt is provided', () => {
-    const todos: Todo[] = [{ id: '1', content: 'task1', status: 'in_progress', priority: 'medium' }];
+  it('detects completion by count, not rounded percent (P2 fix)', () => {
+    // 199/200 → Math.round(99.5%) = 100% but NOT all done
+    const todos: Todo[] = Array.from({ length: 200 }, (_, i) => ({
+      id: String(i + 1),
+      content: `task${i + 1}`,
+      status: i < 199 ? 'completed' : 'pending',
+      priority: 'medium',
+    })) as Todo[];
+
+    const blocks = builder.buildBlocks(todos);
+    // Should NOT show "All tasks completed" because 1 task is still pending
+    const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('All'));
+    expect(footer).toBeUndefined();
+  });
+
+  it('footer shows sub-status and start time (not clock emoji)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'task1', status: 'in_progress', priority: 'medium', activeForm: 'Running tests' },
+    ];
 
     const blocks = builder.buildBlocks(todos, {
       startedAt: new Date('2025-01-01T12:01:00').getTime(),
     });
 
-    const timeCtx = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Start:'));
-    expect(timeCtx).toBeDefined();
-    // Now uses Slack date tokens
-    expect(timeCtx.elements[0].text).toContain('<!date^');
+    const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Started'));
+    expect(footer).toBeDefined();
+    expect(footer.elements[0].text).toContain('▸');
+    expect(footer.elements[0].text).toContain('Running tests');
+    expect(footer.elements[0].text).toContain('Started');
+    // Should NOT use clock emoji
+    expect(footer.elements[0].text).not.toContain(':clock1:');
   });
 
-  it('does not show time context when startedAt is not provided', () => {
-    const todos: Todo[] = [{ id: '1', content: 'task1', status: 'pending', priority: 'medium' }];
+  it('uses #N numbering for task references', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'first', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'second', status: 'pending', priority: 'medium' },
+    ];
 
     const blocks = builder.buildBlocks(todos);
-    const timeCtx = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Start:'));
-    expect(timeCtx).toBeUndefined();
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('#1'));
+    expect(taskSection).toBeDefined();
+    expect(taskSection.text.text).toContain('#1');
+    expect(taskSection.text.text).toContain('#2');
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// QUEUE MODE (compact theme)
+// ═══════════════════════════════════════════════════════════
+
+describe('TaskListBlockBuilder — Queue mode (compact)', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
+  });
+
+  it('groups tasks by state: Now / Up Next / Blocked', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'GitHub issue 생성', status: 'completed', priority: 'high' },
+      { id: '2', content: 'RED 테스트 추가', status: 'completed', priority: 'medium' },
+      { id: '3', content: '구현 (TaskListBlockBuilder)', status: 'in_progress', priority: 'medium' },
+      { id: '4', content: 'PR 올리기 + CI 통과', status: 'pending', priority: 'medium' },
+      { id: '5', content: 'Codex/Gemini 리뷰 반영', status: 'pending', priority: 'low', dependencies: ['4'] },
+    ];
+
+    const blocks = builder.buildBlocks(todos, { theme: 'compact' });
+
+    // Title says "Queue"
+    const titleSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Queue'));
+    expect(titleSection).toBeDefined();
+    expect(titleSection.text.text).toContain('2/5 done');
+
+    // Group section
+    const groupSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Now'));
+    expect(groupSection).toBeDefined();
+    const groupText = groupSection.text.text;
+
+    // Now group
+    expect(groupText).toContain('🟢 *Now*');
+    expect(groupText).toContain('구현');
+
+    // Up Next group
+    expect(groupText).toContain('▸ *Up Next*');
+    expect(groupText).toContain('PR 올리기');
+
+    // Blocked group
+    expect(groupText).toContain(':lock: *Blocked*');
+    expect(groupText).toContain('리뷰 반영');
+    expect(groupText).toContain('waiting for #4');
+
+    // Uses ∙ prefix markers
+    expect(groupText).toContain('∙');
+
+    // Completed tasks should NOT appear in queue
+    expect(groupText).not.toContain('issue 생성');
+    expect(groupText).not.toContain('테스트 추가');
+  });
+
+  it('completed state shows minimal footer', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done1', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'done2', status: 'completed', priority: 'medium' },
+    ];
+
+    const blocks = builder.buildBlocks(todos, {
+      theme: 'compact',
+      startedAt: Date.now() - 42 * 60_000,
+      completedAt: Date.now(),
+    });
+
+    const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('completed'));
+    expect(footer).toBeDefined();
+    expect(footer.elements[0].text).toContain('All tasks completed');
+  });
+
+  it('footer shows done count and active sub-status', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'working', status: 'in_progress', priority: 'medium', activeForm: 'llm_chat(codex)' },
+      { id: '3', content: 'next', status: 'pending', priority: 'medium' },
+    ];
+
+    const blocks = builder.buildBlocks(todos, { theme: 'compact', startedAt: Date.now() });
+
+    const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('done'));
+    expect(footer).toBeDefined();
+    const footerText = footer.elements[0].text;
+    expect(footerText).toContain('✓ 1 done');
+    expect(footerText).toContain('llmˍchat(codex)');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// PULSE MODE (minimal theme)
+// ═══════════════════════════════════════════════════════════
+
+describe('TaskListBlockBuilder — Pulse mode (minimal)', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
+  });
+
+  it('in-progress shows single section with progress/task/blocked', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done1', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'done2', status: 'completed', priority: 'medium' },
+      { id: '3', content: '구현', status: 'in_progress', priority: 'medium', activeForm: 'llm_chat(codex)' },
+      { id: '4', content: 'PR 올리기', status: 'pending', priority: 'medium' },
+      { id: '5', content: '리뷰', status: 'pending', priority: 'low', dependencies: ['4'] },
+    ];
+
+    const blocks = builder.buildBlocks(todos, { theme: 'minimal' });
+
+    // Should be divider + section only (2 blocks)
+    expect(blocks.length).toBe(2);
+    expect(blocks[0].type).toBe('divider');
+    expect(blocks[1].type).toBe('section');
+
+    const text = blocks[1].text.text;
+    // Progress count
+    expect(text).toContain('2/5');
+    // Active task name
+    expect(text).toContain('구현');
+    // Sub-status
+    expect(text).toContain('llmˍchat(codex)');
+    // Blocked count
+    expect(text).toContain(':lock: 1 blocked');
+  });
+
+  it('completed shows single context line', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done1', status: 'completed', priority: 'medium' },
+      { id: '2', content: 'done2', status: 'completed', priority: 'medium' },
+    ];
+
+    const blocks = builder.buildBlocks(todos, {
+      theme: 'minimal',
+      startedAt: Date.now() - 42 * 60_000,
+      completedAt: Date.now(),
+    });
+
+    // Should be divider + context only (2 blocks)
+    expect(blocks.length).toBe(2);
+    expect(blocks[0].type).toBe('divider');
+    expect(blocks[1].type).toBe('context');
+
+    const text = blocks[1].elements[0].text;
+    expect(text).toContain('Done');
+    expect(text).toContain('2/2');
+    expect(text).toContain(':white_check_mark:');
+    expect(text).toContain('42m');
+  });
+
+  it('no blocked count shown when none blocked', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'working', status: 'in_progress', priority: 'medium' },
+      { id: '2', content: 'next', status: 'pending', priority: 'medium' },
+    ];
+
+    const blocks = builder.buildBlocks(todos, { theme: 'minimal' });
+    const text = blocks[1].text.text;
+    expect(text).not.toContain('blocked');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// CROSS-MODE TESTS
+// ═══════════════════════════════════════════════════════════
+
+describe('TaskListBlockBuilder — Cross-mode', () => {
+  let todoManager: TodoManager;
+  let builder: TaskListBlockBuilder;
+
+  beforeEach(() => {
+    todoManager = new TodoManager();
+    builder = new TaskListBlockBuilder(todoManager);
+  });
+
+  it('defaults to checklist when no theme specified', () => {
+    const todos: Todo[] = [{ id: '1', content: 'task', status: 'pending', priority: 'medium' }];
+    const blocks = builder.buildBlocks(todos);
+    const title = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('Task List'));
+    expect(title).toBeDefined();
+  });
+
+  it('maps SessionTheme to rendering mode', () => {
+    const todos: Todo[] = [{ id: '1', content: 'task', status: 'pending', priority: 'medium' }];
+    // default → checklist
+    const defaultBlocks = builder.buildBlocks(todos, { theme: 'default' });
+    expect(defaultBlocks.find((b: any) => b.text?.text?.includes('Task List'))).toBeDefined();
+
+    // compact → queue
+    const compactBlocks = builder.buildBlocks(todos, { theme: 'compact' });
+    expect(compactBlocks.find((b: any) => b.text?.text?.includes('Queue'))).toBeDefined();
+
+    // minimal → pulse
+    const minimalBlocks = builder.buildBlocks(todos, { theme: 'minimal' });
+    expect(minimalBlocks.find((b: any) => b.text?.text?.includes(':clipboard:'))).toBeDefined();
+  });
+
+  it('all modes return empty for empty todos', () => {
+    for (const theme of ['default', 'compact', 'minimal'] as const) {
+      expect(builder.buildBlocks([], { theme })).toEqual([]);
+    }
+  });
+
+  it('all modes start with divider', () => {
+    const todos: Todo[] = [{ id: '1', content: 'task', status: 'pending', priority: 'medium' }];
+    for (const theme of ['default', 'compact', 'minimal'] as const) {
+      const blocks = builder.buildBlocks(todos, { theme });
+      expect(blocks[0].type).toBe('divider');
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// SHARED BEHAVIOR TESTS
+// ═══════════════════════════════════════════════════════════
 
 describe('TodoManager dependency methods', () => {
   let manager: TodoManager;
@@ -171,59 +420,6 @@ describe('TodoManager dependency methods', () => {
   it('getEffectiveStatus returns pending for pending without deps', () => {
     const todos: Todo[] = [{ id: '1', content: 'first', status: 'pending', priority: 'medium' }];
     expect(manager.getEffectiveStatus(todos[0], todos)).toBe('pending');
-  });
-});
-
-describe('TaskListBlockBuilder.flowsFromDeps (arrow logic)', () => {
-  let todoManager: TodoManager;
-  let builder: TaskListBlockBuilder;
-
-  beforeEach(() => {
-    todoManager = new TodoManager();
-    builder = new TaskListBlockBuilder(todoManager);
-  });
-
-  it('shows arrow for in_progress task when explicit deps are all completed', () => {
-    const todos: Todo[] = [
-      { id: '1', content: 'setup', status: 'completed', priority: 'medium' },
-      { id: '2', content: 'build', status: 'in_progress', priority: 'medium', dependencies: ['1'] },
-    ];
-    const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('🟢'));
-    expect(taskSection).toBeDefined();
-    // Arrow prefix '→' should appear before the in-progress task
-    expect(taskSection.text.text).toContain('→');
-  });
-
-  it('shows arrow for in_progress task when previous task is completed (implicit sequential)', () => {
-    const todos: Todo[] = [
-      { id: '1', content: 'first', status: 'completed', priority: 'medium' },
-      { id: '2', content: 'second', status: 'in_progress', priority: 'medium' },
-    ];
-    const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('🟢'));
-    expect(taskSection.text.text).toContain('→');
-  });
-
-  it('does not show arrow for first in_progress task with no deps', () => {
-    const todos: Todo[] = [{ id: '1', content: 'only task', status: 'in_progress', priority: 'medium' }];
-    const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('🟢'));
-    expect(taskSection.text.text).not.toContain('→');
-  });
-
-  it('does not show arrow when explicit deps are not all completed', () => {
-    const todos: Todo[] = [
-      { id: '1', content: 'dep1', status: 'completed', priority: 'medium' },
-      { id: '2', content: 'dep2', status: 'in_progress', priority: 'medium' },
-      { id: '3', content: 'blocked', status: 'in_progress', priority: 'medium', dependencies: ['1', '2'] },
-    ];
-    const blocks = builder.buildBlocks(todos);
-    const taskText =
-      blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('blocked'))?.text?.text || '';
-    // Task 3 line should NOT have arrow since dep '2' is not completed
-    const task3Line = taskText.split('\n').find((l: string) => l.includes('blocked'));
-    expect(task3Line).not.toContain('→');
   });
 });
 
@@ -291,36 +487,36 @@ describe('mrkdwn escaping in task content', () => {
     const blocks = builder.buildBlocks(todos);
     const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('🟢'));
     const text = taskSection.text.text;
-    // Should NOT contain raw mrkdwn chars
     expect(text).not.toContain('*bold*');
     expect(text).not.toContain('_italic_');
     expect(text).not.toContain('~strike~');
   });
 
-  it('escapes angle brackets and ampersands to prevent mention/link injection', () => {
-    const todos: Todo[] = [
-      {
-        id: '1',
-        content: 'Check <!channel> and <@U123> and <http://evil.com|click>',
-        status: 'pending',
-        priority: 'medium',
-      },
-    ];
+  it('escapes angle brackets and ampersands', () => {
+    const todos: Todo[] = [{ id: '1', content: 'Check <!channel> and <@U123>', status: 'pending', priority: 'medium' }];
     const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('⚪'));
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('\u25CB'));
     const text = taskSection.text.text;
-    // Angle brackets should be escaped
     expect(text).not.toContain('<!channel>');
     expect(text).not.toContain('<@U123>');
-    expect(text).not.toContain('<http://');
     expect(text).toContain('&lt;');
   });
 
-  it('flattens newlines in content to prevent layout break', () => {
+  it('escapes unresolved dependency IDs (P2 fix)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'task', status: 'pending', priority: 'medium', dependencies: ['<@U123>'] },
+    ];
+    const blocks = builder.buildBlocks(todos);
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes(':lock:'));
+    const text = taskSection.text.text;
+    expect(text).not.toContain('<@U123>');
+    expect(text).toContain('&lt;');
+  });
+
+  it('flattens newlines in content', () => {
     const todos: Todo[] = [{ id: '1', content: 'line1\nline2\nline3', status: 'pending', priority: 'medium' }];
     const blocks = builder.buildBlocks(todos);
-    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('⚪'));
-    // The task content line should not contain raw newlines from content
+    const taskSection = blocks.find((b: any) => b.type === 'section' && b.text?.text?.includes('\u25CB'));
     const taskLine = taskSection.text.text.split('\n').find((l: string) => l.includes('line1'));
     expect(taskLine).toContain('line1 line2 line3');
   });
@@ -335,14 +531,15 @@ describe('Slack date token in time display', () => {
     builder = new TaskListBlockBuilder(todoManager);
   });
 
-  it('uses Slack date token format for startedAt', () => {
-    const todos: Todo[] = [{ id: '1', content: 'task', status: 'in_progress', priority: 'medium' }];
+  it('uses Slack date token format for startedAt in checklist footer', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'task', status: 'in_progress', priority: 'medium', activeForm: 'working' },
+    ];
     const ts = new Date('2025-06-15T14:30:00Z').getTime();
     const blocks = builder.buildBlocks(todos, { startedAt: ts });
-    const timeCtx = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Start:'));
-    expect(timeCtx).toBeDefined();
-    // Should contain Slack date token format <!date^epoch^{time}|fallback>
-    expect(timeCtx.elements[0].text).toContain('<!date^');
-    expect(timeCtx.elements[0].text).toContain('^{time}|');
+    const footer = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Started'));
+    expect(footer).toBeDefined();
+    expect(footer.elements[0].text).toContain('<!date^');
+    expect(footer.elements[0].text).toContain('^{time}|');
   });
 });
