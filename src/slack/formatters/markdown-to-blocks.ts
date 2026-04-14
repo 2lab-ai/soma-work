@@ -14,6 +14,8 @@
  * - Max 45 blocks per message (Slack limit: 50, leaving room for header/footer)
  * - Max 1 table per message (Slack constraint)
  * - Max 100 rows per table, max 20 columns
+ * - Max 3000 chars per section text / rich_text text element
+ * - Max ~35KB payload per message (Slack undocumented ~40KB limit)
  * - Fallback to plain text on conversion failure
  */
 
@@ -38,6 +40,16 @@ const MAX_TABLE_ROWS = 100;
 
 /** Maximum columns per table block */
 const MAX_TABLE_COLUMNS = 20;
+
+/** Maximum characters for section block text (Slack limit: 3000) */
+const MAX_SECTION_TEXT = 3000;
+
+/**
+ * Maximum estimated payload size per message in bytes.
+ * Slack's undocumented limit is ~40KB for blocks payload.
+ * We use 35KB as a safe threshold to leave room for metadata.
+ */
+const MAX_PAYLOAD_BYTES = 35_000;
 
 export interface SlackBlock {
   type: string;
@@ -110,6 +122,8 @@ export function thinkingToQuoteBlock(thinkingText: string): SlackBlock {
 /**
  * Sanitize blocks to comply with Slack constraints.
  * - Truncate tables exceeding row/column limits
+ * - Truncate section text exceeding 3000 chars
+ * - Truncate rich_text element text lengths
  * - Remove invalid block structures
  */
 function sanitizeBlocks(blocks: SlackBlock[]): SlackBlock[] {
@@ -119,6 +133,12 @@ function sanitizeBlocks(blocks: SlackBlock[]): SlackBlock[] {
     }
     if (block.type === 'header') {
       return sanitizeHeader(block);
+    }
+    if (block.type === 'section') {
+      return sanitizeSection(block);
+    }
+    if (block.type === 'rich_text') {
+      return sanitizeRichText(block);
     }
     return block;
   });
@@ -158,40 +178,109 @@ function sanitizeHeader(block: SlackBlock): SlackBlock {
 }
 
 /**
+ * Ensure section block text stays within 3000 char limit.
+ */
+function sanitizeSection(block: SlackBlock): SlackBlock {
+  const text = block.text?.text || '';
+  if (text.length <= MAX_SECTION_TEXT) return block;
+
+  return {
+    ...block,
+    text: {
+      ...block.text,
+      text: text.slice(0, MAX_SECTION_TEXT - 3) + '...',
+    },
+  };
+}
+
+/**
+ * Truncate text elements in rich_text blocks to prevent oversized payloads.
+ * Walks all nested elements and caps text at 3000 chars per element.
+ */
+function sanitizeRichText(block: SlackBlock): SlackBlock {
+  if (!block.elements || !Array.isArray(block.elements)) return block;
+
+  return {
+    ...block,
+    elements: block.elements.map((subElement: any) => truncateRichTextElement(subElement)),
+  };
+}
+
+function truncateRichTextElement(element: any): any {
+  if (!element) return element;
+
+  // Leaf text element — cap at 3000 chars
+  if (element.type === 'text' && typeof element.text === 'string' && element.text.length > MAX_SECTION_TEXT) {
+    return { ...element, text: element.text.slice(0, MAX_SECTION_TEXT - 3) + '...' };
+  }
+
+  // Container elements (rich_text_section, rich_text_preformatted, rich_text_quote, rich_text_list)
+  if (element.elements && Array.isArray(element.elements)) {
+    return { ...element, elements: element.elements.map((child: any) => truncateRichTextElement(child)) };
+  }
+
+  return element;
+}
+
+/**
+ * Estimate the JSON payload size of a blocks array in bytes.
+ * Uses a fast approximation — exact JSON.stringify is too expensive for hot paths.
+ */
+export function estimatePayloadSize(blocks: SlackBlock[]): number {
+  // JSON.stringify is accurate but acceptable here since it only runs once per message
+  try {
+    return new TextEncoder().encode(JSON.stringify(blocks)).byteLength;
+  } catch {
+    // Fallback: rough estimate
+    return blocks.length * 500;
+  }
+}
+
+/**
  * Split blocks into multiple messages if needed.
  * Rules:
  * - Primary message: up to MAX_BLOCKS_PER_MESSAGE blocks
  * - Each table must be in its own message (1 table per message limit)
+ * - Each message must stay under MAX_PAYLOAD_BYTES (~35KB)
  * - Overflow messages contain remaining blocks
  */
 function splitMessages(blocks: SlackBlock[]): {
   primary: SlackBlock[];
   overflow: SlackBlock[][];
 } {
-  if (blocks.length <= MAX_BLOCKS_PER_MESSAGE && countTables(blocks) <= 1) {
+  if (
+    blocks.length <= MAX_BLOCKS_PER_MESSAGE &&
+    countTables(blocks) <= 1 &&
+    estimatePayloadSize(blocks) <= MAX_PAYLOAD_BYTES
+  ) {
     return { primary: blocks, overflow: [] };
   }
 
   const messages: SlackBlock[][] = [];
   let current: SlackBlock[] = [];
   let currentTableCount = 0;
+  let currentSize = 0;
 
   for (const block of blocks) {
     const isTable = block.type === 'table';
+    const blockSize = estimatePayloadSize([block]);
 
-    // If adding this block would exceed limits, start new message
+    // If adding this block would exceed any limit, start new message
     const wouldExceedBlocks = current.length >= MAX_BLOCKS_PER_MESSAGE;
     const wouldExceedTables = isTable && currentTableCount >= 1;
+    const wouldExceedSize = current.length > 0 && currentSize + blockSize > MAX_PAYLOAD_BYTES;
 
-    if (wouldExceedBlocks || wouldExceedTables) {
+    if (wouldExceedBlocks || wouldExceedTables || wouldExceedSize) {
       if (current.length > 0) {
         messages.push(current);
       }
       current = [];
       currentTableCount = 0;
+      currentSize = 0;
     }
 
     current.push(block);
+    currentSize += blockSize;
     if (isTable) {
       currentTableCount++;
     }

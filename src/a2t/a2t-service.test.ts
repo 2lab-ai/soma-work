@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { A2tService } from './a2t-service';
 import type { A2tStatus } from './types';
 
