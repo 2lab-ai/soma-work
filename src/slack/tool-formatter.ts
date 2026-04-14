@@ -540,6 +540,18 @@ export class ToolFormatter {
     return parts.join('\n\n');
   }
 
+  /**
+   * Format Skill invocation as RPG-style announcement.
+   * ~20% critical hit chance with bold damage number.
+   */
+  static formatSkillInvocationRPG(skillName: string, casterName: string): string {
+    const isCritical = Math.random() < 0.2;
+    const damage = isCritical ? Math.floor(Math.random() * 150) + 100 : Math.floor(Math.random() * 100) + 30;
+    const dmgText = isCritical ? `*${damage}*` : `${damage}`;
+    const suffix = isCritical ? ' 크리티컬!' : '!';
+    return `> '@${casterName}'가 '${skillName}'을 발동했습니다. 데미지 ${dmgText}${suffix}`;
+  }
+
   /** Format a compact completion line for in-place tool message update */
   static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
     const icon = isError ? '🔴' : '🟢';
