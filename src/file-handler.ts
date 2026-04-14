@@ -15,6 +15,8 @@ export interface ProcessedFile {
   isAudio: boolean;
   size: number;
   tempPath?: string;
+  /** Transcript text extracted from Slack's built-in voice transcription */
+  transcript?: string;
 }
 
 export class FileHandler {
@@ -38,10 +40,30 @@ export class FileHandler {
   }
 
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
-    // Media files (video/audio) only need metadata — skip download entirely.
-    // This ensures large media files are still acknowledged instead of silently dropped.
-    if (this.isVideoFile(file.mimetype, file.name) || this.isAudioFile(file.mimetype, file.name)) {
-      this.logger.info('Media file detected, skipping download (metadata only)', {
+    // Audio files: extract Slack's built-in transcription instead of downloading binary.
+    if (this.isAudioFile(file.mimetype, file.name)) {
+      const transcript = this.extractSlackTranscription(file);
+      this.logger.info('Audio file detected', {
+        name: file.name,
+        mimetype: file.mimetype,
+        hasTranscript: !!transcript,
+      });
+      return {
+        path: '',
+        name: file.name,
+        mimetype: file.mimetype,
+        isImage: false,
+        isText: false,
+        isVideo: false,
+        isAudio: true,
+        size: file.size || 0,
+        transcript,
+      };
+    }
+
+    // Video files: metadata only — skip download entirely.
+    if (this.isVideoFile(file.mimetype, file.name)) {
+      this.logger.info('Video file detected, skipping download (metadata only)', {
         name: file.name,
         mimetype: file.mimetype,
       });
@@ -51,8 +73,8 @@ export class FileHandler {
         mimetype: file.mimetype,
         isImage: false,
         isText: false,
-        isVideo: this.isVideoFile(file.mimetype, file.name),
-        isAudio: this.isAudioFile(file.mimetype, file.name),
+        isVideo: true,
+        isAudio: false,
         size: file.size || 0,
       };
     }
@@ -246,6 +268,22 @@ export class FileHandler {
     return false;
   }
 
+  /**
+   * Extract transcription text from Slack's built-in voice transcription.
+   * Slack auto-transcribes voice clips and includes the result in the file metadata.
+   */
+  private extractSlackTranscription(file: any): string | undefined {
+    const transcription = file.transcription;
+    if (!transcription || transcription.status !== 'complete') {
+      return undefined;
+    }
+    const preview = transcription.preview;
+    if (!preview?.content) {
+      return undefined;
+    }
+    return preview.content;
+  }
+
   private isTextFile(mimetype: string): boolean {
     const textTypes = [
       'text/',
@@ -275,8 +313,12 @@ export class FileHandler {
           prompt += `Size: ${file.size} bytes\n`;
           prompt += `Path: ${file.path}\n`;
           prompt += `Note: This is an image file. Use the Read tool to view it (Claude Code supports reading images natively).\n`;
+        } else if (file.isAudio && file.transcript) {
+          // Voice message with Slack-provided transcription — include the spoken text directly.
+          prompt += `\n## Voice Message: ${file.name}\n`;
+          prompt += `[The user sent a voice message. Here is what they said: "${file.transcript}"]\n`;
         } else if (file.isVideo || file.isAudio) {
-          // Same structural prevention as images: omit path to prevent AI from attempting Read on binary media.
+          // Video or audio without transcription — metadata only.
           const mediaCategory = file.isVideo ? 'video' : 'audio';
           prompt += `\n## Media: ${file.name}\n`;
           prompt += `File type: ${file.mimetype}\n`;

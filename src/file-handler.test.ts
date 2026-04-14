@@ -278,3 +278,104 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result.path).toBe('');
   });
 });
+
+// ── Voice transcription support (fix: Transcription failed) ──
+
+describe('FileHandler — Slack voice transcription', () => {
+  const handler = new FileHandler();
+
+  it('downloadFile extracts Slack transcription from audio file', async () => {
+    const fh = handler as any;
+    const file = {
+      name: 'voice_clip.webm',
+      mimetype: 'audio/webm',
+      size: 15000,
+      url_private_download: 'https://example.com/audio',
+      transcription: {
+        status: 'complete',
+        locale: 'en',
+        preview: {
+          content: 'Hello, please fix this bug',
+          has_more: false,
+        },
+      },
+    };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isAudio).toBe(true);
+    expect(result.transcript).toBe('Hello, please fix this bug');
+    expect(result.path).toBe('');
+  });
+
+  it('downloadFile returns undefined transcript when transcription status is not complete', async () => {
+    const fh = handler as any;
+    const file = {
+      name: 'voice_clip.webm',
+      mimetype: 'audio/webm',
+      size: 15000,
+      url_private_download: 'https://example.com/audio',
+      transcription: {
+        status: 'processing',
+        locale: 'en',
+      },
+    };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isAudio).toBe(true);
+    expect(result.transcript).toBeUndefined();
+  });
+
+  it('downloadFile returns undefined transcript when no transcription field', async () => {
+    const fh = handler as any;
+    const file = {
+      name: 'podcast.mp3',
+      mimetype: 'audio/mpeg',
+      size: 80_000_000,
+      url_private_download: 'https://example.com/audio',
+    };
+    const result = await fh.downloadFile(file);
+
+    expect(result).not.toBeNull();
+    expect(result.isAudio).toBe(true);
+    expect(result.transcript).toBeUndefined();
+  });
+
+  it('formatFilePrompt includes transcript for audio with transcription', async () => {
+    const audioWithTranscript: ProcessedFile = {
+      path: '',
+      name: 'voice_clip.webm',
+      mimetype: 'audio/webm',
+      isImage: false,
+      isText: false,
+      isVideo: false,
+      isAudio: true,
+      size: 15000,
+      transcript: 'Hello, please fix this bug',
+    };
+    const result = await handler.formatFilePrompt([audioWithTranscript], '');
+
+    expect(result).toContain('Voice Message');
+    expect(result).toContain('Hello, please fix this bug');
+    expect(result).not.toContain('intentionally withheld');
+  });
+
+  it('formatFilePrompt falls back to media note for audio without transcript', async () => {
+    const audioNoTranscript: ProcessedFile = {
+      path: '',
+      name: 'podcast.mp3',
+      mimetype: 'audio/mpeg',
+      isImage: false,
+      isText: false,
+      isVideo: false,
+      isAudio: true,
+      size: 1200000,
+    };
+    const result = await handler.formatFilePrompt([audioNoTranscript], '');
+
+    expect(result).toContain('## Media:');
+    expect(result).toContain('audio');
+    expect(result).not.toContain('Voice Message');
+  });
+});
