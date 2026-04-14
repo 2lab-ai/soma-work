@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'fs';
+import type { A2tConfig } from './a2t/types';
 import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
@@ -28,6 +29,7 @@ export interface UnifiedConfig {
   plugin?: PluginConfig;
   llmChat?: Record<string, LlmBackendConfigJson>;
   agents?: Record<string, AgentConfig>;
+  a2t?: A2tConfig;
 }
 
 /**
@@ -121,12 +123,18 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.agents = agents;
       }
 
+      // Parse A2T (audio-to-text) config section
+      if (raw.a2t && typeof raw.a2t === 'object') {
+        result.a2t = raw.a2t as A2tConfig;
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
         hasLlmChat: !!result.llmChat,
         agents: result.agents ? Object.keys(result.agents).length : 0,
+        hasA2t: !!result.a2t,
       });
 
       return result;

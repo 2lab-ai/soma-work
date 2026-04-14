@@ -146,19 +146,19 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result).toContain('audio/mpeg');
   });
 
-  // Trace: Scenario 1, Section 3c — ProcessedFile.isVideo → "Media:" header
-  it('includes Media header for video files', async () => {
+  // Trace: Scenario 1, Section 3c — ProcessedFile.isVideo → "Video:" header
+  it('includes Video header for video files', async () => {
     const result = await handler.formatFilePrompt([makeVideoFile()], '');
 
-    expect(result).toContain('## Media:');
+    expect(result).toContain('## Video:');
     expect(result).not.toContain('Read tool');
   });
 
-  // Trace: Scenario 1, Section 3c — ProcessedFile.isAudio → "Media:" header
-  it('includes Media header for audio files', async () => {
+  // Trace: Scenario 1, Section 3c — ProcessedFile.isAudio → "Audio:" header
+  it('includes Audio header for audio files', async () => {
     const result = await handler.formatFilePrompt([makeAudioFile()], '');
 
-    expect(result).toContain('## Media:');
+    expect(result).toContain('## Audio:');
   });
 
   // Image path is now included so agent can view it
