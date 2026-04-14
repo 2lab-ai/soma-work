@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import { isSafePathSegment } from './path-utils';
 
 const ENTRY_DELIMITER = '\n§\n';
 const DEFAULT_MEMORY_CHAR_LIMIT = 2200;
@@ -31,6 +32,9 @@ interface MemoryOperationResult {
 const logger = new Logger('UserMemoryStore');
 
 function getUserMemoryDir(userId: string): string {
+  if (!isSafePathSegment(userId)) {
+    throw new Error(`Invalid userId for memory storage: ${userId}`);
+  }
   return path.join(DATA_DIR, userId);
 }
 
@@ -122,6 +126,11 @@ export function replaceMemory(
   oldText: string,
   newContent: string,
 ): MemoryOperationResult {
+  const trimmedNew = newContent.trim();
+  if (!trimmedNew) {
+    return { ok: false, message: 'Replacement content is empty' };
+  }
+
   const entries = readEntries(userId, target);
   const matches = entries.filter((e) => e.includes(oldText));
 
@@ -134,7 +143,7 @@ export function replaceMemory(
 
   const idx = entries.findIndex((e) => e.includes(oldText));
   const updated = [...entries];
-  updated[idx] = newContent.trim();
+  updated[idx] = trimmedNew;
 
   const charLimit = getCharLimit(target);
   if (totalChars(updated) > charLimit) {
@@ -152,6 +161,9 @@ export function removeMemory(userId: string, target: MemoryTarget, oldText: stri
 
   if (matches.length === 0) {
     return { ok: false, message: `No entry matching "${oldText}" found` };
+  }
+  if (matches.length > 1 && new Set(matches).size > 1) {
+    return { ok: false, message: `Multiple entries match "${oldText}". Be more specific.` };
   }
 
   const idx = entries.findIndex((e) => e.includes(oldText));
