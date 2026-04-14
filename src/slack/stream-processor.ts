@@ -38,8 +38,8 @@ export interface StreamContext {
   logVerbosity?: number;
   /** Whether thinking output is shown in Slack (independent of verbosity). Default: true */
   showThinking?: boolean;
-  /** User's Slack display name (used for skill invocation RPG announcements) */
-  slackName?: string;
+  /** Bot's Slack user ID (used for skill invocation RPG announcements as `<@BOT_ID>`) */
+  botUserId?: string;
 }
 
 /**
@@ -441,7 +441,7 @@ export class StreamProcessor {
       for (const part of content) {
         if (part.type === 'tool_use' && part.name === 'Skill') {
           const skillName = part.input?.skill || part.input?.name || 'unknown';
-          const casterName = context.slackName || 'AI';
+          const casterName = context.botUserId ? `<@${context.botUserId}>` : 'AI';
           const rpgMsg = ToolFormatter.formatSkillInvocationRPG(skillName, casterName);
           await context.say({ text: rpgMsg, thread_ts: context.threadTs });
         }
