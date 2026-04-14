@@ -44,6 +44,14 @@ Invoke `local:zwork` with the confirmed plan and task list.
 
 Invoke `local:zcheck` with the PR URL.
 
+### phase2.9: Persuade & Request Approve
+
+**zcheck 성공 후 실행.** 유저가 Approve할 수 있도록 PR이 이슈 내용대로 왜 작동하는지 설명한다.
+
+1. `local:ztrace`로 PR 변경사항이 이슈의 각 시나리오에서 어떻게 작동하는지 콜스택 수준으로 추적.
+2. ztrace 결과를 유저에게 출력 — 각 시나리오별 트리거, 콜스택, "왜 작동하는가" 포함.
+3. `local:UIAskUserQuestion`으로 Approve 요청. context에 ztrace 요약 + PR 링크 + 이슈 링크 포함.
+
 ### phase3: After Work Completion
 
 1. Output work history + provide issue/PR links
