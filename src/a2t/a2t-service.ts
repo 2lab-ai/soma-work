@@ -82,7 +82,7 @@ export class A2tService {
       model: config.model ?? 'large-v3-turbo',
       device: config.device ?? 'auto',
       computeType: config.computeType ?? 'auto',
-      minMemoryMb: config.minMemoryMb ?? 2000,
+      minMemoryMb: config.minMemoryMb ?? 16000,
       pythonPath: config.pythonPath ?? 'python3',
     };
     if (!this.config.enabled) {
@@ -149,10 +149,13 @@ export class A2tService {
       return;
     }
 
-    // Memory pre-check (Node.js side)
+    // Memory pre-check: require enough FREE memory before loading the model.
+    // Whisper large-v3-turbo needs ~2GB; set threshold high (default 16GB)
+    // so A2T only starts on machines with plenty of headroom.
+    // e.g. Mac Mini 16GB → freemem ~8GB < 16GB → A2T won't start (prevents OOM).
     const availableMb = os.freemem() / (1024 * 1024);
     if (availableMb < this.config.minMemoryMb) {
-      const msg = `Insufficient memory: ${Math.round(availableMb)}MB available, ${this.config.minMemoryMb}MB required`;
+      const msg = `Insufficient free memory for A2T: ${Math.round(availableMb)}MB available, ${this.config.minMemoryMb}MB required`;
       this.status = { state: 'error', error: msg };
       throw new Error(msg);
     }
