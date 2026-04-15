@@ -770,8 +770,7 @@ export class ClaudeHandler {
     // Sandbox: enabled by default for all users. Only admin-toggled sandboxDisabled skips it.
     // Mounts only /tmp/{userId} for filesystem write access.
     {
-      const sandboxDisabled =
-        slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+      const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
       if (!sandboxDisabled) {
         const sandboxConfig: NonNullable<Options['sandbox']> = {
           enabled: true,
