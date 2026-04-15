@@ -19,6 +19,7 @@ import {
   isDangerousCommand,
   isSshCommand,
 } from './dangerous-command-filter';
+import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from './sensitive-path-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -563,6 +564,131 @@ export class ClaudeHandler {
         });
       }
 
+      // Sensitive path guard: block non-admin users from reading host secrets
+      // (SSH keys, API tokens, .env files, DB passwords) via any tool.
+      // Addresses: sandbox read.denyOnly being empty — application-layer enforcement.
+      if (!isAdminUser(slackContext.user)) {
+        // Bash: block commands that read sensitive files (cat, head, tail, etc.)
+        preToolUseHooks.push({
+          matcher: 'Bash',
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+
+              const result = checkBashSensitivePaths(command);
+              if (result.isSensitive) {
+                this.logger.warn('Sensitive path access denied in Bash command', {
+                  command: command.substring(0, 100),
+                  user: slackContext.user,
+                  reason: result.reason,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+
+              return { continue: true };
+            },
+          ],
+        });
+
+        // Read tool: block reading sensitive files directly
+        preToolUseHooks.push({
+          matcher: 'Read',
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const filePath = typeof toolRecord?.file_path === 'string' ? toolRecord.file_path : '';
+
+              const result = checkSensitivePath(filePath);
+              if (result.isSensitive) {
+                this.logger.warn('Sensitive file read denied', {
+                  file: filePath,
+                  user: slackContext.user,
+                  reason: result.reason,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+
+              return { continue: true };
+            },
+          ],
+        });
+
+        // Glob tool: block scanning sensitive directories
+        preToolUseHooks.push({
+          matcher: 'Glob',
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const pattern = typeof toolRecord?.pattern === 'string' ? toolRecord.pattern : '';
+              const globPath = typeof toolRecord?.path === 'string' ? toolRecord.path : undefined;
+
+              const result = checkSensitiveGlob(pattern, globPath);
+              if (result.isSensitive) {
+                this.logger.warn('Sensitive directory glob denied', {
+                  pattern,
+                  path: globPath,
+                  user: slackContext.user,
+                  reason: result.reason,
+                });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                  },
+                };
+              }
+
+              return { continue: true };
+            },
+          ],
+        });
+
+        // Grep tool: block searching in sensitive directories
+        preToolUseHooks.push({
+          matcher: 'Grep',
+          hooks: [
+            async (input: HookInput): Promise<HookJSONOutput> => {
+              const { tool_input } = input as { tool_input: unknown };
+              const toolRecord = tool_input as Record<string, unknown> | undefined;
+              const grepPath = typeof toolRecord?.path === 'string' ? toolRecord.path : '';
+
+              if (grepPath) {
+                const result = checkSensitivePath(grepPath);
+                if (result.isSensitive) {
+                  this.logger.warn('Sensitive directory grep denied', {
+                    path: grepPath,
+                    user: slackContext.user,
+                    reason: result.reason,
+                  });
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse',
+                      permissionDecision: 'deny',
+                    },
+                  };
+                }
+              }
+
+              return { continue: true };
+            },
+          ],
+        });
+      }
+
       // Cross-user directory isolation: deny Bash commands that access another user's
       // /tmp/{userId}/ directory. Always enforced regardless of bypass mode.
       preToolUseHooks.push({
@@ -764,29 +890,6 @@ export class ClaudeHandler {
       if (slackContext?.user && isSafePathSegment(slackContext.user)) {
         const userRootDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
         options.additionalDirectories = [...(options.additionalDirectories || []), userRootDir];
-      }
-    }
-
-    // Sandbox: enabled by default for all users. Only admin-toggled sandboxDisabled skips it.
-    // Mounts only /tmp/{userId} for filesystem write access.
-    {
-      const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
-      if (!sandboxDisabled) {
-        const sandboxConfig: NonNullable<Options['sandbox']> = {
-          enabled: true,
-          autoAllowBashIfSandboxed: true,
-          failIfUnavailable: false,
-          allowUnsandboxedCommands: false,
-        };
-        // Mount only the user's /tmp/{userId} directory for writes
-        if (slackContext?.user && isSafePathSegment(slackContext.user)) {
-          const userDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-          sandboxConfig.filesystem = { allowWrite: [userDir] };
-        }
-        options.sandbox = sandboxConfig;
-        this.logger.debug('Sandbox enabled', { user: slackContext?.user });
-      } else {
-        this.logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
       }
     }
 
