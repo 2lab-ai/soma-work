@@ -585,6 +585,23 @@ export class ToolFormatter {
     return `> '${casterName}'가(이) \`${skillName}\`을 발동했습니다. 데미지 ${dmgText}${suffix}`;
   }
 
+  /**
+   * Format forced skill invocation ($plugin:skill) as RPG-style with red bar.
+   * Returns { text, color } for Slack attachment rendering.
+   * Higher base damage range to reflect forced invocation power.
+   */
+  static formatSkillForceInvocationRPG(skillNames: string[], casterName: string): { text: string; color: string } {
+    const isCritical = Math.random() < 0.3;
+    const damage = isCritical ? Math.floor(Math.random() * 200) + 150 : Math.floor(Math.random() * 120) + 50;
+    const dmgText = isCritical ? `*${damage}*` : `${damage}`;
+    const suffix = isCritical ? ' 💥 크리티컬!' : '!';
+    const skills = skillNames.map((s) => `\`${s}\``).join(', ');
+    return {
+      text: `⚡ '${casterName}'가(이) ${skills}을 *강제 발동*했습니다. 데미지 ${dmgText}${suffix}`,
+      color: '#FF0000',
+    };
+  }
+
   /** Format a compact completion line for in-place tool message update */
   static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
     const icon = isError ? '🔴' : '🟢';
