@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
@@ -12,18 +13,29 @@ const LOCAL_SKILLS_DIR = path.resolve(__dirname, '..', '..', 'local', 'skills');
 /** Max recursion depth to prevent infinite loops in skill references. */
 const MAX_DEPTH = 10;
 
-/** Regex to find $local:skillname or $stv:skillname patterns in text. */
-const SKILL_REF_PATTERN = /\$local:([a-zA-Z0-9_-]+)/g;
+/**
+ * Regex to find $plugin:skillname patterns in text.
+ * Matches: $local:z, $stv:new-task, $superpowers:brainstorming, etc.
+ */
+const SKILL_REF_PATTERN = /\$([\w-]+):([\w-]+)/g;
+
+/** Qualified skill reference: plugin + skill name */
+interface SkillRef {
+  plugin: string;
+  skill: string;
+  /** Canonical key for deduplication: "plugin:skill" */
+  key: string;
+}
 
 /**
- * Handles forced skill invocation via $local:skillname syntax.
+ * Handles forced skill invocation via $plugin:skillname syntax.
  *
- * When a user message contains $local:z, this handler:
- * 1. Extracts all $local:skillname references from the text
- * 2. Reads each SKILL.md file
- * 3. Recursively resolves nested $local: references inside skill content
- * 4. Builds an <invoked_skills> block and appends it to the user's original text
- * 5. Returns via continueWithPrompt so Claude processes both the instruction and the skills
+ * Examples:
+ *   $local:z         → reads local/skills/z/SKILL.md
+ *   $stv:new-task    → reads plugins/stv/skills/new-task/SKILL.md
+ *   $superpowers:tdd → reads plugins/superpowers/skills/tdd/SKILL.md
+ *
+ * Nested $plugin:skill references inside skill content are resolved recursively.
  */
 export class SkillForceHandler implements CommandHandler {
   private logger = new Logger('SkillForceHandler');
@@ -36,13 +48,10 @@ export class SkillForceHandler implements CommandHandler {
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { text, say, threadTs } = ctx;
 
-    // Reset regex lastIndex (stateful global regex)
-    SKILL_REF_PATTERN.lastIndex = 0;
-
     // Collect all top-level skill references from user text
-    const topLevelSkills = this.extractSkillNames(text);
+    const topLevelRefs = this.extractSkillRefs(text);
 
-    if (topLevelSkills.length === 0) {
+    if (topLevelRefs.length === 0) {
       return { handled: false };
     }
 
@@ -50,12 +59,11 @@ export class SkillForceHandler implements CommandHandler {
     const resolved = new Map<string, string>();
     const errors: string[] = [];
 
-    for (const skillName of topLevelSkills) {
-      this.resolveSkill(skillName, resolved, errors, 0);
+    for (const ref of topLevelRefs) {
+      this.resolveSkill(ref, resolved, errors, 0);
     }
 
     if (resolved.size === 0) {
-      // All skills failed to resolve
       await say({
         text: `❌ 스킬을 찾을 수 없습니다: ${errors.join(', ')}`,
         thread_ts: threadTs,
@@ -63,19 +71,16 @@ export class SkillForceHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Report any partial errors
     if (errors.length > 0) {
       this.logger.warn('Some skills could not be resolved', { errors });
     }
 
-    // Build the <invoked_skills> block
+    // Build the <invoked_skills> block with plugin:skill tags
     const skillBlocks = Array.from(resolved.entries())
-      .map(([name, content]) => `<local:${name}>\n${content}\n</local:${name}>`)
+      .map(([key, content]) => `<${key}>\n${content}\n</${key}>`)
       .join('\n');
 
     const invokedBlock = `<invoked_skills>\n${skillBlocks}\n</invoked_skills>`;
-
-    // Compose final prompt: original user text + invoked skills
     const finalPrompt = `${text}\n\n${invokedBlock}`;
 
     this.logger.info('Forced skill invocation', {
@@ -90,53 +95,64 @@ export class SkillForceHandler implements CommandHandler {
   }
 
   /**
-   * Extract unique skill names from text (in order of appearance).
+   * Extract unique skill references from text (in order of appearance).
    */
-  private extractSkillNames(text: string): string[] {
+  private extractSkillRefs(text: string): SkillRef[] {
     SKILL_REF_PATTERN.lastIndex = 0;
-    const names: string[] = [];
+    const refs: SkillRef[] = [];
     const seen = new Set<string>();
     for (;;) {
       const match = SKILL_REF_PATTERN.exec(text);
       if (match === null) break;
-      const name = match[1];
-      if (!seen.has(name)) {
-        seen.add(name);
-        names.push(name);
+      const key = `${match[1]}:${match[2]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        refs.push({ plugin: match[1], skill: match[2], key });
       }
     }
-    return names;
+    return refs;
   }
 
   /**
-   * Recursively resolve a skill and all its nested $local: references.
-   * Results are added to the `resolved` map in dependency order.
+   * Resolve the filesystem path for a skill based on its plugin.
+   *
+   * - local  → dist/local/skills/{skill}/SKILL.md
+   * - others → {PLUGINS_DIR}/{plugin}/skills/{skill}/SKILL.md
    */
-  private resolveSkill(skillName: string, resolved: Map<string, string>, errors: string[], depth: number): void {
-    // Guard: already resolved or max depth
-    if (resolved.has(skillName)) return;
+  private resolveSkillPath(ref: SkillRef): string {
+    if (ref.plugin === 'local') {
+      return path.join(LOCAL_SKILLS_DIR, ref.skill, 'SKILL.md');
+    }
+    return path.join(PLUGINS_DIR, ref.plugin, 'skills', ref.skill, 'SKILL.md');
+  }
+
+  /**
+   * Recursively resolve a skill and all its nested $plugin:skill references.
+   * Results are added to the `resolved` map in dependency order (depth-first).
+   */
+  private resolveSkill(ref: SkillRef, resolved: Map<string, string>, errors: string[], depth: number): void {
+    if (resolved.has(ref.key)) return;
     if (depth >= MAX_DEPTH) {
-      this.logger.warn('Max skill recursion depth reached', { skillName, depth });
+      this.logger.warn('Max skill recursion depth reached', { skill: ref.key, depth });
       return;
     }
 
-    // Read SKILL.md
-    const skillPath = path.join(LOCAL_SKILLS_DIR, skillName, 'SKILL.md');
+    const skillPath = this.resolveSkillPath(ref);
     if (!fs.existsSync(skillPath)) {
-      errors.push(skillName);
-      this.logger.warn('Skill file not found', { skillPath });
+      errors.push(ref.key);
+      this.logger.warn('Skill file not found', { skill: ref.key, skillPath });
       return;
     }
 
     const content = fs.readFileSync(skillPath, 'utf-8');
 
-    // Find nested $local: references in the skill content
-    const nested = this.extractSkillNames(content);
-    for (const nestedName of nested) {
-      this.resolveSkill(nestedName, resolved, errors, depth + 1);
+    // Recursively resolve nested skill references
+    const nested = this.extractSkillRefs(content);
+    for (const nestedRef of nested) {
+      this.resolveSkill(nestedRef, resolved, errors, depth + 1);
     }
 
     // Add this skill AFTER its dependencies (depth-first)
-    resolved.set(skillName, content);
+    resolved.set(ref.key, content);
   }
 }

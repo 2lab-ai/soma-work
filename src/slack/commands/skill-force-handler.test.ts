@@ -5,6 +5,11 @@ import { SkillForceHandler } from './skill-force-handler';
 // Mock fs module
 vi.mock('node:fs');
 
+// Mock PLUGINS_DIR to a predictable path
+vi.mock('../../env-paths', () => ({
+  PLUGINS_DIR: '/mock/plugins',
+}));
+
 describe('SkillForceHandler', () => {
   const handler = new SkillForceHandler();
   const mockSay = vi.fn().mockResolvedValue({ ts: '1' });
@@ -30,12 +35,28 @@ describe('SkillForceHandler', () => {
       expect(handler.canHandle('$local:zcheck')).toBe(true);
     });
 
+    it('matches "$stv:new-task"', () => {
+      expect(handler.canHandle('$stv:new-task')).toBe(true);
+    });
+
+    it('matches "$superpowers:brainstorming"', () => {
+      expect(handler.canHandle('$superpowers:brainstorming')).toBe(true);
+    });
+
     it('matches text containing $local:z', () => {
       expect(handler.canHandle('이거 $local:z 해줘')).toBe(true);
     });
 
+    it('matches text starting with $stv:new-task', () => {
+      expect(handler.canHandle('$stv:new-task 해줘')).toBe(true);
+    });
+
     it('matches multiple skill references', () => {
       expect(handler.canHandle('$local:zcheck 하고 $local:ztrace 해줘')).toBe(true);
+    });
+
+    it('matches mixed plugin references', () => {
+      expect(handler.canHandle('$local:z 하고 $stv:debug 해줘')).toBe(true);
     });
 
     it('does NOT match plain text', () => {
@@ -50,13 +71,17 @@ describe('SkillForceHandler', () => {
       expect(handler.canHandle('$verbosity compact')).toBe(false);
     });
 
+    it('does NOT match $effort', () => {
+      expect(handler.canHandle('$effort high')).toBe(false);
+    });
+
     it('does NOT match partial $local without colon', () => {
       expect(handler.canHandle('$local something')).toBe(false);
     });
   });
 
   describe('execute()', () => {
-    it('embeds single skill content via continueWithPrompt', async () => {
+    it('embeds single local skill content via continueWithPrompt', async () => {
       const skillContent = '# Z Skill\nDo the thing.';
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue(skillContent);
@@ -71,6 +96,42 @@ describe('SkillForceHandler', () => {
       expect(result.continueWithPrompt).toContain(skillContent);
       expect(result.continueWithPrompt).toContain('</local:z>');
       expect(result.continueWithPrompt).toContain('</invoked_skills>');
+    });
+
+    it('embeds stv plugin skill', async () => {
+      const skillContent = '# New Task\nCreate issues.';
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(skillContent);
+
+      const result = await handler.execute(makeCtx('$stv:new-task'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<stv:new-task>');
+      expect(prompt).toContain(skillContent);
+      expect(prompt).toContain('</stv:new-task>');
+    });
+
+    it('resolves stv skills from PLUGINS_DIR', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      await handler.execute(makeCtx('$stv:debug'));
+
+      // Verify the path used for stv plugin (should use PLUGINS_DIR)
+      expect(vi.mocked(fs.existsSync)).toHaveBeenCalledWith(
+        expect.stringContaining('/mock/plugins/stv/skills/debug/SKILL.md'),
+      );
+    });
+
+    it('resolves local skills from LOCAL_SKILLS_DIR', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      await handler.execute(makeCtx('$local:z'));
+
+      // Verify the path used for local plugin (should use __dirname-based path)
+      expect(vi.mocked(fs.existsSync)).toHaveBeenCalledWith(expect.stringContaining('local/skills/z/SKILL.md'));
     });
 
     it('embeds multiple skills in order', async () => {
@@ -88,13 +149,29 @@ describe('SkillForceHandler', () => {
       const prompt = result.continueWithPrompt as string;
       expect(prompt).toContain('<local:zcheck>');
       expect(prompt).toContain('<local:ztrace>');
-      // zcheck should appear before ztrace (order preserved)
       const zcheckPos = prompt.indexOf('<local:zcheck>');
       const ztracePos = prompt.indexOf('<local:ztrace>');
       expect(zcheckPos).toBeLessThan(ztracePos);
     });
 
-    it('recursively resolves nested $local: references', async () => {
+    it('handles mixed plugin skills', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+        const p = String(filePath);
+        if (p.includes('/z/')) return '# Z Skill';
+        if (p.includes('/debug/')) return '# Debug Skill';
+        return '';
+      });
+
+      const result = await handler.execute(makeCtx('$local:z 하고 $stv:debug 해줘'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<local:z>');
+      expect(prompt).toContain('<stv:debug>');
+    });
+
+    it('recursively resolves nested skill references across plugins', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
         const p = String(filePath);
@@ -107,7 +184,6 @@ describe('SkillForceHandler', () => {
 
       expect(result.handled).toBe(true);
       const prompt = result.continueWithPrompt as string;
-      // Both z and zcheck should be present
       expect(prompt).toContain('<local:z>');
       expect(prompt).toContain('<local:zcheck>');
       // zcheck (dependency) should appear before z (depth-first order)
@@ -123,7 +199,6 @@ describe('SkillForceHandler', () => {
       const result = await handler.execute(makeCtx('$local:z and again $local:z'));
 
       expect(result.handled).toBe(true);
-      // Should only appear once
       const matches = (result.continueWithPrompt as string).match(/<local:z>/g);
       expect(matches).toHaveLength(1);
     });
@@ -152,7 +227,7 @@ describe('SkillForceHandler', () => {
       expect(result.continueWithPrompt).toMatch(/^이 기능 구현해줘 \$local:z\n\n<invoked_skills>/);
     });
 
-    it('handles partial failure gracefully (some skills exist, some do not)', async () => {
+    it('handles partial failure gracefully', async () => {
       vi.mocked(fs.existsSync).mockImplementation((filePath) => {
         return String(filePath).includes('/z/');
       });
@@ -163,6 +238,18 @@ describe('SkillForceHandler', () => {
       expect(result.handled).toBe(true);
       expect(result.continueWithPrompt).toContain('<local:z>');
       expect(result.continueWithPrompt).not.toContain('<local:nonexistent>');
+    });
+
+    it('works when $skill is at sentence start', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      const result = await handler.execute(makeCtx('$stv:new-task 이거 해줘'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toMatch(/^\$stv:new-task 이거 해줘\n\n<invoked_skills>/);
+      expect(prompt).toContain('<stv:new-task>');
     });
   });
 });
