@@ -5,9 +5,10 @@ import { SkillForceHandler } from './skill-force-handler';
 // Mock fs module
 vi.mock('node:fs');
 
-// Mock PLUGINS_DIR to a predictable path
+// Mock env-paths to provide PLUGINS_DIR and DATA_DIR
 vi.mock('../../env-paths', () => ({
   PLUGINS_DIR: '/mock/plugins',
+  DATA_DIR: '/mock/data',
 }));
 
 describe('SkillForceHandler', () => {

@@ -209,7 +209,7 @@ export class A2tService {
         if (text) logger.debug(`[a2t-worker] ${text}`);
       });
 
-      this.rl = readline.createInterface({ input: this.process.stdout! });
+      this.rl = readline.createInterface({ input: this.process.stdout as NodeJS.ReadableStream });
 
       // First line determines init success/failure
       this.rl.once('line', (line) => {
@@ -219,7 +219,7 @@ export class A2tService {
             settle(() => {
               this.status = { state: 'ready', model: msg.model, device: msg.device || this.config.device };
               logger.info('A2T service ready', { model: msg.model, device: msg.device });
-              this.rl!.on('line', (l) => this.handleLine(l));
+              this.rl?.on('line', (l) => this.handleLine(l));
               resolve();
             });
           } else if (msg.type === 'error') {
