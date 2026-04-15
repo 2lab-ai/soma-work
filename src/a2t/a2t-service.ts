@@ -209,7 +209,7 @@ export class A2tService {
         if (text) logger.debug(`[a2t-worker] ${text}`);
       });
 
-      this.rl = readline.createInterface({ input: this.process.stdout! });
+      this.rl = readline.createInterface({ input: this.process.stdout as NodeJS.ReadableStream });
 
       // First line determines init success/failure
       this.rl.once('line', (line) => {
