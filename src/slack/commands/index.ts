@@ -20,6 +20,7 @@ export { PersonaHandler } from './persona-handler';
 export { PluginsHandler } from './plugins-handler';
 export { RenewHandler } from './renew-handler';
 export { RestoreHandler } from './restore-handler';
+export { SandboxHandler } from './sandbox-handler';
 export { SessionCommandHandler } from './session-command-handler';
 export { SessionHandler } from './session-handler';
 export { CommandContext, CommandDependencies, CommandHandler, CommandResult, SayFn } from './types';
