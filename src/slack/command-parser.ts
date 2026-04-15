@@ -5,6 +5,7 @@
 export type CctAction = { action: 'status' } | { action: 'set'; target: string } | { action: 'next' };
 
 export type BypassAction = 'on' | 'off' | 'status';
+export type SandboxAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type MemoryAction =
   | { action: 'show' }
@@ -178,6 +179,25 @@ export class CommandParser {
    */
   static parseBypassCommand(text: string): BypassAction {
     const match = text.trim().match(/^\/?bypass(?:\s+(on|off|true|false|enable|disable|status))?$/i);
+    if (!match?.[1]) {
+      return 'status';
+    }
+
+    const action = match[1].toLowerCase();
+    const enableActions = ['on', 'true', 'enable'];
+    const disableActions = ['off', 'false', 'disable'];
+
+    if (enableActions.includes(action)) return 'on';
+    if (disableActions.includes(action)) return 'off';
+    return 'status';
+  }
+
+  static isSandboxCommand(text: string): boolean {
+    return /^\/?sandbox(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
+  }
+
+  static parseSandboxCommand(text: string): SandboxAction {
+    const match = text.trim().match(/^\/?sandbox(?:\s+(on|off|true|false|enable|disable|status))?$/i);
     if (!match?.[1]) {
       return 'status';
     }
@@ -717,6 +737,8 @@ export class CommandParser {
     'servers',
     // Permissions
     'bypass',
+    // Sandbox
+    'sandbox',
     // Memory
     'memory',
     // Persona & Model & Verbosity
@@ -847,6 +869,11 @@ export class CommandParser {
       '• `bypass` or `/bypass` - Show permission bypass status',
       '• `bypass on` or `/bypass on` - Enable permission bypass',
       '• `bypass off` or `/bypass off` - Disable permission bypass',
+      '',
+      '*Sandbox:*',
+      '• `sandbox` or `/sandbox` - Show sandbox status',
+      '• `sandbox on` or `/sandbox on` - Enable sandbox (admin only)',
+      '• `sandbox off` or `/sandbox off` - Disable sandbox (admin only)',
       '',
       '*Email:*',
       '• `show email` - Show your configured email',

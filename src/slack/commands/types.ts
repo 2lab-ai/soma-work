@@ -52,6 +52,7 @@ export type SayFn = (message: {
   text: string;
   thread_ts?: string;
   blocks?: any[];
+  attachments?: any[];
 }) => Promise<{ ts?: string; channel?: string }>;
 
 /**
