@@ -696,7 +696,7 @@ export class StreamProcessor {
 
     try {
       const formResult = await context.say({
-        text: choices.title || '📋 선택이 필요합니다',
+        text: '',
         ...multiPayload,
         thread_ts: context.threadTs,
       });
@@ -756,7 +756,7 @@ export class StreamProcessor {
 
     try {
       const choiceResult = await context.say({
-        text: choice.question,
+        text: '',
         ...singlePayload,
         thread_ts: context.threadTs,
       });
