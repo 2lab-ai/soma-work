@@ -30,7 +30,7 @@
     "model": "large-v3-turbo",
     "device": "auto",
     "computeType": "auto",
-    "minMemoryMb": 2000,
+    "minMemoryMb": 16000,
     "pythonPath": "python3"
   },
   "plugin": {

@@ -29,6 +29,7 @@ import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
+import { SkillForceHandler } from './skill-force-handler';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { VerbosityHandler } from './verbosity-handler';
 import { WebhookHandler } from './webhook-handler';
@@ -53,6 +54,7 @@ export class CommandRouter {
       new McpHandler(deps),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
+      new SkillForceHandler(), // $local:skillname — must come before SessionCommandHandler
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new EmailHandler(),
