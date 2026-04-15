@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
+import { ToolFormatter } from '../tool-formatter';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -86,6 +87,15 @@ export class SkillForceHandler implements CommandHandler {
     this.logger.info('Forced skill invocation', {
       skills: Array.from(resolved.keys()),
       errorSkills: errors,
+    });
+
+    // Emit forced skill RPG meme with red bar
+    const casterName = `<@${ctx.user}>`;
+    const rpg = ToolFormatter.formatSkillForceInvocationRPG(Array.from(resolved.keys()), casterName);
+    await say({
+      text: rpg.text,
+      thread_ts: threadTs,
+      attachments: [{ color: rpg.color, text: rpg.text }],
     });
 
     return {

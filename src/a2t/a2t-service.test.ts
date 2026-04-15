@@ -129,6 +129,6 @@ describe('A2tService — singleton exports', () => {
     // But getA2tService returns the instance
     expect(result).not.toBeNull();
     expect(getA2tService()).not.toBeNull();
-    expect(getA2tService()!.isReady()).toBe(false);
+    expect(getA2tService()?.isReady()).toBe(false);
   });
 });
