@@ -6,7 +6,10 @@ export type CctAction = { action: 'status' } | { action: 'set'; target: string }
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
-export type MemoryAction = { action: 'show' } | { action: 'clear'; index?: number };
+export type MemoryAction =
+  | { action: 'show' }
+  | { action: 'clear'; index?: number }
+  | { action: 'save'; target: 'memory' | 'user'; content: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type OnboardingCommandResult = { prompt?: string };
@@ -192,7 +195,8 @@ export class CommandParser {
    * Check if text is a memory command
    */
   static isMemoryCommand(text: string): boolean {
-    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?))?$/i.test(text.trim());
+    const t = text.trim();
+    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?|save\s+(?:user|memory)\s+.+))?$/i.test(t);
   }
 
   /**
@@ -200,6 +204,12 @@ export class CommandParser {
    */
   static parseMemoryCommand(text: string): MemoryAction {
     const trimmed = text.trim();
+
+    // memory save user|memory <content>
+    const saveMatch = trimmed.match(/^\/?memory\s+save\s+(user|memory)\s+(.+)$/is);
+    if (saveMatch) {
+      return { action: 'save', target: saveMatch[1].toLowerCase() as 'memory' | 'user', content: saveMatch[2].trim() };
+    }
 
     if (/^\/?memory\s+clear\s+(\d+)$/i.test(trimmed)) {
       const match = trimmed.match(/^\/?memory\s+clear\s+(\d+)$/i);
