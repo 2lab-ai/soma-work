@@ -767,6 +767,30 @@ export class ClaudeHandler {
       }
     }
 
+    // Sandbox: enabled by default for all users. Only admin-toggled sandboxDisabled skips it.
+    // Mounts only /tmp/{userId} for filesystem write access.
+    {
+      const sandboxDisabled =
+        slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+      if (!sandboxDisabled) {
+        const sandboxConfig: NonNullable<Options['sandbox']> = {
+          enabled: true,
+          autoAllowBashIfSandboxed: true,
+          failIfUnavailable: false,
+          allowUnsandboxedCommands: false,
+        };
+        // Mount only the user's /tmp/{userId} directory for writes
+        if (slackContext?.user && isSafePathSegment(slackContext.user)) {
+          const userDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+          sandboxConfig.filesystem = { allowWrite: [userDir] };
+        }
+        options.sandbox = sandboxConfig;
+        this.logger.debug('Sandbox enabled', { user: slackContext?.user });
+      } else {
+        this.logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
+      }
+    }
+
     // Resume existing session
     if (session?.sessionId) {
       options.resume = session.sessionId;
