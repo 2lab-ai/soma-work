@@ -13,7 +13,7 @@ export interface A2tConfig {
   device?: string;
   /** CTranslate2 compute type: 'auto' | 'int8' | 'float16' | 'float32'. Default: 'auto' */
   computeType?: string;
-  /** Minimum available memory in MB to start the service. Default: 2000 */
+  /** Minimum FREE memory in MB required to start the service. Default: 16000 (16GB) */
   minMemoryMb?: number;
   /** Path to Python 3 executable. Default: 'python3' */
   pythonPath?: string;
