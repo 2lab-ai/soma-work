@@ -93,7 +93,7 @@ export class SkillForceHandler implements CommandHandler {
     const casterName = `<@${ctx.user}>`;
     const rpg = ToolFormatter.formatSkillForceInvocationRPG(Array.from(resolved.keys()), casterName);
     await say({
-      text: rpg.text,
+      text: '',
       thread_ts: threadTs,
       attachments: [{ color: rpg.color, text: rpg.text }],
     });

@@ -5,7 +5,7 @@ import { SkillForceHandler } from './skill-force-handler';
 // Mock fs module
 vi.mock('node:fs');
 
-// Mock env-paths to provide PLUGINS_DIR and DATA_DIR
+// Mock PLUGINS_DIR to a predictable path
 vi.mock('../../env-paths', () => ({
   PLUGINS_DIR: '/mock/plugins',
   DATA_DIR: '/mock/data',
@@ -251,6 +251,39 @@ describe('SkillForceHandler', () => {
       const prompt = result.continueWithPrompt as string;
       expect(prompt).toMatch(/^\$stv:new-task 이거 해줘\n\n<invoked_skills>/);
       expect(prompt).toContain('<stv:new-task>');
+    });
+
+    it('sends RPG meme via attachment with empty text to prevent Slack duplication', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      await handler.execute(makeCtx('$local:z'));
+
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '',
+          thread_ts: '171.100',
+          attachments: expect.arrayContaining([
+            expect.objectContaining({
+              color: expect.any(String),
+              text: expect.stringContaining('강제 발동'),
+            }),
+          ]),
+        }),
+      );
+    });
+
+    it('RPG meme attachment text is not duplicated in message text field', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      await handler.execute(makeCtx('$local:z'));
+
+      const sayCall = mockSay.mock.calls[0][0];
+      // text must be empty string, not the RPG meme content
+      expect(sayCall.text).toBe('');
+      // attachment must contain the RPG meme
+      expect(sayCall.attachments[0].text).toContain('강제 발동');
     });
   });
 });
