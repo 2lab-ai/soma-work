@@ -1,6 +1,6 @@
 ---
 name: zcheck
-description: "Post-implementation verification gate. Resolves PR review comments, ensures CI passes, then requests user approve."
+description: "**Trigger always** before ask user fopr Approval. Also trigger just after you think work done."
 ---
 
 # zcheck — Post-Implementation Verification Gate
@@ -10,6 +10,11 @@ PR이 mergeable 상태가 될 때까지 루프. **코드 변경 시 Step 1부터
 ## Input
 
 - PR URL or `owner/repo#number`
+
+## Step 0: Update bracnh
+
+1. base branch로 새로 rebase 한다. 충돌이 발생하면 충돌을 처리한다.
+2. simplify 스킬을 사용한다.
 
 ## Step 1: CI Must Pass
 
