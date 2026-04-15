@@ -568,9 +568,11 @@ export class ThreadSurface {
 
     const todos = session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
     if (todos.length > 0 && budgetForTaskList >= 4) {
+      const taskListTheme = userSettingsStore.getUserSessionTheme(session.ownerId);
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
         startedAt: session.taskListStartedAt,
         completedAt: session.taskListCompletedAt,
+        theme: taskListTheme,
       });
       // Only append if it fits within the block budget
       if (taskListBlocks.length <= budgetForTaskList) {

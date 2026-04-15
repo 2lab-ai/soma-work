@@ -8,13 +8,13 @@ import {
   listModelCommands,
   normalizeSessionSnapshot,
   runModelCommand,
-} from '../_shared/model-commands/catalog.js';
-import { validateModelCommandRunArgs } from '../_shared/model-commands/validator.js';
+} from 'somalib/model-commands/catalog.js';
+import { validateModelCommandRunArgs } from 'somalib/model-commands/validator.js';
 import {
   ModelCommandContext,
   ModelCommandListResponse,
   ModelCommandRunResponse,
-} from '../_shared/model-commands/types.js';
+} from 'somalib/model-commands/types.js';
 import { WorkflowType } from '../_shared/types.js';
 
 const logger = new StderrLogger('ModelCommandMCP');
@@ -131,7 +131,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
           properties: {
             commandId: {
               type: 'string',
-              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT'],
+              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT', 'SAVE_MEMORY', 'GET_MEMORY'],
             },
             params: { type: 'object', description: 'Command params object' },
           },
