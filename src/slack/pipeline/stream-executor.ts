@@ -1,3 +1,4 @@
+import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { getChannelDescription } from '../../channel-description-cache';
@@ -16,7 +17,6 @@ import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
-import { parseModelCommandRunResponse } from '../../model-commands/result-parser';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { parseCooldownTime, tokenManager } from '../../token-manager';
 import { determineTurnCategory, type TurnNotifier } from '../../turn-notifier';

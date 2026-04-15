@@ -5,11 +5,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { applyInstructionOperations } from 'somalib/model-commands/catalog';
 import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
-import { applyInstructionOperations } from './model-commands/catalog';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
 import type {
