@@ -1,17 +1,33 @@
-# Use Node.js LTS version
-FROM node:18-alpine
+# Use Node.js LTS on Debian Bookworm (Alpine lacks glibc — faster-whisper/ctranslate2 won't build)
+FROM node:18-bookworm-slim
 
-# Install system dependencies including bash and common shell utilities
-RUN apk add --no-cache git curl bash coreutils findutils grep sed github-cli openssl
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl bash coreutils findutils grep sed openssl ca-certificates gnupg \
+    ripgrep \
+    python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install ripgrep (required by Claude Code SDK)
-RUN curl -LO https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz && \
-    tar xf ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz && \
-    mv ripgrep-14.1.1-x86_64-unknown-linux-musl/rg /usr/local/bin/ && \
-    rm -rf ripgrep-14.1.1-*
+# Install GitHub CLI (requires separate Debian repo)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
+
+# Create non-root user EARLY (before copies that target /home/nodejs)
+RUN groupadd -g 1001 nodejs && \
+    useradd -u 1001 -g nodejs -s /bin/bash -m nodejs
+
+# Install A2T Python dependencies in isolated venv (copy requirements early for build cache)
+COPY services/a2t/requirements.txt /tmp/a2t-requirements.txt
+RUN python3 -m venv /opt/a2t-venv && \
+    /opt/a2t-venv/bin/pip install --no-cache-dir -r /tmp/a2t-requirements.txt && \
+    rm /tmp/a2t-requirements.txt
+ENV PATH="/opt/a2t-venv/bin:$PATH"
 
 # Copy package files
 COPY package*.json ./
@@ -24,38 +40,29 @@ RUN npm install -g tsx
 
 # Install MCP servers globally for GitHub app integration
 RUN npm install -g @modelcontextprotocol/server-filesystem@latest
-RUN npm install -g @modelcontextprotocol/server-github@latest  
+RUN npm install -g @modelcontextprotocol/server-github@latest
 
 # Copy source code
 COPY . .
 
-# Copy Claude Code settings to home directory for default permissions
-COPY claude-code-settings.json /home/nodejs/.claude/settings.json
+# Copy Claude Code settings with correct ownership (user exists, so --chown works)
+COPY --chown=nodejs:nodejs claude-code-settings.json /home/nodejs/.claude/settings.json
 
 # Copy and make the setup script executable
 COPY setup-git-auth.sh /usr/local/bin/setup-git-auth.sh
 RUN chmod +x /usr/local/bin/setup-git-auth.sh
 
-# Create the user content directory
-RUN mkdir -p /usercontent
-
-# Create non-root user with bash shell
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001 -s /bin/bash
-
-# Change ownership of directories
-RUN chown -R nodejs:nodejs /app
-RUN chown -R nodejs:nodejs /usercontent
-RUN chown -R nodejs:nodejs /home/nodejs/.claude
-RUN chown nodejs:nodejs /home/nodejs/.claude/settings.json
+# Create directories and fix ownership
+RUN mkdir -p /usercontent && \
+    mkdir -p /home/nodejs/.cache && \
+    chown -R nodejs:nodejs /app && \
+    chown -R nodejs:nodejs /usercontent && \
+    chown -R nodejs:nodejs /home/nodejs
 
 # Set environment variable for base directory
 ENV BASE_DIRECTORY=/usercontent
 
 USER nodejs
-
-# Configure Git to use token-based authentication for GitHub
-# This will be set up at runtime when GITHUB_TOKEN is available
 
 # Expose the port
 EXPOSE $PORT
