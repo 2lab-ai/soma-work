@@ -90,7 +90,9 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'CONTINUE_SESSION' &&
     commandId !== 'SAVE_CONTEXT_RESULT' &&
     commandId !== 'SAVE_MEMORY' &&
-    commandId !== 'GET_MEMORY'
+    commandId !== 'GET_MEMORY' &&
+    commandId !== 'MANAGE_SKILL' &&
+    commandId !== 'RATE'
   ) {
     return {
       ok: false,
@@ -186,6 +188,37 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       ok: true,
       request: {
         commandId: 'GET_MEMORY',
+        params: undefined,
+      },
+    };
+  }
+
+  if (commandId === 'MANAGE_SKILL') {
+    if (!isRecord(params)) {
+      return invalidArgs('MANAGE_SKILL params must be an object with action');
+    }
+    const action = params.action;
+    if (action !== 'create' && action !== 'update' && action !== 'delete' && action !== 'list') {
+      return invalidArgs(`MANAGE_SKILL action must be 'create', 'update', 'delete', or 'list', got: ${String(action)}`);
+    }
+    return {
+      ok: true,
+      request: {
+        commandId: 'MANAGE_SKILL',
+        params: {
+          action,
+          name: typeof params.name === 'string' ? params.name : undefined,
+          content: typeof params.content === 'string' ? params.content : undefined,
+        },
+      },
+    };
+  }
+
+  if (commandId === 'RATE') {
+    return {
+      ok: true,
+      request: {
+        commandId: 'RATE',
         params: undefined,
       },
     };

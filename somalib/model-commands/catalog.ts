@@ -51,6 +51,23 @@ function getSkillStore(): SkillStore {
   return _skillStore;
 }
 
+// Rating store interface — injected by the host app via registerRatingStore().
+// Returns user's current model rating (0-10, default 5).
+export interface RatingStore {
+  getUserRating(userId: string): number;
+}
+
+let _ratingStore: RatingStore | null = null;
+
+/** Register the rating store implementation. Must be called before RATE command. */
+export function registerRatingStore(store: RatingStore): void {
+  _ratingStore = store;
+}
+
+function getRatingStore(): RatingStore | null {
+  return _ratingStore;
+}
+
 import type {
   ContinueSessionParams,
   ManageSkillParams,
@@ -386,6 +403,11 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
           'Create, update, delete, or list user personal skills. Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. Immediately available after creation.',
         paramsSchema: MANAGE_SKILL_SCHEMA,
       },
+      {
+        id: 'RATE',
+        description: 'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
+        paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
     );
   }
 
@@ -678,6 +700,20 @@ export function runModelCommand(
       };
     }
     return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
+  }
+
+  if (request.commandId === 'RATE') {
+    if (!context.user) {
+      return toRunError('RATE', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const store = getRatingStore();
+    const rating = store ? store.getUserRating(context.user) : 5;
+    return {
+      type: 'model_command_result',
+      commandId: 'RATE',
+      ok: true,
+      payload: { rating },
+    };
   }
 
   if (request.commandId === 'SAVE_CONTEXT_RESULT') {
