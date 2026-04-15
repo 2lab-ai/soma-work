@@ -64,7 +64,7 @@ describe('A2tService — status management', () => {
     expect(cfg.model).toBe('large-v3-turbo');
     expect(cfg.device).toBe('auto');
     expect(cfg.computeType).toBe('auto');
-    expect(cfg.minMemoryMb).toBe(2000);
+    expect(cfg.minMemoryMb).toBe(16000);
     expect(cfg.pythonPath).toBe('python3');
     expect(cfg.enabled).toBe(true);
   });
@@ -88,9 +88,9 @@ describe('A2tService — status management', () => {
   it('initialize() rejects when memory insufficient', async () => {
     // Request an impossibly large amount of memory
     const service = new A2tService({ minMemoryMb: 999_999_999 });
-    await expect(service.initialize()).rejects.toThrow('Insufficient memory');
+    await expect(service.initialize()).rejects.toThrow('Insufficient free memory');
     expect(service.getStatus().state).toBe('error');
-    expect((service.getStatus() as any).error).toContain('Insufficient memory');
+    expect((service.getStatus() as any).error).toContain('Insufficient free memory');
   });
 
   it('initialize() rejects when python not found', async () => {
