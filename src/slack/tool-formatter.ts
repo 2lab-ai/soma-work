@@ -590,10 +590,7 @@ export class ToolFormatter {
    * Returns { text, color } for Slack attachment rendering.
    * Higher base damage range to reflect forced invocation power.
    */
-  static formatSkillForceInvocationRPG(
-    skillNames: string[],
-    casterName: string,
-  ): { text: string; color: string } {
+  static formatSkillForceInvocationRPG(skillNames: string[], casterName: string): { text: string; color: string } {
     const isCritical = Math.random() < 0.3;
     const damage = isCritical ? Math.floor(Math.random() * 200) + 150 : Math.floor(Math.random() * 120) + 50;
     const dmgText = isCritical ? `*${damage}*` : `${damage}`;
