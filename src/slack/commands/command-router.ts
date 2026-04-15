@@ -27,6 +27,7 @@ import { PromptHandler } from './prompt-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
+import { SandboxHandler } from './sandbox-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
 import { SkillForceHandler } from './skill-force-handler';
@@ -57,6 +58,7 @@ export class CommandRouter {
       new SkillForceHandler(), // $local:skillname — must come before SessionCommandHandler
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
+      new SandboxHandler(),
       new EmailHandler(),
       new PersonaHandler(),
       new MemoryHandler(),

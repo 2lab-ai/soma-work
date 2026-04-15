@@ -89,6 +89,8 @@ export interface UserSettings {
   thinkingEnabled?: boolean;
   /** Whether thinking output is shown in Slack. Default: true */
   showThinking?: boolean;
+  /** Whether sandbox is disabled for this user. Default: false (sandbox ON). Admin-only toggle. */
+  sandboxDisabled?: boolean;
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -365,6 +367,21 @@ export class UserSettingsStore {
   setUserBypassPermission(userId: string, bypass: boolean): void {
     this.patchUserSettings(userId, { bypassPermission: bypass });
     logger.info('Set user bypass permission', { userId, bypass });
+  }
+
+  /**
+   * Get user's sandbox disabled setting. Returns false (sandbox ON) by default.
+   */
+  getUserSandboxDisabled(userId: string): boolean {
+    return this.settings[userId]?.sandboxDisabled ?? false;
+  }
+
+  /**
+   * Set user's sandbox disabled setting. Admin-only toggle.
+   */
+  setUserSandboxDisabled(userId: string, disabled: boolean): void {
+    this.patchUserSettings(userId, { sandboxDisabled: disabled });
+    logger.info('Set user sandbox disabled', { userId, disabled });
   }
 
   /**
