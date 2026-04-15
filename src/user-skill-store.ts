@@ -174,11 +174,3 @@ export function deleteUserSkill(userId: string, skillName: string): SkillOperati
   logger.info('User skill deleted', { userId, skillName });
   return { ok: true, message: `Skill "${skillName}" deleted.` };
 }
-
-/**
- * Get the filesystem path for a user skill's SKILL.md.
- * Used by SkillForceHandler for resolving $user:skill-name references.
- */
-export function getUserSkillPath(userId: string, skillName: string): string {
-  return getSkillPath(userId, skillName);
-}
