@@ -372,11 +372,16 @@ function parseAskUserQuestionParams(
     return invalidAskUserQuestionArgs(undefined, 'params_not_object');
   }
 
-  if (!isRecord(raw.payload)) {
+  // Auto-normalize flat params: if payload wrapper is missing but question exists,
+  // treat the entire params object as the payload (matches normalizeSaveContextResultFromVariants pattern)
+  let payload: Record<string, unknown>;
+  if (isRecord(raw.payload)) {
+    payload = raw.payload;
+  } else if (typeof raw.question === 'string') {
+    payload = { ...raw, type: typeof raw.type === 'string' ? raw.type : 'user_choice' };
+  } else {
     return invalidAskUserQuestionArgs(raw, 'missing_payload');
   }
-
-  const payload = raw.payload;
   if (payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[0] && payload.type !== ASK_USER_QUESTION_ALLOWED_TYPES[1]) {
     return invalidAskUserQuestionArgs(raw, 'invalid_payload_type');
   }

@@ -238,7 +238,7 @@ describe('model-command MCP server helpers', () => {
     expect(result.error.message).toContain('params.payload');
   });
 
-  it('rejects ASK_USER_QUESTION root question/options shape', () => {
+  it('auto-normalizes ASK_USER_QUESTION flat params (question/options without payload wrapper)', () => {
     const result = buildModelCommandRunResponse(
       {
         commandId: 'ASK_USER_QUESTION',
@@ -253,10 +253,10 @@ describe('model-command MCP server helpers', () => {
       { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
     );
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe('INVALID_ARGS');
-    expect(result.error.message).toContain('params.payload');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('ASK_USER_QUESTION');
+    expect(result.payload.question).toBeDefined();
   });
 
   it('accepts ASK_USER_QUESTION when strict payload schema is satisfied', () => {
