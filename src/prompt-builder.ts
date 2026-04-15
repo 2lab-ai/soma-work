@@ -11,8 +11,8 @@ import { llmChatConfigStore } from './llm-chat-config-store';
 import { Logger } from './logger';
 import type { WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
-import { listUserSkills } from './user-skill-store';
 import { userSettingsStore } from './user-settings-store';
+import { listUserSkills } from './user-skill-store';
 
 // Prompt file paths
 const PROMPT_DIR = path.join(__dirname, 'prompt');
