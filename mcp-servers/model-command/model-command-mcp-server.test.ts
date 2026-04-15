@@ -259,6 +259,51 @@ describe('model-command MCP server helpers', () => {
     expect(result.payload.question).toBeDefined();
   });
 
+  it('auto-normalizes ASK_USER_QUESTION flat params with choices key', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          question: '어떤 방식으로 진행할까요?',
+          choices: [
+            { label: 'Option A' },
+            { label: 'Option B' },
+          ],
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('ASK_USER_QUESTION');
+    expect(result.payload.question).toBeDefined();
+  });
+
+  it('auto-normalizes ASK_USER_QUESTION flat params with type user_choice_group', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          type: 'user_choice_group',
+          question: '두 가지 결정이 필요합니다',
+          choices: [
+            {
+              question: '첫 번째 결정',
+              options: [{ id: '1', label: 'A' }, { id: '2', label: 'B' }],
+            },
+          ],
+        },
+      },
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('ASK_USER_QUESTION');
+    expect(result.payload.question).toBeDefined();
+  });
+
   it('accepts ASK_USER_QUESTION when strict payload schema is satisfied', () => {
     const result = buildModelCommandRunResponse(
       {
