@@ -9,7 +9,7 @@ import type {
   UserChoiceQuestion,
   UserChoices,
   WorkflowType,
-} from '../types';
+} from './session-types';
 import type {
   AskUserQuestionParams,
   ContinueSessionParams,
@@ -88,7 +88,9 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'UPDATE_SESSION' &&
     commandId !== 'ASK_USER_QUESTION' &&
     commandId !== 'CONTINUE_SESSION' &&
-    commandId !== 'SAVE_CONTEXT_RESULT'
+    commandId !== 'SAVE_CONTEXT_RESULT' &&
+    commandId !== 'SAVE_MEMORY' &&
+    commandId !== 'GET_MEMORY'
   ) {
     return {
       ok: false,
@@ -153,6 +155,43 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
+  if (commandId === 'SAVE_MEMORY') {
+    if (!isRecord(params)) {
+      return invalidArgs('SAVE_MEMORY params must be an object with action, target, and content/old_text');
+    }
+    const action = params.action;
+    const target = params.target;
+    if (action !== 'add' && action !== 'replace' && action !== 'remove') {
+      return invalidArgs(`SAVE_MEMORY action must be 'add', 'replace', or 'remove', got: ${String(action)}`);
+    }
+    if (target !== 'memory' && target !== 'user') {
+      return invalidArgs(`SAVE_MEMORY target must be 'memory' or 'user', got: ${String(target)}`);
+    }
+    return {
+      ok: true,
+      request: {
+        commandId: 'SAVE_MEMORY',
+        params: {
+          action,
+          target,
+          content: typeof params.content === 'string' ? params.content : undefined,
+          old_text: typeof params.old_text === 'string' ? params.old_text : undefined,
+        },
+      },
+    };
+  }
+
+  if (commandId === 'GET_MEMORY') {
+    return {
+      ok: true,
+      request: {
+        commandId: 'GET_MEMORY',
+        params: undefined,
+      },
+    };
+  }
+
+  // SAVE_CONTEXT_RESULT fallback — last remaining commandId
   const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
   const parsed = parseSaveContextResultParams(saveParams);
   if (!parsed.ok) {

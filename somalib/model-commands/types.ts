@@ -7,7 +7,7 @@ import type {
   UserChoice,
   UserChoices,
   WorkflowType,
-} from '../types';
+} from './session-types';
 
 export type ModelCommandId =
   | 'GET_SESSION'
