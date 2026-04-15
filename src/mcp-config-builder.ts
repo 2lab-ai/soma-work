@@ -326,6 +326,7 @@ export class McpConfigBuilder {
       args: ['tsx', modelCommandServerPath],
       env: {
         SOMA_COMMAND_CONTEXT: JSON.stringify(context),
+        SOMA_DATA_DIR: DATA_DIR,
       },
     };
   }
