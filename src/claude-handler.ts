@@ -19,7 +19,12 @@ import {
   isDangerousCommand,
   isSshCommand,
 } from './dangerous-command-filter';
-import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from './sensitive-path-filter';
+import {
+  type SensitivePathResult,
+  checkBashSensitivePaths,
+  checkSensitiveGlob,
+  checkSensitivePath,
+} from './sensitive-path-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -369,7 +374,7 @@ export class ClaudeHandler {
     }
 
     const startTime = Date.now();
-    this.logger.info('🚀 DISPATCH: Starting one-shot query', {
+    this.logger.info('\uD83D\uDE80 DISPATCH: Starting one-shot query', {
       model: options.model,
       resumeSession: !!resumeSessionId,
       messageLength: userMessage.length,
@@ -385,14 +390,14 @@ export class ClaudeHandler {
         const elapsed = Date.now() - startTime;
 
         // Log all message types for debugging
-        this.logger.debug(`📨 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
+        this.logger.debug(`\uD83D\uDCE8 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
           type: message.type,
           subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
         // Handle system init message
         if (message.type === 'system' && message.subtype === 'init') {
-          this.logger.info(`✅ DISPATCH: SDK initialized (${elapsed}ms)`, {
+          this.logger.info(`\u2705 DISPATCH: SDK initialized (${elapsed}ms)`, {
             model: message.model,
             sessionId: message.session_id,
           });
@@ -403,7 +408,7 @@ export class ClaudeHandler {
           for (const block of message.message.content) {
             if (block.type === 'text') {
               assistantText += block.text;
-              this.logger.debug(`📝 DISPATCH: Text received (${elapsed}ms)`, {
+              this.logger.debug(`\uD83D\uDCDD DISPATCH: Text received (${elapsed}ms)`, {
                 textLength: block.text.length,
                 textPreview: block.text.substring(0, 50),
               });
@@ -413,7 +418,7 @@ export class ClaudeHandler {
 
         // Handle result message
         if (message.type === 'result') {
-          this.logger.info(`🏁 DISPATCH: Query completed (${elapsed}ms)`, {
+          this.logger.info(`\uD83C\uDFC1 DISPATCH: Query completed (${elapsed}ms)`, {
             totalMessages: messageCount,
             responseLength: assistantText.length,
             stopReason: message.subtype === 'success' ? message.stop_reason : undefined,
@@ -426,7 +431,7 @@ export class ClaudeHandler {
       // If we already collected assistant text, the response is likely complete
       // even though the process didn't exit cleanly (e.g., SIGTERM / exit code 143)
       if (assistantText.trim()) {
-        this.logger.warn(`⚠️ DISPATCH: Process error after ${elapsed}ms but response available, using it`, {
+        this.logger.warn(`\u26A0\uFE0F DISPATCH: Process error after ${elapsed}ms but response available, using it`, {
           error: (error as Error).message,
           messagesReceived: messageCount,
           responseLength: assistantText.length,
@@ -434,7 +439,7 @@ export class ClaudeHandler {
         });
         // Fall through to return the collected text
       } else {
-        this.logger.error(`❌ DISPATCH: Error after ${elapsed}ms`, {
+        this.logger.error(`\u274C DISPATCH: Error after ${elapsed}ms`, {
           error: (error as Error).message,
           messagesReceived: messageCount,
         });
@@ -443,7 +448,7 @@ export class ClaudeHandler {
     }
 
     const totalTime = Date.now() - startTime;
-    this.logger.info(`📍 DISPATCH: Response complete (${totalTime}ms)`, {
+    this.logger.info(`\uD83D\uDCCD DISPATCH: Response complete (${totalTime}ms)`, {
       responseLength: assistantText.length,
       preview: assistantText.substring(0, 200),
     });
@@ -565,128 +570,77 @@ export class ClaudeHandler {
       }
 
       // Sensitive path guard: block non-admin users from reading host secrets
-      // (SSH keys, API tokens, .env files, DB passwords) via any tool.
-      // Addresses: sandbox read.denyOnly being empty — application-layer enforcement.
+      // via any Claude tool. Addresses sandbox read.denyOnly being empty.
       if (!isAdminUser(slackContext.user)) {
-        // Bash: block commands that read sensitive files (cat, head, tail, etc.)
-        preToolUseHooks.push({
-          matcher: 'Bash',
-          hooks: [
-            async (input: HookInput): Promise<HookJSONOutput> => {
-              const { tool_input } = input as { tool_input: unknown };
-              const toolRecord = tool_input as Record<string, unknown> | undefined;
-              const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
+        const makeSensitiveHook = (
+          check: (r: Record<string, unknown>) => SensitivePathResult,
+          logCtx: (r: Record<string, unknown>) => Record<string, unknown>,
+        ) =>
+          async (input: HookInput): Promise<HookJSONOutput> => {
+            const toolRecord =
+              ((input as { tool_input: unknown }).tool_input as Record<string, unknown>) ?? {};
+            const result = check(toolRecord);
+            if (result.isSensitive) {
+              this.logger.warn('Sensitive path access denied', {
+                user: slackContext.user,
+                reason: result.reason,
+                ...logCtx(toolRecord),
+              });
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                },
+              };
+            }
+            return { continue: true };
+          };
 
-              const result = checkBashSensitivePaths(command);
-              if (result.isSensitive) {
-                this.logger.warn('Sensitive path access denied in Bash command', {
-                  command: command.substring(0, 100),
-                  user: slackContext.user,
-                  reason: result.reason,
-                });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                  },
-                };
-              }
-
-              return { continue: true };
-            },
-          ],
-        });
-
-        // Read tool: block reading sensitive files directly
-        preToolUseHooks.push({
-          matcher: 'Read',
-          hooks: [
-            async (input: HookInput): Promise<HookJSONOutput> => {
-              const { tool_input } = input as { tool_input: unknown };
-              const toolRecord = tool_input as Record<string, unknown> | undefined;
-              const filePath = typeof toolRecord?.file_path === 'string' ? toolRecord.file_path : '';
-
-              const result = checkSensitivePath(filePath);
-              if (result.isSensitive) {
-                this.logger.warn('Sensitive file read denied', {
-                  file: filePath,
-                  user: slackContext.user,
-                  reason: result.reason,
-                });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                  },
-                };
-              }
-
-              return { continue: true };
-            },
-          ],
-        });
-
-        // Glob tool: block scanning sensitive directories
-        preToolUseHooks.push({
-          matcher: 'Glob',
-          hooks: [
-            async (input: HookInput): Promise<HookJSONOutput> => {
-              const { tool_input } = input as { tool_input: unknown };
-              const toolRecord = tool_input as Record<string, unknown> | undefined;
-              const pattern = typeof toolRecord?.pattern === 'string' ? toolRecord.pattern : '';
-              const globPath = typeof toolRecord?.path === 'string' ? toolRecord.path : undefined;
-
-              const result = checkSensitiveGlob(pattern, globPath);
-              if (result.isSensitive) {
-                this.logger.warn('Sensitive directory glob denied', {
-                  pattern,
-                  path: globPath,
-                  user: slackContext.user,
-                  reason: result.reason,
-                });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                  },
-                };
-              }
-
-              return { continue: true };
-            },
-          ],
-        });
-
-        // Grep tool: block searching in sensitive directories
-        preToolUseHooks.push({
-          matcher: 'Grep',
-          hooks: [
-            async (input: HookInput): Promise<HookJSONOutput> => {
-              const { tool_input } = input as { tool_input: unknown };
-              const toolRecord = tool_input as Record<string, unknown> | undefined;
-              const grepPath = typeof toolRecord?.path === 'string' ? toolRecord.path : '';
-
-              if (grepPath) {
-                const result = checkSensitivePath(grepPath);
-                if (result.isSensitive) {
-                  this.logger.warn('Sensitive directory grep denied', {
-                    path: grepPath,
-                    user: slackContext.user,
-                    reason: result.reason,
-                  });
-                  return {
-                    hookSpecificOutput: {
-                      hookEventName: 'PreToolUse',
-                      permissionDecision: 'deny',
-                    },
-                  };
-                }
-              }
-
-              return { continue: true };
-            },
-          ],
-        });
+        preToolUseHooks.push(
+          {
+            matcher: 'Bash',
+            hooks: [
+              makeSensitiveHook(
+                (r) => checkBashSensitivePaths(String(r.command ?? '')),
+                (r) => ({ command: String(r.command ?? '').substring(0, 100) }),
+              ),
+            ],
+          },
+          {
+            matcher: 'Read',
+            hooks: [
+              makeSensitiveHook(
+                (r) => checkSensitivePath(String(r.file_path ?? '')),
+                (r) => ({ file: String(r.file_path ?? '') }),
+              ),
+            ],
+          },
+          {
+            matcher: 'Glob',
+            hooks: [
+              makeSensitiveHook(
+                (r) =>
+                  checkSensitiveGlob(
+                    String(r.pattern ?? ''),
+                    typeof r.path === 'string' ? r.path : undefined,
+                  ),
+                (r) => ({ pattern: String(r.pattern ?? ''), path: r.path }),
+              ),
+            ],
+          },
+          {
+            matcher: 'Grep',
+            hooks: [
+              makeSensitiveHook(
+                (r) =>
+                  typeof r.path === 'string' && r.path
+                    ? checkSensitivePath(r.path)
+                    : { isSensitive: false },
+                (r) => ({ path: r.path }),
+              ),
+            ],
+          },
+        );
       }
 
       // Cross-user directory isolation: deny Bash commands that access another user's
@@ -736,7 +690,7 @@ export class ClaudeHandler {
               const decision = bypassBashPermissionDecision(command);
 
               if (decision === 'ask') {
-                this.logger.warn('Dangerous command in bypass mode — escalating to Slack permission UI', {
+                this.logger.warn('Dangerous command in bypass mode \u2014 escalating to Slack permission UI', {
                   command: command.substring(0, 100),
                   user: slackContext.user,
                 });
@@ -758,7 +712,7 @@ export class ClaudeHandler {
       // allowedTools (computed once at query start) cannot detect.
       // Trace: docs/mcp-tool-permission/trace.md, S3/S5
       if (!isAdminUser(slackContext.user)) {
-        // Cache permission config once per query — it's static deployment config,
+        // Cache permission config once per query \u2014 it's static deployment config,
         // unlike grants which must be re-checked from disk each call.
         const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
         const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
@@ -828,7 +782,7 @@ export class ClaudeHandler {
         options.thinking = { type: 'disabled' };
         this.logger.debug('Thinking disabled for session');
       }
-      // When enabled, don't set thinking — SDK defaults to adaptive for Opus 4.6+
+      // When enabled, don't set thinking \u2014 SDK defaults to adaptive for Opus 4.6+
     }
 
     // Build system prompt with persona and workflow
@@ -858,7 +812,7 @@ export class ClaudeHandler {
     }
     if (builtSystemPrompt) {
       options.systemPrompt = builtSystemPrompt;
-      this.logger.info(`🚀 STARTING QUERY with workflow: [${workflow}]`, {
+      this.logger.info(`\uD83D\uDE80 STARTING QUERY with workflow: [${workflow}]`, {
         workflow,
         sessionId: session?.sessionId,
         model: options.model,
@@ -867,10 +821,10 @@ export class ClaudeHandler {
         repos: slackContext?.repos || [],
       });
     } else {
-      this.logger.warn(`🚀 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
+      this.logger.warn(`\uD83D\uDE80 STARTING QUERY with NO system prompt (workflow: [${workflow}])`);
     }
 
-    // Set working directory — ensure it exists to prevent ENOENT on spawn
+    // Set working directory \u2014 ensure it exists to prevent ENOENT on spawn
     if (workingDirectory) {
       if (!fs.existsSync(workingDirectory)) {
         this.logger.warn('Working directory does not exist, recreating', { workingDirectory });
@@ -902,7 +856,7 @@ export class ClaudeHandler {
     }
 
     // Enable 1M context window beta (applies to supported models).
-    // Only set for API key users — subscription users get a noisy warning from the SDK.
+    // Only set for API key users \u2014 subscription users get a noisy warning from the SDK.
     if (process.env.ANTHROPIC_API_KEY) {
       options.betas = ['context-1m-2025-08-07'];
     }
@@ -969,7 +923,7 @@ export class ClaudeHandler {
     const { serverName, toolFunction } = resolved;
     const requiredLevel = getRequiredLevel(permConfig, serverName, toolFunction);
 
-    // Tool not in permission config but on a gated server → deny-by-default (defense-in-depth)
+    // Tool not in permission config but on a gated server \u2192 deny-by-default (defense-in-depth)
     if (!requiredLevel) {
       return `Tool ${toolFunction} on gated server ${serverName} is not listed in permission config. Access denied by default.`;
     }
