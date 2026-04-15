@@ -32,7 +32,7 @@ def send_error(error: str) -> None:
 
 
 def check_memory(required_mb: int) -> tuple[bool, float]:
-    """Check available system memory."""
+    """Check available (free) system memory before loading the model."""
     try:
         import psutil
         mem = psutil.virtual_memory()
@@ -47,13 +47,13 @@ def main() -> None:
     model_name = os.environ.get("A2T_MODEL", "large-v3-turbo")
     device = os.environ.get("A2T_DEVICE", "auto")
     compute_type = os.environ.get("A2T_COMPUTE_TYPE", "auto")
-    min_memory_mb = int(os.environ.get("A2T_MIN_MEMORY_MB", "2000"))
+    min_memory_mb = int(os.environ.get("A2T_MIN_MEMORY_MB", "16000"))
 
     # ── Memory check ──
     has_memory, available_mb = check_memory(min_memory_mb)
     if not has_memory:
         send_error(
-            f"Insufficient memory: {available_mb:.0f}MB available, "
+            f"Insufficient free memory: {available_mb:.0f}MB available, "
             f"{min_memory_mb}MB required"
         )
         sys.exit(1)
