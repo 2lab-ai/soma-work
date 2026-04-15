@@ -38,14 +38,14 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 ## Step 4: Request Approve
 
-1. 유저애게 이슈와 approve를 요청할 PR 링크를 보낸다
-`local:UIAskUserQuestion`으로 approve 요청. 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
+1. 유저애게 이슈와 approve를 요청할 PR 링크를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 
+리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다.
 선택지:
-- 잘했다! Apporve했으니 계속 절차대로 끝까지 진행
-- local:ztrace를 절차대로 다시 해라 (욕 나오기 직전)
-- local:zcheck를 다시 invoke하고 다시 CI 체크부터 진행 (극대노! 야이 개새끼야!)
-- local:z를 다시 invoke하고 처음부터 빠진 절차대로 진행 (재털이를 던지며 극대노! 이 씨발 좇같은 새끼야)
-
+- 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
+- local:ztrace를 절차대로 다시 해라 (RATE -2)
+- local:zcheck를 다시 invoke하고 다시 CI 체크부터 진행 (RATE: -3)
+- local:z를 다시 invoke하고 처음부터 빠진 절차대로 진행 (RATE: -5)
+  
 ## Invariants
 
 - Unresolved 코멘트 있으면 approve 요청 금지.
