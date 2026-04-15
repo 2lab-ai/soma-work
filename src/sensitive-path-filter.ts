@@ -14,13 +14,11 @@
 
 import * as os from 'os';
 import * as path from 'path';
+import { normalizeTmpPath } from './path-utils';
 
 const HOME = os.homedir();
 
-/**
- * Directories that are always sensitive — any path under these is blocked.
- * Normalized to absolute paths at module load time.
- */
+/** Directories where any path underneath is blocked. */
 const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
   path.join(HOME, '.ssh'),
   path.join(HOME, '.gnupg'),
@@ -31,107 +29,68 @@ const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
   '/etc/shadow',
 ];
 
-/**
- * Specific files that are sensitive regardless of directory.
- */
-const SENSITIVE_EXACT_FILES: ReadonlyArray<string> = [
+/** Specific files that are sensitive regardless of directory. */
+const SENSITIVE_EXACT_FILES = new Set<string>([
   path.join(HOME, '.gitconfig'),
   path.join(HOME, '.netrc'),
   path.join(HOME, '.npmrc'),
   path.join(HOME, '.claude', 'credentials.json'),
-];
+]);
 
-/**
- * Filename patterns that are sensitive in any directory.
- * Matched against the basename of the path.
- */
-const SENSITIVE_BASENAMES: ReadonlyArray<string> = [
-  '.env',
-  '.env.local',
-  '.env.production',
-  '.env.development',
-  '.env.staging',
-  '.env.test',
-];
-
-/**
- * Regex patterns for sensitive basenames (covers .env.* variants).
- */
+/** Regex patterns for sensitive basenames. */
 const SENSITIVE_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
-  /^\.env(\..+)?$/, // .env, .env.local, .env.production, etc.
+  /^\.env(\..+)?$/,
   /^credentials\.json$/,
   /^secrets?\.(json|ya?ml|toml)$/,
 ];
 
-/**
- * Path prefixes for service config files containing secrets.
- * Only the config files in these service directories are blocked, not the entire directory.
- */
+/** Service config files containing secrets. Only specific files are blocked, not the whole directory. */
 const SENSITIVE_SERVICE_CONFIGS: ReadonlyArray<{ dir: string; files: ReadonlyArray<string> }> = [
-  {
-    dir: '/opt/soma-work',
-    files: ['.env', 'config.json'],
-  },
-  {
-    dir: '/opt/soma',
-    files: ['.env', 'config.json'],
-  },
+  { dir: '/opt/soma-work', files: ['.env', 'config.json'] },
+  { dir: '/opt/soma', files: ['.env', 'config.json'] },
 ];
+
+// Regexes for extracting file paths from bash commands — hoisted to avoid per-call recompilation.
+const RE_READ_COMMANDS =
+  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
+const RE_INPUT_REDIRECT = /<\s*((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+const RE_COPY_COMMANDS = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
+const RE_SOURCE_CMD = /\b(?:source|\.)\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
 
 export interface SensitivePathResult {
   readonly isSensitive: boolean;
   readonly reason?: string;
 }
 
-/**
- * Check if an absolute path points to a sensitive location.
- * Returns the reason if sensitive, null otherwise.
- */
+/** Check if an absolute path points to a sensitive location. */
 export function checkSensitivePath(filePath: string): SensitivePathResult {
   if (!filePath) return { isSensitive: false };
 
-  // Normalize: resolve ~, remove trailing slashes, resolve . and ..
   const normalized = normalizePath(filePath);
 
-  // 1. Check sensitive directories (any path under them)
   for (const dir of SENSITIVE_DIRECTORIES) {
     if (normalized === dir || normalized.startsWith(dir + '/')) {
       return { isSensitive: true, reason: `Access to ${dir}/ is restricted` };
     }
   }
 
-  // 2. Check exact sensitive files
-  for (const file of SENSITIVE_EXACT_FILES) {
-    if (normalized === file) {
-      return { isSensitive: true, reason: `Access to ${file} is restricted` };
-    }
+  if (SENSITIVE_EXACT_FILES.has(normalized)) {
+    return { isSensitive: true, reason: `Access to ${normalized} is restricted` };
   }
 
-  // 3. Check sensitive basenames
   const basename = path.basename(normalized);
-
-  for (const name of SENSITIVE_BASENAMES) {
-    if (basename === name) {
-      return { isSensitive: true, reason: `Files named ${name} are restricted` };
-    }
-  }
-
   for (const pattern of SENSITIVE_BASENAME_PATTERNS) {
     if (pattern.test(basename)) {
       return { isSensitive: true, reason: `File ${basename} matches sensitive pattern` };
     }
   }
 
-  // 4. Check service config files
   for (const { dir, files } of SENSITIVE_SERVICE_CONFIGS) {
     for (const file of files) {
-      const fullPath = path.join(dir, file);
-      // Match the exact file OR the file under any subdirectory of the service dir
-      // e.g. /opt/soma-work/dev/.env, /opt/soma-work/prod/config.json
-      if (normalized === fullPath) {
-        return { isSensitive: true, reason: `Service config ${fullPath} is restricted` };
+      if (normalized === path.join(dir, file)) {
+        return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
       }
-      // Check subdirectories: /opt/soma-work/*/{file}
+      // Match subdirectories: /opt/soma-work/*/{file}
       if (normalized.startsWith(dir + '/') && normalized.endsWith('/' + file)) {
         const relative = normalized.slice(dir.length + 1);
         const parts = relative.split('/');
@@ -145,109 +104,56 @@ export function checkSensitivePath(filePath: string): SensitivePathResult {
   return { isSensitive: false };
 }
 
-/**
- * Check if a Bash command attempts to read sensitive files.
- * Detects: cat, head, tail, less, more, bat, xxd, hexdump, strings, base64, open, nano, vi/vim, code
- * Also detects: redirections like `< /path/to/file`, cp/mv from sensitive sources
- */
+/** Check if a Bash command attempts to read sensitive files. */
 export function checkBashSensitivePaths(command: string): SensitivePathResult {
-  // Extract potential file paths from the command
   const paths = extractPathsFromCommand(command);
-
   for (const p of paths) {
     const result = checkSensitivePath(p);
-    if (result.isSensitive) {
-      return result;
-    }
+    if (result.isSensitive) return result;
   }
-
   return { isSensitive: false };
 }
 
-/**
- * Check if a glob pattern targets a sensitive directory.
- */
+/** Check if a glob pattern targets a sensitive directory. */
 export function checkSensitiveGlob(pattern: string, basePath?: string): SensitivePathResult {
-  // Resolve the pattern against the base path
   const resolved = basePath ? path.resolve(basePath, pattern) : pattern;
-
-  // For glob patterns, check if the base directory is sensitive
-  // Remove glob characters to get the base directory
-  const baseDir = resolved.replace(/[*?{}\[\]]/g, '').replace(/\/+$/, '');
-
+  // Split on first glob metacharacter to extract the concrete prefix
+  const baseDir = resolved.split(/[*?{}[\]]/)[0].replace(/\/+$/, '');
   return checkSensitivePath(baseDir);
 }
 
-/**
- * Collect all regex match groups[1] from a global pattern.
- */
 function collectMatches(pattern: RegExp, text: string): string[] {
   return Array.from(text.matchAll(pattern), (m) => m[1]).filter(Boolean);
 }
 
-/**
- * Extract file paths from a bash command string.
- * Handles common file-reading commands and redirections.
- */
 function extractPathsFromCommand(command: string): string[] {
   const paths: string[] = [];
-
-  // File reading commands: cat, head, tail, less, more, bat, xxd, hexdump, strings, base64, open
-  // Also editors: nano, vi, vim, code
-  // Pattern: command [flags] /path/to/file
-  const readCommands =
-    /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
-  paths.push(...collectMatches(readCommands, command));
-
-  // Input redirections: < /path/to/file
-  const inputRedirect = /<\s*((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
-  paths.push(...collectMatches(inputRedirect, command));
-
-  // cp/mv from sensitive source: cp /sensitive/path /dest
-  const copyCommands = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
-  paths.push(...collectMatches(copyCommands, command));
-
-  // source/dot command: source /path or . /path
-  const sourceCmd = /\b(?:source|\.)\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
-  paths.push(...collectMatches(sourceCmd, command));
-
-  // Tilde expansion
+  paths.push(...collectMatches(RE_READ_COMMANDS, command));
+  paths.push(...collectMatches(RE_INPUT_REDIRECT, command));
+  paths.push(...collectMatches(RE_COPY_COMMANDS, command));
+  paths.push(...collectMatches(RE_SOURCE_CMD, command));
   return paths.map(normalizePath);
 }
 
-/**
- * Normalize a file path: expand ~, resolve relative components.
- */
 function normalizePath(filePath: string): string {
   let normalized = filePath;
-
-  // Expand ~ to home directory
   if (normalized.startsWith('~/')) {
     normalized = path.join(HOME, normalized.slice(2));
   } else if (normalized === '~') {
     normalized = HOME;
   }
-
-  // Resolve /private/tmp to /tmp (macOS)
-  if (normalized.startsWith('/private/tmp')) {
-    normalized = '/tmp' + normalized.slice('/private/tmp'.length);
-  }
-
-  // Remove trailing slashes
-  normalized = normalized.replace(/\/+$/, '');
-
-  return normalized;
+  normalized = normalizeTmpPath(normalized);
+  return normalized.replace(/\/+$/, '');
 }
 
 /**
- * Get the list of sensitive directory paths for sandbox read denyOnly configuration.
- * These paths should be added to the sandbox's read.denyOnly list for non-admin users.
+ * Sensitive paths for sandbox read.denyOnly configuration.
+ * Concrete paths (not wildcards) for non-admin user sandbox restriction.
  */
 export function getSensitiveReadDenyPaths(): string[] {
   return [
     ...SENSITIVE_DIRECTORIES,
-    ...SENSITIVE_EXACT_FILES,
-    // Add common service directories containing secrets
+    ...Array.from(SENSITIVE_EXACT_FILES),
     '/opt/soma-work/dev/.env',
     '/opt/soma-work/prod/.env',
     '/opt/soma-work/dev/config.json',
