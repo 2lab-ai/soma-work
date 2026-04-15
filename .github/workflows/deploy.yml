@@ -120,6 +120,7 @@ jobs:
           tar -czf deploy-bundle.tar.gz \
             dist \
             mcp-servers \
+            somalib \
             node_modules \
             package.json \
             service.sh
@@ -179,6 +180,7 @@ jobs:
 
           rsync -a --delete node_modules/ "$TARGET/node_modules/"
           rsync -a --delete mcp-servers/ "$TARGET/mcp-servers/"
+          rsync -a --delete somalib/ "$TARGET/somalib/"
           rsync -a \
             package.json \
             service.sh \

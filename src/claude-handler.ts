@@ -46,10 +46,10 @@ import type {
 // Fallback local plugins directory (used when no PluginManager is configured)
 const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
 
+import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { sendCredentialAlert } from './credential-alert';
 import { ensureValidCredentials, getCredentialStatus } from './credentials-manager';
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
-import type { ModelCommandContext } from './model-commands/types';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
 import { userSettingsStore } from './user-settings-store';

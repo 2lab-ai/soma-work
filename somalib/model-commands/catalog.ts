@@ -5,8 +5,29 @@ import type {
   SessionResourceSnapshot,
   SessionResourceType,
   SessionResourceUpdateRequest,
-} from '../types';
-import { addMemory, loadMemory, removeMemory, replaceMemory } from '../user-memory-store';
+} from './session-types';
+// Memory store interface — injected by the host app via registerMemoryStore().
+// MCP servers that don't use SAVE_MEMORY/GET_MEMORY don't need to register.
+export interface MemoryStore {
+  addMemory(user: string, target: string, content: string): { ok: boolean; message: string };
+  replaceMemory(user: string, target: string, oldText: string, content: string): { ok: boolean; message: string };
+  removeMemory(user: string, target: string, oldText: string): { ok: boolean; message: string };
+  loadMemory(user: string, target: string): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number };
+}
+
+let _memoryStore: MemoryStore | null = null;
+
+/** Register the memory store implementation. Must be called before SAVE_MEMORY/GET_MEMORY commands. */
+export function registerMemoryStore(store: MemoryStore): void {
+  _memoryStore = store;
+}
+
+function getMemoryStore(): MemoryStore {
+  if (!_memoryStore) {
+    throw new Error('Memory store not registered. Call registerMemoryStore() before using SAVE_MEMORY/GET_MEMORY.');
+  }
+  return _memoryStore;
+}
 import type {
   ContinueSessionParams,
   ModelCommandContext,
@@ -507,7 +528,7 @@ export function runModelCommand(
       if (!params.content) {
         return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'content is required for add' });
       }
-      result = addMemory(context.user, params.target, params.content);
+      result = getMemoryStore().addMemory(context.user, params.target, params.content);
     } else if (params.action === 'replace') {
       if (!params.old_text || !params.content) {
         return toRunError('SAVE_MEMORY', {
@@ -515,12 +536,12 @@ export function runModelCommand(
           message: 'old_text and content are required for replace',
         });
       }
-      result = replaceMemory(context.user, params.target, params.old_text, params.content);
+      result = getMemoryStore().replaceMemory(context.user, params.target, params.old_text, params.content);
     } else if (params.action === 'remove') {
       if (!params.old_text) {
         return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'old_text is required for remove' });
       }
-      result = removeMemory(context.user, params.target, params.old_text);
+      result = getMemoryStore().removeMemory(context.user, params.target, params.old_text);
     } else {
       return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
     }
@@ -536,8 +557,9 @@ export function runModelCommand(
     if (!context.user) {
       return toRunError('GET_MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
     }
-    const mem = loadMemory(context.user, 'memory');
-    const usr = loadMemory(context.user, 'user');
+    const store = getMemoryStore();
+    const mem = store.loadMemory(context.user, 'memory');
+    const usr = store.loadMemory(context.user, 'user');
     return {
       type: 'model_command_result',
       commandId: 'GET_MEMORY',

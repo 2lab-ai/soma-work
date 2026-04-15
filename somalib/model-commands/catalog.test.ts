@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionInstruction, SessionInstructionOperation } from '../types';
+import type { SessionInstruction, SessionInstructionOperation } from './session-types';
 import { applyInstructionOperations, getDefaultSessionSnapshot, runModelCommand } from './catalog';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
 
