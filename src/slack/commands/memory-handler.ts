@@ -1,4 +1,4 @@
-import { clearAllMemory, formatMemoryForDisplay, removeMemoryByIndex } from '../../user-memory-store';
+import { addMemory, clearAllMemory, formatMemoryForDisplay, removeMemoryByIndex } from '../../user-memory-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
@@ -17,6 +17,13 @@ export class MemoryHandler implements CommandHandler {
     if (action.action === 'show') {
       const display = formatMemoryForDisplay(user);
       await say({ text: display, thread_ts: threadTs });
+    } else if (action.action === 'save') {
+      const result = addMemory(user, action.target, action.content);
+      if (result.ok) {
+        await say({ text: `✅ Saved to ${action.target}: "${action.content}"`, thread_ts: threadTs });
+      } else {
+        await say({ text: `❌ ${result.message}`, thread_ts: threadTs });
+      }
     } else if (action.action === 'clear') {
       if (action.index !== undefined) {
         // Clear specific entry by number

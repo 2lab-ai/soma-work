@@ -36,6 +36,14 @@ export interface ToolUseLogSummary {
   task?: TaskToolSummary;
 }
 
+/** Extract a ~3-word summary from SAVE_MEMORY content for the Telltale meme */
+function memorySummary(input: any): string {
+  const raw = input?.params?.content ?? input?.content ?? '';
+  if (!raw) return '';
+  const words = String(raw).trim().split(/\s+/).slice(0, 3).join(' ');
+  return words;
+}
+
 export class ToolFormatter {
   private static readonly TASK_PROMPT_PREVIEW_LENGTH = 180;
   private static readonly SUBAGENT_DISPLAY_MAP: Record<string, { label: string; model?: string }> = {
@@ -151,6 +159,13 @@ export class ToolFormatter {
    * Format MCP tool usage
    */
   static formatMcpTool(toolName: string, input: any): string {
+    // SAVE_MEMORY meme: "X will remember that" (Telltale Games style)
+    if (toolName === 'mcp__model-command__run' && input?.commandId === 'SAVE_MEMORY') {
+      const summary = memorySummary(input);
+      return summary
+        ? `🧠 *'${_botDisplayName}'은(는) 이것(\`${summary}\`)을 기억할 것입니다.*`
+        : `🧠 *'${_botDisplayName}'은(는) 이것을 기억할 것입니다.*`;
+    }
     // Parse MCP tool name: mcp__serverName__toolName
     const parts = toolName.split('__');
     const serverName = parts[1] || 'unknown';
@@ -286,7 +301,22 @@ export class ToolFormatter {
    * Format tool_use content from assistant message (default = detail mode)
    */
   static formatToolUse(content: any[], mode: RenderMode = 'detail'): string {
-    if (mode === 'hidden') return '';
+    // SAVE_MEMORY meme always shows, even in hidden mode
+    if (mode === 'hidden') {
+      for (const part of content) {
+        if (
+          part.type === 'tool_use' &&
+          part.name === 'mcp__model-command__run' &&
+          part.input?.commandId === 'SAVE_MEMORY'
+        ) {
+          const summary = memorySummary(part.input);
+          return summary
+            ? `🧠 *'${_botDisplayName}'은(는) 이것(\`${summary}\`)을 기억할 것입니다.*`
+            : `🧠 *'${_botDisplayName}'은(는) 이것을 기억할 것입니다.*`;
+        }
+      }
+      return '';
+    }
     if (mode === 'compact') return ToolFormatter.formatToolUseCompact(content);
     if (mode === 'verbose') return ToolFormatter.formatToolUseVerbose(content);
 
@@ -388,7 +418,10 @@ export class ToolFormatter {
         if (toolName.startsWith('mcp__')) {
           // SAVE_MEMORY meme: "X will remember that" (Telltale Games style)
           if (toolName === 'mcp__model-command__run' && input?.commandId === 'SAVE_MEMORY') {
-            return `🧠 *'${_botDisplayName}'은(는) 이것을 기억할 것입니다.*`;
+            const summary = memorySummary(input);
+            return summary
+              ? `🧠 *'${_botDisplayName}'은(는) 이것(\`${summary}\`)을 기억할 것입니다.*`
+              : `🧠 *'${_botDisplayName}'은(는) 이것을 기억할 것입니다.*`;
           }
           const parts = toolName.split('__');
           const base = `${emoji} MCP: ${parts[1]} → ${parts.slice(2).join('__')}`;
@@ -549,7 +582,7 @@ export class ToolFormatter {
     const damage = isCritical ? Math.floor(Math.random() * 150) + 100 : Math.floor(Math.random() * 100) + 30;
     const dmgText = isCritical ? `*${damage}*` : `${damage}`;
     const suffix = isCritical ? ' 크리티컬!' : '!';
-    return `> '${casterName}'가 '${skillName}'을 발동했습니다. 데미지 ${dmgText}${suffix}`;
+    return `> '${casterName}'가 \`${skillName}\`을 발동했습니다. 데미지 ${dmgText}${suffix}`;
   }
 
   /** Format a compact completion line for in-place tool message update */
