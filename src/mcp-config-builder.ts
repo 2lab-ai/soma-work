@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { isAdminUser } from './admin-utils';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { Logger } from './logger';
@@ -18,7 +19,6 @@ import {
   type McpToolPermissionConfig,
   type PermissionLevel,
 } from './mcp-tool-permission-config';
-import type { ModelCommandContext } from './model-commands/types';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { userSettingsStore } from './user-settings-store';
 

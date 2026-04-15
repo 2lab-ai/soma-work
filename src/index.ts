@@ -1,4 +1,9 @@
 import './env-paths';
+import { registerMemoryStore } from 'somalib/model-commands/catalog';
+import * as userMemoryStore from './user-memory-store';
+
+registerMemoryStore(userMemoryStore);
+
 import { App } from '@slack/bolt';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';

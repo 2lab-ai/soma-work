@@ -156,52 +156,41 @@ For multiple repos, present results as a table or list for readability.
 
 ---
 
-## Release Notes Generation/Posting (Required)
+## Post-Merge Steps (Required)
 
-After the deployment merge is complete, generate release notes for each repo.
+After the deployment merge is complete, follow the steps below.
 
-### Note Generation Criteria
+For multi-repo deployments, repeat steps 5)–6) for each repo.
 
-1. Compare the target before and after the merge.
-2. Create a change summary based on the `target branch diff`.
-3. Must include the following items:
-   - Deployment target (repo/source/target)
-   - Commit summary (focusing on important commits)
-   - Changed files (key files only)
-   - Major changes (features/fixes/risks)
+### 5) Server Healthcheck (only when a server-tools target exists)
 
-### Recommended Format
+If the target branch name matches a server registered in server-tools, perform a healthcheck.
+(e.g., if target is `dev2` and server-tools has a `dev2` server registered)
 
-```markdown
-## Release Notes - {repo}
-- Source: `{source}`
-- Target: `{target}`
-- PR: {pr_url}
+1. Wait for the CD pipeline to finish deploying the new code before checking. If no CI/CD signal is available, wait at least 60 seconds after merge.
+2. Query the Docker container list on the target server using `mcp__server-tools__list_service`
+3. Verify that key services are in Running state and ports are open
+4. If healthy, proceed to the next step; if issues are found, report a warning in the thread and wait for user decision
 
-### Major Changes
-- ...
+> **Caveat**: `list_service` internally runs `docker ps`, which only returns currently running containers. Services that crashed or failed to start after deployment will **not** appear in the results. If the number of returned services is fewer than previously observed, treat it as a warning and investigate before proceeding.
 
-### Commit Summary
-- {sha} {message}
+If no matching server exists in server-tools, skip this step.
 
-### Changed Files (Key)
-- path/to/file1
-- path/to/file2
-```
+### 6) Release Notes Generation/Posting
 
-### Channel Root Posting Rules
+**You must use only the `local:release-notes` skill. Do not write release notes inline.**
 
-Release notes must be posted separately to the **channel root**, not in a thread.
-Use the following `channel_message` directive:
+1. Identify the target's SHA before and after the merge.
+2. Invoke the `local:release-notes` skill with `<before_sha> <after_sha>` arguments.
+3. Post the generated release notes to the channel root using the `channel_message` directive.
 
 ```json
 {
   "type": "channel_message",
-  "text": "Release notes body"
+  "text": "Release notes body (verbatim EN/KO bilingual output from local:release-notes skill)"
 }
 ```
 
-Required conditions:
+4. After posting to the channel, briefly report "Release notes posted" in the thread.
 
-- `text` must contain the full final release notes.
-- After posting to the channel, briefly report "Channel release notes posted" in the thread.
+**Prohibited**: Do not generate release notes by any other means. Each repo gets exactly one `channel_message` per invocation of this skill — do not issue additional duplicate directives.
