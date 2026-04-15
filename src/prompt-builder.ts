@@ -12,6 +12,7 @@ import { Logger } from './logger';
 import type { WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
 import { userSettingsStore } from './user-settings-store';
+import { listUserSkills } from './user-skill-store';
 
 // Prompt file paths
 const PROMPT_DIR = path.join(__dirname, 'prompt');
@@ -232,7 +233,7 @@ export class PromptBuilder {
   /**
    * Process runtime variable placeholders in prompt content
    * Replaces {{variable_name}} and {{user.*}} with runtime values
-   * Escaped variables \{{...}} are preserved as literal {{...}}
+   * Escaped variables \\{{...}} are preserved as literal {{...}}
    */
   private processVariables(content: string, userId?: string): string {
     const result = content.replace(VARIABLE_PATTERN, (match, varName) => {
@@ -249,7 +250,7 @@ export class PromptBuilder {
       return match;
     });
 
-    // Unescape \{{ → {{ after substitution
+    // Unescape \\{{ → {{ after substitution
     return result.replace(/\\\{\{/g, '{{');
   }
 
@@ -400,6 +401,22 @@ export class PromptBuilder {
         const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
         systemPrompt = systemPrompt ? `${systemPrompt}\n\n${guidance}\n${memoryBlock}` : `${guidance}\n${memoryBlock}`;
         this.logger.debug('Injected persistent memory', { user: userId });
+      }
+    }
+
+    // Inject user personal skills list (lazy — only names + descriptions)
+    if (userId) {
+      try {
+        const userSkills = listUserSkills(userId);
+        if (userSkills.length > 0) {
+          const skillList = userSkills
+            .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
+            .join('\n');
+          const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/list).\n${skillList}`;
+          systemPrompt = systemPrompt ? `${systemPrompt}\n${skillBlock}` : skillBlock;
+        }
+      } catch {
+        // Skills dir may not exist — that's fine, no skills to inject
       }
     }
 
