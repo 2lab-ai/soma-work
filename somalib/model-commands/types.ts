@@ -17,7 +17,8 @@ export type ModelCommandId =
   | 'SAVE_CONTEXT_RESULT'
   | 'SAVE_MEMORY'
   | 'GET_MEMORY'
-  | 'MANAGE_SKILL';
+  | 'MANAGE_SKILL'
+  | 'RATE';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -73,6 +74,7 @@ export interface ModelCommandParamsMap {
   SAVE_MEMORY: SaveMemoryParams;
   GET_MEMORY: undefined;
   MANAGE_SKILL: ManageSkillParams;
+  RATE: undefined;
 }
 
 export interface ModelCommandPayloadMap {
@@ -112,6 +114,9 @@ export interface ModelCommandPayloadMap {
     ok: boolean;
     message: string;
     skills?: Array<{ name: string; description: string }>;
+  };
+  RATE: {
+    rating: number;
   };
 }
 

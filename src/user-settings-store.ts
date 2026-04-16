@@ -97,6 +97,10 @@ export interface UserSettings {
   jiraName?: string;
   slackName?: string;
   email?: string; // Slack profile email (auto-fetched via users.info)
+  /** Model rating (0-10, default 5). Used for <your_rating> context tag. */
+  rating?: number;
+  /** Pending rating change notification (consumed once after user changes rating). */
+  pendingRatingChange?: { from: number; to: number };
   // User acceptance (admin approval)
   accepted: boolean;
   acceptedBy?: string;
@@ -310,6 +314,40 @@ export class UserSettingsStore {
   setUserEmail(userId: string, email: string): void {
     this.patchUserSettings(userId, { email });
     logger.info('Set user email', { userId, email });
+  }
+
+  /**
+   * Get user's model rating (0-10, default 5)
+   */
+  getUserRating(userId: string): number {
+    const rating = this.settings[userId]?.rating;
+    return typeof rating === 'number' ? Math.max(0, Math.min(10, rating)) : 5;
+  }
+
+  /**
+   * Set user's model rating (clamped to 0-10)
+   */
+  setUserRating(userId: string, rating: number): void {
+    const clamped = Math.max(0, Math.min(10, rating));
+    this.patchUserSettings(userId, { rating: clamped } as Partial<UserSettings>);
+    logger.info('Set user rating', { userId, rating: clamped });
+  }
+
+  /**
+   * Set pending rating change notification (consumed once on next message)
+   */
+  setPendingRatingChange(userId: string, change: { from: number; to: number }): void {
+    this.patchUserSettings(userId, { pendingRatingChange: change } as Partial<UserSettings>);
+  }
+
+  /**
+   * Consume pending rating change (read and clear). Returns null if none pending.
+   */
+  consumePendingRatingChange(userId: string): { from: number; to: number } | null {
+    const change = this.settings[userId]?.pendingRatingChange;
+    if (!change) return null;
+    this.patchUserSettings(userId, { pendingRatingChange: undefined } as Partial<UserSettings>);
+    return change;
   }
 
   /**
