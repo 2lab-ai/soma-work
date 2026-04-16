@@ -268,7 +268,7 @@ describe('StreamProcessor', () => {
       expect(mockSay).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
-          text: 'Which option?',
+          text: '',
           attachments: expect.any(Array),
         }),
       );
