@@ -107,21 +107,26 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a cct/set_cct command
+   * Check if text is a cct command.
+   *
+   * `/z` refactor (#506): only the canonical `cct` / `cct set <n>` / `cct next`
+   * forms are accepted. Legacy `set_cct <n>` / `nextcct` underscore aliases
+   * are no longer recognised — ZRouter.translateToLegacy bridges the `/z` form
+   * before we reach here.
    */
   static isCctCommand(text: string): boolean {
-    return /^\/?(?:cct|set_cct|nextcct)(?:\s+\S+)?$/i.test(text.trim());
+    return /^\/?cct(?:\s+(?:next|set\s+\S+))?$/i.test(text.trim());
   }
 
   /**
-   * Parse cct command: "cct" → status, "set_cct cctN" → set, "nextcct" → next
+   * Parse cct command: "cct" → status, "cct set cctN" → set, "cct next" → next.
    */
   static parseCctCommand(text: string): CctAction {
     const trimmed = text.trim();
-    if (/^\/?nextcct$/i.test(trimmed)) {
+    if (/^\/?cct\s+next$/i.test(trimmed)) {
       return { action: 'next' };
     }
-    const match = trimmed.match(/^\/?set_cct\s+(\S+)$/i);
+    const match = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
     if (match) {
       return { action: 'set', target: match[1] };
     }
@@ -786,7 +791,10 @@ export class CommandParser {
   }
 
   /**
-   * Known command keywords (including future commands)
+   * Known command keywords (including future commands).
+   *
+   * `/z` refactor (#506) — underscore cct aliases (`set_cct`, `nextcct`) are
+   * removed in favour of the canonical `cct set <n>` / `cct next` forms.
    */
   private static readonly COMMAND_KEYWORDS = new Set([
     // Admin commands
@@ -796,8 +804,6 @@ export class CommandParser {
     'config',
     // Token management
     'cct',
-    'set_cct',
-    'nextcct',
     // Working directory
     'cwd',
     // MCP

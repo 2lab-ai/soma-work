@@ -231,10 +231,10 @@ export function translateToLegacy(remainder: string): string {
   const cwdSet = trimmed.match(/^cwd\s+set\s+(.+)$/i);
   if (cwdSet) return `cwd ${cwdSet[1]}`;
 
-  // cct set <n> → set_cct <n>
-  const cctSet = trimmed.match(/^cct\s+set\s+(\S+)$/i);
-  if (cctSet) return `set_cct ${cctSet[1]}`;
-  if (/^cct\s+next$/i.test(trimmed)) return 'nextcct';
+  // cct set <n> / cct next — native form accepted post-rewrite (#506).
+  // Kept here for readability; falls through to pass-through when no rewrite
+  // is needed. Legacy `set_cct`/`nextcct` underscore aliases are removed.
+  if (/^cct(?:\s+(?:next|set\s+\S+))?$/i.test(trimmed)) return trimmed;
 
   // admin subcommands
   // admin accept <@U> → accept <@U>
