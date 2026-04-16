@@ -91,12 +91,22 @@ export interface UserSettings {
   showThinking?: boolean;
   /** Whether sandbox is disabled for this user. Default: false (sandbox ON). Admin-only toggle. */
   sandboxDisabled?: boolean;
+  /**
+   * Whether sandbox network access is disabled for this user. Default: false
+   * (network ON — preset dev-domain allowlist applied). Any user may toggle.
+   * No effect while `sandboxDisabled` is true.
+   */
+  networkDisabled?: boolean;
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
   jiraName?: string;
   slackName?: string;
   email?: string; // Slack profile email (auto-fetched via users.info)
+  /** Model rating (0-10, default 5). Used for <your_rating> context tag. */
+  rating?: number;
+  /** Pending rating change notification (consumed once after user changes rating). */
+  pendingRatingChange?: { from: number; to: number };
   // User acceptance (admin approval)
   accepted: boolean;
   acceptedBy?: string;
@@ -258,19 +268,15 @@ export class UserSettingsStore {
       (slackName && existing.slackName !== slackName);
 
     if (needsUpdate) {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: existing?.defaultDirectory ?? '',
-        bypassPermission: existing?.bypassPermission ?? false,
-        persona: existing?.persona ?? 'default',
-        defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
-        accepted: existing?.accepted ?? true,
-        lastUpdated: new Date().toISOString(),
+      // Patch only the Jira-related fields so unrelated settings (e.g.
+      // networkDisabled, sandboxDisabled, sessionTheme, notification, etc.)
+      // are preserved. Previously this path overwrote the whole record and
+      // silently reset any field not listed here.
+      this.patchUserSettings(userId, {
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
         slackName: slackName || mapping.slackName || existing?.slackName,
-      };
-      this.saveSettings();
+      });
       logger.info('Updated user Jira info', {
         userId,
         jiraAccountId: mapping.jiraAccountId,
@@ -310,6 +316,40 @@ export class UserSettingsStore {
   setUserEmail(userId: string, email: string): void {
     this.patchUserSettings(userId, { email });
     logger.info('Set user email', { userId, email });
+  }
+
+  /**
+   * Get user's model rating (0-10, default 5)
+   */
+  getUserRating(userId: string): number {
+    const rating = this.settings[userId]?.rating;
+    return typeof rating === 'number' ? Math.max(0, Math.min(10, rating)) : 5;
+  }
+
+  /**
+   * Set user's model rating (clamped to 0-10)
+   */
+  setUserRating(userId: string, rating: number): void {
+    const clamped = Math.max(0, Math.min(10, rating));
+    this.patchUserSettings(userId, { rating: clamped } as Partial<UserSettings>);
+    logger.info('Set user rating', { userId, rating: clamped });
+  }
+
+  /**
+   * Set pending rating change notification (consumed once on next message)
+   */
+  setPendingRatingChange(userId: string, change: { from: number; to: number }): void {
+    this.patchUserSettings(userId, { pendingRatingChange: change } as Partial<UserSettings>);
+  }
+
+  /**
+   * Consume pending rating change (read and clear). Returns null if none pending.
+   */
+  consumePendingRatingChange(userId: string): { from: number; to: number } | null {
+    const change = this.settings[userId]?.pendingRatingChange;
+    if (!change) return null;
+    this.patchUserSettings(userId, { pendingRatingChange: undefined } as Partial<UserSettings>);
+    return change;
   }
 
   /**
@@ -382,6 +422,27 @@ export class UserSettingsStore {
   setUserSandboxDisabled(userId: string, disabled: boolean): void {
     this.patchUserSettings(userId, { sandboxDisabled: disabled });
     logger.info('Set user sandbox disabled', { userId, disabled });
+  }
+
+  /**
+   * Get user's sandbox-network disabled setting. Returns false (network ON)
+   * by default. Any user may toggle this; value is only effective when
+   * `sandboxDisabled` is also false.
+   */
+  getUserNetworkDisabled(userId: string): boolean {
+    return this.settings[userId]?.networkDisabled ?? false;
+  }
+
+  /**
+   * Set user's sandbox-network disabled setting.
+   *
+   * Applies from the next user turn — in-flight SDK queries are not mutated
+   * because sandbox settings are OS-enforced (Seatbelt/bubblewrap) and
+   * captured at `query()` init time.
+   */
+  setUserNetworkDisabled(userId: string, disabled: boolean): void {
+    this.patchUserSettings(userId, { networkDisabled: disabled });
+    logger.info('Set user network disabled', { userId, disabled });
   }
 
   /**

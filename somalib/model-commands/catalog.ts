@@ -28,8 +28,49 @@ function getMemoryStore(): MemoryStore {
   }
   return _memoryStore;
 }
+
+// Skill store interface — injected by the host app via registerSkillStore().
+export interface SkillStore {
+  listSkills(user: string): Array<{ name: string; description: string }>;
+  createSkill(user: string, name: string, content: string): { ok: boolean; message: string };
+  updateSkill(user: string, name: string, content: string): { ok: boolean; message: string };
+  deleteSkill(user: string, name: string): { ok: boolean; message: string };
+}
+
+let _skillStore: SkillStore | null = null;
+
+/** Register the skill store implementation. Must be called before MANAGE_SKILL commands. */
+export function registerSkillStore(store: SkillStore): void {
+  _skillStore = store;
+}
+
+function getSkillStore(): SkillStore {
+  if (!_skillStore) {
+    throw new Error('Skill store not registered. Call registerSkillStore() before using MANAGE_SKILL.');
+  }
+  return _skillStore;
+}
+
+// Rating store interface — injected by the host app via registerRatingStore().
+// Returns user's current model rating (0-10, default 5).
+export interface RatingStore {
+  getUserRating(userId: string): number;
+}
+
+let _ratingStore: RatingStore | null = null;
+
+/** Register the rating store implementation. Must be called before RATE command. */
+export function registerRatingStore(store: RatingStore): void {
+  _ratingStore = store;
+}
+
+function getRatingStore(): RatingStore | null {
+  return _ratingStore;
+}
+
 import type {
   ContinueSessionParams,
+  ManageSkillParams,
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
@@ -229,6 +270,26 @@ const SAVE_MEMORY_SCHEMA = {
   required: ['action', 'target'],
 };
 
+const MANAGE_SKILL_SCHEMA = {
+  type: 'object',
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['create', 'update', 'delete', 'list'],
+      description: 'create: new skill, update: overwrite existing, delete: remove, list: show all',
+    },
+    name: {
+      type: 'string',
+      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete.',
+    },
+    content: {
+      type: 'string',
+      description: 'Full SKILL.md content with YAML frontmatter. Required for create/update.',
+    },
+  },
+  required: ['action'],
+};
+
 const CONTINUE_SESSION_SCHEMA = {
   type: 'object',
   properties: {
@@ -334,6 +395,17 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       {
         id: 'GET_MEMORY',
         description: 'Read current persistent memory and user profile entries',
+        paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+      {
+        id: 'MANAGE_SKILL',
+        description:
+          'Create, update, delete, or list user personal skills. Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. Immediately available after creation.',
+        paramsSchema: MANAGE_SKILL_SCHEMA,
+      },
+      {
+        id: 'RATE',
+        description: 'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
     );
@@ -572,6 +644,75 @@ export function runModelCommand(
         userChars: usr.totalChars,
         userLimit: usr.charLimit,
       },
+    };
+  }
+
+  if (request.commandId === 'MANAGE_SKILL') {
+    if (!context.user) {
+      return toRunError('MANAGE_SKILL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const params = request.params as ManageSkillParams;
+    const store = getSkillStore();
+
+    if (params.action === 'list') {
+      const skills = store.listSkills(context.user);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: { ok: true, message: `${skills.length} skills found`, skills },
+      };
+    }
+    if (params.action === 'create') {
+      if (!params.name || !params.content) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name and content required for create' });
+      }
+      const result = store.createSkill(context.user, params.name, params.content);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: { ok: result.ok, message: result.message },
+      };
+    }
+    if (params.action === 'update') {
+      if (!params.name || !params.content) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name and content required for update' });
+      }
+      const result = store.updateSkill(context.user, params.name, params.content);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: { ok: result.ok, message: result.message },
+      };
+    }
+    if (params.action === 'delete') {
+      if (!params.name) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name required for delete' });
+      }
+      const result = store.deleteSkill(context.user, params.name);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: { ok: result.ok, message: result.message },
+      };
+    }
+    return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
+  }
+
+  if (request.commandId === 'RATE') {
+    if (!context.user) {
+      return toRunError('RATE', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const store = getRatingStore();
+    const rating = store ? store.getUserRating(context.user) : 5;
+    return {
+      type: 'model_command_result',
+      commandId: 'RATE',
+      ok: true,
+      payload: { rating },
     };
   }
 

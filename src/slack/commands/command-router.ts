@@ -24,6 +24,7 @@ import { OnboardingHandler } from './onboarding-handler';
 import { PersonaHandler } from './persona-handler';
 import { PluginsHandler } from './plugins-handler';
 import { PromptHandler } from './prompt-handler';
+import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
@@ -31,6 +32,7 @@ import { SandboxHandler } from './sandbox-handler';
 import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
 import { SkillForceHandler } from './skill-force-handler';
+import { SkillsHandler } from './skills-handler';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { VerbosityHandler } from './verbosity-handler';
 import { WebhookHandler } from './webhook-handler';
@@ -60,7 +62,9 @@ export class CommandRouter {
       new BypassHandler(),
       new SandboxHandler(),
       new EmailHandler(),
+      new RateHandler(),
       new PersonaHandler(),
+      new SkillsHandler(), // skills list/download — before MemoryHandler
       new MemoryHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
