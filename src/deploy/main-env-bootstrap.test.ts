@@ -225,4 +225,28 @@ describe('main-env-bootstrap', () => {
     const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
     expect(settings.U1.defaultModel).toBe('claude-opus-4-6');
   });
+
+  it('preserves stored claude-sonnet-4-6 setting through normalize', async () => {
+    // Regression guard: VALID_MODELS must include sonnet-4-6 so Sonnet users
+    // are NOT silently force-migrated to the default Opus 4.7 model on boot.
+    const targetDir = makeTempDir('bootstrap-target-');
+
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+      U1: {
+        userId: 'U1',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-sonnet-4-6',
+        lastUpdated: '2026-03-12T00:00:00.000Z',
+        accepted: true,
+      },
+    });
+
+    await normalizeMainTargetData(targetDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+    expect(settings.U1.defaultModel).toBe('claude-sonnet-4-6');
+  });
 });

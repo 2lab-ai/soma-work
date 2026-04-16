@@ -97,6 +97,22 @@ export function buildBetaHeaders(
   return needs1mBeta ? ['context-1m-2025-08-07'] : undefined;
 }
 
+/**
+ * Resolve the effective `showSummary` value for a turn.
+ *
+ * Precedence matches the rest of the stack (see stream-executor.ts):
+ *   session override → per-user default → DEFAULT_SHOW_THINKING.
+ *
+ * Extracted so that the session-level `%thinking_summary on|off` override is
+ * honored when building the `thinking` option for the SDK.
+ */
+export function resolveShowSummary(
+  sessionShowThinking: boolean | undefined,
+  userShowThinking: boolean | undefined,
+): boolean {
+  return sessionShowThinking ?? userShowThinking ?? DEFAULT_SHOW_THINKING;
+}
+
 export class ClaudeHandler {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
@@ -812,9 +828,10 @@ export class ClaudeHandler {
         options.thinking = buildThinkingOption(false, false);
         this.logger.debug('Thinking disabled for session');
       } else {
-        const showSummary = slackContext?.user
+        const userShowThinking = slackContext?.user
           ? userSettingsStore.getUserShowThinking(slackContext.user)
-          : DEFAULT_SHOW_THINKING;
+          : undefined;
+        const showSummary = resolveShowSummary(session?.showThinking, userShowThinking);
         options.thinking = buildThinkingOption(true, showSummary);
         this.logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
       }

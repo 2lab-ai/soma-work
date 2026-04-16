@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBetaHeaders, buildThinkingOption } from './claude-handler';
+import { buildBetaHeaders, buildThinkingOption, resolveShowSummary } from './claude-handler';
 import { DEFAULT_SHOW_THINKING, DEFAULT_THINKING_ENABLED } from './user-settings-store';
 
 describe('buildThinkingOption', () => {
@@ -63,5 +63,24 @@ describe('buildBetaHeaders', () => {
   it('includes 1M beta for unknown / empty model name (conservative default)', () => {
     expect(buildBetaHeaders(undefined, true)).toContain('context-1m-2025-08-07');
     expect(buildBetaHeaders('', true)).toContain('context-1m-2025-08-07');
+  });
+});
+
+describe('resolveShowSummary', () => {
+  it('session override wins over user default (session=true, user=false)', () => {
+    expect(resolveShowSummary(true, false)).toBe(true);
+  });
+
+  it('session override wins over user default (session=false, user=true)', () => {
+    expect(resolveShowSummary(false, true)).toBe(false);
+  });
+
+  it('falls back to user default when no session override', () => {
+    expect(resolveShowSummary(undefined, false)).toBe(false);
+    expect(resolveShowSummary(undefined, true)).toBe(true);
+  });
+
+  it('falls back to DEFAULT_SHOW_THINKING when both undefined', () => {
+    expect(resolveShowSummary(undefined, undefined)).toBe(DEFAULT_SHOW_THINKING);
   });
 });
