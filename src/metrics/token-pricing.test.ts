@@ -4,11 +4,14 @@ import { calculateTokenCost, getModelPricing } from './token-pricing';
 describe('Token Pricing', () => {
   describe('getModelPricing', () => {
     it('should return Opus 4.6 pricing', () => {
+      // Per Claude Agent SDK official pricing (2026-04-16):
+      // Opus 4.6 = $5/$25 per MTok, cache read $0.50, 5-min cache write $6.25.
+      // Issue #498 corrected the 3x overcharge from the legacy $15/$75 table.
       const pricing = getModelPricing('claude-opus-4-6-20250414');
-      expect(pricing.inputPerMTok).toBe(15);
-      expect(pricing.outputPerMTok).toBe(75);
-      expect(pricing.cacheReadPerMTok).toBe(1.5);
-      expect(pricing.cacheCreatePerMTok).toBe(18.75);
+      expect(pricing.inputPerMTok).toBe(5);
+      expect(pricing.outputPerMTok).toBe(25);
+      expect(pricing.cacheReadPerMTok).toBe(0.5);
+      expect(pricing.cacheCreatePerMTok).toBe(6.25);
     });
 
     it('should return Sonnet 4.6 pricing', () => {
@@ -18,9 +21,12 @@ describe('Token Pricing', () => {
     });
 
     it('should return Haiku 4.5 pricing', () => {
+      // Per Claude Agent SDK official pricing (2026-04-16):
+      // Haiku 4.5 = $1/$5 per MTok. Issue #498 corrected the ~20% undercharge
+      // from the legacy $0.8/$4 table.
       const pricing = getModelPricing('claude-haiku-4-5-20250301');
-      expect(pricing.inputPerMTok).toBe(0.8);
-      expect(pricing.outputPerMTok).toBe(4);
+      expect(pricing.inputPerMTok).toBe(1);
+      expect(pricing.outputPerMTok).toBe(5);
     });
 
     it('should return fallback (Sonnet-tier) for unknown models', () => {
@@ -37,7 +43,7 @@ describe('Token Pricing', () => {
 
   describe('calculateTokenCost', () => {
     it('should calculate correct cost for Opus 4.6', () => {
-      // 100k input, 50k output, 200k cache read, 10k cache create
+      // 100k input, 50k output, 200k cache read, 10k cache create (5-min tier)
       const cost = calculateTokenCost(
         'claude-opus-4-6-20250414',
         100_000, // input
@@ -46,11 +52,12 @@ describe('Token Pricing', () => {
         10_000, // cache create
       );
 
-      // input: 100k/1M * 15 = 1.5
-      // output: 50k/1M * 75 = 3.75
-      // cacheRead: 200k/1M * 1.5 = 0.3
-      // cacheCreate: 10k/1M * 18.75 = 0.1875
-      const expected = 1.5 + 3.75 + 0.3 + 0.1875;
+      // Opus 4.6 corrected pricing (2026-04-16):
+      // input:       100k / 1M * $5    = 0.5
+      // output:      50k  / 1M * $25   = 1.25
+      // cacheRead:   200k / 1M * $0.50 = 0.1
+      // cacheCreate: 10k  / 1M * $6.25 = 0.0625
+      const expected = 0.5 + 1.25 + 0.1 + 0.0625;
       expect(cost).toBeCloseTo(expected, 4);
     });
 
