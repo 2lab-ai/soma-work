@@ -4,9 +4,11 @@ import path from 'path';
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
-const DEFAULT_MODEL = 'claude-opus-4-6';
+const DEFAULT_MODEL = 'claude-opus-4-7';
 const VALID_MODELS = new Set([
+  'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',

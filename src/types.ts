@@ -39,6 +39,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from 'somalib/model-commands/session-types';
+import type { EffortLevel } from './user-settings-store';
 
 /**
  * Session state machine states
@@ -167,8 +168,8 @@ export interface ConversationSession {
   actionPanel?: ActionPanelState;
   // Log verbosity bitmask (controls which output types are shown in Slack)
   logVerbosity?: number;
-  // Effort level for Claude thinking (low/medium/high/max)
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  // Effort level for Claude thinking
+  effort?: EffortLevel;
   // Whether extended thinking (adaptive reasoning) is enabled for this session
   thinkingEnabled?: boolean;
   // Whether thinking output is shown in Slack for this session
