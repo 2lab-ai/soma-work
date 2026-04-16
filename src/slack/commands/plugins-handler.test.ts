@@ -338,12 +338,16 @@ describe('PluginsHandler', () => {
       expect(handler.canHandle('/plugins update')).toBe(true);
     });
 
-    it('should handle Korean "플러그인 업데이트" command', () => {
-      expect(handler.canHandle('플러그인 업데이트')).toBe(true);
+    it('should NOT handle Korean alias "플러그인 업데이트" (#506)', () => {
+      expect(handler.canHandle('플러그인 업데이트')).toBe(false);
     });
 
-    it('should handle Korean "/플러그인 업데이트" command', () => {
-      expect(handler.canHandle('/플러그인 업데이트')).toBe(true);
+    it('should NOT handle Korean alias "/플러그인 업데이트" (#506)', () => {
+      expect(handler.canHandle('/플러그인 업데이트')).toBe(false);
+    });
+
+    it('should handle singular "plugin update" (/z plugin update native)', () => {
+      expect(handler.canHandle('plugin update')).toBe(true);
     });
 
     it('should reject non-admin users', async () => {
@@ -382,11 +386,11 @@ describe('PluginsHandler', () => {
       expect(resultMessage).toContain('1.0.0');
     });
 
-    it('should work with Korean command for admin users', async () => {
+    it('should work with singular "plugin update" for admin users (#506)', async () => {
       vi.mocked(isAdminUser).mockReturnValue(true);
       mockPluginManager.getResolvedPlugins.mockReturnValue([]);
 
-      const { ctx, say } = createContext('플러그인 업데이트');
+      const { ctx, say } = createContext('plugin update');
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);

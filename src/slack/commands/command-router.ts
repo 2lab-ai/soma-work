@@ -15,7 +15,6 @@ import { CompactHandler } from './compact-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
 import { EmailHandler } from './email-handler';
-import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
@@ -86,7 +85,6 @@ export class CommandRouter {
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),
-      new EsHandler(),
       new UsageHandler(deps),
       new HelpHandler(),
       new SessionHandler(deps),
