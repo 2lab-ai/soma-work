@@ -571,9 +571,7 @@ export class SlackHandler {
    *    handle the message (unknown `/z` remainder, or internal failure);
    *    caller should fall through to the legacy pipeline unchanged.
    */
-  private async routeDmViaZRouter(
-    event: MessageEvent,
-  ): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+  private async routeDmViaZRouter(event: MessageEvent): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
