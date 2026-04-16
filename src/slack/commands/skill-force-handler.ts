@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
+import { ToolFormatter } from '../tool-formatter';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -109,6 +110,15 @@ export class SkillForceHandler implements CommandHandler {
     this.logger.info('Forced skill invocation', {
       skills: Array.from(resolved.keys()),
       errorSkills: errors,
+    });
+
+    // Emit RPG-style forced skill invocation banner (red attachment bar)
+    const casterName = user ? `<@${user}>` : '누군가';
+    const rpg = ToolFormatter.formatSkillForceInvocationRPG(Array.from(resolved.keys()), casterName);
+    await say({
+      text: '',
+      thread_ts: threadTs,
+      attachments: [{ color: rpg.color, text: rpg.text }],
     });
 
     return {
