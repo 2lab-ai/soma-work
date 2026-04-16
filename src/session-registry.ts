@@ -1455,9 +1455,8 @@ export class SessionRegistry {
           sleepStartedAt,
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
-          // Backfill effort from user default when missing on legacy sessions. Without this,
-          // a session saved before the effort field existed would resume on SDK internal
-          // default instead of our configured DEFAULT_EFFORT ('xhigh').
+          // Backfill effort on legacy sessions so resume uses DEFAULT_EFFORT
+          // rather than the SDK default.
           effort: serialized.effort ?? userSettingsStore.getUserDefaultEffort(resolvedOwnerId),
           thinkingEnabled: serialized.thinkingEnabled,
           showThinking: serialized.showThinking,

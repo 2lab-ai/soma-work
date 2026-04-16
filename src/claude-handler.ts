@@ -71,7 +71,10 @@ export { getAvailablePersonas, SessionExpiryCallbacks };
  * `'summarized'` to preserve Slack thinking-summary UX (stream-processor.ts:414
  * filters out empty thinking blocks).
  */
-export function buildThinkingOption(thinkingEnabled: boolean, showSummary: boolean): NonNullable<Options['thinking']> {
+export function buildThinkingOption(
+  thinkingEnabled: boolean,
+  showSummary: boolean = false,
+): NonNullable<Options['thinking']> {
   if (!thinkingEnabled) {
     return { type: 'disabled' };
   }
@@ -817,15 +820,13 @@ export class ClaudeHandler {
     }
 
     // Set thinking config (adaptive reasoning toggle).
-    // Opus 4.7 API default is `display: 'omitted'` — we must explicitly opt in to
-    // `'summarized'` to preserve Slack thinking-summary UX (stream-processor.ts:414
-    // filters out empty thinking blocks).
+    // See `buildThinkingOption` JSDoc for why we explicitly opt into 'summarized'.
     {
       const thinkingEnabled =
         session?.thinkingEnabled ??
         (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : DEFAULT_THINKING_ENABLED);
       if (!thinkingEnabled) {
-        options.thinking = buildThinkingOption(false, false);
+        options.thinking = buildThinkingOption(false);
         this.logger.debug('Thinking disabled for session');
       } else {
         const userShowThinking = slackContext?.user

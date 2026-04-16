@@ -11,9 +11,10 @@ describe('buildThinkingOption', () => {
     expect(buildThinkingOption(true, false)).toEqual({ type: 'adaptive', display: 'omitted' });
   });
 
-  it('returns disabled when thinkingEnabled=false', () => {
+  it('returns disabled when thinkingEnabled=false (regardless of showSummary)', () => {
     expect(buildThinkingOption(false, true)).toEqual({ type: 'disabled' });
     expect(buildThinkingOption(false, false)).toEqual({ type: 'disabled' });
+    expect(buildThinkingOption(false)).toEqual({ type: 'disabled' });
   });
 
   it('defaults (thinkingEnabled=true, showSummary=true) yield adaptive+summarized', () => {

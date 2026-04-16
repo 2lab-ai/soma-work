@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AVAILABLE_MODELS, DEFAULT_MODEL as STORE_DEFAULT_MODEL } from '../user-settings-store';
 import { bootstrapMainEnvironment, normalizeMainTargetData } from './main-env-bootstrap';
 
 function writeJson(filePath: string, value: unknown): void {
@@ -224,6 +225,42 @@ describe('main-env-bootstrap', () => {
 
     const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
     expect(settings.U1.defaultModel).toBe('claude-opus-4-6');
+  });
+
+  it('VALID_MODELS + DEFAULT_MODEL stay in sync with user-settings-store canonical list', async () => {
+    // Bootstrap duplicates these constants (to keep bootstrap import-lean). This
+    // drift guard catches the failure mode that originally shipped sonnet-4-6 as
+    // silently force-migrated to the default: any model added to the canonical
+    // AVAILABLE_MODELS must also be accepted here, otherwise users on that model
+    // will be rewritten to DEFAULT_MODEL on boot normalize.
+    const targetDir = makeTempDir('bootstrap-target-');
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    const settings: Record<string, Record<string, unknown>> = {};
+    for (const model of AVAILABLE_MODELS) {
+      // claude-opus-4-5-20251101 is intentionally still migrated (retired model).
+      if (model === 'claude-opus-4-5-20251101') continue;
+      const userId = `U-${model}`;
+      settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: model,
+        lastUpdated: '2026-03-12T00:00:00.000Z',
+        accepted: true,
+      };
+    }
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), settings);
+
+    await normalizeMainTargetData(targetDir);
+
+    const after = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+    for (const model of AVAILABLE_MODELS) {
+      if (model === 'claude-opus-4-5-20251101') continue;
+      expect(after[`U-${model}`].defaultModel).toBe(model);
+    }
+    // And the store's canonical default is one of the accepted models.
+    expect(AVAILABLE_MODELS).toContain(STORE_DEFAULT_MODEL);
   });
 
   it('preserves stored claude-sonnet-4-6 setting through normalize', async () => {

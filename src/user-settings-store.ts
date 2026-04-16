@@ -35,12 +35,13 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
 
 // Effort levels
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
-export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
+/** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */
 export function coerceEffort(value: unknown): EffortLevel {
-  return (EFFORT_LEVELS as readonly string[]).includes(value as string) ? (value as EffortLevel) : DEFAULT_EFFORT;
+  return (EFFORT_LEVELS as readonly unknown[]).includes(value) ? (value as EffortLevel) : DEFAULT_EFFORT;
 }
 
 // Thinking (adaptive reasoning) toggle
