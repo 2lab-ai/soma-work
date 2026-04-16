@@ -34,6 +34,11 @@ interface RouteActionValue {
   userId: string;
   prUrl?: string;
   advisoryEphemeral?: boolean;
+  // Bot message ts posted to the original thread during init (dispatch status,
+  // conversation-history link, etc.). Only these are deleted on Move/Stay.
+  // Serialized into the Slack button value so cleanup works across restarts
+  // and after the original session has been terminated. Never contains model replies.
+  cleanupTs?: string[];
 }
 
 export class ChannelRouteActionHandler {
@@ -88,13 +93,24 @@ export class ChannelRouteActionHandler {
       if (!originalThreadTs) {
         logger.warn('🔀 Missing original thread ts', { value });
       } else {
-        logger.debug('🔀 Deleting bot messages in original thread', {
+        logger.debug('🔀 Deleting tracked init clutter in original thread', {
           channel: value.originalChannel,
           threadTs: originalThreadTs,
+          cleanupTsCount: value.cleanupTs?.length ?? 0,
         });
-        await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
-          excludeTs: value.originalTs ? [value.originalTs] : [],
-        });
+        // Delete only the init clutter we tracked (dispatch status, conversation-history link).
+        // Deleting all bot-authored messages here would also wipe prior model replies (#516).
+        for (const cleanupTs of value.cleanupTs || []) {
+          try {
+            await this.deps.slackApi.deleteMessage(value.originalChannel, cleanupTs);
+          } catch (error) {
+            logger.debug('🔀 Failed to delete source-thread cleanup message', {
+              channel: value.originalChannel,
+              cleanupTs,
+              error,
+            });
+          }
+        }
       }
 
       // Terminate original ghost session
@@ -163,13 +179,23 @@ export class ChannelRouteActionHandler {
       if (!originalThreadTs) {
         logger.warn('🔀 Missing original thread ts', { value });
       } else {
-        logger.debug('🔀 Deleting bot messages in original thread', {
+        logger.debug('🔀 Deleting tracked init clutter in original thread', {
           channel: value.originalChannel,
           threadTs: originalThreadTs,
+          cleanupTsCount: value.cleanupTs?.length ?? 0,
         });
-        await this.deps.slackApi.deleteThreadBotMessages(value.originalChannel, originalThreadTs, {
-          excludeTs: value.originalTs ? [value.originalTs] : [],
-        });
+        // Delete only the init clutter we tracked — see handleMove above (#516).
+        for (const cleanupTs of value.cleanupTs || []) {
+          try {
+            await this.deps.slackApi.deleteMessage(value.originalChannel, cleanupTs);
+          } catch (error) {
+            logger.debug('🔀 Failed to delete source-thread cleanup message', {
+              channel: value.originalChannel,
+              cleanupTs,
+              error,
+            });
+          }
+        }
       }
 
       if (sessionThreadTs) {
@@ -373,6 +399,8 @@ export function buildChannelRouteBlocks(params: {
   moveButtonText?: string;
   messageText?: string;
   sectionText?: string;
+  /** Init-clutter ts to be deleted on Move/Stay. See RouteActionValue.cleanupTs. */
+  cleanupTs?: string[];
 }): { text: string; blocks: any[] } {
   logger.info('🔀 buildChannelRouteBlocks', {
     prUrl: params.prUrl,
@@ -396,6 +424,7 @@ export function buildChannelRouteBlocks(params: {
     userId: params.userId,
     prUrl: params.prUrl,
     advisoryEphemeral: params.advisoryEphemeral,
+    cleanupTs: params.cleanupTs,
   };
   const valueStr = JSON.stringify(value);
 

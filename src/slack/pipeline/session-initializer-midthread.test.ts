@@ -106,11 +106,24 @@ beforeEach(() => {
 
   mockSlackApi = {
     getUserName: vi.fn().mockResolvedValue('Test User'),
-    postMessage: vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    // Distinct ts per call tags the sender site so we can prove only
+    // init-clutter (conversation link / dispatch status) is deleted — model replies
+    // (which would have their own ts) must never be touched. See Issue #516.
+    postMessage: vi.fn().mockImplementation(async (_channel: string, text: string) => {
+      if (typeof text === 'string') {
+        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
+        if (text.includes('🧵')) return { ts: 'redirect-ts' };
+      }
+      return { ts: 'other-bot-ts' };
+    }),
     getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p1739000000001000'),
     addReaction: vi.fn().mockResolvedValue(undefined),
     removeReaction: vi.fn().mockResolvedValue(undefined),
     updateMessage: vi.fn().mockResolvedValue(undefined),
+    // deleteMessage replaces the old wholesale deleteThreadBotMessages: we now
+    // only delete the exact ts we posted during init.
+    deleteMessage: vi.fn().mockResolvedValue(undefined),
     deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -183,7 +196,7 @@ describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  it('midThread_deletesDispatchClutter: deletes bot messages for mid-thread mentions', async () => {
+  it('midThread_deletesDispatchClutter: deletes tracked init clutter for mid-thread mentions', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -194,7 +207,10 @@ describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
+    // New behavior: only tracked init-clutter ts is deleted individually,
+    // never the wholesale "all bot messages in thread" delete (Issue #516).
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 
   it('midThread_postsRedirect: posts redirect 🧵 message (not retention 📋)', async () => {
@@ -237,7 +253,8 @@ describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
 
     await expect(sessionInitializer.initialize(event as any, '/test/dir')).resolves.toBeDefined();
 
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 });
 
@@ -251,7 +268,7 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  it('topLevel_deletesBotMessages: deletes bot messages when no thread_ts', async () => {
+  it('topLevel_deletesBotMessages: deletes tracked init clutter when no thread_ts', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -262,7 +279,8 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 
   it('topLevel_doesNotRetainInitialMessage: does not post permalink retention message', async () => {
@@ -347,7 +365,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
   });
 
-  it('midThread_alwaysCallsDelete: deleteThreadBotMessages called for mid-thread mentions', async () => {
+  it('midThread_alwaysCallsDelete: deleteMessage called for mid-thread mentions', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -358,22 +376,28 @@ describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', '1711234567.000100');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 
   it('midThread_deletesBeforeRedirect: delete happens before redirect message', async () => {
     const callOrder: string[] = [];
 
-    mockSlackApi.deleteThreadBotMessages.mockImplementation(async () => {
+    mockSlackApi.deleteMessage.mockImplementation(async () => {
       callOrder.push('delete');
     });
 
     mockSlackApi.postMessage.mockImplementation(async (...args: any[]) => {
       const text = args[1];
-      if (typeof text === 'string' && text.includes('🧵')) {
-        callOrder.push('redirect');
+      if (typeof text === 'string') {
+        if (text.includes('🧵')) {
+          callOrder.push('redirect');
+          return { ts: 'redirect-ts' };
+        }
+        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
       }
-      return { ts: 'msg123' };
+      return { ts: 'other-bot-ts' };
     });
 
     const event = {
@@ -406,7 +430,10 @@ describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalled();
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalled();
+    // The redirect 🧵 ts must NOT be deleted — it was posted AFTER cleanup
+    // and is not part of the tracked init-clutter set.
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', 'redirect-ts');
 
     // Redirect 🧵 message posted to source thread (not retention 📋)
     const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
@@ -428,7 +455,7 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
   });
 
   // Trace: S4, Sec 3b — delete + redirect
-  it('topLevel_deletesAndRedirects: deletes bot messages and posts redirect', async () => {
+  it('topLevel_deletesAndRedirects: deletes tracked init clutter and posts redirect', async () => {
     const event = {
       user: 'U_EXISTING_USER',
       channel: 'C123',
@@ -439,8 +466,9 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
-    // Delete is called
-    expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
+    // Delete is called for tracked init clutter only (Issue #516)
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
 
     // Redirect message "🧵" is posted to original thread
     const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
@@ -482,6 +510,60 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
 
     const result = await sessionInitializer.initialize(event as any, '/test/dir');
     expect(result.session.sourceThread).toBeUndefined();
+  });
+});
+
+// ============================================================
+// Scenario 6 (Issue #516) — model replies survive mid-thread migration
+// Fix: only tracked init clutter (conversation link / dispatch status) is
+// deleted on migration; model replies that pre-exist in the source thread
+// must NEVER be touched by cleanup.
+// ============================================================
+describe('Scenario 6 (#516): model replies preserved across mid-thread migration', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
+    mockClaudeHandler.getSession.mockReturnValue(null);
+    mockClaudeHandler.needsDispatch.mockReturnValue(true);
+  });
+
+  it('midThread_doesNotDeletePreexistingModelReplies', async () => {
+    // Pre-seed the session with a model-reply ts that must NOT be deleted.
+    // (In production, model replies are posted during the prior turn and
+    // never added to sourceThreadCleanupTs.)
+    const sessionWithHistory: any = {
+      sessionId: 'session-456',
+      owner: 'U123',
+      ownerName: 'Test User',
+      channel: 'C123',
+      threadTs: '1711234567.000100',
+      conversationId: undefined,
+      isOnboarding: false,
+      workflow: undefined,
+      sourceThreadCleanupTs: undefined,
+    };
+    mockClaudeHandler.createSession.mockReturnValue(sessionWithHistory);
+
+    const event = {
+      user: 'U_EXISTING_USER',
+      channel: 'C123',
+      thread_ts: '1711234567.000100',
+      ts: '1711234599.000200',
+      text: '@zhugeliang 여기 내용 정리해줘',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // Only tracked init-clutter ts may be deleted.
+    const deletedTs = mockSlackApi.deleteMessage.mock.calls.map((call: any[]) => call[1]);
+    for (const ts of deletedTs) {
+      // Allowed: conv-link-ts, dispatch-ts. Anything else is a regression.
+      expect(['conv-link-ts', 'dispatch-ts']).toContain(ts);
+    }
+
+    // A pretend prior model-reply ts — proves we never do wholesale deletion.
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', 'model-reply-ts-from-prior-turn');
+    // And the old broad-sweep API must remain unused.
+    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 });
 
