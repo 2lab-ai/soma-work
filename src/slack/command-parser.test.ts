@@ -1028,4 +1028,111 @@ describe('CommandParser', () => {
       expect(CommandParser.parseEmailCommand('set email')).toEqual({ action: 'status' });
     });
   });
+
+  describe('isSandboxCommand', () => {
+    it('matches bare "sandbox"', () => {
+      expect(CommandParser.isSandboxCommand('sandbox')).toBe(true);
+      expect(CommandParser.isSandboxCommand('/sandbox')).toBe(true);
+    });
+
+    it('matches "sandbox on|off|status" and synonyms', () => {
+      for (const s of [
+        'sandbox on',
+        'sandbox off',
+        'sandbox status',
+        'sandbox true',
+        'sandbox false',
+        'sandbox enable',
+        'sandbox disable',
+      ]) {
+        expect(CommandParser.isSandboxCommand(s)).toBe(true);
+      }
+    });
+
+    it('matches bare "sandbox network"', () => {
+      expect(CommandParser.isSandboxCommand('sandbox network')).toBe(true);
+      expect(CommandParser.isSandboxCommand('/sandbox network')).toBe(true);
+    });
+
+    it('matches "sandbox network on|off|status" and synonyms', () => {
+      for (const s of [
+        'sandbox network on',
+        'sandbox network off',
+        'sandbox network status',
+        'sandbox network true',
+        'sandbox network false',
+        'sandbox network enable',
+        'sandbox network disable',
+      ]) {
+        expect(CommandParser.isSandboxCommand(s)).toBe(true);
+      }
+    });
+
+    it('does not match garbage', () => {
+      expect(CommandParser.isSandboxCommand('sandbox foo')).toBe(false);
+      expect(CommandParser.isSandboxCommand('sandbox network foo')).toBe(false);
+      expect(CommandParser.isSandboxCommand('sandbox network on off')).toBe(false);
+      expect(CommandParser.isSandboxCommand('sandboxes')).toBe(false);
+      expect(CommandParser.isSandboxCommand('help')).toBe(false);
+    });
+  });
+
+  describe('parseSandboxCommand', () => {
+    it('parses bare "sandbox" as target=sandbox, action=status', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox')).toEqual({ target: 'sandbox', action: 'status' });
+    });
+
+    it('parses "sandbox on/off/status" as target=sandbox', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox on')).toEqual({ target: 'sandbox', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('/sandbox off')).toEqual({ target: 'sandbox', action: 'off' });
+      expect(CommandParser.parseSandboxCommand('sandbox status')).toEqual({ target: 'sandbox', action: 'status' });
+    });
+
+    it('parses synonym actions for sandbox target', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox true')).toEqual({ target: 'sandbox', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('sandbox enable')).toEqual({ target: 'sandbox', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('sandbox false')).toEqual({ target: 'sandbox', action: 'off' });
+      expect(CommandParser.parseSandboxCommand('sandbox disable')).toEqual({ target: 'sandbox', action: 'off' });
+    });
+
+    it('parses "sandbox network" as target=network, action=status', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox network')).toEqual({ target: 'network', action: 'status' });
+    });
+
+    it('parses "sandbox network on/off/status" as target=network', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox network on')).toEqual({ target: 'network', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('/sandbox network off')).toEqual({ target: 'network', action: 'off' });
+      expect(CommandParser.parseSandboxCommand('sandbox network status')).toEqual({
+        target: 'network',
+        action: 'status',
+      });
+    });
+
+    it('parses synonym actions for network target', () => {
+      expect(CommandParser.parseSandboxCommand('sandbox network true')).toEqual({ target: 'network', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('sandbox network enable')).toEqual({ target: 'network', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('sandbox network false')).toEqual({ target: 'network', action: 'off' });
+      expect(CommandParser.parseSandboxCommand('sandbox network disable')).toEqual({
+        target: 'network',
+        action: 'off',
+      });
+    });
+
+    it('is case-insensitive', () => {
+      expect(CommandParser.parseSandboxCommand('Sandbox Network ON')).toEqual({ target: 'network', action: 'on' });
+      expect(CommandParser.parseSandboxCommand('SANDBOX OFF')).toEqual({ target: 'sandbox', action: 'off' });
+    });
+  });
+
+  describe('getHelpMessage — sandbox section', () => {
+    it('documents both sandbox and sandbox network commands', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('*Sandbox:*');
+      expect(help).toContain('`sandbox on`');
+      expect(help).toContain('`sandbox off`');
+      expect(help).toContain('`sandbox network`');
+      expect(help).toContain('`sandbox network on`');
+      expect(help).toContain('`sandbox network off`');
+    });
+  });
 });

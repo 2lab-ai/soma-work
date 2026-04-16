@@ -6,6 +6,8 @@ export type CctAction = { action: 'status' } | { action: 'set'; target: string }
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
+export type SandboxTarget = 'sandbox' | 'network';
+export type SandboxCommand = { target: SandboxTarget; action: SandboxAction };
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type MemoryAction =
   | { action: 'show' }
@@ -194,23 +196,37 @@ export class CommandParser {
     return 'status';
   }
 
+  /**
+   * Matches:
+   *   sandbox
+   *   sandbox on|off|true|false|enable|disable|status
+   *   sandbox network
+   *   sandbox network on|off|true|false|enable|disable|status
+   */
   static isSandboxCommand(text: string): boolean {
-    return /^\/?sandbox(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
+    return /^\/?sandbox(?:\s+network)?(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
   }
 
-  static parseSandboxCommand(text: string): SandboxAction {
-    const match = text.trim().match(/^\/?sandbox(?:\s+(on|off|true|false|enable|disable|status))?$/i);
-    if (!match?.[1]) {
-      return 'status';
+  /**
+   * Parse sandbox command. Returns `{ target, action }` where target is
+   * either `sandbox` (the OS-level sandbox itself) or `network` (the
+   * per-user network allowlist toggle inside the sandbox). Missing action
+   * resolves to `status`.
+   */
+  static parseSandboxCommand(text: string): SandboxCommand {
+    const match = text.trim().match(/^\/?sandbox(?:\s+(network))?(?:\s+(on|off|true|false|enable|disable|status))?$/i);
+    const target: SandboxTarget = match?.[1] ? 'network' : 'sandbox';
+    if (!match?.[2]) {
+      return { target, action: 'status' };
     }
 
-    const action = match[1].toLowerCase();
+    const action = match[2].toLowerCase();
     const enableActions = ['on', 'true', 'enable'];
     const disableActions = ['off', 'false', 'disable'];
 
-    if (enableActions.includes(action)) return 'on';
-    if (disableActions.includes(action)) return 'off';
-    return 'status';
+    if (enableActions.includes(action)) return { target, action: 'on' };
+    if (disableActions.includes(action)) return { target, action: 'off' };
+    return { target, action: 'status' };
   }
 
   /**
@@ -895,6 +911,9 @@ export class CommandParser {
       '• `sandbox` or `/sandbox` - Show sandbox status',
       '• `sandbox on` or `/sandbox on` - Enable sandbox (admin only)',
       '• `sandbox off` or `/sandbox off` - Disable sandbox (admin only)',
+      '• `sandbox network` - Show sandbox network allowlist status',
+      '• `sandbox network on` - Enable network allowlist (default; takes effect next turn)',
+      '• `sandbox network off` - Disable network allowlist — full outbound access (takes effect next turn)',
       '',
       '*Email:*',
       '• `show email` - Show your configured email',
