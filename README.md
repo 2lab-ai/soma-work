@@ -159,27 +159,33 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 
 ## Commands
 
+All commands use the unified `/z` grammar: `/z <topic> [verb] [args...]`. See `docs/spec/01-slack-integration.md` for the full surface and `docs/ops/rollback-z-refactor.md` for emergency rollback.
+
 | Command | Description |
 |---------|-------------|
-| `cwd [path]` | Show / set working directory |
-| `mcp` · `mcp reload` | List MCP servers / reload config |
-| `bypass [on\|off]` | Toggle permission bypass |
-| `persona [name]` | Switch persona |
-| `model [name]` | Switch model (sonnet, opus, haiku) |
-| `verbosity [level]` | Set output verbosity |
-| `sessions` | List active sessions |
-| `new` · `renew` | Reset / renew session |
-| `close` | Close current thread session |
-| `restore` | Restore a session |
-| `context` | Show context window status |
-| `link [url]` | Attach issue/PR/doc links |
-| `onboarding` | Run onboarding workflow |
-| `admin` | Admin commands (accept/deny/users/config) |
-| `cct` · `set_cct` | CCT token status / manual switch |
-| `marketplace` | Plugin marketplace |
-| `plugins` | Manage installed plugins |
-| `$model` · `$verbosity` | Session-only settings (non-persistent) |
-| `help` | Show help |
+| `/z help` | Show all topics |
+| `/z cwd [set <path>]` | Show / set working directory |
+| `/z mcp [list\|reload]` | List MCP servers / reload config |
+| `/z bypass [set on\|off]` | Toggle permission bypass |
+| `/z persona [set <name>\|list]` | Switch persona |
+| `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
+| `/z verbosity [set <level>]` | Set output verbosity |
+| `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
+| `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
+| `/z close` | Close current thread session |
+| `/z restore` | Restore a session |
+| `/z context` · `/z compact` | Show / compact the context window |
+| `/z link <type> <url>` | Attach issue/PR/doc links |
+| `/z onboarding` | Run onboarding workflow |
+| `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
+| `/z cct [set <name>\|next]` | CCT token status / manual switch |
+| `/z marketplace [add <x>]` | Plugin marketplace |
+| `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
+| `/z skill [list\|download]` | Skills directory |
+| `/z report [today\|daily\|weekly]` | Usage reports |
+| `$model <v>` · `$verbosity <v>` | Session-only settings (naked `$` still works) |
+
+**Migration (#506)**: Legacy naked forms (`persona linus`, `model sonnet`, `show_prompt`, …) are deprecated. The first use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
 
 ---
 
