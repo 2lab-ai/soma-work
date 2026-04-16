@@ -1434,8 +1434,9 @@ export class SessionRegistry {
           }
         }
 
+        const resolvedOwnerId = serialized.ownerId || serialized.userId;
         const session: ConversationSession = {
-          ownerId: serialized.ownerId || serialized.userId, // Fallback for legacy sessions
+          ownerId: resolvedOwnerId, // Fallback for legacy sessions
           ownerName: serialized.ownerName,
           userId: serialized.userId, // Legacy field
           channelId: serialized.channelId,
@@ -1454,7 +1455,10 @@ export class SessionRegistry {
           sleepStartedAt,
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
-          effort: serialized.effort,
+          // Backfill effort from user default when missing on legacy sessions. Without this,
+          // a session saved before the effort field existed would resume on SDK internal
+          // default instead of our configured DEFAULT_EFFORT ('xhigh').
+          effort: serialized.effort ?? userSettingsStore.getUserDefaultEffort(resolvedOwnerId),
           thinkingEnabled: serialized.thinkingEnabled,
           showThinking: serialized.showThinking,
           // Clear stale messageTs/renderKey on restore — the Slack message may have been
