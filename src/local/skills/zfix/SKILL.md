@@ -1,98 +1,68 @@
 ---
 name: zfix
-description: "Gap analysis between issue spec and PR implementation. Finds missing wiring, dead code, untested paths. Fixes via local:z."
+description: "Verify-first variant of local:z. Use when implementation already exists but has gaps. Detects intent-vs-impl gaps via scenario trace, then dispatches to local:z pipeline."
 ---
 
-# zfix — Feature Spec vs Implementation Gap Analysis & Fix
+# zfix — Gap-Driven z Execution
 
-Verifies that a PR (or set of PRs) fully implements the feature described in an issue.
-Traces every scenario through the codebase at callstack depth.
-Any gap found is documented, then fixed via `local:z` workflow.
+## What zfix Is (and Isn't)
+
+**zfix is not a new workflow.** It is `local:z` with an added INTAKE step: scenario-trace the gap between user intent and existing implementation, emit a gap-spec issue, then hand off to the standard z pipeline.
+
+- `$z {issue}` — no implementation exists yet.
+- `$zfix {issue} {PR...}` — implementation exists but is broken / incomplete / unreachable / misaligned with intent.
+
+Once the gap is detected and written as an issue, zfix is done. Planning, implementation, review, CI, approve — all of that stays in `local:z` / `local:zwork` / `local:zcheck`. If zfix re-implements any of those phases, it is wrong.
 
 ## Trigger
 
-- `$zfix {issue} {PR1} {PR2...}` — issue number/URL + PR numbers/URLs
-- `$zfix #497` — issue only (find related PRs from issue body/comments)
-- `$zfix #482 #488 #495` — issue + explicit PR list
+- User reports "it doesn't work" on a shipped PR.
+- PR merged, but a scenario from the issue is not reachable end-to-end.
+- Review finds dead code, unwired registry, missing entry-point hook.
+- Explicit: `$zfix {issue-ref} {pr-ref...}` (PR list optional — infer from issue if omitted).
 
 ## Process
 
-### 1. INTAKE — Collect Spec & Implementation
+### Phase INTAKE — Gap Detection (zfix-specific)
 
-1. **Read the issue**: title + body + all comments. Extract the user's actual intent — what behavior they expect to see working.
-2. **Read PR(s)**: body + changed files + full diff. Understand what was actually implemented.
-3. **List expected scenarios**: Every user-facing behavior the issue describes. Be exhaustive — include edge cases, error paths, and integration points.
+1. **Read intent.** Issue title + body + all comments. Extract user-facing scenarios exhaustively — happy path, edge cases, error paths, integration points.
+2. **Read implementation.** PR body + full diff. Assume nothing works. "Function exists" is not evidence.
+3. **Trace each scenario via `local:ztrace`** — callstack depth, not API surface. For every scenario, list each gate the call must cross: entry → validation → dispatch → handler → side-effect → exit. Classify:
+   - ✅ Works — full path verified
+   - ⚠️ Partial — path exists but lacks validation / test / edge case
+   - ❌ Blocked — path broken, code unreachable, or dead
+4. **Emit gap spec via `stv:new-task`.** The new issue contains:
+   - Scenario table with classifications
+   - For each ❌/⚠️: the exact failing gate + root cause
+   - The coverage dimension that was missed (see Meta-Principle below)
 
-### 2. TRACE — Callstack-Depth Scenario Verification
+### Phase DISPATCH — Hand off to local:z
 
-For each scenario, trace the full execution path through the code:
+Input to `local:z` is the new gap-spec issue.
 
-```
-Scenario: "MANAGE_SKILL create"
-  → Entry: LLM calls model-command MCP tool "run"
-  → Gate 1: MCP tool schema (commandId enum) — ✅ or ❌
-  → Gate 2: validator.ts (allowlist + params) — ✅ or ❌  
-  → Gate 3: catalog.ts (handler) — ✅ or ❌
-  → Gate 4: store wiring (registerXxxStore) — ✅ or ❌
-  → Exit: disk write + response
-```
+- Planning → `local:z` phase1
+- Implementation → `local:zwork`
+- Verification / CI / review resolution → `local:zcheck`
+- Approve request → `local:zcheck`
 
-**Checklist for new model commands** (common miss pattern):
-- [ ] `somalib/model-commands/types.ts` — type added to `ModelCommandId` union
-- [ ] `somalib/model-commands/catalog.ts` — handler + schema + descriptor
-- [ ] `somalib/model-commands/validator.ts` — allowlist + params validation
-- [ ] `mcp-servers/model-command/model-command-mcp-server.ts` — commandId enum
-- [ ] Entry point wiring (src/index.ts + mcp-servers constructor)
+zfix writes no code, runs no CI, resolves no review comments. It only detects the gap.
 
-**Checklist for new handlers/commands**:
-- [ ] Handler registered in command-router.ts
-- [ ] Test file exists
-- [ ] Prompt injection (if needed) in prompt-builder.ts
+## Meta-Principle: End-to-End Trace Discipline
 
-Classify each scenario:
-- ✅ **Works** — full path verified, no gaps
-- ⚠️ **Partial** — path exists but missing validation/test/edge case
-- ❌ **Blocked** — path is broken, code unreachable, or dead
+Gaps are not random. They cluster along **coverage dimensions** — places where a new concept must be registered in N layers but only lands in M < N. Scan for these during INTAKE, regardless of language or framework:
 
-### 3. GAP REPORT — Document Findings
+- **New enum / union member** → every `switch`, `if/else`, allowlist, schema enum, external tool descriptor must list it.
+- **New registry / catalog entry** → every process that boots the app must register it (main, worker, separate MCP / sidecar processes, test harness).
+- **New handler / command** → router + test + any LLM-facing prompt or schema.
+- **New DI binding** → every site that constructs the container.
+- **New entry-point argument / env var** → every launcher (CLI, docker, CI, dev script).
 
-Output a structured report:
-
-```markdown
-## Gap Analysis: {issue title}
-
-### Scenarios Traced
-| # | Scenario | Status | Gap |
-|---|----------|--------|-----|
-| 1 | MANAGE_SKILL create | ❌ | MCP enum + validator |
-| 2 | $user:my-deploy invoke | ✅ | — |
-| 3 | skills list command | ✅ | — |
-
-### Gaps Found
-| # | Severity | File | Description |
-|---|----------|------|-------------|
-| G1 | 🔴 Critical | validator.ts:86 | commandId not in allowlist |
-| G2 | 🟡 Medium | skills-handler.test.ts | test file missing |
-
-### Root Cause
-[Why these gaps exist — usually: plan didn't include wiring steps]
-```
-
-If gaps found → create a GitHub issue with ztrace scenarios.
-
-### 4. FIX — Implement via local:z
-
-1. **Plan**: List exact file + line changes for each gap
-2. **Implement**: Make the changes surgically
-3. **Verify**: Run affected tests, tsc, biome
-4. **Push**: Create PR via MCP or git CLI
-5. **zcheck**: Full zcheck procedure before requesting approve
-6. **Re-verify**: Run zfix again on the fix PR to confirm no recursive gaps
+Missing any one of these makes the feature unreachable — the exact shape of "dead code that looks alive in review".
 
 ## Rules
 
-- **Trace at callstack depth, not API surface.** "The function exists" is not verification. "The function is reachable from the entry point" is.
-- **Every new ID/enum/registry must be added to ALL layers.** If you add a new commandId, check types → catalog → validator → MCP schema → entry points.
-- **Missing tests are gaps.** New code without tests is incomplete implementation.
-- **Don't optimize — fix.** The goal is making the feature work, not improving adjacent code.
-- **Document the miss pattern.** After fixing, note what checklist item was missed so it's caught earlier next time.
+- **Trace at callstack depth.** Reachability from the entry point is the only proof.
+- **Do not build a parallel pipeline.** INTAKE only. Everything else is `local:z`.
+- **Missing tests are gaps.** Untested reachable code is ⚠️ Partial.
+- **Name the miss pattern.** After fixing, record which coverage dimension was missed — so the next feature does not repeat it.
+- **If you are writing implementation details in zfix, stop.** Dispatch to `local:z`.
