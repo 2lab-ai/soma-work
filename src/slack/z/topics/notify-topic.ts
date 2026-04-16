@@ -151,7 +151,21 @@ export function createNotifyTopicBinding(): ZTopicBinding {
     renderCard: (args) => renderNotifyCard({ userId: args.userId, issuedAt: args.issuedAt }),
     openModal: (args) => openNotifyModal({ client: args.client, triggerId: args.triggerId }),
     submitModal: async (args) => {
-      await submitNotifyModal({ client: args.client, userId: args.userId, values: args.values });
+      // ack() already fired in the framework wrapper — surface validation
+      // failures as a DM so users get visible feedback instead of a silently
+      // closed modal (codex P1 #5).
+      const result = await submitNotifyModal({ client: args.client, userId: args.userId, values: args.values });
+      if (!result.ok) {
+        try {
+          const desc = result.description ? `\n${result.description}` : '';
+          await args.client.chat.postMessage({
+            channel: args.userId,
+            text: `${result.summary}${desc}`,
+          });
+        } catch (err) {
+          logger.warn('notify modal failure DM failed', { err: (err as Error).message });
+        }
+      }
     },
   };
 }

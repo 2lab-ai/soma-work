@@ -108,14 +108,20 @@ describe('/z Block Kit flow — help card → nav → set', () => {
     expect(client.chat.delete).toHaveBeenCalledWith({ channel: 'D1', ts: '111.1' });
   });
 
-  it('unknown topic nav is a no-op (logs, does not crash)', async () => {
+  it('unknown topic nav surfaces a visible Phase 3 notice (no silent fallback)', async () => {
     const registry = buildDefaultTopicRegistry();
     const handler = new ZSettingsActionHandler({ registry });
     const client = makeClient();
 
     const body = buildDmActionBody('z_help_nav_doesnotexist');
     await expect(handler.handleHelpNav(body, client)).resolves.toBeUndefined();
-    expect(client.chat.update).not.toHaveBeenCalled();
+    // DM path → replace() calls chat.update; we expect ONE visible message
+    // (not a silent no-op) even for unregistered topics so the "no silent
+    // fallback" invariant (MASTER-SPEC §10) holds.
+    expect(client.chat.update).toHaveBeenCalledTimes(1);
+    const payload = client.chat.update.mock.calls[0][0];
+    expect(payload.text).toContain('Phase 3');
+    expect(payload.text).toContain('doesnotexist');
   });
 });
 

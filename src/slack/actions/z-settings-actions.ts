@@ -101,12 +101,27 @@ export function respondFromActionBody(args: { body: any; client: WebClient; resp
   const { body, client, respond } = args;
   const channelId: string | undefined = body?.container?.channel_id ?? body?.channel?.id;
   const isDm = channelId?.startsWith('D') === true;
+  const isEphemeral: boolean = body?.container?.is_ephemeral === true;
+  const responseUrl: string | undefined = body?.response_url;
+
+  // Slash-posted ephemeral cards (including `/z` invoked inside a DM) arrive
+  // with `container.is_ephemeral=true`. They MUST be mutated via response_url
+  // — `chat.update` is illegal on ephemeral messages. Check this BEFORE the
+  // DM branch: a DM channel with an ephemeral container is still slash-flow.
+  if (isEphemeral && responseUrl) {
+    return new ChannelEphemeralZRespond({
+      client,
+      channel: channelId ?? '',
+      user: body?.user?.id ?? '',
+      threadTs: body?.container?.thread_ts ?? body?.message?.thread_ts,
+      responseUrl,
+    });
+  }
 
   if (isDm) {
     return DmZRespond.fromAction(body, client);
   }
 
-  const responseUrl: string | undefined = body?.response_url;
   if (responseUrl) {
     return new ChannelEphemeralZRespond({
       client,
@@ -273,12 +288,19 @@ export class ZSettingsActionHandler {
     const match = actionId.match(/^z_help_nav_(.+)$/);
     if (!match) return;
     const [, topic] = match;
+    const zRespond = respondFromActionBody({ body, client, respond });
     const binding = this.deps.registry.get(topic);
     if (!binding) {
-      logger.warn('Unknown topic for z_help_nav_*', { topic, actionId });
+      // Phase 3 topics surface an explicit notice instead of a silent no-op
+      // so the "no silent fallback" invariant (MASTER-SPEC §10) holds. The
+      // help card keeps non-Phase-2 buttons visible so users know the topic
+      // exists; clicking reveals a clear "coming soon" message.
+      logger.info('z_help_nav: unregistered Phase 3 topic', { topic, actionId });
+      await zRespond.replace({
+        text: `⏳ \`/z ${topic}\`는 Phase 3에서 Block Kit UI가 제공될 예정입니다. 지금은 텍스트 명령(\`/z ${topic} ...\`)을 사용해주세요.`,
+      });
       return;
     }
-    const zRespond = respondFromActionBody({ body, client, respond });
     try {
       const { blocks, text } = await binding.renderCard({
         userId: body?.user?.id ?? '',

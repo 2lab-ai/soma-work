@@ -59,6 +59,33 @@ describe('respondFromActionBody', () => {
     const r = respondFromActionBody({ body, client });
     expect(r).toBeInstanceOf(ChannelEphemeralZRespond);
   });
+
+  it('slash-in-DM (container.is_ephemeral=true) uses ChannelEphemeralZRespond, not DmZRespond', () => {
+    // Regression: `/z` invoked inside a DM yields an ephemeral slash response;
+    // button clicks on that card arrive with channel_id=D... AND
+    // is_ephemeral=true. chat.update is illegal on ephemeral messages, so we
+    // MUST route through response_url (ChannelEphemeralZRespond) instead of
+    // DmZRespond.
+    const body = {
+      container: { channel_id: 'D123', is_ephemeral: true },
+      response_url: 'https://hooks.slack.com/actions/slash-in-dm',
+      user: { id: 'U1' },
+    };
+    const r = respondFromActionBody({ body, client });
+    expect(r).toBeInstanceOf(ChannelEphemeralZRespond);
+    expect(r.source).toBe('channel_mention');
+  });
+
+  it('persistent DM bot message (is_ephemeral=false) still uses DmZRespond', () => {
+    const body = {
+      container: { channel_id: 'D123', is_ephemeral: false, message_ts: '222.2' },
+      message: { ts: '222.2' },
+      response_url: 'https://hooks.slack.com/actions/dm-persistent',
+      user: { id: 'U1' },
+    };
+    const r = respondFromActionBody({ body, client });
+    expect(r).toBeInstanceOf(DmZRespond);
+  });
 });
 
 /* ------------------------------------------------------------------ *

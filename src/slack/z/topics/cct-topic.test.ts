@@ -49,13 +49,17 @@ describe('cct-topic.renderCctCard', () => {
     expect(ids).toContain('z_setting_cct_cancel');
   });
 
-  it('admin card lists set_<name> + next', async () => {
+  it('admin card lists <name> + next (no `set_` prefix — avoids greedy action-id parser collision)', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 2 });
     const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_cct_set_set_cct1');
-    expect(ids).toContain('z_setting_cct_set_set_cct2');
+    expect(ids).toContain('z_setting_cct_set_cct1');
+    expect(ids).toContain('z_setting_cct_set_cct2');
     expect(ids).toContain('z_setting_cct_set_next');
+    // Regression guard: the legacy double-`set_` form is gone so the
+    // `/^z_setting_(.+)_set_(.+)$/` greedy parser can no longer split topic
+    // as `cct_set`.
+    expect(ids).not.toContain('z_setting_cct_set_set_cct1');
   });
 });
 
@@ -74,9 +78,16 @@ describe('cct-topic.applyCct', () => {
     expect(r.summary).toContain('Rotated');
   });
 
-  it('admin can set by name', async () => {
+  it('admin can set by name (legacy `set_<name>` form)', async () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const r = await applyCct({ userId: 'U1', value: 'set_cct2' });
+    expect(r.ok).toBe(true);
+    expect(r.summary).toContain('cct2');
+  });
+
+  it('admin can set by name (bare-name form from Block Kit buttons)', async () => {
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const r = await applyCct({ userId: 'U1', value: 'cct2' });
     expect(r.ok).toBe(true);
     expect(r.summary).toContain('cct2');
   });

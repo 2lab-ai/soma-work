@@ -41,8 +41,11 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     return `• ${parts.join(' ')}`;
   });
 
+  // NOTE: option.id is interpolated into `z_setting_cct_set_<id>`. Keep ids
+  // free of `_set_` substring so the greedy parser in z-settings-actions.ts
+  // splits topic=`cct` cleanly (regressed when ids were `set_<name>`).
   const options = tokens.map((t) => ({
-    id: `set_${t.name}`,
+    id: t.name,
     label: `🔑 ${t.name}${active && t.name === active.name ? ' •' : ''}`,
     description: `활성 토큰을 ${t.name}으로 전환합니다.`,
   }));
@@ -88,26 +91,26 @@ export async function applyCct(args: { userId: string; value: string }): Promise
       description: `\`${TokenManager.maskToken(active.value)}\``,
     };
   }
+  // Support both the new bare-name form (`value = t.name`) emitted by Block
+  // Kit buttons and the legacy `set_<name>` form used by `/z cct set <name>`
+  // text invocations, so the same handler serves both paths.
   const setMatch = value.match(/^set_(.+)$/);
-  if (setMatch) {
-    const target = setMatch[1];
-    const ok = tokenManager.setActiveToken(target);
-    if (!ok) {
-      const available = tokens.map((t) => `\`${t.name}\``).join(', ');
-      return {
-        ok: false,
-        summary: `❌ Unknown token: \`${target}\``,
-        description: `Available: ${available}`,
-      };
-    }
-    const active = tokenManager.getActiveToken();
+  const target = setMatch ? setMatch[1] : value;
+  const ok = tokenManager.setActiveToken(target);
+  if (!ok) {
+    const available = tokens.map((t) => `\`${t.name}\``).join(', ');
     return {
-      ok: true,
-      summary: `🔑 Active → *${active.name}*`,
-      description: `\`${TokenManager.maskToken(active.value)}\``,
+      ok: false,
+      summary: `❌ Unknown token: \`${target}\``,
+      description: `Available: ${available}`,
     };
   }
-  return { ok: false, summary: `❌ Unknown cct value: \`${value}\`` };
+  const active = tokenManager.getActiveToken();
+  return {
+    ok: true,
+    summary: `🔑 Active → *${active.name}*`,
+    description: `\`${TokenManager.maskToken(active.value)}\``,
+  };
 }
 
 export function createCctTopicBinding(): ZTopicBinding {
