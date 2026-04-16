@@ -19,7 +19,7 @@ export class RateHandler implements CommandHandler {
     if (action.action === 'status') {
       const rating = userSettingsStore.getUserRating(user);
       await say({
-        text: `\u2B50 *Model Rating*: \`${rating}/10\`\n\n\`rate +\` / \`rate -\` \uBA85\uB839\uC73C\uB85C \uC810\uC218\uB97C \uBCC0\uACBD\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.`,
+        text: `⭐ *Model Rating*: \`${rating}/10\`\n\n\`rate +\` / \`rate -\` 명령으로 점수를 변경할 수 있습니다.`,
         thread_ts: threadTs,
       });
     } else if (action.action === 'up') {
@@ -30,7 +30,7 @@ export class RateHandler implements CommandHandler {
         userSettingsStore.setPendingRatingChange(user, { from: oldRating, to: newRating });
       }
       await say({
-        text: `\u2B50 *Rating*: \`${oldRating}\` \u2192 \`${newRating}/10\` (+1)`,
+        text: `⭐ *Rating*: \`${oldRating}\` → \`${newRating}/10\` (+1)`,
         thread_ts: threadTs,
       });
     } else if (action.action === 'down') {
@@ -41,7 +41,7 @@ export class RateHandler implements CommandHandler {
         userSettingsStore.setPendingRatingChange(user, { from: oldRating, to: newRating });
       }
       await say({
-        text: `\u2B50 *Rating*: \`${oldRating}\` \u2192 \`${newRating}/10\` (-1)`,
+        text: `⭐ *Rating*: \`${oldRating}\` → \`${newRating}/10\` (-1)`,
         thread_ts: threadTs,
       });
     }
