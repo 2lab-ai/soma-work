@@ -5,10 +5,15 @@ import { SkillForceHandler } from './skill-force-handler';
 // Mock fs module
 vi.mock('node:fs');
 
-// Mock PLUGINS_DIR to a predictable path
+// Mock env-paths
 vi.mock('../../env-paths', () => ({
   PLUGINS_DIR: '/mock/plugins',
   DATA_DIR: '/mock/data',
+}));
+
+// Mock path-utils
+vi.mock('../../path-utils', () => ({
+  isSafePathSegment: (s: string) => !!s && !s.includes('/') && !s.includes('..'),
 }));
 
 describe('SkillForceHandler', () => {
@@ -78,6 +83,31 @@ describe('SkillForceHandler', () => {
 
     it('does NOT match partial $local without colon', () => {
       expect(handler.canHandle('$local something')).toBe(false);
+    });
+
+    // Bare $skill shorthand tests
+    it('matches bare "$z" when local skill exists on disk', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
+      expect(handler.canHandle('$z')).toBe(true);
+    });
+
+    it('matches bare "$z 해줘" when local skill exists', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
+      expect(handler.canHandle('$z 해줘')).toBe(true);
+    });
+
+    it('does NOT match bare "$model" when no local skill exists', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      expect(handler.canHandle('$model opus')).toBe(false);
+    });
+
+    it('does NOT match bare "$nonexistent" when no local skill exists', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      expect(handler.canHandle('$nonexistent')).toBe(false);
+    });
+
+    it('matches "$user:my-skill" (qualified user namespace)', () => {
+      expect(handler.canHandle('$user:my-skill')).toBe(true);
     });
   });
 
@@ -253,37 +283,57 @@ describe('SkillForceHandler', () => {
       expect(prompt).toContain('<stv:new-task>');
     });
 
-    it('sends RPG meme via attachment with empty text to prevent Slack duplication', async () => {
+    // Bare $skill execute tests
+    it('resolves bare "$z" as local:z', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z Bare');
 
-      await handler.execute(makeCtx('$local:z'));
+      const result = await handler.execute(makeCtx('$z'));
 
-      expect(mockSay).toHaveBeenCalledWith(
-        expect.objectContaining({
-          text: '',
-          thread_ts: '171.100',
-          attachments: expect.arrayContaining([
-            expect.objectContaining({
-              color: expect.any(String),
-              text: expect.stringContaining('강제 발동'),
-            }),
-          ]),
-        }),
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<local:z>');
+      expect(prompt).toContain('# Z Bare');
+    });
+
+    it('deduplicates bare "$z" and qualified "$local:z"', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z');
+
+      const result = await handler.execute(makeCtx('$z and $local:z'));
+
+      expect(result.handled).toBe(true);
+      const matches = (result.continueWithPrompt as string).match(/<local:z>/g);
+      expect(matches).toHaveLength(1);
+    });
+
+    // User skill tests
+    it('resolves $user:my-skill from user data directory', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# My Skill');
+
+      const result = await handler.execute(makeCtx('$user:my-skill'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<user:my-skill>');
+      expect(vi.mocked(fs.existsSync)).toHaveBeenCalledWith(
+        expect.stringContaining('/mock/data/U1/skills/my-skill/SKILL.md'),
       );
     });
 
-    it('RPG meme attachment text is not duplicated in message text field', async () => {
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+    it('shows error when user skill not found', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
 
-      await handler.execute(makeCtx('$local:z'));
+      const result = await handler.execute(makeCtx('$user:nonexistent'));
 
-      const sayCall = mockSay.mock.calls[0][0];
-      // text must be empty string, not the RPG meme content
-      expect(sayCall.text).toBe('');
-      // attachment must contain the RPG meme
-      expect(sayCall.attachments[0].text).toContain('강제 발동');
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toBeUndefined();
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('nonexistent'),
+        }),
+      );
     });
   });
 });

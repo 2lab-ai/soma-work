@@ -16,7 +16,9 @@ export type ModelCommandId =
   | 'CONTINUE_SESSION'
   | 'SAVE_CONTEXT_RESULT'
   | 'SAVE_MEMORY'
-  | 'GET_MEMORY';
+  | 'GET_MEMORY'
+  | 'MANAGE_SKILL'
+  | 'RATE';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -57,6 +59,12 @@ export interface SaveMemoryParams {
   old_text?: string;
 }
 
+export interface ManageSkillParams {
+  action: 'create' | 'update' | 'delete' | 'list';
+  name?: string;
+  content?: string;
+}
+
 export interface ModelCommandParamsMap {
   GET_SESSION: undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
@@ -65,6 +73,8 @@ export interface ModelCommandParamsMap {
   SAVE_CONTEXT_RESULT: SaveContextResultParams;
   SAVE_MEMORY: SaveMemoryParams;
   GET_MEMORY: undefined;
+  MANAGE_SKILL: ManageSkillParams;
+  RATE: undefined;
 }
 
 export interface ModelCommandPayloadMap {
@@ -99,6 +109,14 @@ export interface ModelCommandPayloadMap {
     memoryLimit: number;
     userChars: number;
     userLimit: number;
+  };
+  MANAGE_SKILL: {
+    ok: boolean;
+    message: string;
+    skills?: Array<{ name: string; description: string }>;
+  };
+  RATE: {
+    rating: number;
   };
 }
 

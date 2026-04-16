@@ -1,8 +1,15 @@
 import './env-paths';
-import { registerMemoryStore } from 'somalib/model-commands/catalog';
+import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
+import { createUserSkill, deleteUserSkill, listUserSkills, updateUserSkill } from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
+registerSkillStore({
+  listSkills: listUserSkills,
+  createSkill: createUserSkill,
+  updateSkill: updateUserSkill,
+  deleteSkill: deleteUserSkill,
+});
 
 import { App } from '@slack/bolt';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';

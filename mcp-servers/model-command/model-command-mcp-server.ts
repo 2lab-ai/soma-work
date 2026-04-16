@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'fs';
+import path from 'path';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import { StderrLogger } from '../_shared/stderr-logger.js';
@@ -8,9 +10,12 @@ import {
   listModelCommands,
   normalizeSessionSnapshot,
   registerMemoryStore,
+  registerRatingStore,
+  registerSkillStore,
   runModelCommand,
 } from 'somalib/model-commands/catalog.js';
 import { MemoryFileStore } from 'somalib/model-commands/memory-file-store.js';
+import { SkillFileStore } from 'somalib/model-commands/skill-file-store.js';
 import { validateModelCommandRunArgs } from 'somalib/model-commands/validator.js';
 import {
   ModelCommandContext,
@@ -117,9 +122,25 @@ class ModelCommandMcpServer extends BaseMcpServer {
     super('model-command');
     this.context = parseModelCommandContext(process.env.SOMA_COMMAND_CONTEXT);
 
-    // Register memory store so SAVE_MEMORY/GET_MEMORY commands work in this process
+    // Register memory + skill stores so commands work in this process
     if (process.env.SOMA_DATA_DIR) {
       registerMemoryStore(new MemoryFileStore(process.env.SOMA_DATA_DIR));
+      registerSkillStore(new SkillFileStore(process.env.SOMA_DATA_DIR));
+
+      // Register rating store so RATE command works in this process
+      const dataDir = process.env.SOMA_DATA_DIR;
+      registerRatingStore({
+        getUserRating(userId: string): number {
+          try {
+            const settingsPath = path.join(dataDir, 'user-settings.json');
+            const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            const rating = data[userId]?.rating;
+            return typeof rating === 'number' ? Math.max(0, Math.min(10, rating)) : 5;
+          } catch {
+            return 5;
+          }
+        },
+      });
     }
   }
 
@@ -138,7 +159,17 @@ class ModelCommandMcpServer extends BaseMcpServer {
           properties: {
             commandId: {
               type: 'string',
-              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT', 'SAVE_MEMORY', 'GET_MEMORY'],
+              enum: [
+                'GET_SESSION',
+                'UPDATE_SESSION',
+                'ASK_USER_QUESTION',
+                'CONTINUE_SESSION',
+                'SAVE_CONTEXT_RESULT',
+                'SAVE_MEMORY',
+                'GET_MEMORY',
+                'MANAGE_SKILL',
+                'RATE',
+              ],
             },
             params: { type: 'object', description: 'Command params object' },
           },
