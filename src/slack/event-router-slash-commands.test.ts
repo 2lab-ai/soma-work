@@ -318,6 +318,34 @@ describe('EventRouter.setupSlashCommands — legacy rollback (SOMA_ENABLE_LEGACY
     }
   });
 
+  it('/soma: all SLASH_FORBIDDEN entries are blocked on legacy rollback (FIX #2)', async () => {
+    // Covers all 12 entries in SLASH_FORBIDDEN — previously only the first 6
+    // (SESSION_DEPENDENT_COMMANDS) were blocked, leaving `compact` and
+    // `session set *` unblocked under rollback. See capability.ts.
+    const cases: { text: string; contains: string }[] = [
+      { text: 'new', contains: 'new' },
+      { text: 'close', contains: 'close' },
+      { text: 'renew', contains: 'renew' },
+      { text: 'context', contains: 'context' },
+      { text: 'restore', contains: 'restore' },
+      { text: 'link https://x', contains: 'link' },
+      { text: 'compact', contains: 'compact' },
+      { text: 'session set model opus', contains: 'session set model' },
+      { text: 'session set verbosity 2', contains: 'session set verbosity' },
+      { text: 'session set effort high', contains: 'session set effort' },
+      { text: 'session set thinking on', contains: 'session set thinking' },
+      { text: 'session set thinking_summary on', contains: 'session set thinking_summary' },
+    ];
+
+    for (const { text, contains } of cases) {
+      const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text });
+      await handlers['/soma']({ command, ack, respond });
+      const responseText = respond.mock.calls[0][0].text;
+      expect(responseText).toContain('스레드 컨텍스트가 필요');
+      expect(responseText).toContain(contains);
+    }
+  });
+
   it('/soma: stateless commands (help) are NOT blocked', async () => {
     const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
     await handlers['/soma']({ command, ack, respond });

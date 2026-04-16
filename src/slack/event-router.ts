@@ -12,9 +12,10 @@ import type { CommandDependencies } from './commands/types';
 import type { SessionUiManager } from './session-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 import { SlashCommandAdapter } from './slash-command-adapter';
+import { isSlashForbidden } from './z/capability';
 import { normalizeZInvocation, stripZPrefix } from './z/normalize';
 import { ChannelEphemeralZRespond, SlashZRespond } from './z/respond';
-import { ZRouter } from './z/router';
+import { parseTopic, ZRouter } from './z/router';
 import { isLegacyNaked } from './z/tombstone';
 
 export interface EventRouterDeps {
@@ -266,9 +267,25 @@ export class EventRouter {
     }
   }
 
-  // Commands that require thread/session context — not available via slash commands
-  // These need a real thread_ts to find or create sessions.
-  private static readonly SESSION_DEPENDENT_COMMANDS = ['new', 'close', 'renew', 'context', 'restore', 'link'];
+  /**
+   * Check if a legacy `/soma <text>` text should be blocked because it matches
+   * a `SLASH_FORBIDDEN` entry. Uses the canonical `isSlashForbidden()` helper
+   * from `./z/capability` so that rollback coverage (Tier 2) matches the
+   * `/z` path exactly — including `compact` and `session:set:*` tuples that
+   * the old `SESSION_DEPENDENT_COMMANDS` list missed. FIX #2 in PR #509.
+   */
+  private blockedLegacyCommand(text: string): { blocked: boolean; firstWord?: string } {
+    const trimmed = text.trim();
+    if (!trimmed) return { blocked: false };
+    const { topic, verb, arg } = parseTopic(trimmed);
+    if (!topic) return { blocked: false };
+    if (isSlashForbidden(topic, verb, arg)) {
+      // Surface a stable label in the error message.
+      const label = [topic, verb, arg].filter(Boolean).join(' ');
+      return { blocked: true, firstWord: label };
+    }
+    return { blocked: false };
+  }
 
   /**
    * Slash command 핸들러 설정
@@ -430,10 +447,10 @@ export class EventRouter {
         await respond({ text: CommandParser.getHelpMessage(), response_type: 'ephemeral' });
         return;
       }
-      const firstWord = ctx.text.trim().split(/\s+/)[0]?.toLowerCase();
-      if (firstWord && EventRouter.SESSION_DEPENDENT_COMMANDS.includes(firstWord)) {
+      const blocked = this.blockedLegacyCommand(ctx.text);
+      if (blocked.blocked && blocked.firstWord) {
         await respond({
-          text: `⚠️ \`${firstWord}\` 명령은 스레드 컨텍스트가 필요합니다.\n봇이 응답하고 있는 스레드에서 \`${firstWord}\` 를 텍스트로 입력해주세요.`,
+          text: `⚠️ \`${blocked.firstWord}\` 명령은 스레드 컨텍스트가 필요합니다.\n봇이 응답하고 있는 스레드에서 \`${blocked.firstWord}\` 를 텍스트로 입력해주세요.`,
           response_type: 'ephemeral',
         });
         return;
