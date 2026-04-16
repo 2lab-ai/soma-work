@@ -201,12 +201,18 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     if (action !== 'create' && action !== 'update' && action !== 'delete' && action !== 'list') {
       return invalidArgs(`MANAGE_SKILL action must be 'create', 'update', 'delete', or 'list', got: ${String(action)}`);
     }
+    if ((action === 'create' || action === 'update' || action === 'delete') && typeof params.name !== 'string') {
+      return invalidArgs('MANAGE_SKILL name is required for create/update/delete');
+    }
+    if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
+      return invalidArgs('MANAGE_SKILL content is required for create/update');
+    }
     return {
       ok: true,
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action,
+          action: action as 'create' | 'update' | 'delete' | 'list',
           name: typeof params.name === 'string' ? params.name : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },
@@ -223,6 +229,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       },
     };
   }
+
 
   // SAVE_CONTEXT_RESULT fallback — last remaining commandId
   const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
