@@ -1,9 +1,9 @@
 # Slack Integration Specification
 
 ## Version
-- Document Version: 1.0
-- Source File: `src/slack-handler.ts`
-- Last Updated: 2025-12-13
+- Document Version: 1.1
+- Source File: `src/slack-handler.ts`, `src/slack/z/`
+- Last Updated: 2026-04-16 (#506: `/z` Phase 1)
 
 ## 1. Overview
 
@@ -371,3 +371,51 @@ try {
 - Bot Token: 환경변수로 관리
 - App Token: 환경변수로 관리
 - 파일 다운로드 시 Bot Token 사용
+
+## 10. `/z` Unified Command Surface (Phase 1 — #506)
+
+### 10.1 Entry Points
+
+세 경로가 모두 동일한 `ZInvocation`으로 정규화된다:
+
+| Source | 트리거 | respond 구현 |
+|--------|--------|--------------|
+| `slash` | `/z <topic>` Slack 슬래시 커맨드 | `SlashZRespond` (`respond()` + `response_url`) |
+| `channel_mention` | `@bot /z <topic>` — app_mention | `ChannelEphemeralZRespond` (`chat.postEphemeral`) |
+| `dm` | DM 메시지 본문 `/z <topic>` | `DmZRespond` (`chat.postMessage` + `chat.update` with branded `BotMessageTs`) |
+
+### 10.2 Dispatch Pipeline
+
+`src/slack/z/` 모듈:
+
+1. **normalize** (`normalize.ts`) — entry text → `ZInvocation` + 플래그 (`isLegacyNaked`, `whitelistedNaked`).
+2. **tombstone** (`tombstone.ts`) — legacy naked 감지. 매칭되면 `migrationHintShown` CAS로 한 번만 힌트 카드 표시.
+3. **whitelist** (`whitelist.ts`) — `session`, `sessions public`, `new`, `renew`, `theme`, `$*` — 네이키드 허용.
+4. **capability** (`capability.ts`) — slash 엔트리에서 스레드 컨텍스트가 필요한 명령 (`new`, `close`, `renew`, `context`, `restore`, `link`, `compact`, `session:set:*`) 차단.
+5. **router** (`router.ts`) — `translateToLegacy()`로 `/z <topic> <verb> …` → 기존 legacy 문법으로 브리지한 뒤 `CommandRouter`에 dispatch. Phase 2에서 handler 가 직접 `/z` 문법을 수용하도록 이관 예정.
+6. **ui-builder** (`ui-builder.ts`) — `buildHelpCard`, `buildTombstoneCard` (결정적 `block_id = z_<topic>_<issuedAt>_<idx>`), `buildSettingCard` (Phase 2 #507 stub).
+
+### 10.3 Legacy Naked Handling
+
+- 멀티 워드 legacy 명령 (`persona set linus`, `show prompt`, `mcp list` 등) — 실행되지 않고 **사용자당 한 번** 마이그레이션 힌트만 표시 (`user-settings-store.markMigrationHintShown`, CAS).
+- 화이트리스트 네이키드는 기존대로 동작.
+- 정체 불명 입력은 통과 → Claude 대화로 전달.
+
+### 10.4 Slash 금지 Capability
+
+Slack 슬래시 커맨드는 스레드 컨텍스트가 없으므로 다음은 rejection 메시지로 거절한다 (`SLASH_FORBIDDEN_MESSAGE`):
+
+`new`, `close`, `renew`, `context`, `restore`, `link`, `compact`, `session:set:model`, `session:set:verbosity`, `session:set:effort`, `session:set:thinking`, `session:set:thinking_summary`
+
+DM / 채널-멘션에서는 문제 없이 동작.
+
+### 10.5 롤백
+
+세 단계 (빠른 → 느린):
+
+1. `SOMA_ENABLE_LEGACY_SLASH=true` 환경 변수 — tombstone 비활성, legacy 네이키드 그대로 dispatch.
+2. `git revert` + 재배포.
+3. `slack-app-manifest.prev.json` + `scripts/slack-manifest-rollback.sh` — Slack 앱 설정 UI에서 `/z` 슬래시 커맨드 제거.
+
+상세: `docs/ops/rollback-z-refactor.md`.
+

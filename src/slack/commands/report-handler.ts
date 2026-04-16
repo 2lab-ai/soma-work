@@ -5,7 +5,8 @@
  * `report today`  — 오늘 실시간 리포트
  * `report daily`  — 전일 일간 리포트
  * `report weekly` — 전주 주간 리포트 (사용자별 랭킹 포함)
- * `report help`   — 도움말
+ *
+ * `/z` refactor (#506): `report help` removed — use `/z help` instead.
  *
  * Trace: docs/daily-weekly-report/trace.md, Scenario 6
  */
@@ -35,7 +36,10 @@ interface ReportDeps {
   formatter: FormatterLike;
 }
 
-const REPORT_COMMAND_REGEX = /^report(?:\s+(today|daily|weekly|help))?$/i;
+// `/z` refactor (#506): `report help` is removed — users should call
+// `/z help` for the unified command list. `report` alone still shows the
+// today snapshot.
+const REPORT_COMMAND_REGEX = /^report(?:\s+(today|daily|weekly))?$/i;
 
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 
@@ -74,16 +78,6 @@ function getLastMondayDateStr(): string {
   return d.toISOString().slice(0, 10);
 }
 
-const HELP_TEXT = [
-  '*:bar_chart: 리포트 명령어*',
-  '',
-  '`report` — 오늘 실시간 리포트 (기본값)',
-  '`report today` — 오늘 실시간 리포트',
-  '`report daily` — 전일 일간 리포트',
-  '`report weekly` — 전주 주간 리포트 (사용자별 랭킹 포함)',
-  '`report help` — 이 도움말',
-].join('\n');
-
 export class ReportHandler implements CommandHandler {
   private deps: ReportDeps;
 
@@ -104,11 +98,6 @@ export class ReportHandler implements CommandHandler {
     }
 
     const subcommand = (match[1] || 'today').toLowerCase();
-
-    if (subcommand === 'help') {
-      await say({ text: HELP_TEXT, thread_ts: threadTs });
-      return { handled: true };
-    }
 
     logger.info(`Manual ${subcommand} report triggered by ${user}`);
 

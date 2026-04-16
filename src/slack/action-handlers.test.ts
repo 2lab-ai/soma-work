@@ -84,6 +84,50 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith(/^custom_input_multi_/, expect.any(Function));
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));
     });
+
+    it('should register /z Block Kit settings action + view regexes (#507)', () => {
+      const mockApp = {
+        action: vi.fn(),
+        view: vi.fn(),
+      };
+
+      handlers.registerHandlers(mockApp as any);
+
+      const actionPatterns = mockApp.action.mock.calls
+        .map((c: any[]) => c[0])
+        .filter((p: any) => p instanceof RegExp)
+        .map((p: RegExp) => p.source);
+      expect(actionPatterns).toContain('^z_setting_(.+)_set_(.+)$');
+      expect(actionPatterns).toContain('^z_setting_(.+)_cancel$');
+      expect(actionPatterns).toContain('^z_setting_(.+)_open_modal$');
+      expect(actionPatterns).toContain('^z_help_nav_(.+)$');
+
+      const viewPatterns = mockApp.view.mock.calls
+        .map((c: any[]) => c[0])
+        .filter((p: any) => p instanceof RegExp)
+        .map((p: RegExp) => p.source);
+      expect(viewPatterns).toContain('^z_setting_(.+)_modal_submit$');
+    });
+
+    it('exposes getZTopicRegistry with all 11 Phase 2 topics', () => {
+      const registry = handlers.getZTopicRegistry();
+      const topics = registry.topics().sort();
+      expect(topics).toEqual(
+        [
+          'bypass',
+          'cct',
+          'cwd',
+          'email',
+          'memory',
+          'model',
+          'notify',
+          'persona',
+          'sandbox',
+          'theme',
+          'verbosity',
+        ].sort(),
+      );
+    });
   });
 
   describe('pending form management', () => {

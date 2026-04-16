@@ -25,9 +25,9 @@ describe('CommandParser CCT', () => {
     expect(CommandParser.isCctCommand('cct')).toBe(true);
   });
 
-  it('should recognize "set_cct cct2" as cct command', async () => {
+  it('should recognize "cct set cct2" as cct command', async () => {
     const { CommandParser } = await import('../command-parser');
-    expect(CommandParser.isCctCommand('set_cct cct2')).toBe(true);
+    expect(CommandParser.isCctCommand('cct set cct2')).toBe(true);
   });
 
   it('should parse "cct" as status action', async () => {
@@ -36,21 +36,31 @@ describe('CommandParser CCT', () => {
     expect(result).toEqual({ action: 'status' });
   });
 
-  it('should parse "set_cct cct2" as set action', async () => {
+  it('should parse "cct set cct2" as set action', async () => {
     const { CommandParser } = await import('../command-parser');
-    const result = CommandParser.parseCctCommand('set_cct cct2');
+    const result = CommandParser.parseCctCommand('cct set cct2');
     expect(result).toEqual({ action: 'set', target: 'cct2' });
   });
 
-  it('should recognize "nextcct" as cct command', async () => {
+  it('should recognize "cct next" as cct command', async () => {
     const { CommandParser } = await import('../command-parser');
-    expect(CommandParser.isCctCommand('nextcct')).toBe(true);
+    expect(CommandParser.isCctCommand('cct next')).toBe(true);
   });
 
-  it('should parse "nextcct" as next action', async () => {
+  it('should parse "cct next" as next action', async () => {
     const { CommandParser } = await import('../command-parser');
-    const result = CommandParser.parseCctCommand('nextcct');
+    const result = CommandParser.parseCctCommand('cct next');
     expect(result).toEqual({ action: 'next' });
+  });
+
+  it('should NOT recognize legacy underscore alias "set_cct cct2" (#506)', async () => {
+    const { CommandParser } = await import('../command-parser');
+    expect(CommandParser.isCctCommand('set_cct cct2')).toBe(false);
+  });
+
+  it('should NOT recognize legacy alias "nextcct" (#506)', async () => {
+    const { CommandParser } = await import('../command-parser');
+    expect(CommandParser.isCctCommand('nextcct')).toBe(false);
   });
 
   it('should not match unrelated text', async () => {

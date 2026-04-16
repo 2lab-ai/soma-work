@@ -1,13 +1,16 @@
 import { isAdminUser } from '../../admin-utils';
 import { TokenManager, tokenManager } from '../../token-manager';
 import { CommandParser } from '../command-parser';
+import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
  * Handles CCT token management commands (admin only):
- * - `cct` — show token status
- * - `set_cct cctN` — switch active token
- * - `nextcct` — rotate to next available token
+ * - `cct` — show token status (Block Kit card in Phase 2)
+ * - `cct set <name>` — switch active token (text ack, back-compat)
+ * - `cct next` — rotate to next available token (text ack, back-compat)
+ *
+ * Legacy `set_cct` / `nextcct` underscore aliases were removed in #506.
  */
 export class CctHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -38,24 +41,12 @@ export class CctHandler implements CommandHandler {
     }
 
     if (action.action === 'status') {
-      const active = tokenManager.getActiveToken();
-      const now = new Date();
-      const lines = tokens.map((t) => {
-        const masked = TokenManager.maskToken(t.value);
-        const parts = [`${t.name}=\`${masked}\``];
-        if (t.name === active.name) parts.push('*(active)*');
-        if (t.cooldownUntil && t.cooldownUntil > now) {
-          parts.push(
-            `_(rate limited until ${t.cooldownUntil.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })})_`,
-          );
-        }
-        return parts.join(' ');
+      // Phase 2 (#507): render Block Kit card by default.
+      const { text: fallback, blocks } = await renderCctCard({
+        userId: user,
+        issuedAt: Date.now(),
       });
-
-      await say({
-        text: `🔑 *CCT Token Status*\n\n${lines.join('\n')}`,
-        thread_ts: threadTs,
-      });
+      await say({ text: fallback ?? '🔑 CCT', blocks, thread_ts: threadTs });
     } else if (action.action === 'next') {
       const result = tokenManager.rotateToNext();
       if (result) {
