@@ -4,6 +4,7 @@ import type { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
 import type { ConversationSession } from '../types';
+import { userSettingsStore } from '../user-settings-store';
 import type { ActionHandlers, MessageEvent, MessageHandler, SayFn } from './action-handlers';
 import { CommandParser } from './command-parser';
 import { CommandRouter } from './commands/command-router';
@@ -11,6 +12,11 @@ import type { CommandDependencies } from './commands/types';
 import type { SessionUiManager } from './session-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 import { SlashCommandAdapter } from './slash-command-adapter';
+import { isSlashForbidden } from './z/capability';
+import { normalizeZInvocation, stripZPrefix } from './z/normalize';
+import { ChannelEphemeralZRespond, SlashZRespond } from './z/respond';
+import { parseTopic, ZRouter } from './z/router';
+import { isLegacyNaked } from './z/tombstone';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -27,6 +33,7 @@ export class EventRouter {
   private logger = new Logger('EventRouter');
   private cleanupIntervalId: NodeJS.Timeout | null = null;
   private commandRouter: CommandRouter | null = null;
+  private zRouter: ZRouter | null = null;
 
   constructor(
     private app: App,
@@ -35,7 +42,34 @@ export class EventRouter {
   ) {
     if (deps.commandDeps) {
       this.commandRouter = new CommandRouter(deps.commandDeps);
+      this.zRouter = new ZRouter({
+        legacyRouter: this.commandRouter,
+        tombstoneStore: {
+          markMigrationHintShown: (uid) => userSettingsStore.markMigrationHintShown(uid),
+          hasMigrationHintShown: (uid) => userSettingsStore.hasMigrationHintShown(uid),
+        },
+      });
     }
+  }
+
+  /**
+   * Exposes the shared `ZRouter` instance so that callers outside of the
+   * slash-command path (DM entry in SlackHandler, app_mention app_mention
+   * event) can route `/z …` invocations through the same router. See FIX #1
+   * in PR #509.
+   */
+  getZRouter(): ZRouter | null {
+    return this.zRouter;
+  }
+
+  /**
+   * Returns true when the `SOMA_ENABLE_LEGACY_SLASH` env var is set.
+   * When enabled the old `/soma`, `/session`, `/new` handlers remain active
+   * (rollback path — Tier 2 in plan/MASTER-SPEC.md §12).
+   */
+  private legacySlashEnabled(): boolean {
+    const v = process.env.SOMA_ENABLE_LEGACY_SLASH;
+    return v === 'true' || v === '1';
   }
 
   /**
@@ -95,8 +129,40 @@ export class EventRouter {
         return;
       }
 
+      // Issue #141: Strip only bot mention, preserve other user mentions in the prompt.
+      let botId: string | undefined;
+      try {
+        botId = await this.deps.slackApi.getBotUserId();
+      } catch (err) {
+        this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
+      }
+      const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
+
+      // FIX #1 (PR #509): route `@bot /z …` and non-whitelisted legacy naked
+      // forms through ZRouter so the three entry points (slash, DM,
+      // app_mention) share the same normalization pipeline.
+      //
+      // codex P1 followup: this MUST run before the source-thread linked-session
+      // guard below — otherwise `@bot /z persona` issued inside a source thread
+      // that happens to have a linked work-session is intercepted by the
+      // "linked session status" card and never reaches ZRouter, violating the
+      // stated contract that channel_mention shares the normalization pipeline.
+      const routedViaZ = await this.maybeRouteAppMentionViaZRouter({
+        event,
+        strippedText: text,
+      });
+      if (routedViaZ.terminal) {
+        return;
+      }
+      let nextText = text;
+      if (routedViaZ.continueWithPrompt !== undefined) {
+        // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
+        nextText = routedViaZ.continueWithPrompt;
+      }
+
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
-      // respond with that session's status instead of creating a new session
+      // respond with that session's status instead of creating a new session.
+      // (Runs AFTER the `/z` gate so `/z …` commands can execute in source threads.)
       if (event.thread_ts) {
         const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
         if (!existingSession) {
@@ -108,18 +174,10 @@ export class EventRouter {
         }
       }
 
-      // Issue #141: Strip only bot mention, preserve other user mentions in the prompt.
-      let botId: string | undefined;
-      try {
-        botId = await this.deps.slackApi.getBotUserId();
-      } catch (err) {
-        this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
-      }
-      const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
       await this.messageHandler(
         {
           ...event,
-          text,
+          text: nextText,
         } as MessageEvent,
         say,
       );
@@ -159,67 +217,183 @@ export class EventRouter {
     });
   }
 
-  // Commands that require thread/session context — not available via slash commands
-  // These need a real thread_ts to find or create sessions.
-  private static readonly SESSION_DEPENDENT_COMMANDS = ['new', 'close', 'renew', 'context', 'restore', 'link'];
+  /**
+   * FIX #1 (PR #509): decides whether to route an `app_mention` through
+   * `ZRouter` instead of the normal pipeline.
+   *
+   * Return shape (codex P1 followup):
+   *  - `terminal: true` — the router fully consumed the invocation (card,
+   *    tombstone, forbidden notice, error, or a command that finished itself).
+   *    Caller MUST NOT continue pipeline processing.
+   *  - `terminal: false, continueWithPrompt: string` — the command produced
+   *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should
+   *    substitute the event text and continue the legacy pipeline.
+   *  - `terminal: false, continueWithPrompt: undefined` — ZRouter did not
+   *    apply (not a `/z` prefix and not a legacy naked form) OR an internal
+   *    failure occurred; caller should continue with the original stripped
+   *    text.
+   *
+   * Routing rules (per MASTER-SPEC §5-1):
+   *  - Text starts with `/z` → normalize + dispatch.
+   *  - Text matches a legacy naked form (`persona set linus`, `show prompt`) →
+   *    normalize + dispatch (ZRouter will render tombstone).
+   *  - Whitelisted naked (`new`, `session`, `$…`) or unrecognized prose →
+   *    `{ terminal: false }` (caller falls through).
+   */
+  private async maybeRouteAppMentionViaZRouter(args: {
+    event: any;
+    strippedText: string;
+  }): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+    const { event, strippedText } = args;
+    if (!this.zRouter) return { terminal: false };
+    const text = strippedText.trim();
+    if (!text) return { terminal: false };
+
+    const startsWithZ = stripZPrefix(text) !== null;
+    const legacyNaked = !startsWithZ && isLegacyNaked(text);
+    if (!startsWithZ && !legacyNaked) return { terminal: false };
+
+    try {
+      const respond = new ChannelEphemeralZRespond({
+        client: this.deps.slackApi.getClient(),
+        channel: event.channel,
+        user: event.user,
+        threadTs: event.thread_ts ?? event.ts,
+      });
+      const inv = normalizeZInvocation({
+        source: 'channel_mention',
+        text,
+        userId: event.user,
+        channelId: event.channel,
+        teamId: (event as any).team ?? '',
+        threadTs: event.thread_ts ?? event.ts,
+        respond,
+      });
+      const result = await this.zRouter.dispatch(inv);
+
+      if (!result.handled && result.error) {
+        this.logger.error('ZRouter.dispatch (app_mention) returned error', {
+          error: result.error,
+          user: event.user,
+          channel: event.channel,
+        });
+        await respond.send({
+          text: `⚠️ 명령 실행 실패: ${result.error}`,
+          ephemeral: true,
+        });
+        return { terminal: true };
+      }
+
+      if (result.continueWithPrompt !== undefined) {
+        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+      }
+
+      if (result.handled) {
+        return { terminal: true };
+      }
+
+      // Unhandled, no error, no continuation — fall through to legacy.
+      return { terminal: false };
+    } catch (err: any) {
+      this.logger.error('Failed to route app_mention /z via ZRouter', {
+        err: err?.message,
+        user: event.user,
+        channel: event.channel,
+      });
+      // Fall through to normal pipeline on unexpected failure.
+      return { terminal: false };
+    }
+  }
+
+  /**
+   * Check if a legacy `/soma <text>` text should be blocked because it matches
+   * a `SLASH_FORBIDDEN` entry. Uses the canonical `isSlashForbidden()` helper
+   * from `./z/capability` so that rollback coverage (Tier 2) matches the
+   * `/z` path exactly — including `compact` and `session:set:*` tuples that
+   * the old `SESSION_DEPENDENT_COMMANDS` list missed. FIX #2 in PR #509.
+   */
+  private blockedLegacyCommand(text: string): { blocked: boolean; firstWord?: string } {
+    const trimmed = text.trim();
+    if (!trimmed) return { blocked: false };
+    const { topic, verb, arg } = parseTopic(trimmed);
+    if (!topic) return { blocked: false };
+    if (isSlashForbidden(topic, verb, arg)) {
+      // Surface a stable label in the error message.
+      const label = [topic, verb, arg].filter(Boolean).join(' ');
+      return { blocked: true, firstWord: label };
+    }
+    return { blocked: false };
+  }
 
   /**
    * Slash command 핸들러 설정
    * Trace: docs/slash-commands/trace.md, Scenario 1-5
+   *
+   * `/z` — unified `/z` entry point (Phase 1 of #506).
+   * `/soma`, `/session`, `/new` — legacy. Release N: manifest keeps them
+   * alongside `/z`, but at runtime they are tombstone-redirected to `/z`.
+   * Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the old behaviour
+   * (rollback Tier 2 in plan/MASTER-SPEC.md §12).
    */
   private setupSlashCommands(): void {
-    // /soma [subcommand] — 범용 명령 (Scenario 2, 3)
-    this.app.command('/soma', async ({ command, ack, respond }) => {
+    const legacyEnabled = this.legacySlashEnabled();
+
+    // /z — unified entry point.
+    this.app.command('/z', async ({ command, ack, respond }) => {
       await ack();
-      this.logger.info('Slash command /soma', {
+      this.logger.info('Slash command /z', {
         text: command.text?.substring(0, 50),
         user: command.user_id,
         channel: command.channel_id,
       });
 
       try {
-        const ctx = SlashCommandAdapter.adapt(command, respond);
-
-        // Empty text → help fallback (Scenario 3, Case A)
-        if (!ctx.text.trim()) {
-          await respond({
-            text: CommandParser.getHelpMessage(),
-            response_type: 'ephemeral',
-          });
-          return;
-        }
-
-        // Block session-dependent commands — slash commands have no thread context
-        const firstWord = ctx.text.trim().split(/\s+/)[0]?.toLowerCase();
-        if (firstWord && EventRouter.SESSION_DEPENDENT_COMMANDS.includes(firstWord)) {
-          await respond({
-            text: `⚠️ \`${firstWord}\` 명령은 스레드 컨텍스트가 필요합니다.\n봇이 응답하고 있는 스레드에서 \`${firstWord}\` 를 텍스트로 입력해주세요.`,
-            response_type: 'ephemeral',
-          });
-          return;
-        }
-
-        // Route through existing CommandRouter
-        if (this.commandRouter) {
-          const result = await this.commandRouter.route(ctx);
-
-          // If CommandRouter didn't handle it, show help
-          if (!result.handled) {
-            await respond({
-              text: CommandParser.getHelpMessage(),
-              response_type: 'ephemeral',
-            });
-          }
-        } else {
-          this.logger.warn('CommandRouter not available for slash commands');
+        if (!this.zRouter) {
           await respond({
             text: '⚠️ Bot is still initializing. Please try again in a moment.',
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        const zRespond = new SlashZRespond(respond);
+        const inv = normalizeZInvocation({
+          source: 'slash',
+          text: command.text ?? '',
+          userId: command.user_id,
+          channelId: command.channel_id,
+          teamId: command.team_id,
+          respond: zRespond,
+        });
+
+        const result = await this.zRouter.dispatch(inv);
+
+        // Error path: surface the underlying error to the user instead of
+        // silently falling back to help (would mask real runtime failures).
+        if (!result.handled && result.error) {
+          this.logger.error('ZRouter.dispatch returned error', {
+            error: result.error,
+            user: command.user_id,
+            channel: command.channel_id,
+            text: command.text?.substring(0, 100),
+          });
+          await respond({
+            text: `⚠️ 명령 실행 실패: ${result.error}`,
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        // If /z remainder wasn't handled and it looks legit, fall back to help.
+        if (!result.handled && !result.consumed) {
+          await respond({
+            text: CommandParser.getHelpMessage(),
             response_type: 'ephemeral',
           });
         }
       } catch (error: any) {
         const errorMessage = error?.message || String(error) || 'Unknown error';
-        this.logger.error('Error handling /soma slash command', {
+        this.logger.error('Error handling /z slash command', {
           error: errorMessage,
           stack: error?.stack,
           user: command.user_id,
@@ -228,11 +402,11 @@ export class EventRouter {
         });
         try {
           await respond({
-            text: '⚠️ 명령 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            text: '⚠️ /z 명령 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
             response_type: 'ephemeral',
           });
         } catch (respondError: any) {
-          this.logger.error('Failed to send error response for /soma', {
+          this.logger.error('Failed to send error response for /z', {
             originalError: errorMessage,
             respondError: respondError?.message,
           });
@@ -240,94 +414,167 @@ export class EventRouter {
       }
     });
 
-    // /session — 세션 관리 (Scenario 4)
-    // NOTE: Intentionally bypasses CommandRouter and calls SessionManager directly.
-    // The text command 'sessions' goes through CommandRouter → SessionHandler,
-    // but /session uses a direct call for clarity. If SessionHandler evolves,
-    // update this path as well. See: docs/slash-commands/trace.md, Scenario 4, Section 3a.
-    this.app.command('/session', async ({ command, ack, respond }) => {
-      await ack();
-      this.logger.info('Slash command /session', {
-        user: command.user_id,
-        channel: command.channel_id,
-      });
-
-      try {
-        const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(command.user_id, {
-          showControls: true,
-        });
-        await respond({
-          text,
-          blocks,
-          response_type: 'ephemeral',
-        });
-      } catch (error: any) {
-        const errorMessage = error?.message || String(error) || 'Unknown error';
-        this.logger.error('Error handling /session slash command', {
-          error: errorMessage,
-          stack: error?.stack,
+    // /soma — 기존 소마 명령. Release N: tombstone-redirect unless legacy
+    // flag is on. When legacy is enabled the original handler runs.
+    this.app.command('/soma', async ({ command, ack, respond }) => {
+      if (!legacyEnabled) {
+        await ack();
+        this.logger.info('Slash command /soma — redirecting to /z (legacy disabled)', {
           user: command.user_id,
-          channel: command.channel_id,
+          text: command.text?.substring(0, 50),
         });
         try {
           await respond({
-            text: '⚠️ 세션 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            text: '`/soma`는 `/z`로 통합되었습니다. `/z` 또는 `/z help`를 사용해주세요.',
             response_type: 'ephemeral',
           });
-        } catch (respondError: any) {
-          this.logger.error('Failed to send error response for /session', {
-            originalError: errorMessage,
-            respondError: respondError?.message,
-          });
+        } catch {
+          // double-fault guard
         }
+        return;
       }
+      // LEGACY PATH
+      await this.handleLegacySomaSlash(command, ack, respond);
+    });
+
+    // /session — 세션 관리 (Scenario 4). Release N: tombstone-redirect unless
+    // legacy flag is on. When legacy is enabled the original handler runs.
+    this.app.command('/session', async ({ command, ack, respond }) => {
+      if (!legacyEnabled) {
+        await ack();
+        this.logger.info('Slash command /session — redirecting to /z (legacy disabled)', {
+          user: command.user_id,
+        });
+        try {
+          await respond({
+            text: '`/session`은 `/z`로 통합되었습니다. `/z session` 또는 `/z`를 사용해주세요.',
+            response_type: 'ephemeral',
+          });
+        } catch {
+          // double-fault guard
+        }
+        return;
+      }
+      // LEGACY PATH
+      await this.handleLegacySessionSlash(command, ack, respond);
     });
 
     // /new — 세션 리셋 fallback (Scenario 5)
     this.app.command('/new', async ({ command, ack, respond }) => {
-      await ack();
-      this.logger.info('Slash command /new', {
-        text: command.text?.substring(0, 50),
-        user: command.user_id,
-        channel: command.channel_id,
-      });
-
-      try {
-        // SlashCommand has no thread_ts — always show fallback guidance
-        const prompt = command.text?.trim();
-        let message = '💡 `/new` 명령은 스레드 내에서만 사용할 수 있습니다.\n\n';
-        message += '봇이 응답하고 있는 스레드에서 `new` 를 텍스트로 입력해주세요.';
-        if (prompt) {
-          message += `\n프롬프트를 함께 전달하려면: \`new ${prompt}\``;
-        }
-
-        await respond({
-          text: message,
-          response_type: 'ephemeral',
-        });
-      } catch (error: any) {
-        const errorMessage = error?.message || String(error) || 'Unknown error';
-        this.logger.error('Error handling /new slash command', {
-          error: errorMessage,
-          stack: error?.stack,
+      if (!legacyEnabled) {
+        await ack();
+        this.logger.info('Slash command /new — redirecting to /z (legacy disabled)', {
           user: command.user_id,
-          channel: command.channel_id,
         });
         try {
           await respond({
-            text: '⚠️ /new 명령 처리 중 오류가 발생했습니다.',
+            text: '`/new`는 `/z`로 통합되었습니다. 스레드에서 `new` 또는 `/z new`를 사용해주세요.',
             response_type: 'ephemeral',
           });
-        } catch (respondError: any) {
-          this.logger.error('Failed to send error response for /new', {
-            originalError: errorMessage,
-            respondError: respondError?.message,
-          });
+        } catch {
+          // double-fault guard
         }
+        return;
       }
+      await this.handleLegacyNewSlash(command, ack, respond);
     });
 
-    this.logger.info('Slash commands registered: /soma, /session, /new');
+    this.logger.info('Slash commands registered: /z, /soma, /session, /new', {
+      legacyEnabled,
+    });
+  }
+
+  /**
+   * LEGACY — only reached when SOMA_ENABLE_LEGACY_SLASH=true.
+   * Handles the pre-`/z` `/soma` slash command by adapting to CommandRouter.
+   */
+  private async handleLegacySomaSlash(command: any, ack: any, respond: any): Promise<void> {
+    await ack();
+    this.logger.info('Slash command /soma (legacy path)', {
+      text: command.text?.substring(0, 50),
+      user: command.user_id,
+      channel: command.channel_id,
+    });
+    try {
+      const ctx = SlashCommandAdapter.adapt(command, respond);
+      if (!ctx.text.trim()) {
+        await respond({ text: CommandParser.getHelpMessage(), response_type: 'ephemeral' });
+        return;
+      }
+      const blocked = this.blockedLegacyCommand(ctx.text);
+      if (blocked.blocked && blocked.firstWord) {
+        await respond({
+          text: `⚠️ \`${blocked.firstWord}\` 명령은 스레드 컨텍스트가 필요합니다.\n봇이 응답하고 있는 스레드에서 \`${blocked.firstWord}\` 를 텍스트로 입력해주세요.`,
+          response_type: 'ephemeral',
+        });
+        return;
+      }
+      if (this.commandRouter) {
+        const result = await this.commandRouter.route(ctx);
+        if (!result.handled) {
+          await respond({ text: CommandParser.getHelpMessage(), response_type: 'ephemeral' });
+        }
+      } else {
+        await respond({
+          text: '⚠️ Bot is still initializing. Please try again in a moment.',
+          response_type: 'ephemeral',
+        });
+      }
+    } catch (error: any) {
+      this.logger.error('Error handling /soma slash command (legacy)', { error: error?.message });
+      try {
+        await respond({
+          text: '⚠️ 명령 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          response_type: 'ephemeral',
+        });
+      } catch {
+        // ignored — double-fault guard
+      }
+    }
+  }
+
+  /** LEGACY — only reached when SOMA_ENABLE_LEGACY_SLASH=true. */
+  private async handleLegacySessionSlash(command: any, ack: any, respond: any): Promise<void> {
+    await ack();
+    this.logger.info('Slash command /session (legacy path)', { user: command.user_id });
+    try {
+      const { text, blocks } = await this.deps.sessionManager.formatUserSessionsBlocks(command.user_id, {
+        showControls: true,
+      });
+      await respond({ text, blocks, response_type: 'ephemeral' });
+    } catch (error: any) {
+      this.logger.error('Error handling /session slash command (legacy)', { error: error?.message });
+      try {
+        await respond({
+          text: '⚠️ 세션 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+          response_type: 'ephemeral',
+        });
+      } catch {
+        // ignored
+      }
+    }
+  }
+
+  /** LEGACY — only reached when SOMA_ENABLE_LEGACY_SLASH=true. */
+  private async handleLegacyNewSlash(command: any, ack: any, respond: any): Promise<void> {
+    await ack();
+    this.logger.info('Slash command /new (legacy path)', { user: command.user_id });
+    try {
+      const prompt = command.text?.trim();
+      let message = '💡 `/new` 명령은 스레드 내에서만 사용할 수 있습니다.\n\n';
+      message += '봇이 응답하고 있는 스레드에서 `new` 를 텍스트로 입력해주세요.';
+      if (prompt) {
+        message += `\n프롬프트를 함께 전달하려면: \`new ${prompt}\``;
+      }
+      await respond({ text: message, response_type: 'ephemeral' });
+    } catch (error: any) {
+      this.logger.error('Error handling /new slash command (legacy)', { error: error?.message });
+      try {
+        await respond({ text: '⚠️ /new 명령 처리 중 오류가 발생했습니다.', response_type: 'ephemeral' });
+      } catch {
+        // ignored
+      }
+    }
   }
 
   /**

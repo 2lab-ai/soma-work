@@ -64,7 +64,8 @@ describe('ReportHandler', () => {
     expect(handler.canHandle('report today')).toBe(true);
     expect(handler.canHandle('report daily')).toBe(true);
     expect(handler.canHandle('report weekly')).toBe(true);
-    expect(handler.canHandle('report help')).toBe(true);
+    // /z refactor (#506): `report help` was removed — use `/z help` instead.
+    expect(handler.canHandle('report help')).toBe(false);
     expect(handler.canHandle('something else')).toBe(false);
   });
 
@@ -132,8 +133,11 @@ describe('ReportHandler', () => {
     expect(mockSay).toHaveBeenCalled();
   });
 
-  // `report help` shows help text
-  it('reportHelp_showsHelp', async () => {
+  // /z refactor (#506): `report help` is removed. The handler no longer
+  // accepts the subcommand; users are redirected to `/z help` via the
+  // tombstone surface in CommandRouter. `execute()` with that text must
+  // return handled=false so the router can continue dispatch.
+  it('reportHelp_isRemoved_doesNotHandle', async () => {
     const result = await handler.execute({
       user: 'U123',
       channel: 'C456',
@@ -142,11 +146,8 @@ describe('ReportHandler', () => {
       say: mockSay as any,
     });
 
-    expect(result.handled).toBe(true);
-    expect(mockSay).toHaveBeenCalled();
-    const sayArg = mockSay.mock.calls[0][0];
-    expect(sayArg.text || JSON.stringify(sayArg)).toMatch(/daily|weekly|today|help/i);
-    // aggregator should NOT be called for help
+    expect(result.handled).toBe(false);
+    expect(mockSay).not.toHaveBeenCalled();
     expect(mockDeps.aggregator.aggregateDaily).not.toHaveBeenCalled();
     expect(mockDeps.aggregator.aggregateWeekly).not.toHaveBeenCalled();
   });
