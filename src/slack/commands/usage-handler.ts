@@ -1,5 +1,5 @@
-import { ReportAggregator } from '../../metrics/report-aggregator';
 import { MetricsEventStore } from '../../metrics/event-store';
+import { ReportAggregator } from '../../metrics/report-aggregator';
 import type { TokenUsageRanking, UsageReport } from '../../metrics/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';

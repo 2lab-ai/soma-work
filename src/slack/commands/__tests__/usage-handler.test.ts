@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { UsageHandler } from '../usage-handler';
 import type { CommandContext, CommandDependencies } from '../types';
+import { UsageHandler } from '../usage-handler';
 
 /**
  * UsageHandler P0 regression tests.

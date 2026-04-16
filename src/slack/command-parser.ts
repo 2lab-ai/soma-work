@@ -365,7 +365,10 @@ export class CommandParser {
     let period: 'today' | 'week' | 'month' = 'today';
     let userId: string | undefined;
 
-    const parts = trimmed.replace(/^usage\s*/i, '').trim().split(/\s+/);
+    const parts = trimmed
+      .replace(/^usage\s*/i, '')
+      .trim()
+      .split(/\s+/);
     for (const part of parts) {
       if (/^week$/i.test(part)) period = 'week';
       else if (/^month$/i.test(part)) period = 'month';
@@ -968,10 +971,10 @@ export class CommandParser {
       '• `restore` or `/restore` - Restore Claude credentials from backup',
       '',
       '*Token Usage:*',
-      '• `usage` or `/usage` - Show today\'s token usage and rankings',
-      '• `usage week` - Show this week\'s token usage',
-      '• `usage month` - Show this month\'s token usage',
-      '• `usage @user` - Show specific user\'s token usage',
+      "• `usage` or `/usage` - Show today's token usage and rankings",
+      "• `usage week` - Show this week's token usage",
+      "• `usage month` - Show this month's token usage",
+      "• `usage @user` - Show specific user's token usage",
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',
