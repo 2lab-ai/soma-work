@@ -23,4 +23,10 @@ setup:
 	./service.sh main setup
 	./service.sh dev setup
 
-.PHONY: up down build test setup
+# Build a sandbox-safe gh CLI with Mozilla NSS fallback CA roots.
+# Fixes: tls: failed to verify certificate: x509: OSStatus -26276
+# See docs/sandbox-gh-cli-tls-fix.md
+gh-fallback:
+	./scripts/build-gh-fallback.sh
+
+.PHONY: up down build test setup gh-fallback
