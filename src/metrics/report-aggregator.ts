@@ -718,7 +718,7 @@ export function computeFunFacts(
     if (busiestDay.totalEvents > 0) {
       facts.push({
         icon: '📅',
-        text: `가장 바쁘 날: ${busiestDay.dayLabel} (${busiestDay.date}, 이벤트 ${busiestDay.totalEvents}건)`,
+        text: `가장 바쁜 날: ${busiestDay.dayLabel} (${busiestDay.date}, 이벤트 ${busiestDay.totalEvents}건)`,
       });
     }
 
