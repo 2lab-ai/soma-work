@@ -898,6 +898,7 @@ describe('CommandParser', () => {
       'effort low',
       'effort medium',
       'effort high',
+      'effort xhigh',
       'effort max',
       '/effort',
       '/effort high',
@@ -930,7 +931,7 @@ describe('CommandParser', () => {
       expect(CommandParser.parseEffortCommand('effort status')).toEqual({ action: 'status' });
     });
 
-    it.each(['low', 'medium', 'high', 'max'])('parses "effort %s" as set', (level) => {
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'])('parses "effort %s" as set', (level) => {
       expect(CommandParser.parseEffortCommand(`effort ${level}`)).toEqual({ action: 'set', level });
     });
 
@@ -1020,6 +1021,14 @@ describe('CommandParser', () => {
         type: 'effort',
         action: 'set',
         level: 'high',
+      });
+    });
+
+    it('parses "%effort xhigh" as effort set', () => {
+      expect(CommandParser.parseSessionCommand('%effort xhigh')).toEqual({
+        type: 'effort',
+        action: 'set',
+        level: 'xhigh',
       });
     });
 

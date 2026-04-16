@@ -5,13 +5,13 @@ const { mockSetUserDefaultEffort, mockGetUserDefaultEffort, mockResolveEffortInp
   mockSetUserDefaultEffort: vi.fn(),
   mockGetUserDefaultEffort: vi.fn().mockReturnValue('high'),
   mockResolveEffortInput: vi.fn((v: string) =>
-    ['low', 'medium', 'high', 'max'].includes(v) ? (v as 'low' | 'medium' | 'high' | 'max') : null,
+    ['low', 'medium', 'high', 'xhigh', 'max'].includes(v) ? (v as 'low' | 'medium' | 'high' | 'xhigh' | 'max') : null,
   ),
 }));
 
 vi.mock('../../user-settings-store', () => ({
   DEFAULT_EFFORT: 'high',
-  EFFORT_LEVELS: ['low', 'medium', 'high', 'max'] as const,
+  EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
   userSettingsStore: {
     getUserDefaultEffort: mockGetUserDefaultEffort,
     setUserDefaultEffort: mockSetUserDefaultEffort,
@@ -80,7 +80,7 @@ describe('EffortHandler', () => {
   });
 
   describe('execute — set', () => {
-    it.each(['low', 'medium', 'high', 'max'])('persists valid level "%s"', async (level) => {
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'])('persists valid level "%s"', async (level) => {
       const ctx = makeCtx(`effort ${level}`);
       const result = await handler.execute(ctx);
       expect(result.handled).toBe(true);

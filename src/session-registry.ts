@@ -28,7 +28,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { userSettingsStore } from './user-settings-store';
+import { type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -87,7 +87,7 @@ interface SerializedSession {
   // Log verbosity bitmask
   logVerbosity?: number;
   // Effort level for Claude thinking
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: EffortLevel;
   // Extended thinking (adaptive reasoning) toggle
   thinkingEnabled?: boolean;
   // Thinking summary display toggle
@@ -1434,8 +1434,9 @@ export class SessionRegistry {
           }
         }
 
+        const resolvedOwnerId = serialized.ownerId || serialized.userId;
         const session: ConversationSession = {
-          ownerId: serialized.ownerId || serialized.userId, // Fallback for legacy sessions
+          ownerId: resolvedOwnerId, // Fallback for legacy sessions
           ownerName: serialized.ownerName,
           userId: serialized.userId, // Legacy field
           channelId: serialized.channelId,
@@ -1454,7 +1455,9 @@ export class SessionRegistry {
           sleepStartedAt,
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,
-          effort: serialized.effort,
+          // Backfill effort on legacy sessions so resume uses DEFAULT_EFFORT
+          // rather than the SDK default.
+          effort: serialized.effort ?? userSettingsStore.getUserDefaultEffort(resolvedOwnerId),
           thinkingEnabled: serialized.thinkingEnabled,
           showThinking: serialized.showThinking,
           // Clear stale messageTs/renderKey on restore — the Slack message may have been

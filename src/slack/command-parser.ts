@@ -2,6 +2,8 @@
  * Command parsing utilities for Slack bot commands
  */
 
+import { EFFORT_LEVELS } from '../user-settings-store';
+
 export type CctAction = { action: 'status' } | { action: 'set'; target: string } | { action: 'next' };
 
 export type BypassAction = 'on' | 'off' | 'status';
@@ -1051,7 +1053,7 @@ export class CommandParser {
       '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '• `effort` - Show current default effort level',
-      '• `effort <level>` - Set default effort (low/medium/high/max). Persists for all future sessions.',
+      `• \`effort <level>\` - Set default effort (${EFFORT_LEVELS.join('/')}). Persists for all future sessions.`,
       '',
       '*LLM Chat Config:*',
       '• `show llm_chat` - Show current llm_chat model configuration',
@@ -1066,7 +1068,7 @@ export class CommandParser {
       '• `%model` - Show session model',
       '• `%model <name>` - Change model for this session only',
       '• `%effort` - Show session effort level',
-      '• `%effort <level>` - Change effort for this session only (low/medium/high/max)',
+      `• \`%effort <level>\` - Change effort for this session only (${EFFORT_LEVELS.join('/')})`,
       '• `%verbosity` - Show session verbosity',
       '• `%verbosity <level>` - Change verbosity for this session only',
       '• `%thinking` - Show extended thinking (adaptive reasoning) status',
