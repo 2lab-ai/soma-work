@@ -202,6 +202,10 @@ export interface TokenUsageMetadata {
   costUsd: number;
   /** Per-model breakdown when multiple models are used in one loop */
   modelBreakdown?: Record<string, ModelTokenUsage>;
+  /** Where cost came from: 'sdk' if SDK costUSD > 0 was used, 'calculated' if computed from token counts */
+  costSource?: 'sdk' | 'calculated';
+  /** Version of pricing table used for calculation (e.g., '2026-04-16') */
+  pricingVersion?: string;
 }
 
 /**
@@ -217,6 +221,15 @@ export interface TokenUsageAggregation {
   byModel: Record<string, ModelTokenUsage>;
 }
 
+/** Per-user token/cost ranking entry */
+export interface TokenUsageRanking {
+  userId: string;
+  userName: string;
+  totalTokens: number;
+  totalCostUsd: number;
+  rank: number;
+}
+
 /**
  * Usage report for API responses.
  */
@@ -230,4 +243,10 @@ export interface UsageReport {
     date: string;
     totals: TokenUsageAggregation;
   }>;
+  /** Rankings by total token count (desc), empty when userId filter applied */
+  tokenRankings: TokenUsageRanking[];
+  /** Rankings by total cost USD (desc), empty when userId filter applied */
+  costRankings: TokenUsageRanking[];
+  /** True if any events lack pricingVersion (legacy data mixed in) */
+  hasLegacyData: boolean;
 }
