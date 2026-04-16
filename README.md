@@ -159,7 +159,20 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 
 ## Commands
 
-All commands use the unified `/z` grammar: `/z <topic> [verb] [args...]`. See `docs/spec/01-slack-integration.md` for the full surface and `docs/ops/rollback-z-refactor.md` for emergency rollback.
+Four prefix families — each with a clear, non-overlapping purpose:
+
+| Prefix | Scope | Persistence | Example |
+|--------|-------|-------------|---------|
+| `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
+| `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
+| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner) | Per-message | `$z`, `$stv:new-task` |
+| naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
+
+> **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
+
+### `/z` — primary surface
+
+Grammar: `/z <topic> [verb] [args...]`. See `docs/spec/01-slack-integration.md` for the full surface, `docs/ops/rollback-z-refactor.md` for emergency rollback.
 
 | Command | Description |
 |---------|-------------|
@@ -183,9 +196,54 @@ All commands use the unified `/z` grammar: `/z <topic> [verb] [args...]`. See `d
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
-| `%model <v>` · `%verbosity <v>` | Session-only settings (non-persistent). `$` prefix accepted during deprecation grace period; `$` is now reserved for forced skill invocation (e.g. `$z`, `$stv:new-task`). |
 
-**Migration (#506)**: Legacy naked forms (`persona linus`, `model sonnet`, `show_prompt`, …) are deprecated. The first use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
+### `%` — session-scoped (ephemeral)
+
+Overrides that apply **only to the current session** and do not persist. Cleared on `/z new` or `/z renew`.
+
+| Command | Description |
+|---------|-------------|
+| `%` | Show session info (model, verbosity, effort, thinking flags) |
+| `%model [<name>]` | Get / set session model (e.g. `%model opus`) |
+| `%verbosity [<level>]` | Get / set session verbosity |
+| `%effort [<level>]` | Get / set session effort |
+| `%thinking [on\|off]` | Toggle extended thinking for this session |
+| `%thinking_summary [on\|off]` | Toggle thinking-output display |
+
+> The `$` prefix is still accepted for these subcommands (`$model opus`, …) during the deprecation grace period — the bot will reply with a one-line hint directing you to `%`.
+
+### `$` — forced skill invocation
+
+Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution.
+
+| Syntax | Resolves to |
+|--------|-------------|
+| `$<skill>` | `src/local/skills/<skill>/SKILL.md` (bare shorthand for local skills) |
+| `$local:<skill>` | Same as above, explicit form |
+| `$user:<skill>` | `DATA_DIR/{userId}/skills/<skill>/SKILL.md` (per-user skills) |
+| `$<plugin>:<skill>` | `plugins/<plugin>/skills/<skill>/SKILL.md` |
+
+Representative examples: `$z`, `$zcheck`, `$stv:new-task`. For the current inventory see [`src/local/skills/`](./src/local/skills/) (hardcoded lists drift — always check the directory).
+
+Nested `$plugin:skill` references inside skill content are resolved recursively (max depth 10).
+
+### naked — bare-text compatibility
+
+A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts).
+
+| Form | Notes |
+|------|-------|
+| `session` · `sessions` | List active sessions |
+| `sessions public` | Public session listing |
+| `sessions terminate <key>` | Terminate a session by key |
+| `theme` · `theme <name>` · `theme set <name>` · `theme=<name>` | Theme get/set (both `set`-prefixed and bare-value forms accepted) |
+| `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
+| `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
+| `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
+
+Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
+
+**Migration (#506)**: Legacy naked command forms (`persona linus`, `model sonnet`, `show_prompt`, …) outside this whitelist are deprecated. First use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
 
 ---
 
