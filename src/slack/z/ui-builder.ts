@@ -13,9 +13,19 @@
 import type { TombstoneHint } from './tombstone';
 import type { ZBlock } from './types';
 
-/** Deterministic block_id generator. */
+/** Deterministic block_id generator.
+ *
+ * Topic is sanitized to `[a-z0-9_]+`. Non-alphanumeric runs collapse to a
+ * single underscore; leading/trailing underscores are stripped. If nothing
+ * alphanumeric remains, falls back to `z` so the generated id is always
+ * well-formed (`z_<topic>_<issuedAt>_<index>`).
+ */
 export function zBlockId(topic: string, issuedAt: number, index: number): string {
-  const safeTopic = topic.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'z';
+  const collapsed = topic
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const safeTopic = collapsed || 'z';
   return `z_${safeTopic}_${issuedAt}_${index}`;
 }
 
