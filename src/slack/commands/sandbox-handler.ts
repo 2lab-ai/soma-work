@@ -2,6 +2,7 @@ import { isAdminUser } from '../../admin-utils';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { renderSandboxCard } from '../z/topics/sandbox-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -10,10 +11,9 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  *   `sandbox [on|off|status]`          — admin-only for on/off; ON by default
  *   `sandbox network [on|off|status]`  — any user; ON by default
  *
- * Sandbox is an OS-level isolation layer captured at `query()` init, so
- * toggles take effect on the next user turn (next `query()` call), not mid-
- * session. The handler always surfaces the combined (sandbox × network)
- * state so users understand the effective posture.
+ * Phase 2 (#507): bare `sandbox` / `sandbox status` renders a Block Kit card
+ * via the /z topic module. Explicit on/off/network subcommands retain their
+ * prior text output for CLI-style back-compat.
  */
 export class SandboxHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -25,10 +25,14 @@ export class SandboxHandler implements CommandHandler {
     const { target, action } = CommandParser.parseSandboxCommand(text);
 
     const sandboxDisabled = userSettingsStore.getUserSandboxDisabled(user);
-    const networkDisabled = userSettingsStore.getUserNetworkDisabled(user);
 
     if (action === 'status') {
-      await say({ text: this.formatStatus(sandboxDisabled, networkDisabled), thread_ts: threadTs });
+      // Phase 2: render Block Kit card by default.
+      const { text: fallback, blocks } = await renderSandboxCard({
+        userId: user,
+        issuedAt: Date.now(),
+      });
+      await say({ text: fallback ?? '🛡️ Sandbox', blocks, thread_ts: threadTs });
       return { handled: true };
     }
 
@@ -81,32 +85,5 @@ export class SandboxHandler implements CommandHandler {
       });
     }
     return { handled: true };
-  }
-
-  /** Render the combined sandbox × network state. */
-  private formatStatus(sandboxDisabled: boolean, networkDisabled: boolean): string {
-    const sandboxLine = sandboxDisabled
-      ? '• Sandbox: `OFF` — bash runs without isolation'
-      : '• Sandbox: `ON` — bash runs in an isolated environment';
-
-    let networkLine: string;
-    if (networkDisabled) {
-      networkLine = sandboxDisabled
-        ? '• Network allowlist: `OFF` _(stored; inactive while sandbox is OFF)_'
-        : '• Network allowlist: `OFF` — outbound traffic is not restricted to the dev allowlist';
-    } else {
-      networkLine = sandboxDisabled
-        ? `• Network allowlist: \`ON\` _(stored; inactive while sandbox is OFF)_`
-        : `• Network allowlist: \`ON\` — outbound restricted to ${DEV_DOMAIN_ALLOWLIST.length} preset dev domains`;
-    }
-
-    return [
-      `🛡️ *Sandbox Status*`,
-      '',
-      sandboxLine,
-      networkLine,
-      '',
-      '_`sandbox on|off` is admin-only. `sandbox network on|off` is available to all users. Changes apply from your next message._',
-    ].join('\n');
   }
 }

@@ -1,6 +1,7 @@
 import { Logger } from '../../logger';
-import { type SessionTheme, THEME_NAMES, userSettingsStore } from '../../user-settings-store';
+import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { applyTheme, renderThemeCard } from '../z/topics/theme-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
@@ -23,40 +24,29 @@ export class SessionHandler implements CommandHandler {
     const { user, channel, text, threadTs, say } = ctx;
 
     // Session theme command (e.g., "sessions theme=A", "theme", "theme set B")
+    //
+    // Phase 2 (#507): bare `theme` renders Block Kit via /z topic module.
+    // Explicit `theme set <v>` retains text ack for CLI back-compat.
     if (CommandParser.isSessionThemeCommand(text)) {
       const parsed = CommandParser.parseSessionThemeCommand(text);
       if (parsed && parsed.theme === null) {
-        // Query: show current theme
-        const current = userSettingsStore.getUserSessionTheme(user);
-        const themeList = Object.entries(THEME_NAMES)
-          .map(([k, v]) => (k === current ? `*\`${k}\` ${v}* ← 현재` : `\`${k}\` ${v}`))
-          .join('\n');
-        await say({
-          text: `🎨 *현재 테마: ${current} (${THEME_NAMES[current]})*\n\n${themeList}\n\n변경: \`theme set <A-L>\` · 초기화: \`theme set default\``,
-          thread_ts: threadTs,
+        const { text: fallback, blocks } = await renderThemeCard({
+          userId: user,
+          issuedAt: Date.now(),
         });
+        await say({ text: fallback ?? '🎨 Theme', blocks, thread_ts: threadTs });
         return { handled: true };
       }
       if (parsed && parsed.theme !== null) {
-        const resolved = userSettingsStore.resolveThemeInput(parsed.theme);
-        if (resolved === null) {
-          const validThemes = Object.entries(THEME_NAMES)
-            .map(([k, v]) => `\`${k}\` (${v})`)
-            .join(', ');
+        const result = await applyTheme({ userId: user, value: parsed.theme });
+        if (result.ok) {
           await say({
-            text: `❌ 알 수 없는 테마: \`${parsed.theme}\`\n사용 가능: ${validThemes}, \`reset\` (기본값으로 초기화)`,
-            thread_ts: threadTs,
-          });
-        } else if (resolved === 'reset') {
-          userSettingsStore.setUserSessionTheme(user, undefined);
-          await say({
-            text: `🎨 테마가 *기본값 (Default Rich Card)* 으로 초기화되었습니다.`,
+            text: `✅ ${result.summary}${result.description ? `\n\n${result.description}` : ''}`,
             thread_ts: threadTs,
           });
         } else {
-          userSettingsStore.setUserSessionTheme(user, resolved);
           await say({
-            text: `🎨 테마가 *${THEME_NAMES[resolved]}* 로 설정되었습니다. 모든 UI에 적용됩니다.\n초기화: \`sessions theme=reset\``,
+            text: `${result.summary}${result.description ? `\n\n${result.description}` : ''}`,
             thread_ts: threadTs,
           });
         }
