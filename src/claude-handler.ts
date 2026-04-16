@@ -19,12 +19,6 @@ import {
   isDangerousCommand,
   isSshCommand,
 } from './dangerous-command-filter';
-import {
-  type SensitivePathResult,
-  checkBashSensitivePaths,
-  checkSensitiveGlob,
-  checkSensitivePath,
-} from './sensitive-path-filter';
 import { CONFIG_FILE } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -38,6 +32,12 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
+import {
+  checkBashSensitivePaths,
+  checkSensitiveGlob,
+  checkSensitivePath,
+  type SensitivePathResult,
+} from './sensitive-path-filter';
 import type {
   ActivityState,
   ConversationSession,
@@ -572,13 +572,13 @@ export class ClaudeHandler {
       // Sensitive path guard: block non-admin users from reading host secrets
       // via any Claude tool. Addresses sandbox read.denyOnly being empty.
       if (!isAdminUser(slackContext.user)) {
-        const makeSensitiveHook = (
-          check: (r: Record<string, unknown>) => SensitivePathResult,
-          logCtx: (r: Record<string, unknown>) => Record<string, unknown>,
-        ) =>
+        const makeSensitiveHook =
+          (
+            check: (r: Record<string, unknown>) => SensitivePathResult,
+            logCtx: (r: Record<string, unknown>) => Record<string, unknown>,
+          ) =>
           async (input: HookInput): Promise<HookJSONOutput> => {
-            const toolRecord =
-              ((input as { tool_input: unknown }).tool_input as Record<string, unknown>) ?? {};
+            const toolRecord = ((input as { tool_input: unknown }).tool_input as Record<string, unknown>) ?? {};
             const result = check(toolRecord);
             if (result.isSensitive) {
               this.logger.warn('Sensitive path access denied', {
@@ -619,11 +619,7 @@ export class ClaudeHandler {
             matcher: 'Glob',
             hooks: [
               makeSensitiveHook(
-                (r) =>
-                  checkSensitiveGlob(
-                    String(r.pattern ?? ''),
-                    typeof r.path === 'string' ? r.path : undefined,
-                  ),
+                (r) => checkSensitiveGlob(String(r.pattern ?? ''), typeof r.path === 'string' ? r.path : undefined),
                 (r) => ({ pattern: String(r.pattern ?? ''), path: r.path }),
               ),
             ],
@@ -632,10 +628,7 @@ export class ClaudeHandler {
             matcher: 'Grep',
             hooks: [
               makeSensitiveHook(
-                (r) =>
-                  typeof r.path === 'string' && r.path
-                    ? checkSensitivePath(r.path)
-                    : { isSensitive: false },
+                (r) => (typeof r.path === 'string' && r.path ? checkSensitivePath(r.path) : { isSensitive: false }),
                 (r) => ({ path: r.path }),
               ),
             ],
