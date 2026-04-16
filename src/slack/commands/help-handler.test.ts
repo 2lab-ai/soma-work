@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CommandContext } from './types';
 import { HelpHandler } from './help-handler';
+import type { CommandContext } from './types';
 
 function makeCtx(overrides: Partial<CommandContext> = {}): { ctx: CommandContext; sayMock: ReturnType<typeof vi.fn> } {
   const sayMock = vi.fn().mockResolvedValue({ ts: '123.456', channel: 'C1' });
