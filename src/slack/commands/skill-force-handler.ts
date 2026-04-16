@@ -107,14 +107,15 @@ export class SkillForceHandler implements CommandHandler {
     const invokedBlock = `<invoked_skills>\n${skillBlocks}\n</invoked_skills>`;
     const finalPrompt = `${text}\n\n${invokedBlock}`;
 
+    const resolvedKeys = Array.from(resolved.keys());
     this.logger.info('Forced skill invocation', {
-      skills: Array.from(resolved.keys()),
+      skills: resolvedKeys,
       errorSkills: errors,
     });
 
     // Emit RPG-style forced skill invocation banner (red attachment bar)
     const casterName = user ? `<@${user}>` : '누군가';
-    const rpg = ToolFormatter.formatSkillForceInvocationRPG(Array.from(resolved.keys()), casterName);
+    const rpg = ToolFormatter.formatSkillForceInvocationRPG(resolvedKeys, casterName);
     await say({
       text: '',
       thread_ts: threadTs,
