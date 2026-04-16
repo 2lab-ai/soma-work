@@ -141,7 +141,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
           properties: {
             commandId: {
               type: 'string',
-              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT', 'SAVE_MEMORY', 'GET_MEMORY'],
+              enum: ['GET_SESSION', 'UPDATE_SESSION', 'ASK_USER_QUESTION', 'CONTINUE_SESSION', 'SAVE_CONTEXT_RESULT', 'SAVE_MEMORY', 'GET_MEMORY', 'MANAGE_SKILL'],
             },
             params: { type: 'object', description: 'Command params object' },
           },
