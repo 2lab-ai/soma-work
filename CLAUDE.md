@@ -105,19 +105,48 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 ## Slack Commands
 
+### 접두(prefix) 체계 — 4가지 (#508, #506, #507)
+
+| 접두 | 용도 | 영속성 | 예시 |
+|------|------|--------|------|
+| `/z <topic> …` | 주 명령 표면 (Block Kit UI) | 유저 전역 | `/z persona set linus` |
+| `%<sub> …` | 현재 세션만 오버라이드 | `new`/`renew` 시 초기화 | `%model opus` |
+| `$<skill>` / `$<plugin>:<skill>` | 스킬 강제 발동 (RPG 배너) | 메시지 1회 | `$z`, `$stv:new-task` |
+| 네이키드 텍스트 | 채팅 / 워크플로우 디스패치 | n/a | `fix PR 123` |
+
+### `/z` — 주 명령 (유저 전역, 영속)
+
 | 명령 | 설명 |
 |------|------|
-| `cwd` | 현재 작업 디렉토리 |
-| `mcp` / `mcp reload` | MCP 서버 목록 / 리로드 |
-| `bypass [on/off]` | 권한 프롬프트 우회 |
-| `persona [name]` | 페르소나 변경 |
-| `model [name]` | 모델 변경 (sonnet/opus/haiku) |
-| `sessions` | 활성 세션 목록 |
-| `new` / `renew` | 세션 초기화 / 갱신 |
-| `close` | 현재 스레드 세션 종료 |
-| `context` | 컨텍스트 윈도우 상태 |
-| `restore` | 세션 복원 |
-| `link [url]` | 세션에 이슈/PR/문서 링크 첨부 |
-| `onboarding` | 온보딩 워크플로우 실행 |
-| `verbosity [level]` | 출력 상세도 설정 |
-| `%` / `%model` / `%verbosity` | 세션 전용 설정 (비영속). `$` 접두는 deprecation grace period 동안만 허용. `$`는 강제 스킬 발동 전용 (`$z`, `$stv:new-task` 등). |
+| `/z cwd [set <path>]` | 현재 작업 디렉토리 |
+| `/z mcp [list\|reload]` | MCP 서버 목록 / 리로드 |
+| `/z bypass [set on\|off]` | 권한 프롬프트 우회 |
+| `/z persona [set <name>\|list]` | 페르소나 변경 |
+| `/z model [set <name>\|list]` | 모델 변경 (sonnet/opus/haiku) |
+| `/z verbosity [set <level>]` | 출력 상세도 |
+| `/z session` · `sessions` | 활성 세션 목록 |
+| `/z new` · `/z renew` | 세션 초기화 / 갱신 |
+| `/z close` | 현재 스레드 세션 종료 |
+| `/z context` · `/z compact` | 컨텍스트 상태 / 압축 |
+| `/z restore` | 세션 복원 |
+| `/z link <type> <url>` | 세션에 이슈/PR/문서 링크 첨부 |
+| `/z onboarding` | 온보딩 워크플로우 실행 |
+| `/z cct [set <name>\|next]` | CCT 토큰 상태 / 수동 전환 |
+| `/z marketplace [add <x>]` | 플러그인 마켓플레이스 |
+| `/z plugin [add\|update\|remove\|rollback\|backups]` | 설치 플러그인 관리 |
+| `/z skill [list\|download]` | 스킬 디렉토리 |
+| `/z report [today\|daily\|weekly]` | 사용량 리포트 |
+| `/z admin …` | 관리자 명령 |
+
+### `%` — 세션 스코프 (비영속)
+
+`%model`, `%verbosity`, `%effort`, `%thinking`, `%thinking_summary` — 현재 세션에만 적용되고 `/z new` 또는 `/z renew` 시 초기화. 값 인자 없이 부르면 현재 상태 조회.
+
+`$model`/`$verbosity` 같은 **legacy `$` 접두 세션 명령은 deprecation grace period 동안만 허용**되고, 호출 시 한 줄 경고 후 동작함. `$`는 스킬 전용으로 이관 중.
+
+### `$` — 스킬 강제 발동
+
+`$<skill>`은 `src/local/skills/<skill>/SKILL.md`를 읽고 그 절차를 강제 실행 (RPG 배너 emit).
+`$<plugin>:<skill>` 형태는 해당 플러그인의 스킬 경로로 resolve. 중첩 `$plugin:skill` 참조는 최대 depth 10까지 재귀 해석.
+
+라우팅 순서: `SkillForceHandler` → `SessionCommandHandler` — `$z`·`$zcheck`는 스킬로, `$model`·`$verbosity`는 세션으로 분기.
