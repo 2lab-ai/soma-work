@@ -16,34 +16,25 @@ describe('SlashZRespond', () => {
     const respondFn = vi.fn().mockResolvedValue(undefined);
     const r = new SlashZRespond(respondFn as any);
     await r.send({ text: 'hi' });
-    expect(respondFn).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral', text: 'hi' }),
-    );
+    expect(respondFn).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral', text: 'hi' }));
   });
 
   it('send({ephemeral:false}) uses in_channel', async () => {
     const respondFn = vi.fn().mockResolvedValue(undefined);
     const r = new SlashZRespond(respondFn as any);
     await r.send({ text: 'hi', ephemeral: false });
-    expect(respondFn).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'in_channel' }),
-    );
+    expect(respondFn).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'in_channel' }));
   });
 
   it('replace() uses replace_original:true', async () => {
     const respondFn = vi.fn().mockResolvedValue(undefined);
     const r = new SlashZRespond(respondFn as any);
     await r.replace({ text: 'updated' });
-    expect(respondFn).toHaveBeenCalledWith(
-      expect.objectContaining({ replace_original: true, text: 'updated' }),
-    );
+    expect(respondFn).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true, text: 'updated' }));
   });
 
   it('replace() falls back to UI-expired notice when respond throws', async () => {
-    const respondFn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('token expired'))
-      .mockResolvedValue(undefined);
+    const respondFn = vi.fn().mockRejectedValueOnce(new Error('token expired')).mockResolvedValue(undefined);
     const r = new SlashZRespond(respondFn as any);
     await r.replace({ text: 'updated' });
     expect(respondFn).toHaveBeenCalledTimes(2);
@@ -55,9 +46,7 @@ describe('SlashZRespond', () => {
     const respondFn = vi.fn().mockResolvedValue(undefined);
     const r = new SlashZRespond(respondFn as any);
     await r.dismiss();
-    expect(respondFn).toHaveBeenCalledWith(
-      expect.objectContaining({ delete_original: true }),
-    );
+    expect(respondFn).toHaveBeenCalledWith(expect.objectContaining({ delete_original: true }));
   });
 });
 
@@ -93,9 +82,7 @@ describe('ChannelEphemeralZRespond', () => {
     const client = { chat: { postEphemeral, postMessage } };
     const r = new ChannelEphemeralZRespond({ client: client as any, channel: 'C1', user: 'U1' });
     const out = await r.send({ text: 'hi' });
-    expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: 'U1', text: 'hi' }),
-    );
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'U1', text: 'hi' }));
     expect(out.ts).toBe('dm_ts');
   });
 
@@ -202,8 +189,6 @@ describe('DmZRespond', () => {
       botMessageTs: markBotMessageTs('888'),
     });
     await r2.dismiss();
-    expect(client.chat.delete).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: 'D1', ts: '888' }),
-    );
+    expect(client.chat.delete).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D1', ts: '888' }));
   });
 });

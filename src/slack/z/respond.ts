@@ -15,7 +15,7 @@
 import type { RespondFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { Logger } from '../../logger';
-import { type BotMessageTs, type ZBlock, type ZRespond, type ZSource } from './types';
+import type { BotMessageTs, ZBlock, ZRespond, ZSource } from './types';
 
 const logger = new Logger('ZRespond');
 

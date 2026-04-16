@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-
-import { buildHelpCard, buildSettingCard, buildTombstoneCard, zBlockId } from './ui-builder';
 import type { TombstoneHint } from './tombstone';
+import { buildHelpCard, buildSettingCard, buildTombstoneCard, zBlockId } from './ui-builder';
 
 describe('zBlockId', () => {
   it('generates deterministic id from topic/issuedAt/index', () => {
@@ -38,7 +37,23 @@ describe('buildHelpCard', () => {
   it('body mentions all major topics', () => {
     const blocks = buildHelpCard({ issuedAt: 1 });
     const text = ((blocks[0] as any).text.text as string).toLowerCase();
-    for (const topic of ['persona', 'model', 'verbosity', 'bypass', 'sandbox', 'notify', 'webhook', 'memory', 'mcp', 'plugin', 'skill', 'cwd', 'cct', 'report', 'admin']) {
+    for (const topic of [
+      'persona',
+      'model',
+      'verbosity',
+      'bypass',
+      'sandbox',
+      'notify',
+      'webhook',
+      'memory',
+      'mcp',
+      'plugin',
+      'skill',
+      'cwd',
+      'cct',
+      'report',
+      'admin',
+    ]) {
       expect(text, `topic ${topic} missing`).toContain(topic);
     }
   });

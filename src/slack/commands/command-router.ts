@@ -105,7 +105,8 @@ export class CommandRouter {
     // Phase 1 of /z refactor (#506): `/z` prefix + legacy-naked tombstone.
     // Set SOMA_ENABLE_LEGACY_SLASH=true to bypass the new routing entirely
     // (rollback Tier 2 — plan/MASTER-SPEC.md §12).
-    const legacyEnabled = process.env.SOMA_ENABLE_LEGACY_SLASH === 'true' || process.env.SOMA_ENABLE_LEGACY_SLASH === '1';
+    const legacyEnabled =
+      process.env.SOMA_ENABLE_LEGACY_SLASH === 'true' || process.env.SOMA_ENABLE_LEGACY_SLASH === '1';
 
     const zPrefixRemainder = stripZPrefix(text.trim());
     if (zPrefixRemainder !== null) {

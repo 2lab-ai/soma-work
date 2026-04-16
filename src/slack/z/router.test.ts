@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-
-import { parseTopic, translateToLegacy, ZRouter } from './router';
 import type { LegacyCommandRouter, TombstoneStore } from './router';
+import { parseTopic, translateToLegacy, ZRouter } from './router';
 import type { ZInvocation, ZRespond } from './types';
 
 function makeRespond(overrides: Partial<ZRespond> = {}): ZRespond {
@@ -29,10 +28,7 @@ function makeInv(overrides: Partial<ZInvocation> = {}): ZInvocation {
   } as ZInvocation;
 }
 
-function makeDeps(
-  legacyOverride: Partial<LegacyCommandRouter> = {},
-  storeOverride: Partial<TombstoneStore> = {},
-) {
+function makeDeps(legacyOverride: Partial<LegacyCommandRouter> = {}, storeOverride: Partial<TombstoneStore> = {}) {
   const legacyRouter: LegacyCommandRouter = {
     route: vi.fn().mockResolvedValue({ handled: true }),
     ...legacyOverride,
@@ -186,9 +182,7 @@ describe('ZRouter.dispatch', () => {
     const inv = makeInv({ source: 'slash', remainder: 'new hello', respond: makeRespond({ send }) });
 
     await router.dispatch(inv);
-    expect(send).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('스레드 컨텍스트') }),
-    );
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('스레드 컨텍스트') }));
     expect(legacyRouter.route).not.toHaveBeenCalled();
   });
 
@@ -198,9 +192,7 @@ describe('ZRouter.dispatch', () => {
     const inv = makeInv({ source: 'dm', remainder: 'new hello', rawText: '/z new hello' });
 
     await router.dispatch(inv);
-    expect(legacyRouter.route).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'new hello' }),
-    );
+    expect(legacyRouter.route).toHaveBeenCalledWith(expect.objectContaining({ text: 'new hello' }));
   });
 
   it('session set model → translates to $model', async () => {
@@ -209,9 +201,7 @@ describe('ZRouter.dispatch', () => {
     const inv = makeInv({ source: 'dm', remainder: 'session set persona linus' });
 
     await router.dispatch(inv);
-    expect(legacyRouter.route).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '$persona linus' }),
-    );
+    expect(legacyRouter.route).toHaveBeenCalledWith(expect.objectContaining({ text: '$persona linus' }));
   });
 
   it('admin accept <@U> → translates to accept', async () => {
@@ -220,9 +210,7 @@ describe('ZRouter.dispatch', () => {
     const inv = makeInv({ source: 'slash', remainder: 'admin accept <@U999>' });
 
     await router.dispatch(inv);
-    expect(legacyRouter.route).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'accept <@U999>' }),
-    );
+    expect(legacyRouter.route).toHaveBeenCalledWith(expect.objectContaining({ text: 'accept <@U999>' }));
   });
 
   it('legacy router error → dispatch returns error', async () => {

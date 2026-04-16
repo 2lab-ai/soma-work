@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-
-import { normalizeZInvocation, stripZPrefix } from './normalize';
 import type { NormalizeInput } from './normalize';
+import { normalizeZInvocation, stripZPrefix } from './normalize';
 import type { ZRespond } from './types';
 
 function makeRespond(): ZRespond {
@@ -13,7 +12,9 @@ function makeRespond(): ZRespond {
   };
 }
 
-function makeInput(overrides: Partial<NormalizeInput> & { text: string; source: NormalizeInput['source'] }): NormalizeInput {
+function makeInput(
+  overrides: Partial<NormalizeInput> & { text: string; source: NormalizeInput['source'] },
+): NormalizeInput {
   return {
     userId: 'U1',
     channelId: 'C1',

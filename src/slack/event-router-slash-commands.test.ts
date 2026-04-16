@@ -144,9 +144,7 @@ describe('EventRouter.setupSlashCommands — /z unified (default)', () => {
     const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: '' });
     await handlers['/z']({ command, ack, respond });
 
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral' }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
   });
 
   it('/z: when zRouter is not initialized, responds with init message', async () => {
@@ -170,9 +168,7 @@ describe('EventRouter.setupSlashCommands — /z unified (default)', () => {
     const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'help' });
     await handlers['/z']({ command, ack, respond });
 
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral' }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     const errorText = respond.mock.calls[0][0].text;
     expect(errorText).not.toContain('DB connection');
     expect(errorText).not.toContain('10.0.0.5');
@@ -290,9 +286,7 @@ describe('EventRouter.setupSlashCommands — legacy rollback (SOMA_ENABLE_LEGACY
 
     await handlers['/soma']({ command, ack, respond });
 
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral' }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     const errorText = respond.mock.calls[0][0].text;
     expect(errorText).not.toContain('DB connection');
     expect(errorText).not.toContain('10.0.0.5');
@@ -317,9 +311,7 @@ describe('EventRouter.setupSlashCommands — legacy rollback (SOMA_ENABLE_LEGACY
       const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: cmd });
       await handlers['/soma']({ command, ack, respond });
 
-      expect(respond).toHaveBeenCalledWith(
-        expect.objectContaining({ response_type: 'ephemeral' }),
-      );
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
       const text = respond.mock.calls[0][0].text;
       expect(text).toContain('스레드 컨텍스트가 필요');
       expect(text).toContain(cmd);
@@ -396,9 +388,7 @@ describe('EventRouter.setupSlashCommands — legacy rollback (SOMA_ENABLE_LEGACY
     await handlers['/new']({ command, ack, respond });
 
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral' }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     const text = respond.mock.calls[0][0].text;
     expect(text).toContain('스레드 내에서만');
   });
