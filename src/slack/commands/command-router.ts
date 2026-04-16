@@ -1,6 +1,12 @@
 import { Logger } from '../../logger';
 import { getReportDeps } from '../../metrics';
+import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { isSlashForbidden, SLASH_FORBIDDEN_MESSAGE } from '../z/capability';
+import { stripZPrefix } from '../z/normalize';
+import { parseTopic, translateToLegacy } from '../z/router';
+import { detectLegacyNaked } from '../z/tombstone';
+import { isWhitelistedNaked } from '../z/whitelist';
 import { AdminHandler } from './admin-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
@@ -10,7 +16,6 @@ import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
-import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
@@ -82,7 +87,6 @@ export class CommandRouter {
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),
-      new EsHandler(),
       new UsageHandler(deps),
       new HelpHandler(),
       new SessionHandler(deps),
@@ -94,17 +98,63 @@ export class CommandRouter {
    * @returns CommandResult with handled=true if a command was executed
    */
   async route(ctx: CommandContext): Promise<CommandResult> {
-    const { text, say, threadTs } = ctx;
+    const { say, threadTs } = ctx;
+    const originalText = ctx.text;
 
-    if (!text) {
+    if (!originalText) {
       return { handled: false };
     }
 
+    // Phase 1 of /z refactor (#506): `/z` prefix + legacy-naked tombstone.
+    // Set SOMA_ENABLE_LEGACY_SLASH=true to bypass the new routing entirely
+    // (rollback Tier 2 — plan/MASTER-SPEC.md §12).
+    const legacyEnabled =
+      process.env.SOMA_ENABLE_LEGACY_SLASH === 'true' || process.env.SOMA_ENABLE_LEGACY_SLASH === '1';
+
+    const zPrefixRemainder = stripZPrefix(originalText.trim());
+    if (zPrefixRemainder !== null) {
+      // Empty `/z` → help
+      if (!zPrefixRemainder) {
+        await say({ text: CommandParser.getHelpMessage(), thread_ts: threadTs });
+        return { handled: true };
+      }
+      // Slash-forbidden check is applied at the SlashZRespond entry point.
+      // Here we only reach /z via channel_mention / DM which DO have thread
+      // context, so no further gating is needed.
+      // Still surface the standardised denial for accidental slash-like
+      // contexts (empty/placeholder threadTs == channelId).
+      if (ctx.threadTs === ctx.channel) {
+        const { topic, verb, arg } = parseTopic(zPrefixRemainder);
+        if (topic && isSlashForbidden(topic, verb, arg)) {
+          await say({ text: SLASH_FORBIDDEN_MESSAGE, thread_ts: threadTs });
+          return { handled: true };
+        }
+      }
+      ctx.text = translateToLegacy(zPrefixRemainder);
+      // Fall through to handler dispatch below. NOTE: downstream must read
+      // `ctx.text` (not a destructured copy) so the translated form reaches
+      // canHandle() / execute() — thread `/z persona`, `/z model`, etc.
+      // regressed when the old path used the stale local `text`.
+    } else if (!legacyEnabled && !isWhitelistedNaked(originalText)) {
+      const hint = detectLegacyNaked(originalText);
+      if (hint) {
+        const freshlyMarked = await userSettingsStore.markMigrationHintShown(ctx.user);
+        if (freshlyMarked) {
+          await say({
+            text: `ℹ️ \`${hint.oldForm}\`은 더 이상 사용되지 않습니다. 대신 \`${hint.newForm}\`을 사용해주세요.\n💡 \`/z\` 또는 \`/z help\`로 전체 명령을 확인할 수 있어요.`,
+            thread_ts: threadTs,
+          });
+        }
+        return { handled: true };
+      }
+    }
+
+    const routedText = ctx.text ?? originalText;
     for (const handler of this.handlers) {
-      if (handler.canHandle(text)) {
+      if (handler.canHandle(routedText)) {
         this.logger.debug('Routing to handler', {
           handler: handler.constructor.name,
-          text: text.substring(0, 50),
+          text: routedText.substring(0, 50),
         });
 
         try {
@@ -123,9 +173,9 @@ export class CommandRouter {
     }
 
     // Check if it looks like a command but wasn't handled
-    const { isPotential, keyword } = CommandParser.isPotentialCommand(text);
+    const { isPotential, keyword } = CommandParser.isPotentialCommand(routedText);
     if (isPotential) {
-      this.logger.debug('Unrecognized potential command', { keyword, text: text.substring(0, 50) });
+      this.logger.debug('Unrecognized potential command', { keyword, text: routedText.substring(0, 50) });
       await say({
         text: `❓ \`${keyword}\` 명령어를 인식할 수 없습니다. \`help\`를 입력하여 사용 가능한 명령어를 확인하세요.`,
         thread_ts: threadTs,

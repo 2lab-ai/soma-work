@@ -59,8 +59,9 @@ describe('PromptHandler', () => {
       expect(handler.canHandle('/show prompt')).toBe(true);
     });
 
-    it('matches "show_prompt"', () => {
-      expect(handler.canHandle('show_prompt')).toBe(true);
+    it('does not match underscore form "show_prompt" (removed in #506)', () => {
+      // /z refactor (#506): canonical form is `show prompt` (space-separated).
+      expect(handler.canHandle('show_prompt')).toBe(false);
     });
 
     it('matches case-insensitive "Show Prompt"', () => {

@@ -6,8 +6,10 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 /**
  * Handles CCT token management commands (admin only):
  * - `cct` — show token status
- * - `set_cct cctN` — switch active token
- * - `nextcct` — rotate to next available token
+ * - `cct set <name>` — switch active token
+ * - `cct next` — rotate to next available token
+ *
+ * Legacy `set_cct` / `nextcct` underscore aliases were removed in #506.
  */
 export class CctHandler implements CommandHandler {
   canHandle(text: string): boolean {
