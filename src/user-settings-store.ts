@@ -91,6 +91,12 @@ export interface UserSettings {
   showThinking?: boolean;
   /** Whether sandbox is disabled for this user. Default: false (sandbox ON). Admin-only toggle. */
   sandboxDisabled?: boolean;
+  /**
+   * Whether sandbox network access is disabled for this user. Default: false
+   * (network ON — preset dev-domain allowlist applied). Any user may toggle.
+   * No effect while `sandboxDisabled` is true.
+   */
+  networkDisabled?: boolean;
   lastUpdated: string;
   // Jira integration
   jiraAccountId?: string;
@@ -262,19 +268,15 @@ export class UserSettingsStore {
       (slackName && existing.slackName !== slackName);
 
     if (needsUpdate) {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: existing?.defaultDirectory ?? '',
-        bypassPermission: existing?.bypassPermission ?? false,
-        persona: existing?.persona ?? 'default',
-        defaultModel: existing?.defaultModel ?? DEFAULT_MODEL,
-        accepted: existing?.accepted ?? true,
-        lastUpdated: new Date().toISOString(),
+      // Patch only the Jira-related fields so unrelated settings (e.g.
+      // networkDisabled, sandboxDisabled, sessionTheme, notification, etc.)
+      // are preserved. Previously this path overwrote the whole record and
+      // silently reset any field not listed here.
+      this.patchUserSettings(userId, {
         jiraAccountId: mapping.jiraAccountId,
         jiraName: mapping.name,
         slackName: slackName || mapping.slackName || existing?.slackName,
-      };
-      this.saveSettings();
+      });
       logger.info('Updated user Jira info', {
         userId,
         jiraAccountId: mapping.jiraAccountId,
@@ -420,6 +422,27 @@ export class UserSettingsStore {
   setUserSandboxDisabled(userId: string, disabled: boolean): void {
     this.patchUserSettings(userId, { sandboxDisabled: disabled });
     logger.info('Set user sandbox disabled', { userId, disabled });
+  }
+
+  /**
+   * Get user's sandbox-network disabled setting. Returns false (network ON)
+   * by default. Any user may toggle this; value is only effective when
+   * `sandboxDisabled` is also false.
+   */
+  getUserNetworkDisabled(userId: string): boolean {
+    return this.settings[userId]?.networkDisabled ?? false;
+  }
+
+  /**
+   * Set user's sandbox-network disabled setting.
+   *
+   * Applies from the next user turn — in-flight SDK queries are not mutated
+   * because sandbox settings are OS-enforced (Seatbelt/bubblewrap) and
+   * captured at `query()` init time.
+   */
+  setUserNetworkDisabled(userId: string, disabled: boolean): void {
+    this.patchUserSettings(userId, { networkDisabled: disabled });
+    logger.info('Set user network disabled', { userId, disabled });
   }
 
   /**

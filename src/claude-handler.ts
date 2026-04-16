@@ -32,6 +32,7 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
+import { DEV_DOMAIN_ALLOWLIST } from './sandbox/dev-domain-allowlist';
 import {
   checkBashSensitivePaths,
   checkSensitiveGlob,
@@ -776,6 +777,46 @@ export class ClaudeHandler {
         this.logger.debug('Thinking disabled for session');
       }
       // When enabled, don't set thinking \u2014 SDK defaults to adaptive for Opus 4.6+
+    }
+
+    // Sandbox: enabled by default for all users. Only admin-toggled
+    // `sandboxDisabled` skips it. When sandbox is active, a dev-domain
+    // allowlist (`DEV_DOMAIN_ALLOWLIST`) is applied to the network unless the
+    // user has set `networkDisabled=true`, in which case every outbound
+    // domain is blocked by the SDK default.
+    //
+    // Applies from the NEXT user turn \u2014 SDK sandbox config is captured at
+    // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
+    // Linux), so in-flight queries keep the previous policy.
+    {
+      const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+      if (!sandboxDisabled) {
+        const sandboxConfig: NonNullable<Options['sandbox']> = {
+          enabled: true,
+          autoAllowBashIfSandboxed: true,
+          failIfUnavailable: false,
+          allowUnsandboxedCommands: false,
+        };
+        // Mount only the user's /tmp/{userId} directory for writes.
+        if (slackContext?.user && isSafePathSegment(slackContext.user)) {
+          const userDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+          sandboxConfig.filesystem = { allowWrite: [userDir] };
+        }
+        const networkDisabled = slackContext?.user
+          ? userSettingsStore.getUserNetworkDisabled(slackContext.user)
+          : false;
+        if (!networkDisabled) {
+          sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
+        }
+        options.sandbox = sandboxConfig;
+        this.logger.debug('Sandbox enabled', {
+          user: slackContext?.user,
+          network: networkDisabled ? 'off' : 'on',
+          domains: networkDisabled ? 0 : DEV_DOMAIN_ALLOWLIST.length,
+        });
+      } else {
+        this.logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
+      }
     }
 
     // Build system prompt with persona and workflow
