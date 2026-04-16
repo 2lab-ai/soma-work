@@ -40,7 +40,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const blocks = this.buildBlocksForTheme(theme, event, emoji, label);
 
     try {
-      const result = await this.slackApi.postMessage(event.channel, text, {
+      const result = await this.slackApi.postMessage(event.channel, '', {
         threadTs: event.threadTs,
         attachments: [{ color, blocks }],
       });

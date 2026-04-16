@@ -721,12 +721,12 @@ export class StreamProcessor {
     });
 
     try {
-      // Provide a Slack fallback text (used for push notifications, mobile
-      // previews, and screen readers). multiPayload may override this via
-      // spread; when it doesn't, the form title stays accessible.
-      const fallbackText = choices.title || '선택이 필요합니다';
+      // Intentionally empty text — attachments carry the rendered content.
+      // Setting a text here caused duplicate rendering in Slack
+      // (hotfix 53e98054 on deploy/dev). Push notification fallback is
+      // preserved via the attachments' fallback field.
       const formResult = await context.say({
-        text: fallbackText,
+        text: '',
         ...multiPayload,
         thread_ts: context.threadTs,
       });
@@ -785,12 +785,12 @@ export class StreamProcessor {
     this.logger.debug('Built single choice blocks', { blockCount });
 
     try {
-      // Provide a Slack fallback text (used for push notifications, mobile
-      // previews, and screen readers). singlePayload may override this via
-      // spread; when it doesn't, the question stays accessible.
-      const fallbackText = choice.question || '선택이 필요합니다';
+      // Intentionally empty text — attachments carry the rendered content.
+      // Setting a text here caused duplicate rendering in Slack
+      // (hotfix 53e98054 on deploy/dev). Push notification fallback is
+      // preserved via the attachments' fallback field.
       const choiceResult = await context.say({
-        text: fallbackText,
+        text: '',
         ...singlePayload,
         thread_ts: context.threadTs,
       });
