@@ -6,6 +6,7 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import { Logger } from '../logger';
+import { calculateTokenCost } from '../metrics/model-registry';
 import type { SessionLinks } from '../types';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
@@ -140,6 +141,18 @@ export interface UsageData {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   totalCostUsd: number;
+  /**
+   * Provenance of `totalCostUsd`:
+   * - 'sdk': every contributing model reported `costUSD > 0` and we used it as-is
+   * - 'calculated': at least one model's cost was computed locally via
+   *   `calculateTokenCost()` (because the SDK returned 0 or we fell back
+   *   to the legacy `message.usage` path).
+   *
+   * Must be set at the point cost is actually determined. Do NOT
+   * reconstruct it downstream from `totalCostUsd > 0` — a computed
+   * non-zero cost is indistinguishable from an SDK one without this flag.
+   */
+  costSource?: 'sdk' | 'calculated';
   /** Model's max context window size from SDK (e.g. 1_000_000). undefined if unavailable. */
   contextWindow?: number;
   /** Model name (e.g. "claude-opus-4-6-20250414") from the SDK usage key */
@@ -252,6 +265,13 @@ export class StreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
+  /**
+   * Model name captured from the most recent SDKAssistantMessage
+   * (BetaMessage.model). Used by extractUsageData's direct-usage fallback
+   * so calculateTokenCost prices the correct tier when the result message
+   * itself does not carry `model`.
+   */
+  private _lastAssistantModelName: string | undefined;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
@@ -360,6 +380,12 @@ export class StreamProcessor {
         cacheReadTokens: msgUsage.cache_read_input_tokens || 0,
         cacheCreateTokens: msgUsage.cache_creation_input_tokens || 0,
       };
+    }
+
+    // Track model name for direct-usage fallback pricing in extractUsageData.
+    const msgModel = (message.message as any).model;
+    if (typeof msgModel === 'string' && msgModel.length > 0) {
+      this._lastAssistantModelName = msgModel;
     }
 
     const content = message.message.content;
@@ -695,6 +721,10 @@ export class StreamProcessor {
     });
 
     try {
+      // Intentionally empty text — attachments carry the rendered content.
+      // Setting a text here caused duplicate rendering in Slack
+      // (hotfix 53e98054 on deploy/dev). Push notification fallback is
+      // preserved via the attachments' fallback field.
       const formResult = await context.say({
         text: '',
         ...multiPayload,
@@ -755,6 +785,10 @@ export class StreamProcessor {
     this.logger.debug('Built single choice blocks', { blockCount });
 
     try {
+      // Intentionally empty text — attachments carry the rendered content.
+      // Setting a text here caused duplicate rendering in Slack
+      // (hotfix 53e98054 on deploy/dev). Push notification fallback is
+      // preserved via the attachments' fallback field.
       const choiceResult = await context.say({
         text: '',
         ...singlePayload,
@@ -1058,12 +1092,27 @@ export class StreamProcessor {
     // Fallback: try direct usage field (older API format)
     const directUsage = message.usage;
     if (directUsage) {
+      const directInput = directUsage.input_tokens || 0;
+      const directOutput = directUsage.output_tokens || 0;
+      const directCacheRead = directUsage.cache_read_input_tokens || 0;
+      const directCacheCreate = directUsage.cache_creation_input_tokens || 0;
+      const directSdkCost = message.total_cost_usd || 0;
+      // Extract model name from the message so calculateTokenCost prices the
+      // correct tier. Passing `undefined` here defaults to Sonnet-tier pricing
+      // in model-registry's FALLBACK_SPEC — which silently undercharges Opus
+      // and mis-charges all other non-Sonnet variants.
+      const directModel = (message.model as string | undefined) ?? this._lastAssistantModelName;
+      const useSdk = directSdkCost > 0;
       const usage: UsageData = {
-        inputTokens: directUsage.input_tokens || 0,
-        outputTokens: directUsage.output_tokens || 0,
-        cacheReadInputTokens: directUsage.cache_read_input_tokens || 0,
-        cacheCreationInputTokens: directUsage.cache_creation_input_tokens || 0,
-        totalCostUsd: message.total_cost_usd || 0,
+        inputTokens: directInput,
+        outputTokens: directOutput,
+        cacheReadInputTokens: directCacheRead,
+        cacheCreationInputTokens: directCacheCreate,
+        totalCostUsd: useSdk
+          ? directSdkCost
+          : calculateTokenCost(directModel, directInput, directOutput, directCacheRead, directCacheCreate),
+        costSource: useSdk ? 'sdk' : 'calculated',
+        modelName: directModel,
       };
       this.logger.debug('Extracted usage data from direct usage field', usage);
       return usage;
@@ -1101,6 +1150,12 @@ export class StreamProcessor {
     let totalCost = 0;
     let contextWindow: number | undefined;
     let modelName: string | undefined;
+    // Track whether any model's cost came from our local calculation.
+    // Needed so downstream consumers (event emitter) can label the source
+    // correctly — a computed non-zero cost cannot be distinguished from an
+    // SDK-reported one by value alone.
+    let anyCalculated = false;
+    let sawAnyModel = false;
 
     // Preserve per-model breakdown for token_usage event
     const modelBreakdown: Record<
@@ -1116,11 +1171,20 @@ export class StreamProcessor {
 
     for (const [model, usage] of Object.entries(modelUsageMap)) {
       if (usage) {
+        sawAnyModel = true;
         const input = usage.inputTokens || 0;
         const output = usage.outputTokens || 0;
         const cacheRead = usage.cacheReadInputTokens || 0;
         const cacheCreate = usage.cacheCreationInputTokens || 0;
-        const cost = usage.costUSD || 0;
+        // SDK costUSD > 0 → trust it; else → calculate from token counts
+        const sdkCost = usage.costUSD || 0;
+        let cost: number;
+        if (sdkCost > 0) {
+          cost = sdkCost;
+        } else {
+          cost = calculateTokenCost(model, input, output, cacheRead, cacheCreate);
+          anyCalculated = true;
+        }
 
         totalInput += input;
         totalOutput += output;
@@ -1154,6 +1218,10 @@ export class StreamProcessor {
       cacheReadInputTokens: totalCacheRead,
       cacheCreationInputTokens: totalCacheCreation,
       totalCostUsd: totalCost,
+      // If we saw at least one model and none required calculation → 'sdk'.
+      // Any fallback path or empty map → 'calculated' (conservative: we can't
+      // claim the SDK vouched for a cost we had to compute or default to 0).
+      costSource: sawAnyModel && !anyCalculated ? 'sdk' : 'calculated',
       contextWindow,
       modelName,
       modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,

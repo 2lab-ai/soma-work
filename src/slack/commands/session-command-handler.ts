@@ -11,10 +11,17 @@ import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles $ prefix commands for current-session-only settings.
- * - `$` → show session info
- * - `$model [value]` → get/set session model (no persistence)
- * - `$verbosity [value]` → get/set session verbosity (no persistence)
+ * Handles `%` prefix commands for current-session-only settings.
+ * The legacy `$` prefix is still accepted during a deprecation grace period and emits a
+ * one-line notice so users migrate off `$`. `$` is now primarily used for forced skill
+ * invocation (see `SkillForceHandler`).
+ *
+ * - `%` → show session info
+ * - `%model [value]` → get/set session model (no persistence)
+ * - `%verbosity [value]` → get/set session verbosity (no persistence)
+ * - `%effort [value]` → get/set session effort
+ * - `%thinking [on|off]` → toggle extended thinking
+ * - `%thinking_summary [on|off]` → toggle thinking output display
  */
 export class SessionCommandHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -26,6 +33,16 @@ export class SessionCommandHandler implements CommandHandler {
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { user, channel, threadTs, say } = ctx;
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
+
+    // Emit deprecation notice if the user still uses the legacy `$` prefix.
+    // We intentionally continue executing the command so nothing breaks.
+    if (CommandParser.isDeprecatedSessionCommand(ctx.text)) {
+      const newForm = ctx.text.trim().replace(/^\$/, '%');
+      await say({
+        text: `⚠️ \`$\` 접두 세션 명령은 더 이상 사용되지 않습니다. 대신 \`${newForm}\` 형태로 \`%\` 접두를 사용하세요. (\`$\`는 강제 스킬 발동 전용)`,
+        thread_ts: threadTs,
+      });
+    }
 
     if (!session) {
       await say({
@@ -174,7 +191,7 @@ export class SessionCommandHandler implements CommandHandler {
 
     lines.push('');
     lines.push('_⚡ = overridden for this session (differs from user default)_');
-    lines.push('_Use `$model <name>` or `$verbosity <level>` to change session settings._');
+    lines.push('_Use `%model <name>` or `%verbosity <level>` to change session settings._');
 
     await say({ text: lines.join('\n'), thread_ts: threadTs });
     return { handled: true };
@@ -282,7 +299,7 @@ export class SessionCommandHandler implements CommandHandler {
     session.effort = normalized as (typeof valid)[number];
     const warning = normalized === 'max' ? '\n_⚠️ `max` requires API key — will fail on Claude.ai subscription_' : '';
     await say({
-      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`$effort high\` to restore default._`,
+      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`%effort high\` to restore default._`,
       thread_ts: threadTs,
     });
     return { handled: true };
@@ -307,7 +324,7 @@ export class SessionCommandHandler implements CommandHandler {
 
     if (!['on', 'off', 'true', 'false', 'enable', 'disable'].includes(normalized)) {
       await say({
-        text: '❌ Usage: `$thinking on` or `$thinking off`',
+        text: '❌ Usage: `%thinking on` or `%thinking off`',
         thread_ts: threadTs,
       });
       return { handled: true };
@@ -341,7 +358,7 @@ export class SessionCommandHandler implements CommandHandler {
 
     if (!['on', 'off', 'true', 'false', 'enable', 'disable'].includes(normalized)) {
       await say({
-        text: '❌ Usage: `$thinking_summary on` or `$thinking_summary off`',
+        text: '❌ Usage: `%thinking_summary on` or `%thinking_summary off`',
         thread_ts: threadTs,
       });
       return { handled: true };

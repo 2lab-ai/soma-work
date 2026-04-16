@@ -20,6 +20,7 @@ import {
   type ModelTokenUsage,
   type TokenUsageAggregation,
   type TokenUsageMetadata,
+  type TokenUsageRanking,
   type TrendComparison,
   type UsageReport,
   type UserRanking,
@@ -272,6 +273,36 @@ export class ReportAggregator {
     const byUser = aggregateTokenEventsByUser(tokenEvents);
     const byDay = aggregateTokenEventsByDay(tokenEvents, startDate, endDate);
 
+    // Compute rankings (only when not filtered by userId)
+    let tokenRankings: TokenUsageRanking[] = [];
+    let costRankings: TokenUsageRanking[] = [];
+    if (!userId) {
+      const rankingEntries = Object.entries(byUser).map(([uid, agg]) => ({
+        userId: uid,
+        userName: agg.userName,
+        totalTokens:
+          agg.totalInputTokens + agg.totalOutputTokens + agg.totalCacheReadTokens + agg.totalCacheCreateTokens,
+        totalCostUsd: agg.totalCostUsd,
+        rank: 0,
+      }));
+
+      // Token rankings: desc by totalTokens, tie-break alphabetical userName
+      tokenRankings = [...rankingEntries]
+        .sort((a, b) => b.totalTokens - a.totalTokens || a.userName.localeCompare(b.userName))
+        .map((e, i) => ({ ...e, rank: i + 1 }));
+
+      // Cost rankings: desc by totalCostUsd, tie-break alphabetical userName
+      costRankings = [...rankingEntries]
+        .sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.userName.localeCompare(b.userName))
+        .map((e, i) => ({ ...e, rank: i + 1 }));
+    }
+
+    // Detect legacy data (events without pricingVersion)
+    const hasLegacyData = tokenEvents.some((e) => {
+      const m = e.metadata as unknown as TokenUsageMetadata | undefined;
+      return !m?.pricingVersion;
+    });
+
     return {
       period: determinePeriod(startDate, endDate),
       startDate,
@@ -279,6 +310,9 @@ export class ReportAggregator {
       totals,
       byUser,
       byDay,
+      tokenRankings,
+      costRankings,
+      hasLegacyData,
     };
   }
 }

@@ -120,4 +120,4 @@ gh workflow run deploy --ref main -f confirm=deploy
 | `link [url]` | 세션에 이슈/PR/문서 링크 첨부 |
 | `onboarding` | 온보딩 워크플로우 실행 |
 | `verbosity [level]` | 출력 상세도 설정 |
-| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) |
+| `%` / `%model` / `%verbosity` | 세션 전용 설정 (비영속). `$` 접두는 deprecation grace period 동안만 허용. `$`는 강제 스킬 발동 전용 (`$z`, `$stv:new-task` 등). |
