@@ -19,7 +19,9 @@
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
     "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
   },
-  "workspaces": ["somalib"],
+  "workspaces": [
+    "somalib"
+  ],
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -32,7 +34,7 @@
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.97",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
     "@anthropic-ai/sdk": "^0.86.1",
     "@clickhouse/client": "^1.18.2",
     "@fastify/websocket": "^11.2.0",

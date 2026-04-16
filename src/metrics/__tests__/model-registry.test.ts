@@ -10,12 +10,23 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-04-16', () => {
-      expect(PRICING_VERSION).toBe('2026-04-16');
+    it('should be 2026-04-17', () => {
+      expect(PRICING_VERSION).toBe('2026-04-17');
     });
   });
 
   describe('getModelSpec', () => {
+    it('returns Opus 4.7 spec', () => {
+      const spec = getModelSpec('claude-opus-4-7');
+      expect(spec.pricing.inputPerMTok).toBe(5);
+      expect(spec.pricing.outputPerMTok).toBe(25);
+      expect(spec.pricing.cacheReadPerMTok).toBe(0.5);
+      expect(spec.pricing.cache5minWritePerMTok).toBe(6.25);
+      expect(spec.pricing.cache1hrWritePerMTok).toBe(10);
+      expect(spec.contextWindow).toBe(1_000_000);
+      expect(spec.maxOutput).toBe(128_000);
+    });
+
     it('returns Opus 4.6 spec', () => {
       const spec = getModelSpec('claude-opus-4-6-20250414');
       expect(spec.pricing.inputPerMTok).toBe(5);
@@ -71,6 +82,11 @@ describe('model-registry', () => {
   });
 
   describe('calculateTokenCost', () => {
+    it('calculates Opus 4.7 cost correctly', () => {
+      const cost = calculateTokenCost('claude-opus-4-7', 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+      expect(cost).toBeCloseTo(36.75, 2);
+    });
+
     it('calculates Opus 4.6 cost correctly', () => {
       // 1M input + 1M output + 1M cache read + 1M cache create
       const cost = calculateTokenCost('claude-opus-4-6-20250414', 1_000_000, 1_000_000, 1_000_000, 1_000_000);

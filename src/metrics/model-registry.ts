@@ -1,10 +1,10 @@
 /**
  * Unified model registry — single source of truth for pricing, context windows, and max output.
  * Source: https://docs.anthropic.com/en/docs/about-claude/models
- * Last updated: 2026-04-16
+ * Last updated: 2026-04-17
  */
 
-export const PRICING_VERSION = '2026-04-16';
+export const PRICING_VERSION = '2026-04-17';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -27,6 +27,21 @@ export interface ModelSpec {
  * Order matters — first match wins.
  */
 const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
+  // Claude 4.7
+  [
+    'opus-4-7',
+    {
+      pricing: {
+        inputPerMTok: 5,
+        outputPerMTok: 25,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 6.25,
+        cache1hrWritePerMTok: 10,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
   // Claude 4.6
   [
     'opus-4-6',
