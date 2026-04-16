@@ -20,6 +20,10 @@ vi.mock('../../user-settings-store', () => ({
     getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-4-6'),
     getUserDefaultEffort: vi.fn().mockReturnValue('high'),
     getUserShowThinking: vi.fn().mockReturnValue(true),
+    getUserRating: vi.fn().mockReturnValue(5),
+    setUserRating: vi.fn(),
+    consumePendingRatingChange: vi.fn().mockReturnValue(null),
+    setPendingRatingChange: vi.fn(),
   },
 }));
 
