@@ -123,7 +123,7 @@ export class CommandRouter {
     if (isPotential) {
       this.logger.debug('Unrecognized potential command', { keyword, text: text.substring(0, 50) });
       await say({
-        text: `\u2753 \`${keyword}\` \uBA85\uB839\uC5B4\uB97C \uC778\uC2DD\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \`help\`\uB97C \uC785\uB825\uD558\uC5EC \uC0AC\uC6A9 \uAC00\uB2A5\uD55C \uBA85\uB839\uC5B4\uB97C \uD655\uC778\uD558\uC138\uC694.`,
+        text: `❓ \`${keyword}\` 명령어를 인식할 수 없습니다. \`help\`를 입력하여 사용 가능한 명령어를 확인하세요.`,
         thread_ts: threadTs,
       });
       return { handled: true }; // Mark as handled to prevent Claude processing
