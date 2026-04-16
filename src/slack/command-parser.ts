@@ -369,6 +369,39 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a usage command
+   */
+  static isUsageCommand(text: string): boolean {
+    return /^\/?usage(?:\s+.*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse usage command: usage [week|month] [@user]
+   */
+  static parseUsageCommand(text: string): { period: 'today' | 'week' | 'month'; userId?: string } {
+    const trimmed = text.trim().replace(/^\//, '');
+    let period: 'today' | 'week' | 'month' = 'today';
+    let userId: string | undefined;
+
+    const parts = trimmed
+      .replace(/^usage\s*/i, '')
+      .trim()
+      .split(/\s+/);
+    for (const part of parts) {
+      if (/^week$/i.test(part)) period = 'week';
+      else if (/^month$/i.test(part)) period = 'month';
+      else if (/^today$/i.test(part)) period = 'today';
+      else {
+        // Match Slack user mention: <@U123ABC> or <@U123ABC|name>
+        const userMatch = part.match(/^<@(\w+)(?:\|[^>]*)?>$/);
+        if (userMatch) userId = userMatch[1];
+      }
+    }
+
+    return { period, userId };
+  }
+
+  /**
    * Check if text is a renew command (save → reset → load)
    * Supports: renew, /renew, renew <prompt>, /renew <prompt>
    */
@@ -817,6 +850,8 @@ export class CommandParser {
     // Help
     'help',
     'commands',
+    // Token usage
+    'usage',
     // Marketplace & Plugins
     'marketplace',
     'plugins',
@@ -1002,6 +1037,12 @@ export class CommandParser {
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
+      '',
+      '*Token Usage:*',
+      "• `usage` or `/usage` - Show today's token usage and rankings",
+      "• `usage week` - Show this week's token usage",
+      "• `usage month` - Show this month's token usage",
+      "• `usage @user` - Show specific user's token usage",
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',
