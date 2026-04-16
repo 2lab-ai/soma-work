@@ -7,9 +7,15 @@
  *  - `ChannelEphemeralZRespond.replace` requires a per-action `response_url`.
  *  - `DmZRespond.replace` uses `client.chat.update` with a **branded**
  *    `BotMessageTs` — user message ts cannot be passed here at the type level.
- *  - When a required URL/ts is missing we MUST send a visible
+ *  - When a required URL/ts is missing on `replace()` we MUST send a visible
  *    "⚠️ UI가 만료됐습니다. `/z <topic>`으로 다시 열어주세요." notice rather
- *    than silently no-op.
+ *    than silently no-op — `replace` is always a visible mutation, so silent
+ *    failure breaks the contract.
+ *  - `dismiss()` is treated as an "already closed" semantic when the resource
+ *    (responseUrl / botMessageTs) is missing — silent no-op is correct UX
+ *    (the user wanted to close; it IS closed, or already was). Missing
+ *    resources are logged at `info` level with the `ZRESPOND_DISMISS_NOOP`
+ *    tag so ops can detect misuse. See FIX #4 in PR #509.
  */
 
 import type { RespondFn } from '@slack/bolt';
@@ -56,6 +62,13 @@ export class SlashZRespond implements ZRespond {
     }
   }
 
+  /**
+   * dismiss(): silent-on-missing-resource contract.
+   * SlashZRespond always has a respondFn so there's no "missing" case, but
+   * respondFn throwing is treated as "already closed / UI expired" — we log
+   * at warn level but do NOT send a user-facing fallback. Replace() is the
+   * visible path; dismiss is a user intent to close. See FIX #4.
+   */
   async dismiss(): Promise<void> {
     try {
       await this.respondFn({
@@ -64,7 +77,10 @@ export class SlashZRespond implements ZRespond {
         text: '',
       });
     } catch (err) {
-      logger.warn('SlashZRespond.dismiss failed', { err: (err as Error).message });
+      logger.warn('SlashZRespond.dismiss failed', {
+        err: (err as Error).message,
+        tag: 'ZRESPOND_DISMISS_NOOP',
+      });
       // Non-critical — no user-facing fallback needed.
     }
   }
@@ -139,9 +155,20 @@ export class ChannelEphemeralZRespond implements ZRespond {
     }
   }
 
+  /**
+   * dismiss(): silent-on-missing-response_url contract.
+   * When `responseUrl` is absent the UI was never posted via an interactive
+   * flow (or has expired) — treating this as "already closed" is the natural
+   * UX. We emit an info log with the `ZRESPOND_DISMISS_NOOP` tag so ops can
+   * detect unintended misuse. See FIX #4 in PR #509.
+   */
   async dismiss(): Promise<void> {
     if (!this.deps.responseUrl) {
-      logger.debug('ChannelEphemeralZRespond.dismiss: no response_url — nothing to delete');
+      logger.info('ChannelEphemeralZRespond.dismiss: no response_url — treating as already-closed', {
+        channel: this.deps.channel,
+        user: this.deps.user,
+        tag: 'ZRESPOND_DISMISS_NOOP',
+      });
       return;
     }
     try {
@@ -149,7 +176,10 @@ export class ChannelEphemeralZRespond implements ZRespond {
         delete_original: true,
       });
     } catch (err) {
-      logger.warn('ChannelEphemeralZRespond.dismiss failed', { err: (err as Error).message });
+      logger.warn('ChannelEphemeralZRespond.dismiss failed', {
+        err: (err as Error).message,
+        tag: 'ZRESPOND_DISMISS_NOOP',
+      });
     }
   }
 }
@@ -208,14 +238,30 @@ export class DmZRespond implements ZRespond {
     }
   }
 
+  /**
+   * dismiss(): silent-on-missing-botMessageTs contract.
+   * Without a stored bot message ts there is nothing to delete — treating
+   * this as "already closed" is the natural UX. We emit an info log with
+   * the `ZRESPOND_DISMISS_NOOP` tag so ops can detect unintended misuse.
+   * See FIX #4 in PR #509.
+   */
   async dismiss(): Promise<void> {
     const { client, channel, botMessageTs } = this.deps;
-    if (!botMessageTs) return;
+    if (!botMessageTs) {
+      logger.info('DmZRespond.dismiss: no botMessageTs — treating as already-closed', {
+        channel,
+        tag: 'ZRESPOND_DISMISS_NOOP',
+      });
+      return;
+    }
     try {
       await client.chat.delete({ channel, ts: botMessageTs });
       this.deps = { ...this.deps, botMessageTs: undefined };
     } catch (err) {
-      logger.warn('DmZRespond.dismiss failed', { err: (err as Error).message });
+      logger.warn('DmZRespond.dismiss failed', {
+        err: (err as Error).message,
+        tag: 'ZRESPOND_DISMISS_NOOP',
+      });
     }
   }
 }

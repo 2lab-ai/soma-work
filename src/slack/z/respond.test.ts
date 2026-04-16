@@ -122,10 +122,26 @@ describe('ChannelEphemeralZRespond', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://new.url');
   });
 
-  it('dismiss() without response_url is a no-op (does not throw)', async () => {
+  it('dismiss() without response_url is a silent no-op + info log (contract, FIX #4)', async () => {
+    // Contract documentation: dismiss() with no response_url is treated as
+    // "already closed" — the natural UX — and logs at info level with the
+    // ZRESPOND_DISMISS_NOOP tag for ops visibility.
     const client = makeClient();
     const r = new ChannelEphemeralZRespond({ client: client as any, channel: 'C1', user: 'U1' });
+    // Spy on the internal logger imported by respond.ts via console path.
+    const { Logger } = await import('../../logger');
+    const infoSpy = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+
     await expect(r.dismiss()).resolves.toBeUndefined();
+
+    // Must not have posted any user-facing fallback (no postEphemeral call).
+    expect(client.chat.postEphemeral as any).not.toHaveBeenCalled();
+    // Must have emitted the ops-visible info log with the standard tag.
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('dismiss'),
+      expect.objectContaining({ tag: 'ZRESPOND_DISMISS_NOOP' }),
+    );
+    infoSpy.mockRestore();
   });
 });
 
@@ -190,5 +206,24 @@ describe('DmZRespond', () => {
     });
     await r2.dismiss();
     expect(client.chat.delete).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D1', ts: '888' }));
+  });
+
+  it('dismiss() without botMessageTs emits info log (contract, FIX #4)', async () => {
+    // Contract: missing botMessageTs → silent no-op + info log with
+    // ZRESPOND_DISMISS_NOOP tag. No user-facing message, no chat.delete.
+    const client = makeClient();
+    const r = new DmZRespond({ client: client as any, channel: 'D1' });
+    const { Logger } = await import('../../logger');
+    const infoSpy = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+
+    await expect(r.dismiss()).resolves.toBeUndefined();
+
+    expect(client.chat.delete).not.toHaveBeenCalled();
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('dismiss'),
+      expect.objectContaining({ tag: 'ZRESPOND_DISMISS_NOOP' }),
+    );
+    infoSpy.mockRestore();
   });
 });
