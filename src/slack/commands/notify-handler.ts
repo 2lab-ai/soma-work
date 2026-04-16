@@ -12,6 +12,7 @@
 
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { renderNotifyCard } from '../z/topics/notify-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 const NOTIFY_USAGE = `📋 *알림 사용법*\n\n\`notify on\` — Slack DM 알림 활성화\n\`notify off\` — Slack DM 알림 비활성화\n\`notify status\` — 현재 설정 조회\n\`notify telegram <chat_id>\` — 텔레그램 알림 등록\n\`notify telegram off\` — 텔레그램 알림 해제`;
@@ -59,16 +60,26 @@ export class NotifyHandler implements CommandHandler {
         break;
 
       case 'status': {
-        const settings = userSettingsStore.getUserSettings(user);
-        const notif = settings?.notification;
-        const lines = [
-          `📋 *알림 설정 현황*`,
-          ``,
-          `• Slack DM: ${notif?.slackDm ? '✅ 활성화' : '❌ 비활성화'}`,
-          `• 웹훅: ${notif?.webhookUrl ? `✅ \`${notif.webhookUrl}\`` : '❌ 미등록'}`,
-          `• 텔레그램: ${notif?.telegramChatId ? `✅ Chat ID: \`${notif.telegramChatId}\`` : '❌ 미등록'}`,
-        ];
-        await say({ text: lines.join('\n'), thread_ts: threadTs });
+        // Phase 2 (#507): render Block Kit card by default.
+        try {
+          const { text: fallback, blocks } = await renderNotifyCard({
+            userId: user,
+            issuedAt: Date.now(),
+          });
+          await say({ text: fallback ?? '🔔 Notifications', blocks, thread_ts: threadTs });
+        } catch {
+          // Fallback to plain-text status if card render fails.
+          const settings = userSettingsStore.getUserSettings(user);
+          const notif = settings?.notification;
+          const lines = [
+            `📋 *알림 설정 현황*`,
+            ``,
+            `• Slack DM: ${notif?.slackDm ? '✅ 활성화' : '❌ 비활성화'}`,
+            `• 웹훅: ${notif?.webhookUrl ? `✅ \`${notif.webhookUrl}\`` : '❌ 미등록'}`,
+            `• 텔레그램: ${notif?.telegramChatId ? `✅ Chat ID: \`${notif.telegramChatId}\`` : '❌ 미등록'}`,
+          ];
+          await say({ text: lines.join('\n'), thread_ts: threadTs });
+        }
         break;
       }
 

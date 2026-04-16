@@ -203,6 +203,32 @@ export class DmZRespond implements ZRespond {
 
   constructor(private deps: DmZRespondDeps) {}
 
+  /**
+   * Mint a DmZRespond from a Bolt action body.
+   *
+   * Used by action handlers for buttons embedded in a bot-posted DM card.
+   * The `body.message.ts` on such actions is ALWAYS the bot message ts
+   * (Slack guarantees `container.message_ts` and `message.ts` refer to the
+   * clicked message, which for our DM card is bot-owned). Validates
+   * channel is a DM and ts is present — otherwise throws so callers can
+   * surface a clearer error.
+   */
+  static fromAction(body: any, client: WebClient): DmZRespond {
+    const channel: string | undefined = body?.container?.channel_id ?? body?.channel?.id;
+    const ts: string | undefined = body?.message?.ts ?? body?.container?.message_ts;
+    if (!channel || !channel.startsWith('D')) {
+      throw new Error(`DmZRespond.fromAction: container channel is not a DM (${channel ?? 'undefined'})`);
+    }
+    if (!ts) {
+      throw new Error('DmZRespond.fromAction: missing message.ts on action body');
+    }
+    return new DmZRespond({
+      client,
+      channel,
+      botMessageTs: ts as BotMessageTs,
+    });
+  }
+
   async send(opts: { text?: string; blocks?: ZBlock[]; ephemeral?: boolean }): Promise<{ ts?: string }> {
     const { client, channel } = this.deps;
     const res = await client.chat.postMessage({
