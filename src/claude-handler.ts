@@ -59,10 +59,43 @@ import { ensureValidCredentials, getCredentialStatus } from './credentials-manag
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
-import { userSettingsStore } from './user-settings-store';
+import { DEFAULT_SHOW_THINKING, DEFAULT_THINKING_ENABLED, userSettingsStore } from './user-settings-store';
 
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
+
+/**
+ * Build the `thinking` option value for a query.
+ *
+ * Opus 4.7 API default is `display: 'omitted'` — we must explicitly opt in to
+ * `'summarized'` to preserve Slack thinking-summary UX (stream-processor.ts:414
+ * filters out empty thinking blocks).
+ */
+export function buildThinkingOption(thinkingEnabled: boolean, showSummary: boolean): NonNullable<Options['thinking']> {
+  if (!thinkingEnabled) {
+    return { type: 'disabled' };
+  }
+  return { type: 'adaptive', display: showSummary ? 'summarized' : 'omitted' };
+}
+
+/**
+ * Build the `betas` header list for a query.
+ *
+ * 1M context window is GA on Opus 4.7, Opus 4.6, and Sonnet 4.6 — no beta header
+ * needed there. Still required for older Sonnet 4.5 / Haiku 4.5 when using
+ * API-key auth. Returns `undefined` when no beta headers are needed (or when
+ * using OAuth/subscription auth, which does not support the 1M beta header).
+ */
+export function buildBetaHeaders(
+  model: string | undefined,
+  hasApiKey: boolean,
+): NonNullable<Options['betas']> | undefined {
+  if (!hasApiKey) return undefined;
+  const activeModel = model || '';
+  const needs1mBeta =
+    !activeModel.includes('opus-4-7') && !activeModel.includes('opus-4-6') && !activeModel.includes('sonnet-4-6');
+  return needs1mBeta ? ['context-1m-2025-08-07'] : undefined;
+}
 
 export class ClaudeHandler {
   private logger = new Logger('ClaudeHandler');
@@ -761,22 +794,30 @@ export class ClaudeHandler {
       this.logger.debug('Using user default model', { model: userModel, user: slackContext.user });
     }
 
-    // Set effort level only when explicitly configured (max is Opus 4.6 only)
+    // Set effort level only when explicitly configured
     if (session?.effort) {
       options.effort = session.effort;
       this.logger.debug('Using session effort', { effort: session.effort });
     }
 
-    // Set thinking config (adaptive reasoning toggle)
+    // Set thinking config (adaptive reasoning toggle).
+    // Opus 4.7 API default is `display: 'omitted'` — we must explicitly opt in to
+    // `'summarized'` to preserve Slack thinking-summary UX (stream-processor.ts:414
+    // filters out empty thinking blocks).
     {
       const thinkingEnabled =
         session?.thinkingEnabled ??
-        (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : true);
+        (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : DEFAULT_THINKING_ENABLED);
       if (!thinkingEnabled) {
-        options.thinking = { type: 'disabled' };
+        options.thinking = buildThinkingOption(false, false);
         this.logger.debug('Thinking disabled for session');
+      } else {
+        const showSummary = slackContext?.user
+          ? userSettingsStore.getUserShowThinking(slackContext.user)
+          : DEFAULT_SHOW_THINKING;
+        options.thinking = buildThinkingOption(true, showSummary);
+        this.logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
       }
-      // When enabled, don't set thinking \u2014 SDK defaults to adaptive for Opus 4.6+
     }
 
     // Sandbox: enabled by default for all users. Only admin-toggled
@@ -889,10 +930,13 @@ export class ClaudeHandler {
       this.logger.debug('Starting new Claude conversation');
     }
 
-    // Enable 1M context window beta (applies to supported models).
-    // Only set for API key users \u2014 subscription users get a noisy warning from the SDK.
-    if (process.env.ANTHROPIC_API_KEY) {
-      options.betas = ['context-1m-2025-08-07'];
+    // 1M context window: GA on Opus 4.7, Opus 4.6, Sonnet 4.6 — no beta header needed there.
+    // Still required for older Sonnet 4.5 / Haiku 4.5 when using API-key auth.
+    {
+      const betas = buildBetaHeaders(options.model, !!process.env.ANTHROPIC_API_KEY);
+      if (betas) {
+        options.betas = betas;
+      }
     }
 
     // Set abort controller

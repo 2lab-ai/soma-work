@@ -176,9 +176,53 @@ describe('main-env-bootstrap', () => {
     const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
 
     expect(settings.U1.accepted).toBe(true);
-    expect(settings.U1.defaultModel).toBe('claude-opus-4-6');
+    expect(settings.U1.defaultModel).toBe('claude-opus-4-7');
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
+  });
+
+  it('preserves stored claude-opus-4-7 setting through normalize', async () => {
+    const targetDir = makeTempDir('bootstrap-target-');
+
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+      U1: {
+        userId: 'U1',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-7',
+        lastUpdated: '2026-03-12T00:00:00.000Z',
+        accepted: true,
+      },
+    });
+
+    await normalizeMainTargetData(targetDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+    expect(settings.U1.defaultModel).toBe('claude-opus-4-7');
+  });
+
+  it('preserves stored claude-opus-4-6 setting through normalize', async () => {
+    const targetDir = makeTempDir('bootstrap-target-');
+
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+      U1: {
+        userId: 'U1',
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: 'claude-opus-4-6',
+        lastUpdated: '2026-03-12T00:00:00.000Z',
+        accepted: true,
+      },
+    });
+
+    await normalizeMainTargetData(targetDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+    expect(settings.U1.defaultModel).toBe('claude-opus-4-6');
   });
 });

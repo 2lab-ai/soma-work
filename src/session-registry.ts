@@ -28,7 +28,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { userSettingsStore } from './user-settings-store';
+import { type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -87,7 +87,7 @@ interface SerializedSession {
   // Log verbosity bitmask
   logVerbosity?: number;
   // Effort level for Claude thinking
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  effort?: EffortLevel;
   // Extended thinking (adaptive reasoning) toggle
   thinkingEnabled?: boolean;
   // Thinking summary display toggle

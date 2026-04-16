@@ -8,14 +8,14 @@ vi.mock('../../user-settings-store', () => ({
       defaultDirectory: '',
       bypassPermission: false,
       persona: 'default',
-      defaultModel: 'claude-opus-4-6',
+      defaultModel: 'claude-opus-4-7',
       lastUpdated: new Date().toISOString(),
     }),
     createPendingUser: vi.fn(),
-    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  DEFAULT_MODEL: 'claude-opus-4-6',
+  DEFAULT_MODEL: 'claude-opus-4-7',
 }));
 
 vi.mock('../../admin-utils', () => ({

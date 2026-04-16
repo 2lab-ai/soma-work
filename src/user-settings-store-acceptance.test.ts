@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { UserSettingsStore } from './user-settings-store';
+import { DEFAULT_EFFORT, UserSettingsStore } from './user-settings-store';
 
 // Trace: Scenario 1 — Existing User Migration
 // Trace: Scenario 2/3 — Acceptance gate data model
@@ -147,6 +147,65 @@ describe('UserSettingsStore — acceptance', () => {
       const store = new UserSettingsStore(tmpDir);
 
       expect(store.isUserAccepted('U_UNKNOWN')).toBe(false);
+    });
+  });
+
+  describe('defaultEffort coercion on load', () => {
+    it('keeps valid stored defaultEffort unchanged', () => {
+      const data = {
+        U1: {
+          userId: 'U1',
+          defaultDirectory: '',
+          bypassPermission: false,
+          persona: 'default',
+          defaultModel: 'claude-opus-4-7',
+          defaultEffort: 'max',
+          lastUpdated: '2026-01-01',
+          accepted: true,
+        },
+      };
+      fs.writeFileSync(`${tmpDir}/user-settings.json`, JSON.stringify(data));
+
+      const store = new UserSettingsStore(tmpDir);
+      expect(store.getUserDefaultEffort('U1')).toBe('max');
+    });
+
+    it('coerces unknown defaultEffort to DEFAULT_EFFORT', () => {
+      const data = {
+        U1: {
+          userId: 'U1',
+          defaultDirectory: '',
+          bypassPermission: false,
+          persona: 'default',
+          defaultModel: 'claude-opus-4-7',
+          defaultEffort: 'bogus',
+          lastUpdated: '2026-01-01',
+          accepted: true,
+        },
+      };
+      fs.writeFileSync(`${tmpDir}/user-settings.json`, JSON.stringify(data));
+
+      const store = new UserSettingsStore(tmpDir);
+      expect(store.getUserDefaultEffort('U1')).toBe(DEFAULT_EFFORT);
+    });
+
+    it('accepts xhigh as a valid stored value', () => {
+      const data = {
+        U1: {
+          userId: 'U1',
+          defaultDirectory: '',
+          bypassPermission: false,
+          persona: 'default',
+          defaultModel: 'claude-opus-4-7',
+          defaultEffort: 'xhigh',
+          lastUpdated: '2026-01-01',
+          accepted: true,
+        },
+      };
+      fs.writeFileSync(`${tmpDir}/user-settings.json`, JSON.stringify(data));
+
+      const store = new UserSettingsStore(tmpDir);
+      expect(store.getUserDefaultEffort('U1')).toBe('xhigh');
     });
   });
 });
