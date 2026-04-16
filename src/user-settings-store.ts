@@ -113,6 +113,12 @@ export interface UserSettings {
   acceptedAt?: string;
   // Notification preferences
   notification?: NotificationSettings;
+  /**
+   * Whether the one-time `/z` migration tombstone hint has been shown to
+   * this user. Set via CAS (see `markMigrationHintShown`).
+   * Phase 1 of /z refactor (#506).
+   */
+  migrationHintShown?: boolean;
 }
 
 export interface NotificationSettings {
@@ -650,6 +656,68 @@ export class UserSettingsStore {
         return 'Haiku 4.5';
       default:
         return model;
+    }
+  }
+
+  /**
+   * Has the `/z` migration tombstone hint been shown to this user?
+   * Phase 1 of /z refactor (#506).
+   */
+  hasMigrationHintShown(userId: string): boolean {
+    return this.settings[userId]?.migrationHintShown === true;
+  }
+
+  /**
+   * Atomically set the `migrationHintShown` flag (compare-and-set).
+   *
+   * Returns `true` if the flag was freshly set (caller should show the
+   * tombstone), or `false` if another call already set it for this user
+   * (caller must suppress duplicate hints).
+   *
+   * Concurrency: Node.js is single-threaded, so "compare-and-set" here
+   * is an atomic check-then-write on the in-memory record plus an async
+   * `writeFileSync`. For safety against the (rare) interleaving where
+   * two async tombstone paths race, the first caller to observe
+   * `migrationHintShown !== true` wins and writes the flag + persists to
+   * disk before yielding to the event loop.
+   */
+  async markMigrationHintShown(userId: string): Promise<boolean> {
+    // Synchronous CAS — no awaits between read and write.
+    const existing = this.settings[userId];
+    if (existing?.migrationHintShown === true) {
+      return false;
+    }
+    if (existing) {
+      existing.migrationHintShown = true;
+      existing.lastUpdated = new Date().toISOString();
+    } else {
+      this.settings[userId] = {
+        userId,
+        defaultDirectory: '',
+        bypassPermission: false,
+        persona: 'default',
+        defaultModel: DEFAULT_MODEL,
+        accepted: true,
+        migrationHintShown: true,
+        lastUpdated: new Date().toISOString(),
+      };
+    }
+    // Persist asynchronously — the in-memory CAS is already committed.
+    this.saveSettings();
+    logger.info('Marked /z migrationHintShown for user', { userId });
+    return true;
+  }
+
+  /**
+   * Test-only: reset the `migrationHintShown` flag for a user.
+   * Used by the tombstone table-driven test.
+   */
+  resetMigrationHintShown(userId: string): void {
+    const existing = this.settings[userId];
+    if (existing) {
+      existing.migrationHintShown = false;
+      existing.lastUpdated = new Date().toISOString();
+      this.saveSettings();
     }
   }
 
