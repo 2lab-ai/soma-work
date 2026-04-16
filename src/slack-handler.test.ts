@@ -620,4 +620,61 @@ describe('SlackHandler', () => {
     expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
     expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
   });
+
+  it('DM `/z new <prompt>` with continueWithPrompt substitutes text and continues pipeline (codex P1 followup)', async () => {
+    // When ZRouter captures a follow-up prompt (e.g. new-handler returns
+    // continueWithPrompt), the DM entry MUST continue the normal pipeline with
+    // that prompt instead of silently no-opping.
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const dispatch = vi.fn().mockResolvedValue({
+      handled: true,
+      continueWithPrompt: 'write a failing test',
+    });
+    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+    handlerAny.slackApi = {
+      getClient: vi.fn().mockReturnValue({
+        chat: {
+          postMessage: vi.fn().mockResolvedValue({ ts: 'bot.1' }),
+          update: vi.fn().mockResolvedValue(undefined),
+          delete: vi.fn().mockResolvedValue(undefined),
+        },
+      }),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    // shouldContinue:false lets us stop after processFiles so we don't need to
+    // stub the whole pipeline — the key assertion is that the *substituted*
+    // text reaches the pipeline.
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+      routeCommand: vi.fn(),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn(),
+      initialize: vi.fn(),
+    };
+
+    const say = vi.fn();
+    const event = {
+      user: 'U123',
+      channel: 'D123',
+      ts: '555.666',
+      text: '/z new write a failing test',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    // ZRouter saw the invocation.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    // Pipeline was entered with the substituted prompt.
+    expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+    const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
+    expect(forwardedEvent.text).toBe('write a failing test');
+  });
 });

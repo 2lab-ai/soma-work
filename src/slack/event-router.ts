@@ -129,19 +129,6 @@ export class EventRouter {
         return;
       }
 
-      // Source thread re-mention: if mentioned in a thread that has a linked bot session,
-      // respond with that session's status instead of creating a new session
-      if (event.thread_ts) {
-        const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
-        if (!existingSession) {
-          const linkedSession = this.deps.claudeHandler.findSessionBySourceThread(event.channel, event.thread_ts);
-          if (linkedSession) {
-            await this.respondWithLinkedSessionStatus(event.channel, event.thread_ts, linkedSession, say);
-            return;
-          }
-        }
-      }
-
       // Issue #141: Strip only bot mention, preserve other user mentions in the prompt.
       let botId: string | undefined;
       try {
@@ -154,18 +141,43 @@ export class EventRouter {
       // FIX #1 (PR #509): route `@bot /z …` and non-whitelisted legacy naked
       // forms through ZRouter so the three entry points (slash, DM,
       // app_mention) share the same normalization pipeline.
+      //
+      // codex P1 followup: this MUST run before the source-thread linked-session
+      // guard below — otherwise `@bot /z persona` issued inside a source thread
+      // that happens to have a linked work-session is intercepted by the
+      // "linked session status" card and never reaches ZRouter, violating the
+      // stated contract that channel_mention shares the normalization pipeline.
       const routedViaZ = await this.maybeRouteAppMentionViaZRouter({
         event,
         strippedText: text,
       });
-      if (routedViaZ) {
+      if (routedViaZ.terminal) {
         return;
+      }
+      let nextText = text;
+      if (routedViaZ.continueWithPrompt !== undefined) {
+        // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
+        nextText = routedViaZ.continueWithPrompt;
+      }
+
+      // Source thread re-mention: if mentioned in a thread that has a linked bot session,
+      // respond with that session's status instead of creating a new session.
+      // (Runs AFTER the `/z` gate so `/z …` commands can execute in source threads.)
+      if (event.thread_ts) {
+        const existingSession = this.deps.claudeHandler.getSession(event.channel, event.thread_ts);
+        if (!existingSession) {
+          const linkedSession = this.deps.claudeHandler.findSessionBySourceThread(event.channel, event.thread_ts);
+          if (linkedSession) {
+            await this.respondWithLinkedSessionStatus(event.channel, event.thread_ts, linkedSession, say);
+            return;
+          }
+        }
       }
 
       await this.messageHandler(
         {
           ...event,
-          text,
+          text: nextText,
         } as MessageEvent,
         say,
       );
@@ -207,25 +219,39 @@ export class EventRouter {
 
   /**
    * FIX #1 (PR #509): decides whether to route an `app_mention` through
-   * `ZRouter` instead of the normal pipeline. Returns `true` if the event was
-   * handled by the router (caller MUST NOT continue pipeline processing).
+   * `ZRouter` instead of the normal pipeline.
+   *
+   * Return shape (codex P1 followup):
+   *  - `terminal: true` — the router fully consumed the invocation (card,
+   *    tombstone, forbidden notice, error, or a command that finished itself).
+   *    Caller MUST NOT continue pipeline processing.
+   *  - `terminal: false, continueWithPrompt: string` — the command produced
+   *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should
+   *    substitute the event text and continue the legacy pipeline.
+   *  - `terminal: false, continueWithPrompt: undefined` — ZRouter did not
+   *    apply (not a `/z` prefix and not a legacy naked form) OR an internal
+   *    failure occurred; caller should continue with the original stripped
+   *    text.
    *
    * Routing rules (per MASTER-SPEC §5-1):
-   *  - Text starts with `/z` → normalize + dispatch, return true.
+   *  - Text starts with `/z` → normalize + dispatch.
    *  - Text matches a legacy naked form (`persona set linus`, `show prompt`) →
-   *    normalize + dispatch (ZRouter will render tombstone), return true.
+   *    normalize + dispatch (ZRouter will render tombstone).
    *  - Whitelisted naked (`new`, `session`, `$…`) or unrecognized prose →
-   *    return false; caller falls through to the normal message pipeline.
+   *    `{ terminal: false }` (caller falls through).
    */
-  private async maybeRouteAppMentionViaZRouter(args: { event: any; strippedText: string }): Promise<boolean> {
+  private async maybeRouteAppMentionViaZRouter(args: {
+    event: any;
+    strippedText: string;
+  }): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
     const { event, strippedText } = args;
-    if (!this.zRouter) return false;
+    if (!this.zRouter) return { terminal: false };
     const text = strippedText.trim();
-    if (!text) return false;
+    if (!text) return { terminal: false };
 
     const startsWithZ = stripZPrefix(text) !== null;
     const legacyNaked = !startsWithZ && isLegacyNaked(text);
-    if (!startsWithZ && !legacyNaked) return false;
+    if (!startsWithZ && !legacyNaked) return { terminal: false };
 
     try {
       const respond = new ChannelEphemeralZRespond({
@@ -244,6 +270,7 @@ export class EventRouter {
         respond,
       });
       const result = await this.zRouter.dispatch(inv);
+
       if (!result.handled && result.error) {
         this.logger.error('ZRouter.dispatch (app_mention) returned error', {
           error: result.error,
@@ -254,8 +281,19 @@ export class EventRouter {
           text: `⚠️ 명령 실행 실패: ${result.error}`,
           ephemeral: true,
         });
+        return { terminal: true };
       }
-      return true;
+
+      if (result.continueWithPrompt !== undefined) {
+        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+      }
+
+      if (result.handled) {
+        return { terminal: true };
+      }
+
+      // Unhandled, no error, no continuation — fall through to legacy.
+      return { terminal: false };
     } catch (err: any) {
       this.logger.error('Failed to route app_mention /z via ZRouter', {
         err: err?.message,
@@ -263,7 +301,7 @@ export class EventRouter {
         channel: event.channel,
       });
       // Fall through to normal pipeline on unexpected failure.
-      return false;
+      return { terminal: false };
     }
   }
 

@@ -259,13 +259,22 @@ export class SlackHandler {
       //   normalization pipeline as slash and app_mention). Whitelisted naked
       //   (session/new/renew/$*) still falls through to the legacy pipeline
       //   because those commands need the full session-aware InputProcessor.
+      // FIX #1 followup (codex P1): honour `continueWithPrompt` so commands
+      //   like `/z new write a test` continue into the session pipeline
+      //   with the captured prompt rather than becoming a silent no-op.
       const dmText = (event.text ?? '').trim();
       if (stripZPrefix(dmText) !== null) {
-        const handled = await this.routeDmViaZRouter(event);
-        if (handled) {
+        const routed = await this.routeDmViaZRouter(event);
+        if (routed.terminal) {
           return;
         }
-        // Fall through on unexpected failure (best-effort continuity).
+        if (routed.continueWithPrompt !== undefined) {
+          // ZRouter consumed the `/z <topic> …` prefix and handed back a
+          // prompt for the normal pipeline (e.g. `/z new write a test` →
+          // `write a test`). Substitute the event text and fall through.
+          event.text = routed.continueWithPrompt;
+        }
+        // else: not terminal and no continuation — fall through with original text.
       }
       if (dmText.startsWith('/z') || isZWhitelistedNaked(dmText)) {
         this.logger.info('DM /z or whitelisted naked accepted into pipeline', {
@@ -549,14 +558,26 @@ export class SlackHandler {
 
   /**
    * FIX #1 (PR #509): route DM `/z …` through ZRouter with `source='dm'` and
-   * a `DmZRespond` (chat.postMessage + chat.update). Returns `true` if the
-   * message was handled (caller must return; do NOT continue pipeline).
+   * a `DmZRespond` (chat.postMessage + chat.update).
+   *
+   * Return shape (codex P1 followup):
+   *  - `terminal: true` — the router fully consumed the invocation (tombstone
+   *    card, help card, forbidden notice, error ephemeral, or a command that
+   *    returned `handled:true` with no continuation). Caller must return.
+   *  - `terminal: false, continueWithPrompt: string` — the command captured
+   *    a follow-up prompt (e.g. `/z new write a test`); caller should
+   *    substitute `event.text` with the prompt and continue the pipeline.
+   *  - `terminal: false, continueWithPrompt: undefined` — the router did not
+   *    handle the message (unknown `/z` remainder, or internal failure);
+   *    caller should fall through to the legacy pipeline unchanged.
    */
-  private async routeDmViaZRouter(event: MessageEvent): Promise<boolean> {
+  private async routeDmViaZRouter(
+    event: MessageEvent,
+  ): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
-      return false;
+      return { terminal: false };
     }
     try {
       const respond = new DmZRespond({
@@ -573,6 +594,8 @@ export class SlackHandler {
         respond,
       });
       const result = await zRouter.dispatch(inv);
+
+      // Error path: show failure notice and terminate.
       if (!result.handled && result.error) {
         this.logger.error('ZRouter.dispatch (dm) returned error', {
           error: result.error,
@@ -580,15 +603,28 @@ export class SlackHandler {
           channel: event.channel,
         });
         await respond.send({ text: `⚠️ 명령 실행 실패: ${result.error}` });
+        return { terminal: true };
       }
-      return true;
+
+      // Continuation path: caller must continue with the captured prompt.
+      if (result.continueWithPrompt !== undefined) {
+        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+      }
+
+      // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      if (result.handled) {
+        return { terminal: true };
+      }
+
+      // Unhandled, no error, no continuation → fall through to legacy pipeline.
+      return { terminal: false };
     } catch (err: any) {
       this.logger.error('routeDmViaZRouter failed', {
         err: err?.message,
         user: event.user,
         channel: event.channel,
       });
-      return false;
+      return { terminal: false };
     }
   }
 

@@ -236,4 +236,71 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
       expect.objectContaining({ text: expect.stringContaining('명령 실행 실패') }),
     );
   });
+
+  it('`@bot /z new <prompt>` with continueWithPrompt substitutes text and continues pipeline (codex P1 followup)', async () => {
+    // ZRouter captures `/z new foo` and returns a `continueWithPrompt`; the
+    // app_mention handler must forward the substituted prompt into the legacy
+    // pipeline instead of no-opping.
+    const dispatch = vi.fn().mockResolvedValue({
+      handled: true,
+      continueWithPrompt: 'write a failing test',
+    });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '1.1',
+        text: '<@B_BOT> /z new write a failing test',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    // Pipeline was entered with the substituted text.
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('write a failing test');
+  });
+
+  it('`@bot /z persona` in a source thread with a linked session bypasses linked-status guard (codex P1 followup)', async () => {
+    // Before the fix, the source-thread re-mention guard intercepted any
+    // app_mention inside a thread linked to a work session — including `/z`
+    // commands. The guard must run AFTER the `/z` gate.
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    eventRouter.zRouter = { dispatch };
+
+    // Simulate: source thread has a linked work session.
+    mockDeps.claudeHandler.getSession.mockReturnValue(null);
+    mockDeps.claudeHandler.findSessionBySourceThread.mockReturnValue({
+      channelId: 'C_WORK',
+      threadTs: 'wt.1',
+    });
+    // Spy on the "linked status" responder so we can assert it is NOT called.
+    const linkedStatusSpy = vi.fn();
+    (eventRouter as any).respondWithLinkedSessionStatus = linkedStatusSpy;
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '2.2',
+        thread_ts: 'src.1', // in a source thread
+        text: '<@B_BOT> /z persona',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    // /z was routed normally.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls[0][0].source).toBe('channel_mention');
+    // Linked-status card was NOT rendered.
+    expect(linkedStatusSpy).not.toHaveBeenCalled();
+    // Legacy pipeline was NOT invoked (terminal).
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+  });
 });
