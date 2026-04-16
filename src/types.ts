@@ -192,6 +192,11 @@ export interface ConversationSession {
     channel: string;
     threadTs: string;
   };
+  // Bot message ts posted to the SOURCE thread during session init
+  // (dispatch status, conversation-history link, etc.). These are the ONLY
+  // messages cleaned up on mid-thread migration or channel-route move/stay —
+  // model conversation replies are never included here, so they survive migration.
+  sourceThreadCleanupTs?: string[];
   // Error auto-retry tracking: count of consecutive retries for the current error sequence.
   // Reset to 0 on successful execution. Max 3 retries with 30s delay between each.
   errorRetryCount?: number;
