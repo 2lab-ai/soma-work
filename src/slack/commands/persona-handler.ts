@@ -1,10 +1,16 @@
 import { getAvailablePersonas } from '../../claude-handler';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { applyPersona, renderPersonaCard } from '../z/topics/persona-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles persona commands (status/list/set)
+ * Handles persona commands (status/list/set).
+ *
+ * Phase 2 (#507):
+ *   - bare `persona` → Block Kit setting card (via /z topic builder)
+ *   - `persona list` → text listing (back-compat)
+ *   - `persona set <n>` → apply + text ack (back-compat)
  */
 export class PersonaHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -16,12 +22,12 @@ export class PersonaHandler implements CommandHandler {
     const personaAction = CommandParser.parsePersonaCommand(text);
 
     if (personaAction.action === 'status') {
-      const currentPersona = userSettingsStore.getUserPersona(user);
-      const availablePersonas = getAvailablePersonas();
-      await say({
-        text: `🎭 *Persona Status*\n\nYour current persona: \`${currentPersona}\`\n\nAvailable personas: ${availablePersonas.map((p) => `\`${p}\``).join(', ')}\n\n_Use \`persona set <name>\` to change your persona._`,
-        thread_ts: threadTs,
+      // Phase 2: render Block Kit card by default.
+      const { text: fallback, blocks } = await renderPersonaCard({
+        userId: user,
+        issuedAt: Date.now(),
       });
+      await say({ text: fallback ?? '🎭 Persona', blocks, thread_ts: threadTs });
     } else if (personaAction.action === 'list') {
       const availablePersonas = getAvailablePersonas();
       const currentPersona = userSettingsStore.getUserPersona(user);
@@ -33,16 +39,15 @@ export class PersonaHandler implements CommandHandler {
         thread_ts: threadTs,
       });
     } else if (personaAction.action === 'set' && personaAction.persona) {
-      const availablePersonas = getAvailablePersonas();
-      if (availablePersonas.includes(personaAction.persona)) {
-        userSettingsStore.setUserPersona(user, personaAction.persona);
+      const result = await applyPersona({ userId: user, value: personaAction.persona });
+      if (result.ok) {
         await say({
-          text: `✅ *Persona Changed*\n\nYour persona is now set to: \`${personaAction.persona}\``,
+          text: `✅ *Persona Changed*\n\n${result.summary}\n\n${result.description ?? ''}`,
           thread_ts: threadTs,
         });
       } else {
         await say({
-          text: `❌ *Unknown Persona*\n\nPersona \`${personaAction.persona}\` not found.\n\nAvailable personas: ${availablePersonas.map((p) => `\`${p}\``).join(', ')}`,
+          text: `❌ *Unknown Persona*\n\n${result.summary}\n\n${result.description ?? ''}`,
           thread_ts: threadTs,
         });
       }

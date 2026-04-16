@@ -1,11 +1,14 @@
+import { renderCwdCard } from '../z/topics/cwd-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles working directory commands (cwd)
+ * Handles working directory commands (cwd).
  *
  * Working directories are now fixed per user: {BASE_DIRECTORY}/{userId}/
- * - Users cannot set custom working directories
- * - The cwd command only shows the current fixed directory
+ * - Users cannot set custom working directories (security isolation).
+ * - Phase 2 (#507): `cwd` (get) renders a read-only Block Kit card via the
+ *   /z cwd topic module. The legacy set-path branch still emits a plain
+ *   system message explaining why it is disabled.
  */
 export class CwdHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -30,15 +33,26 @@ export class CwdHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Check for get command - show fixed directory
+    // Check for get command - render Block Kit card.
     if (this.deps.workingDirManager.isGetCommand(text)) {
-      const directory = this.deps.workingDirManager.getWorkingDirectory(channel, threadTs, user);
-
-      await this.deps.slackApi.postSystemMessage(
-        channel,
-        this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
-        { threadTs },
-      );
+      try {
+        const { text: fallback, blocks } = await renderCwdCard({
+          userId: user,
+          issuedAt: Date.now(),
+        });
+        await this.deps.slackApi.postSystemMessage(channel, fallback ?? '📁 Working Directory', {
+          threadTs,
+          blocks,
+        });
+      } catch {
+        // Fallback: original formatted text message.
+        const directory = this.deps.workingDirManager.getWorkingDirectory(channel, threadTs, user);
+        await this.deps.slackApi.postSystemMessage(
+          channel,
+          this.deps.workingDirManager.formatDirectoryMessage(directory, ''),
+          { threadTs },
+        );
+      }
       return { handled: true };
     }
 
