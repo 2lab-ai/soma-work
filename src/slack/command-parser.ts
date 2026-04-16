@@ -733,49 +733,68 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a session command ($ prefix)
-   * Matches: $, $model, $model opus, $verbosity, $verbosity compact
+   * Check if text is a session command (% prefix; $ prefix accepted during deprecation grace period).
+   *
+   * Primary prefix: `%` (e.g., `%`, `%model`, `%model opus`, `%verbosity compact`)
+   * Legacy prefix: `$` — still accepted so existing users are not broken, but
+   *   `SessionCommandHandler` emits a deprecation notice and asks users to switch to `%`.
+   *
+   * `$` is now reserved for forced skill invocation (`$plugin:skill`, `$skill`).
+   * Session subcommands (model/verbosity/effort/thinking/thinking_summary) never collide with
+   * local skill names, but we keep both prefixes recognized so the router can route `$model`
+   * to the session handler (NOT the skill handler) during the grace period.
    */
   static isSessionCommand(text: string): boolean {
-    return /^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/i.test(text.trim());
+    return /^[%$](?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/i.test(text.trim());
   }
 
   /**
-   * Parse session command ($, $model [value], $verbosity [value])
+   * Detect whether a session command was issued with the deprecated `$` prefix.
+   * Returns true only for text that is a session command AND starts with `$`.
+   */
+  static isDeprecatedSessionCommand(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('$')) return false;
+    return CommandParser.isSessionCommand(trimmed);
+  }
+
+  /**
+   * Parse a session command. Accepts both `%` (preferred) and `$` (deprecated) prefixes.
+   * Examples: `%`, `%model`, `%model opus`, `%effort high`, `%thinking on`, `%thinking_summary off`.
    */
   static parseSessionCommand(text: string): SessionCommandAction {
     const trimmed = text.trim();
 
-    const modelMatch = trimmed.match(/^\$model(?:\s+(\S+))?$/i);
+    const modelMatch = trimmed.match(/^[%$]model(?:\s+(\S+))?$/i);
     if (modelMatch) {
       return modelMatch[1]
         ? { type: 'model', action: 'set', model: modelMatch[1] }
         : { type: 'model', action: 'status' };
     }
 
-    const verbosityMatch = trimmed.match(/^\$verbosity(?:\s+(\S+))?$/i);
+    const verbosityMatch = trimmed.match(/^[%$]verbosity(?:\s+(\S+))?$/i);
     if (verbosityMatch) {
       return verbosityMatch[1]
         ? { type: 'verbosity', action: 'set', level: verbosityMatch[1] }
         : { type: 'verbosity', action: 'status' };
     }
 
-    const effortMatch = trimmed.match(/^\$effort(?:\s+(\S+))?$/i);
+    const effortMatch = trimmed.match(/^[%$]effort(?:\s+(\S+))?$/i);
     if (effortMatch) {
       return effortMatch[1]
         ? { type: 'effort', action: 'set', level: effortMatch[1] }
         : { type: 'effort', action: 'status' };
     }
 
-    // $thinking_summary must be checked before $thinking (longer prefix first)
-    const thinkingSummaryMatch = trimmed.match(/^\$thinking_summary(?:\s+(\S+))?$/i);
+    // %thinking_summary must be checked before %thinking (longer prefix first)
+    const thinkingSummaryMatch = trimmed.match(/^[%$]thinking_summary(?:\s+(\S+))?$/i);
     if (thinkingSummaryMatch) {
       return thinkingSummaryMatch[1]
         ? { type: 'thinking_summary', action: 'set', value: thinkingSummaryMatch[1] }
         : { type: 'thinking_summary', action: 'status' };
     }
 
-    const thinkingMatch = trimmed.match(/^\$thinking(?:\s+(\S+))?$/i);
+    const thinkingMatch = trimmed.match(/^[%$]thinking(?:\s+(\S+))?$/i);
     if (thinkingMatch) {
       return thinkingMatch[1]
         ? { type: 'thinking', action: 'set', value: thinkingMatch[1] }
@@ -865,9 +884,11 @@ export class CommandParser {
     const words = normalized.split(' ');
     const firstWord = words[0];
 
-    // $ prefix: only known session command roots ($, $model, $verbosity, $effort, $thinking, $thinking_summary)
-    if (firstWord.startsWith('$')) {
-      if (/^\$(?:model|verbosity|effort|thinking_summary|thinking)?(?:\s|$)/i.test(normalized)) {
+    // % prefix (primary) or $ prefix (legacy, deprecated): only known session command roots
+    // (%/$, %model, %verbosity, %effort, %thinking, %thinking_summary).
+    // Note: $plugin:skill / bare $skill are handled by SkillForceHandler (routed earlier).
+    if (firstWord.startsWith('%') || firstWord.startsWith('$')) {
+      if (/^[%$](?:model|verbosity|effort|thinking_summary|thinking)?(?:\s|$)/i.test(normalized)) {
         return { isPotential: true, keyword: firstWord };
       }
       return { isPotential: false };
@@ -977,18 +998,20 @@ export class CommandParser {
       '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
       '• `reset llm_chat` - Reset llm_chat config to defaults',
       '',
-      '*Session Settings ($ prefix):*',
-      '• `$` - Show current session info (model, effort, verbosity, context, etc.)',
-      '• `$model` - Show session model',
-      '• `$model <name>` - Change model for this session only',
-      '• `$effort` - Show session effort level',
-      '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
-      '• `$verbosity` - Show session verbosity',
-      '• `$verbosity <level>` - Change verbosity for this session only',
-      '• `$thinking` - Show extended thinking (adaptive reasoning) status',
-      '• `$thinking on|off` - Toggle extended thinking for this session',
-      '• `$thinking_summary` - Show thinking summary display status',
-      '• `$thinking_summary on|off` - Toggle thinking output display for this session',
+      '*Session Settings (`%` prefix):*',
+      '_Note: `$` prefix is deprecated for session commands — use `%` instead._',
+      '_`$` is now reserved for forced skill invocation (`$z`, `$stv:new-task`, etc.)._',
+      '• `%` - Show current session info (model, effort, verbosity, context, etc.)',
+      '• `%model` - Show session model',
+      '• `%model <name>` - Change model for this session only',
+      '• `%effort` - Show session effort level',
+      '• `%effort <level>` - Change effort for this session only (low/medium/high/max)',
+      '• `%verbosity` - Show session verbosity',
+      '• `%verbosity <level>` - Change verbosity for this session only',
+      '• `%thinking` - Show extended thinking (adaptive reasoning) status',
+      '• `%thinking on|off` - Toggle extended thinking for this session',
+      '• `%thinking_summary` - Show thinking summary display status',
+      '• `%thinking_summary on|off` - Toggle thinking output display for this session',
       '',
       '*Marketplace:*',
       '• `marketplace` or `/marketplace` - Show registered marketplaces',
