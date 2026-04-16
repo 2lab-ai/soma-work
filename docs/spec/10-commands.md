@@ -410,7 +410,7 @@ https://yoursite.atlassian.net/wiki/spaces/SPACE/pages/123456789
 | `cct [set <name> \| next]` | CCT 토큰 상태 / 수동 전환 / 다음 토큰으로 회전 | ✅ |
 | `marketplace` | 플러그인 마켓플레이스 | ✅ |
 | `plugin[s]` | 설치된 플러그인 관리 (`add`/`remove`/`update`/`rollback`/`backups`) | ✅ |
-| `$` / `$model` / `$verbosity` | 세션 전용 설정 (비영속) | ✅ |
+| `%` / `%model` / `%verbosity` | 세션 전용 설정 (비영속). `$` 접두는 deprecation grace period 동안만 허용되며 경고 메시지와 함께 실행됨. `$`는 강제 스킬 발동 전용. | ✅ |
 | `취소/stop/cancel` | 진행 중 요청 취소 | ❌ |
 
 ## 11. Usage Contexts

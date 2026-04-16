@@ -107,7 +107,7 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────┐
 │                       Slack Events                            │
 │                 (DM / Mention / Thread)                       │
 └──────────┬──────────────────────────────────┬─────────────────┘
@@ -130,13 +130,13 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
   │  └──────────┘ │ stream   │
   │               └────┬─────┘
   │                    │
-  ┌────────────────────▼──────────────────┐
+  ┌────────────────────▼────────────────────┐
   │            ClaudeHandler              │
   │ ┌──────────┐ ┌──────────┐ ┌────────┐ │
   │ │ Session  │ │ Prompt   │ │Dispatch│ │
   │ │ Registry │ │ Builder  │ │Service │ │
   │ └──────────┘ └──────────┘ └────────┘ │
-  └──────────────────┬────────────────────┘
+  └──────────────────┬──────────────────────┘
                      │
        ┌─────────────┼──────────────┐
        │             │              │
@@ -145,12 +145,12 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
   │ Manager │  │  Auth   │  │  Service  │
   └────┬────┘  └─────────┘  └───────────┘
        │
-  ┌────▼──────────────────────────────────┐
+  ┌────▼─────────────────────────────────┐
   │         Internal MCP Servers          │
   │  llm · model-command · slack-mcp      │
   │  cron · agent · server-tools          │
   │  permission · mcp-tool-permission     │
-  └───────────────────────────────────────┘
+  └─────────────────────────────────────────┘
 ```
 
 **Key Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager` — present simple interfaces over complex subsystems. Each module follows Single Responsibility Principle.
@@ -183,7 +183,7 @@ All commands use the unified `/z` grammar: `/z <topic> [verb] [args...]`. See `d
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
-| `$model <v>` · `$verbosity <v>` | Session-only settings (naked `$` still works) |
+| `%model <v>` · `%verbosity <v>` | Session-only settings (non-persistent). `$` prefix accepted during deprecation grace period; `$` is now reserved for forced skill invocation (e.g. `$z`, `$stv:new-task`). |
 
 **Migration (#506)**: Legacy naked forms (`persona linus`, `model sonnet`, `show_prompt`, …) are deprecated. The first use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
 

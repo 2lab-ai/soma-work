@@ -486,6 +486,19 @@ describe('CommandParser', () => {
       expect(help).toContain('plugins add');
       expect(help).toContain('plugins remove');
     });
+
+    it('should document the `%` prefix session settings and deprecate `$`', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('Session Settings (`%` prefix)');
+      expect(help).toContain('`%model <name>`');
+      expect(help).toContain('`%effort <level>`');
+      expect(help).toContain('`%verbosity <level>`');
+      expect(help).toContain('`%thinking on|off`');
+      // Deprecation note for `$`
+      expect(help).toContain('`$` prefix is deprecated');
+      // Clarify that `$` is for forced skill invocation
+      expect(help).toContain('forced skill invocation');
+    });
   });
 
   describe('isMarketplaceCommand', () => {
@@ -696,23 +709,52 @@ describe('CommandParser', () => {
       expect(CommandParser.isPotentialCommand('/sessions').isPotential).toBe(true);
     });
 
-    it('should recognize "$model" as a potential command', () => {
+    it('should recognize "%model" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%model').isPotential).toBe(true);
+    });
+
+    it('should recognize "%model opus" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%model opus').isPotential).toBe(true);
+    });
+
+    it('should recognize "%verbosity" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%verbosity').isPotential).toBe(true);
+    });
+
+    it('should recognize "%effort high" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%effort high').isPotential).toBe(true);
+    });
+
+    it('should recognize "%thinking" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%thinking').isPotential).toBe(true);
+    });
+
+    it('should recognize "%thinking_summary on" as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('%thinking_summary on').isPotential).toBe(true);
+    });
+
+    it('should recognize "%" as a potential command (bare percent — session info)', () => {
+      expect(CommandParser.isPotentialCommand('%').isPotential).toBe(true);
+    });
+
+    // Legacy `$` prefix still recognized during deprecation grace period.
+    it('should recognize "$model" as a potential command (legacy)', () => {
       expect(CommandParser.isPotentialCommand('$model').isPotential).toBe(true);
     });
 
-    it('should recognize "$model opus" as a potential command', () => {
+    it('should recognize "$model opus" as a potential command (legacy)', () => {
       expect(CommandParser.isPotentialCommand('$model opus').isPotential).toBe(true);
     });
 
-    it('should recognize "$verbosity" as a potential command', () => {
+    it('should recognize "$verbosity" as a potential command (legacy)', () => {
       expect(CommandParser.isPotentialCommand('$verbosity').isPotential).toBe(true);
     });
 
-    it('should recognize "$effort high" as a potential command', () => {
+    it('should recognize "$effort high" as a potential command (legacy)', () => {
       expect(CommandParser.isPotentialCommand('$effort high').isPotential).toBe(true);
     });
 
-    it('should recognize "$" as a potential command (bare dollar — session info)', () => {
+    it('should recognize "$" as a potential command (bare dollar — session info, legacy)', () => {
       expect(CommandParser.isPotentialCommand('$').isPotential).toBe(true);
     });
 
@@ -769,6 +811,19 @@ describe('CommandParser', () => {
       expect(CommandParser.isPotentialCommand('$HOME/documents').isPotential).toBe(false);
     });
 
+    it('should not recognize "$local:z" as a potential command (skill reference)', () => {
+      // `$plugin:skill` is routed to SkillForceHandler, not session commands.
+      expect(CommandParser.isPotentialCommand('$local:z').isPotential).toBe(false);
+    });
+
+    it('should not recognize "$z" as a potential command (bare skill shorthand)', () => {
+      expect(CommandParser.isPotentialCommand('$z').isPotential).toBe(false);
+    });
+
+    it('should not recognize "%rubbish" as a potential command (unknown % root)', () => {
+      expect(CommandParser.isPotentialCommand('%rubbish').isPotential).toBe(false);
+    });
+
     it('should not recognize "show prompt please" as a potential command (three words)', () => {
       expect(CommandParser.isPotentialCommand('show prompt please').isPotential).toBe(false);
     });
@@ -779,6 +834,166 @@ describe('CommandParser', () => {
 
     it('should not recognize "   " as a potential command (whitespace only)', () => {
       expect(CommandParser.isPotentialCommand('   ').isPotential).toBe(false);
+    });
+  });
+
+  describe('isSessionCommand', () => {
+    // Primary `%` prefix
+    it.each([
+      '%',
+      '%model',
+      '%model opus',
+      '%verbosity',
+      '%verbosity compact',
+      '%effort',
+      '%effort high',
+      '%thinking',
+      '%thinking on',
+      '%thinking_summary',
+      '%thinking_summary off',
+    ])('should match "%s"', (cmd) => {
+      expect(CommandParser.isSessionCommand(cmd)).toBe(true);
+    });
+
+    // Legacy `$` prefix (grace period)
+    it.each([
+      '$',
+      '$model',
+      '$model opus',
+      '$verbosity',
+      '$verbosity compact',
+      '$effort high',
+      '$thinking on',
+      '$thinking_summary off',
+    ])('should match legacy "%s"', (cmd) => {
+      expect(CommandParser.isSessionCommand(cmd)).toBe(true);
+    });
+
+    it('should not match "%foo" (unknown subcommand)', () => {
+      expect(CommandParser.isSessionCommand('%foo')).toBe(false);
+    });
+
+    it('should not match "$foo" (unknown subcommand)', () => {
+      expect(CommandParser.isSessionCommand('$foo')).toBe(false);
+    });
+
+    it('should not match "$local:z" (skill reference)', () => {
+      expect(CommandParser.isSessionCommand('$local:z')).toBe(false);
+    });
+
+    it('should not match "$z" (bare skill reference)', () => {
+      // `$z` looks like a session command root, but there's no session sub `z` — the regex
+      // is anchored to known sub-commands only.
+      expect(CommandParser.isSessionCommand('$z')).toBe(false);
+    });
+
+    it('should not match "plain text"', () => {
+      expect(CommandParser.isSessionCommand('hello')).toBe(false);
+    });
+  });
+
+  describe('isDeprecatedSessionCommand', () => {
+    it('should flag legacy "$model" as deprecated', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('$model')).toBe(true);
+    });
+
+    it('should flag legacy "$" as deprecated', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('$')).toBe(true);
+    });
+
+    it('should flag legacy "$effort high" as deprecated', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('$effort high')).toBe(true);
+    });
+
+    it('should not flag "%model" (primary prefix)', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('%model')).toBe(false);
+    });
+
+    it('should not flag "%" (primary prefix)', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('%')).toBe(false);
+    });
+
+    it('should not flag "$local:z" (not a session command)', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('$local:z')).toBe(false);
+    });
+
+    it('should not flag "$z" (not a session command)', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('$z')).toBe(false);
+    });
+
+    it('should not flag plain text', () => {
+      expect(CommandParser.isDeprecatedSessionCommand('hello world')).toBe(false);
+    });
+  });
+
+  describe('parseSessionCommand', () => {
+    it('parses "%" as info', () => {
+      expect(CommandParser.parseSessionCommand('%')).toEqual({ type: 'info' });
+    });
+
+    it('parses legacy "$" as info', () => {
+      expect(CommandParser.parseSessionCommand('$')).toEqual({ type: 'info' });
+    });
+
+    it('parses "%model" as model status', () => {
+      expect(CommandParser.parseSessionCommand('%model')).toEqual({ type: 'model', action: 'status' });
+    });
+
+    it('parses "%model opus" as model set', () => {
+      expect(CommandParser.parseSessionCommand('%model opus')).toEqual({
+        type: 'model',
+        action: 'set',
+        model: 'opus',
+      });
+    });
+
+    it('parses legacy "$model opus" as model set (grace period)', () => {
+      expect(CommandParser.parseSessionCommand('$model opus')).toEqual({
+        type: 'model',
+        action: 'set',
+        model: 'opus',
+      });
+    });
+
+    it('parses "%verbosity compact" as verbosity set', () => {
+      expect(CommandParser.parseSessionCommand('%verbosity compact')).toEqual({
+        type: 'verbosity',
+        action: 'set',
+        level: 'compact',
+      });
+    });
+
+    it('parses "%effort high" as effort set', () => {
+      expect(CommandParser.parseSessionCommand('%effort high')).toEqual({
+        type: 'effort',
+        action: 'set',
+        level: 'high',
+      });
+    });
+
+    it('parses "%thinking on" as thinking set', () => {
+      expect(CommandParser.parseSessionCommand('%thinking on')).toEqual({
+        type: 'thinking',
+        action: 'set',
+        value: 'on',
+      });
+    });
+
+    it('parses "%thinking_summary off" as thinking_summary set (before %thinking)', () => {
+      // Ensures the longer `_summary` prefix is checked before bare `%thinking`.
+      expect(CommandParser.parseSessionCommand('%thinking_summary off')).toEqual({
+        type: 'thinking_summary',
+        action: 'set',
+        value: 'off',
+      });
+    });
+
+    it('parses legacy "$thinking_summary on" as thinking_summary set', () => {
+      expect(CommandParser.parseSessionCommand('$thinking_summary on')).toEqual({
+        type: 'thinking_summary',
+        action: 'set',
+        value: 'on',
+      });
     });
   });
 
