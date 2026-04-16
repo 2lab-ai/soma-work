@@ -114,6 +114,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
       deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -381,7 +382,9 @@ describe('SessionInitializer - Onboarding Detection', () => {
       expect(String(migratedContextCall?.[1] || '')).toContain('이전 스레드');
       expect(result.session.threadModel).toBe('bot-initiated');
       expect(result.session.threadRootTs).toBe('msg123');
-      expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
+      // Init clutter is deleted ts-by-ts (Issue #516) — wholesale sweep must not be used.
+      expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'msg123');
+      expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
     });
   });
 });
