@@ -8,6 +8,7 @@ export { CommandRouter } from './command-router';
 export { CompactHandler } from './compact-handler';
 export { ContextHandler } from './context-handler';
 export { CwdHandler } from './cwd-handler';
+export { EffortHandler } from './effort-handler';
 export { EmailHandler } from './email-handler';
 export { HelpHandler } from './help-handler';
 export { LinkHandler } from './link-handler';

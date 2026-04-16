@@ -35,6 +35,7 @@ export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
 // Effort levels
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 export const DEFAULT_EFFORT: EffortLevel = 'high';
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'max'] as const;
 
 // Thinking (adaptive reasoning) toggle
 export const DEFAULT_THINKING_ENABLED = true;
@@ -618,6 +619,14 @@ export class UserSettingsStore {
   resolveVerbosityInput(input: string): LogVerbosity | null {
     const normalized = input.toLowerCase().trim();
     return VERBOSITY_NAMES.includes(normalized as LogVerbosity) ? (normalized as LogVerbosity) : null;
+  }
+
+  /**
+   * Validate and normalize effort input. Returns null for unknown values.
+   */
+  resolveEffortInput(input: string): EffortLevel | null {
+    const normalized = input.toLowerCase().trim();
+    return EFFORT_LEVELS.includes(normalized as EffortLevel) ? (normalized as EffortLevel) : null;
   }
 
   /**
