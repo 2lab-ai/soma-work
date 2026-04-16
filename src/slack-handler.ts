@@ -41,6 +41,7 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import { isWhitelistedNaked as isZWhitelistedNaked } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession } from './types';
@@ -251,10 +252,21 @@ export class SlackHandler {
       if (handledCleanupRequest) {
         return;
       }
-      // DM messages that aren't cleanup requests should not enter the session pipeline.
-      // DMs are reserved for bot management commands (message deletion, etc.).
-      this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
-      return;
+      // Phase 1 of /z refactor (#506): allow `/z …` and whitelisted naked
+      // (session/new/renew/$*) to enter the command pipeline from DM. All
+      // other DM messages are dropped as before.
+      const dmText = (event.text ?? '').trim();
+      if (dmText.startsWith('/z') || isZWhitelistedNaked(dmText)) {
+        this.logger.info('DM /z or whitelisted naked accepted into pipeline', {
+          user: event.user,
+          channel,
+          preview: dmText.substring(0, 40),
+        });
+        // Fall through to the normal pipeline so the DM reaches CommandRouter.
+      } else {
+        this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
+        return;
+      }
     }
 
     // Immediately acknowledge the message with eyes emoji
