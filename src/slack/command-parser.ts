@@ -45,6 +45,8 @@ export type PluginsAction =
 
 export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
 
+export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
+
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
   | { action: 'deny'; targetUser: string }
@@ -524,6 +526,23 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a rate command (rate / rate + / rate -)
+   */
+  static isRateCommand(text: string): boolean {
+    return /^\/? *rate(?:\s+[+-])?\s*$/i.test(text.trim());
+  }
+
+  /**
+   * Parse rate command
+   */
+  static parseRateCommand(text: string): RateAction {
+    const trimmed = text.trim();
+    if (/^\/? *rate\s+\+\s*$/i.test(trimmed)) return { action: 'up' };
+    if (/^\/? *rate\s+-\s*$/i.test(trimmed)) return { action: 'down' };
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
@@ -622,7 +641,7 @@ export class CommandParser {
     const t = text.trim();
     return (
       /^\/?plugins(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(t) ||
-      /^\/?플러그인\s*업데이트$/i.test(t)
+      /^\/?\uD50C\uB7EC\uADF8\uC778\s*\uC5C5\uB370\uC774\uD2B8$/i.test(t)
     );
   }
 
@@ -632,8 +651,8 @@ export class CommandParser {
   static parsePluginsCommand(text: string): PluginsAction {
     const trimmed = text.trim();
 
-    // Match: plugins update / 플러그인 업데이트
-    if (/^\/?plugins\s+update$/i.test(trimmed) || /^\/?플러그인\s*업데이트$/i.test(trimmed)) {
+    // Match: plugins update / \uD50C\uB7EC\uADF8\uC778 \uC5C5\uB370\uC774\uD2B8
+    if (/^\/?plugins\s+update$/i.test(trimmed) || /^\/?\uD50C\uB7EC\uADF8\uC778\s*\uC5C5\uB370\uC774\uD2B8$/i.test(trimmed)) {
       return { action: 'update' };
     }
 
@@ -766,7 +785,7 @@ export class CommandParser {
     // Marketplace & Plugins
     'marketplace',
     'plugins',
-    '플러그인',
+    '\uD50C\uB7EC\uADF8\uC778',
     // Future: save/load (oh-my-claude skills)
     'save',
     'load',
@@ -776,6 +795,8 @@ export class CommandParser {
     // Admin: show prompt / show instructions (exact two-word forms)
     'show_prompt',
     'show_instructions',
+    // Rating
+    'rate',
     // Notification
     'notify',
     'webhook',
@@ -837,106 +858,111 @@ export class CommandParser {
    */
   static getHelpMessage(): string {
     const commands = [
-      '*📚 Available Commands*',
+      '*\uD83D\uDCDA Available Commands*',
       '',
       '*Working Directory:*',
-      '• `cwd` or `/cwd` - Show current working directory',
-      '  _각 사용자는 고정된 디렉토리(`BASE_DIR/{userId}/`)를 사용합니다._',
+      '\u2022 `cwd` or `/cwd` - Show current working directory',
+      '  _\uAC01 \uC0AC\uC6A9\uC790\uB294 \uACE0\uC815\uB41C \uB514\uB809\uD1A0\uB9AC(`BASE_DIR/{userId}/`)\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4._',
       '',
       '*Sessions:*',
-      '• `sessions` or `/sessions` - Show your active sessions (ephemeral)',
-      '• `sessions public` - Show your sessions to everyone in channel',
-      '• `all_sessions` or `/all_sessions` - Show all active sessions',
-      '• `terminate <session-key>` - Terminate a specific session',
-      "• `close` or `/close` - Close current thread's session",
-      '• `new` or `/new` - Reset session context (start fresh conversation in same thread)',
-      '• `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
-      '• `onboarding` or `/onboarding` - Run onboarding workflow anytime',
-      '• `context` or `/context` - Show current session token usage and cost',
-      '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
-      '• `compact` or `/compact` - Force context compaction (for testing compression)',
+      '\u2022 `sessions` or `/sessions` - Show your active sessions (ephemeral)',
+      '\u2022 `sessions public` - Show your sessions to everyone in channel',
+      '\u2022 `all_sessions` or `/all_sessions` - Show all active sessions',
+      '\u2022 `terminate <session-key>` - Terminate a specific session',
+      "\u2022 `close` or `/close` - Close current thread's session",
+      '\u2022 `new` or `/new` - Reset session context (start fresh conversation in same thread)',
+      '\u2022 `new <prompt>` or `/new <prompt>` - Reset and start with new prompt',
+      '\u2022 `onboarding` or `/onboarding` - Run onboarding workflow anytime',
+      '\u2022 `context` or `/context` - Show current session token usage and cost',
+      '\u2022 `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
+      '\u2022 `compact` or `/compact` - Force context compaction (for testing compression)',
       '',
       '*Links:*',
-      '• `link issue <url>` - Attach issue link to current session',
-      '• `link pr <url>` - Attach PR link to current session',
-      '• `link doc <url>` - Attach doc link to current session',
+      '\u2022 `link issue <url>` - Attach issue link to current session',
+      '\u2022 `link pr <url>` - Attach PR link to current session',
+      '\u2022 `link doc <url>` - Attach doc link to current session',
       '',
       '*MCP Servers:*',
-      '• `mcp` or `/mcp` - Show MCP server status',
-      '• `mcp reload` or `/mcp reload` - Reload MCP configuration',
+      '\u2022 `mcp` or `/mcp` - Show MCP server status',
+      '\u2022 `mcp reload` or `/mcp reload` - Reload MCP configuration',
       '',
       '*Permissions:*',
-      '• `bypass` or `/bypass` - Show permission bypass status',
-      '• `bypass on` or `/bypass on` - Enable permission bypass',
-      '• `bypass off` or `/bypass off` - Disable permission bypass',
+      '\u2022 `bypass` or `/bypass` - Show permission bypass status',
+      '\u2022 `bypass on` or `/bypass on` - Enable permission bypass',
+      '\u2022 `bypass off` or `/bypass off` - Disable permission bypass',
       '',
       '*Sandbox:*',
-      '• `sandbox` or `/sandbox` - Show sandbox status',
-      '• `sandbox on` or `/sandbox on` - Enable sandbox (admin only)',
-      '• `sandbox off` or `/sandbox off` - Disable sandbox (admin only)',
+      '\u2022 `sandbox` or `/sandbox` - Show sandbox status',
+      '\u2022 `sandbox on` or `/sandbox on` - Enable sandbox (admin only)',
+      '\u2022 `sandbox off` or `/sandbox off` - Disable sandbox (admin only)',
       '',
       '*Email:*',
-      '• `show email` - Show your configured email',
-      '• `set email <email>` - Set your email (used for Co-Authored-By in commits)',
+      '\u2022 `show email` - Show your configured email',
+      '\u2022 `set email <email>` - Set your email (used for Co-Authored-By in commits)',
+      '',
+      '*Rating:*',
+      '\u2022 `rate` - Show current model rating',
+      '\u2022 `rate +` - Increase rating by 1 (max 10)',
+      '\u2022 `rate -` - Decrease rating by 1 (min 0)',
       '',
       '*Persona:*',
-      '• `persona` or `/persona` - Show current persona',
-      '• `persona list` or `/persona list` - List available personas',
-      '• `persona set <name>` or `/persona set <name>` - Set persona',
+      '\u2022 `persona` or `/persona` - Show current persona',
+      '\u2022 `persona list` or `/persona list` - List available personas',
+      '\u2022 `persona set <name>` or `/persona set <name>` - Set persona',
       '',
       '*Model & Verbosity:*',
-      '• `model` - Show/set default model (persists across sessions)',
-      '• `model <name>` - Set default model (e.g., `model opus`)',
-      '• `model list` - List available models',
-      '• `verbosity` - Show current log verbosity',
-      '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
+      '\u2022 `model` - Show/set default model (persists across sessions)',
+      '\u2022 `model <name>` - Set default model (e.g., `model opus`)',
+      '\u2022 `model list` - List available models',
+      '\u2022 `verbosity` - Show current log verbosity',
+      '\u2022 `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '',
       '*LLM Chat Config:*',
-      '• `show llm_chat` - Show current llm_chat model configuration',
-      '• `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
-      '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
-      '• `reset llm_chat` - Reset llm_chat config to defaults',
+      '\u2022 `show llm_chat` - Show current llm_chat model configuration',
+      '\u2022 `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
+      '\u2022 `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
+      '\u2022 `reset llm_chat` - Reset llm_chat config to defaults',
       '',
       '*Session Settings ($ prefix):*',
-      '• `$` - Show current session info (model, effort, verbosity, context, etc.)',
-      '• `$model` - Show session model',
-      '• `$model <name>` - Change model for this session only',
-      '• `$effort` - Show session effort level',
-      '• `$effort <level>` - Change effort for this session only (low/medium/high/max)',
-      '• `$verbosity` - Show session verbosity',
-      '• `$verbosity <level>` - Change verbosity for this session only',
-      '• `$thinking` - Show extended thinking (adaptive reasoning) status',
-      '• `$thinking on|off` - Toggle extended thinking for this session',
-      '• `$thinking_summary` - Show thinking summary display status',
-      '• `$thinking_summary on|off` - Toggle thinking output display for this session',
+      '\u2022 `$` - Show current session info (model, effort, verbosity, context, etc.)',
+      '\u2022 `$model` - Show session model',
+      '\u2022 `$model <name>` - Change model for this session only',
+      '\u2022 `$effort` - Show session effort level',
+      '\u2022 `$effort <level>` - Change effort for this session only (low/medium/high/max)',
+      '\u2022 `$verbosity` - Show session verbosity',
+      '\u2022 `$verbosity <level>` - Change verbosity for this session only',
+      '\u2022 `$thinking` - Show extended thinking (adaptive reasoning) status',
+      '\u2022 `$thinking on|off` - Toggle extended thinking for this session',
+      '\u2022 `$thinking_summary` - Show thinking summary display status',
+      '\u2022 `$thinking_summary on|off` - Toggle thinking output display for this session',
       '',
       '*Marketplace:*',
-      '• `marketplace` or `/marketplace` - Show registered marketplaces',
-      '• `marketplace add owner/repo` - Add a marketplace from GitHub repo',
-      '• `marketplace add owner/repo --name custom` - Add with custom name',
-      '• `marketplace add owner/repo --ref branch` - Add with specific git ref',
-      '• `marketplace remove name` - Remove a marketplace by name',
+      '\u2022 `marketplace` or `/marketplace` - Show registered marketplaces',
+      '\u2022 `marketplace add owner/repo` - Add a marketplace from GitHub repo',
+      '\u2022 `marketplace add owner/repo --name custom` - Add with custom name',
+      '\u2022 `marketplace add owner/repo --ref branch` - Add with specific git ref',
+      '\u2022 `marketplace remove name` - Remove a marketplace by name',
       '',
       '*Plugins:*',
-      '• `plugins` or `/plugins` - Show installed plugins',
-      '• `plugins add pluginName@marketplaceName` - Install a plugin',
-      '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
-      '• `plugins update` or `플러그인 업데이트` - Force re-download all plugins (Admin only)',
+      '\u2022 `plugins` or `/plugins` - Show installed plugins',
+      '\u2022 `plugins add pluginName@marketplaceName` - Install a plugin',
+      '\u2022 `plugins remove pluginName@marketplaceName` - Remove a plugin',
+      '\u2022 `plugins update` or `\uD50C\uB7EC\uADF8\uC778 \uC5C5\uB370\uC774\uD2B8` - Force re-download all plugins (Admin only)',
       '',
       '*Prompt & Instructions (Admin):*',
-      '• `show prompt` - Show the system prompt used in this session',
-      '• `show instructions` - Show user instructions stored in this session',
+      '\u2022 `show prompt` - Show the system prompt used in this session',
+      '\u2022 `show instructions` - Show user instructions stored in this session',
       '',
       '*Token Management (Admin):*',
-      '• `cct` - Show OAuth token pool status',
-      '• `set_cct <name>` - Switch active token (e.g., `set_cct cct2`)',
-      '• `nextcct` - Rotate to next available token',
+      '\u2022 `cct` - Show OAuth token pool status',
+      '\u2022 `set_cct <name>` - Switch active token (e.g., `set_cct cct2`)',
+      '\u2022 `nextcct` - Rotate to next available token',
       '',
       '*Credentials:*',
-      '• `restore` or `/restore` - Restore Claude credentials from backup',
+      '\u2022 `restore` or `/restore` - Restore Claude credentials from backup',
       '',
       '*Help:*',
-      '• `help` or `/help` - Show this help message',
+      '\u2022 `help` or `/help` - Show this help message',
     ];
     return commands.join('\n');
   }
