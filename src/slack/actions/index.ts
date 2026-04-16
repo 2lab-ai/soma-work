@@ -9,12 +9,14 @@ import { FormActionHandler } from './form-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PendingFormStore } from './pending-form-store';
+import { buildDefaultTopicRegistry } from '../z/topics';
 import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
 export { PendingFormStore } from './pending-form-store';
 // Re-export types for backwards compatibility
@@ -38,6 +40,8 @@ export class ActionHandlers {
   private userAcceptanceHandler: UserAcceptanceActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
+  private zSettingsHandler: ZSettingsActionHandler;
+  private zTopicRegistry: ZTopicRegistry;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
@@ -110,6 +114,20 @@ export class ActionHandlers {
     this.pluginUpdateHandler = new PluginUpdateActionHandler({
       mcpManager: ctx.mcpManager,
     });
+
+    // `/z` Block Kit action/view router — registered alongside the others
+    // in `registerHandlers`. The registry is populated up-front so tests and
+    // introspection callers can access topic bindings before `registerHandlers`
+    // runs.
+    this.zTopicRegistry = buildDefaultTopicRegistry();
+    this.zSettingsHandler = new ZSettingsActionHandler({
+      registry: this.zTopicRegistry,
+    });
+  }
+
+  /** Topic registry backing the `/z` Block Kit actions. Exposed for tests. */
+  getZTopicRegistry(): ZTopicRegistry {
+    return this.zTopicRegistry;
   }
 
   /**
@@ -298,6 +316,11 @@ export class ActionHandlers {
       await ack();
       await this.formHandler.handleCustomInputSubmit(body, view);
     });
+
+    // `/z` Block Kit settings actions + view_submission (#507, Phase 2).
+    // Registers: z_setting_*_set_*, z_setting_*_cancel, z_setting_*_open_modal,
+    //            z_help_nav_*, and view z_setting_*_modal_submit.
+    this.zSettingsHandler.register(app);
   }
 
   /** Delegate dashboard choice answer to ChoiceActionHandler */
