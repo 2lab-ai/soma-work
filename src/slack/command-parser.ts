@@ -45,6 +45,8 @@ export type PluginsAction =
 
 export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
 
+export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
+
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
   | { action: 'deny'; targetUser: string }
@@ -524,6 +526,23 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a rate command (rate / rate + / rate -)
+   */
+  static isRateCommand(text: string): boolean {
+    return /^\/? *rate(?:\s+[+-])?\s*$/i.test(text.trim());
+  }
+
+  /**
+   * Parse rate command
+   */
+  static parseRateCommand(text: string): RateAction {
+    const trimmed = text.trim();
+    if (/^\/? *rate\s+\+\s*$/i.test(trimmed)) return { action: 'up' };
+    if (/^\/? *rate\s+-\s*$/i.test(trimmed)) return { action: 'down' };
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
@@ -776,6 +795,8 @@ export class CommandParser {
     // Admin: show prompt / show instructions (exact two-word forms)
     'show_prompt',
     'show_instructions',
+    // Rating
+    'rate',
     // Notification
     'notify',
     'webhook',
@@ -878,6 +899,11 @@ export class CommandParser {
       '*Email:*',
       '• `show email` - Show your configured email',
       '• `set email <email>` - Set your email (used for Co-Authored-By in commits)',
+      '',
+      '*Rating:*',
+      '• `rate` - Show current model rating',
+      '• `rate +` - Increase rating by 1 (max 10)',
+      '• `rate -` - Decrease rating by 1 (min 0)',
       '',
       '*Persona:*',
       '• `persona` or `/persona` - Show current persona',

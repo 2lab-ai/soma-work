@@ -91,7 +91,8 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'SAVE_CONTEXT_RESULT' &&
     commandId !== 'SAVE_MEMORY' &&
     commandId !== 'GET_MEMORY' &&
-    commandId !== 'MANAGE_SKILL'
+    commandId !== 'MANAGE_SKILL' &&
+    commandId !== 'RATE'
   ) {
     return {
       ok: false,
@@ -218,6 +219,17 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       },
     };
   }
+
+  if (commandId === 'RATE') {
+    return {
+      ok: true,
+      request: {
+        commandId: 'RATE',
+        params: undefined,
+      },
+    };
+  }
+
 
   // SAVE_CONTEXT_RESULT fallback — last remaining commandId
   const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
