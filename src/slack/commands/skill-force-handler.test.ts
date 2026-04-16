@@ -129,6 +129,78 @@ describe('SkillForceHandler', () => {
       expect(result.continueWithPrompt).toContain('</invoked_skills>');
     });
 
+    it('emits RPG skill-force-invocation banner (red attachment) on success', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z Skill');
+
+      await handler.execute(makeCtx('$local:z'));
+
+      // Find the RPG banner call: red attachment bar with "강제 발동" text.
+      const rpgCall = mockSay.mock.calls.find((call) => {
+        const arg = call[0];
+        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
+      });
+      expect(rpgCall).toBeDefined();
+      expect(rpgCall![0].thread_ts).toBe('171.100');
+      expect(rpgCall![0].attachments[0].text).toContain('강제 발동');
+      expect(rpgCall![0].attachments[0].text).toContain('`local:z`');
+      expect(rpgCall![0].attachments[0].text).toContain('<@U1>');
+    });
+
+    it('emits RPG banner listing ALL resolved skills (multi-skill invocation)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+        const p = String(filePath);
+        if (p.includes('/z/')) return '# Z';
+        if (p.includes('/debug/')) return '# Debug';
+        return '';
+      });
+
+      await handler.execute(makeCtx('$local:z 하고 $stv:debug'));
+
+      const rpgCall = mockSay.mock.calls.find((call) => {
+        const arg = call[0];
+        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
+      });
+      expect(rpgCall).toBeDefined();
+      const bannerText = rpgCall![0].attachments[0].text as string;
+      expect(bannerText).toContain('`local:z`');
+      expect(bannerText).toContain('`stv:debug`');
+    });
+
+    it('does NOT emit RPG banner when no skills are resolved', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      await handler.execute(makeCtx('$local:nonexistent'));
+
+      // Only the error message should be posted; no red-bar attachment.
+      const rpgCall = mockSay.mock.calls.find((call) => {
+        const arg = call[0];
+        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
+      });
+      expect(rpgCall).toBeUndefined();
+    });
+
+    it('uses "누군가" as caster name when user is absent', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Skill');
+
+      await handler.execute({
+        user: undefined as any,
+        channel: 'C1',
+        threadTs: '171.100',
+        text: '$local:z',
+        say: mockSay,
+      });
+
+      const rpgCall = mockSay.mock.calls.find((call) => {
+        const arg = call[0];
+        return Array.isArray(arg?.attachments) && arg.attachments.some((a: any) => a.color === '#FF0000');
+      });
+      expect(rpgCall).toBeDefined();
+      expect(rpgCall![0].attachments[0].text).toContain('누군가');
+    });
+
     it('embeds stv plugin skill', async () => {
       const skillContent = '# New Task\nCreate issues.';
       vi.mocked(fs.existsSync).mockReturnValue(true);
