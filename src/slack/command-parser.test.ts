@@ -892,6 +892,58 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('isEffortCommand', () => {
+    it.each([
+      'effort',
+      'effort low',
+      'effort medium',
+      'effort high',
+      'effort max',
+      '/effort',
+      '/effort high',
+    ])('accepts "%s"', (cmd) => {
+      expect(CommandParser.isEffortCommand(cmd)).toBe(true);
+    });
+
+    it.each([
+      '%effort',
+      '$effort',
+      '$effort high',
+      '%effort high',
+      'effortx',
+      'effort high low',
+    ])('rejects "%s" (not a bare effort command)', (cmd) => {
+      expect(CommandParser.isEffortCommand(cmd)).toBe(false);
+    });
+
+    it('rejects plain text', () => {
+      expect(CommandParser.isEffortCommand('please increase effort')).toBe(false);
+    });
+  });
+
+  describe('parseEffortCommand', () => {
+    it('parses "effort" as status', () => {
+      expect(CommandParser.parseEffortCommand('effort')).toEqual({ action: 'status' });
+    });
+
+    it('parses "effort status" as status', () => {
+      expect(CommandParser.parseEffortCommand('effort status')).toEqual({ action: 'status' });
+    });
+
+    it.each(['low', 'medium', 'high', 'max'])('parses "effort %s" as set', (level) => {
+      expect(CommandParser.parseEffortCommand(`effort ${level}`)).toEqual({ action: 'set', level });
+    });
+
+    it('parses "/effort high" as set', () => {
+      expect(CommandParser.parseEffortCommand('/effort high')).toEqual({ action: 'set', level: 'high' });
+    });
+
+    it('passes through unknown level for handler-side validation', () => {
+      // Parser does not validate level values — the handler is responsible.
+      expect(CommandParser.parseEffortCommand('effort turbo')).toEqual({ action: 'set', level: 'turbo' });
+    });
+  });
+
   describe('isDeprecatedSessionCommand', () => {
     it('should flag legacy "$model" as deprecated', () => {
       expect(CommandParser.isDeprecatedSessionCommand('$model')).toBe(true);
