@@ -1867,6 +1867,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       totalCostUsd: session.usage.totalCostUsd,
     });
 
+    // Per-turn data is the source of truth for live context display. If it is
+    // missing, the aggregate path overstates context usage (sums ALL API calls
+    // in the agent loop). Log a warning so the gap is observable in ops.
+    if (!hasPerTurn) {
+      this.logger.warn('Session context usage derived from aggregate fallback (per-turn tokens missing) — displayed context may overstate actual window occupancy', {
+        conversationId: session.conversationId,
+        model: usage.modelName || session.model,
+        currentContext: contextUsed,
+        contextWindow: session.usage.contextWindow,
+      });
+    }
+
     // Emit token_usage event for persistent tracking (fire-and-forget)
     this.emitTokenUsageEvent(session, usage);
   }
