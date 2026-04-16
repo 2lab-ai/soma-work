@@ -1891,7 +1891,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     try {
       const emitter = getMetricsEmitter();
       const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
-      const costSource: 'sdk' | 'calculated' = usage.totalCostUsd > 0 ? 'sdk' : 'calculated';
+      // Must come from StreamProcessor where the cost was actually determined.
+      // Re-deriving from `usage.totalCostUsd > 0` flips the label for any
+      // calculated non-zero cost (which the SDK did not actually report).
+      // Default to 'calculated' when absent — do not claim SDK provenance we
+      // can't verify.
+      const costSource: 'sdk' | 'calculated' = usage.costSource ?? 'calculated';
       emitter
         .emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
           sessionKey,
