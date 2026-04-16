@@ -8,9 +8,11 @@ import {
   listModelCommands,
   normalizeSessionSnapshot,
   registerMemoryStore,
+  registerSkillStore,
   runModelCommand,
 } from 'somalib/model-commands/catalog.js';
 import { MemoryFileStore } from 'somalib/model-commands/memory-file-store.js';
+import { SkillFileStore } from 'somalib/model-commands/skill-file-store.js';
 import { validateModelCommandRunArgs } from 'somalib/model-commands/validator.js';
 import {
   ModelCommandContext,
@@ -117,9 +119,10 @@ class ModelCommandMcpServer extends BaseMcpServer {
     super('model-command');
     this.context = parseModelCommandContext(process.env.SOMA_COMMAND_CONTEXT);
 
-    // Register memory store so SAVE_MEMORY/GET_MEMORY commands work in this process
+    // Register memory + skill stores so commands work in this process
     if (process.env.SOMA_DATA_DIR) {
       registerMemoryStore(new MemoryFileStore(process.env.SOMA_DATA_DIR));
+      registerSkillStore(new SkillFileStore(process.env.SOMA_DATA_DIR));
     }
   }
 
