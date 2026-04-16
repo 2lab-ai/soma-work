@@ -6,6 +6,7 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import { Logger } from '../logger';
+import { calculateTokenCost } from '../metrics/model-registry';
 import type { SessionLinks } from '../types';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
@@ -696,7 +697,7 @@ export class StreamProcessor {
 
     try {
       const formResult = await context.say({
-        text: choices.title || '📋 선택이 필요합니다',
+        text: '',
         ...multiPayload,
         thread_ts: context.threadTs,
       });
@@ -756,7 +757,7 @@ export class StreamProcessor {
 
     try {
       const choiceResult = await context.say({
-        text: choice.question,
+        text: '',
         ...singlePayload,
         thread_ts: context.threadTs,
       });
@@ -1058,12 +1059,20 @@ export class StreamProcessor {
     // Fallback: try direct usage field (older API format)
     const directUsage = message.usage;
     if (directUsage) {
+      const directInput = directUsage.input_tokens || 0;
+      const directOutput = directUsage.output_tokens || 0;
+      const directCacheRead = directUsage.cache_read_input_tokens || 0;
+      const directCacheCreate = directUsage.cache_creation_input_tokens || 0;
+      const directSdkCost = message.total_cost_usd || 0;
       const usage: UsageData = {
-        inputTokens: directUsage.input_tokens || 0,
-        outputTokens: directUsage.output_tokens || 0,
-        cacheReadInputTokens: directUsage.cache_read_input_tokens || 0,
-        cacheCreationInputTokens: directUsage.cache_creation_input_tokens || 0,
-        totalCostUsd: message.total_cost_usd || 0,
+        inputTokens: directInput,
+        outputTokens: directOutput,
+        cacheReadInputTokens: directCacheRead,
+        cacheCreationInputTokens: directCacheCreate,
+        totalCostUsd:
+          directSdkCost > 0
+            ? directSdkCost
+            : calculateTokenCost(undefined, directInput, directOutput, directCacheRead, directCacheCreate),
       };
       this.logger.debug('Extracted usage data from direct usage field', usage);
       return usage;
@@ -1120,7 +1129,11 @@ export class StreamProcessor {
         const output = usage.outputTokens || 0;
         const cacheRead = usage.cacheReadInputTokens || 0;
         const cacheCreate = usage.cacheCreationInputTokens || 0;
-        const cost = usage.costUSD || 0;
+        // SDK costUSD > 0 → trust it; else → calculate from token counts
+        const sdkCost = usage.costUSD || 0;
+        const cost = sdkCost > 0
+          ? sdkCost
+          : calculateTokenCost(model, input, output, cacheRead, cacheCreate);
 
         totalInput += input;
         totalOutput += output;
