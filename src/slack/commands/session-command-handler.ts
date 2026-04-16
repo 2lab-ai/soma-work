@@ -1,6 +1,8 @@
 import {
+  DEFAULT_EFFORT,
   DEFAULT_SHOW_THINKING,
   DEFAULT_THINKING_ENABLED,
+  EFFORT_LEVELS,
   MODEL_ALIASES,
   type ModelId,
   userSettingsStore,
@@ -284,7 +286,7 @@ export class SessionCommandHandler implements CommandHandler {
 
   private async setSessionEffort(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
-    const valid = ['low', 'medium', 'high', 'max'] as const;
+    const valid = EFFORT_LEVELS;
     const normalized = input.toLowerCase();
 
     if (!valid.includes(normalized as any)) {
@@ -299,7 +301,7 @@ export class SessionCommandHandler implements CommandHandler {
     session.effort = normalized as (typeof valid)[number];
     const warning = normalized === 'max' ? '\n_⚠️ `max` requires API key — will fail on Claude.ai subscription_' : '';
     await say({
-      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`%effort high\` to restore default._`,
+      text: `⚡ *Session Effort Changed*\n\nThis session now uses: *${normalized}*${warning}\n_Use \`%effort ${DEFAULT_EFFORT}\` to restore default._`,
       thread_ts: threadTs,
     });
     return { handled: true };
