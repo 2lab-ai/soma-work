@@ -107,7 +107,7 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────┐
 │                       Slack Events                            │
 │                 (DM / Mention / Thread)                       │
 └──────────┬──────────────────────────────────┬─────────────────┘
@@ -130,13 +130,13 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
   │  └──────────┘ │ stream   │
   │               └────┬─────┘
   │                    │
-  ┌────────────────────▼──────────────────┐
+  ┌────────────────────▼────────────────────┐
   │            ClaudeHandler              │
   │ ┌──────────┐ ┌──────────┐ ┌────────┐ │
   │ │ Session  │ │ Prompt   │ │Dispatch│ │
   │ │ Registry │ │ Builder  │ │Service │ │
   │ └──────────┘ └──────────┘ └────────┘ │
-  └──────────────────┬────────────────────┘
+  └──────────────────┬──────────────────────┘
                      │
        ┌─────────────┼──────────────┐
        │             │              │
@@ -145,12 +145,12 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
   │ Manager │  │  Auth   │  │  Service  │
   └────┬────┘  └─────────┘  └───────────┘
        │
-  ┌────▼──────────────────────────────────┐
+  ┌────▼─────────────────────────────────┐
   │         Internal MCP Servers          │
   │  llm · model-command · slack-mcp      │
   │  cron · agent · server-tools          │
   │  permission · mcp-tool-permission     │
-  └───────────────────────────────────────┘
+  └─────────────────────────────────────────┘
 ```
 
 **Key Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager` — present simple interfaces over complex subsystems. Each module follows Single Responsibility Principle.
@@ -178,7 +178,7 @@ See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
 | `cct` · `set_cct` | CCT token status / manual switch |
 | `marketplace` | Plugin marketplace |
 | `plugins` | Manage installed plugins |
-| `$model` · `$verbosity` | Session-only settings (non-persistent) |
+| `%model` · `%verbosity` | Session-only settings (non-persistent). `$` prefix accepted during deprecation grace period; `$` is now reserved for forced skill invocation (e.g. `$z`, `$stv:new-task`). |
 | `help` | Show help |
 
 ---
