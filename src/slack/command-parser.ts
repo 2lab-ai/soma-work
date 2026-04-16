@@ -332,6 +332,33 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an effort command (user-global setter).
+   *
+   * `effort` / `effort <level>` sets the user's default effort level and
+   * persists it via `userSettingsStore.setUserDefaultEffort()`. Affects all
+   * future sessions plus the current session live.
+   *
+   * Session-only changes use the `%effort` / `$effort` prefix forms handled
+   * by `SessionCommandHandler`. Invariant: bare command = user-global,
+   * prefixed command = session-scoped.
+   */
+  static isEffortCommand(text: string): boolean {
+    return /^\/?effort(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse effort command: `effort`, `effort status`, `effort <level>`.
+   */
+  static parseEffortCommand(text: string): { action: 'status' | 'set'; level?: string } {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?effort\s+(\S+)$/i);
+    if (match && match[1] !== 'status') {
+      return { action: 'set', level: match[1] };
+    }
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is a restore credentials command
    */
   static isRestoreCommand(text: string): boolean {
@@ -832,6 +859,7 @@ export class CommandParser {
     'persona',
     'model',
     'verbosity',
+    'effort',
     // Sessions
     'sessions',
     'terminate',
@@ -991,6 +1019,8 @@ export class CommandParser {
       '• `model list` - List available models',
       '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
+      '• `effort` - Show current default effort level',
+      '• `effort <level>` - Set default effort (low/medium/high/max). Persists for all future sessions.',
       '',
       '*LLM Chat Config:*',
       '• `show llm_chat` - Show current llm_chat model configuration',

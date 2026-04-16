@@ -8,6 +8,7 @@ import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
+import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
 import { EsHandler } from './es-handler';
 import { HelpHandler } from './help-handler';
@@ -69,6 +70,7 @@ export class CommandRouter {
       new MemoryHandler(),
       new ModelHandler(deps),
       new VerbosityHandler(deps),
+      new EffortHandler(deps),
       new NotifyHandler(),
       new WebhookHandler(),
       new RestoreHandler(),
