@@ -218,7 +218,7 @@ export class StreamExecutor {
 유저의 요청을 이해하기 위해 스레드의 이전 대화를 확인해야 할 수 있습니다.
 
 사용 가능한 도구:
-- get_thread_messages: 스레드 메시지를 offset/limit으로 조회 (offset 0 = root message, offset 1 = 첫 번째 reply). 멘션 근처 메시지는 before/after 파라미터로도 접근 가능.
+- get_thread_messages: 스레드 메시지를 offset/limit으로 조회 (offset 0 = root message, offset 1 = 첨 번째 reply). 멘션 근처 메시지는 before/after 파라미터로도 접근 가능.
 - download_thread_file: 스레드 메시지의 첨부 파일 다운로드 → Read 도구로 확인
 
 먼저 get_thread_messages로 멘션 이전 대화를 읽고, 유저가 "여기 내용"이라고 지칭하는 것이 무엇인지 파악하세요.
@@ -694,7 +694,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
             // Context compaction start — always visible regardless of verbosity
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
+            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗄️ 컨텍스트 압축 시작...');
           } else if (status === 'compact_done') {
             // Context compaction end — always visible regardless of verbosity
             await this.deps.assistantStatusManager.setStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
@@ -1392,7 +1392,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     // Fallback: "permission denied for /path" or "permission denied: /path"
-    const permissionMatch = combined.match(/permission denied[:\s]+(?:for\s+)?(\/.+?)(?:\n|$)/i);
+    const permissionMatch = combined.match(/permission denied[:\s]+(?:for\s+)?(\/.*?)(?:\n|$)/i);
     return permissionMatch?.[1]?.trim();
   }
 
@@ -1664,6 +1664,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     contextItems.push(`  <user-persona>${persona}</user-persona>`);
     contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
     contextItems.push(`  <user-bypass-permission>${bypassPermission ? 'on' : 'off'}</user-bypass-permission>`);
+
+    // User rating - model self-awareness of user satisfaction
+    const rating = userSettingsStore.getUserRating(userId);
+    contextItems.push(`  <your_rating>${rating}</your_rating>`);
+
+    // Rating change notification (injected once after user changes rating)
+    const pendingChange = userSettingsStore.consumePendingRatingChange(userId);
+    if (pendingChange) {
+      contextItems.push(`  <rating_change>${pendingChange.from}→${pendingChange.to} (user rated you ${pendingChange.to > pendingChange.from ? 'up' : 'down'})</rating_change>`);
+    }
 
     // Environment context - always include cwd and timestamp
     contextItems.push(`  <cwd>${workingDirectory}</cwd>`);
@@ -2418,11 +2428,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       ? `\n\nAfter loading the context, execute this user instruction:\n<user-instruction>${userMessage}</user-instruction>`
       : "\n\nContinue with that context. If unsure what to do next, call 'oracle' agent for guidance.";
 
-    const loadPrompt = `Use 'local:load' skill with this saved context:
-<save>
-${saveContent}
-</save>
-${userInstruction}`;
+    const loadPrompt = `Use 'local:load' skill with this saved context:\n<save>\n${saveContent}\n</save>\n${userInstruction}`;
 
     this.logger.info('Renew: returning continuation for load', { id, hasUserMessage: !!userMessage });
 
