@@ -1641,6 +1641,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
     contextItems.push(`  <user-bypass-permission>${bypassPermission ? 'on' : 'off'}</user-bypass-permission>`);
 
+    // User rating - model self-awareness of user satisfaction
+    const rating = userSettingsStore.getUserRating(userId);
+    contextItems.push(`  <your_rating>${rating}</your_rating>`);
+
+    // Rating change notification (injected once after user changes rating)
+    const pendingChange = userSettingsStore.consumePendingRatingChange(userId);
+    if (pendingChange) {
+      const direction = pendingChange.to > pendingChange.from ? 'up' : 'down';
+      contextItems.push(
+        `  <rating_change>${pendingChange.from}→${pendingChange.to} (user rated you ${direction})</rating_change>`,
+      );
+    }
+
     // Environment context - always include cwd and timestamp
     contextItems.push(`  <cwd>${workingDirectory}</cwd>`);
     contextItems.push(`  <timestamp>${new Date().toISOString()}</timestamp>`);

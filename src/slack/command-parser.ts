@@ -6,6 +6,8 @@ export type CctAction = { action: 'status' } | { action: 'set'; target: string }
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
+export type SandboxTarget = 'sandbox' | 'network';
+export type SandboxCommand = { target: SandboxTarget; action: SandboxAction };
 export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: string };
 export type MemoryAction =
   | { action: 'show' }
@@ -44,6 +46,8 @@ export type PluginsAction =
   | { action: 'backups'; pluginRef: string };
 
 export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
+
+export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
 
 export type AdminAction =
   | { action: 'accept'; targetUser: string }
@@ -192,23 +196,37 @@ export class CommandParser {
     return 'status';
   }
 
+  /**
+   * Matches:
+   *   sandbox
+   *   sandbox on|off|true|false|enable|disable|status
+   *   sandbox network
+   *   sandbox network on|off|true|false|enable|disable|status
+   */
   static isSandboxCommand(text: string): boolean {
-    return /^\/?sandbox(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
+    return /^\/?sandbox(?:\s+network)?(?:\s+(?:on|off|true|false|enable|disable|status))?$/i.test(text.trim());
   }
 
-  static parseSandboxCommand(text: string): SandboxAction {
-    const match = text.trim().match(/^\/?sandbox(?:\s+(on|off|true|false|enable|disable|status))?$/i);
-    if (!match?.[1]) {
-      return 'status';
+  /**
+   * Parse sandbox command. Returns `{ target, action }` where target is
+   * either `sandbox` (the OS-level sandbox itself) or `network` (the
+   * per-user network allowlist toggle inside the sandbox). Missing action
+   * resolves to `status`.
+   */
+  static parseSandboxCommand(text: string): SandboxCommand {
+    const match = text.trim().match(/^\/?sandbox(?:\s+(network))?(?:\s+(on|off|true|false|enable|disable|status))?$/i);
+    const target: SandboxTarget = match?.[1] ? 'network' : 'sandbox';
+    if (!match?.[2]) {
+      return { target, action: 'status' };
     }
 
-    const action = match[1].toLowerCase();
+    const action = match[2].toLowerCase();
     const enableActions = ['on', 'true', 'enable'];
     const disableActions = ['off', 'false', 'disable'];
 
-    if (enableActions.includes(action)) return 'on';
-    if (disableActions.includes(action)) return 'off';
-    return 'status';
+    if (enableActions.includes(action)) return { target, action: 'on' };
+    if (disableActions.includes(action)) return { target, action: 'off' };
+    return { target, action: 'status' };
   }
 
   /**
@@ -557,6 +575,23 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a rate command (rate / rate + / rate -)
+   */
+  static isRateCommand(text: string): boolean {
+    return /^\/? *rate(?:\s+[+-])?\s*$/i.test(text.trim());
+  }
+
+  /**
+   * Parse rate command
+   */
+  static parseRateCommand(text: string): RateAction {
+    const trimmed = text.trim();
+    if (/^\/? *rate\s+\+\s*$/i.test(trimmed)) return { action: 'up' };
+    if (/^\/? *rate\s+-\s*$/i.test(trimmed)) return { action: 'down' };
+    return { action: 'status' };
+  }
+
+  /**
    * Check if text is any llm_chat command (set/show/reset)
    */
   static isLlmChatCommand(text: string): boolean {
@@ -811,6 +846,8 @@ export class CommandParser {
     // Admin: show prompt / show instructions (exact two-word forms)
     'show_prompt',
     'show_instructions',
+    // Rating
+    'rate',
     // Notification
     'notify',
     'webhook',
@@ -909,10 +946,18 @@ export class CommandParser {
       '• `sandbox` or `/sandbox` - Show sandbox status',
       '• `sandbox on` or `/sandbox on` - Enable sandbox (admin only)',
       '• `sandbox off` or `/sandbox off` - Disable sandbox (admin only)',
+      '• `sandbox network` - Show sandbox network allowlist status',
+      '• `sandbox network on` - Enable network allowlist (default; takes effect next turn)',
+      '• `sandbox network off` - Disable network allowlist — full outbound access (takes effect next turn)',
       '',
       '*Email:*',
       '• `show email` - Show your configured email',
       '• `set email <email>` - Set your email (used for Co-Authored-By in commits)',
+      '',
+      '*Rating:*',
+      '• `rate` - Show current model rating',
+      '• `rate +` - Increase rating by 1 (max 10)',
+      '• `rate -` - Decrease rating by 1 (min 0)',
       '',
       '*Persona:*',
       '• `persona` or `/persona` - Show current persona',

@@ -24,6 +24,7 @@ import { OnboardingHandler } from './onboarding-handler';
 import { PersonaHandler } from './persona-handler';
 import { PluginsHandler } from './plugins-handler';
 import { PromptHandler } from './prompt-handler';
+import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
 import { RestoreHandler } from './restore-handler';
@@ -62,6 +63,7 @@ export class CommandRouter {
       new BypassHandler(),
       new SandboxHandler(),
       new EmailHandler(),
+      new RateHandler(),
       new PersonaHandler(),
       new SkillsHandler(), // skills list/download — before MemoryHandler
       new MemoryHandler(),
