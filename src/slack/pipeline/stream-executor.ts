@@ -16,6 +16,7 @@ import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
+import { getContextWindow, PRICING_VERSION } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { parseCooldownTime, tokenManager } from '../../token-manager';
@@ -70,34 +71,9 @@ export interface ExecuteResult {
 // Fallback context window size when SDK doesn't report contextWindow.
 const FALLBACK_CONTEXT_WINDOW = 200_000;
 
-/**
- * Known model context window sizes (with 1M beta enabled).
- * Key: model family substring matched against the full model name.
- *
- * SDK's ModelUsage.contextWindow often reports the BASE window (200k)
- * even when the 1M beta header is active. This table provides the
- * EFFECTIVE window so we can take max(sdk, lookup).
- */
-const MODEL_CONTEXT_WINDOWS: [pattern: string, contextWindow: number][] = [
-  // 4.6 models: 1M with context-1m beta
-  ['opus-4-6', 1_000_000],
-  ['sonnet-4-6', 1_000_000],
-  // 4.5 models: 1M with context-1m beta
-  ['opus-4-5', 1_000_000],
-  ['sonnet-4-5', 1_000_000],
-  ['haiku-4-5', 200_000],
-  // 4.0 models
-  ['sonnet-4-', 200_000],
-  ['haiku-4-', 200_000],
-];
-
 /** Resolve context window for a model by name pattern matching. */
 function resolveContextWindow(modelName?: string): number {
-  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  for (const [pattern, size] of MODEL_CONTEXT_WINDOWS) {
-    if (modelName.includes(pattern)) return size;
-  }
-  return FALLBACK_CONTEXT_WINDOW;
+  return getContextWindow(modelName) || FALLBACK_CONTEXT_WINDOW;
 }
 
 interface StreamExecutorDeps {
@@ -1903,6 +1879,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     try {
       const emitter = getMetricsEmitter();
       const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+      const costSource: 'sdk' | 'calculated' = usage.totalCostUsd > 0 ? 'sdk' : 'calculated';
       emitter
         .emitTokenUsage(session.ownerId, session.ownerName || 'unknown', {
           sessionKey,
@@ -1914,6 +1891,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
           costUsd: usage.totalCostUsd,
           modelBreakdown: usage.modelBreakdown,
+          costSource,
+          pricingVersion: PRICING_VERSION,
         })
         .catch((err) => {
           this.logger.debug('Failed to emit token_usage event (async)', {
