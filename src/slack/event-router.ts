@@ -330,6 +330,22 @@ export class EventRouter {
 
         const result = await this.zRouter.dispatch(inv);
 
+        // Error path: surface the underlying error to the user instead of
+        // silently falling back to help (would mask real runtime failures).
+        if (!result.handled && result.error) {
+          this.logger.error('ZRouter.dispatch returned error', {
+            error: result.error,
+            user: command.user_id,
+            channel: command.channel_id,
+            text: command.text?.substring(0, 100),
+          });
+          await respond({
+            text: `⚠️ 명령 실행 실패: ${result.error}`,
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
         // If /z remainder wasn't handled and it looks legit, fall back to help.
         if (!result.handled && !result.consumed) {
           await respond({

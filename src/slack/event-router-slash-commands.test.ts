@@ -175,6 +175,42 @@ describe('EventRouter.setupSlashCommands — /z unified (default)', () => {
     expect(errorText).toContain('⚠️');
   });
 
+  it('/z: when ZRouter returns {handled:false, error}, error is surfaced to user (not swallowed)', async () => {
+    // FIX #3 — routeToLegacy errors must be propagated rather than masked by help fallback.
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockResolvedValue({
+        handled: false,
+        error: 'persona handler crashed',
+      }),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'persona set linus' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('명령 실행 실패'),
+      }),
+    );
+    // The error message MUST include the root cause.
+    expect(respond.mock.calls[0][0].text).toContain('persona handler crashed');
+  });
+
+  it('/z: when ZRouter returns {handled:false, no error}, falls back to help', async () => {
+    // The non-error unhandled path still falls back to help.
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockResolvedValue({ handled: false, consumed: false }),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'unknown' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    const text = respond.mock.calls[0][0].text;
+    expect(text).not.toContain('명령 실행 실패');
+  });
+
   it('/z: double-fault — respond() failure in catch does not throw', async () => {
     (eventRouter as any).zRouter = {
       dispatch: vi.fn().mockRejectedValue(new Error('Original error')),
