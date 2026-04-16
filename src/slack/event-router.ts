@@ -12,9 +12,10 @@ import type { CommandDependencies } from './commands/types';
 import type { SessionUiManager } from './session-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 import { SlashCommandAdapter } from './slash-command-adapter';
-import { normalizeZInvocation } from './z/normalize';
-import { SlashZRespond } from './z/respond';
+import { normalizeZInvocation, stripZPrefix } from './z/normalize';
+import { ChannelEphemeralZRespond, SlashZRespond } from './z/respond';
 import { ZRouter } from './z/router';
+import { isLegacyNaked } from './z/tombstone';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -48,6 +49,16 @@ export class EventRouter {
         },
       });
     }
+  }
+
+  /**
+   * Exposes the shared `ZRouter` instance so that callers outside of the
+   * slash-command path (DM entry in SlackHandler, app_mention app_mention
+   * event) can route `/z …` invocations through the same router. See FIX #1
+   * in PR #509.
+   */
+  getZRouter(): ZRouter | null {
+    return this.zRouter;
   }
 
   /**
@@ -138,6 +149,18 @@ export class EventRouter {
         this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
       }
       const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
+
+      // FIX #1 (PR #509): route `@bot /z …` and non-whitelisted legacy naked
+      // forms through ZRouter so the three entry points (slash, DM,
+      // app_mention) share the same normalization pipeline.
+      const routedViaZ = await this.maybeRouteAppMentionViaZRouter({
+        event,
+        strippedText: text,
+      });
+      if (routedViaZ) {
+        return;
+      }
+
       await this.messageHandler(
         {
           ...event,
@@ -179,6 +202,68 @@ export class EventRouter {
         await this.handleThreadMessage(messageEvent, say);
       }
     });
+  }
+
+  /**
+   * FIX #1 (PR #509): decides whether to route an `app_mention` through
+   * `ZRouter` instead of the normal pipeline. Returns `true` if the event was
+   * handled by the router (caller MUST NOT continue pipeline processing).
+   *
+   * Routing rules (per MASTER-SPEC §5-1):
+   *  - Text starts with `/z` → normalize + dispatch, return true.
+   *  - Text matches a legacy naked form (`persona set linus`, `show prompt`) →
+   *    normalize + dispatch (ZRouter will render tombstone), return true.
+   *  - Whitelisted naked (`new`, `session`, `$…`) or unrecognized prose →
+   *    return false; caller falls through to the normal message pipeline.
+   */
+  private async maybeRouteAppMentionViaZRouter(args: { event: any; strippedText: string }): Promise<boolean> {
+    const { event, strippedText } = args;
+    if (!this.zRouter) return false;
+    const text = strippedText.trim();
+    if (!text) return false;
+
+    const startsWithZ = stripZPrefix(text) !== null;
+    const legacyNaked = !startsWithZ && isLegacyNaked(text);
+    if (!startsWithZ && !legacyNaked) return false;
+
+    try {
+      const respond = new ChannelEphemeralZRespond({
+        client: this.deps.slackApi.getClient(),
+        channel: event.channel,
+        user: event.user,
+        threadTs: event.thread_ts ?? event.ts,
+      });
+      const inv = normalizeZInvocation({
+        source: 'channel_mention',
+        text,
+        userId: event.user,
+        channelId: event.channel,
+        teamId: (event as any).team ?? '',
+        threadTs: event.thread_ts ?? event.ts,
+        respond,
+      });
+      const result = await this.zRouter.dispatch(inv);
+      if (!result.handled && result.error) {
+        this.logger.error('ZRouter.dispatch (app_mention) returned error', {
+          error: result.error,
+          user: event.user,
+          channel: event.channel,
+        });
+        await respond.send({
+          text: `⚠️ 명령 실행 실패: ${result.error}`,
+          ephemeral: true,
+        });
+      }
+      return true;
+    } catch (err: any) {
+      this.logger.error('Failed to route app_mention /z via ZRouter', {
+        err: err?.message,
+        user: event.user,
+        channel: event.channel,
+      });
+      // Fall through to normal pipeline on unexpected failure.
+      return false;
+    }
   }
 
   // Commands that require thread/session context — not available via slash commands

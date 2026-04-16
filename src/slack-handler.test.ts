@@ -486,4 +486,138 @@ describe('SlackHandler', () => {
     expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
     expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '555.666', 'eyes');
   });
+
+  /* ============================================================
+   * FIX #1 (PR #509): DM /z routing through ZRouter
+   * ============================================================ */
+
+  it('DM `/z help` routes through ZRouter with source=dm (FIX #1)', async () => {
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+    handlerAny.slackApi = {
+      getClient: vi.fn().mockReturnValue({
+        chat: {
+          postMessage: vi.fn().mockResolvedValue({ ts: 'bot.1' }),
+          update: vi.fn().mockResolvedValue(undefined),
+          delete: vi.fn().mockResolvedValue(undefined),
+        },
+      }),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn(),
+      routeCommand: vi.fn(),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn(),
+      initialize: vi.fn(),
+    };
+
+    const say = vi.fn();
+    const event = {
+      user: 'U123',
+      channel: 'D123',
+      ts: '555.666',
+      text: '/z help',
+      team: 'T_X',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const inv = dispatch.mock.calls[0][0];
+    expect(inv.source).toBe('dm');
+    expect(inv.remainder).toBe('help');
+    // ZRouter handles the response — legacy pipeline MUST NOT run.
+    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+  });
+
+  it('DM `new hello` (whitelisted naked) falls through to legacy pipeline (FIX #1)', async () => {
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+    handlerAny.slackApi = {
+      getClient: vi.fn(),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+      routeCommand: vi.fn(),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn(),
+      initialize: vi.fn(),
+    };
+
+    const say = vi.fn();
+    const event = {
+      user: 'U123',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'new hello world',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    // Whitelisted naked does NOT go to ZRouter from DM — it falls through.
+    expect(dispatch).not.toHaveBeenCalled();
+    // Legacy pipeline was entered (processFiles called).
+    expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalled();
+  });
+
+  it('DM `persona set linus` (legacy naked, not whitelisted) is dropped per spec §6 (FIX #1)', async () => {
+    const app = { client: {} } as any;
+    const claudeHandler = {};
+    const mcpManager = {};
+
+    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+    const handlerAny = handler as any;
+
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+    handlerAny.slackApi = {
+      getClient: vi.fn(),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn(),
+      routeCommand: vi.fn(),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn(),
+      initialize: vi.fn(),
+    };
+
+    const say = vi.fn();
+    const event = {
+      user: 'U123',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'persona set linus',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    // Legacy naked (non-whitelisted) DM is still dropped per existing spec §6.
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+  });
 });

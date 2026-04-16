@@ -41,6 +41,8 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
+import { DmZRespond } from './slack/z/respond';
 import { isWhitelistedNaked as isZWhitelistedNaked } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
@@ -252,10 +254,19 @@ export class SlackHandler {
       if (handledCleanupRequest) {
         return;
       }
-      // Phase 1 of /z refactor (#506): allow `/z …` and whitelisted naked
-      // (session/new/renew/$*) to enter the command pipeline from DM. All
-      // other DM messages are dropped as before.
+      // Phase 1 of /z refactor (#506): 3 DM sub-paths.
+      // FIX #1 (PR #509): `/z …` DMs are routed through ZRouter here (same
+      //   normalization pipeline as slash and app_mention). Whitelisted naked
+      //   (session/new/renew/$*) still falls through to the legacy pipeline
+      //   because those commands need the full session-aware InputProcessor.
       const dmText = (event.text ?? '').trim();
+      if (stripZPrefix(dmText) !== null) {
+        const handled = await this.routeDmViaZRouter(event);
+        if (handled) {
+          return;
+        }
+        // Fall through on unexpected failure (best-effort continuity).
+      }
       if (dmText.startsWith('/z') || isZWhitelistedNaked(dmText)) {
         this.logger.info('DM /z or whitelisted naked accepted into pipeline', {
           user: event.user,
@@ -534,6 +545,51 @@ export class SlackHandler {
       executeParams,
       turnRunner,
     });
+  }
+
+  /**
+   * FIX #1 (PR #509): route DM `/z …` through ZRouter with `source='dm'` and
+   * a `DmZRespond` (chat.postMessage + chat.update). Returns `true` if the
+   * message was handled (caller must return; do NOT continue pipeline).
+   */
+  private async routeDmViaZRouter(event: MessageEvent): Promise<boolean> {
+    const zRouter = this.eventRouter.getZRouter();
+    if (!zRouter) {
+      this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
+      return false;
+    }
+    try {
+      const respond = new DmZRespond({
+        client: this.slackApi.getClient(),
+        channel: event.channel,
+      });
+      const inv = normalizeZInvocation({
+        source: 'dm',
+        text: event.text ?? '',
+        userId: event.user,
+        channelId: event.channel,
+        teamId: (event as any).team ?? '',
+        threadTs: event.thread_ts ?? event.ts,
+        respond,
+      });
+      const result = await zRouter.dispatch(inv);
+      if (!result.handled && result.error) {
+        this.logger.error('ZRouter.dispatch (dm) returned error', {
+          error: result.error,
+          user: event.user,
+          channel: event.channel,
+        });
+        await respond.send({ text: `⚠️ 명령 실행 실패: ${result.error}` });
+      }
+      return true;
+    } catch (err: any) {
+      this.logger.error('routeDmViaZRouter failed', {
+        err: err?.message,
+        user: event.user,
+        channel: event.channel,
+      });
+      return false;
+    }
   }
 
   private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {
