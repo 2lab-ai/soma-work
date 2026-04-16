@@ -41,6 +41,9 @@ import { createForkExecutor } from './slack/create-fork-executor';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
+import { DmZRespond } from './slack/z/respond';
+import { isWhitelistedNaked as isZWhitelistedNaked } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession } from './types';
@@ -251,10 +254,39 @@ export class SlackHandler {
       if (handledCleanupRequest) {
         return;
       }
-      // DM messages that aren't cleanup requests should not enter the session pipeline.
-      // DMs are reserved for bot management commands (message deletion, etc.).
-      this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
-      return;
+      // Phase 1 of /z refactor (#506): 3 DM sub-paths.
+      // FIX #1 (PR #509): `/z …` DMs are routed through ZRouter here (same
+      //   normalization pipeline as slash and app_mention). Whitelisted naked
+      //   (session/new/renew/$*) still falls through to the legacy pipeline
+      //   because those commands need the full session-aware InputProcessor.
+      // FIX #1 followup (codex P1): honour `continueWithPrompt` so commands
+      //   like `/z new write a test` continue into the session pipeline
+      //   with the captured prompt rather than becoming a silent no-op.
+      const dmText = (event.text ?? '').trim();
+      if (stripZPrefix(dmText) !== null) {
+        const routed = await this.routeDmViaZRouter(event);
+        if (routed.terminal) {
+          return;
+        }
+        if (routed.continueWithPrompt !== undefined) {
+          // ZRouter consumed the `/z <topic> …` prefix and handed back a
+          // prompt for the normal pipeline (e.g. `/z new write a test` →
+          // `write a test`). Substitute the event text and fall through.
+          event.text = routed.continueWithPrompt;
+        }
+        // else: not terminal and no continuation — fall through with original text.
+      }
+      if (dmText.startsWith('/z') || isZWhitelistedNaked(dmText)) {
+        this.logger.info('DM /z or whitelisted naked accepted into pipeline', {
+          user: event.user,
+          channel,
+          preview: dmText.substring(0, 40),
+        });
+        // Fall through to the normal pipeline so the DM reaches CommandRouter.
+      } else {
+        this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
+        return;
+      }
     }
 
     // Immediately acknowledge the message with eyes emoji
@@ -522,6 +554,76 @@ export class SlackHandler {
       executeParams,
       turnRunner,
     });
+  }
+
+  /**
+   * FIX #1 (PR #509): route DM `/z …` through ZRouter with `source='dm'` and
+   * a `DmZRespond` (chat.postMessage + chat.update).
+   *
+   * Return shape (codex P1 followup):
+   *  - `terminal: true` — the router fully consumed the invocation (tombstone
+   *    card, help card, forbidden notice, error ephemeral, or a command that
+   *    returned `handled:true` with no continuation). Caller must return.
+   *  - `terminal: false, continueWithPrompt: string` — the command captured
+   *    a follow-up prompt (e.g. `/z new write a test`); caller should
+   *    substitute `event.text` with the prompt and continue the pipeline.
+   *  - `terminal: false, continueWithPrompt: undefined` — the router did not
+   *    handle the message (unknown `/z` remainder, or internal failure);
+   *    caller should fall through to the legacy pipeline unchanged.
+   */
+  private async routeDmViaZRouter(event: MessageEvent): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+    const zRouter = this.eventRouter.getZRouter();
+    if (!zRouter) {
+      this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
+      return { terminal: false };
+    }
+    try {
+      const respond = new DmZRespond({
+        client: this.slackApi.getClient(),
+        channel: event.channel,
+      });
+      const inv = normalizeZInvocation({
+        source: 'dm',
+        text: event.text ?? '',
+        userId: event.user,
+        channelId: event.channel,
+        teamId: (event as any).team ?? '',
+        threadTs: event.thread_ts ?? event.ts,
+        respond,
+      });
+      const result = await zRouter.dispatch(inv);
+
+      // Error path: show failure notice and terminate.
+      if (!result.handled && result.error) {
+        this.logger.error('ZRouter.dispatch (dm) returned error', {
+          error: result.error,
+          user: event.user,
+          channel: event.channel,
+        });
+        await respond.send({ text: `⚠️ 명령 실행 실패: ${result.error}` });
+        return { terminal: true };
+      }
+
+      // Continuation path: caller must continue with the captured prompt.
+      if (result.continueWithPrompt !== undefined) {
+        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+      }
+
+      // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      if (result.handled) {
+        return { terminal: true };
+      }
+
+      // Unhandled, no error, no continuation → fall through to legacy pipeline.
+      return { terminal: false };
+    } catch (err: any) {
+      this.logger.error('routeDmViaZRouter failed', {
+        err: err?.message,
+        user: event.user,
+        channel: event.channel,
+      });
+      return { terminal: false };
+    }
   }
 
   private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {

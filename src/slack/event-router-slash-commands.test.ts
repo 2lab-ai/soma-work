@@ -1,15 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Integration Tests for EventRouter.setupSlashCommands()
- * Trace: docs/slash-commands/trace.md — missing contract tests identified in PR review
  *
- * These tests verify the EventRouter-level slash command handling:
- * - ack() called immediately
- * - Error handling paths with double-fault protection
- * - /session with/without active sessions
- * - /new fallback message
- * - Session-dependent command blocking
+ * Phase 1 of #506 — unified `/z` entry point:
+ * - `/z` registered as the primary command
+ * - `/soma`, `/session`, `/new` are tombstone-redirected to `/z` by default
+ * - Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore pre-/z behavior (rollback)
  */
 
 // Minimal mocks for Bolt's app.command() pattern
@@ -35,81 +32,275 @@ function createMockBoltArgs(overrides: Record<string, any> = {}) {
   };
 }
 
-// We test the slash command logic by importing EventRouter and capturing
-// the handlers registered via app.command()
-describe('EventRouter.setupSlashCommands — integration', () => {
+function buildMockDeps() {
+  return {
+    slackApi: {
+      getBotUserId: vi.fn().mockResolvedValue('B_BOT'),
+      getClient: vi.fn(),
+      getChannelInfo: vi.fn(),
+      getPermalink: vi.fn(),
+      addReaction: vi.fn(),
+    },
+    claudeHandler: {
+      getSession: vi.fn(),
+      findSessionBySourceThread: vi.fn(),
+      setExpiryCallbacks: vi.fn(),
+      cleanupInactiveSessions: vi.fn(),
+    },
+    sessionManager: {
+      formatUserSessionsBlocks: vi.fn(),
+      handleSessionWarning: vi.fn(),
+      handleSessionSleep: vi.fn(),
+      handleSessionExpiry: vi.fn(),
+      handleIdleCheck: vi.fn(),
+    },
+    actionHandlers: {
+      registerHandlers: vi.fn(),
+    },
+    commandDeps: {
+      workingDirManager: {
+        parseSetCommand: vi.fn().mockReturnValue(null),
+        isGetCommand: vi.fn().mockReturnValue(false),
+      },
+      mcpManager: { getPluginManager: vi.fn() },
+      claudeHandler: {},
+      sessionUiManager: {},
+      requestCoordinator: {},
+      slackApi: {},
+      reactionManager: {},
+      contextWindowManager: {},
+    },
+  };
+}
+
+async function setupRouter(opts: { legacyEnabled?: boolean } = {}) {
+  if (opts.legacyEnabled) {
+    process.env.SOMA_ENABLE_LEGACY_SLASH = 'true';
+  } else {
+    delete process.env.SOMA_ENABLE_LEGACY_SLASH;
+  }
+
+  const handlers: Record<string, Function> = {};
+  const mockApp = {
+    command: vi.fn((cmd: string, handler: Function) => {
+      handlers[cmd] = handler;
+    }),
+    message: vi.fn(),
+    event: vi.fn(),
+  };
+  const mockDeps = buildMockDeps();
+
+  const { EventRouter } = await import('./event-router');
+  const eventRouter = new EventRouter(mockApp as any, mockDeps as any, vi.fn());
+  eventRouter.setup();
+
+  return { handlers, mockApp, mockDeps, eventRouter: eventRouter as any };
+}
+
+describe('EventRouter.setupSlashCommands — /z unified (default)', () => {
   let handlers: Record<string, Function>;
   let mockApp: any;
   let mockDeps: any;
   let eventRouter: any;
 
   beforeEach(async () => {
-    handlers = {};
+    ({ handlers, mockApp, mockDeps, eventRouter } = await setupRouter());
+  });
 
-    mockApp = {
-      command: vi.fn((cmd: string, handler: Function) => {
-        handlers[cmd] = handler;
-      }),
-      message: vi.fn(),
-      event: vi.fn(),
-    };
-
-    mockDeps = {
-      slackApi: {
-        getBotUserId: vi.fn().mockResolvedValue('B_BOT'),
-        getClient: vi.fn(),
-        getChannelInfo: vi.fn(),
-        getPermalink: vi.fn(),
-        addReaction: vi.fn(),
-      },
-      claudeHandler: {
-        getSession: vi.fn(),
-        findSessionBySourceThread: vi.fn(),
-        setExpiryCallbacks: vi.fn(),
-        cleanupInactiveSessions: vi.fn(),
-      },
-      sessionManager: {
-        formatUserSessionsBlocks: vi.fn(),
-        handleSessionWarning: vi.fn(),
-        handleSessionSleep: vi.fn(),
-        handleSessionExpiry: vi.fn(),
-        handleIdleCheck: vi.fn(),
-      },
-      actionHandlers: {
-        registerHandlers: vi.fn(),
-      },
-      commandDeps: {
-        workingDirManager: {
-          parseSetCommand: vi.fn().mockReturnValue(null),
-          isGetCommand: vi.fn().mockReturnValue(false),
-        },
-        mcpManager: { getPluginManager: vi.fn() },
-        claudeHandler: {},
-        sessionUiManager: {},
-        requestCoordinator: {},
-        slackApi: {},
-        reactionManager: {},
-        contextWindowManager: {},
-      },
-    };
-
-    const { EventRouter } = await import('./event-router');
-    eventRouter = new EventRouter(mockApp, mockDeps, vi.fn());
-    eventRouter.setup();
+  afterEach(() => {
+    delete process.env.SOMA_ENABLE_LEGACY_SLASH;
   });
 
   // ============================================================
-  // Trace S1: Registration
+  // Registration
   // ============================================================
 
-  it('registers three slash commands: /soma, /session, /new', () => {
+  it('registers /z as the unified entry point', () => {
+    expect(mockApp.command).toHaveBeenCalledWith('/z', expect.any(Function));
+  });
+
+  it('registers legacy slash commands (/soma, /session, /new) for tombstone-redirect', () => {
     expect(mockApp.command).toHaveBeenCalledWith('/soma', expect.any(Function));
     expect(mockApp.command).toHaveBeenCalledWith('/session', expect.any(Function));
     expect(mockApp.command).toHaveBeenCalledWith('/new', expect.any(Function));
   });
 
   // ============================================================
-  // Trace S2: /soma — ack() called immediately
+  // /z — dispatches to ZRouter
+  // ============================================================
+
+  it('/z: ack() is called immediately', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'help' });
+    await handlers['/z']({ command, ack, respond });
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it('/z: empty text falls back to help', async () => {
+    // Force zRouter.dispatch() to return not-handled.
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockResolvedValue({ handled: false, consumed: false }),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: '' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+  });
+
+  it('/z: when zRouter is not initialized, responds with init message', async () => {
+    (eventRouter as any).zRouter = null;
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'help' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('initializing'),
+      }),
+    );
+  });
+
+  it('/z: handler exception returns generic ephemeral error (no internal details)', async () => {
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockRejectedValue(new Error('DB connection failed: host=10.0.0.5')),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'help' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    const errorText = respond.mock.calls[0][0].text;
+    expect(errorText).not.toContain('DB connection');
+    expect(errorText).not.toContain('10.0.0.5');
+    expect(errorText).toContain('⚠️');
+  });
+
+  it('/z: when ZRouter returns {handled:false, error}, error is surfaced to user (not swallowed)', async () => {
+    // FIX #3 — routeToLegacy errors must be propagated rather than masked by help fallback.
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockResolvedValue({
+        handled: false,
+        error: 'persona handler crashed',
+      }),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'persona set linus' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('명령 실행 실패'),
+      }),
+    );
+    // The error message MUST include the root cause.
+    expect(respond.mock.calls[0][0].text).toContain('persona handler crashed');
+  });
+
+  it('/z: when ZRouter returns {handled:false, no error}, falls back to help', async () => {
+    // The non-error unhandled path still falls back to help.
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockResolvedValue({ handled: false, consumed: false }),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'unknown' });
+    await handlers['/z']({ command, ack, respond });
+
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    const text = respond.mock.calls[0][0].text;
+    expect(text).not.toContain('명령 실행 실패');
+  });
+
+  it('/z: double-fault — respond() failure in catch does not throw', async () => {
+    (eventRouter as any).zRouter = {
+      dispatch: vi.fn().mockRejectedValue(new Error('Original error')),
+    };
+
+    const { command, ack, respond } = createMockBoltArgs({ command: '/z', text: 'help' });
+    respond.mockRejectedValueOnce(new Error('respond() also failed'));
+
+    await expect(handlers['/z']({ command, ack, respond })).resolves.not.toThrow();
+  });
+
+  // ============================================================
+  // /soma, /session, /new — tombstone redirects
+  // ============================================================
+
+  it('/soma: redirects to /z by default', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
+    await handlers['/soma']({ command, ack, respond });
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('/z'),
+      }),
+    );
+  });
+
+  it('/soma: respond() failure in redirect does not throw', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
+    respond.mockRejectedValueOnce(new Error('response_url expired'));
+    await expect(handlers['/soma']({ command, ack, respond })).resolves.not.toThrow();
+  });
+
+  it('/session: redirects to /z by default', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/session' });
+    await handlers['/session']({ command, ack, respond });
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('/z'),
+      }),
+    );
+    // Legacy sessionManager code path must NOT run.
+    expect(mockDeps.sessionManager.formatUserSessionsBlocks).not.toHaveBeenCalled();
+  });
+
+  it('/session: respond() failure in redirect does not throw', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/session' });
+    respond.mockRejectedValueOnce(new Error('response_url expired'));
+    await expect(handlers['/session']({ command, ack, respond })).resolves.not.toThrow();
+  });
+
+  it('/new: redirects to /z by default', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/new', text: '' });
+    await handlers['/new']({ command, ack, respond });
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_type: 'ephemeral',
+        text: expect.stringContaining('/z'),
+      }),
+    );
+  });
+
+  it('/new: respond() failure in redirect does not throw', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/new', text: '' });
+    respond.mockRejectedValueOnce(new Error('response_url expired'));
+    await expect(handlers['/new']({ command, ack, respond })).resolves.not.toThrow();
+  });
+});
+
+describe('EventRouter.setupSlashCommands — legacy rollback (SOMA_ENABLE_LEGACY_SLASH=true)', () => {
+  let handlers: Record<string, Function>;
+  let mockDeps: any;
+  let eventRouter: any;
+
+  beforeEach(async () => {
+    ({ handlers, mockDeps, eventRouter } = await setupRouter({ legacyEnabled: true }));
+  });
+
+  afterEach(() => {
+    delete process.env.SOMA_ENABLE_LEGACY_SLASH;
+  });
+
+  // ============================================================
+  // /soma — ack() called immediately + CommandRouter path
   // ============================================================
 
   it('/soma: ack() is called immediately before any async work', async () => {
@@ -117,100 +308,90 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     await handlers['/soma']({ command, ack, respond });
 
     expect(ack).toHaveBeenCalledTimes(1);
-    // ack must be called before respond
     const ackOrder = ack.mock.invocationCallOrder[0];
     const respondOrder = respond.mock.invocationCallOrder[0];
     expect(ackOrder).toBeLessThan(respondOrder);
   });
 
-  // ============================================================
-  // Trace S2: /soma — error handling returns ephemeral
-  // ============================================================
-
   it('/soma: handler exception returns generic ephemeral error (no internal details)', async () => {
-    // Force CommandRouter.route() to throw
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/soma',
-      text: 'help',
-    });
+    const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
 
-    // Override the commandRouter to throw
-    const origRouter = (eventRouter as any).commandRouter;
     (eventRouter as any).commandRouter = {
       route: vi.fn().mockRejectedValue(new Error('DB connection failed: host=10.0.0.5')),
     };
 
     await handlers['/soma']({ command, ack, respond });
 
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-      }),
-    );
-    // Must NOT expose internal error details
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     const errorText = respond.mock.calls[0][0].text;
     expect(errorText).not.toContain('DB connection');
     expect(errorText).not.toContain('10.0.0.5');
     expect(errorText).toContain('⚠️');
-
-    // Restore
-    (eventRouter as any).commandRouter = origRouter;
   });
 
   it('/soma: double-fault — respond() failure in catch does not throw', async () => {
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/soma',
-      text: 'help',
-    });
+    const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
 
     (eventRouter as any).commandRouter = {
       route: vi.fn().mockRejectedValue(new Error('Original error')),
     };
     respond.mockRejectedValueOnce(new Error('respond() also failed'));
 
-    // Should not throw — double fault is caught internally
     await expect(handlers['/soma']({ command, ack, respond })).resolves.not.toThrow();
   });
-
-  // ============================================================
-  // P1: Session-dependent commands blocked via slash
-  // ============================================================
 
   it('/soma: session-dependent commands (close, renew, new, context, restore, link) are blocked', async () => {
     const sessionCommands = ['close', 'renew', 'new', 'context', 'restore', 'link'];
 
     for (const cmd of sessionCommands) {
-      const { command, ack, respond } = createMockBoltArgs({
-        command: '/soma',
-        text: cmd,
-      });
+      const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: cmd });
       await handlers['/soma']({ command, ack, respond });
 
-      expect(respond).toHaveBeenCalledWith(
-        expect.objectContaining({
-          response_type: 'ephemeral',
-        }),
-      );
+      expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
       const text = respond.mock.calls[0][0].text;
       expect(text).toContain('스레드 컨텍스트가 필요');
       expect(text).toContain(cmd);
     }
   });
 
-  it('/soma: stateless commands (help, model) are NOT blocked', async () => {
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/soma',
-      text: 'help',
-    });
+  it('/soma: all SLASH_FORBIDDEN entries are blocked on legacy rollback (FIX #2)', async () => {
+    // Covers all 12 entries in SLASH_FORBIDDEN — previously only the first 6
+    // (SESSION_DEPENDENT_COMMANDS) were blocked, leaving `compact` and
+    // `session set *` unblocked under rollback. See capability.ts.
+    const cases: { text: string; contains: string }[] = [
+      { text: 'new', contains: 'new' },
+      { text: 'close', contains: 'close' },
+      { text: 'renew', contains: 'renew' },
+      { text: 'context', contains: 'context' },
+      { text: 'restore', contains: 'restore' },
+      { text: 'link https://x', contains: 'link' },
+      { text: 'compact', contains: 'compact' },
+      { text: 'session set model opus', contains: 'session set model' },
+      { text: 'session set verbosity 2', contains: 'session set verbosity' },
+      { text: 'session set effort high', contains: 'session set effort' },
+      { text: 'session set thinking on', contains: 'session set thinking' },
+      { text: 'session set thinking_summary on', contains: 'session set thinking_summary' },
+    ];
+
+    for (const { text, contains } of cases) {
+      const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text });
+      await handlers['/soma']({ command, ack, respond });
+      const responseText = respond.mock.calls[0][0].text;
+      expect(responseText).toContain('스레드 컨텍스트가 필요');
+      expect(responseText).toContain(contains);
+    }
+  });
+
+  it('/soma: stateless commands (help) are NOT blocked', async () => {
+    const { command, ack, respond } = createMockBoltArgs({ command: '/soma', text: 'help' });
     await handlers['/soma']({ command, ack, respond });
 
-    // help should be routed to CommandRouter, not blocked
     const text = respond.mock.calls[0][0].text;
     expect(text).not.toContain('스레드 컨텍스트가 필요');
   });
 
   // ============================================================
-  // Trace S4: /session — with and without active sessions
+  // /session — legacy path calls sessionManager
   // ============================================================
 
   it('/session: with active sessions, returns ephemeral list', async () => {
@@ -223,7 +404,9 @@ describe('EventRouter.setupSlashCommands — integration', () => {
     await handlers['/session']({ command, ack, respond });
 
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(mockDeps.sessionManager.formatUserSessionsBlocks).toHaveBeenCalledWith('U_TEST', { showControls: true });
+    expect(mockDeps.sessionManager.formatUserSessionsBlocks).toHaveBeenCalledWith('U_TEST', {
+      showControls: true,
+    });
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '2 active sessions',
@@ -261,31 +444,21 @@ describe('EventRouter.setupSlashCommands — integration', () => {
   });
 
   // ============================================================
-  // Trace S5: /new — fallback message
+  // /new — legacy fallback message
   // ============================================================
 
   it('/new: always returns fallback message', async () => {
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/new',
-      text: '',
-    });
+    const { command, ack, respond } = createMockBoltArgs({ command: '/new', text: '' });
     await handlers['/new']({ command, ack, respond });
 
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response_type: 'ephemeral',
-      }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     const text = respond.mock.calls[0][0].text;
     expect(text).toContain('스레드 내에서만');
   });
 
   it('/new: with prompt, includes prompt in fallback message', async () => {
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/new',
-      text: 'fix the bug',
-    });
+    const { command, ack, respond } = createMockBoltArgs({ command: '/new', text: 'fix the bug' });
     await handlers['/new']({ command, ack, respond });
 
     const text = respond.mock.calls[0][0].text;
@@ -293,10 +466,7 @@ describe('EventRouter.setupSlashCommands — integration', () => {
   });
 
   it('/new: error in respond() does not throw', async () => {
-    const { command, ack, respond } = createMockBoltArgs({
-      command: '/new',
-      text: '',
-    });
+    const { command, ack, respond } = createMockBoltArgs({ command: '/new', text: '' });
     respond.mockRejectedValueOnce(new Error('response_url expired'));
 
     await expect(handlers['/new']({ command, ack, respond })).resolves.not.toThrow();

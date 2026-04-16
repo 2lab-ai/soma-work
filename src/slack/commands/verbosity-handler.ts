@@ -1,10 +1,15 @@
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
-import { getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '../output-flags';
+import { getVerbosityFlags, VERBOSITY_NAMES } from '../output-flags';
+import { applyVerbosity, renderVerbosityCard } from '../z/topics/verbosity-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles verbosity commands (status/set)
+ * Handles verbosity commands (status/set).
+ *
+ * Phase 2 (#507):
+ *   - bare `verbosity` → Block Kit setting card
+ *   - `verbosity <level>` → apply + text ack (also applied to current session)
  */
 export class VerbosityHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -18,18 +23,19 @@ export class VerbosityHandler implements CommandHandler {
     const parsed = CommandParser.parseVerbosityCommand(ctx.text);
 
     if (parsed.action === 'set' && parsed.level) {
-      const resolved = userSettingsStore.resolveVerbosityInput(parsed.level);
-      if (resolved) {
-        userSettingsStore.setUserDefaultLogVerbosity(user, resolved);
-
-        // Also apply to the current session live
-        const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        if (session) {
-          session.logVerbosity = getVerbosityFlags(resolved);
+      const result = await applyVerbosity({ userId: user, value: parsed.level });
+      if (result.ok) {
+        // Apply to the current session live — mirrors legacy behaviour.
+        const resolved = userSettingsStore.resolveVerbosityInput(parsed.level);
+        if (resolved) {
+          const session = this.deps.claudeHandler.getSession(channel, threadTs);
+          if (session) {
+            session.logVerbosity = getVerbosityFlags(resolved);
+          }
         }
 
         await say({
-          text: `✅ *Log Verbosity Changed*\n\nVerbosity is now: *${resolved}*\n\n_Applied to current and future sessions._`,
+          text: `✅ *Log Verbosity Changed*\n\n${result.summary}\n\n_Applied to current and future sessions._`,
           thread_ts: threadTs,
         });
       } else {
@@ -40,16 +46,11 @@ export class VerbosityHandler implements CommandHandler {
         });
       }
     } else {
-      // Status
-      const current = userSettingsStore.getUserDefaultLogVerbosity(user);
-      const levelList = VERBOSITY_NAMES.map((name) =>
-        name === current ? `• *${name}* _(current)_` : `• ${name}`,
-      ).join('\n');
-
-      await say({
-        text: `📊 *Log Verbosity*\n\nCurrent: *${current}*\n\n*Available levels:*\n${levelList}\n\n_Use \`verbosity <level>\` to change._`,
-        thread_ts: threadTs,
+      const { text: fallback, blocks } = await renderVerbosityCard({
+        userId: user,
+        issuedAt: Date.now(),
       });
+      await say({ text: fallback ?? '📊 Verbosity', blocks, thread_ts: threadTs });
     }
 
     return { handled: true };

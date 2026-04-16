@@ -1,9 +1,14 @@
 import { addMemory, clearAllMemory, formatMemoryForDisplay, removeMemoryByIndex } from '../../user-memory-store';
 import { CommandParser } from '../command-parser';
+import { renderMemoryCard } from '../z/topics/memory-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles memory commands (show/clear)
+ * Handles memory commands (show/save/clear).
+ *
+ * Phase 2 (#507): bare `memory` / `memory show` renders Block Kit via
+ * renderMemoryCard. Explicit save/clear subcommands keep their text acks for
+ * CLI-style back-compat.
  */
 export class MemoryHandler implements CommandHandler {
   canHandle(text: string): boolean {
@@ -15,8 +20,17 @@ export class MemoryHandler implements CommandHandler {
     const action = CommandParser.parseMemoryCommand(text);
 
     if (action.action === 'show') {
-      const display = formatMemoryForDisplay(user);
-      await say({ text: display, thread_ts: threadTs });
+      try {
+        const { text: fallback, blocks } = await renderMemoryCard({
+          userId: user,
+          issuedAt: Date.now(),
+        });
+        await say({ text: fallback ?? '🧠 Memory', blocks, thread_ts: threadTs });
+      } catch {
+        // Fallback to plain-text display if card render fails.
+        const display = formatMemoryForDisplay(user);
+        await say({ text: display, thread_ts: threadTs });
+      }
     } else if (action.action === 'save') {
       const result = addMemory(user, action.target, action.content);
       if (result.ok) {

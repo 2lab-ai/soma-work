@@ -107,21 +107,26 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a cct/set_cct command
+   * Check if text is a cct command.
+   *
+   * `/z` refactor (#506): only the canonical `cct` / `cct set <n>` / `cct next`
+   * forms are accepted. Legacy `set_cct <n>` / `nextcct` underscore aliases
+   * are no longer recognised — ZRouter.translateToLegacy bridges the `/z` form
+   * before we reach here.
    */
   static isCctCommand(text: string): boolean {
-    return /^\/?(?:cct|set_cct|nextcct)(?:\s+\S+)?$/i.test(text.trim());
+    return /^\/?cct(?:\s+(?:next|set\s+\S+))?$/i.test(text.trim());
   }
 
   /**
-   * Parse cct command: "cct" → status, "set_cct cctN" → set, "nextcct" → next
+   * Parse cct command: "cct" → status, "cct set cctN" → set, "cct next" → next.
    */
   static parseCctCommand(text: string): CctAction {
     const trimmed = text.trim();
-    if (/^\/?nextcct$/i.test(trimmed)) {
+    if (/^\/?cct\s+next$/i.test(trimmed)) {
       return { action: 'next' };
     }
-    const match = trimmed.match(/^\/?set_cct\s+(\S+)$/i);
+    const match = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
     if (match) {
       return { action: 'set', target: match[1] };
     }
@@ -129,17 +134,21 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is an MCP info command
+   * Check if text is an MCP info command.
+   *
+   * `/z` refactor (#506): legacy `servers` / `server` / `?` suffix aliases
+   * are removed — only the canonical `mcp` / `mcp list` / `mcp info` /
+   * `mcp status` forms are accepted.
    */
   static isMcpInfoCommand(text: string): boolean {
-    return /^\/?(?:mcp|servers?)(?:\s+(?:info|list|status))?(?:\?)?$/i.test(text.trim());
+    return /^\/?mcp(?:\s+(?:info|list|status))?$/i.test(text.trim());
   }
 
   /**
-   * Check if text is an MCP reload command
+   * Check if text is an MCP reload command.
    */
   static isMcpReloadCommand(text: string): boolean {
-    return /^\/?(?:mcp|servers?)\s+(?:reload|refresh)$/i.test(text.trim());
+    return /^\/?mcp\s+(?:reload|refresh)$/i.test(text.trim());
   }
 
   /**
@@ -332,33 +341,71 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a restore credentials command
+   * Check if text is an effort command (user-global setter).
+   *
+   * `effort` / `effort <level>` sets the user's default effort level and
+   * persists it via `userSettingsStore.setUserDefaultEffort()`. Affects all
+   * future sessions plus the current session live.
+   *
+   * Session-only changes use the `%effort` / `$effort` prefix forms handled
+   * by `SessionCommandHandler`. Invariant: bare command = user-global,
+   * prefixed command = session-scoped.
+   */
+  static isEffortCommand(text: string): boolean {
+    return /^\/?effort(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse effort command: `effort`, `effort status`, `effort <level>`.
+   */
+  static parseEffortCommand(text: string): { action: 'status' | 'set'; level?: string } {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?effort\s+(\S+)$/i);
+    if (match && match[1] !== 'status') {
+      return { action: 'set', level: match[1] };
+    }
+    return { action: 'status' };
+  }
+
+  /**
+   * Check if text is a restore credentials command.
+   *
+   * `/z` refactor (#506): legacy `credentials` / `credentials status` aliases
+   * are removed — only `restore` / `restore status` / `restore restore` forms
+   * are accepted (tombstone redirects legacy callers).
    */
   static isRestoreCommand(text: string): boolean {
-    return /^\/?(?:restore|credentials?)(?:\s+(?:restore|status))?$/i.test(text.trim());
+    return /^\/?restore(?:\s+(?:restore|status))?$/i.test(text.trim());
   }
 
   /**
-   * Check if text is a "show prompt" command (admin only)
-   * Matches: "show prompt", "/show prompt", "show_prompt", "/show_prompt"
+   * Check if text is a "show prompt" command (admin only).
+   *
+   * `/z` refactor (#506): underscore alias `show_prompt` is removed —
+   * only the space form `show prompt` is accepted.
    */
   static isShowPromptCommand(text: string): boolean {
-    return /^\/?show[_ ]prompt$/i.test(text.trim());
+    return /^\/?show\s+prompt$/i.test(text.trim());
   }
 
   /**
-   * Check if text is a "show instructions" command (admin only)
-   * Matches: "show instructions", "/show instructions", "show_instructions", "/show_instructions"
+   * Check if text is a "show instructions" command (admin only).
+   *
+   * `/z` refactor (#506): underscore alias `show_instructions` is removed —
+   * only the space form `show instructions` is accepted.
    */
   static isShowInstructionsCommand(text: string): boolean {
-    return /^\/?show[_ ]instructions$/i.test(text.trim());
+    return /^\/?show\s+instructions$/i.test(text.trim());
   }
 
   /**
-   * Check if text is a help command
+   * Check if text is a help command.
+   *
+   * `/z` refactor (#506): legacy `commands` / `command` / `?` suffix aliases
+   * are removed — only `help` is accepted (tombstone redirects `commands`).
    */
   static isHelpCommand(text: string): boolean {
-    return /^\/?(?:help|commands?)(?:\?)?$/i.test(text.trim());
+    return /^\/?help$/i.test(text.trim());
   }
 
   /**
@@ -508,10 +555,15 @@ export class CommandParser {
   }
 
   /**
-   * Parse terminate command, returns session key or null
+   * Parse terminate command, returns session key or null.
+   *
+   * `/z` refactor (#506): legacy `kill` / `end` / `_session` suffix aliases
+   * are removed — only `terminate <key>` / `sessions terminate <key>` forms
+   * are accepted (the `sessions terminate` whitelist entry is handled by the
+   * naked-whitelist in z/whitelist.ts).
    */
   static parseTerminateCommand(text: string): string | null {
-    const match = text.trim().match(/^\/?(?:terminate|kill|end)(?:_session)?\s+(.+)$/i);
+    const match = text.trim().match(/^\/?terminate\s+(.+)$/i);
     return match ? match[1].trim() : null;
   }
 
@@ -684,47 +736,47 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a plugins command
+   * Check if text is a plugins command.
+   *
+   * `/z` refactor (#506): Korean alias `플러그인 업데이트` is removed — only
+   * the English `plugins <verb>` / `plugin <verb>` forms are accepted (the
+   * tombstone hint redirects `플러그인` callers to `/z plugin update`).
    */
   static isPluginsCommand(text: string): boolean {
-    const t = text.trim();
-    return (
-      /^\/?plugins(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(t) ||
-      /^\/?플러그인\s*업데이트$/i.test(t)
-    );
+    return /^\/?plugins?(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(text.trim());
   }
 
   /**
-   * Parse plugins command
+   * Parse plugins command.
    */
   static parsePluginsCommand(text: string): PluginsAction {
     const trimmed = text.trim();
 
-    // Match: plugins update / 플러그인 업데이트
-    if (/^\/?plugins\s+update$/i.test(trimmed) || /^\/?플러그인\s*업데이트$/i.test(trimmed)) {
+    // Match: plugins update
+    if (/^\/?plugins?\s+update$/i.test(trimmed)) {
       return { action: 'update' };
     }
 
     // Match: plugins add <pluginRef>
-    const addMatch = trimmed.match(/^\/?plugins\s+add\s+(\S+)$/i);
+    const addMatch = trimmed.match(/^\/?plugins?\s+add\s+(\S+)$/i);
     if (addMatch) {
       return { action: 'add', pluginRef: addMatch[1] };
     }
 
     // Match: plugins remove <pluginRef>
-    const removeMatch = trimmed.match(/^\/?plugins\s+remove\s+(\S+)$/i);
+    const removeMatch = trimmed.match(/^\/?plugins?\s+remove\s+(\S+)$/i);
     if (removeMatch) {
       return { action: 'remove', pluginRef: removeMatch[1] };
     }
 
     // Match: plugins rollback <pluginRef>
-    const rollbackMatch = trimmed.match(/^\/?plugins\s+rollback\s+(\S+)$/i);
+    const rollbackMatch = trimmed.match(/^\/?plugins?\s+rollback\s+(\S+)$/i);
     if (rollbackMatch) {
       return { action: 'rollback', pluginRef: rollbackMatch[1] };
     }
 
     // Match: plugins backups <pluginRef>
-    const backupsMatch = trimmed.match(/^\/?plugins\s+backups\s+(\S+)$/i);
+    const backupsMatch = trimmed.match(/^\/?plugins?\s+backups\s+(\S+)$/i);
     if (backupsMatch) {
       return { action: 'backups', pluginRef: backupsMatch[1] };
     }
@@ -805,7 +857,15 @@ export class CommandParser {
   }
 
   /**
-   * Known command keywords (including future commands)
+   * Known command keywords (for `isPotentialCommand` hint detection).
+   *
+   * `/z` refactor (#506) — removed aliases (all now tombstone-redirected):
+   *  - `set_cct`, `nextcct` — underscore form
+   *  - `servers` — use `mcp [list|reload]`
+   *  - `credentials` — use `restore`
+   *  - `commands`, `command`, `?` — use `help`
+   *  - `kill`, `end` — use `terminate`
+   *  - `플러그인` — use `plugins` / `plugin`
    */
   private static readonly COMMAND_KEYWORDS = new Set([
     // Admin commands
@@ -815,13 +875,10 @@ export class CommandParser {
     'config',
     // Token management
     'cct',
-    'set_cct',
-    'nextcct',
     // Working directory
     'cwd',
     // MCP
     'mcp',
-    'servers',
     // Permissions
     'bypass',
     // Sandbox
@@ -832,11 +889,10 @@ export class CommandParser {
     'persona',
     'model',
     'verbosity',
+    'effort',
     // Sessions
     'sessions',
     'terminate',
-    'kill',
-    'end',
     'new',
     'onboarding',
     'context',
@@ -846,23 +902,21 @@ export class CommandParser {
     'link',
     // Credentials
     'restore',
-    'credentials',
     // Help
     'help',
-    'commands',
     // Token usage
     'usage',
     // Marketplace & Plugins
     'marketplace',
     'plugins',
-    '플러그인',
+    'plugin',
     // Future: save/load (oh-my-claude skills)
     'save',
     'load',
-    // Email
+    // Email — multi-word keys (detected via two-word `show_email` / `set_email` join)
     'set_email',
     'show_email',
-    // Admin: show prompt / show instructions (exact two-word forms)
+    // Admin: show prompt / show instructions (detected via two-word join)
     'show_prompt',
     'show_instructions',
     // Rating
@@ -870,6 +924,11 @@ export class CommandParser {
     // Notification
     'notify',
     'webhook',
+    // Report
+    'report',
+    // Skills
+    'skills',
+    'skill',
   ]);
 
   /**
@@ -991,6 +1050,8 @@ export class CommandParser {
       '• `model list` - List available models',
       '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
+      '• `effort` - Show current default effort level',
+      '• `effort <level>` - Set default effort (low/medium/high/max). Persists for all future sessions.',
       '',
       '*LLM Chat Config:*',
       '• `show llm_chat` - Show current llm_chat model configuration',
@@ -1024,7 +1085,7 @@ export class CommandParser {
       '• `plugins` or `/plugins` - Show installed plugins',
       '• `plugins add pluginName@marketplaceName` - Install a plugin',
       '• `plugins remove pluginName@marketplaceName` - Remove a plugin',
-      '• `plugins update` or `플러그인 업데이트` - Force re-download all plugins (Admin only)',
+      '• `plugins update` - Force re-download all plugins (Admin only)',
       '',
       '*Prompt & Instructions (Admin):*',
       '• `show prompt` - Show the system prompt used in this session',
@@ -1032,8 +1093,8 @@ export class CommandParser {
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status',
-      '• `set_cct <name>` - Switch active token (e.g., `set_cct cct2`)',
-      '• `nextcct` - Rotate to next available token',
+      '• `cct set <name>` - Switch active token (e.g., `cct set cct2`)',
+      '• `cct next` - Rotate to next available token',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
