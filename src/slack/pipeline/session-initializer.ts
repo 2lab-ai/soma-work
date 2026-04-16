@@ -203,9 +203,12 @@ export class SessionInitializer {
 
         // Always show conversation URL — it's essential for session review
         const conversationUrl = getConversationUrl(conversationId);
-        await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
+        const convLinkResult = await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
           threadTs,
         });
+        if (convLinkResult?.ts) {
+          (session.sourceThreadCleanupTs ??= []).push(convLinkResult.ts);
+        }
         this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
@@ -398,6 +401,9 @@ export class SessionInitializer {
           userId: user,
           advisoryEphemeral: false,
           allowStay: true,
+          // Carry init-clutter ts into the button payload so cleanup survives restarts
+          // and the original session being terminated (#516).
+          cleanupTs: session.sourceThreadCleanupTs ? [...session.sourceThreadCleanupTs] : undefined,
         };
         await this.postRouteAdvisory(channel, threadTs, routeBlockParams);
 
@@ -452,6 +458,8 @@ export class SessionInitializer {
           sectionText: hasDefaultRoute
             ? `⚠️ 이 repo와 매핑된 채널을 찾지 못했습니다.\n기본 채널 <#${targetChannelId}>로 이동하거나 현재 채널에서 진행할 수 있습니다.`
             : '⚠️ 이 repo와 매핑된 채널을 찾지 못했습니다.\n현재 채널에서 진행할까요?',
+          // Carry init-clutter ts into the button payload (#516).
+          cleanupTs: session.sourceThreadCleanupTs ? [...session.sourceThreadCleanupTs] : undefined,
         };
 
         await this.postRouteAdvisory(channel, threadTs, routeBlockParams);
@@ -622,6 +630,14 @@ export class SessionInitializer {
         threadTs,
       });
       dispatchMessageTs = msgResult?.ts;
+      if (dispatchMessageTs) {
+        // Track for source-thread cleanup on mid-thread migration / channel-route.
+        // Model replies are never tracked here, so they survive migration.
+        const dispatchSessionForTs = this.deps.claudeHandler.getSession(channel, threadTs);
+        if (dispatchSessionForTs) {
+          (dispatchSessionForTs.sourceThreadCleanupTs ??= []).push(dispatchMessageTs);
+        }
+      }
 
       this.logger.info('🎯 Starting dispatch classification', {
         channel,
@@ -797,8 +813,17 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
 
-    // 1. Always clean up dispatch clutter in original thread
-    await this.deps.slackApi.deleteThreadBotMessages(channel, threadTs);
+    // 1. Clean up only the init clutter we posted (dispatch status, conversation-history link).
+    //    Deleting all bot-authored messages here would also wipe prior model replies
+    //    from an existing thread (#516). The session object is the ORIGINAL session,
+    //    captured above; its sourceThreadCleanupTs holds exactly the ts to remove.
+    for (const cleanupTs of session.sourceThreadCleanupTs || []) {
+      try {
+        await this.deps.slackApi.deleteMessage(channel, cleanupTs);
+      } catch (error) {
+        this.logger.debug('Failed to delete source-thread cleanup message', { channel, cleanupTs, error });
+      }
+    }
 
     // 2. Unified redirect — same UX whether from channel or thread.
     // Previously, thread-originating mentions got a rich retention card (📋) while

@@ -285,9 +285,104 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 
 ---
 
+## 4.6) `/z` Block Kit 설정 카드 (#507, Phase 2)
+
+`/z` 슬래시 커맨드는 모든 설정 토픽을 **Block Kit 카드**로 렌더링한다.
+legacy 텍스트 출력은 fallback `text`로만 유지되고, 주 UX는 버튼 인터랙션이다.
+
+### 5.1 구성 요소
+
+| 모듈 | 역할 |
+|------|------|
+| `src/slack/z/ui-builder.ts` | `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard`, `buildTombstoneCard` |
+| `src/slack/z/topics/*-topic.ts` | 토픽별 `renderCard` / `apply` / `openModal` / `submitModal` (11개) |
+| `src/slack/z/topics/index.ts` | `buildDefaultTopicRegistry()` — 11 토픽을 한 번에 등록 |
+| `src/slack/actions/z-settings-actions.ts` | regex action/view 핸들러 (`ZSettingsActionHandler`) |
+| `src/slack/actions/index.ts` | `ActionHandlers.registerHandlers(app)` 안에서 z-settings 핸들러 자동 wiring |
+
+### 5.2 Action ID 규약
+
+모든 `/z` Block Kit 버튼의 `action_id`는 다음 규칙을 따른다:
+
+| 패턴 | 용도 |
+|------|------|
+| `z_setting_<topic>_set_<value>` | 설정값 적용 (예: `z_setting_model_set_opus`) |
+| `z_setting_<topic>_cancel` | 카드 닫기 (dismiss) |
+| `z_setting_<topic>_open_modal` | 입력 모달 열기 |
+| `z_setting_<topic>_modal_submit` | `view.callback_id` — 모달 submit |
+| `z_help_nav_<topic>` | help 카드 → 토픽 카드 네비게이션 |
+
+`block_id`는 `zBlockId(topic, issuedAt, index)`로 deterministic하게 생성한다:
+`z_<topic>_<issuedAt>_<index>`.
+
+### 5.3 Source-aware ZRespond 재구성 (중요)
+
+action handler가 카드를 교체(`replace`)할 때, **원래 전송한 surface와 동일한
+경로**로 응답해야 한다. 잘못 선택하면 "UI 만료" 또는 이중 렌더 발생.
+
+| Source | 감지 방법 | 응답 방식 |
+|--------|-----------|-----------|
+| DM | `body.container.channel_id.startsWith('D')` | `chat.update({ channel, ts: botMessageTs })` — branded `BotMessageTs`는 `body.message.ts`로부터 `DmZRespond.fromAction(body, client)`가 검증 |
+| Channel (ephemeral) / Slash | `body.response_url` 존재 | `response_url` POST + `replace_original: true` — `chat.update` 절대 금지 (ephemeral은 편집 불가) |
+| Slash (fallback) | response_url 없음 | `SlashZRespond(respondFn)` — Bolt의 `respond()` 사용 |
+
+재구성 진입점: `respondFromActionBody({ body, client, respond })` in `z-settings-actions.ts`.
+
+### 5.4 Flow (help → nav → set)
+
+```
+/z  (empty remainder)
+  └─> ZRouter → buildHelpCard({issuedAt})
+       └─> 카테고리별 z_help_nav_<topic> 버튼 (5개/row)
+
+[user clicks z_help_nav_<topic>]
+  └─> ZSettingsActionHandler.handleHelpNav
+       └─> registry.get(topic).renderCard({userId, issuedAt})
+            └─> zRespond.replace({text, blocks})  // 원 카드와 같은 surface
+
+[user clicks z_setting_<topic>_set_<value>]
+  └─> ZSettingsActionHandler.handleSet
+       └─> binding.apply({userId, value, actionId, body})
+            ├─ ok:true,  dismiss:false → buildConfirmationCard + replace
+            ├─ ok:true,  dismiss:true  → zRespond.dismiss()
+            └─ ok:false              → error confirmation
+```
+
+### 5.5 모달 (open_modal / modal_submit)
+
+텍스트 입력이 필요한 토픽(`email`, `notify` telegram id, `memory` 추가)은
+`openModal` 훅에서 `views.open({ trigger_id, view })`를 호출한다. View의
+`callback_id`는 반드시 `z_setting_<topic>_modal_submit` 패턴을 따른다.
+
+`handleModalSubmit`은 `body.view.state.values` 전체를 해당 토픽 binding의
+`submitModal`에 전달한다. **모달은 `replace()` 불가** — 사용자 피드백은
+`client.chat.postMessage` (DM ack) 또는 postEphemeral로 별도 전송한다.
+
+### 5.6 테스트 커버리지
+
+| 파일 | 내용 |
+|------|------|
+| `src/slack/z/ui-builder.test.ts` | 각 builder의 block 구조, 한도 (actions 25, context 10) |
+| `src/slack/actions/z-settings-actions.test.ts` | source 선택, set/cancel/nav/open_modal/submit 라우팅 |
+| `src/slack/z/topics/<topic>-topic.test.ts` | 토픽별 apply/render 로직 |
+| `src/slack/z/topics/index.test.ts` | 11 토픽 registry 등록 |
+| `src/slack/z/topics/flow-e2e.test.ts` | help → nav → set e2e, 모든 토픽 렌더 smoke |
+
+### 5.7 새 토픽 추가 체크리스트
+
+1. `src/slack/z/topics/<topic>-topic.ts`에 `render*Card`, `apply*`, `create*TopicBinding` 작성
+2. (선택) `openModal` / `submitModal` 훅 구현 — `buildXxxModal()` View 페이로드 포함
+3. `src/slack/z/topics/index.ts`의 `registerAllTopics`에 binding 추가
+4. `ui-builder.ts`의 `DEFAULT_HELP_CATEGORIES`에 nav 버튼 등록
+5. `<topic>-topic.test.ts`에 `renderCard` + `apply` + (modal) 테스트 추가
+6. `flow-e2e.test.ts`는 자동으로 새 토픽을 smoke test에 포함함 (registry 순회)
+
+---
+
 ## 5) 이 리포 문서 연결
 
 - Slack UI 액션 패널 스펙: `docs/spec/13-slack-ui-action-panel.md`
+- `/z` 슬래시 커맨드 마스터 스펙: `plan/MASTER-SPEC.md` (§8 Block Kit, §15 actions/view id)
 
 ---
 

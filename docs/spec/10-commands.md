@@ -1,12 +1,21 @@
 # Commands Reference
 
 ## Version
-- Document Version: 2.0
-- Last Updated: 2026-03-06
+- Document Version: 2.1
+- Last Updated: 2026-04-16 (#506: `/z` Phase 1)
 
 ## 1. Overview
 
 이 문서는 Claude Code Slack Bot에서 사용 가능한 모든 명령어를 설명합니다. 모든 명령어는 `/` 접두사 유무와 관계없이 동작합니다.
+
+### 1.1 `/z` 통합 명령 표면 (Phase 1 — #506)
+
+Phase 1부터 모든 명령은 `/z <topic> [verb] [args…]` 통합 문법으로 접근하는 것이 권장됩니다. 기존 네이키드 문법(`persona linus`, `model sonnet`, …)은 사용자당 한 번만 마이그레이션 힌트(`tombstone`)를 보여주고 이후 드롭됩니다. 화이트리스트(`session`, `sessions public`, `new`, `renew`, `theme`, `$*`)는 계속 네이키드로 동작합니다.
+
+- 아키텍처: `docs/spec/01-slack-integration.md` §10
+- 롤백 절차: `docs/ops/rollback-z-refactor.md`
+- 롤백 플래그: `SOMA_ENABLE_LEGACY_SLASH=true` (Tier 1 — 즉시)
+- 제거된 별칭(#506): `set_cct` → `cct set`, `nextcct` → `cct next`, `플러그인 업데이트` → `plugin update`, `show_prompt` → `show prompt`, `show_instructions` → `show instructions`, `servers` → `mcp list`, `credentials` → `restore`, `commands`/`?`·`commands?` → `help`, `kill`/`end` → `terminate`, `report help` → `/z help`.
 
 ## 2. Working Directory Commands
 
@@ -398,9 +407,9 @@ https://yoursite.atlassian.net/wiki/spaces/SPACE/pages/123456789
 | `onboarding` | 온보딩 워크플로우 실행 | ✅ |
 | `help` | 도움말 표시 | ✅ |
 | `admin` | 관리자 명령 (accept/deny/users/config) | ✅ |
-| `cct` / `set_cct` | CCT 토큰 상태/수동 전환 | ✅ |
+| `cct [set <name> \| next]` | CCT 토큰 상태 / 수동 전환 / 다음 토큰으로 회전 | ✅ |
 | `marketplace` | 플러그인 마켓플레이스 | ✅ |
-| `plugins` | 설치된 플러그인 관리 | ✅ |
+| `plugin[s]` | 설치된 플러그인 관리 (`add`/`remove`/`update`/`rollback`/`backups`) | ✅ |
 | `%` / `%model` / `%verbosity` | 세션 전용 설정 (비영속). `$` 접두는 deprecation grace period 동안만 허용되며 경고 메시지와 함께 실행됨. `$`는 강제 스킬 발동 전용. | ✅ |
 | `취소/stop/cancel` | 진행 중 요청 취소 | ❌ |
 

@@ -22,8 +22,21 @@ export class SlashCommandAdapter {
    *   SlashCommand.text       → CommandContext.text
    *   respond()               → CommandContext.say       (wrapped as SayFn)
    *
-   * ⚠️ threadTs is set to channel_id as a placeholder. Session-dependent commands
-   * must be filtered out BEFORE reaching CommandRouter (see EventRouter.SESSION_DEPENDENT_COMMANDS).
+   * ⚠️ threadTs placeholder — Slack slash commands carry no thread context,
+   * so we set `threadTs = channel_id` purely as a non-null filler. This ONLY
+   * works because session-dependent commands (`new`, `close`, `renew`,
+   * `context`, `restore`, `link`, `compact`, `session:set:*`) are gated
+   * upstream before reaching this adapter.
+   *
+   * See:
+   *  - `src/slack/z/capability.ts` `SLASH_FORBIDDEN` — the authoritative list
+   *    of topics/verbs the slash path rejects with `SLASH_FORBIDDEN_MESSAGE`.
+   *  - `src/slack/event-router.ts` `blockedLegacyCommand()` — the
+   *    `SOMA_ENABLE_LEGACY_SLASH=true` rollback path, which also defers to
+   *    `isSlashForbidden()` so the blocked set stays in sync.
+   *
+   * If a future command needs a real thread_ts, it MUST also be added to
+   * `SLASH_FORBIDDEN`, or routed via `@bot /z <topic>` / DM instead of slash.
    */
   static adapt(command: SlashCommand, respond: RespondFn): CommandContext {
     const say = SlashCommandAdapter.wrapRespondAsSay(respond);

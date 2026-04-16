@@ -1,9 +1,15 @@
 import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { applyModel, renderModelCard } from '../z/topics/model-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
- * Handles model commands (status/list/set) — persists to user default
+ * Handles model commands (status/list/set) — persists to user default.
+ *
+ * Phase 2 (#507):
+ *   - bare `model` → Block Kit setting card (via /z topic builder)
+ *   - `model list` → text listing (back-compat)
+ *   - `model set <n>` → apply + text ack (back-compat)
  */
 export class ModelHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -17,16 +23,11 @@ export class ModelHandler implements CommandHandler {
     const modelAction = CommandParser.parseModelCommand(text);
 
     if (modelAction.action === 'status') {
-      const currentModel = userSettingsStore.getUserDefaultModel(user);
-      const displayName = userSettingsStore.getModelDisplayName(currentModel);
-      const aliasesText = Object.entries(MODEL_ALIASES)
-        .map(([alias, model]) => `\`${alias}\` → ${userSettingsStore.getModelDisplayName(model)}`)
-        .join('\n');
-
-      await say({
-        text: `🤖 *Model Status*\n\nYour default model: *${displayName}*\n\`${currentModel}\`\n\n*Available aliases:*\n${aliasesText}\n\n_Use \`model set <name>\` to change your default model._`,
-        thread_ts: threadTs,
+      const { text: fallback, blocks } = await renderModelCard({
+        userId: user,
+        issuedAt: Date.now(),
       });
+      await say({ text: fallback ?? '🤖 Model', blocks, thread_ts: threadTs });
     } else if (modelAction.action === 'list') {
       const currentModel = userSettingsStore.getUserDefaultModel(user);
       const modelList = AVAILABLE_MODELS.map((m) => {
@@ -39,19 +40,18 @@ export class ModelHandler implements CommandHandler {
         thread_ts: threadTs,
       });
     } else if (modelAction.action === 'set' && modelAction.model) {
-      const resolvedModel = userSettingsStore.resolveModelInput(modelAction.model);
-      if (resolvedModel) {
-        userSettingsStore.setUserDefaultModel(user, resolvedModel);
-
-        // Also apply to current session (like verbosity does)
-        const session = this.deps.claudeHandler.getSession(channel, threadTs);
-        if (session) {
-          session.model = resolvedModel;
+      const result = await applyModel({ userId: user, value: modelAction.model });
+      if (result.ok) {
+        // Also apply to current session (mirrors legacy behaviour).
+        const resolvedModel = userSettingsStore.resolveModelInput(modelAction.model);
+        if (resolvedModel) {
+          const session = this.deps.claudeHandler.getSession(channel, threadTs);
+          if (session) {
+            session.model = resolvedModel;
+          }
         }
-
-        const displayName = userSettingsStore.getModelDisplayName(resolvedModel);
         await say({
-          text: `✅ *Model Changed*\n\nYour default model is now: *${displayName}*\n\`${resolvedModel}\`\n\n_Applied to current and future sessions._`,
+          text: `✅ *Model Changed*\n\n${result.summary}\n\n${result.description ?? ''}`,
           thread_ts: threadTs,
         });
       } else {
@@ -59,7 +59,7 @@ export class ModelHandler implements CommandHandler {
           .map((a) => `\`${a}\``)
           .join(', ');
         await say({
-          text: `❌ *Unknown Model*\n\nModel \`${modelAction.model}\` not found.\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
+          text: `❌ *Unknown Model*\n\n${result.summary}\n\n*Available aliases:* ${aliasesText}\n\n_Use \`model list\` to see all available models._`,
           thread_ts: threadTs,
         });
       }

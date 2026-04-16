@@ -17,21 +17,27 @@
     },
     "slash_commands": [
       {
+        "command": "/z",
+        "description": "Unified Claude Code Bot command (help, persona, model, session, admin, ...)",
+        "usage_hint": "[help|persona|model|session|notify|admin|...]",
+        "should_escape": false
+      },
+      {
         "command": "/soma",
-        "description": "Claude Code Bot commands (help, model, persona, etc.)",
-        "usage_hint": "[help|model|persona|sessions|bypass|mcp|plugins|...]",
+        "description": "[deprecated] redirects to /z — kept for rollback in Release N",
+        "usage_hint": "(use /z)",
         "should_escape": false
       },
       {
         "command": "/session",
-        "description": "View and manage your bot sessions",
-        "usage_hint": "",
+        "description": "[deprecated] redirects to /z session — kept for rollback in Release N",
+        "usage_hint": "(use /z session)",
         "should_escape": false
       },
       {
         "command": "/new",
-        "description": "Reset session and start fresh conversation",
-        "usage_hint": "[optional prompt]",
+        "description": "[deprecated] redirects to /z new — kept for rollback in Release N",
+        "usage_hint": "(use /z new)",
         "should_escape": false
       }
     ]
