@@ -26,7 +26,7 @@ import type { App, RespondFn } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { Logger } from '../../logger';
 import { ChannelEphemeralZRespond, DmZRespond, SlashZRespond } from '../z/respond';
-import type { ZRespond } from '../z/types';
+import type { ZBlock, ZRespond } from '../z/types';
 
 const logger = new Logger('ZSettingsActions');
 
@@ -45,6 +45,12 @@ export interface ZTopicBinding {
     actionId: string;
     /** Full action body (for advanced handlers that need extras). */
     body: any;
+    /**
+     * Optional closure for mid-apply intermediate rerenders (e.g. a
+     * "working…" pending card before a long LLM call). Handlers that omit
+     * the call keep the original single-stage behaviour.
+     */
+    respond?: (blocks: ZBlock[]) => Promise<void>;
   }): Promise<ApplyResult>;
   /**
    * Re-render the topic's setting card. Invoked on `z_help_nav_<topic>`.
@@ -79,6 +85,12 @@ export interface ApplyResult {
   description?: string;
   /** When true, the card is dismissed instead of replaced with confirmation. */
   dismiss?: boolean;
+  /**
+   * When `'topic'`, handleSet re-invokes `binding.renderCard` and replaces
+   * the message with the freshly rendered topic card instead of a generic
+   * confirmation (Scenario 15 — 2-stage rerender).
+   */
+  rerender?: 'topic';
 }
 
 export interface RenderResult {
@@ -223,9 +235,22 @@ export class ZSettingsActionHandler {
     const zRespond = respondFromActionBody({ body, client, respond });
 
     try {
-      const result = await binding.apply({ userId, value, actionId, body });
+      // Scenario 15: closure lets the handler push an intermediate "working…"
+      // card before a long-running branch (e.g. memory improve calls LLM).
+      const respondClosure = async (blocks: ZBlock[]): Promise<void> => {
+        await zRespond.replace({ text: '🧠 Memory', blocks });
+      };
+      const result = await binding.apply({ userId, value, actionId, body, respond: respondClosure });
       if (result.dismiss) {
         await zRespond.dismiss();
+        return;
+      }
+      // Scenario 15: when a handler requests a topic rerender (improve
+      // branches), replace the card with a freshly rendered topic card
+      // instead of the generic confirmation card.
+      if (result.rerender === 'topic') {
+        const card = await binding.renderCard({ userId, issuedAt: Date.now() });
+        await zRespond.replace({ text: card.text, blocks: card.blocks });
         return;
       }
       const issuedAt = Date.now();
