@@ -15,6 +15,8 @@ They are invoked as **naked** text (no `/z` prefix).
 | `ui-test` | Prints usage help |
 | `ui-test stream` | Runs `chat.startStream` → 5× `chat.appendStream` → `chat.stopStream`. Each chunk is ≥260 chars (forces buffer overflow). 800ms between chunks. |
 | `ui-test plan` | Posts a `plan` block with 4 `task_card`s, then transitions through 5 states via `chat.update` (3s intervals). Status values: `pending` → `in_progress` → `complete` → `error`. Each update carries a classic `section` fallback block + top-level `text` for legacy clients. |
+| `ui-test task_card` | Posts a single **standalone** `task_card` block (outside any `plan` wrapper) and transitions it `pending` → `in_progress` → `complete` via `chat.update` (3s intervals). Confirms whether Slack accepts `task_card` as a top-level block. |
+| `ui-test work` | Combined simulation: starts a stream at the top, posts a live `plan` below, then runs 4 real shell commands (`pwd`, `date -u`, `uptime`, `ls /tmp \| wc -l`) via `node:child_process.exec`. Each step flips the corresponding `task_card` `pending` → `in_progress` → `complete`/`error` while streaming the command output into the top message. 5s timeout, 4KB buffer per step. Commands are compile-time constants — no user input touches the shell. |
 
 ## Gating (triple)
 
@@ -55,11 +57,31 @@ ADMIN_USERS=U0123ABC,U0456DEF
 - Each state also includes a classic `section` fallback block with `mrkdwn`: `*Fallback* — state N: t0=... · t1=... · t2=... · t3=...`.
 - `text` field mirrors the fallback for legacy clients that can't render `plan`/`task_card`.
 
+### `ui-test task_card`
+- One DM message with a standalone `task_card` block.
+- 3-second intervals: `pending` → `in_progress` → `complete`.
+- `text` fallback: `task_card demo — <status>`.
+
+### `ui-test work`
+- Two DM messages anchor the run: a **stream** (top) and a **plan** (bottom).
+- 4 tasks execute in order. For each task:
+  - Plan `task_card` flips to `in_progress`.
+  - Stream appends `### <title>\n$ <cmd>`.
+  - `child_process.exec` runs the command (5s timeout, 4KB buffer, `bash` shell).
+  - Stream appends the command output in a fenced block.
+  - Plan `task_card` flips to `complete` (or `error` if the command failed).
+- Stream closes with `✅ All tasks complete.` or `⚠️ N complete, M error.` summary.
+- Plan remains visible after completion so the user can inspect final task states.
+
+### Streaming mode invariant
+
+`chat.appendStream({ chunks: [...] })` locks the stream into **chunks** mode. `chat.stopStream` must close in the same mode — passing top-level `markdown_text` after chunked appends raises `streaming_mode_mismatch` on the server. The harness uses `chunks` mode end-to-end for every stream and this is verified by `ui-test stream` in DM.
+
 ## Go / No-Go checklist
 
-Run both commands and observe on **three Slack clients simultaneously**:
+Run all four commands and observe on **three Slack clients simultaneously**:
 
-- [ ] **iOS** — stream chunks visible and incremental; plan block renders OR falls back to section; task_card status transitions visible
+- [ ] **iOS** — stream chunks visible and incremental; plan block renders OR falls back to section; task_card status transitions visible; `work` runs shell commands and updates both blocks in lockstep
 - [ ] **Android** — same
 - [ ] **desktop web** — same
 
@@ -100,6 +122,6 @@ These existing code paths were not touched by Phase 0 and must still work:
 | `src/slack/commands/ui-test-handler.ts` | **New** — Phase 0 harness |
 | `src/slack/commands/command-router.ts` | Register `UITestHandler` (near `SandboxHandler`) |
 | `src/slack/commands/index.ts` | Re-export `UITestHandler` |
-| `src/slack/z/whitelist.ts` | Add `^ui-test(\s+(stream\|plan))?$` to naked whitelist |
+| `src/slack/z/whitelist.ts` | Add `^ui-test(\s+(stream\|plan\|task_card\|work))?$` to naked whitelist |
 | `src/slack/z/capability.ts` | Add `'ui-test'` to `SLASH_FORBIDDEN` |
 | `docs/slack-ui-phase0.md` | This document |
