@@ -110,7 +110,7 @@ class LlmMCPServer extends BaseMcpServer {
     return [
       {
         name: 'chat',
-        description: 'Start a new LLM chat session. Routes to codex or gemini backend based on model name. Set background=true for async execution.',
+        description: 'Start a new LLM chat session. Routes to codex or gemini backend based on model name. Always synchronous — background execution is currently DISABLED due to upstream Claude Code harness bug (anthropics/claude-code#47936) that causes parent agents to end their turn prematurely. Call this tool and await the result inline.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -118,20 +118,20 @@ class LlmMCPServer extends BaseMcpServer {
             model: { type: 'string', description: 'Model name or alias. Use "codex", "gemini" for latest of each model.' },
             config: { type: 'object', description: 'Optional config overrides', additionalProperties: true },
             cwd: { type: 'string', description: 'Working directory' },
-            background: { type: 'boolean', description: 'If true, returns immediately with a jobId for polling via status tool.' },
+            background: { type: 'boolean', description: 'DISABLED. Setting this to true will throw an error. Background execution is blocked because it triggers upstream Claude Code bug (anthropics/claude-code#47936) where the parent agent ends its turn instead of polling status. Always call this tool synchronously.' },
           },
           required: ['prompt'],
         },
       },
       {
         name: 'chat-reply',
-        description: 'Continue an existing LLM chat session.',
+        description: 'Continue an existing LLM chat session. Always synchronous — background execution is currently DISABLED (see `chat` tool description).',
         inputSchema: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: 'The prompt to continue the conversation.' },
             sessionId: { type: 'string', description: 'The session ID from a previous chat call.' },
-            background: { type: 'boolean', description: 'If true, returns immediately with a jobId for polling via status tool.' },
+            background: { type: 'boolean', description: 'DISABLED. Setting this to true will throw an error. See `chat` tool for details.' },
           },
           required: ['prompt', 'sessionId'],
         },
@@ -214,6 +214,19 @@ class LlmMCPServer extends BaseMcpServer {
     const config = args.config as Record<string, unknown> | undefined;
     const background = args.background === true;
 
+    // Block background=true: upstream Claude Code bug (anthropics/claude-code#47936)
+    // causes parent agents to terminate the turn instead of polling status/result.
+    // Force synchronous execution until upstream is fixed.
+    if (background) {
+      throw new Error(
+        'llm chat background=true is DISABLED. ' +
+        'Background execution triggers an upstream Claude Code harness bug ' +
+        '(anthropics/claude-code#47936) that makes the parent agent end its turn ' +
+        'instead of polling status/result. Call this tool synchronously (omit `background` ' +
+        'or set it to false) and await the result inline.'
+      );
+    }
+
     const route = routeModel(model);
     this.logger.info(`Routing chat to ${route.backend}`, { model, resolvedModel: route.model, background });
 
@@ -276,6 +289,17 @@ class LlmMCPServer extends BaseMcpServer {
     const prompt = args.prompt as string;
     const sessionId = args.sessionId as string | undefined;
     const background = args.background === true;
+
+    // Block background=true: see handleChat for rationale (anthropics/claude-code#47936).
+    if (background) {
+      throw new Error(
+        'llm chat-reply background=true is DISABLED. ' +
+        'Background execution triggers an upstream Claude Code harness bug ' +
+        '(anthropics/claude-code#47936) that makes the parent agent end its turn ' +
+        'instead of polling status/result. Call this tool synchronously (omit `background` ' +
+        'or set it to false) and await the result inline.'
+      );
+    }
 
     const session = sessionId ? sessionStore.get(sessionId) : undefined;
     if (!session) {
