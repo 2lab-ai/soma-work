@@ -8,7 +8,8 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { buildOption, CANVAS_HEIGHT, CANVAS_WIDTH } from './buildOption';
-import { EchartsInitError, FontLoadError, ResvgNativeError } from './errors';
+import { EchartsInitError, FontLoadError } from './errors';
+import { svgToPng } from './svg-to-png';
 import type { UsageCardStats } from './types';
 
 // `__dirname` resolves to `dist/metrics/usage-render` at runtime (CJS target) — see tsconfig.
@@ -61,18 +62,5 @@ export async function renderUsageCard(stats: UsageCardStats): Promise<Buffer> {
     throw new EchartsInitError('ECharts SSR failed', err);
   }
 
-  try {
-    const { Resvg } = await import('@resvg/resvg-js');
-    const resvg = new Resvg(svg, {
-      fitTo: { mode: 'original' },
-      font: {
-        fontFiles: [fontPath],
-        defaultFontFamily: 'Noto Sans KR',
-        loadSystemFonts: false,
-      },
-    });
-    return resvg.render().asPng();
-  } catch (err) {
-    throw new ResvgNativeError('resvg PNG render failed', err);
-  }
+  return svgToPng(svg, { fontPath, defaultFontFamily: 'Noto Sans KR' });
 }
