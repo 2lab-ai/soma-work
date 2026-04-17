@@ -1,5 +1,6 @@
 import type { EndTurnInfo } from '../agent-session/agent-session-types';
 import type { ClaudeHandler } from '../claude-handler';
+import { config } from '../config';
 import { Logger } from '../logger';
 import type { TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
@@ -7,6 +8,7 @@ import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import { ThreadSurface } from './thread-surface';
+import { type TurnContext, type TurnEndReason, TurnSurface } from './turn-surface';
 import type { SlackMessagePayload } from './user-choice-handler';
 
 interface ThreadPanelDeps {
@@ -17,18 +19,35 @@ interface ThreadPanelDeps {
   completionMessageTracker?: CompletionMessageTracker;
 }
 
+// Re-export turn types so pipeline/stream-executor can address them without
+// importing the underlying surface directly. Keeps TurnSurface `@internal`.
+export type { TurnContext, TurnEndReason } from './turn-surface';
+
 /**
- * ThreadPanel — now delegates to ThreadSurface for combined header+panel rendering.
+ * ThreadPanel — combined header+panel rendering (legacy) + per-turn B1 stream
+ * façade (5-block UI refactor, Issue #525).
  *
- * Maintains the same public API so all existing callers continue to work unchanged.
- * ThreadSurface is the single-writer implementation with debounce and coalescing.
+ * Legacy (PHASE=0) behavior is preserved: all existing callers see identical
+ * behavior because the delegated ThreadSurface path is unchanged.
+ *
+ * New per-turn API (PHASE>=1):
+ *   `beginTurn` / `appendText` / `endTurn` / `failTurn` route to TurnSurface,
+ *   which owns `chat.startStream` / `appendStream` / `stopStream`.
+ * When PHASE=0 these methods silently no-op so the stream-executor / stream-
+ * processor can call them unconditionally and the legacy `context.say` path
+ * keeps running.
+ *
+ * @internal — ThreadSurface/TurnSurface are implementation details;
+ *             callers MUST go through ThreadPanel.
  */
 export class ThreadPanel {
   private logger = new Logger('ThreadPanel');
   private surface: ThreadSurface;
+  private turnSurface: TurnSurface;
 
   constructor(private deps: ThreadPanelDeps) {
     this.surface = new ThreadSurface(deps);
+    this.turnSurface = new TurnSurface({ slackApi: deps.slackApi });
   }
 
   async create(session: ConversationSession, sessionKey: string): Promise<void> {
@@ -81,6 +100,48 @@ export class ThreadPanel {
     hasPendingChoice: boolean,
   ): Promise<void> {
     await this.surface.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
+  }
+
+  // =========================================================================
+  // 5-block per-turn façade (Issue #525, P1)
+  //
+  // PHASE=0 → no-op (legacy ThreadSurface + context.say continue to own B1).
+  // PHASE>=1 → delegate to TurnSurface for chat.startStream / appendStream /
+  //            stopStream. Callers (stream-processor, stream-executor) may
+  //            invoke these unconditionally; the PHASE guard lives here.
+  // =========================================================================
+
+  /**
+   * Whether the 5-block per-turn façade is active for this deployment. Used
+   * by stream-processor to choose between the legacy `context.say` path and
+   * the new `appendText` path without importing `config` itself.
+   */
+  isTurnSurfaceActive(): boolean {
+    return config.ui.fiveBlockPhase >= 1;
+  }
+
+  /** Open a per-turn B1 stream. PHASE=0 no-ops. */
+  async beginTurn(ctx: TurnContext): Promise<void> {
+    if (config.ui.fiveBlockPhase < 1) return;
+    await this.turnSurface.begin(ctx);
+  }
+
+  /** Append a markdown_text chunk to the active B1 stream. PHASE=0 no-ops. */
+  async appendText(turnId: string, text: string): Promise<void> {
+    if (config.ui.fiveBlockPhase < 1) return;
+    await this.turnSurface.appendText(turnId, text);
+  }
+
+  /** Close the B1 stream for a turn. PHASE=0 no-ops. Idempotent. */
+  async endTurn(turnId: string, reason: TurnEndReason): Promise<void> {
+    if (config.ui.fiveBlockPhase < 1) return;
+    await this.turnSurface.end(turnId, reason);
+  }
+
+  /** Defensive close on error — always attempts stopStream. PHASE=0 no-ops. */
+  async failTurn(turnId: string, error: Error): Promise<void> {
+    if (config.ui.fiveBlockPhase < 1) return;
+    await this.turnSurface.fail(turnId, error);
   }
 
   // ---- internal helpers ----
