@@ -115,6 +115,14 @@ export class TurnSurface {
   async begin(ctx: TurnContext): Promise<void> {
     if (this.phase() < 1) return;
 
+    // Duplicate begin() on the same turnId is a contract violation from the
+    // caller, but we defend so a stray call can't open a second Slack stream
+    // and orphan the first handle.
+    if (this.turns.has(ctx.turnId)) {
+      this.logger.warn('begin() called twice for same turnId — ignored', { turnId: ctx.turnId });
+      return;
+    }
+
     // Supersede prior in-flight turn on the same session. Runs to completion
     // before the new stream opens so the user sees a clean close rather than
     // a dangling "typing" indicator.
@@ -153,7 +161,19 @@ export class TurnSurface {
       const result: { ts?: string } = await (client.chat as any).startStream(startArgs);
       const state = this.turns.get(ctx.turnId);
       if (!state) {
-        // Concurrent supersede already removed the state — nothing to do.
+        // Concurrent supersede cleaned up this turn while startStream was in
+        // flight. Slack now holds an open stream handle we've lost track of —
+        // close it immediately to avoid a dangling "typing" indicator and a
+        // leaked B1 message on the client side.
+        if (result?.ts) {
+          this.logger.warn('closing orphaned stream from superseded begin()', {
+            turnId: ctx.turnId,
+            streamTs: result.ts,
+          });
+          await this.closeOrphanStream(ctx.channelId, result.ts).catch(() => {
+            /* already logged by closeOrphanStream */
+          });
+        }
         return;
       }
       if (result?.ts) {
@@ -175,14 +195,22 @@ export class TurnSurface {
   /**
    * Append a markdown_text chunk to the B1 stream. PHASE>=1 only.
    *
-   * Silently drops when:
-   *   - no open stream for this turnId (e.g. startStream failed)
+   * Returns `true` when the chunk was sent to Slack (happy path). Returns
+   * `false` when the chunk was NOT delivered — callers use this as the
+   * "fall back to legacy `context.say`" signal so a transient `startStream`
+   * failure doesn't silently eat the assistant's reply.
+   *
+   * Drops (returns `false`) when:
+   *   - PHASE<1 (caller should have taken the legacy path anyway)
    *   - `text` is empty (Slack rejects empty chunks)
+   *   - no open stream for this turnId (e.g. startStream failed or still
+   *     in flight; chunk will land on the legacy surface instead)
    *   - the turn is already closing (end()/fail() in flight)
+   *   - `chat.appendStream` itself raises (Slack error, network)
    */
-  async appendText(turnId: string, text: string): Promise<void> {
-    if (this.phase() < 1) return;
-    if (!text) return;
+  async appendText(turnId: string, text: string): Promise<boolean> {
+    if (this.phase() < 1) return false;
+    if (!text) return false;
 
     const state = this.turns.get(turnId);
     if (!state || !state.streamTs || state.closing) {
@@ -192,7 +220,7 @@ export class TurnSurface {
         hasStreamTs: !!state?.streamTs,
         closing: state?.closing,
       });
-      return;
+      return false;
     }
 
     try {
@@ -203,11 +231,13 @@ export class TurnSurface {
         chunks: [{ type: 'markdown_text', text }],
       });
       state.appendedChunks += 1;
+      return true;
     } catch (err) {
       this.logger.warn('chat.appendStream failed', {
         turnId,
         error: (err as Error).message,
       });
+      return false;
     }
   }
 
@@ -248,10 +278,14 @@ export class TurnSurface {
     if (this.phase() < 1) return;
 
     const state = this.turns.get(turnId);
-    if (!state) return;
+    // Idempotent: already closing (another end()/fail() in flight) or already
+    // closed (state cleaned up) → no-op. Check-and-set is synchronous so
+    // concurrent callers cannot both pass this gate.
+    if (!state || state.closing) return;
 
     // Mark closing so a concurrent appendText() call during shutdown is
-    // dropped rather than racing with stopStream.
+    // dropped rather than racing with stopStream, and so a concurrent
+    // end()/fail() call bounces off the idempotency check above.
     state.closing = true;
 
     try {
@@ -274,7 +308,9 @@ export class TurnSurface {
     if (this.phase() < 1) return;
 
     const state = this.turns.get(turnId);
-    if (!state) return;
+    // Idempotent: already closing (another end()/fail() in flight) or already
+    // closed (state cleaned up) → no-op. See end() for the same rationale.
+    if (!state || state.closing) return;
 
     state.closing = true;
     this.logger.debug('turn fail()', { turnId, error: error.message });
@@ -291,6 +327,29 @@ export class TurnSurface {
   // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
+
+  /**
+   * Close a stream whose TurnState was already cleaned up (supersede race).
+   * Called from `begin()` when `startStream` resolved after the supersede
+   * fail() had already removed the state. `chunks: []` preserves chunks-mode
+   * symmetry; no appendStream was ever called for this ts, so it's actually
+   * the degenerate "open then immediately close" case.
+   */
+  private async closeOrphanStream(channelId: string, streamTs: string): Promise<void> {
+    try {
+      const client = this.deps.slackApi.getClient();
+      await (client.chat as any).stopStream({
+        channel: channelId,
+        ts: streamTs,
+        chunks: [],
+      });
+    } catch (err) {
+      this.logger.warn('orphan stopStream failed', {
+        streamTs,
+        error: (err as Error).message,
+      });
+    }
+  }
 
   /**
    * Call `chat.stopStream` honoring the chunks-mode invariant.

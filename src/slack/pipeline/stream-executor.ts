@@ -449,8 +449,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         botUserId: await this.deps.slackApi.getBotUserId(),
         // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
         // stream processor so it can route text chunks into the B1 stream.
-        // PHASE=0 deployments leave threadPanel absent from deps → fields
-        // stay undefined → stream-processor falls back to legacy `say()`.
+        // The façade is always populated (StreamExecutor receives it from
+        // session initialization); PHASE-gating lives inside
+        // `threadPanel.isTurnSurfaceActive()` so the stream-processor branch
+        // is a single conditional: PHASE=0 → legacy `say()`, PHASE>=1 →
+        // `appendText()` with graceful fallback on `false` return.
         turnId,
         threadPanel: this.deps.threadPanel,
         get logVerbosity() {

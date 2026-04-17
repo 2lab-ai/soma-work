@@ -624,4 +624,102 @@ describe('StreamProcessor', () => {
       expect(mockSay).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #525 P1 — B1 per-turn stream routing contract
+  //
+  // Verifies the PHASE>=1 path through `sayWithBlockKit`: when a turnId +
+  // active ThreadPanel façade are present, assistant text is routed to
+  // `threadPanel.appendText()` instead of `context.say`. The graceful-fallback
+  // contract (appendText returning `false` → legacy `context.say`) is the
+  // codex MAJOR finding and must stay covered against regression.
+  // -------------------------------------------------------------------------
+
+  describe('Issue #525 P1 — ThreadPanel appendText routing', () => {
+    it('routes narrative text to threadPanel.appendText when the façade is active', async () => {
+      const appendText = vi.fn().mockResolvedValue(true);
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'streamed reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'streamed reply');
+      // Legacy Block Kit path must be bypassed on success.
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('falls back to context.say when threadPanel.appendText returns false', async () => {
+      // Codex MAJOR: a transient `chat.startStream` failure must NOT silently
+      // eat the assistant's reply. appendText returning false is the contract
+      // signal for "fall through to legacy Block Kit".
+      const appendText = vi.fn().mockResolvedValue(false);
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'rescue reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'rescue reply');
+      // Fallback path: legacy `context.say` carries the reply.
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('rescue reply'),
+          thread_ts: 'thread_ts',
+        }),
+      );
+    });
+
+    it('takes the legacy path when the façade reports inactive (PHASE=0)', async () => {
+      const appendText = vi.fn();
+      const threadPanel = {
+        isTurnSurfaceActive: () => false,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'legacy reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      // Façade short-circuits at the `isTurnSurfaceActive()` guard.
+      expect(appendText).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalled();
+    });
+  });
 });

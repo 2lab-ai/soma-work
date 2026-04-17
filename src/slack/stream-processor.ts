@@ -62,7 +62,8 @@ export interface StreamContext {
  */
 export interface ThreadPanelFacade {
   isTurnSurfaceActive(): boolean;
-  appendText(turnId: string, text: string): Promise<void>;
+  /** Returns `true` when Slack accepted the chunk; `false` signals "fall back to legacy context.say". */
+  appendText(turnId: string, text: string): Promise<boolean>;
 }
 
 /**
@@ -1312,9 +1313,14 @@ export class StreamProcessor {
     // TurnSurface.appendText (chat.appendStream) instead of opening a new
     // Block Kit message per chunk. Verbosity tags are dropped in the stream
     // path — they are legacy noise on a consolidated single-writer surface.
+    //
+    // Graceful degradation: appendText returns `false` when the B1 stream is
+    // not usable (startStream failed, no streamTs, stream already closed).
+    // Falling through to the legacy Block Kit path prevents silent response
+    // loss on a transient Slack stream-open failure under PHASE>=1.
     if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
-      await context.threadPanel.appendText(context.turnId, text);
-      return;
+      const delivered = await context.threadPanel.appendText(context.turnId, text);
+      if (delivered) return;
     }
 
     const tag = this.vtag(OutputFlag.FINAL_RESULT, context);

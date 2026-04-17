@@ -281,11 +281,112 @@ describe('TurnSurface', () => {
 
       const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
       await surface.begin(ctx);
-      await surface.begin(ctx); // idempotent — same turnId, no supersede
+      await surface.begin(ctx); // duplicate begin() — short-circuits without a second startStream
 
-      // No stopStream (no supersede) — both starts hit the same turnId slot
+      // No stopStream (no supersede) AND no second startStream (defensive
+      // short-circuit prevents orphaning the first stream handle).
       expect(client.chat.stopStream).not.toHaveBeenCalled();
-      expect(client.chat.startStream).toHaveBeenCalledTimes(2);
+      expect(client.chat.startStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes an orphaned stream when supersede cleans up mid-startStream', async () => {
+      // Arrange: make A's startStream resolve slowly so supersede can land
+      // between `turns.set(A)` and the startStream await settling. B resolves
+      // immediately. The race matches the codex-flagged hole in begin().
+      let resolveAStart: (v: { ts: string }) => void = () => {};
+      const startStream = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<{ ts: string }>((resolve) => {
+              resolveAStart = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({ ts: 'stream-B' });
+      const client = makeClient({ startStream });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const sessionKey = 'C1:t1';
+      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
+      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+
+      // Kick off A; don't await — it's still pending on startStream.
+      const aPromise = surface.begin(ctxA);
+
+      // B's begin supersedes A (fail(A) runs; A has no streamTs yet → closeStream skipped,
+      // TurnState A removed from the map).
+      await surface.begin(ctxB);
+
+      // Now A's startStream finally resolves with a ts — but its TurnState is gone.
+      resolveAStart({ ts: 'stream-A-orphan' });
+      await aPromise;
+
+      // The orphaned stream-A-orphan handle must be closed, else Slack dangles
+      // a "typing" indicator and a leaked B1 message.
+      expect(client.chat.stopStream).toHaveBeenCalledWith({
+        channel: 'C1',
+        ts: 'stream-A-orphan',
+        chunks: [],
+      });
+      // B's stream is still active.
+      expect(surface._getActiveTurnId(sessionKey)).toBe('C1:t1:B');
+
+      await surface.end(ctxB.turnId, 'completed');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // appendText boolean return (graceful fallback signal)
+  // -------------------------------------------------------------------------
+
+  describe('appendText return value', () => {
+    it('returns true when the chunk is delivered to Slack (PHASE>=1)', async () => {
+      config.ui.fiveBlockPhase = 1;
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      await expect(surface.appendText(ctx.turnId, 'ok')).resolves.toBe(true);
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it('returns false when PHASE<1 so caller takes the legacy path', async () => {
+      config.ui.fiveBlockPhase = 0;
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      await expect(surface.appendText('any', 'hi')).resolves.toBe(false);
+      expect(client.chat.appendStream).not.toHaveBeenCalled();
+    });
+
+    it('returns false when startStream failed (no streamTs) so caller falls back', async () => {
+      config.ui.fiveBlockPhase = 1;
+      const client = makeClient({
+        startStream: vi.fn().mockRejectedValue(new Error('slack 500')),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx); // swallows the error, no streamTs recorded
+
+      // appendText detects the missing streamTs and surfaces false so the
+      // stream-processor can fall back to `context.say`.
+      await expect(surface.appendText(ctx.turnId, 'reply')).resolves.toBe(false);
+      expect(client.chat.appendStream).not.toHaveBeenCalled();
+    });
+
+    it('returns false when chat.appendStream itself raises', async () => {
+      config.ui.fiveBlockPhase = 1;
+      const client = makeClient({
+        appendStream: vi.fn().mockRejectedValue(new Error('transient network')),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      await expect(surface.appendText(ctx.turnId, 'reply')).resolves.toBe(false);
+      await surface.end(ctx.turnId, 'completed');
     });
   });
 

@@ -126,10 +126,18 @@ export class ThreadPanel {
     await this.turnSurface.begin(ctx);
   }
 
-  /** Append a markdown_text chunk to the active B1 stream. PHASE=0 no-ops. */
-  async appendText(turnId: string, text: string): Promise<void> {
-    if (config.ui.fiveBlockPhase < 1) return;
-    await this.turnSurface.appendText(turnId, text);
+  /**
+   * Append a markdown_text chunk to the active B1 stream.
+   *
+   * Returns `true` when Slack accepted the chunk, `false` when it did not
+   * (PHASE<1, empty text, no open stream, or SDK error). Callers use the
+   * `false` return as the "fall back to legacy `context.say`" signal so a
+   * transient `startStream` failure under PHASE>=1 doesn't silently eat the
+   * assistant reply.
+   */
+  async appendText(turnId: string, text: string): Promise<boolean> {
+    if (config.ui.fiveBlockPhase < 1) return false;
+    return this.turnSurface.appendText(turnId, text);
   }
 
   /** Close the B1 stream for a turn. PHASE=0 no-ops. Idempotent. */
