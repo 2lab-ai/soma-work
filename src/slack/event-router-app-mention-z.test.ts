@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * FIX #1 (PR #509): `app_mention` events that start with `/z` or match a
- * legacy naked command must route through `ZRouter` — the same normalization
- * pipeline as slash and DM. This test file exercises that contract.
+ * FIX #1 (PR #509, revised by #530): `app_mention` events that start with
+ * `/z` must route through `ZRouter` — the same normalization pipeline as
+ * slash and DM. Bare `[cmd] [args]` (restored in #530) falls through to the
+ * legacy pipeline instead. This test file exercises that contract.
  *
  * See: plan/MASTER-SPEC.md §5-1 "3 entry points common normalizeZInvocation".
  */
@@ -122,8 +123,8 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     expect(mockMessageHandler).not.toHaveBeenCalled();
   });
 
-  it('routes legacy naked `@bot persona set linus` through ZRouter (tombstone path)', async () => {
-    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+  it('bare `@bot persona set linus` falls through to legacy pipeline (#530)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true });
     eventRouter.zRouter = { dispatch };
 
     const handler = eventHandlers['app_mention'];
@@ -138,12 +139,105 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
       say: vi.fn(),
     });
 
+    // Bare text MUST NOT route through ZRouter after #530 (Gate C' removed).
+    expect(dispatch).not.toHaveBeenCalled();
+    // Fall-through to legacy pipeline with original bare text.
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('persona set linus');
+  });
+
+  it('bare `@bot model opus-4.7` (no linked session) falls through — ZRouter not called (#530)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '1.1',
+        text: '<@B_BOT> model opus-4.7',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('model opus-4.7');
+  });
+
+  it('`@bot /z model opus-4.7` still routes through ZRouter (regression guard)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '1.1',
+        text: '<@B_BOT> /z model opus-4.7',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
     expect(dispatch).toHaveBeenCalledTimes(1);
-    const inv = dispatch.mock.calls[0][0];
-    expect(inv.source).toBe('channel_mention');
-    expect(inv.isLegacyNaked).toBe(true);
-    // Tombstone handled by ZRouter; no pipeline continuation.
+    expect(dispatch.mock.calls[0][0].source).toBe('channel_mention');
+  });
+
+  it('bare `@bot model opus-4.7` in source thread with linked session still shows linked-status card (pre-#509 parity)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true });
+    eventRouter.zRouter = { dispatch };
+
+    mockDeps.claudeHandler.getSession.mockReturnValue(null);
+    mockDeps.claudeHandler.findSessionBySourceThread.mockReturnValue({
+      channelId: 'C_WORK',
+      threadTs: 'wt.1',
+    });
+    const linkedStatusSpy = vi.fn();
+    (eventRouter as any).respondWithLinkedSessionStatus = linkedStatusSpy;
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '2.2',
+        thread_ts: 'src.1',
+        text: '<@B_BOT> model opus-4.7',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    // Bare command in source-thread with linked session: ZRouter NOT called,
+    // linked-status card IS rendered (pre-#509 intentional exception).
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(linkedStatusSpy).toHaveBeenCalledTimes(1);
     expect(mockMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('bare `@bot commands` (retired) falls through to legacy pipeline — no tombstone (#530)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ handled: true });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: {
+        user: 'U_X',
+        channel: 'C_X',
+        ts: '1.1',
+        text: '<@B_BOT> commands',
+        team: 'T_X',
+      },
+      say: vi.fn(),
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('commands');
   });
 
   it('forbidden `@bot /z new` (slash-only) IS allowed via channel_mention (not slash)', async () => {
