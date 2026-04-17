@@ -22,5 +22,7 @@ Even when it is not a PR review request, when looking at code:
 - stv:debug
 - stv:think
 - local:zwork
+- local:diagram
+- local:architecture-diagram
 
 </workflow_prompt>
