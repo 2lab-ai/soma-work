@@ -35,7 +35,13 @@ export interface ShutdownDeps {
 
 export class ShutdownCoordinator {
   private _accepting = true;
-  private shuttingDown = false;
+  /**
+   * In-flight graceful() promise. Memoized so a second signal (or BaseMcpServer's
+   * own SIGINT/SIGTERM handler falling through to shutdown()) awaits the same
+   * drain sequence instead of returning immediately and letting the caller
+   * race process.exit() with the still-running drain.
+   */
+  private gracefulPromise: Promise<void> | null = null;
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly deps: ShutdownDeps;
   private readonly drainTimeoutMs: number;
@@ -67,12 +73,21 @@ export class ShutdownCoordinator {
   }
 
   /**
-   * Run the shutdown sequence. Idempotent; repeated calls await the first.
+   * Run the shutdown sequence. Idempotent; repeated calls share the first
+   * invocation's promise so every caller awaits the same drain completion.
+   *
+   * Intentionally NOT `async` — an async wrapper would create a new promise
+   * per call, breaking reference-identity memoization. We return the stored
+   * promise directly.
    */
-  async graceful(signal: NodeJS.Signals | 'programmatic'): Promise<void> {
-    if (this.shuttingDown) return;
-    this.shuttingDown = true;
+  graceful(signal: NodeJS.Signals | 'programmatic'): Promise<void> {
+    if (this.gracefulPromise) return this.gracefulPromise;
     this._accepting = false;
+    this.gracefulPromise = this.runGraceful(signal);
+    return this.gracefulPromise;
+  }
+
+  private async runGraceful(signal: NodeJS.Signals | 'programmatic'): Promise<void> {
     logger.info('llm.shutdown.begin', { signal });
 
     // 2. drain inflight handlers (bounded)
@@ -119,14 +134,15 @@ export class ShutdownCoordinator {
   }
 
   /**
-   * Install SIGINT/SIGTERM/exit handlers. Call once at boot.
+   * Install a single best-effort `exit`-event pidfile-release handler. Signal
+   * handling (SIGINT/SIGTERM) is owned by BaseMcpServer.run(), which calls the
+   * LlmMCPServer subclass's `shutdown()` override — that in turn awaits
+   * `graceful()`. Installing SIGINT/SIGTERM here too would race BaseMcpServer's
+   * handler: the second `graceful()` would return the memoized promise, but a
+   * second `process.exit(0)` triggered on the base path could still undercut
+   * the drain. Keeping one owner per signal eliminates the ambiguity.
    */
-  installSignalHandlers(exit: (code: number) => void = (c) => process.exit(c)): void {
-    const onSignal = (sig: NodeJS.Signals) => {
-      void this.graceful(sig).then(() => exit(sig === 'SIGINT' ? 130 : 0));
-    };
-    process.on('SIGINT', onSignal);
-    process.on('SIGTERM', onSignal);
+  installSignalHandlers(): void {
     // Best-effort sync unlink on plain exit() calls (crash after graceful already unlinked is a no-op).
     process.on('exit', () => {
       try { this.deps.pidfile.release(); } catch { /* ignore */ }

@@ -179,4 +179,48 @@ describe('Pidfile + shutdown ordering', () => {
     expect(pidfileExistsDuringDrain).toBe(true);
     expect(fs.existsSync(pidPath)).toBe(false);
   });
+
+  it('concurrent graceful() calls share one drain (test 63b)', async () => {
+    // Review fix: a second signal (or BaseMcpServer.run()'s own SIGINT/SIGTERM
+    // handler falling through to our override) used to return immediately from
+    // graceful(), letting the caller race process.exit() against a still-
+    // running drain. Memoization means both awaiters see the same resolution.
+    const handle = acquirePidfile(pidPath);
+    const sessionStore = new FileSessionStore(path.join(dir, 'sessions.jsonl'));
+    const childRegistry = new ChildRegistry(path.join(dir, 'children.jsonl'), {
+      captureFingerprint: () => ({ startTimeToken: 't', cmdFingerprint: 'f' }),
+    });
+    const runtimes: Record<Backend, LlmRuntime> = {
+      codex: makeFakeRuntime('codex'),
+      gemini: makeFakeRuntime('gemini'),
+    };
+    await sessionStore.prune();
+
+    const coord = new ShutdownCoordinator({
+      pidfile: handle,
+      sessionStore,
+      childRegistry,
+      runtimes,
+      drainTimeoutMs: 1_000,
+    });
+
+    // Track drain start/finish. If memoization is broken, the second caller
+    // resolves before the first finishes the drain.
+    let drainCompleted = false;
+    const origDrain = sessionStore.writeQueue.drain.bind(sessionStore.writeQueue);
+    vi.spyOn(sessionStore.writeQueue, 'drain').mockImplementation(async () => {
+      await origDrain();
+      // Small delay to make the race visible if memoization were absent.
+      await new Promise((r) => setTimeout(r, 50));
+      drainCompleted = true;
+    });
+
+    const p1 = coord.graceful('SIGTERM');
+    const p2 = coord.graceful('programmatic');
+    // They must be the SAME promise (memoized), not two racers.
+    expect(p1).toBe(p2);
+    await Promise.all([p1, p2]);
+    expect(drainCompleted).toBe(true);
+    expect(fs.existsSync(pidPath)).toBe(false);
+  });
 });

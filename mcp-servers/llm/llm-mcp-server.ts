@@ -264,7 +264,21 @@ export class LlmMCPServer extends BaseMcpServer {
       createdAt: now,
       updatedAt: now,
     };
-    await this.deps.sessionStore.save(pending);
+    // Map placeholder-save failures to PERSISTENCE_FAILED (not BACKEND_FAILED);
+    // the backend was never invoked, so the error is purely a durability issue.
+    try {
+      await this.deps.sessionStore.save(pending);
+    } catch (persistErr) {
+      this.logger.error('llm.session.placeholder-persist-failed', {
+        publicId,
+        err: String(persistErr),
+      });
+      throw new LlmChatError(
+        ErrorCode.PERSISTENCE_FAILED,
+        'Failed to persist session placeholder; backend was not invoked',
+        persistErr,
+      );
+    }
 
     this.logger.info('llm.session.created', {
       publicId,
@@ -288,6 +302,20 @@ export class LlmMCPServer extends BaseMcpServer {
         ErrorCode.BACKEND_FAILED,
         err instanceof Error ? err.message : String(err),
         err,
+      );
+    }
+
+    // D10 invariant defense: a blank `backendSessionId` means the extract
+    // helper fell through every branch. Promoting to `ready` with '' would
+    // be silently corrupt — resume would pass '' to the backend, and the
+    // loader's tri-state rule (`ready ⇒ backendSessionId != null`) only
+    // rejects null. Treat this as a backend failure; purge placeholder.
+    if (!startResult.backendSessionId || startResult.backendSessionId.trim() === '') {
+      try { await this.deps.sessionStore.delete(publicId); } catch { /* best-effort */ }
+      this.logger.warn('llm.session.blank-backend-session-id', { publicId, backend: route.backend });
+      throw new LlmChatError(
+        ErrorCode.BACKEND_FAILED,
+        'Backend returned empty session ID',
       );
     }
 

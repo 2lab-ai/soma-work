@@ -191,6 +191,33 @@ describe('LlmMCPServer handleTool — chat new/resume', () => {
     expect(parseStructured(result).error.code).toBe(ErrorCode.PERSISTENCE_FAILED);
   });
 
+  it('test 10b: new placeholder-save failure → PERSISTENCE_FAILED + backend never invoked', async () => {
+    // Review fix: sessionStore.save(pending) throwing used to bubble as BACKEND_FAILED.
+    vi.spyOn(deps.sessionStore, 'save').mockRejectedValueOnce(new Error('disk full'));
+    const startSpy = deps.runtimes.codex.startSession;
+    const result = await deps.server.handleTool('chat', { prompt: 'hi', model: 'codex' });
+    expect(result.isError).toBe(true);
+    expect(parseStructured(result).error.code).toBe(ErrorCode.PERSISTENCE_FAILED);
+    expect(startSpy).not.toHaveBeenCalled(); // Backend was never invoked.
+  });
+
+  it('test 10c: runtime returns empty backendSessionId → BACKEND_FAILED + placeholder purged', async () => {
+    // Review fix (D10 defense): extractThreadId/extractSessionId can fall through
+    // to ''. Promoting '' to ready leaves an un-resumable record the loader only
+    // coerces to `corrupted` on NEXT restart. Reject at-the-door instead.
+    deps.runtimes.codex.startSession.mockResolvedValueOnce({
+      backendSessionId: '',
+      content: 'ok',
+      resolvedConfig: {},
+    });
+    const result = await deps.server.handleTool('chat', { prompt: 'hi', model: 'codex' });
+    expect(result.isError).toBe(true);
+    expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_FAILED);
+    // Placeholder must not linger.
+    const raw = fs.readFileSync(path.join(deps.dir, 'sessions.jsonl'), 'utf8').trim();
+    expect(raw).toBe('');
+  });
+
   it('test 11: resolvedConfig echoed by startSession is stored verbatim', async () => {
     deps.runtimes.codex.startSession.mockResolvedValueOnce({
       backendSessionId: 'thread-x',
