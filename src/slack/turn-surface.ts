@@ -210,7 +210,11 @@ export class TurnSurface {
    */
   async appendText(turnId: string, text: string): Promise<boolean> {
     if (this.phase() < 1) return false;
-    if (!text) return false;
+    // Reject whitespace-only chunks (matches `handleTextMessage`'s own
+    // `!text.trim()` guard at stream-processor.ts) so stray newlines /
+    // indentation fragments don't get billed as chunks or rendered as
+    // empty blobs in the B1 stream.
+    if (!text || !text.trim()) return false;
 
     const state = this.turns.get(turnId);
     if (!state || !state.streamTs || state.closing) {
@@ -329,13 +333,16 @@ export class TurnSurface {
   // -------------------------------------------------------------------------
 
   /**
-   * Close a stream whose TurnState was already cleaned up (supersede race).
-   * Called from `begin()` when `startStream` resolved after the supersede
-   * fail() had already removed the state. `chunks: []` preserves chunks-mode
-   * symmetry; no appendStream was ever called for this ts, so it's actually
-   * the degenerate "open then immediately close" case.
+   * Raw `chat.stopStream` with chunks-mode symmetry. Returns `true` on
+   * success, `false` on any Slack/network error. Callers layer their own
+   * structured logging on top so the context (turn vs orphan) is preserved.
+   *
+   * Chunks-mode symmetry: an empty chunks array closes without inserting a
+   * trailing marker, which would be a B5-responsibility leak (P5 scope).
+   * The `as any` bridges the same SDK typing gap documented on startStream
+   * in `begin()` above.
    */
-  private async closeOrphanStream(channelId: string, streamTs: string): Promise<void> {
+  private async stopStreamRaw(channelId: string, streamTs: string): Promise<boolean> {
     try {
       const client = this.deps.slackApi.getClient();
       await (client.chat as any).stopStream({
@@ -343,29 +350,33 @@ export class TurnSurface {
         ts: streamTs,
         chunks: [],
       });
-    } catch (err) {
-      this.logger.warn('orphan stopStream failed', {
-        streamTs,
-        error: (err as Error).message,
-      });
+      return true;
+    } catch {
+      return false;
     }
   }
 
   /**
-   * Call `chat.stopStream` honoring the chunks-mode invariant.
-   * `origin`/`reason` exist only for structured logging on failure.
+   * Close a stream whose TurnState was already cleaned up (supersede race).
+   * Called from `begin()` when `startStream` resolved after the supersede
+   * fail() had already removed the state — open-then-immediately-close.
+   */
+  private async closeOrphanStream(channelId: string, streamTs: string): Promise<void> {
+    const ok = await this.stopStreamRaw(channelId, streamTs);
+    if (!ok) {
+      this.logger.warn('orphan stopStream failed', { streamTs });
+    }
+  }
+
+  /**
+   * Close a known-turn stream with full structured logging. Callers must
+   * only invoke when `state.streamTs` is set (see `end()`/`fail()` guards).
+   * `origin`/`reason` exist only for observability.
    */
   private async closeStream(state: TurnState, origin: 'end' | 'fail', reason: TurnEndReason): Promise<void> {
-    try {
-      const client = this.deps.slackApi.getClient();
-      await (client.chat as any).stopStream({
-        channel: state.ctx.channelId,
-        ts: state.streamTs,
-        // Chunks-mode symmetry: an empty chunks array satisfies the close
-        // contract without inserting a trailing marker, which would be a
-        // B5-responsibility leak (P5 scope).
-        chunks: [],
-      });
+    if (!state.streamTs) return;
+    const ok = await this.stopStreamRaw(state.ctx.channelId, state.streamTs);
+    if (ok) {
       this.logger.debug('B1 stream closed', {
         turnId: state.ctx.turnId,
         streamTs: state.streamTs,
@@ -374,12 +385,11 @@ export class TurnSurface {
         appendedChunks: state.appendedChunks,
         elapsedMs: Date.now() - state.startedAt,
       });
-    } catch (err) {
+    } else {
       this.logger.warn('chat.stopStream failed', {
         turnId: state.ctx.turnId,
         origin,
         reason,
-        error: (err as Error).message,
       });
     }
   }

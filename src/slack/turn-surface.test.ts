@@ -148,6 +148,23 @@ describe('TurnSurface', () => {
       expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
     });
 
+    it('appendText drops whitespace-only chunks', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      // Whitespace-only chunks would otherwise be billed as chunks and
+      // render as empty blobs — match handleTextMessage's `!text.trim()`
+      // guard so the B1 surface stays consistent.
+      await expect(surface.appendText(ctx.turnId, '   ')).resolves.toBe(false);
+      await expect(surface.appendText(ctx.turnId, '\n\n')).resolves.toBe(false);
+      await expect(surface.appendText(ctx.turnId, '\t  \n')).resolves.toBe(false);
+
+      expect(client.chat.appendStream).not.toHaveBeenCalled();
+      await surface.end(ctx.turnId, 'completed');
+    });
+
     it('appendText is a no-op once the turn is closing', async () => {
       // stopStream delays so we can interleave an appendText while closing=true
       let releaseStop: () => void = () => {};
