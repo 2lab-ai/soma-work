@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
@@ -47,6 +48,14 @@ function getCharLimit(target: MemoryTarget): number {
   return target === 'memory' ? DEFAULT_MEMORY_CHAR_LIMIT : DEFAULT_USER_CHAR_LIMIT;
 }
 
+/**
+ * Per-entry soft cap = 30% of the store's total char limit.
+ * Shared with memory-improve.ts so LLM output truncation matches store validation.
+ */
+export function getPerEntryCap(target: MemoryTarget): number {
+  return Math.floor(getCharLimit(target) * 0.3);
+}
+
 function readEntries(userId: string, target: MemoryTarget): string[] {
   const filePath = getFilePath(userId, target);
   try {
@@ -68,8 +77,21 @@ function writeEntries(userId: string, target: MemoryTarget, entries: string[]): 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  // Truly unique temp name: pid+time collides within the same millisecond
+  // under concurrent async writes. UUID v4 makes the race impossible.
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${randomUUID()}`;
   const content = entries.join(ENTRY_DELIMITER);
-  fs.writeFileSync(filePath, content, 'utf-8');
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
 }
 
 function totalChars(entries: string[]): number {
@@ -188,6 +210,100 @@ export function removeMemoryByIndex(userId: string, target: MemoryTarget, index:
   writeEntries(userId, target, updated);
   logger.info('Memory removed by index', { userId, target, index });
   return { ok: true, message: `Entry #${index} removed`, entries: updated };
+}
+
+/**
+ * Replace entry at 1-based index atomically.
+ * Validates newText.length against per-entry cap and total char limit.
+ * Optional `expectedOldText` enforces compare-and-swap: if the entry at
+ * that index no longer equals the expected text (because a concurrent
+ * delete/improve shifted the list during a long-running LLM call), the
+ * write is rejected with reason `'cas mismatch'`.
+ * Returns {ok:false, reason} WITHOUT mutating store on failure.
+ */
+export function replaceMemoryByIndex(
+  userId: string,
+  target: MemoryTarget,
+  index: number,
+  newText: string,
+  expectedOldText?: string,
+): { ok: boolean; reason?: string } {
+  const trimmed = newText.trim();
+  const entries = readEntries(userId, target);
+  if (index < 1 || index > entries.length) {
+    return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
+  }
+  if (expectedOldText !== undefined && entries[index - 1] !== expectedOldText) {
+    return { ok: false, reason: 'cas mismatch' };
+  }
+  const perEntryCap = getPerEntryCap(target);
+  if (trimmed.length > perEntryCap) {
+    return { ok: false, reason: `entry too long (${trimmed.length} > ${perEntryCap})` };
+  }
+  if (trimmed.length === 0) {
+    return { ok: false, reason: 'empty entry' };
+  }
+  const next = [...entries];
+  next[index - 1] = trimmed;
+  if (totalChars(next) > getCharLimit(target)) {
+    return { ok: false, reason: 'total over charLimit' };
+  }
+  writeEntries(userId, target, next);
+  logger.info('Memory replaced by index', { userId, target, index });
+  return { ok: true };
+}
+
+/**
+ * Replace entire entries array atomically.
+ * Prevalidates: non-empty array, no duplicates, per-entry cap, total cap.
+ * Optional `expectedOldEntries` enforces compare-and-swap: if the current
+ * store entries no longer match the captured snapshot (concurrent edit
+ * during a long-running LLM call), the write is rejected with reason
+ * `'cas mismatch'`. Comparison is strict element-wise equality including
+ * order.
+ * Returns {ok:false, reason} WITHOUT mutating store on failure.
+ */
+export function replaceAllMemory(
+  userId: string,
+  target: MemoryTarget,
+  entries: string[],
+  expectedOldEntries?: string[],
+): { ok: boolean; reason?: string } {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { ok: false, reason: 'empty entries array' };
+  }
+  if (expectedOldEntries !== undefined) {
+    const current = readEntries(userId, target);
+    if (current.length !== expectedOldEntries.length || current.some((e, i) => e !== expectedOldEntries[i])) {
+      return { ok: false, reason: 'cas mismatch' };
+    }
+  }
+  const trimmedEntries: string[] = [];
+  for (const s of entries) {
+    if (typeof s !== 'string') {
+      return { ok: false, reason: 'non-string entry' };
+    }
+    const t = s.trim();
+    if (t.length === 0) {
+      return { ok: false, reason: 'empty entry in array' };
+    }
+    trimmedEntries.push(t);
+  }
+  if (new Set(trimmedEntries).size !== trimmedEntries.length) {
+    return { ok: false, reason: 'duplicate entries' };
+  }
+  const perEntryCap = getPerEntryCap(target);
+  for (const s of trimmedEntries) {
+    if (s.length > perEntryCap) {
+      return { ok: false, reason: `entry too long (max ${perEntryCap})` };
+    }
+  }
+  if (totalChars(trimmedEntries) > getCharLimit(target)) {
+    return { ok: false, reason: 'total over charLimit' };
+  }
+  writeEntries(userId, target, trimmedEntries);
+  logger.info('Memory replaced in full', { userId, target, count: trimmedEntries.length });
+  return { ok: true };
 }
 
 export function clearMemory(userId: string, target: MemoryTarget): MemoryOperationResult {
