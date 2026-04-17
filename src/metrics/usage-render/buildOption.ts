@@ -191,17 +191,21 @@ export function buildOption(stats: UsageCardStats): EChartsOptionLike {
     });
   });
 
-  // Rankings header + rows (token top-5)
+  // Rankings header + rows (token top-5).
+  // If target is outside top-5, aggregator surfaces them via `targetTokenRow`
+  // and we render their row below the top-5 with a "…" separator.
   const rankX = 120;
   const rankY = 1100;
+  const ROW_HEIGHT = 44;
+  const TOP_ROWS = 5;
   graphic.push({
     type: 'text',
     left: rankX,
     top: rankY,
     style: { text: '🏆 토큰 사용 TOP 5', fontFamily: FONT_FAMILY, fontSize: 24, fontWeight: 'bold', fill: '#111' },
   });
-  stats.rankings.tokensTop.slice(0, 5).forEach((r, i) => {
-    const y = rankY + 50 + i * 44;
+  stats.rankings.tokensTop.slice(0, TOP_ROWS).forEach((r, i) => {
+    const y = rankY + 50 + i * ROW_HEIGHT;
     const isTarget = r.userId === stats.targetUserId;
     graphic.push({
       type: 'text',
@@ -216,8 +220,30 @@ export function buildOption(stats: UsageCardStats): EChartsOptionLike {
       },
     });
   });
+  if (stats.rankings.targetTokenRow) {
+    const r = stats.rankings.targetTokenRow;
+    const sepY = rankY + 50 + TOP_ROWS * ROW_HEIGHT;
+    graphic.push({
+      type: 'text',
+      left: rankX,
+      top: sepY,
+      style: { text: '…', fontFamily: FONT_FAMILY, fontSize: 20, fill: '#999' },
+    });
+    graphic.push({
+      type: 'text',
+      left: rankX,
+      top: sepY + ROW_HEIGHT,
+      style: {
+        text: `${r.rank}. ${r.userName || r.userId} — ${fmt(r.totalTokens)}`,
+        fontFamily: FONT_FAMILY,
+        fontSize: 20,
+        fontWeight: 'bold',
+        fill: '#216e39',
+      },
+    });
+  }
 
-  // Cost top-5
+  // Cost top-5 (same pattern as token rankings above).
   const costX = 860;
   graphic.push({
     type: 'text',
@@ -225,8 +251,8 @@ export function buildOption(stats: UsageCardStats): EChartsOptionLike {
     top: rankY,
     style: { text: '💰 비용 TOP 5', fontFamily: FONT_FAMILY, fontSize: 24, fontWeight: 'bold', fill: '#111' },
   });
-  stats.rankings.costTop.slice(0, 5).forEach((r, i) => {
-    const y = rankY + 50 + i * 44;
+  stats.rankings.costTop.slice(0, TOP_ROWS).forEach((r, i) => {
+    const y = rankY + 50 + i * ROW_HEIGHT;
     const isTarget = r.userId === stats.targetUserId;
     graphic.push({
       type: 'text',
@@ -241,6 +267,28 @@ export function buildOption(stats: UsageCardStats): EChartsOptionLike {
       },
     });
   });
+  if (stats.rankings.targetCostRow) {
+    const r = stats.rankings.targetCostRow;
+    const sepY = rankY + 50 + TOP_ROWS * ROW_HEIGHT;
+    graphic.push({
+      type: 'text',
+      left: costX,
+      top: sepY,
+      style: { text: '…', fontFamily: FONT_FAMILY, fontSize: 20, fill: '#999' },
+    });
+    graphic.push({
+      type: 'text',
+      left: costX,
+      top: sepY + ROW_HEIGHT,
+      style: {
+        text: `${r.rank}. ${r.userName || r.userId} — $${r.totalCost.toFixed(2)}`,
+        fontFamily: FONT_FAMILY,
+        fontSize: 20,
+        fontWeight: 'bold',
+        fill: '#216e39',
+      },
+    });
+  }
 
   // Session top-3 (tokens) + top-3 (span)
   const sessX = 120;

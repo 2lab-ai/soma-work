@@ -41,6 +41,14 @@ export interface UsageCardStats {
   rankings: {
     tokensTop: UsageCardRanking[];
     costTop: UsageCardRanking[];
+    /**
+     * Target user's token ranking row when they are outside the rendered top-5
+     * (null when target is already inside the top-5). Rank reflects position in
+     * the full sorted list, not the sliced view.
+     */
+    targetTokenRow: UsageCardRanking | null;
+    /** Same as `targetTokenRow` but for cost-sorted rankings. */
+    targetCostRow: UsageCardRanking | null;
   };
   sessions: {
     tokenTop3: UsageCardSession[];

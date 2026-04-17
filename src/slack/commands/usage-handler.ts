@@ -20,6 +20,8 @@ export interface UsageCardOverrides {
     filesUploadV2: (args: Record<string, unknown>) => Promise<unknown>;
     postMessage: (args: { channel: string; text: string; blocks?: unknown[]; thread_ts?: string }) => Promise<unknown>;
     postEphemeral: (args: { channel: string; user: string; text: string; thread_ts?: string }) => Promise<unknown>;
+    /** Opens a DM channel with the user and returns the channel id. */
+    openDmChannel: (userId: string) => Promise<string>;
   };
   clock?: () => Date;
 }
@@ -91,9 +93,24 @@ export class UsageHandler implements CommandHandler {
    */
   async handleCard(ctx: CommandContext): Promise<CommandResult> {
     const { channel, threadTs, text, user } = ctx;
+
+    // Strict param gate — v1 spec §3 forbids *any* argument on `/usage card`.
+    // `/usage card @someone`, `/usage card foo` → reject explicitly rather
+    // than silently produce the caller's own card.
+    if (hasExtraCardArgs(text)) {
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        '⚠️ `/usage card` 는 추가 인자를 받지 않습니다. 본인 카드만 발급 가능합니다.',
+        { threadTs },
+      );
+      return { handled: true };
+    }
+
     const parsed = CommandParser.parseUsageCommand(text);
 
-    // Privacy gate — `/usage card @someone_else` is rejected.
+    // Privacy gate — redundant safety net (strict param gate above should
+    // already catch this). Kept so the privacy rule can never regress even
+    // if the parser grows new cases.
     if (parsed.userId && parsed.userId !== user) {
       await this.deps.slackApi.postSystemMessage(
         channel,
@@ -174,15 +191,42 @@ export class UsageHandler implements CommandHandler {
       return { handled: true };
     } catch (err) {
       if (isSafeOperational(err)) {
+        const kind = err.constructor.name;
         this.logger.error('usage_card_safe_failure', {
-          kind: err.constructor.name,
+          kind,
           message: err.message,
         });
         await this.postEphemeral(ctx, '카드 생성 실패, 잠시 후 다시 시도해 주세요.');
+        // Best-effort DM alert (spec §4.4 / §5 acceptance §4). Failure of the
+        // DM itself is swallowed — the channel fallback already succeeded and
+        // a secondary failure must not mask the first.
+        await this.postDmAlert(user, kind);
         return { handled: true };
       }
       // Non-operational error: re-throw so upstream handler/logging sees it.
       throw err;
+    }
+  }
+
+  /**
+   * Notify the caller via DM that their `/usage card` render failed.
+   * Errors are logged but never thrown — this is an auxiliary alert path.
+   */
+  private async postDmAlert(userId: string, kind: string): Promise<void> {
+    const text = `⚠️ 사용량 카드 생성 실패 (\`${kind}\`). 잠시 후 다시 시도하거나 관리자에게 문의해 주세요.`;
+    try {
+      if (this.overrides.slackApi) {
+        const dmChannel = await this.overrides.slackApi.openDmChannel(userId);
+        await this.overrides.slackApi.postMessage({ channel: dmChannel, text });
+        return;
+      }
+      const dmChannel = await this.deps.slackApi.openDmChannel(userId);
+      await this.deps.slackApi.postMessage(dmChannel, text);
+    } catch (dmErr) {
+      this.logger.error('usage_card_dm_alert_failed', {
+        kind,
+        message: dmErr instanceof Error ? dmErr.message : String(dmErr),
+      });
     }
   }
 
@@ -260,13 +304,28 @@ export class UsageHandler implements CommandHandler {
 }
 
 /**
- * Detect `/usage card` (optional leading slash, optional trailing args/user-mention).
+ * Detect `/usage card` (optional leading slash, optional trailing tokens).
+ * Routing-level check: returns true even when extra tokens are present so the
+ * handler can produce an explicit reject message instead of silently falling
+ * through to the bare `/usage` path. Strict arg-count enforcement lives in
+ * `hasExtraCardArgs` below.
  */
 export function isCardSubcommand(text: string): boolean {
   const trimmed = text.trim().replace(/^\//, '');
   const parts = trimmed.split(/\s+/);
   if (parts[0]?.toLowerCase() !== 'usage') return false;
   return (parts[1] ?? '').toLowerCase() === 'card';
+}
+
+/**
+ * Returns true if `/usage card` was invoked with any extra tokens
+ * (e.g. `/usage card @someone`, `/usage card foo`). Spec §3 forbids args.
+ */
+export function hasExtraCardArgs(text: string): boolean {
+  const trimmed = text.trim().replace(/^\//, '');
+  const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
+  // Expected shape: ['usage', 'card']; anything longer is a violation.
+  return parts.length > 2;
 }
 
 interface FilesUploadV2RespFileInner {

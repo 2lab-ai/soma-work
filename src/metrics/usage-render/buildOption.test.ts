@@ -25,6 +25,8 @@ function makeStats(partial: Partial<UsageCardStats> = {}): UsageCardStats {
         { userId: 'U_B', userName: 'B', totalTokens: 900_000, totalCost: 5.0, rank: 2 },
       ],
       costTop: [{ userId: 'U_TEST', userName: 'Tester', totalTokens: 1_234_567, totalCost: 7.89, rank: 1 }],
+      targetTokenRow: null,
+      targetCostRow: null,
     },
     sessions: {
       tokenTop3: [{ sessionKey: 'S1', totalTokens: 500_000, durationMs: 3_600_000, firstEventAt: '', lastEventAt: '' }],
@@ -92,5 +94,88 @@ describe('buildOption', () => {
   it('canvas dims exported constants match contract', () => {
     expect(CANVAS_WIDTH).toBe(1600);
     expect(CANVAS_HEIGHT).toBe(2200);
+  });
+
+  describe('target-user visibility (rankings P0)', () => {
+    const otherTop = [
+      { userId: 'U_A', userName: 'A', totalTokens: 9_000_000, totalCost: 50.0, rank: 1 },
+      { userId: 'U_B', userName: 'B', totalTokens: 8_000_000, totalCost: 40.0, rank: 2 },
+      { userId: 'U_C', userName: 'C', totalTokens: 7_000_000, totalCost: 30.0, rank: 3 },
+      { userId: 'U_D', userName: 'D', totalTokens: 6_000_000, totalCost: 20.0, rank: 4 },
+      { userId: 'U_E', userName: 'E', totalTokens: 5_000_000, totalCost: 10.0, rank: 5 },
+    ];
+
+    it('target inside top-5 → NO overflow separator/row added', () => {
+      const stats = makeStats({
+        targetUserId: 'U_A',
+        targetUserName: 'A',
+        rankings: {
+          tokensTop: otherTop,
+          costTop: otherTop,
+          targetTokenRow: null,
+          targetCostRow: null,
+        },
+      });
+      const opt = buildOption(stats);
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      // No lone "…" separator should appear when target is already visible.
+      expect(texts).not.toContain('…');
+    });
+
+    it('target ranked 8th → overflow row rendered with rank=8 text + "…" separator', () => {
+      const target = { userId: 'U_TEST', userName: 'Tester', totalTokens: 1_234_567, totalCost: 7.89, rank: 8 };
+      const stats = makeStats({
+        rankings: {
+          tokensTop: otherTop,
+          costTop: otherTop,
+          targetTokenRow: target,
+          targetCostRow: target,
+        },
+      });
+      const opt = buildOption(stats);
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      // "…" separator appears (at least twice — once per column).
+      expect(texts.filter((t: string) => t === '…').length).toBeGreaterThanOrEqual(2);
+      // Target's real rank (8) appears in an overflow row.
+      expect(texts.some((t: string) => t.startsWith('8. Tester'))).toBe(true);
+    });
+  });
+
+  describe('KPI strip + fun-fact footer contents', () => {
+    it('KPI labels (24시간, 7일, 30일, 비용, 연속, 세션) are all present', () => {
+      const opt = buildOption(makeStats());
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      for (const label of ['24시간', '7일', '30일', '비용(30일)', '연속', '세션']) {
+        expect(texts).toContain(label);
+      }
+    });
+
+    it('30일 KPI value includes formatted total tokens', () => {
+      const opt = buildOption(makeStats({ totals: { last24h: 1, last7d: 2, last30d: 1_234_567, costLast30dUsd: 0 } }));
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      expect(texts).toContain('1,234,567');
+    });
+
+    it('cost KPI formatted as $0.00 style (en-US)', () => {
+      const opt = buildOption(makeStats({ totals: { last24h: 0, last7d: 0, last30d: 1, costLast30dUsd: 3.456 } }));
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      expect(texts).toContain('$3.46');
+    });
+
+    it('favoriteModel null → renders em-dash placeholder', () => {
+      const opt = buildOption(makeStats({ favoriteModel: null }));
+      const texts = opt.graphic.map((g: any) => (g.style?.text as string) || '');
+      expect(texts.some((t: string) => t.includes('즐겨 쓰는 모델: —'))).toBe(true);
+    });
+
+    it('title contains user name + date window', () => {
+      const opt = buildOption(
+        makeStats({ targetUserName: '주군', windowStart: '2026-03-20', windowEnd: '2026-04-18' }),
+      );
+      const titleText = (opt.title[0] as any).text as string;
+      expect(titleText).toContain('주군');
+      expect(titleText).toContain('2026-03-20');
+      expect(titleText).toContain('2026-04-18');
+    });
   });
 });

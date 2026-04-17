@@ -442,14 +442,25 @@ export class ReportAggregator {
       totalCost: v.cost,
       rank: 0,
     }));
-    const tokensTop: UsageCardRanking[] = [...rankingEntries]
+    // Sort the full list first so rank is stable across slices; each top-N
+    // entry carries its real position. If target is outside the rendered
+    // top-5 (the card's on-screen window), expose their row separately so
+    // `buildOption` can still highlight them. Trace: spec §4.3, P0 fix.
+    const RENDER_TOP_N = 5;
+    const tokensSorted: UsageCardRanking[] = [...rankingEntries]
       .sort((a, b) => b.totalTokens - a.totalTokens || (a.userName || '').localeCompare(b.userName || ''))
-      .slice(0, topN)
       .map((e, i) => ({ ...e, rank: i + 1 }));
-    const costTop: UsageCardRanking[] = [...rankingEntries]
+    const costSorted: UsageCardRanking[] = [...rankingEntries]
       .sort((a, b) => b.totalCost - a.totalCost || (a.userName || '').localeCompare(b.userName || ''))
-      .slice(0, topN)
       .map((e, i) => ({ ...e, rank: i + 1 }));
+    const tokensTop = tokensSorted.slice(0, topN);
+    const costTop = costSorted.slice(0, topN);
+    const targetTokenRow = tokensSorted.slice(0, RENDER_TOP_N).some((r) => r.userId === targetUserId)
+      ? null
+      : (tokensSorted.find((r) => r.userId === targetUserId) ?? null);
+    const targetCostRow = costSorted.slice(0, RENDER_TOP_N).some((r) => r.userId === targetUserId)
+      ? null
+      : (costSorted.find((r) => r.userId === targetUserId) ?? null);
 
     // Heatmap: 42 cells, 7 cols × 6 rows. Align so that real days land on correct weekday.
     // Day-of-week in KST, Sunday=0..Saturday=6 (matches `cellIndex % 7`).
@@ -522,7 +533,7 @@ export class ReportAggregator {
       },
       heatmap,
       hourly: perHourForTarget,
-      rankings: { tokensTop, costTop },
+      rankings: { tokensTop, costTop, targetTokenRow, targetCostRow },
       sessions: { tokenTop3, spanTop3 },
       favoriteModel,
       currentStreakDays,

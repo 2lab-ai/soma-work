@@ -26,16 +26,32 @@ export function __setFontPathForTests(p: string | null): void {
   testFontPath = p;
 }
 
+// Font files below this size are almost certainly a truncated download or
+// LFS pointer stub. Keeps us from handing resvg a bogus font silently.
+const MIN_FONT_BYTES = 1024 * 100; // 100KB (NotoSansKR is ~4MB)
+
 async function loadFontPath(): Promise<string> {
   if (fontPathPromise) return fontPathPromise;
   const resolvedPath = testFontPath || FONT_PATH;
-  fontPathPromise = fs
-    .access(resolvedPath)
-    .then(() => resolvedPath)
-    .catch((err) => {
+  // Validate readability + non-trivial size. `fs.access` alone only checks
+  // existence, so it passes on unreadable (permission-denied) or truncated
+  // files — both of which have bitten production font pipelines before.
+  fontPathPromise = (async () => {
+    try {
+      await fs.access(resolvedPath, fs.constants.R_OK);
+      const stat = await fs.stat(resolvedPath);
+      if (!stat.isFile()) {
+        throw new Error(`${resolvedPath} is not a regular file`);
+      }
+      if (stat.size < MIN_FONT_BYTES) {
+        throw new Error(`font at ${resolvedPath} is only ${stat.size} bytes (< ${MIN_FONT_BYTES})`);
+      }
+      return resolvedPath;
+    } catch (err) {
       fontPathPromise = null;
       throw new FontLoadError(`Failed to load Noto Sans KR from ${resolvedPath}`, err);
-    });
+    }
+  })();
   return fontPathPromise;
 }
 

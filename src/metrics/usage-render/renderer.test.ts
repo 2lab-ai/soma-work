@@ -24,6 +24,8 @@ function makeStats(): UsageCardStats {
     rankings: {
       tokensTop: [{ userId: 'U_TEST', userName: 'Tester', totalTokens: 12345, totalCost: 0.42, rank: 1 }],
       costTop: [{ userId: 'U_TEST', userName: 'Tester', totalTokens: 12345, totalCost: 0.42, rank: 1 }],
+      targetTokenRow: null,
+      targetCostRow: null,
     },
     sessions: {
       tokenTop3: [],

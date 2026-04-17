@@ -91,6 +91,68 @@ describe('aggregateUsageCard', () => {
     const targetRank = result.rankings.tokensTop.find((r) => r.userId === 'U_TEST_TARGET');
     expect(targetRank).toBeDefined();
     expect(targetRank?.totalTokens).toBeGreaterThan(0);
+    // Target sits in top-5 (fixture gives them most events) → overflow row null.
+    expect(result.rankings.targetTokenRow).toBeNull();
+    expect(result.rankings.targetCostRow).toBeNull();
+  });
+
+  it('rankings assign sequential rank starting at 1, descending by tokens', async () => {
+    const events = loadFixture();
+    const { aggregator } = makeAggregator(events);
+    const result = await aggregator.aggregateUsageCard({
+      startDate: FIXTURE_START_DATE,
+      endDate: FIXTURE_END_DATE,
+      targetUserId: 'U_TEST_TARGET',
+      now: new Date('2026-04-17T23:00:00+09:00'),
+    });
+    if ('empty' in result && result.empty === true) throw new Error('expected non-empty');
+    result.rankings.tokensTop.forEach((r, i) => expect(r.rank).toBe(i + 1));
+    for (let i = 1; i < result.rankings.tokensTop.length; i++) {
+      expect(result.rankings.tokensTop[i - 1].totalTokens).toBeGreaterThanOrEqual(
+        result.rankings.tokensTop[i].totalTokens,
+      );
+    }
+  });
+
+  it('target outside rendered top-5 → targetTokenRow surfaces overflow with real rank', async () => {
+    // Synthesise a scenario where the target is clearly outside top-5 by
+    // adding 6 higher-volume users on top of the fixture.
+    const events = loadFixture();
+    const extras: MetricsEvent[] = [];
+    for (let u = 0; u < 6; u++) {
+      const userId = `U_TOP_${u}`;
+      for (let i = 0; i < 5; i++) {
+        extras.push({
+          eventType: 'token_usage',
+          timestamp: Date.parse('2026-04-17T12:00:00+09:00') + i * 1000,
+          userId,
+          userName: `Top${u}`,
+          sessionKey: `s_${userId}_${i}`,
+          metadata: {
+            inputTokens: 10_000_000, // massively larger than any fixture user
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costUsd: 100,
+            model: 'claude-opus-4-7',
+          },
+        } as unknown as MetricsEvent);
+      }
+    }
+    const { aggregator } = makeAggregator([...events, ...extras]);
+    const result = await aggregator.aggregateUsageCard({
+      startDate: FIXTURE_START_DATE,
+      endDate: FIXTURE_END_DATE,
+      targetUserId: 'U_TEST_TARGET',
+      now: new Date('2026-04-17T23:00:00+09:00'),
+    });
+    if ('empty' in result && result.empty === true) throw new Error('expected non-empty');
+
+    expect(result.rankings.targetTokenRow).not.toBeNull();
+    expect(result.rankings.targetTokenRow?.userId).toBe('U_TEST_TARGET');
+    expect(result.rankings.targetTokenRow?.rank).toBeGreaterThan(5);
+    // Target must NOT appear in the rendered top-5 slice.
+    expect(result.rankings.tokensTop.slice(0, 5).some((r) => r.userId === 'U_TEST_TARGET')).toBe(false);
   });
 
   it('empty short-circuit: unknown target user → {empty: true}', async () => {
