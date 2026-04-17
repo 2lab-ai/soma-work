@@ -2,6 +2,7 @@ import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../../../config';
 import { ensureValidCredentials } from '../../../credentials-manager';
 import { Logger } from '../../../logger';
+import { getPerEntryCap } from '../../../user-memory-store';
 
 const logger = new Logger('MemoryImprove');
 
@@ -52,7 +53,7 @@ export async function improveEntry(entry: string, target: 'memory' | 'user'): Pr
   const raw = await runQuery(prompt, systemPrompt);
   const text = raw.replace(/[\r\n]+/g, ' ').trim();
   if (!text) throw new Error('empty LLM output');
-  const cap = target === 'memory' ? 660 : 412;
+  const cap = getPerEntryCap(target);
   return text.substring(0, cap);
 }
 
@@ -84,6 +85,6 @@ export async function improveAll(entries: string[], target: 'memory' | 'user'): 
 
   if (arr.length === 0) throw new Error('improveAll returned empty');
 
-  const cap = target === 'memory' ? 660 : 412;
+  const cap = getPerEntryCap(target);
   return arr.map((s) => s.substring(0, cap));
 }

@@ -238,7 +238,7 @@ export class ZSettingsActionHandler {
       // Scenario 15: closure lets the handler push an intermediate "working…"
       // card before a long-running branch (e.g. memory improve calls LLM).
       const respondClosure = async (blocks: ZBlock[]): Promise<void> => {
-        await zRespond.replace({ text: '🧠 Memory', blocks });
+        await zRespond.replace({ text: `/z ${topic}`, blocks });
       };
       const result = await binding.apply({ userId, value, actionId, body, respond: respondClosure });
       if (result.dismiss) {

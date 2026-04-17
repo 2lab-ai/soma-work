@@ -47,6 +47,14 @@ function getCharLimit(target: MemoryTarget): number {
   return target === 'memory' ? DEFAULT_MEMORY_CHAR_LIMIT : DEFAULT_USER_CHAR_LIMIT;
 }
 
+/**
+ * Per-entry soft cap = 30% of the store's total char limit.
+ * Shared with memory-improve.ts so LLM output truncation matches store validation.
+ */
+export function getPerEntryCap(target: MemoryTarget): number {
+  return Math.floor(getCharLimit(target) * 0.3);
+}
+
 function readEntries(userId: string, target: MemoryTarget): string[] {
   const filePath = getFilePath(userId, target);
   try {
@@ -212,19 +220,20 @@ export function replaceMemoryByIndex(
   index: number,
   newText: string,
 ): { ok: boolean; reason?: string } {
+  const trimmed = newText.trim();
   const entries = readEntries(userId, target);
   if (index < 1 || index > entries.length) {
     return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
   }
-  const perEntryCap = Math.floor(getCharLimit(target) * 0.3);
-  if (newText.length > perEntryCap) {
-    return { ok: false, reason: `entry too long (${newText.length} > ${perEntryCap})` };
+  const perEntryCap = getPerEntryCap(target);
+  if (trimmed.length > perEntryCap) {
+    return { ok: false, reason: `entry too long (${trimmed.length} > ${perEntryCap})` };
   }
-  if (newText.length === 0) {
+  if (trimmed.length === 0) {
     return { ok: false, reason: 'empty entry' };
   }
   const next = [...entries];
-  next[index - 1] = newText;
+  next[index - 1] = trimmed;
   if (totalChars(next) > getCharLimit(target)) {
     return { ok: false, reason: 'total over charLimit' };
   }
@@ -246,23 +255,31 @@ export function replaceAllMemory(
   if (!Array.isArray(entries) || entries.length === 0) {
     return { ok: false, reason: 'empty entries array' };
   }
-  if (new Set(entries).size !== entries.length) {
-    return { ok: false, reason: 'duplicate entries' };
-  }
-  const perEntryCap = Math.floor(getCharLimit(target) * 0.3);
+  const trimmedEntries: string[] = [];
   for (const s of entries) {
-    if (typeof s !== 'string' || s.length === 0) {
+    if (typeof s !== 'string') {
+      return { ok: false, reason: 'non-string entry' };
+    }
+    const t = s.trim();
+    if (t.length === 0) {
       return { ok: false, reason: 'empty entry in array' };
     }
+    trimmedEntries.push(t);
+  }
+  if (new Set(trimmedEntries).size !== trimmedEntries.length) {
+    return { ok: false, reason: 'duplicate entries' };
+  }
+  const perEntryCap = getPerEntryCap(target);
+  for (const s of trimmedEntries) {
     if (s.length > perEntryCap) {
       return { ok: false, reason: `entry too long (max ${perEntryCap})` };
     }
   }
-  if (totalChars(entries) > getCharLimit(target)) {
+  if (totalChars(trimmedEntries) > getCharLimit(target)) {
     return { ok: false, reason: 'total over charLimit' };
   }
-  writeEntries(userId, target, entries);
-  logger.info('Memory replaced in full', { userId, target, count: entries.length });
+  writeEntries(userId, target, trimmedEntries);
+  logger.info('Memory replaced in full', { userId, target, count: trimmedEntries.length });
   return { ok: true };
 }
 

@@ -129,6 +129,21 @@ describe('user-memory-store atomic write + new primitives', () => {
       // untouched
       expect(store.loadMemory(userId, 'memory').entries).toEqual(['a', 'b'.repeat(2100)]);
     });
+
+    it('trims whitespace and stores trimmed', () => {
+      store.addMemory(userId, 'memory', 'a');
+      const r = store.replaceMemoryByIndex(userId, 'memory', 1, '  newtext  ');
+      expect(r).toEqual({ ok: true });
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['newtext']);
+    });
+
+    it('rejects whitespace-only newText as empty', () => {
+      store.addMemory(userId, 'memory', 'a');
+      const r = store.replaceMemoryByIndex(userId, 'memory', 1, '   \n\t  ');
+      expect(r.ok).toBe(false);
+      expect(r.reason).toContain('empty');
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['a']);
+    });
   });
 
   describe('replaceAllMemory (Scenario 12)', () => {
@@ -196,6 +211,21 @@ describe('user-memory-store atomic write + new primitives', () => {
       const r = store.replaceAllMemory(userId, 'user', ['a'.repeat(500)]);
       expect(r.ok).toBe(false);
       expect(store.loadMemory(userId, 'user').entries).toEqual(['old']);
+    });
+
+    it('trims whitespace in all entries', () => {
+      store.addMemory(userId, 'memory', 'old');
+      const r = store.replaceAllMemory(userId, 'memory', ['  a  ', 'b  ', '  c']);
+      expect(r).toEqual({ ok: true });
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['a', 'b', 'c']);
+    });
+
+    it('rejects whitespace-only entries', () => {
+      store.addMemory(userId, 'memory', 'old');
+      const r = store.replaceAllMemory(userId, 'memory', ['a', '   ', 'c']);
+      expect(r.ok).toBe(false);
+      expect(r.reason).toContain('empty');
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['old']);
     });
   });
 });
