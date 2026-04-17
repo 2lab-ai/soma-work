@@ -5,6 +5,7 @@
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
+import { config } from '../config';
 import { Logger } from '../logger';
 import { calculateTokenCost } from '../metrics/model-registry';
 import type { SessionLinks } from '../types';
@@ -41,6 +42,27 @@ export interface StreamContext {
   showThinking?: boolean;
   /** Bot's Slack user ID (used for skill invocation RPG announcements as `<@BOT_ID>`) */
   botUserId?: string;
+  /**
+   * Per-turn identifier for the 5-block UI façade (Issue #525, PHASE>=1).
+   * Populated by stream-executor as `${sessionKey}:${turnStartTs}`.
+   * When unset, callers fall back to the legacy `context.say` path.
+   */
+  turnId?: string;
+  /**
+   * ThreadPanel façade instance — carries `appendText()` for the B1 stream.
+   * Only present when PHASE>=1; stream-processor gates on this + turnId.
+   */
+  threadPanel?: ThreadPanelFacade;
+}
+
+/**
+ * Narrow structural type for the subset of ThreadPanel used by StreamContext.
+ * Declared inline to avoid importing the concrete class (prevents a runtime
+ * import cycle with thread-panel → turn-surface → config).
+ */
+export interface ThreadPanelFacade {
+  isTurnSurfaceActive(): boolean;
+  appendText(turnId: string, text: string): Promise<void>;
 }
 
 /**
@@ -451,6 +473,12 @@ export class StreamProcessor {
    * Handle tool use in assistant message
    */
   private async handleToolUseMessage(content: any[], context: StreamContext): Promise<void> {
+    // Issue #525 P1: when the per-turn façade is active, suppress THIS
+    // function's own `context.say` calls (RPG skill banner + tool-call block).
+    // B1-fenced tool rendering + B4 status routing land in P2/P4 via the
+    // tool-event-processor callback — that path is unchanged and still fires.
+    const inTurn = Boolean(context.turnId && context.threadPanel?.isTurnSurfaceActive());
+
     // Notify status update
     if (this.callbacks.onStatusUpdate) {
       await this.callbacks.onStatusUpdate('working');
@@ -462,8 +490,9 @@ export class StreamProcessor {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
     }
 
-    // Emit RPG-style skill invocation announcement (shown even in minimal)
-    if (this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
+    // Emit RPG-style skill invocation announcement (PHASE=0 only — flavor text
+    // is dropped from the P1 consolidated stream per plan v2 §5.1).
+    if (!inTurn && this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
       for (const part of content) {
         if (part.type === 'tool_use' && part.name === 'Skill') {
           const skillName = part.input?.skill || part.input?.name || 'unknown';
@@ -489,9 +518,9 @@ export class StreamProcessor {
       return part;
     });
 
-    // Format and send tool use messages (render mode dispatch)
+    // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
     const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
-    if (toolCallMode !== 'hidden') {
+    if (!inTurn && toolCallMode !== 'hidden') {
       const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
@@ -917,8 +946,14 @@ export class StreamProcessor {
   /**
    * Rebuild a compact message from all tracked tool entries for the given ts.
    * Each line shows the correct status icon (⏳/⚪/🟢/🔴) and optional duration.
+   *
+   * PHASE>=1: no compact messages are created in the first place (see
+   * handleToolUseMessage), so entries will be empty and this is a natural
+   * no-op. The explicit guard below documents intent and defends against
+   * accidental future wiring.
    */
   private async rebuildCompactMessage(ts: string, channel: string): Promise<void> {
+    if (config.ui.fiveBlockPhase >= 1) return;
     const entries = this.compactMessageEntries.get(ts);
     if (!entries || !this.callbacks.onUpdateMessage) return;
 
@@ -1273,6 +1308,15 @@ export class StreamProcessor {
    * Handles overflow messages (content exceeding 45-block limit).
    */
   private async sayWithBlockKit(text: string, context: StreamContext): Promise<void> {
+    // Issue #525 P1: PHASE>=1 routes assistant text into the B1 stream via
+    // TurnSurface.appendText (chat.appendStream) instead of opening a new
+    // Block Kit message per chunk. Verbosity tags are dropped in the stream
+    // path — they are legacy noise on a consolidated single-writer surface.
+    if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
+      await context.threadPanel.appendText(context.turnId, text);
+      return;
+    }
+
     const tag = this.vtag(OutputFlag.FINAL_RESULT, context);
     const { blocks, fallbackText, overflow } = markdownToBlocks(text);
 

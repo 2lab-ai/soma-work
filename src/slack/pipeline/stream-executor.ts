@@ -52,7 +52,7 @@ import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flag
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
-import type { ThreadPanel } from '../thread-panel';
+import type { ThreadPanel, TurnContext } from '../thread-panel';
 import { MessageEvent, type SayFn } from './types';
 
 /**
@@ -277,6 +277,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
+    // Issue #525 P1: per-turn identity for the 5-block UI façade. Computed
+    // BEFORE any try/catch so the finally block can call endTurn() even if
+    // preparePrompt/query-setup throws. TurnSurface.end is idempotent and
+    // gated on SOMA_UI_5BLOCK_PHASE>=1 — PHASE=0 deployments see no change.
+    const turnId = `${sessionKey}:${requestStartedAt.getTime()}`;
+    const turnContext: TurnContext = {
+      channelId: channel,
+      threadTs: threadTs || undefined,
+      sessionKey,
+      turnId,
+    };
+    await this.deps.threadPanel?.beginTurn(turnContext);
+
     // Capture token at query start for CAS-safe rotation on rate limit.
     // Reading process.env at error time is wrong — another session may have already rotated it.
     const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
@@ -434,6 +447,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionKey,
         sessionId: session?.sessionId,
         botUserId: await this.deps.slackApi.getBotUserId(),
+        // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
+        // stream processor so it can route text chunks into the B1 stream.
+        // PHASE=0 deployments leave threadPanel absent from deps → fields
+        // stay undefined → stream-processor falls back to legacy `say()`.
+        turnId,
+        threadPanel: this.deps.threadPanel,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -927,6 +946,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
+      // Issue #525 P1: close the B1 stream before handleError posts the
+      // error block — otherwise the stream would linger until finally and
+      // race with the error message rendering. PHASE=0 → no-op.
+      if (requestAborted) {
+        await this.deps.threadPanel?.endTurn(turnId, 'aborted');
+      } else {
+        await this.deps.threadPanel?.failTurn(turnId, error as Error);
+      }
       const retryAfterMs = await this.handleError(
         error,
         session,
@@ -940,6 +967,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Idempotent: if end/fail already ran (catch or early-return path
+      // inside try), TurnSurface state is cleared and this is a no-op.
+      // Covers success-path exits via return from the try block.
+      await this.deps.threadPanel?.endTurn(turnId, 'completed');
       await this.cleanup(session, sessionKey, abortController);
     }
   }
