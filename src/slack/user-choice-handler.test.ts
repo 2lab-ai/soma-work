@@ -350,9 +350,7 @@ this is not valid json
       const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'default');
       const blocks = getBlocks(payload);
       // Since #545: single user_choice path renders a `💡 <context>` block in all 3 themes.
-      const contextBlock = blocks.find(
-        (b: any) => b.type === 'context' && b.elements?.[0]?.text?.startsWith('💡 '),
-      );
+      const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.startsWith('💡 '));
       expect(contextBlock).toBeDefined();
       expect(contextBlock.elements[0].text).toBe('💡 Important context');
     });
