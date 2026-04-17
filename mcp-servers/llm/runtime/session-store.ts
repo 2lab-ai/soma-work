@@ -177,6 +177,10 @@ export class FileSessionStore implements SessionStore {
   async save(record: SessionRecord): Promise<void> {
     this.ensureLoaded();
     return this.mutateAndPersist((recs) => {
+      // Enforce the tri-state invariant at the top of every persistence path —
+      // update/updateBackendSessionId already do this; save() was the only
+      // write gate that silently admitted invariant violations.
+      this.assertInvariant(record);
       recs.set(record.publicId, { ...record, resolvedConfig: { ...record.resolvedConfig } });
       this.pruneExcessInPlace(recs);
     });
@@ -295,8 +299,14 @@ export class FileSessionStore implements SessionStore {
   // ── Invariants & pruning ──────────────────────────────
 
   private assertInvariant(r: SessionRecord): void {
-    if (r.status === 'ready' && r.backendSessionId === null) {
-      throw new Error(`Invariant violated: ready session ${r.publicId} has null backendSessionId`);
+    if (r.status === 'ready') {
+      if (r.backendSessionId === null) {
+        throw new Error(`Invariant violated: ready session ${r.publicId} has null backendSessionId`);
+      }
+      // Empty or whitespace-only IDs would silently corrupt future resumes.
+      if (r.backendSessionId.trim() === '') {
+        throw new Error(`Invariant violated: ready session ${r.publicId} has blank backendSessionId`);
+      }
     }
     if (r.status === 'pending' && r.backendSessionId !== null) {
       throw new Error(`Invariant violated: pending session ${r.publicId} has non-null backendSessionId`);

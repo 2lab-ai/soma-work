@@ -337,6 +337,78 @@ describe('ChildRegistry', () => {
   }, 10_000);
 });
 
+describe('ChildRegistry — hardening (reviewer follow-up)', () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'child-registry-harden-'));
+    filePath = path.join(dir, 'llm-children.jsonl');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('loader rejects non-positive-integer pid values (test 59e)', () => {
+    // Any of pid: 0, -1, 1.5, NaN in the JSONL would let process.kill signal
+    // a process group or the server itself. Loader must drop these records.
+    writeRawJsonl(filePath, [
+      { pid: 0, backend: 'codex', spawnedAt: '2026-04-18T00:00:00.000Z', startTimeToken: 't', cmdFingerprint: 'f' },
+      { pid: -1, backend: 'codex', spawnedAt: '2026-04-18T00:00:00.000Z', startTimeToken: 't', cmdFingerprint: 'f' },
+      { pid: 1.5, backend: 'codex', spawnedAt: '2026-04-18T00:00:00.000Z', startTimeToken: 't', cmdFingerprint: 'f' },
+      { pid: Number.NaN, backend: 'codex', spawnedAt: '2026-04-18T00:00:00.000Z', startTimeToken: 't', cmdFingerprint: 'f' },
+      // One valid entry to prove the loader still accepts well-formed records.
+      { pid: 99999, backend: 'gemini', spawnedAt: '2026-04-18T00:00:00.000Z', startTimeToken: 't', cmdFingerprint: 'f' },
+    ]);
+
+    const reg = new ChildRegistry(filePath);
+    const recs = reg.getRecords();
+    expect(recs).toHaveLength(1);
+    expect(recs[0].pid).toBe(99999);
+  });
+
+  it('shutdownAll skips PID-reused entries (fingerprint mismatch → no SIGTERM) (test 59f)', async () => {
+    // Simulate: record stored with fingerprint A, but the live PID now has
+    // fingerprint B (reused by an unrelated process since our last reap).
+    const { pid, proc } = spawnSleep(60);
+    try {
+      // Override captureFingerprint so append stores 'STORED' but the shutdown
+      // re-check returns 'DIFFERENT' — mismatch path.
+      let callNum = 0;
+      const captureFP = (): Fingerprint | null => {
+        callNum += 1;
+        if (callNum === 1) return { startTimeToken: 'STORED', cmdFingerprint: 'STORED-FP' };
+        return { startTimeToken: 'DIFFERENT', cmdFingerprint: 'DIFFERENT-FP' };
+      };
+      const reg = new ChildRegistry(filePath, { captureFingerprint: captureFP });
+      await reg.append(pid, 'codex');
+
+      const killSpy = vi.spyOn(process, 'kill');
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      await reg.shutdownAll();
+
+      // No SIGTERM/SIGKILL sent to the reused PID.
+      const sigCalls = killSpy.mock.calls.filter(([p, sig]) => p === pid && (sig === 'SIGTERM' || sig === 'SIGKILL'));
+      expect(sigCalls).toHaveLength(0);
+
+      // Warned.
+      const emitted = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(emitted).toContain('llm.orphan.pid-reused');
+      // And the phase marker lets operators distinguish shutdown vs. replay.
+      // Logger uses JSON.stringify with indentation — accept either spacing.
+      expect(emitted).toMatch(/"phase":\s*"shutdown"/);
+
+      killSpy.mockRestore();
+      stderrSpy.mockRestore();
+    } finally {
+      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+    }
+  }, 10_000);
+});
+
 describe('captureFingerprint', () => {
   it('returns a plausible shape for a live PID (smoke)', () => {
     const fp = captureFingerprint(process.pid);

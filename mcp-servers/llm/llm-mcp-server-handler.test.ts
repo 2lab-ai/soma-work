@@ -275,6 +275,31 @@ describe('LlmMCPServer handleTool — chat new/resume', () => {
     expect(deps.sessionStore.get('resume-ok')!.backendSessionId).toBe('thread-rotated');
   });
 
+  it('test 13b: resume returning whitespace backendSessionId → store keeps old id (no corruption)', async () => {
+    // A whitespace-only string is truthy and would silently promote the
+    // stored ID to blank, corrupting all future resumes. The handler must
+    // fall through to touch() and preserve the existing backendSessionId.
+    await seedReady();
+    const stored = deps.sessionStore.get('resume-ok')!.backendSessionId;
+    deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
+      backendSessionId: '   ',
+      content: 'r',
+    });
+    const result = await deps.server.handleTool('chat', { prompt: 'x', resumeSessionId: 'resume-ok' });
+    expect(parseStructured(result).sessionId).toBe('resume-ok');
+    expect(deps.sessionStore.get('resume-ok')!.backendSessionId).toBe(stored);
+  });
+
+  it('test 13c: resume returning padded backendSessionId → store trims before persisting', async () => {
+    await seedReady();
+    deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
+      backendSessionId: '  thread-rotated  ',
+      content: 'r',
+    });
+    await deps.server.handleTool('chat', { prompt: 'x', resumeSessionId: 'resume-ok' });
+    expect(deps.sessionStore.get('resume-ok')!.backendSessionId).toBe('thread-rotated');
+  });
+
   it('test 14: resume with cwd override; stored cwd is fallback', async () => {
     await seedReady();
     await deps.server.handleTool('chat', {

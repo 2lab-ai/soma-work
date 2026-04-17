@@ -48,11 +48,33 @@ export function acquirePidfile(pidPath: string = defaultPidfilePath()): PidfileH
     fd = tryOpen();
   } catch (e: any) {
     if (e?.code !== 'EEXIST') throw e;
-    // Stale? Read owner, check if alive.
+
+    // A concurrent process may have just done `openSync('wx')` but not yet
+    // written its PID — the file is briefly empty. If we unlinked on empty
+    // we'd open a split-brain window: the racer would finish writing to a
+    // file we've already unlinked, and both instances would proceed believing
+    // they hold the lock. Retry-read with tight backoff to let the legit
+    // writer finish (writeSync completes within microseconds in practice).
     let raw = '';
-    try { raw = fs.readFileSync(pidPath, 'utf-8').trim(); } catch { /* ignore */ }
+    const readDeadline = Date.now() + 500;
+    while (Date.now() < readDeadline) {
+      try { raw = fs.readFileSync(pidPath, 'utf-8').trim(); } catch { /* ignore */ }
+      if (raw) break;
+      // busy-wait with short sleep — intentionally sync to match the rest of
+      // this function's sync boot semantics.
+      const until = Date.now() + 20;
+      while (Date.now() < until) { /* spin */ }
+    }
     const oldPid = Number(raw);
-    if (Number.isFinite(oldPid) && oldPid > 0 && oldPid !== myPid) {
+    if (!Number.isFinite(oldPid) || oldPid <= 0 || !Number.isInteger(oldPid)) {
+      // Still empty/unparseable after 500ms of retries. Either a legit writer
+      // is crash-wedged mid-boot or the file is corrupt. Fail-closed: exit(1)
+      // is strictly safer than unlinking and potentially stomping on an
+      // in-progress racer. An operator can inspect/remove the file manually.
+      logger.error('llm.process.pidfile-unreadable', { pidfile: pidPath, raw: raw.slice(0, 40) });
+      process.exit(1);
+    }
+    if (oldPid !== myPid) {
       let ownerAlive = false;
       try {
         process.kill(oldPid, 0);

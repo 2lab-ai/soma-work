@@ -310,7 +310,11 @@ export class LlmMCPServer extends BaseMcpServer {
     // be silently corrupt — resume would pass '' to the backend, and the
     // loader's tri-state rule (`ready ⇒ backendSessionId != null`) only
     // rejects null. Treat this as a backend failure; purge placeholder.
-    if (!startResult.backendSessionId || startResult.backendSessionId.trim() === '') {
+    const normalizedBsid =
+      typeof startResult.backendSessionId === 'string'
+        ? startResult.backendSessionId.trim()
+        : '';
+    if (!normalizedBsid) {
       try { await this.deps.sessionStore.delete(publicId); } catch { /* best-effort */ }
       this.logger.warn('llm.session.blank-backend-session-id', { publicId, backend: route.backend });
       throw new LlmChatError(
@@ -324,7 +328,7 @@ export class LlmMCPServer extends BaseMcpServer {
     // have leaked (we cannot revoke it).
     try {
       await this.deps.sessionStore.update(publicId, {
-        backendSessionId: startResult.backendSessionId,
+        backendSessionId: normalizedBsid,
         resolvedConfig: startResult.resolvedConfig,
         status: 'ready',
       });
@@ -334,7 +338,7 @@ export class LlmMCPServer extends BaseMcpServer {
       } catch { /* best-effort */ }
       this.logger.error('llm.session.leaked', {
         publicId,
-        backendSessionId: startResult.backendSessionId,
+        backendSessionId: normalizedBsid,
         err: String(persistErr),
       });
       throw new LlmChatError(
@@ -403,15 +407,22 @@ export class LlmMCPServer extends BaseMcpServer {
       }
 
       try {
-        if (
-          resumeResult.backendSessionId &&
-          resumeResult.backendSessionId !== session.backendSessionId
-        ) {
+        // Normalize the backend's returned session ID: a whitespace-only
+        // value would pass a truthy check yet silently corrupt future
+        // resumes (the store's `ready` invariant now also rejects blank).
+        const trimmedBsid =
+          typeof resumeResult.backendSessionId === 'string'
+            ? resumeResult.backendSessionId.trim()
+            : '';
+        if (trimmedBsid && trimmedBsid !== session.backendSessionId) {
           await this.deps.sessionStore.updateBackendSessionId(
             resumeSessionId,
-            resumeResult.backendSessionId,
+            trimmedBsid,
           );
         } else {
+          // Either the backend did not rotate the ID, or it returned a blank
+          // value — in both cases we keep the existing stored ID and just
+          // bump updatedAt via touch().
           await this.deps.sessionStore.touch(resumeSessionId);
         }
       } catch (persistErr) {

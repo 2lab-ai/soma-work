@@ -263,15 +263,44 @@ export class ChildRegistry {
   /**
    * Called during graceful shutdown. Terminates any still-live children
    * recorded here (in case the runtime did not remove them).
+   *
+   * D29 reuse defense: same-lifetime PID reuse is possible if a tracked
+   * child died and the OS recycled its PID before shutdown. Re-verify the
+   * fingerprint here before signaling; drop mismatches (logged) so we never
+   * kill an unrelated process that happens to share a stale PID.
    */
   async shutdownAll(): Promise<void> {
     this.ensureLoaded();
-    const live = this.records.filter((r) => isAlive(r.pid));
-    for (const r of live) {
+    const aliveRecords = this.records.filter((r) => isAlive(r.pid));
+    const targets: ChildRecord[] = [];
+    for (const rec of aliveRecords) {
+      if (rec.startTimeToken && rec.cmdFingerprint) {
+        const current = this.captureFingerprint(rec.pid);
+        if (current && (
+          current.startTimeToken !== rec.startTimeToken ||
+          current.cmdFingerprint !== rec.cmdFingerprint
+        )) {
+          logger.warn('llm.orphan.pid-reused', {
+            pid: rec.pid,
+            phase: 'shutdown',
+            stored: {
+              startTimeToken: rec.startTimeToken,
+              cmdFingerprint: rec.cmdFingerprint,
+            },
+            current,
+          });
+          continue;
+        }
+        // current===null → ps unavailable; fall through to plain-PID kill
+        // (same conservative fallback as replayAndReap).
+      }
+      targets.push(rec);
+    }
+    for (const r of targets) {
       try { process.kill(r.pid, 'SIGTERM'); } catch { /* ignore */ }
     }
-    await Promise.all(live.map((r) => pollUntilDead(r.pid, 3_000)));
-    for (const r of live) {
+    await Promise.all(targets.map((r) => pollUntilDead(r.pid, 3_000)));
+    for (const r of targets) {
       if (isAlive(r.pid)) {
         try { process.kill(r.pid, 'SIGKILL'); } catch { /* ignore */ }
       }
@@ -337,9 +366,14 @@ export class ChildRegistry {
       if (!trimmed) continue;
       try {
         const parsed = JSON.parse(trimmed);
+        // PID must be a positive integer. Zero or negative targets a
+        // process group in process.kill(), which would let a malformed
+        // JSONL line signal arbitrary processes during replayAndReap.
         if (
           parsed &&
           typeof parsed.pid === 'number' &&
+          Number.isInteger(parsed.pid) &&
+          parsed.pid > 0 &&
           (parsed.backend === 'codex' || parsed.backend === 'gemini') &&
           typeof parsed.spawnedAt === 'string'
         ) {

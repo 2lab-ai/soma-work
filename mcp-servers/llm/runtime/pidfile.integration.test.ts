@@ -83,6 +83,48 @@ describe('Pidfile + shutdown ordering', () => {
     }
   });
 
+  it('empty pidfile (racer just openSync\'d, not yet written) → fail-closed instead of unlink-steal (test 61a)', () => {
+    // Simulates: a concurrent process called fs.openSync(path, 'wx') and won
+    // the exclusive-create race, but has NOT yet written its PID. The file
+    // exists but is empty. If acquirePidfile unlinks on empty read, the
+    // racer and us both believe we hold the lock → split-brain.
+    //
+    // Correct behaviour: after the retry-read window (500ms) without a valid
+    // PID, exit(1) rather than unlinking.
+    fs.writeFileSync(pidPath, '', 'utf8');
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT_${code ?? 0}`);
+    }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(() => acquirePidfile(pidPath)).toThrow(/EXIT_1/);
+    const emitted = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(emitted).toContain('llm.process.pidfile-unreadable');
+    // Crucially: we did NOT unlink the racer's file.
+    expect(fs.existsSync(pidPath)).toBe(true);
+
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('malformed pidfile content (non-numeric) → fail-closed (test 61b)', () => {
+    fs.writeFileSync(pidPath, 'not-a-pid\n', 'utf8');
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`EXIT_${code ?? 0}`);
+    }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(() => acquirePidfile(pidPath)).toThrow(/EXIT_1/);
+    const emitted = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    expect(emitted).toContain('llm.process.pidfile-unreadable');
+    expect(fs.existsSync(pidPath)).toBe(true);
+
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it('stale pidfile (pid not running) → unlinked + proceed (test 61)', () => {
     // Definitely-dead PID: spawn+wait; by the time spawnSync returns the process is gone.
     const r = spawnSync('true', []);

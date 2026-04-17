@@ -273,6 +273,30 @@ describe('FileSessionStore — JSONL + migration + v8 invariants', () => {
     expect(rec!.backendSessionId).toBeNull();
   });
 
+  it('v8 invariant: save() of ready with blank backendSessionId → throws (test 47b-blank)', async () => {
+    // The loader invariant covered null at :117; the runtime-side assertInvariant
+    // must also reject empty/whitespace strings, otherwise a buggy update path
+    // could promote 'ready' with a blank id that later corrupts resume calls.
+    const store = new FileSessionStore(filePath);
+    const now = new Date().toISOString();
+    // First insert as pending (valid).
+    await store.save({
+      publicId: 'blank-bsid',
+      backend: 'codex',
+      backendSessionId: null,
+      model: 'gpt-5.4',
+      resolvedConfig: {},
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+      cwd: null,
+    });
+    // Now try to promote to ready with a whitespace ID — must throw.
+    await expect(
+      store.update('blank-bsid', { status: 'ready', backendSessionId: '   ' }),
+    ).rejects.toThrow(/blank backendSessionId/);
+  });
+
   it('v8 invariant: pending with non-null backendSessionId → corrupted (test 47c)', async () => {
     const now = new Date().toISOString();
     const raw = {
