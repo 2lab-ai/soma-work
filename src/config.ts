@@ -11,11 +11,40 @@ export interface PreflightResult {
   warnings: string[];
 }
 
+/**
+ * Parse SOMA_UI_5BLOCK_PHASE — integer in [0..5] rolling out the 5-block UI
+ * refactor (Issue #525). Out-of-range, non-integer, or missing values fall
+ * back to 0 (all legacy) with a warn log. This is the single rollout variable
+ * for the whole refactor; cumulative prefix semantics (see
+ * docs/slack-ui-phase1.md §Rollout).
+ */
+function parseFiveBlockPhase(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 5) {
+    logger.warn(`SOMA_UI_5BLOCK_PHASE="${raw}" invalid (expected integer 0..5); falling back to 0`);
+    return 0;
+  }
+  return n;
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
     appToken: process.env.SLACK_APP_TOKEN!,
     signingSecret: process.env.SLACK_SIGNING_SECRET!,
+  },
+  ui: {
+    /**
+     * 5-block UI refactor rollout phase (Issue #525):
+     *   0 = all legacy (default)
+     *   1 = B1 stream consolidation new path
+     *   2 = + B2 plan
+     *   3 = + B3 choice
+     *   4 = + B4 status (requires Assistant container registration; clamped to 3 if missing)
+     *   5 = + B5 completion marker
+     */
+    fiveBlockPhase: parseFiveBlockPhase(process.env.SOMA_UI_5BLOCK_PHASE),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
