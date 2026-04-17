@@ -68,8 +68,19 @@ function writeEntries(userId: string, target: MemoryTarget, entries: string[]): 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   const content = entries.join(ENTRY_DELIMITER);
-  fs.writeFileSync(filePath, content, 'utf-8');
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
 }
 
 function totalChars(entries: string[]): number {
@@ -188,6 +199,71 @@ export function removeMemoryByIndex(userId: string, target: MemoryTarget, index:
   writeEntries(userId, target, updated);
   logger.info('Memory removed by index', { userId, target, index });
   return { ok: true, message: `Entry #${index} removed`, entries: updated };
+}
+
+/**
+ * Replace entry at 1-based index atomically.
+ * Validates newText.length against per-entry cap and total char limit.
+ * Returns {ok:false, reason} WITHOUT mutating store on failure.
+ */
+export function replaceMemoryByIndex(
+  userId: string,
+  target: MemoryTarget,
+  index: number,
+  newText: string,
+): { ok: boolean; reason?: string } {
+  const entries = readEntries(userId, target);
+  if (index < 1 || index > entries.length) {
+    return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
+  }
+  const perEntryCap = Math.floor(getCharLimit(target) * 0.3);
+  if (newText.length > perEntryCap) {
+    return { ok: false, reason: `entry too long (${newText.length} > ${perEntryCap})` };
+  }
+  if (newText.length === 0) {
+    return { ok: false, reason: 'empty entry' };
+  }
+  const next = [...entries];
+  next[index - 1] = newText;
+  if (totalChars(next) > getCharLimit(target)) {
+    return { ok: false, reason: 'total over charLimit' };
+  }
+  writeEntries(userId, target, next);
+  logger.info('Memory replaced by index', { userId, target, index });
+  return { ok: true };
+}
+
+/**
+ * Replace entire entries array atomically.
+ * Prevalidates: non-empty array, no duplicates, per-entry cap, total cap.
+ * Returns {ok:false, reason} WITHOUT mutating store on failure.
+ */
+export function replaceAllMemory(
+  userId: string,
+  target: MemoryTarget,
+  entries: string[],
+): { ok: boolean; reason?: string } {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { ok: false, reason: 'empty entries array' };
+  }
+  if (new Set(entries).size !== entries.length) {
+    return { ok: false, reason: 'duplicate entries' };
+  }
+  const perEntryCap = Math.floor(getCharLimit(target) * 0.3);
+  for (const s of entries) {
+    if (typeof s !== 'string' || s.length === 0) {
+      return { ok: false, reason: 'empty entry in array' };
+    }
+    if (s.length > perEntryCap) {
+      return { ok: false, reason: `entry too long (max ${perEntryCap})` };
+    }
+  }
+  if (totalChars(entries) > getCharLimit(target)) {
+    return { ok: false, reason: 'total over charLimit' };
+  }
+  writeEntries(userId, target, entries);
+  logger.info('Memory replaced in full', { userId, target, count: entries.length });
+  return { ok: true };
 }
 
 export function clearMemory(userId: string, target: MemoryTarget): MemoryOperationResult {
