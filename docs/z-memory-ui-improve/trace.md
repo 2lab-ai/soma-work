@@ -5,7 +5,7 @@
 | # | Scenario | Size | Status |
 |---|----------|------|--------|
 | 1 | renderMemoryCard — section+actions per-entry (2 blocks/entry) + top/bottom global actions + cancel | medium | RED |
-| 2 | Block-budget fallback — N+M > 19 시 오래된 entries를 collapsed section(들)로 접음 | medium | RED |
+| 2 | Block-budget fallback — N+M > 20 시 오래된 entries를 collapsed section(들)로 접음 | medium | RED |
 | 3 | Section 3000-char cap — 긴 entry text → 2900자 chunk 분할 또는 truncate | small | RED |
 | 4 | Byte payload guard — Buffer.byteLength > 12000 시 truncate/collapse | small | RED |
 | 5 | Mrkdwn escape — `<@U..>` / `<!here>` / `*_~<>&` 무력화 (escapeMrkdwn) | small | RED |
@@ -54,7 +54,7 @@ renderMemoryCard({userId, issuedAt})
   │    │                    button('❌ 닫기', value='cancel',
   │    │                           action_id='z_setting_memory_cancel')]
   │    └─ context: CLI help
-  ├─ if (11 + 2*(N+M) > 50):
+  ├─ if (9 + 2*(N+M) > 50):     // 9 fixed blocks
   │     blocks = collapseFallback(blocks, mem, usr)                // Scenario 2
   ├─ blocks = enforceSectionCharCap(blocks)                         // Scenario 3
   ├─ blocks = bytePayloadGuard(blocks)                              // Scenario 4
@@ -64,11 +64,11 @@ renderMemoryCard({userId, issuedAt})
 ### Contract Test
 
 ```typescript
-it('renders all entries as section+actions (2 blocks/entry) when N+M <= 19', async () => {
+it('renders all entries as section+actions (2 blocks/entry) when N+M <= 20', async () => {
   // Arrange: mem 5 entries, usr 5 entries
   // Act: renderMemoryCard
   // Assert:
-  //   blocks.length === 11 + 2*10 === 31
+  //   blocks.length === 9 + 2*10 === 29
   //   each entry has both section (with original text) and actions with 2 buttons
   //   improve button action_id matches `z_setting_memory_set_improve_<target>_<N>`
   //   clear button has `confirm` object
@@ -83,17 +83,17 @@ it('clear button has confirm dialog', () => {
 
 ---
 
-## Scenario 2: Block-budget fallback — N+M > 19
+## Scenario 2: Block-budget fallback — N+M > 20
 
 ### Trigger
-11 + 2·(N+M) > 50 즉 N+M ≥ 20.
+9 + 2·(N+M) > 50 즉 N+M ≥ 21.
 
 ### Trace
 
 ```
 collapseFallback(blocks, mem, usr):
   totalEntries = mem.entries.length + usr.entries.length
-  overflow = totalEntries - 19
+  overflow = totalEntries - 20   // 9 fixed + 2*20 = 49 ≤ 50 cap
   // 큰 store부터 오래된(낮은 index) 쪽을 접음
   larger = mem.entries.length >= usr.entries.length ? 'memory' : 'user'
   takeFrom[larger] = overflow

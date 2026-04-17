@@ -42,9 +42,9 @@ actions.elements = [
 ```
 
 **Block-budget 계산**:
-- 고정 블록: 11 (header, summary, top-actions, mem-header, divider, user-header, bottom-actions, extra-actions, help)
-- entry당 2 blocks
-- 50 cap ≤ 11 + 2·(N+M) → **(N+M) ≤ 19**
+- 고정 블록: **9** (header, summary context, top-actions, mem-group-header section, divider, user-group-header section, bottom-actions, extra-actions, help context)
+- entry당 2 blocks (section + actions)
+- 50 cap ≤ 9 + 2·(N+M) → **(N+M) ≤ 20**
 
 **Block-budget fallback** (`N+M > 19`):
 - 큰 쪽 store부터 오래된 entries를 **collapsed single section**으로 접음 (text only, per-entry actions 제거)
