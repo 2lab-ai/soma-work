@@ -63,37 +63,30 @@ export async function improveAll(entries: string[], target: 'memory' | 'user'): 
   const raw = await runQuery(prompt, systemPrompt);
   const trimmed = raw.trim();
 
+  // Try JSON array first; unreachable/malformed falls through to split.
+  // A parseable-but-wrong-shape array (e.g. `[1,2,3]`) MUST throw — silently
+  // stringifying it via the split fallback would persist model garbage.
   let arr: string[] | null = null;
-  let jsonParseError: string | null = null;
-  try {
-    const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
-        arr = parsed as string[];
-      } else if (Array.isArray(parsed)) {
-        // Array but has non-string members — reject, do NOT fall through to
-        // split-on-dashes which would happily stringify `[1,2,3]` into one
-        // bogus entry. Tell the caller the model returned a bad shape.
-        jsonParseError = `array has non-string members (${parsed.length} items)`;
+  const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (jsonMatch) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      logger.warn('improveAll JSON parse failed, trying split fallback', {
+        target,
+        error: (err as Error).message,
+      });
+    }
+    if (Array.isArray(parsed)) {
+      if (parsed.every((x): x is string => typeof x === 'string')) {
+        arr = parsed;
       } else {
-        jsonParseError = 'parsed JSON was not an array';
+        throw new Error(
+          `improveAll rejected malformed LLM output: array has non-string members (${parsed.length} items)`,
+        );
       }
     }
-  } catch (err) {
-    // Malformed JSON — log so a model regression shows up in ops, and only
-    // then try the `---` split fallback.
-    jsonParseError = (err as Error).message;
-    logger.warn('improveAll JSON parse failed, trying split fallback', {
-      target,
-      error: jsonParseError,
-    });
-  }
-
-  // If JSON looked valid (array) but had non-string members, DON'T silently
-  // fall through — the model gave a structurally wrong answer.
-  if (jsonParseError && jsonParseError.startsWith('array has non-string members')) {
-    throw new Error(`improveAll rejected malformed LLM output: ${jsonParseError}`);
   }
 
   if (!arr) {

@@ -418,10 +418,11 @@ function buildBlocksWithCollapse(
   usrLimit: number,
   memPct: number,
   usrPct: number,
+  plan?: { memCollapseN: number; usrCollapseN: number },
 ): ZBlock[] {
   const memCount = memEntries.length;
   const usrCount = usrEntries.length;
-  const { memCollapseN, usrCollapseN } = planCollapse(memCount, usrCount);
+  const { memCollapseN, usrCollapseN } = plan ?? planCollapse(memCount, usrCount);
 
   const memCollapsed = memEntries.slice(0, memCollapseN);
   const memKept = memEntries.slice(memCollapseN);
@@ -479,37 +480,23 @@ export async function renderMemoryCard(args: { userId: string; issuedAt: number 
   // Safety: if still > 50 blocks (e.g. many very short entries on both
   // stores), fold ALL user entries into collapsed summary sections and trim
   // oldest memory entries until we fit under the cap. Memory is the primary
-  // store so we prefer to preserve its per-entry view.
+  // store so we prefer to preserve its per-entry view. Reuses the same
+  // builder with an overridden plan (user fully collapsed, memory keeps ≤19
+  // per-entry rows).
   if (blocks.length > 50) {
     const memCount = mem.entries.length;
     const usrCount = usr.entries.length;
-    // Keep enough memory per-entry rows to fit under 50 with fixed(9) +
-    // banner(1) + mem-collapsed(≤1) + user-collapsed(≤1). 2*keep ≤ 38 → 19.
+    // 2*keep ≤ 38 → keep 19 memory rows (fixed ~9 + banner + collapsed ≤2)
     const memCollapseN = Math.max(0, memCount - 19);
-    const memCollapsed = mem.entries.slice(0, memCollapseN);
-    const memKept = mem.entries.slice(memCollapseN);
-    const totalCollapsed = memCollapsed.length + usrCount;
-
-    const rebuilt: ZBlock[] = [];
-    rebuilt.push(headerBlock());
-    rebuilt.push(
-      summaryContextBlock(memCount, mem.percentUsed, usrCount, usr.percentUsed, mem.charLimit, usr.charLimit),
+    blocks = buildBlocksWithCollapse(
+      mem.entries,
+      usr.entries,
+      mem.charLimit,
+      usr.charLimit,
+      mem.percentUsed,
+      usr.percentUsed,
+      { memCollapseN, usrCollapseN: usrCount },
     );
-    if (totalCollapsed > 0) rebuilt.push(collapseBannerContext(totalCollapsed));
-    rebuilt.push(globalActionsRow('z_memory_global_top'));
-    rebuilt.push(groupHeaderSection('memory', memCount));
-    rebuilt.push(...collapseSectionsFor('memory', memCollapsed, 1));
-    for (let i = 0; i < memKept.length; i++) {
-      const idx = memCollapsed.length + i + 1;
-      rebuilt.push(...perEntryBlocks('memory', idx, memKept[i]));
-    }
-    rebuilt.push(dividerBlock());
-    rebuilt.push(groupHeaderSection('user', usrCount));
-    rebuilt.push(...collapseSectionsFor('user', usr.entries, 1));
-    rebuilt.push(globalActionsRow('z_memory_global_bottom'));
-    rebuilt.push(extraActionsRow());
-    rebuilt.push(helpContextBlock());
-    blocks = rebuilt;
   }
 
   blocks = enforceSectionCharCap(blocks);
