@@ -25,4 +25,5 @@ export { SandboxHandler } from './sandbox-handler';
 export { SessionCommandHandler } from './session-command-handler';
 export { SessionHandler } from './session-handler';
 export { CommandContext, CommandDependencies, CommandHandler, CommandResult, SayFn } from './types';
+export { UITestHandler } from './ui-test-handler';
 export { UsageHandler } from './usage-handler';
