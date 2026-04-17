@@ -1,16 +1,26 @@
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
-/** Anchored match for `ui-test`, `ui-test stream`, or `ui-test plan`. Case-insensitive. */
-const UI_TEST_RE = /^ui-test(?:\s+(stream|plan))?$/i;
+const execAsync = promisify(exec);
+
+/** Anchored match for `ui-test` and its subcommands. Case-insensitive. */
+const UI_TEST_RE = /^ui-test(?:\s+(stream|plan|task_card|work))?$/i;
 
 /**
  * UI test harness for Phase 0 of #525 — Slack Agents UI migration.
  *
- * Exposes two DM-only naked commands behind triple gating:
- *   `ui-test stream` — exercises chat.startStream / appendStream / stopStream
- *   `ui-test plan`   — exercises plan + task_card blocks across 5 state transitions
+ * Exposes DM-only naked commands behind triple gating:
+ *   `ui-test stream`    — chat.startStream / appendStream / stopStream (5 chunks)
+ *   `ui-test plan`      — plan + 4 task_cards across 5 state transitions
+ *   `ui-test task_card` — standalone task_card block, pending → in_progress → complete
+ *   `ui-test work`      — combined streaming narrative + live plan updates driven by
+ *                         real `child_process.exec` calls (pwd/date/uptime/ls), so the
+ *                         harness literally "does work" on the host while both blocks
+ *                         advance in lockstep.
  *
  * Gating order (env → admin → DM-only → subcommand) is deliberate:
  *  1. If SLACK_UI_TEST_ENABLED is not exactly 'true', the handler still matches
@@ -24,6 +34,11 @@ const UI_TEST_RE = /^ui-test(?:\s+(stream|plan))?$/i;
  * Slash `/z ui-test` is intentionally blocked by SLASH_FORBIDDEN in
  * `src/slack/z/capability.ts` — the slash path sets `threadTs = channel_id` as
  * a placeholder which is incompatible with `chat.startStream({ thread_ts })`.
+ *
+ * Stream mode invariant: once `appendStream` is called with `chunks:[{type,text}]`,
+ * Slack locks the stream into "chunks" mode. `stopStream` must ALSO close with a
+ * `chunks` array — passing a top-level `markdown_text` after chunked appends will
+ * raise `streaming_mode_mismatch`. Both runners below honor that invariant.
  *
  * See issue #525 and docs/slack-ui-phase0.md for go/no-go checklist.
  */
@@ -75,8 +90,10 @@ export class UITestHandler implements CommandHandler {
       await say({
         text:
           '📖 *`ui-test` usage*\n' +
-          '• `ui-test stream` — run a 5-chunk streaming demo (chat.startStream/appendStream/stopStream)\n' +
-          '• `ui-test plan` — render a plan + 4 task_cards and transition through 5 states',
+          '• `ui-test stream` — 5-chunk streaming demo (chat.startStream/appendStream/stopStream)\n' +
+          '• `ui-test plan` — render a plan + 4 task_cards and transition through 5 states\n' +
+          '• `ui-test task_card` — standalone task_card block, pending → in_progress → complete\n' +
+          '• `ui-test work` — combined stream + plan driven by real shell work (pwd/date/uptime/ls)',
         thread_ts: threadTs,
       });
       return { handled: true };
@@ -87,6 +104,10 @@ export class UITestHandler implements CommandHandler {
         await this.runStreamDemo(ctx);
       } else if (subcommand === 'plan') {
         await this.runPlanDemo(ctx);
+      } else if (subcommand === 'task_card') {
+        await this.runTaskCardDemo(ctx);
+      } else if (subcommand === 'work') {
+        await this.runWorkDemo(ctx);
       }
     } catch (error: any) {
       this.logger.error('ui-test handler failed', {
@@ -149,11 +170,14 @@ export class UITestHandler implements CommandHandler {
       await sleep(800);
     }
 
+    // Must close in the SAME mode appendStream used (chunks). Passing a
+    // top-level `markdown_text` here after chunked appends raises
+    // `streaming_mode_mismatch` server-side. Verified in DM on 2026-04-17.
     await client.chat.stopStream({
       channel,
       ts,
-      markdown_text: '✅ Stream demo complete (5 chunks).',
-    });
+      chunks: [{ type: 'markdown_text', text: '✅ Stream demo complete (5 chunks).' }],
+    } as any);
   }
 
   private async runPlanDemo(ctx: CommandContext): Promise<void> {
@@ -185,6 +209,126 @@ export class UITestHandler implements CommandHandler {
         blocks: buildPlanBlocks(state) as any[],
       });
     }
+  }
+
+  /**
+   * Standalone task_card demo — posts one task_card block (outside any plan
+   * wrapper) and transitions it pending → in_progress → complete via
+   * `chat.update`. Confirms whether Slack accepts task_card as a top-level
+   * block on all three clients (iOS / Android / desktop web). If Slack rejects
+   * the payload, the outer try/catch surfaces the error text in-channel.
+   */
+  private async runTaskCardDemo(ctx: CommandContext): Promise<void> {
+    const { channel } = ctx;
+    const client = this.deps.slackApi.getClient();
+    const thread_ts = this.resolveThreadTs(ctx);
+    const threadArg = thread_ts ? { thread_ts } : {};
+
+    const states: TaskStatus[] = ['pending', 'in_progress', 'complete'];
+
+    const first = await client.chat.postMessage({
+      channel,
+      ...threadArg,
+      text: `task_card demo — ${states[0]}`,
+      blocks: [standaloneTaskCard(states[0])] as any[],
+    });
+    const ts = first.ts;
+    if (!ts) {
+      throw new Error('chat.postMessage task_card returned no ts');
+    }
+
+    for (let i = 1; i < states.length; i += 1) {
+      await sleep(3000);
+      await client.chat.update({
+        channel,
+        ts,
+        text: `task_card demo — ${states[i]}`,
+        blocks: [standaloneTaskCard(states[i])] as any[],
+      });
+    }
+  }
+
+  /**
+   * Combined simulation — runs a 4-step "fake agent" loop:
+   *   top:    streaming narration (startStream → appendStream → stopStream)
+   *   bottom: plan block with 4 task_cards (postMessage → chat.update ×N)
+   *
+   * Each step really executes a hardcoded shell command (pwd / date -u /
+   * uptime / ls /tmp | wc -l) via node:child_process.exec so the block
+   * transitions are driven by actual I/O instead of timers. Output is
+   * redacted to N lines per step and appended to the stream. No user input
+   * reaches the shell — commands are compile-time constants. 5s timeout and
+   * 4KB buffer per step limit blast radius if the host environment misbehaves.
+   */
+  private async runWorkDemo(ctx: CommandContext): Promise<void> {
+    const { channel } = ctx;
+    const client = this.deps.slackApi.getClient();
+    const thread_ts = this.resolveThreadTs(ctx);
+    const threadArg = thread_ts ? { thread_ts } : {};
+
+    // Start stream FIRST so it anchors above the plan in the DM timeline.
+    const start = await client.chat.startStream({
+      channel,
+      ...threadArg,
+    } as any);
+    const streamTs = start.ts;
+    if (!streamTs) {
+      throw new Error('chat.startStream returned no ts');
+    }
+
+    await appendStreamText(
+      client,
+      channel,
+      streamTs,
+      `🤖 *Simulated agent run* — ${WORK_STEPS.length} real shell tasks queued.\n\n`,
+    );
+
+    const statuses: TaskStatus[] = WORK_STEPS.map(() => 'pending');
+
+    // Plan block posted AFTER stream so it lands below the stream in the DM.
+    const planPost = await client.chat.postMessage({
+      channel,
+      ...threadArg,
+      text: workFallbackText(statuses),
+      blocks: buildWorkPlan(statuses) as any[],
+    });
+    const planTs = planPost.ts;
+    if (!planTs) {
+      throw new Error('chat.postMessage plan returned no ts');
+    }
+
+    for (let i = 0; i < WORK_STEPS.length; i += 1) {
+      const step = WORK_STEPS[i];
+
+      statuses[i] = 'in_progress';
+      await client.chat.update({
+        channel,
+        ts: planTs,
+        text: workFallbackText(statuses),
+        blocks: buildWorkPlan(statuses) as any[],
+      });
+      await appendStreamText(client, channel, streamTs, `### ${step.title}\n\`$ ${step.cmd}\`\n\n`);
+
+      const result = await runShell(step.cmd);
+      const truncated = result.text.split('\n').slice(0, step.maxLines).join('\n');
+      await appendStreamText(client, channel, streamTs, '```\n' + truncated + '\n```\n\n');
+
+      statuses[i] = result.ok ? 'complete' : 'error';
+      await client.chat.update({
+        channel,
+        ts: planTs,
+        text: workFallbackText(statuses),
+        blocks: buildWorkPlan(statuses) as any[],
+      });
+      await sleep(400);
+    }
+
+    const finalSummary = workSummary(statuses);
+    await client.chat.stopStream({
+      channel,
+      ts: streamTs,
+      chunks: [{ type: 'markdown_text', text: finalSummary }],
+    } as any);
   }
 }
 
@@ -264,4 +408,94 @@ function statesDescription(state: number): string {
 
 function fallbackText(state: number): string {
   return `Plan demo state ${state}: ${statesDescription(state)}`;
+}
+
+function standaloneTaskCard(status: TaskStatus): Record<string, unknown> {
+  return {
+    type: 'task_card',
+    task_id: 'tc-standalone',
+    title: 'Standalone task_card demo',
+    status,
+    details: {
+      type: 'rich_text',
+      elements: [
+        {
+          type: 'rich_text_section',
+          elements: [{ type: 'text', text: `Currently ${status}` }],
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Steps executed by `ui-test work`. Commands are HARDCODED constants — no
+ * user input reaches the shell — so the admin/DM/env gate is the only trust
+ * boundary we need. `maxLines` clamps streamed output per step.
+ */
+const WORK_STEPS: ReadonlyArray<{ title: string; cmd: string; maxLines: number }> = [
+  { title: 'Check working directory', cmd: 'pwd', maxLines: 1 },
+  { title: 'Capture UTC timestamp', cmd: 'date -u', maxLines: 1 },
+  { title: 'Host uptime snapshot', cmd: 'uptime', maxLines: 1 },
+  { title: 'Count /tmp entries', cmd: 'ls /tmp 2>/dev/null | wc -l', maxLines: 1 },
+];
+
+async function runShell(cmd: string): Promise<{ ok: boolean; text: string }> {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, {
+      timeout: 5000,
+      maxBuffer: 4096,
+      shell: '/bin/bash',
+    });
+    const text = (stdout || stderr || '').trim();
+    return { ok: true, text: text.length > 0 ? text : '(no output)' };
+  } catch (err: any) {
+    const msg = (err?.stderr || err?.stdout || err?.message || 'unknown error').toString().trim();
+    return { ok: false, text: msg };
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function appendStreamText(client: any, channel: string, ts: string, text: string): Promise<void> {
+  await client.chat.appendStream({
+    channel,
+    ts,
+    chunks: [{ type: 'markdown_text', text }],
+  });
+}
+
+function buildWorkPlan(statuses: readonly TaskStatus[]): Record<string, unknown>[] {
+  const tasks = WORK_STEPS.map((step, i) => ({
+    type: 'task_card',
+    task_id: `w${i}`,
+    title: step.title,
+    status: statuses[i],
+    details: {
+      type: 'rich_text',
+      elements: [
+        {
+          type: 'rich_text_section',
+          elements: [{ type: 'text', text: `$ ${step.cmd}` }],
+        },
+      ],
+    },
+  }));
+  return [
+    {
+      type: 'plan',
+      title: 'Live agent work',
+      tasks,
+    },
+  ];
+}
+
+function workFallbackText(statuses: readonly TaskStatus[]): string {
+  return 'Live agent work — ' + statuses.map((s, i) => `w${i}=${s}`).join(' · ');
+}
+
+function workSummary(statuses: readonly TaskStatus[]): string {
+  const ok = statuses.filter((s) => s === 'complete').length;
+  const fail = statuses.filter((s) => s === 'error').length;
+  const verdict = fail === 0 ? '✅ All tasks complete.' : `⚠️ ${ok} complete, ${fail} error.`;
+  return `${verdict} (${statuses.length} total)`;
 }
