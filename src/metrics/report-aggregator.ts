@@ -332,8 +332,6 @@ export class ReportAggregator {
     endDate: string;
     targetUserId: string;
     targetUserName?: string;
-    hourly?: boolean;
-    sessions?: boolean;
     topN?: number;
     now?: Date;
   }): Promise<UsageCardResult> {
@@ -384,11 +382,11 @@ export class ReportAggregator {
       }
 
       // Per-day (KST)
-      const dayKey = timestampToDateInTzLocal(e.timestamp);
+      const dayKey = timestampToDateInTz(e.timestamp);
       perDayForTarget.set(dayKey, (perDayForTarget.get(dayKey) || 0) + tokens);
 
       // Per-hour (KST)
-      const hour = getHourInTzLocal(e.timestamp);
+      const hour = getHourInTz(e.timestamp);
       perHourForTarget[hour] += tokens;
 
       // Per-session
@@ -990,16 +988,6 @@ function timestampToDateInTz(timestamp: number): string {
  * Get hour (0-23) in report timezone.
  */
 function getHourInTz(timestamp: number): number {
-  const hourStr = hourFormatter.format(new Date(timestamp));
-  return parseInt(hourStr, 10) % 24;
-}
-
-// Local helpers reusable by aggregateUsageCard (avoid exposing in public API).
-function timestampToDateInTzLocal(timestamp: number): string {
-  return dateFormatter.format(new Date(timestamp));
-}
-
-function getHourInTzLocal(timestamp: number): number {
   const hourStr = hourFormatter.format(new Date(timestamp));
   return parseInt(hourStr, 10) % 24;
 }

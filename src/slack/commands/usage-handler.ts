@@ -111,13 +111,10 @@ export class UsageHandler implements CommandHandler {
     const defaultAggregator = new ReportAggregator(store);
     const aggregator = this.overrides.aggregator ?? defaultAggregator;
 
-    let stats: UsageCardResult;
-    stats = await aggregator.aggregateUsageCard({
+    const stats: UsageCardResult = await aggregator.aggregateUsageCard({
       startDate,
       endDate,
       targetUserId: user,
-      hourly: true,
-      sessions: true,
       topN: 10,
       now,
     });
