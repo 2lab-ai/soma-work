@@ -22,6 +22,10 @@ export const SLASH_FORBIDDEN: ReadonlySet<string> = new Set<string>([
   'session:set:effort',
   'session:set:thinking',
   'session:set:thinking_summary',
+  // Phase 0 of #525 — slash path sets `threadTs = channel_id` placeholder,
+  // which is incompatible with `chat.startStream({ thread_ts })`. Forced to
+  // DM-only naked trigger.
+  'ui-test',
 ]);
 
 /**
