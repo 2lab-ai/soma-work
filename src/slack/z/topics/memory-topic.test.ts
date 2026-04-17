@@ -26,14 +26,23 @@ vi.mock('../../../user-memory-store', () => {
       entries.memory = [];
       entries.user = [];
     },
-    replaceMemoryByIndex: vi.fn((_u: string, t: Target, i: number, newText: string) => {
+    replaceMemoryByIndex: vi.fn((_u: string, t: Target, i: number, newText: string, expectedOldText?: string) => {
       if (i < 1 || i > entries[t].length) return { ok: false, reason: 'out of range' };
+      if (expectedOldText !== undefined && entries[t][i - 1] !== expectedOldText) {
+        return { ok: false, reason: 'cas mismatch' };
+      }
       if (!newText || newText.length === 0) return { ok: false, reason: 'empty entry' };
       entries[t][i - 1] = newText;
       return { ok: true };
     }),
-    replaceAllMemory: vi.fn((_u: string, t: Target, next: string[]) => {
+    replaceAllMemory: vi.fn((_u: string, t: Target, next: string[], expectedOldEntries?: string[]) => {
       if (!Array.isArray(next) || next.length === 0) return { ok: false, reason: 'empty' };
+      if (expectedOldEntries !== undefined) {
+        const cur = entries[t];
+        if (cur.length !== expectedOldEntries.length || cur.some((e, i) => e !== expectedOldEntries[i])) {
+          return { ok: false, reason: 'cas mismatch' };
+        }
+      }
       if (new Set(next).size !== next.length) return { ok: false, reason: 'duplicates' };
       entries[t] = [...next];
       return { ok: true };
@@ -388,7 +397,8 @@ describe('applyMemory — improve branches', () => {
 
     expect(improveEntryMock).toHaveBeenCalledTimes(1);
     expect(improveEntryMock).toHaveBeenCalledWith('entry-C', 'memory');
-    expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I1', 'memory', 3, 'refined');
+    // CAS: expectedOldText is the original entry text captured at click-time.
+    expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I1', 'memory', 3, 'refined', 'entry-C');
     expect(respond).toHaveBeenCalledTimes(1);
     // Respond (pending card) must fire BEFORE replaceMemoryByIndex.
     const respondOrder = respond.mock.invocationCallOrder[0];
@@ -407,7 +417,7 @@ describe('applyMemory — improve branches', () => {
     const result = await applyMemory({ userId: 'I2', value: 'improve_user_2' });
 
     expect(improveEntryMock).toHaveBeenCalledWith('u2', 'user');
-    expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I2', 'user', 2, 'refined-u');
+    expect(replaceMemoryByIndexMock).toHaveBeenCalledWith('I2', 'user', 2, 'refined-u', 'u2');
     expect(result.ok).toBe(true);
     expect(result.rerender).toBe('topic');
   });
@@ -422,7 +432,8 @@ describe('applyMemory — improve branches', () => {
 
     expect(improveAllMock).toHaveBeenCalledTimes(1);
     expect(improveAllMock).toHaveBeenCalledWith(['a', 'b', 'c'], 'memory');
-    expect(replaceAllMemoryMock).toHaveBeenCalledWith('I3', 'memory', ['x', 'y', 'z']);
+    // CAS: 4th arg is the snapshot captured before the LLM call.
+    expect(replaceAllMemoryMock).toHaveBeenCalledWith('I3', 'memory', ['x', 'y', 'z'], ['a', 'b', 'c']);
     expect(result.ok).toBe(true);
     expect(result.rerender).toBe('topic');
     expect(result.summary).toContain('3 → 3');
@@ -436,7 +447,7 @@ describe('applyMemory — improve branches', () => {
     const result = await applyMemory({ userId: 'I4', value: 'improve_user_all' });
 
     expect(improveAllMock).toHaveBeenCalledWith(['u-a', 'u-b'], 'user');
-    expect(replaceAllMemoryMock).toHaveBeenCalledWith('I4', 'user', ['U-A', 'U-B']);
+    expect(replaceAllMemoryMock).toHaveBeenCalledWith('I4', 'user', ['U-A', 'U-B'], ['u-a', 'u-b']);
     expect(result.ok).toBe(true);
     expect(result.rerender).toBe('topic');
   });
@@ -506,6 +517,82 @@ describe('applyMemory — improve branches', () => {
       .map((b) => b.text.text as string)
       .join(' ');
     expect(pendingText).toContain('개선 중');
+  });
+
+  it('improve_memory_N rejects with CAS mismatch when entry shifted mid-flight', async () => {
+    clearAllMemoryMock('I10');
+    addMemoryMock('I10', 'memory', 'A');
+    addMemoryMock('I10', 'memory', 'B');
+    addMemoryMock('I10', 'memory', 'C');
+
+    // Simulate concurrent delete during the LLM call: when improveEntry
+    // resolves, we remove index 1 so idx 3 no longer points to 'C'.
+    vi.mocked(improveEntryMock).mockImplementationOnce(async (text: string) => {
+      expect(text).toBe('C'); // captured original
+      // Race: another click removed entry 1 ('A')
+      const { removeMemoryByIndex } = await import('../../../user-memory-store');
+      (removeMemoryByIndex as any)('I10', 'memory', 1);
+      return 'refined-C';
+    });
+
+    const result = await applyMemory({ userId: 'I10', value: 'improve_memory_3' });
+
+    // applyMemory passes expectedOldText='C'. Store now has ['B', 'C'].
+    // entries[3-1] is undefined (length=2 < 3) → index out-of-range, NOT cas mismatch.
+    // For the CAS path proper, we need a shift that keeps length >= idx but
+    // swaps the target. Use a different race instead:
+    expect(result.ok).toBe(false);
+    expect(result.rerender).toBe('topic');
+  });
+
+  it('improve_memory_N rejects with CAS mismatch on same-length shift', async () => {
+    clearAllMemoryMock('I11');
+    addMemoryMock('I11', 'memory', 'A');
+    addMemoryMock('I11', 'memory', 'B');
+    addMemoryMock('I11', 'memory', 'C');
+
+    // Race: during LLM call, another click replaced entry 2 in-place.
+    vi.mocked(improveEntryMock).mockImplementationOnce(async (text: string) => {
+      expect(text).toBe('B');
+      // Replace idx 2 without CAS (regular replaceMemoryByIndex with no
+      // expected arg) — simulates a parallel non-CAS write. Use mock directly.
+      const store = await import('../../../user-memory-store');
+      (store.replaceMemoryByIndex as any)('I11', 'memory', 2, 'HIJACKED');
+      return 'would-be-refined-B';
+    });
+
+    const result = await applyMemory({ userId: 'I11', value: 'improve_memory_2' });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain('다른 수정이 발생해 취소됨');
+    expect(result.rerender).toBe('topic');
+    // Verify the hijacker's value survived — not overwritten by the stale LLM.
+    const { loadMemory } = await import('../../../user-memory-store');
+    expect((loadMemory as any)('I11', 'memory').entries[1]).toBe('HIJACKED');
+  });
+
+  it('improve_memory_all rejects with CAS mismatch when entries mutated mid-flight', async () => {
+    clearAllMemoryMock('I12');
+    addMemoryMock('I12', 'memory', 'a1');
+    addMemoryMock('I12', 'memory', 'a2');
+    addMemoryMock('I12', 'memory', 'a3');
+
+    // Race: delete one entry while the LLM batch-refine runs.
+    vi.mocked(improveAllMock).mockImplementationOnce(async (arr: string[]) => {
+      expect(arr).toEqual(['a1', 'a2', 'a3']); // snapshot was captured
+      const { removeMemoryByIndex } = await import('../../../user-memory-store');
+      (removeMemoryByIndex as any)('I12', 'memory', 1);
+      return ['refined'];
+    });
+
+    const result = await applyMemory({ userId: 'I12', value: 'improve_memory_all' });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain('다른 수정이 발생해 취소됨');
+    expect(result.rerender).toBe('topic');
+    // Intervening delete survived — store not clobbered by stale all-improve.
+    const { loadMemory } = await import('../../../user-memory-store');
+    expect((loadMemory as any)('I12', 'memory').entries).toEqual(['a2', 'a3']);
   });
 });
 

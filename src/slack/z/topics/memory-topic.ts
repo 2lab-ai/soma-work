@@ -600,6 +600,11 @@ export async function applyMemory(args: {
         rerender: 'topic',
       };
     }
+    // Capture the original text at click-time. This is our CAS witness: if
+    // the entry at idx changes during the LLM call (e.g. concurrent delete
+    // shifts the list), replaceMemoryByIndex below will reject the write
+    // instead of overwriting a different entry.
+    const originalText = cur.entries[idx - 1];
     // Stage 1 of 2-stage rerender: push pending card immediately.
     try {
       const pending = await renderPendingCard({ userId, target, idx, issuedAt: Date.now() });
@@ -610,7 +615,7 @@ export async function applyMemory(args: {
     // Stage 2: LLM call → persist → rerender.
     let improved: string;
     try {
-      improved = await improveEntry(cur.entries[idx - 1], target);
+      improved = await improveEntry(originalText, target);
     } catch (err) {
       return {
         ok: false,
@@ -618,11 +623,15 @@ export async function applyMemory(args: {
         rerender: 'topic',
       };
     }
-    const r = replaceMemoryByIndex(userId, target, idx, improved);
+    const r = replaceMemoryByIndex(userId, target, idx, improved, originalText);
     if (!r.ok) {
+      const msg =
+        r.reason === 'cas mismatch'
+          ? `⚠️ ${target} #${idx} 개선 중 다른 수정이 발생해 취소됨 (원본 보존됨)`
+          : `❌ 저장 실패: ${r.reason}`;
       return {
         ok: false,
-        summary: `❌ 저장 실패: ${r.reason}`,
+        summary: msg,
         rerender: 'topic',
       };
     }
@@ -644,6 +653,10 @@ export async function applyMemory(args: {
         rerender: 'topic',
       };
     }
+    // Snapshot entries for CAS. If any entry mutates during the LLM call,
+    // replaceAllMemory rejects with 'cas mismatch' and we keep the updated
+    // store intact instead of overwriting intervening edits.
+    const originalEntries = [...cur.entries];
     try {
       const pending = await renderPendingCard({ userId, target, idx: 'all', issuedAt: Date.now() });
       await respond?.(pending.blocks);
@@ -652,7 +665,7 @@ export async function applyMemory(args: {
     }
     let improved: string[];
     try {
-      improved = await improveAll(cur.entries, target);
+      improved = await improveAll(originalEntries, target);
     } catch (err) {
       return {
         ok: false,
@@ -660,17 +673,21 @@ export async function applyMemory(args: {
         rerender: 'topic',
       };
     }
-    const r = replaceAllMemory(userId, target, improved);
+    const r = replaceAllMemory(userId, target, improved, originalEntries);
     if (!r.ok) {
+      const msg =
+        r.reason === 'cas mismatch'
+          ? `⚠️ ${target} 전체 개선 중 다른 수정이 발생해 취소됨 (기존 entries 보존됨)`
+          : `❌ 저장 실패: ${r.reason}`;
       return {
         ok: false,
-        summary: `❌ 저장 실패: ${r.reason}`,
+        summary: msg,
         rerender: 'topic',
       };
     }
     return {
       ok: true,
-      summary: `✅ ${target} ${cur.entries.length} → ${improved.length} 재구성`,
+      summary: `✅ ${target} ${originalEntries.length} → ${improved.length} 재구성`,
       rerender: 'topic',
     };
   }

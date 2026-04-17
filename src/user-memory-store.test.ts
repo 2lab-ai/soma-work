@@ -29,6 +29,7 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     renameSync: vi.fn(actual.renameSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
   };
 });
 
@@ -38,9 +39,10 @@ describe('user-memory-store atomic write + new primitives', () => {
 
   beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-mem-test-'));
-    // Reset renameSync mock to delegate to real impl by default
+    // Reset both mocks to delegate to real impls by default
     const actual = await vi.importActual<typeof import('fs')>('fs');
     vi.mocked(fs.renameSync).mockImplementation(actual.renameSync);
+    vi.mocked(fs.writeFileSync).mockImplementation(actual.writeFileSync);
     vi.resetModules();
     store = await import('./user-memory-store');
   });
@@ -74,6 +76,51 @@ describe('user-memory-store atomic write + new primitives', () => {
       const userDir = path.join(tempDir, userId);
       const leftover = fs.readdirSync(userDir).filter((f) => f.includes('.tmp.'));
       expect(leftover).toEqual([]);
+    });
+
+    it('preserves original on writeFileSync failure (tmp never created)', () => {
+      // Seed initial entry so the dir exists
+      store.addMemory(userId, 'memory', 'original');
+      const originalEntries = store.loadMemory(userId, 'memory').entries;
+
+      // Force writeFileSync to fail → never reach renameSync.
+      vi.mocked(fs.writeFileSync).mockImplementation(() => {
+        throw new Error('EACCES');
+      });
+
+      expect(() => store.addMemory(userId, 'memory', 'new')).toThrow('EACCES');
+
+      // Original file preserved
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(originalEntries);
+
+      // No tmp leftovers
+      const userDir = path.join(tempDir, userId);
+      const leftover = fs.readdirSync(userDir).filter((f) => f.includes('.tmp.'));
+      expect(leftover).toEqual([]);
+    });
+
+    it('uses unique tmp path per write (UUID component)', async () => {
+      // Spy writeFileSync: record tmp paths and delegate to real impl.
+      const realFs = await vi.importActual<typeof import('fs')>('fs');
+      const paths: string[] = [];
+      vi.mocked(fs.writeFileSync).mockImplementation(((
+        p: Parameters<typeof fs.writeFileSync>[0],
+        data: Parameters<typeof fs.writeFileSync>[1],
+      ) => {
+        if (typeof p === 'string' && p.includes('.tmp.')) paths.push(p);
+        return realFs.writeFileSync(p, data);
+      }) as typeof fs.writeFileSync);
+
+      store.addMemory(userId, 'memory', 'e1');
+      store.addMemory(userId, 'memory', 'e2');
+      store.addMemory(userId, 'memory', 'e3');
+
+      expect(paths.length).toBe(3);
+      expect(new Set(paths).size).toBe(3); // all unique
+      // Each path must include a UUID-shaped component (8-4-4-4-12 hex).
+      for (const p of paths) {
+        expect(p).toMatch(/\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      }
     });
   });
 
@@ -143,6 +190,34 @@ describe('user-memory-store atomic write + new primitives', () => {
       expect(r.ok).toBe(false);
       expect(r.reason).toContain('empty');
       expect(store.loadMemory(userId, 'memory').entries).toEqual(['a']);
+    });
+
+    describe('CAS (expectedOldText)', () => {
+      it('proceeds when entry at index still equals expected text', () => {
+        store.addMemory(userId, 'memory', 'orig');
+        const r = store.replaceMemoryByIndex(userId, 'memory', 1, 'NEW', 'orig');
+        expect(r).toEqual({ ok: true });
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['NEW']);
+      });
+
+      it('rejects with cas mismatch when index now points to a different entry', () => {
+        // Simulate the race: we captured 'orig' at click-time, but a concurrent
+        // delete removed 'orig' at idx 1 and shifted 'other' into idx 1.
+        store.addMemory(userId, 'memory', 'other');
+        // originally captured at idx 1 = 'orig', but store now has ['other']
+        const r = store.replaceMemoryByIndex(userId, 'memory', 1, 'NEW', 'orig');
+        expect(r.ok).toBe(false);
+        expect(r.reason).toBe('cas mismatch');
+        // 'other' preserved — CAS prevented overwrite
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['other']);
+      });
+
+      it('without expectedOldText behaves as original (no CAS)', () => {
+        store.addMemory(userId, 'memory', 'x');
+        const r = store.replaceMemoryByIndex(userId, 'memory', 1, 'y');
+        expect(r).toEqual({ ok: true });
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['y']);
+      });
     });
   });
 
@@ -226,6 +301,55 @@ describe('user-memory-store atomic write + new primitives', () => {
       expect(r.ok).toBe(false);
       expect(r.reason).toContain('empty');
       expect(store.loadMemory(userId, 'memory').entries).toEqual(['old']);
+    });
+
+    it('rejects non-string member without mutation', () => {
+      store.addMemory(userId, 'memory', 'old');
+      // Simulate a malformed LLM response that slipped past memory-improve.ts.
+      const r = store.replaceAllMemory(userId, 'memory', ['a', 42 as unknown as string, 'c']);
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe('non-string entry');
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['old']);
+    });
+
+    describe('CAS (expectedOldEntries)', () => {
+      it('proceeds when current entries match the snapshot', () => {
+        store.addMemory(userId, 'memory', 'a');
+        store.addMemory(userId, 'memory', 'b');
+        const snapshot = store.loadMemory(userId, 'memory').entries;
+        const r = store.replaceAllMemory(userId, 'memory', ['x', 'y'], snapshot);
+        expect(r).toEqual({ ok: true });
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['x', 'y']);
+      });
+
+      it('rejects with cas mismatch when entries changed mid-flight', () => {
+        store.addMemory(userId, 'memory', 'a');
+        store.addMemory(userId, 'memory', 'b');
+        const snapshot = ['a', 'b']; // captured before a concurrent delete
+        // Simulate concurrent delete: remove entry 1 while the LLM was running
+        store.removeMemory(userId, 'memory', 'a');
+        const r = store.replaceAllMemory(userId, 'memory', ['x', 'y'], snapshot);
+        expect(r.ok).toBe(false);
+        expect(r.reason).toBe('cas mismatch');
+        // Store preserved — 'b' only remains, intervening delete respected
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['b']);
+      });
+
+      it('rejects cas mismatch when length differs', () => {
+        store.addMemory(userId, 'memory', 'a');
+        const snapshot = ['a', 'b']; // we thought there were two
+        const r = store.replaceAllMemory(userId, 'memory', ['x'], snapshot);
+        expect(r.ok).toBe(false);
+        expect(r.reason).toBe('cas mismatch');
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['a']);
+      });
+
+      it('without snapshot behaves as before (no CAS)', () => {
+        store.addMemory(userId, 'memory', 'orig');
+        const r = store.replaceAllMemory(userId, 'memory', ['x']);
+        expect(r).toEqual({ ok: true });
+        expect(store.loadMemory(userId, 'memory').entries).toEqual(['x']);
+      });
     });
   });
 });

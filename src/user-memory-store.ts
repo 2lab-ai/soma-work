@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
@@ -76,7 +77,9 @@ function writeEntries(userId: string, target: MemoryTarget, entries: string[]): 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  // Truly unique temp name: pid+time collides within the same millisecond
+  // under concurrent async writes. UUID v4 makes the race impossible.
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${randomUUID()}`;
   const content = entries.join(ENTRY_DELIMITER);
   try {
     fs.writeFileSync(tmpPath, content, 'utf-8');
@@ -212,6 +215,10 @@ export function removeMemoryByIndex(userId: string, target: MemoryTarget, index:
 /**
  * Replace entry at 1-based index atomically.
  * Validates newText.length against per-entry cap and total char limit.
+ * Optional `expectedOldText` enforces compare-and-swap: if the entry at
+ * that index no longer equals the expected text (because a concurrent
+ * delete/improve shifted the list during a long-running LLM call), the
+ * write is rejected with reason `'cas mismatch'`.
  * Returns {ok:false, reason} WITHOUT mutating store on failure.
  */
 export function replaceMemoryByIndex(
@@ -219,11 +226,15 @@ export function replaceMemoryByIndex(
   target: MemoryTarget,
   index: number,
   newText: string,
+  expectedOldText?: string,
 ): { ok: boolean; reason?: string } {
   const trimmed = newText.trim();
   const entries = readEntries(userId, target);
   if (index < 1 || index > entries.length) {
     return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
+  }
+  if (expectedOldText !== undefined && entries[index - 1] !== expectedOldText) {
+    return { ok: false, reason: 'cas mismatch' };
   }
   const perEntryCap = getPerEntryCap(target);
   if (trimmed.length > perEntryCap) {
@@ -245,15 +256,27 @@ export function replaceMemoryByIndex(
 /**
  * Replace entire entries array atomically.
  * Prevalidates: non-empty array, no duplicates, per-entry cap, total cap.
+ * Optional `expectedOldEntries` enforces compare-and-swap: if the current
+ * store entries no longer match the captured snapshot (concurrent edit
+ * during a long-running LLM call), the write is rejected with reason
+ * `'cas mismatch'`. Comparison is strict element-wise equality including
+ * order.
  * Returns {ok:false, reason} WITHOUT mutating store on failure.
  */
 export function replaceAllMemory(
   userId: string,
   target: MemoryTarget,
   entries: string[],
+  expectedOldEntries?: string[],
 ): { ok: boolean; reason?: string } {
   if (!Array.isArray(entries) || entries.length === 0) {
     return { ok: false, reason: 'empty entries array' };
+  }
+  if (expectedOldEntries !== undefined) {
+    const current = readEntries(userId, target);
+    if (current.length !== expectedOldEntries.length || current.some((e, i) => e !== expectedOldEntries[i])) {
+      return { ok: false, reason: 'cas mismatch' };
+    }
   }
   const trimmedEntries: string[] = [];
   for (const s of entries) {

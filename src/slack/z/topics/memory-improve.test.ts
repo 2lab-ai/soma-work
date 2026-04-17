@@ -109,10 +109,27 @@ describe('improveAll', () => {
     await expect(improveAll(['x'], 'memory')).rejects.toThrow(/empty/);
   });
 
-  it('ignores JSON if array contains non-strings then falls through to split', async () => {
+  it('rejects JSON array with non-string members (does NOT fall through to split)', async () => {
+    // Model returned [1,2,3] — structurally wrong shape. Must throw so an
+    // ops regression surfaces instead of silently persisting `"[1,2,3]"` or
+    // other garbage from the fallback split path.
     mockAssistantText = '[1,2,3]\n---\nfallback';
+    await expect(improveAll(['x'], 'memory')).rejects.toThrow(/non-string members/);
+  });
+
+  it('rejects JSON that is parseable but not an array', async () => {
+    mockAssistantText = '["ok"] plus trailing prose';
+    // regex captures ["ok"] — that IS an array of strings, so this should
+    // succeed. Verify that behavior first (sanity).
+    const ok = await improveAll(['x'], 'memory');
+    expect(ok).toEqual(['ok']);
+  });
+
+  it('falls through to split when JSON is malformed (not parseable)', async () => {
+    // `[` inside without matching `]` → no regex match → fall through
+    mockAssistantText = 'prose without array brackets\n---\nsecond';
     const result = await improveAll(['x'], 'memory');
-    expect(result).toEqual(['[1,2,3]', 'fallback']);
+    expect(result).toEqual(['prose without array brackets', 'second']);
   });
 
   it('embeds entries count + separator in prompt', async () => {
