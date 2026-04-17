@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * FIX #1 (PR #509): `app_mention` events that start with `/z` or match a
- * legacy naked command must route through `ZRouter` — the same normalization
- * pipeline as slash and DM. This test file exercises that contract.
+ * FIX #1 (PR #509, revised by #530): `app_mention` events that start with
+ * `/z` must route through `ZRouter` — the same normalization pipeline as
+ * slash and DM. Bare `[cmd] [args]` (restored in #530) falls through to the
+ * legacy pipeline instead. This test file exercises that contract.
  *
  * See: plan/MASTER-SPEC.md §5-1 "3 entry points common normalizeZInvocation".
  */
