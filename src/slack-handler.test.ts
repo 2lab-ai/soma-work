@@ -448,43 +448,68 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
   });
 
-  it('DM message without permalink does not enter session pipeline', async () => {
-    const app = { client: {} } as any;
-    const claudeHandler = {};
-    const mcpManager = {};
+  it('DM plain text from non-admin is rejected via Gate A (Issue #553)', async () => {
+    // Old spec §6 silent-drop → new Issue #553 UX: ephemeral guide + ❎ reaction,
+    // pipeline MUST NOT be entered. (Admin plain text is covered by T1 below.)
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
 
-    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
-    const handlerAny = handler as any;
+    try {
+      const app = { client: {} } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
 
-    const mockSlackApi = {
-      addReaction: vi.fn().mockResolvedValue(undefined),
-      removeReaction: vi.fn().mockResolvedValue(undefined),
-    };
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
 
-    handlerAny.slackApi = mockSlackApi;
-    handlerAny.inputProcessor = {
-      processFiles: vi.fn(),
-      routeCommand: vi.fn(),
-    };
-    handlerAny.sessionInitializer = {
-      validateWorkingDirectory: vi.fn(),
-      initialize: vi.fn(),
-    };
+      const mockSlackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph.1' }),
+      };
 
-    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
-    const event = {
-      user: 'U123',
-      channel: 'D123',
-      ts: '555.666',
-      text: 'hello bot',
-    };
+      handlerAny.slackApi = mockSlackApi;
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn(),
+        routeCommand: vi.fn(),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn(),
+        initialize: vi.fn(),
+      };
 
-    await handler.handleMessage(event as any, say);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+      const event = {
+        user: 'U_NORMAL', // not in ADMIN_USERS
+        channel: 'D123',
+        ts: '555.666',
+        text: 'hello bot',
+      };
 
-    // Should NOT enter the pipeline at all
-    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
-    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
-    expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '555.666', 'eyes');
+      await handler.handleMessage(event as any, say);
+
+      // Pipeline MUST NOT be entered.
+      expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+      expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+      expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '555.666', 'eyes');
+      // New rejection UX.
+      expect(mockSlackApi.postEphemeral).toHaveBeenCalledWith(
+        'D123',
+        'U_NORMAL',
+        expect.stringContaining('DM에서는 관리자만'),
+        '555.666',
+      );
+      expect(mockSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'heavy_multiplication_x');
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
   });
 
   /* ============================================================
@@ -541,140 +566,471 @@ describe('SlackHandler', () => {
     expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
   });
 
-  it('DM `new hello` (whitelisted naked) falls through to legacy pipeline (FIX #1)', async () => {
-    const app = { client: {} } as any;
-    const claudeHandler = {};
-    const mcpManager = {};
+  it('DM `new hello` (session-creating naked) falls through for admin (FIX #1)', async () => {
+    // Issue #553: `new` is NOT in the non-admin DM allowlist (it creates a
+    // session from scratch). Admin, on the other hand, may use any naked form.
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
 
-    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
-    const handlerAny = handler as any;
+    try {
+      const app = { client: {} } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
 
-    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
-    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
-    handlerAny.slackApi = {
-      getClient: vi.fn(),
-      addReaction: vi.fn().mockResolvedValue(undefined),
-      removeReaction: vi.fn().mockResolvedValue(undefined),
-    };
-    handlerAny.inputProcessor = {
-      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
-      routeCommand: vi.fn(),
-    };
-    handlerAny.sessionInitializer = {
-      validateWorkingDirectory: vi.fn(),
-      initialize: vi.fn(),
-    };
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
 
-    const say = vi.fn();
-    const event = {
-      user: 'U123',
-      channel: 'D123',
-      ts: '555.666',
-      text: 'new hello world',
-    };
+      const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        getClient: vi.fn(),
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph.1' }),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi.fn(),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn(),
+        initialize: vi.fn(),
+      };
 
-    await handler.handleMessage(event as any, say);
+      const say = vi.fn();
+      const event = {
+        user: 'U_ADMIN',
+        channel: 'D123',
+        ts: '555.666',
+        text: 'new hello world',
+      };
 
-    // Whitelisted naked does NOT go to ZRouter from DM — it falls through.
-    expect(dispatch).not.toHaveBeenCalled();
-    // Legacy pipeline was entered (processFiles called).
-    expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalled();
+      await handler.handleMessage(event as any, say);
+
+      // Naked does NOT go to ZRouter from DM — it falls through.
+      expect(dispatch).not.toHaveBeenCalled();
+      // Legacy pipeline was entered (processFiles called).
+      expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalled();
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
   });
 
-  it('DM `persona set linus` (legacy naked, not whitelisted) is dropped per spec §6 (FIX #1)', async () => {
-    const app = { client: {} } as any;
-    const claudeHandler = {};
-    const mcpManager = {};
+  it('DM `persona set linus` (legacy naked, not whitelisted) is rejected for non-admin with ❎ + guide (#553)', async () => {
+    // Pre-#553: silent drop. Post-#553: Gate A ephemeral + ❎ reaction because
+    // `persona` is not in the non-admin allowlist. Admin users are unaffected
+    // here; this case is specifically non-admin.
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
 
-    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
-    const handlerAny = handler as any;
+    try {
+      const app = { client: {} } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
 
-    const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
-    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
-    handlerAny.slackApi = {
-      getClient: vi.fn(),
-      addReaction: vi.fn().mockResolvedValue(undefined),
-      removeReaction: vi.fn().mockResolvedValue(undefined),
-    };
-    handlerAny.inputProcessor = {
-      processFiles: vi.fn(),
-      routeCommand: vi.fn(),
-    };
-    handlerAny.sessionInitializer = {
-      validateWorkingDirectory: vi.fn(),
-      initialize: vi.fn(),
-    };
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
 
-    const say = vi.fn();
-    const event = {
-      user: 'U123',
-      channel: 'D123',
-      ts: '555.666',
-      text: 'persona set linus',
-    };
+      const dispatch = vi.fn().mockResolvedValue({ handled: true, consumed: true });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        getClient: vi.fn(),
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph.1' }),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn(),
+        routeCommand: vi.fn(),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn(),
+        initialize: vi.fn(),
+      };
 
-    await handler.handleMessage(event as any, say);
+      const say = vi.fn();
+      const event = {
+        user: 'U_NORMAL',
+        channel: 'D123',
+        ts: '555.666',
+        text: 'persona set linus',
+      };
 
-    // Legacy naked (non-whitelisted) DM is still dropped per existing spec §6.
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
-    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+      await handler.handleMessage(event as any, say);
+
+      // Router was never reached, pipeline was never entered.
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+      expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+      // But now the user gets a clear response instead of silence.
+      expect(handlerAny.slackApi.postEphemeral).toHaveBeenCalledWith(
+        'D123',
+        'U_NORMAL',
+        expect.stringContaining('DM에서는 관리자만'),
+        '555.666',
+      );
+      expect(handlerAny.slackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'heavy_multiplication_x');
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
   });
 
-  it('DM `/z new <prompt>` with continueWithPrompt substitutes text and continues pipeline (codex P1 followup)', async () => {
+  it('DM `/z new <prompt>` with continueWithPrompt substitutes text and continues pipeline for admin (codex P1 followup)', async () => {
     // When ZRouter captures a follow-up prompt (e.g. new-handler returns
     // continueWithPrompt), the DM entry MUST continue the normal pipeline with
     // that prompt instead of silently no-opping.
-    const app = { client: {} } as any;
-    const claudeHandler = {};
-    const mcpManager = {};
+    //
+    // Issue #553: `new` is not in the non-admin SAFE_Z_TOPICS allowlist, so
+    // this flow is admin-only. Use U_ADMIN to preserve the original intent
+    // (that the substituted text reaches the pipeline).
+    const { resetAdminUsersCache } = await import('./admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
 
-    const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
-    const handlerAny = handler as any;
+    try {
+      const app = { client: {} } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
 
-    const dispatch = vi.fn().mockResolvedValue({
-      handled: true,
-      continueWithPrompt: 'write a failing test',
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      const dispatch = vi.fn().mockResolvedValue({
+        handled: true,
+        continueWithPrompt: 'write a failing test',
+      });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        getClient: vi.fn().mockReturnValue({
+          chat: {
+            postMessage: vi.fn().mockResolvedValue({ ts: 'bot.1' }),
+            update: vi.fn().mockResolvedValue(undefined),
+            delete: vi.fn().mockResolvedValue(undefined),
+          },
+        }),
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph.1' }),
+      };
+      // shouldContinue:false lets us stop after processFiles so we don't need
+      // to stub the whole pipeline — the key assertion is that the
+      // *substituted* text reaches the pipeline.
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi.fn(),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn(),
+        initialize: vi.fn(),
+      };
+
+      const say = vi.fn();
+      const event = {
+        user: 'U_ADMIN',
+        channel: 'D123',
+        ts: '555.666',
+        text: '/z new write a failing test',
+      };
+
+      await handler.handleMessage(event as any, say);
+
+      // ZRouter saw the invocation.
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      // Pipeline was entered with the substituted prompt.
+      expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+      const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
+      expect(forwardedEvent.text).toBe('write a failing test');
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
+  });
+
+  /* ============================================================
+   * Issue #553 — DM always responds (admin/non-admin matrix)
+   * ============================================================ */
+
+  describe('Issue #553 — DM always responds', () => {
+    // Shared fixture for the admin/non-admin gate tests.
+    // Each test swaps `event.user` between U_ADMIN and U_NORMAL.
+    const withAdmins = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const { resetAdminUsersCache } = await import('./admin-utils');
+      const prevAdmins = process.env.ADMIN_USERS;
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+      try {
+        return await fn();
+      } finally {
+        if (prevAdmins === undefined) {
+          delete process.env.ADMIN_USERS;
+        } else {
+          process.env.ADMIN_USERS = prevAdmins;
+        }
+        resetAdminUsersCache();
+      }
+    };
+
+    // Build a SlackHandler stubbed for the Gate A / Gate B paths.
+    // `dispatchResult` drives `routeDmViaZRouter` when text starts with `/z`.
+    const buildHandler = (
+      opts: { dispatchResult?: any; routeCommandResult?: { handled: boolean; continueWithPrompt?: string } } = {},
+    ) => {
+      const app = { client: {} } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      const dispatch = vi.fn().mockResolvedValue(opts.dispatchResult ?? { handled: true, consumed: true });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue({
+          chat: {
+            postMessage: vi.fn().mockResolvedValue({ ts: 'bot.1' }),
+            update: vi.fn().mockResolvedValue(undefined),
+            delete: vi.fn().mockResolvedValue(undefined),
+          },
+        }),
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph.1' }),
+      };
+      handlerAny.slackApi = slackApi;
+
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi
+          .fn()
+          .mockResolvedValue(opts.routeCommandResult ?? { handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn(),
+        initialize: vi.fn(),
+      };
+
+      return { handler, handlerAny, dispatch, slackApi };
+    };
+
+    // T1 — Admin plain text DM enters the normal pipeline unmodified.
+    it('T1: admin DM plain text enters pipeline with original text (no promotion)', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny } = buildHandler();
+        const event = { user: 'U_ADMIN', channel: 'D123', ts: '1.1', text: 'hello' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+        const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
+        // Text must reach the pipeline unchanged (no `new hello` rewrite).
+        expect(forwardedEvent.text).toBe('hello');
+      });
     });
-    handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
-    handlerAny.slackApi = {
-      getClient: vi.fn().mockReturnValue({
-        chat: {
-          postMessage: vi.fn().mockResolvedValue({ ts: 'bot.1' }),
-          update: vi.fn().mockResolvedValue(undefined),
-          delete: vi.fn().mockResolvedValue(undefined),
-        },
-      }),
-      addReaction: vi.fn().mockResolvedValue(undefined),
-      removeReaction: vi.fn().mockResolvedValue(undefined),
-    };
-    // shouldContinue:false lets us stop after processFiles so we don't need to
-    // stub the whole pipeline — the key assertion is that the *substituted*
-    // text reaches the pipeline.
-    handlerAny.inputProcessor = {
-      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
-      routeCommand: vi.fn(),
-    };
-    handlerAny.sessionInitializer = {
-      validateWorkingDirectory: vi.fn(),
-      initialize: vi.fn(),
-    };
 
-    const say = vi.fn();
-    const event = {
-      user: 'U123',
-      channel: 'D123',
-      ts: '555.666',
-      text: '/z new write a failing test',
-    };
+    // T2 — Non-admin plain text DM is rejected by Gate A.
+    it('T2: non-admin DM plain text is rejected by Gate A (ephemeral + ❎)', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '2.2', text: 'hello' };
 
-    await handler.handleMessage(event as any, say);
+        await handler.handleMessage(event as any, vi.fn());
 
-    // ZRouter saw the invocation.
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    // Pipeline was entered with the substituted prompt.
-    expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
-    const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
-    expect(forwardedEvent.text).toBe('write a failing test');
+        // Gate A fires before processFiles — pipeline untouched.
+        expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+        expect(slackApi.postEphemeral).toHaveBeenCalledWith(
+          'D123',
+          'U_NORMAL',
+          expect.stringContaining('DM에서는 관리자만'),
+          '2.2',
+        );
+        expect(slackApi.addReaction).toHaveBeenCalledWith('D123', '2.2', 'heavy_multiplication_x');
+      });
+    });
+
+    // T3 — Non-admin `/z session` passes Gate A (sessions is in SAFE_Z_TOPICS).
+    it('T3: non-admin DM `/z sessions` reaches ZRouter (safe topic)', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, dispatch, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '3.3', text: '/z sessions' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(slackApi.postEphemeral).not.toHaveBeenCalled();
+        expect(slackApi.addReaction).not.toHaveBeenCalledWith('D123', '3.3', 'heavy_multiplication_x');
+      });
+    });
+
+    // T4 — Non-admin naked `sessions` enters the pipeline (legacy route).
+    it('T4: non-admin DM `sessions` (naked whitelist) enters pipeline', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, dispatch, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '4.4', text: 'sessions' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        // Naked `sessions` is NOT `/z`, so ZRouter stays silent.
+        expect(dispatch).not.toHaveBeenCalled();
+        // Pipeline was entered — processFiles called.
+        expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+        expect(slackApi.postEphemeral).not.toHaveBeenCalled();
+      });
+    });
+
+    // T5 — Non-admin `/z new foo` is rejected (new NOT in SAFE_Z_TOPICS).
+    it('T5: non-admin DM `/z new foo` rejected (session-creating topic)', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, dispatch, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '5.5', text: '/z new foo' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        // ZRouter never reached — Gate A terminated.
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        expect(slackApi.addReaction).toHaveBeenCalledWith('D123', '5.5', 'heavy_multiplication_x');
+      });
+    });
+
+    // T6 — Non-admin `/z thinking on` is rejected (thinking is not a
+    // registered /z topic).
+    it('T6: non-admin DM `/z thinking on` rejected (unregistered topic)', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, dispatch, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '6.6', text: '/z thinking on' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        expect(slackApi.postEphemeral).toHaveBeenCalled();
+        expect(slackApi.addReaction).toHaveBeenCalledWith('D123', '6.6', 'heavy_multiplication_x');
+      });
+    });
+
+    // T7 — Admin `/z new foo` reaches ZRouter.
+    it('T7: admin DM `/z new foo` reaches ZRouter', async () => {
+      await withAdmins(async () => {
+        const { handler, dispatch, slackApi } = buildHandler({
+          dispatchResult: { handled: true, consumed: true },
+        });
+        const event = { user: 'U_ADMIN', channel: 'D123', ts: '7.7', text: '/z new foo' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(slackApi.addReaction).not.toHaveBeenCalledWith('D123', '7.7', 'heavy_multiplication_x');
+      });
+    });
+
+    // T8 — Non-admin `%model sonnet` passes Gate A and reaches the pipeline.
+    it('T8: non-admin DM `%model sonnet` passes Gate A', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, dispatch, slackApi } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '8.8', text: '%model sonnet' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+        expect(slackApi.postEphemeral).not.toHaveBeenCalled();
+      });
+    });
+
+    // T9 — Non-admin bare `/z` reaches ZRouter (help card path).
+    it('T9: non-admin DM bare `/z` reaches ZRouter (help card)', async () => {
+      await withAdmins(async () => {
+        const { handler, dispatch } = buildHandler();
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '9.9', text: '/z' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(dispatch).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // T10 — Non-admin DM with file upload + plain text caption is rejected
+    // BEFORE processFiles (no 📎 messages leak).
+    it('T10: non-admin DM file upload + plain caption rejected before processFiles', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, slackApi } = buildHandler();
+        const event = {
+          user: 'U_NORMAL',
+          channel: 'D123',
+          ts: '10.10',
+          text: 'analyze this',
+          files: [{ id: 'F1', name: 'report.pdf' }],
+        };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        expect(slackApi.postEphemeral).toHaveBeenCalled();
+        expect(slackApi.addReaction).toHaveBeenCalledWith('D123', '10.10', 'heavy_multiplication_x');
+      });
+    });
+
+    // T11 — Admin DM cleanup permalink still routes to handleDmCleanupRequest
+    // and short-circuits before Gate A.
+    it('T11: admin DM permalink triggers cleanup and short-circuits Gate A', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, slackApi } = buildHandler();
+        const getMessage = vi.fn().mockResolvedValue({ ts: '111.222', user: 'B999' });
+        const getBotUserId = vi.fn().mockResolvedValue('B999');
+        const deleteMessage = vi.fn().mockResolvedValue(undefined);
+        Object.assign(slackApi, { getMessage, getBotUserId, deleteMessage });
+
+        const event = {
+          user: 'U_ADMIN',
+          channel: 'D123',
+          ts: '11.11',
+          text: 'https://workspace.slack.com/archives/C999/p111222000000',
+        };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        expect(deleteMessage).toHaveBeenCalled();
+        expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+      });
+    });
+
+    // T12 — Non-admin DM bare `help` passes Gate A and reaches the pipeline
+    // (HelpHandler runs inside CommandRouter).
+    it('T12: non-admin DM `help` passes Gate A', async () => {
+      await withAdmins(async () => {
+        const { handler, handlerAny, slackApi } = buildHandler({
+          routeCommandResult: { handled: true, continueWithPrompt: undefined },
+        });
+        const event = { user: 'U_NORMAL', channel: 'D123', ts: '12.12', text: 'help' };
+
+        await handler.handleMessage(event as any, vi.fn());
+
+        // Gate A passed — pipeline entered.
+        expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
+        // No rejection UX.
+        expect(slackApi.postEphemeral).not.toHaveBeenCalled();
+        expect(slackApi.addReaction).not.toHaveBeenCalledWith('D123', '12.12', 'heavy_multiplication_x');
+      });
+    });
   });
 });

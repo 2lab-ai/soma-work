@@ -344,6 +344,68 @@ describe('EventRouter', () => {
       // Should not be handled here (app_mention handles it)
       expect(mockMessageHandler).not.toHaveBeenCalled();
     });
+
+    // Issue #553 — handleThreadMessage must skip DMs entirely because
+    // `app.message()` is the authoritative handler for DM events. Without
+    // this guard, Slack's double-dispatch causes a 🚫 `no_entry` reaction
+    // to race against the real Gate A / Gate B handling in handleMessage.
+
+    // T13 — DM + thread_ts + no session: no 🚫 reaction.
+    it('T13: DM without session does NOT get no_entry reaction (Issue #553)', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(null);
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'D123', // DM channel
+        thread_ts: '111.222',
+        ts: '333.444',
+        text: 'some reply',
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Thread handler bailed out at the DM guard.
+      expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '333.444', 'no_entry');
+      // messageHandler for the thread path should also not fire — the DM
+      // path is owned by `app.message()`, not `app.event('message')`.
+      expect(mockMessageHandler).not.toHaveBeenCalled();
+    });
+
+    // T14 — DM + thread_ts + session exists: still skipped (prevents
+    // double-dispatch with `app.message`).
+    it('T14: DM with session is skipped in handleThreadMessage (Issue #553)', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(createMockSession());
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'D123',
+        thread_ts: '111.222',
+        ts: '333.444',
+        text: 'some reply in DM thread',
+      };
+      const mockSay = vi.fn();
+
+      await handler({ event: mockEvent, say: mockSay });
+
+      // Full skip — no double-dispatch to the message handler from this path.
+      expect(mockMessageHandler).not.toHaveBeenCalled();
+      expect(mockSlackApi.addReaction).not.toHaveBeenCalledWith('D123', '333.444', 'no_entry');
+    });
+
+    // T15 / T16 coverage for channel + thread_ts paths is handled by the
+    // existing "should handle thread messages when session exists" and
+    // "should ignore thread messages without session" cases above (both use
+    // channel `C456`, which is NOT a DM). Those tests lock in the regression
+    // that channel-thread behavior is unchanged.
   });
 
   describe('member_joined_channel handler', () => {
