@@ -2,6 +2,9 @@ import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
+/** Anchored match for `ui-test`, `ui-test stream`, or `ui-test plan`. Case-insensitive. */
+const UI_TEST_RE = /^ui-test(?:\s+(stream|plan))?$/i;
+
 /**
  * UI test harness for Phase 0 of #525 — Slack Agents UI migration.
  *
@@ -33,13 +36,12 @@ export class UITestHandler implements CommandHandler {
     // Intentionally DO NOT check SLACK_UI_TEST_ENABLED here. The env gate is
     // enforced inside execute() so the handler still claims the message and
     // prevents fall-through to the general session pipeline when disabled.
-    return /^ui-test(\s+(stream|plan))?$/i.test((text ?? '').trim());
+    return UI_TEST_RE.test((text ?? '').trim());
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { user, channel, threadTs, text, say } = ctx;
 
-    // Gate 1: env flag
     if (process.env.SLACK_UI_TEST_ENABLED !== 'true') {
       await say({
         text: '⚠️ `ui-test` is disabled. Set `SLACK_UI_TEST_ENABLED=true` to enable the Phase 0 harness.',
@@ -48,7 +50,6 @@ export class UITestHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Gate 2: admin-only
     if (!isAdminUser(user)) {
       await say({
         text: '🚫 *Permission Denied*\n\n`ui-test` is admin-only.',
@@ -57,9 +58,9 @@ export class UITestHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Gate 3: DM-only. Slack DM channel IDs start with `D` (im), public/
-    // private channels start with `C`/`G`. We deliberately avoid extending
-    // CommandContext with `channelType` — this one-char check suffices.
+    // Slack DM channel IDs start with `D` (im), public/private channels with
+    // `C`/`G`. We deliberately avoid extending CommandContext with
+    // `channelType` — this one-char check suffices.
     if (!channel.startsWith('D')) {
       await say({
         text: '🙈 `ui-test` is DM-only. Please send this command in a direct message with the bot.',
@@ -68,10 +69,7 @@ export class UITestHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // Gate 4: subcommand dispatch
-    const trimmed = (text ?? '').trim();
-    const match = /^ui-test(?:\s+(stream|plan))?$/i.exec(trimmed);
-    const subcommand = match?.[1]?.toLowerCase();
+    const subcommand = UI_TEST_RE.exec((text ?? '').trim())?.[1]?.toLowerCase();
 
     if (!subcommand) {
       await say({
@@ -190,10 +188,6 @@ export class UITestHandler implements CommandHandler {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming chunk helpers
-// ---------------------------------------------------------------------------
-
 const LOREM_260 =
   'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod ' +
   'tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim ' +
@@ -207,10 +201,6 @@ function buildStreamChunkText(n: number): string {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ---------------------------------------------------------------------------
-// Plan + task_card helpers
-// ---------------------------------------------------------------------------
 
 type TaskStatus = 'pending' | 'in_progress' | 'complete' | 'error';
 
