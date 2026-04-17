@@ -56,5 +56,10 @@ export function isWhitelistedNaked(text: string): boolean {
   // theme / theme set X / theme=X / theme X
   if (/^theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/i.test(trimmed)) return true;
 
+  // ui-test / ui-test stream / ui-test plan — Phase 0 of #525.
+  // Handler (`UITestHandler`) gates env + admin + DM-only internally.
+  // Slash `/z ui-test` is blocked via SLASH_FORBIDDEN (capability.ts).
+  if (/^ui-test(?:\s+(?:stream|plan))?$/i.test(trimmed)) return true;
+
   return false;
 }
