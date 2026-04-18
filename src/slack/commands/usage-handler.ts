@@ -315,4 +315,3 @@ export function hasExtraCardArgs(text: string): boolean {
   // Expected shape: ['usage', 'card']; anything longer is a violation.
   return parts.length > 2;
 }
-
