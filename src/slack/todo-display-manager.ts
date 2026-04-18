@@ -1,9 +1,11 @@
+import { config } from '../config';
 import { Logger } from '../logger';
 import { parseTodos, type Todo, type TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
 import type { ReactionManager } from './reaction-manager';
 import type { SlackApiHelper } from './slack-api-helper';
+import type { TurnAddress } from './turn-surface';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
@@ -16,6 +18,16 @@ export type SayFunction = (message: { text: string; thread_ts: string }) => Prom
  * Wired by stream-executor to ThreadPanel.updatePanel().
  */
 export type RenderRequestCallback = (session: ConversationSession, sessionKey: string) => Promise<void>;
+
+/**
+ * Callback to render the TodoWrite snapshot as a dedicated B2 plan-block
+ * Slack message (Issue #577, P2). Wired by slack-handler to
+ * `ThreadPanel.renderTasks`. Only invoked under `SOMA_UI_5BLOCK_PHASE>=2`
+ * AND when the caller supplies a `turnId` + `turnCtx` (i.e. inside a
+ * stream-executor turn). The callback returns `false` when it decided not
+ * to render — callers treat that as "stay with the legacy path only".
+ */
+export type PlanRenderCallback = (turnId: string, todos: Todo[], ctx: TurnAddress) => Promise<boolean>;
 
 /**
  * Manages todo list display and updates in Slack.
@@ -33,6 +45,7 @@ export class TodoDisplayManager {
   private todoMessages: Map<string, string> = new Map(); // sessionKey -> messageTs
 
   private onRenderRequest?: RenderRequestCallback;
+  private onPlanRender?: PlanRenderCallback;
 
   constructor(
     private slackApi: SlackApiHelper,
@@ -49,8 +62,25 @@ export class TodoDisplayManager {
   }
 
   /**
+   * Set the callback for rendering the per-turn B2 plan-block message
+   * (Issue #577). Must be called after construction (circular dep break).
+   * If unset, `handleTodoUpdate` falls back to the legacy single-writer
+   * path (`onRenderRequest` only) regardless of PHASE.
+   */
+  setPlanRenderCallback(cb: PlanRenderCallback): void {
+    this.onPlanRender = cb;
+  }
+
+  /**
    * Handle a todo update event from the stream.
    * Updates todo state and triggers thread header re-render.
+   *
+   * Under `SOMA_UI_5BLOCK_PHASE>=2` with a live `turnId` + `turnCtx`, the
+   * TodoWrite snapshot ALSO fans out to `onPlanRender` (→ TurnSurface's
+   * `planTs` message). The legacy `onRenderRequest` still fires for the
+   * combined header surface — `thread-surface.ts` has its own PHASE>=2
+   * guard that skips the task-list embed, so both callbacks are safe to
+   * invoke without double-rendering the todos.
    */
   async handleTodoUpdate(
     input: TodoUpdateInput,
@@ -61,6 +91,8 @@ export class TodoDisplayManager {
     say: SayFunction,
     logVerbosity?: number,
     session?: ConversationSession,
+    turnId?: string,
+    turnCtx?: TurnAddress,
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -99,6 +131,24 @@ export class TodoDisplayManager {
         } else if (!allDone) {
           // Reset if tasks become active again (e.g. new tasks added after completion)
           session.taskListCompletedAt = undefined;
+        }
+      }
+
+      // Fan out to TurnSurface.renderTasks BEFORE the legacy render request.
+      // The two surfaces are independent Slack messages (planTs vs combined
+      // header), so a failure on one must not block the other — hence no
+      // gating on onRenderRequest's success.
+      if (config.ui.fiveBlockPhase >= 2 && this.onPlanRender && turnId && turnCtx && newTodos.length > 0) {
+        try {
+          await this.onPlanRender(turnId, newTodos, turnCtx);
+        } catch (error) {
+          // Swallow — plan block is best-effort. The legacy path below
+          // still covers the todos via combined-header fallback.
+          this.logger.debug('Plan render callback failed', {
+            sessionKey,
+            turnId,
+            error: (error as Error).message,
+          });
         }
       }
 

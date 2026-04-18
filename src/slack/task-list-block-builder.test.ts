@@ -543,3 +543,133 @@ describe('Slack date token in time display', () => {
     expect(footer.elements[0].text).toContain('^{time}|');
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// PHASE 2 — buildPlanTasks (plan/task_card blocks + fallback)
+// ═══════════════════════════════════════════════════════════
+
+describe('TaskListBlockBuilder.buildPlanTasks (P2 plan/task_card)', () => {
+  it('returns empty blocks and text for empty todo list', () => {
+    const result = TaskListBlockBuilder.buildPlanTasks([]);
+    expect(result.blocks).toEqual([]);
+    expect(result.text).toBe('');
+  });
+
+  it('returns empty blocks and text for undefined todos', () => {
+    const result = TaskListBlockBuilder.buildPlanTasks(undefined as any);
+    expect(result.blocks).toEqual([]);
+    expect(result.text).toBe('');
+  });
+
+  it('maps status 4-way: completed→✅, in_progress→⏳, pending→⬜, blocked→🚧 in top-level text', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done', status: 'completed', priority: 'high' },
+      { id: '2', content: 'running', status: 'in_progress', priority: 'high' },
+      { id: '3', content: 'waiting', status: 'pending', priority: 'medium' },
+      // blocked is derived: pending with an incomplete dep
+      { id: '4', content: 'waiting on 2', status: 'pending', priority: 'low', dependencies: ['2'] },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+
+    expect(result.text).toContain('✅ done');
+    expect(result.text).toContain('⏳ running');
+    expect(result.text).toContain('⬜ waiting');
+    expect(result.text).toContain('🚧 waiting on 2');
+  });
+
+  it('renders a plan block with task_card entries using Slack schema statuses', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done', status: 'completed', priority: 'high' },
+      { id: '2', content: 'running', status: 'in_progress', priority: 'high', activeForm: 'Running now' },
+      { id: '3', content: 'waiting', status: 'pending', priority: 'medium' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+
+    const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+    expect(planBlock).toBeDefined();
+    expect(Array.isArray(planBlock.tasks)).toBe(true);
+    expect(planBlock.tasks.length).toBe(3);
+
+    // Slack task_card schema uses 'complete' (not 'completed')
+    const statuses = planBlock.tasks.map((tc: any) => tc.status);
+    expect(statuses).toEqual(['complete', 'in_progress', 'pending']);
+
+    // Every task_card has type, task_id, title
+    for (const tc of planBlock.tasks) {
+      expect(tc.type).toBe('task_card');
+      expect(typeof tc.task_id).toBe('string');
+      expect(typeof tc.title).toBe('string');
+    }
+  });
+
+  it('maps blocked (pending + incomplete deps) to task_card pending (Slack has no blocked state)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'dep', status: 'in_progress', priority: 'high' },
+      { id: '2', content: 'blocked task', status: 'pending', priority: 'low', dependencies: ['1'] },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+    const blockedCard = planBlock.tasks.find((tc: any) => tc.title.includes('blocked task'));
+    // Slack task_card schema has no 'blocked' — P2 falls back to 'pending'.
+    expect(blockedCard.status).toBe('pending');
+    // Top-level text still shows the 🚧 prefix so operators can tell at a glance.
+    expect(result.text).toContain('🚧 blocked task');
+  });
+
+  it('includes a classic mrkdwn section fallback block for old clients', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'done', status: 'completed', priority: 'high' },
+      { id: '2', content: 'running', status: 'in_progress', priority: 'high' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+
+    const sectionFallback = result.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(sectionFallback).toBeDefined();
+    // Fallback contains both tasks in plain mrkdwn
+    expect(sectionFallback.text.text).toContain('done');
+    expect(sectionFallback.text.text).toContain('running');
+  });
+
+  it('plan block precedes section fallback (old clients still render section even if plan is skipped)', () => {
+    const todos: Todo[] = [{ id: '1', content: 't', status: 'completed', priority: 'high' }];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const planIdx = result.blocks.findIndex((b: any) => b.type === 'plan');
+    const sectionIdx = result.blocks.findIndex((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(planIdx).toBeGreaterThanOrEqual(0);
+    expect(sectionIdx).toBeGreaterThan(planIdx);
+  });
+
+  it('escapes user-supplied mrkdwn control characters in fallback text to prevent injection', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'evil *bold* _italic_ `code` <@U123>', status: 'pending', priority: 'high' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const sectionFallback = result.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(sectionFallback.text.text).not.toContain('*bold*');
+    expect(sectionFallback.text.text).not.toContain('_italic_');
+    expect(sectionFallback.text.text).not.toContain('<@U123>');
+    // Top-level text is plain — raw user text is allowed there (Slack shows it verbatim).
+    expect(result.text).toContain('evil');
+  });
+
+  it('top-level text uses newline per todo (one line per task)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'a', status: 'completed', priority: 'high' },
+      { id: '2', content: 'b', status: 'pending', priority: 'high' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    expect(result.text.split('\n').length).toBe(2);
+  });
+
+  it('assigns a unique task_id per task_card in the plan block (prevents Slack rejection on duplicates)', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'a', status: 'pending', priority: 'high' },
+      { id: '2', content: 'b', status: 'pending', priority: 'high' },
+      { id: '3', content: 'c', status: 'pending', priority: 'high' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+    const ids = planBlock.tasks.map((tc: any) => tc.task_id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
