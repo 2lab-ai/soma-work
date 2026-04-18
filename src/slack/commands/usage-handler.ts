@@ -2,7 +2,7 @@ import { Logger } from '../../logger';
 import { MetricsEventStore } from '../../metrics/event-store';
 import { ReportAggregator } from '../../metrics/report-aggregator';
 import type { UsageReport } from '../../metrics/types';
-import { isSafeOperational, SlackPostError, SlackUploadError } from '../../metrics/usage-render/errors';
+import { isSafeOperational, SlackUploadError } from '../../metrics/usage-render/errors';
 import { renderUsageCard } from '../../metrics/usage-render/renderer';
 import type { UsageCardResult } from '../../metrics/usage-render/types';
 import { CommandParser } from '../command-parser';
@@ -145,43 +145,30 @@ export class UsageHandler implements CommandHandler {
       const renderer = this.overrides.renderer ?? renderUsageCard;
       const png = await renderer(stats);
 
-      let fileId: string | undefined;
+      // 1-step upload: `filesUploadV2` with `channel_id` + `thread_ts` +
+      // `initial_comment` atomically uploads, shares to the channel/thread, and
+      // renders the caption — eliminating the race where a follow-up
+      // `postMessage({ blocks: [image slack_file.id] })` could fire before
+      // Slack finished sharing the file and be rejected with
+      // `invalid_blocks: invalid slack file`. See issue #579.
+      const altText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
       try {
         const uploadArgs = {
           filename: 'usage-card.png',
           file: png,
           channel_id: channel,
+          thread_ts: threadTs,
+          initial_comment: altText,
           alt_text: `Usage card for ${stats.targetUserName || stats.targetUserId}`,
           request_file_info: false,
         };
-        const uploadResp = this.overrides.slackApi
-          ? await this.overrides.slackApi.filesUploadV2(uploadArgs)
-          : await this.deps.slackApi.getClient().filesUploadV2(uploadArgs);
-        fileId = extractFileId(uploadResp);
-      } catch (err) {
-        throw new SlackUploadError('filesUploadV2 failed', err);
-      }
-
-      // Post Block Kit image block referencing the uploaded file.
-      const altText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
-      const blocks = fileId ? [{ type: 'image', slack_file: { id: fileId }, alt_text: altText }] : undefined;
-
-      try {
         if (this.overrides.slackApi) {
-          await this.overrides.slackApi.postMessage({
-            channel,
-            text: altText,
-            blocks,
-            thread_ts: threadTs,
-          });
-        } else if (blocks) {
-          await this.deps.slackApi.postMessage(channel, altText, { threadTs, blocks });
+          await this.overrides.slackApi.filesUploadV2(uploadArgs);
         } else {
-          // filesUploadV2 returned no file id — file is still attached to the channel.
-          await this.deps.slackApi.postSystemMessage(channel, altText, { threadTs });
+          await this.deps.slackApi.getClient().filesUploadV2(uploadArgs);
         }
       } catch (err) {
-        throw new SlackPostError('chat.postMessage failed', err);
+        throw new SlackUploadError('filesUploadV2 failed', err);
       }
 
       this.logger.info('usage_card_rendered', {
@@ -328,22 +315,3 @@ export function hasExtraCardArgs(text: string): boolean {
   return parts.length > 2;
 }
 
-interface FilesUploadV2RespFileInner {
-  id?: string;
-}
-interface FilesUploadV2RespFile {
-  id?: string;
-  files?: FilesUploadV2RespFileInner[];
-}
-interface FilesUploadV2Resp {
-  files?: FilesUploadV2RespFile[];
-}
-
-function extractFileId(resp: unknown): string | undefined {
-  if (!resp || typeof resp !== 'object') return undefined;
-  const r = resp as FilesUploadV2Resp;
-  // @slack/web-api v7 filesUploadV2 shape: { files: [{ files: [{ id }] }] }
-  const first = r.files?.[0];
-  const inner: FilesUploadV2RespFileInner | FilesUploadV2RespFile | undefined = first?.files?.[0] ?? first;
-  return inner?.id;
-}
