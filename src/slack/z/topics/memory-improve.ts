@@ -1,4 +1,5 @@
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildQueryEnv } from '../../../auth/query-env-builder';
 import { config } from '../../../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../../../credentials-manager';
 import { Logger } from '../../../logger';
@@ -28,9 +29,10 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       throw credErr;
     }
 
-    // Pass the fresh lease token via options.env (SDK merges it on top of
-    // process.env) so this call and any concurrent Claude spawn each use
-    // their own lease's token.
+    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
+    // so this call and any concurrent Claude spawn each use their own
+    // lease's token.
+    const { env } = buildQueryEnv(lease);
     const options: Options = {
       model: config.conversation.summaryModel,
       maxTurns: 1,
@@ -38,7 +40,7 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       systemPrompt,
       settingSources: [],
       plugins: [],
-      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
+      env,
       stderr: (data: string) => {
         logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
       },

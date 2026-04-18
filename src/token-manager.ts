@@ -4,8 +4,10 @@
  *
  * Responsibilities:
  *   - Maintain the registry of slots (setup_token or oauth_credentials).
- *   - Select the active slot; expose it to downstream children via
- *     `process.env.CLAUDE_CODE_OAUTH_TOKEN` for backward compat.
+ *   - Select the active slot; surface its fresh access token through
+ *     `acquireLease()`. Callers forward the lease's token to the Claude
+ *     Agent SDK per-call via `buildQueryEnv(lease)` → `options.env`.
+ *     TokenManager NEVER writes to `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
  *   - Rotate on rate-limit and manual requests, skipping tombstoned /
  *     revoked / cooling / refresh_failed slots.
  *   - Manage leases (replaces refcount): acquire / heartbeat / release,
@@ -361,9 +363,14 @@ export class TokenManager {
   }
 
   /**
-   * Ensure activeSlotId is set to a real slot, and mirror its token to
-   * `process.env.CLAUDE_CODE_OAUTH_TOKEN` for downstream spawned processes.
-   * If the current active slot is ineligible, we pick the next healthy one.
+   * Ensure activeSlotId is set to a real slot. If the current active slot is
+   * ineligible, we pick the next healthy one.
+   *
+   * The active token is NOT mirrored to `process.env` — consumers obtain the
+   * token per-call via `acquireLease().accessToken` and pass it to the Agent
+   * SDK through `options.env` (see `src/auth/query-env-builder.ts`). This
+   * avoids a cross-tenant race where concurrent dispatches clobber each
+   * other's `CLAUDE_CODE_OAUTH_TOKEN`.
    */
   private async ensureActiveSlot(): Promise<void> {
     await this.store.mutate((snap) => {
@@ -381,23 +388,12 @@ export class TokenManager {
         snap.registry.activeSlotId = preferred.slotId;
       }
     });
-    // Apply env var from outside the mutate so we read the latest snap.
-    const snap = await this.store.load();
-    const active = this.getActiveSlotFromSnap(snap);
-    if (active) {
-      this.mirrorToEnv(active);
-    }
   }
 
   private getActiveSlotFromSnap(snap: CctStoreSnapshot): TokenSlot | null {
     const id = snap.registry.activeSlotId;
     if (!id) return null;
     return snap.registry.slots.find((s) => s.slotId === id) ?? null;
-  }
-
-  private mirrorToEnv(slot: TokenSlot): void {
-    const token = resolveActiveTokenValue(slot);
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
   }
 
   // ── Public API ────────────────────────────────────────────
@@ -457,7 +453,6 @@ export class TokenManager {
     const snap = await this.store.load();
     const slot = this.getActiveSlotFromSnap(snap);
     if (slot) {
-      this.mirrorToEnv(slot);
       logger.info(
         `applyToken: active=${slot.name} (${maskToken(resolveActiveTokenValue(slot))})`,
         redactAnthropicSecrets({ slotId, name: slot.name }) as Record<string, unknown>,
@@ -484,9 +479,6 @@ export class TokenManager {
       return null;
     });
     if (result) {
-      const snap = await this.store.load();
-      const slot = this.getActiveSlotFromSnap(snap);
-      if (slot) this.mirrorToEnv(slot);
       await this.refreshCache();
     }
     return result;
@@ -542,11 +534,6 @@ export class TokenManager {
       return null;
     });
 
-    if (rotated) {
-      const snap = await this.store.load();
-      const slot = this.getActiveSlotFromSnap(snap);
-      if (slot) this.mirrorToEnv(slot);
-    }
     await this.refreshCache();
     logger.info(
       `rotateOnRateLimit: ${reason ?? '(no reason)'} source=${source} rotated=${rotated ? rotated.name : 'none'}`,
@@ -619,10 +606,6 @@ export class TokenManager {
       return picked;
     });
 
-    // Mirror env for the (possibly rotated) active slot.
-    const snap = await this.store.load();
-    const active = this.getActiveSlotFromSnap(snap);
-    if (active) this.mirrorToEnv(active);
     await this.refreshCache();
     logger.debug(`acquireLease ${leaseId} on ${chosenSlotId} (ownerTag=${ownerTag})`);
     return lease;
@@ -764,9 +747,6 @@ export class TokenManager {
         snap.registry.activeSlotId = newSlot.slotId;
       }
     });
-    const snap = await this.store.load();
-    const active = this.getActiveSlotFromSnap(snap);
-    if (active) this.mirrorToEnv(active);
     await this.refreshCache();
     logger.info(
       `addSlot: ${newSlot.name} kind=${newSlot.kind} slotId=${newSlot.slotId}`,
@@ -828,9 +808,6 @@ export class TokenManager {
       }
       removed = true;
     });
-    const snap = await this.store.load();
-    const active = this.getActiveSlotFromSnap(snap);
-    if (active) this.mirrorToEnv(active);
     await this.refreshCache();
     return pendingDrain ? { removed: false, pendingDrain: true } : { removed };
   }
@@ -896,10 +873,6 @@ export class TokenManager {
           st.authState = 'healthy';
           snap.state[slot.slotId] = st;
         });
-        // Mirror env if this is the active slot.
-        const latest = await this.store.load();
-        const active = this.getActiveSlotFromSnap(latest);
-        if (active?.slotId === slot.slotId) this.mirrorToEnv(active);
         await this.refreshCache();
         logger.info(
           'refreshAccessToken: success',
