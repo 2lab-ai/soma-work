@@ -2,11 +2,13 @@
  * Action + view handlers for `/z` Block Kit cards (Phase 2, #507).
  *
  * Registers on the Bolt app:
- *   - action  /^z_setting_(.+)_set_(.+)$/      — apply an option (e.g. set model=opus)
- *   - action  /^z_setting_(.+)_cancel$/        — dismiss the card
- *   - action  /^z_setting_(.+)_open_modal$/    — open a text-input modal
- *   - action  /^z_help_nav_(.+)$/              — render topic card
- *   - view    /^z_setting_(.+)_modal_submit$/  — apply submitted modal input
+ *   - action  /^z_setting_(.+)_set_(.+)$/              — apply an option
+ *   - action  /^z_setting_(.+)_cancel$/                — dismiss the card
+ *   - action  /^z_setting_(.+)_open_modal(?:_(.+))?$/  — open a modal
+ *                                                        (optional `_<kind>` suffix
+ *                                                        for topic-level modal kinds)
+ *   - action  /^z_help_nav_(.+)$/                      — render topic card
+ *   - view    /^z_setting_(.+)_modal_submit$/          — apply submitted modal input
  *
  * Source-aware ZRespond reconstruction (MUST match original send surface):
  *   - DM      (container.channel_id starts with 'D')
@@ -200,7 +202,7 @@ export class ZSettingsActionHandler {
       await this.handleCancel(body, client, respond);
     });
 
-    app.action(/^z_setting_(.+)_open_modal$/, async ({ ack, body, client }) => {
+    app.action(/^z_setting_(.+)_open_modal(?:_(.+))?$/, async ({ ack, body, client }) => {
       await ack();
       await this.handleOpenModal(body, client);
     });
@@ -289,7 +291,11 @@ export class ZSettingsActionHandler {
     const action = body?.actions?.[0];
     const actionId: string | undefined = action?.action_id;
     if (!actionId) return;
-    const match = actionId.match(/^z_setting_(.+)_open_modal$/);
+    // Match either `z_setting_<topic>_open_modal` or
+    // `z_setting_<topic>_open_modal_<kind>`. The topic binding is responsible
+    // for inspecting body.actions[0].action_id to discriminate kinds — we
+    // only need to route to the correct topic here.
+    const match = actionId.match(/^z_setting_(.+?)_open_modal(?:_(.+))?$/);
     if (!match) return;
     const [, topic] = match;
     const binding = this.deps.registry.get(topic);

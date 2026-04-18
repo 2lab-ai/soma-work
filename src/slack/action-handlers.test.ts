@@ -99,7 +99,9 @@ describe('ActionHandlers', () => {
         .map((p: RegExp) => p.source);
       expect(actionPatterns).toContain('^z_setting_(.+)_set_(.+)$');
       expect(actionPatterns).toContain('^z_setting_(.+)_cancel$');
-      expect(actionPatterns).toContain('^z_setting_(.+)_open_modal$');
+      // Extended to allow optional `_<kind>` suffix for topic-level modal
+      // kinds (e.g. memory's `_open_modal_clear_manage`).
+      expect(actionPatterns).toContain('^z_setting_(.+)_open_modal(?:_(.+))?$');
       expect(actionPatterns).toContain('^z_help_nav_(.+)$');
 
       const viewPatterns = mockApp.view.mock.calls
