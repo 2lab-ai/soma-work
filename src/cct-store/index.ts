@@ -1,7 +1,6 @@
 import path from 'node:path';
 
 export { migrateLegacyCooldowns } from './migrate';
-export { migrateV1ToV2 } from './migrate-v2';
 export { CctStore, RevisionConflictError } from './store';
 export type {
   AuthState,
@@ -14,8 +13,6 @@ export type {
   SetupTokenSlot,
   SlotKind,
   SlotState,
-  SnapshotV1,
-  SnapshotV2,
   TokenSlot,
   UsageSnapshot,
   UsageWindow,

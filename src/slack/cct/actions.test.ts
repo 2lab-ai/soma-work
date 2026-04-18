@@ -178,7 +178,7 @@ describe('parseOAuthBlob', () => {
 describe('buildCardFromManager (post-action ephemeral card)', () => {
   it('uses snapshot state so the card reflects persisted per-slot state after Add', async () => {
     const snap = {
-      version: 2 as const,
+      version: 1 as const,
       revision: 2,
       registry: {
         activeSlotId: 'slot-1',

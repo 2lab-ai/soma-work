@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockAcquireLease = vi.fn();
 const mockReleaseLease = vi.fn(async () => {});
 const mockHeartbeatLease = vi.fn(async () => {});
+const mockGetActiveToken = vi.fn();
+const mockGetValidAccessToken = vi.fn();
 const mockApplyToken = vi.fn(async () => {});
 const mockMarkAuthState = vi.fn(async () => {});
 
@@ -11,6 +13,8 @@ const mockTokenManager = {
   acquireLease: mockAcquireLease,
   releaseLease: mockReleaseLease,
   heartbeatLease: mockHeartbeatLease,
+  getActiveToken: mockGetActiveToken,
+  getValidAccessToken: mockGetValidAccessToken,
   applyToken: mockApplyToken,
   markAuthState: mockMarkAuthState,
   listTokens: vi.fn(() => []),
@@ -34,25 +38,26 @@ beforeEach(() => {
   mockReleaseLease.mockResolvedValue(undefined);
   mockHeartbeatLease.mockReset();
   mockHeartbeatLease.mockResolvedValue(undefined);
+  mockGetActiveToken.mockReset();
+  mockGetValidAccessToken.mockReset();
 });
 
 describe('ensureActiveSlotAuth', () => {
   it('returns a lease with the expected shape (setup_token)', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L1',
-      slotId: 'slot-A',
-      name: 'setup1',
-      kind: 'setup_token',
-      accessToken: 'sk-ant-oat01-TEST',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetValidAccessToken.mockResolvedValue('sk-ant-oat01-TEST');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'test:owner');
 
     expect(lease.slotId).toBe('slot-A');
-    expect(lease.name).toBe('setup1');
     expect(lease.kind).toBe('setup_token');
     expect(lease.accessToken).toBe('sk-ant-oat01-TEST');
-    expect(lease.configDir).toBeUndefined();
     expect(typeof lease.release).toBe('function');
     expect(typeof lease.heartbeat).toBe('function');
     expect(mockAcquireLease).toHaveBeenCalledWith('test:owner', undefined);
@@ -61,11 +66,12 @@ describe('ensureActiveSlotAuth', () => {
   it('forwards ttlMs to acquireLease', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L2',
-      slotId: 'slot-A',
-      name: 'setup1',
-      kind: 'setup_token',
-      accessToken: 'tok',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetValidAccessToken.mockResolvedValue('tok');
 
     await ensureActiveSlotAuth(mockTokenManager as any, 'tag', 30_000);
     expect(mockAcquireLease).toHaveBeenCalledWith('tag', 30_000);
@@ -78,58 +84,31 @@ describe('ensureActiveSlotAuth', () => {
     expect(mockReleaseLease).not.toHaveBeenCalled();
   });
 
-  it('carries accessToken from acquireLease through to the lease (oauth_credentials)', async () => {
+  it('for oauth_credentials slots, accessToken is the value returned by getValidAccessToken (refresh)', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L3',
-      slotId: 'slot-O',
-      name: 'oauth1',
-      kind: 'oauth_credentials',
-      accessToken: 'refreshed-access-token',
-      configDir: '/var/soma/cct-store.dirs/slot-O',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-O', name: 'oauth1', kind: 'oauth_credentials' });
+    mockGetValidAccessToken.mockResolvedValue('refreshed-access-token');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
     expect(lease.accessToken).toBe('refreshed-access-token');
     expect(lease.kind).toBe('oauth_credentials');
-    expect(lease.configDir).toBe('/var/soma/cct-store.dirs/slot-O');
-  });
-
-  it('populates lease.configDir for oauth_credentials slots', async () => {
-    mockAcquireLease.mockResolvedValue({
-      leaseId: 'L3b',
-      slotId: 'slot-O2',
-      name: 'oauth2',
-      kind: 'oauth_credentials',
-      accessToken: 'tok',
-      configDir: '/data/cct-store.dirs/slot-O2',
-    });
-
-    const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
-    expect(lease.configDir).toBe('/data/cct-store.dirs/slot-O2');
-  });
-
-  it('leaves lease.configDir undefined for setup_token slots', async () => {
-    mockAcquireLease.mockResolvedValue({
-      leaseId: 'L3c',
-      slotId: 'slot-S',
-      name: 'setup2',
-      kind: 'setup_token',
-      accessToken: 'tok',
-      // configDir intentionally omitted — setup_token slots do not own one.
-    });
-
-    const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
-    expect(lease.configDir).toBeUndefined();
+    expect(mockGetValidAccessToken).toHaveBeenCalledWith('slot-O');
   });
 
   it('release() is idempotent', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L4',
-      slotId: 'slot-A',
-      name: 'setup1',
-      kind: 'setup_token',
-      accessToken: 'tok',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetValidAccessToken.mockResolvedValue('tok');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
     await lease.release();
@@ -138,14 +117,42 @@ describe('ensureActiveSlotAuth', () => {
     expect(mockReleaseLease).toHaveBeenCalledTimes(1);
   });
 
+  it('releases the underlying lease when getValidAccessToken throws', async () => {
+    mockAcquireLease.mockResolvedValue({
+      leaseId: 'L5',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-O', name: 'oauth1', kind: 'oauth_credentials' });
+    mockGetValidAccessToken.mockRejectedValue(new Error('refresh 401'));
+
+    await expect(ensureActiveSlotAuth(mockTokenManager as any, 'owner')).rejects.toBeInstanceOf(NoHealthySlotError);
+    expect(mockReleaseLease).toHaveBeenCalledWith('L5');
+  });
+
+  it('throws NoHealthySlotError (and releases) when getActiveToken returns null', async () => {
+    mockAcquireLease.mockResolvedValue({
+      leaseId: 'L6',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    mockGetActiveToken.mockReturnValue(null);
+
+    await expect(ensureActiveSlotAuth(mockTokenManager as any, 'owner')).rejects.toBeInstanceOf(NoHealthySlotError);
+    expect(mockReleaseLease).toHaveBeenCalledWith('L6');
+  });
+
   it('heartbeat() forwards to tokenManager.heartbeatLease while active', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L7',
-      slotId: 'slot-A',
-      name: 'setup1',
-      kind: 'setup_token',
-      accessToken: 'tok',
+      ownerTag: 'test',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetValidAccessToken.mockResolvedValue('tok');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
     await lease.heartbeat();
@@ -163,11 +170,12 @@ describe('ensureValidCredentials (legacy wrapper)', () => {
   it('returns {valid:true} on successful acquisition', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L-compat',
-      slotId: 'slot-A',
-      name: 'setup1',
-      kind: 'setup_token',
-      accessToken: 'tok',
+      ownerTag: 'legacy',
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetValidAccessToken.mockResolvedValue('tok');
 
     const r = await ensureValidCredentials();
     expect(r.valid).toBe(true);
