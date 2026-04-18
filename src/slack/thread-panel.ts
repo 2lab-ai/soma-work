@@ -2,13 +2,13 @@ import type { EndTurnInfo } from '../agent-session/agent-session-types';
 import type { ClaudeHandler } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
-import type { TodoManager } from '../todo-manager';
+import type { Todo, TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import { ThreadSurface } from './thread-surface';
-import { type TurnContext, type TurnEndReason, TurnSurface } from './turn-surface';
+import { type TurnAddress, type TurnContext, type TurnEndReason, TurnSurface } from './turn-surface';
 import type { SlackMessagePayload } from './user-choice-handler';
 
 interface ThreadPanelDeps {
@@ -20,7 +20,7 @@ interface ThreadPanelDeps {
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
-export type { TurnContext, TurnEndReason } from './turn-surface';
+export type { TurnAddress, TurnContext, TurnEndReason } from './turn-surface';
 
 /**
  * ThreadPanel — combined header+panel rendering (legacy) + per-turn B1 stream
@@ -149,6 +149,26 @@ export class ThreadPanel {
   async failTurn(turnId: string, error: Error): Promise<void> {
     if (config.ui.fiveBlockPhase < 1) return;
     await this.turnSurface.fail(turnId, error);
+  }
+
+  /**
+   * Render the TodoWrite plan snapshot as a dedicated B2 plan block message
+   * (P2, Issue #577). Writes to `planTs` (separate Slack message from the B1
+   * stream and from the legacy combined header). Gated on PHASE>=2; PHASE<2
+   * returns `false` so callers keep using the legacy ThreadSurface embed.
+   *
+   * `ctx` is required when `renderTasks` is invoked before `beginTurn` (e.g.
+   * a TodoWrite fires in a turn that hasn't opened a B1 stream yet). If `ctx`
+   * is omitted and no TurnState exists, the call is a silent no-op returning
+   * `false`.
+   *
+   * Returns `true` when Slack accepted the (debounced) render, `false` when
+   * it did not (PHASE<2, missing ctx + no state, or SDK error). Callers treat
+   * `false` as "fall back to legacy `onRenderRequest`".
+   */
+  async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
+    if (config.ui.fiveBlockPhase < 2) return false;
+    return this.turnSurface.renderTasks(turnId, todos, ctx);
   }
 
   // ---- internal helpers ----
