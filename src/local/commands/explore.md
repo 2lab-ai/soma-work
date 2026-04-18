@@ -9,7 +9,6 @@ allowed-tools:
   - Glob
   - AskUserQuestion
   - mcp__llm__chat
-  - mcp__llm__chat-reply
 ---
 
 **Always read commands body** even if you knew it.**

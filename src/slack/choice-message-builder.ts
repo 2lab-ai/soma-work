@@ -1,4 +1,5 @@
-import type { UserChoice, UserChoices } from '../types';
+import { LEGACY_RECOMMENDED_SUFFIX_RE } from 'somalib/model-commands/validator';
+import type { UserChoice, UserChoiceOption, UserChoices } from '../types';
 import type { SessionTheme } from '../user-settings-store';
 
 export interface SlackMessagePayload {
@@ -10,9 +11,163 @@ export interface SlackMessagePayload {
 const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
 
 /**
+ * Escape user-controlled text for inclusion inside a Slack `mrkdwn` block.
+ *
+ * Slack only requires `&`, `<`, `>` to be entity-encoded for text embedded in
+ * `mrkdwn`; this prevents labels like `<@U123>` from triggering mentions and
+ * `<url|label>` from rendering as links. Formatting chars (`*_~`) remain intact
+ * — banner is already bold via surrounding `*…*`, so wrapping cancels out.
+ */
+function escapeSlackMrkdwn(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
  * Slack 블록 UI 빌딩 로직
  */
 export class ChoiceMessageBuilder {
+  // ---------------------------------------------------------------------------
+  // Recommended-choice helpers
+  // ---------------------------------------------------------------------------
+
+  /** Strip trailing "(Recommended · N/M)" or "(Recommended)" suffix for display. */
+  private static stripRecommendedMarker(label: string): string {
+    return label.replace(/\s*\(Recommended(?:\s*·[^)]*)?\)\s*$/i, '').trim();
+  }
+
+  /**
+   * Resolve recommended choiceId: explicit id (if it matches one of the options) > legacy label scan.
+   * Returns undefined if neither path yields a match.
+   */
+  private static resolveRecommendedId(explicitId: string | undefined, options: UserChoiceOption[]): string | undefined {
+    if (explicitId && options.some((o) => o.id === explicitId)) {
+      return explicitId;
+    }
+    const legacy = options.find((o) => LEGACY_RECOMMENDED_SUFFIX_RE.test(o.label));
+    return legacy?.id;
+  }
+
+  /**
+   * Partition options into recommended + others while preserving original index
+   * (used for emoji numbering so context prose like "Option B" still lines up).
+   */
+  private static partitionByRecommended(
+    options: UserChoiceOption[],
+    recommendedId: string | undefined,
+  ): {
+    recommended: { opt: UserChoiceOption; origIndex: number }[];
+    others: { opt: UserChoiceOption; origIndex: number }[];
+  } {
+    const recommended: { opt: UserChoiceOption; origIndex: number }[] = [];
+    const others: { opt: UserChoiceOption; origIndex: number }[] = [];
+    options.forEach((opt, idx) => {
+      if (recommendedId && opt.id === recommendedId) {
+        recommended.push({ opt, origIndex: idx });
+      } else {
+        others.push({ opt, origIndex: idx });
+      }
+    });
+    return { recommended, others };
+  }
+
+  /** Returns opt with its label cleaned (no "(Recommended...)" suffix). */
+  private static sanitizeLabel(opt: UserChoiceOption): UserChoiceOption {
+    const cleaned = ChoiceMessageBuilder.stripRecommendedMarker(opt.label);
+    return cleaned === opt.label ? opt : { ...opt, label: cleaned };
+  }
+
+  /**
+   * Build the action-area blocks for a single-choice question.
+   *
+   * When a recommended option is resolved:
+   *   [section banner] → [actions: primary solo rec button]
+   *     → [divider if others exist] → [actions: other buttons + custom_input]
+   *   When ONLY the recommended exists (no others): banner → rec actions → custom_input own row.
+   * When no recommended: a single actions block with all buttons + custom_input (legacy behavior).
+   */
+  private static buildSingleChoiceActionBlocks(choice: UserChoice, sessionKey: string): any[] {
+    const rawOptions = choice.choices.slice(0, 4);
+    const recId = ChoiceMessageBuilder.resolveRecommendedId(choice.recommendedChoiceId, rawOptions);
+    const sanitized = rawOptions.map((o) => ChoiceMessageBuilder.sanitizeLabel(o));
+    const { recommended, others } = ChoiceMessageBuilder.partitionByRecommended(sanitized, recId);
+
+    const blocks: any[] = [];
+
+    if (recommended.length === 0) {
+      // Legacy single-row path
+      const buttons = sanitized.map((opt, idx) =>
+        ChoiceMessageBuilder.buildChoiceButton(opt, idx, sessionKey, choice.question, false),
+      );
+      buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+      blocks.push({ type: 'actions', elements: buttons });
+      return blocks;
+    }
+
+    // Banner section — escape user-controlled label for Slack mrkdwn so content like
+    // `<@U123>`, `<!channel>`, or `<url|text>` can't inject mentions/links into the banner.
+    const recLabel = escapeSlackMrkdwn(recommended[0].opt.label);
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `⭐ *Recommended — ${recLabel}*`,
+      },
+    });
+
+    // Solo rec actions row (primary-styled)
+    const recButtons = recommended.map(({ opt, origIndex }) =>
+      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, true),
+    );
+    blocks.push({ type: 'actions', elements: recButtons });
+
+    if (others.length === 0) {
+      // Only recommended — custom input on its own actions row
+      blocks.push({
+        type: 'actions',
+        elements: [ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question)],
+      });
+      return blocks;
+    }
+
+    blocks.push({ type: 'divider' });
+    const otherButtons = others.map(({ opt, origIndex }) =>
+      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, false),
+    );
+    otherButtons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    blocks.push({ type: 'actions', elements: otherButtons });
+
+    return blocks;
+  }
+
+  /** Build a single choice button (used by both legacy row and recommended-aware row). */
+  private static buildChoiceButton(
+    opt: UserChoiceOption,
+    origIndex: number,
+    sessionKey: string,
+    question: string,
+    isPrimary: boolean,
+  ): any {
+    const btn: any = {
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: `${OPTION_EMOJIS[origIndex]} ${opt.label.substring(0, 40)}`,
+        emoji: true,
+      },
+      value: JSON.stringify({
+        sessionKey,
+        choiceId: opt.id,
+        label: opt.label,
+        question,
+      }),
+      action_id: `user_choice_${opt.id}`,
+    };
+    if (isPrimary) {
+      btn.style = 'primary';
+    }
+    return btn;
+  }
+
   /**
    * Build Slack attachment for single user choice (Jira-style card UI)
    * Dispatches to themed layout builders based on theme parameter.
@@ -34,25 +189,6 @@ export class ChoiceMessageBuilder {
   // ---------------------------------------------------------------------------
   // Helper: build standard action buttons (shared across themes)
   // ---------------------------------------------------------------------------
-
-  private static buildOptionButtons(choice: UserChoice, sessionKey: string): any[] {
-    const options = choice.choices.slice(0, 4);
-    return options.map((opt, idx) => ({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        choiceId: opt.id,
-        label: opt.label,
-        question: choice.question,
-      }),
-      action_id: `user_choice_${opt.id}`,
-    }));
-  }
 
   private static buildCustomInputButton(sessionKey: string, question: string): any {
     return {
@@ -99,15 +235,35 @@ export class ChoiceMessageBuilder {
       },
     });
 
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const defaultCtx = choice.context?.trim();
+    if (defaultCtx) {
+      attachmentBlocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${defaultCtx}`,
+          },
+        ],
+      });
+    }
+
     attachmentBlocks.push({ type: 'divider' });
 
-    // Build fields for horizontal layout (2 columns) with number emojis
-    const options = choice.choices.slice(0, 4);
-    const fields: any[] = options.map((opt, idx) => ({
+    // Build fields for horizontal layout (2 columns) with number emojis.
+    // Reorder so recommended comes first (matches action button order), but preserve origIndex emoji numbering.
+    const rawOptions = choice.choices.slice(0, 4);
+    const recId = ChoiceMessageBuilder.resolveRecommendedId(choice.recommendedChoiceId, rawOptions);
+    const sanitized = rawOptions.map((o) => ChoiceMessageBuilder.sanitizeLabel(o));
+    const { recommended, others } = ChoiceMessageBuilder.partitionByRecommended(sanitized, recId);
+    const displayOrder = [...recommended, ...others];
+
+    const fields: any[] = displayOrder.map(({ opt, origIndex }) => ({
       type: 'mrkdwn',
       text: opt.description
-        ? `${OPTION_EMOJIS[idx]} *${opt.label}*\n_${opt.description}_`
-        : `${OPTION_EMOJIS[idx]} *${opt.label}*`,
+        ? `${OPTION_EMOJIS[origIndex]} *${opt.label}*\n_${opt.description}_`
+        : `${OPTION_EMOJIS[origIndex]} *${opt.label}*`,
     }));
 
     if (fields.length > 0) {
@@ -124,43 +280,7 @@ export class ChoiceMessageBuilder {
       }
     }
 
-    // Action buttons
-    const buttons: any[] = options.map((opt, idx) => ({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        choiceId: opt.id,
-        label: opt.label,
-        question: choice.question,
-      }),
-      action_id: `user_choice_${opt.id}`,
-    }));
-
-    // Custom input button
-    buttons.push({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: '✏️ 직접 입력',
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        question: choice.question,
-        type: 'single',
-      }),
-      action_id: 'custom_input_single',
-    });
-
-    attachmentBlocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+    attachmentBlocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
 
     return {
       attachments: [
@@ -188,13 +308,21 @@ export class ChoiceMessageBuilder {
       },
     });
 
-    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
-    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const compactCtx = choice.context?.trim();
+    if (compactCtx) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${compactCtx}`,
+          },
+        ],
+      });
+    }
 
-    blocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
@@ -217,13 +345,21 @@ export class ChoiceMessageBuilder {
       ],
     });
 
-    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
-    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const minimalCtx = choice.context?.trim();
+    if (minimalCtx) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${minimalCtx}`,
+          },
+        ],
+      });
+    }
 
-    blocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
@@ -348,13 +484,20 @@ export class ChoiceMessageBuilder {
           });
         }
 
-        // Options with number emojis
-        const options = q.choices.slice(0, 4);
-        const fields: any[] = options.map((opt, optIdx) => ({
+        // Options with number emojis. Reorder so the recommended option comes first,
+        // but keep OPTION_EMOJIS aligned with the original index (so context prose like
+        // "Option B" still matches the 2️⃣ emoji).
+        const rawOptions = q.choices.slice(0, 4);
+        const recId = ChoiceMessageBuilder.resolveRecommendedId(q.recommendedChoiceId, rawOptions);
+        const sanitizedOptions = rawOptions.map((o) => ChoiceMessageBuilder.sanitizeLabel(o));
+        const { recommended, others } = ChoiceMessageBuilder.partitionByRecommended(sanitizedOptions, recId);
+        const displayOrder = [...recommended, ...others];
+
+        const fields: any[] = displayOrder.map(({ opt, origIndex }) => ({
           type: 'mrkdwn',
           text: opt.description
-            ? `${OPTION_EMOJIS[optIdx]} *${opt.label}*\n_${opt.description}_`
-            : `${OPTION_EMOJIS[optIdx]} *${opt.label}*`,
+            ? `${OPTION_EMOJIS[origIndex]} *${opt.label}*\n_${opt.description}_`
+            : `${OPTION_EMOJIS[origIndex]} *${opt.label}*`,
         }));
 
         if (fields.length > 0) {
@@ -371,25 +514,36 @@ export class ChoiceMessageBuilder {
           }
         }
 
-        // Action buttons with number emojis
-        const buttons: any[] = options.map((opt, optIdx) => ({
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: `${OPTION_EMOJIS[optIdx]} ${opt.label.substring(0, 22)}`,
-            emoji: true,
-          },
-          value: JSON.stringify({
-            formId,
-            sessionKey,
-            questionId: q.id,
-            choiceId: opt.id,
-            label: opt.label,
-          }),
-          action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
-        }));
+        // Action buttons with number emojis. Recommended first (⭐ prefix + style='primary'),
+        // others follow in original order. Kept inline in ONE actions block to preserve
+        // the Slack 50-block message cap for multi-form.
+        const buttons: any[] = displayOrder.map(({ opt, origIndex }) => {
+          const isRec = recommended.length > 0 && opt.id === recommended[0].opt.id;
+          const btn: any = {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: isRec
+                ? `⭐ ${OPTION_EMOJIS[origIndex]} ${opt.label.substring(0, 22)}`
+                : `${OPTION_EMOJIS[origIndex]} ${opt.label.substring(0, 22)}`,
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+              choiceId: opt.id,
+              label: opt.label,
+            }),
+            action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
+          };
+          if (isRec) {
+            btn.style = 'primary';
+          }
+          return btn;
+        });
 
-        // Custom input button
+        // Custom input button (always appended last; preserves the custom_input per-actions-block invariant)
         buttons.push({
           type: 'button',
           text: {

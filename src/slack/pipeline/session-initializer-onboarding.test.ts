@@ -29,16 +29,17 @@ vi.mock('../../user-settings-store', () => ({
     loadSlackJiraMapping: vi.fn(),
     getSlackJiraMapping: vi.fn().mockReturnValue({}),
     findJiraAccountBySlackId: vi.fn().mockReturnValue(undefined),
-    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
   AVAILABLE_MODELS: [
+    'claude-opus-4-7',
     'claude-opus-4-6',
     'claude-sonnet-4-5-20250929',
     'claude-opus-4-5-20251101',
     'claude-haiku-4-5-20251001',
   ],
-  DEFAULT_MODEL: 'claude-opus-4-6',
+  DEFAULT_MODEL: 'claude-opus-4-7',
 }));
 
 vi.mock('../../admin-utils', () => ({
@@ -114,6 +115,7 @@ describe('SessionInitializer - Onboarding Detection', () => {
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReaction: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
       deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -381,7 +383,9 @@ describe('SessionInitializer - Onboarding Detection', () => {
       expect(String(migratedContextCall?.[1] || '')).toContain('이전 스레드');
       expect(result.session.threadModel).toBe('bot-initiated');
       expect(result.session.threadRootTs).toBe('msg123');
-      expect(mockSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C123', 'thread123');
+      // Init clutter is deleted ts-by-ts (Issue #516) — wholesale sweep must not be used.
+      expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'msg123');
+      expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
     });
   });
 });

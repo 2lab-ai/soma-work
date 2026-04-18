@@ -342,18 +342,17 @@ this is not valid json
       expect(questionBlock).toBeDefined();
     });
 
-    it('should not include a separate context block in default theme (context is omitted)', () => {
+    it('should include a 💡 context block in default theme when choice.context is provided (#545)', () => {
       const choiceWithContext: UserChoice = {
         ...sampleChoice,
         context: 'Important context',
       };
       const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'default');
       const blocks = getBlocks(payload);
-      // The new default theme (based on former Theme D) does not render a context block for choice.context
-      const contextBlock = blocks.find(
-        (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'),
-      );
-      expect(contextBlock).toBeUndefined();
+      // Since #545: single user_choice path renders a `💡 <context>` block in all 3 themes.
+      const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.startsWith('💡 '));
+      expect(contextBlock).toBeDefined();
+      expect(contextBlock.elements[0].text).toBe('💡 Important context');
     });
 
     it('should include custom input button', () => {
@@ -560,6 +559,133 @@ this is not valid json
         const customButton = actionBlock.elements.find((e: any) => e.action_id.startsWith('custom_input_multi_'));
         expect(customButton).toBeDefined();
       }
+    });
+
+    it('still includes custom_input buttons in every actions block when recommendedChoiceId is set (invariant)', () => {
+      const recChoices: UserChoices = {
+        type: 'user_choices',
+        title: 'With rec',
+        questions: [
+          {
+            id: 'q1',
+            question: 'Q1?',
+            recommendedChoiceId: '2',
+            choices: [
+              { id: '1', label: 'One' },
+              { id: '2', label: 'Two' },
+            ],
+          },
+          {
+            id: 'q2',
+            question: 'Q2?',
+            recommendedChoiceId: 'a',
+            choices: [
+              { id: 'a', label: 'A' },
+              { id: 'b', label: 'B' },
+            ],
+          },
+        ],
+      };
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(recChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
+      expect(actionBlocks).toHaveLength(2);
+      for (const actionBlock of actionBlocks) {
+        const customButton = actionBlock.elements.find((e: any) => e.action_id.startsWith('custom_input_multi_'));
+        expect(customButton).toBeDefined();
+      }
+    });
+  });
+
+  describe('extractUserChoice preserves recommendedChoiceId', () => {
+    it('single user_choice preserves recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choice",
+  "question": "Pick one",
+  "recommendedChoiceId": "2",
+  "choices": [
+    {"id": "1", "label": "A"},
+    {"id": "2", "label": "B"}
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice?.recommendedChoiceId).toBe('2');
+    });
+
+    it('user_choices with per-question recommendedChoiceId preserves the field', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choices",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "One?",
+      "recommendedChoiceId": "b",
+      "choices": [
+        {"id": "a", "label": "A"},
+        {"id": "b", "label": "B"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBeNull();
+      expect(result.choices?.questions[0].recommendedChoiceId).toBe('b');
+    });
+
+    it('user_choice_group with two questions preserves per-question recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "question": "Decisions",
+  "choices": [
+    {
+      "question": "First?",
+      "recommendedChoiceId": "2",
+      "options": [
+        {"id": "1", "label": "A"},
+        {"id": "2", "label": "B"}
+      ]
+    },
+    {
+      "question": "Second?",
+      "recommendedChoiceId": "y",
+      "options": [
+        {"id": "x", "label": "X"},
+        {"id": "y", "label": "Y"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBeNull();
+      expect(result.choices?.questions).toHaveLength(2);
+      expect(result.choices?.questions[0].recommendedChoiceId).toBe('2');
+      expect(result.choices?.questions[1].recommendedChoiceId).toBe('y');
+    });
+
+    it('user_choice_group with single question collapses to user_choice and preserves recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "question": "Decision",
+  "choices": [
+    {
+      "question": "Pick",
+      "recommendedChoiceId": "2",
+      "options": [
+        {"id": "1", "label": "A"},
+        {"id": "2", "label": "B"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBeNull();
+      expect(result.choice?.recommendedChoiceId).toBe('2');
     });
   });
 });

@@ -1,12 +1,9 @@
 import { Logger } from '../../logger';
 import { getReportDeps } from '../../metrics';
-import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { isSlashForbidden, SLASH_FORBIDDEN_MESSAGE } from '../z/capability';
 import { stripZPrefix } from '../z/normalize';
 import { parseTopic, translateToLegacy } from '../z/router';
-import { detectLegacyNaked } from '../z/tombstone';
-import { isWhitelistedNaked } from '../z/whitelist';
 import { AdminHandler } from './admin-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
@@ -40,6 +37,7 @@ import { SessionHandler } from './session-handler';
 import { SkillForceHandler } from './skill-force-handler';
 import { SkillsHandler } from './skills-handler';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+import { UITestHandler } from './ui-test-handler';
 import { UsageHandler } from './usage-handler';
 import { VerbosityHandler } from './verbosity-handler';
 import { WebhookHandler } from './webhook-handler';
@@ -68,6 +66,7 @@ export class CommandRouter {
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new SandboxHandler(),
+      new UITestHandler(deps),
       new EmailHandler(),
       new RateHandler(),
       new PersonaHandler(),
@@ -105,12 +104,11 @@ export class CommandRouter {
       return { handled: false };
     }
 
-    // Phase 1 of /z refactor (#506): `/z` prefix + legacy-naked tombstone.
-    // Set SOMA_ENABLE_LEGACY_SLASH=true to bypass the new routing entirely
-    // (rollback Tier 2 — plan/MASTER-SPEC.md §12).
-    const legacyEnabled =
-      process.env.SOMA_ENABLE_LEGACY_SLASH === 'true' || process.env.SOMA_ENABLE_LEGACY_SLASH === '1';
-
+    // `/z` prefix support for thread/app_mention text (Phase 1 of #506).
+    // NOTE: bare `[cmd] [args]` is NOT gated here — handlers below match it
+    // directly. The Phase 1 tombstone gate was removed (#530) to restore
+    // pre-#509 behavior. `SOMA_ENABLE_LEGACY_SLASH` now scopes only to the
+    // slash deprecation rollback in event-router.ts.
     const zPrefixRemainder = stripZPrefix(originalText.trim());
     if (zPrefixRemainder !== null) {
       // Empty `/z` → help
@@ -135,18 +133,6 @@ export class CommandRouter {
       // `ctx.text` (not a destructured copy) so the translated form reaches
       // canHandle() / execute() — thread `/z persona`, `/z model`, etc.
       // regressed when the old path used the stale local `text`.
-    } else if (!legacyEnabled && !isWhitelistedNaked(originalText)) {
-      const hint = detectLegacyNaked(originalText);
-      if (hint) {
-        const freshlyMarked = await userSettingsStore.markMigrationHintShown(ctx.user);
-        if (freshlyMarked) {
-          await say({
-            text: `ℹ️ \`${hint.oldForm}\`은 더 이상 사용되지 않습니다. 대신 \`${hint.newForm}\`을 사용해주세요.\n💡 \`/z\` 또는 \`/z help\`로 전체 명령을 확인할 수 있어요.`,
-            thread_ts: threadTs,
-          });
-        }
-        return { handled: true };
-      }
     }
 
     const routedText = ctx.text ?? originalText;

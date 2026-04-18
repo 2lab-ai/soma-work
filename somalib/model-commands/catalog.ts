@@ -78,6 +78,7 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
+import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
   issue: 'issues',
@@ -164,6 +165,10 @@ const ASK_USER_QUESTION_SCHEMA = {
             type: { type: 'string', enum: ['user_choice'] },
             question: { type: 'string' },
             context: { type: 'string' },
+            recommendedChoiceId: {
+              type: 'string',
+              description: 'ID of the recommended choice option (must match one of choices[].id)',
+            },
             choices: {
               type: 'array',
               minItems: 1,
@@ -194,6 +199,10 @@ const ASK_USER_QUESTION_SCHEMA = {
                 properties: {
                   question: { type: 'string' },
                   context: { type: 'string' },
+                  recommendedChoiceId: {
+                    type: 'string',
+                    description: 'ID of the recommended option for this question',
+                  },
                   options: {
                     type: 'array',
                     minItems: 1,
@@ -569,12 +578,14 @@ export function runModelCommand(
   }
 
   if (request.commandId === 'ASK_USER_QUESTION') {
+    const warnings = checkAskUserQuestionQuality(request.params);
     return {
       type: 'model_command_result',
       commandId: 'ASK_USER_QUESTION',
       ok: true,
       payload: {
         question: request.params.question,
+        ...(warnings.length > 0 ? { warnings } : {}),
       },
     };
   }

@@ -16,7 +16,6 @@ import { isSlashForbidden } from './z/capability';
 import { normalizeZInvocation, stripZPrefix } from './z/normalize';
 import { ChannelEphemeralZRespond, SlashZRespond } from './z/respond';
 import { parseTopic, ZRouter } from './z/router';
-import { isLegacyNaked } from './z/tombstone';
 
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
@@ -138,9 +137,10 @@ export class EventRouter {
       }
       const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
 
-      // FIX #1 (PR #509): route `@bot /z …` and non-whitelisted legacy naked
-      // forms through ZRouter so the three entry points (slash, DM,
-      // app_mention) share the same normalization pipeline.
+      // FIX #1 (PR #509, revised by #530): route `@bot /z …` through ZRouter
+      // so slash + DM + app_mention share one normalization pipeline for the
+      // `/z` surface. Bare `[cmd] [args]` falls through to the normal
+      // app_mention pipeline (event-router.ts:163 이후 경로).
       //
       // codex P1 followup: this MUST run before the source-thread linked-session
       // guard below — otherwise `@bot /z persona` issued inside a source thread
@@ -229,16 +229,13 @@ export class EventRouter {
    *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should
    *    substitute the event text and continue the legacy pipeline.
    *  - `terminal: false, continueWithPrompt: undefined` — ZRouter did not
-   *    apply (not a `/z` prefix and not a legacy naked form) OR an internal
-   *    failure occurred; caller should continue with the original stripped
-   *    text.
+   *    apply (text does not start with `/z`) OR an internal failure occurred;
+   *    caller should continue with the original stripped text.
    *
    * Routing rules (per MASTER-SPEC §5-1):
    *  - Text starts with `/z` → normalize + dispatch.
-   *  - Text matches a legacy naked form (`persona set linus`, `show prompt`) →
-   *    normalize + dispatch (ZRouter will render tombstone).
-   *  - Whitelisted naked (`new`, `session`, `$…`) or unrecognized prose →
-   *    `{ terminal: false }` (caller falls through).
+   *  - Otherwise → `{ terminal: false }` (caller falls through to normal
+   *    app_mention pipeline, preserving pre-#509 bare-command behavior).
    */
   private async maybeRouteAppMentionViaZRouter(args: {
     event: any;
@@ -250,8 +247,7 @@ export class EventRouter {
     if (!text) return { terminal: false };
 
     const startsWithZ = stripZPrefix(text) !== null;
-    const legacyNaked = !startsWithZ && isLegacyNaked(text);
-    if (!startsWithZ && !legacyNaked) return { terminal: false };
+    if (!startsWithZ) return { terminal: false };
 
     try {
       const respond = new ChannelEphemeralZRespond({
@@ -636,9 +632,26 @@ export class EventRouter {
 
   /**
    * 스레드 메시지 처리 (멘션 없이)
+   *
+   * Issue #553: DMs are handled authoritatively by `app.message()`
+   * (setupMessageHandlers, line ~91). Slack delivers DM events on BOTH
+   * `app.message` and `app.event('message')`, so without this guard DMs
+   * without an existing session get a 🚫 `no_entry` from this path at the
+   * same time `handleMessage` is running Gate A — causing a spurious
+   * "ignored" signal on messages the bot is actually processing. Skip DMs
+   * here entirely; the DM path has its own Gate A/Gate B rejection UX.
    */
   private async handleThreadMessage(messageEvent: any, say: SayFn): Promise<void> {
     const { user, channel, thread_ts: threadTs, ts, text = '' } = messageEvent;
+
+    if (channel?.startsWith('D')) {
+      this.logger.debug('Skipping DM in handleThreadMessage (app.message is authoritative)', {
+        user,
+        channel,
+        threadTs,
+      });
+      return;
+    }
 
     // 봇 멘션이 포함된 경우 스킵 (app_mention에서 처리)
     const botId = await this.deps.slackApi.getBotUserId();

@@ -8,14 +8,14 @@ vi.mock('../../user-settings-store', () => ({
       defaultDirectory: '',
       bypassPermission: false,
       persona: 'default',
-      defaultModel: 'claude-opus-4-6',
+      defaultModel: 'claude-opus-4-7',
       lastUpdated: new Date().toISOString(),
     }),
     createPendingUser: vi.fn(),
-    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.6'),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  DEFAULT_MODEL: 'claude-opus-4-6',
+  DEFAULT_MODEL: 'claude-opus-4-7',
 }));
 
 vi.mock('../../admin-utils', () => ({
@@ -330,6 +330,47 @@ describe('SessionInitializer - channel routing advisory', () => {
       return blocks.some((b: any) => b.type === 'section' && b.text?.text?.includes('매핑된 채널을 찾지 못했습니다'));
     });
     expect(noMappingCall).toBeUndefined();
+  });
+
+  it('threads sourceThreadCleanupTs into channel-route button value (Issue #516)', async () => {
+    // Distinct ts per postMessage so we can identify the conversation-link ts.
+    mockSlackApi.postMessage = vi.fn().mockImplementation(async (_c: string, text: string) => {
+      if (typeof text === 'string') {
+        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
+      }
+      return { ts: 'other-bot-ts' };
+    });
+
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    // Advisory post carries Move/Stop buttons with cleanupTs durably serialized.
+    const advisoryCall = mockSlackApi.postMessage.mock.calls.find((call: any[]) => {
+      const blocks = call[2]?.blocks;
+      if (!Array.isArray(blocks)) return false;
+      return blocks.some((b: any) => b.type === 'actions');
+    });
+    expect(advisoryCall).toBeDefined();
+    const actionsBlock = advisoryCall![2].blocks.find((b: any) => b.type === 'actions');
+    expect(actionsBlock).toBeDefined();
+    expect(actionsBlock.elements.length).toBeGreaterThan(0);
+
+    // Every button in the advisory must carry cleanupTs that includes the
+    // conversation-link ts we tracked during init. This is the durability
+    // contract: the handler fires after restart / session halt, and must
+    // still be able to clean up init clutter without a session registry.
+    for (const el of actionsBlock.elements as any[]) {
+      const decoded = JSON.parse(el.value);
+      expect(decoded.cleanupTs).toContain('conv-link-ts');
+    }
   });
 
   it('falls through to no_mapping when registerChannel fails to find repo', async () => {

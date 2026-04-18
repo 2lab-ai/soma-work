@@ -37,7 +37,11 @@ for each decision:
        → Ask the user
        → Present 3-person review results + recommendation together
        → [tier ~N lines] notation required in the question
-       → Use UIAskUserQuestion Skill
+       → Use UIAskUserQuestion Skill with template
+         [`../UIAskUserQuestion/templates/decision-gate-tier-medium.json`](../UIAskUserQuestion/templates/decision-gate-tier-medium.json)
+         — `{decision_summary}` / `{impact_scope}` / `{rollback_cost}` placeholders
+         already pass the 6-rule soft gate. `local:zwork` delegates here when
+         retries exceed 3; it must not own its own UIAskUserQuestion template.
 ```
 
 ## 3-Person Majority Review (MANDATORY)

@@ -3,30 +3,52 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../../admin-utils', () => ({ isAdminUser: vi.fn() }));
 
 vi.mock('../../../token-manager', () => {
-  const tokens: Array<{ name: string; value: string; cooldownUntil?: Date }> = [
-    { name: 'cct1', value: 'sk-abcdef1234567890' },
-    { name: 'cct2', value: 'sk-ghijkl0987654321' },
+  type SlotListItem = {
+    slotId: string;
+    name: string;
+    kind: 'setup_token' | 'oauth_credentials';
+    status: string;
+  };
+  const tokens: SlotListItem[] = [
+    { slotId: 'slot-1', name: 'cct1', kind: 'setup_token', status: 'healthy' },
+    { slotId: 'slot-2', name: 'cct2', kind: 'setup_token', status: 'healthy' },
   ];
   let activeIdx = 0;
+  const tm = {
+    listTokens: () => [...tokens],
+    getActiveToken: () => {
+      const t = tokens[activeIdx];
+      return t ? { slotId: t.slotId, name: t.name, kind: t.kind } : null;
+    },
+    applyToken: async (slotId: string) => {
+      const i = tokens.findIndex((t) => t.slotId === slotId);
+      if (i < 0) throw new Error(`unknown slotId ${slotId}`);
+      activeIdx = i;
+    },
+    rotateToNext: async () => {
+      if (tokens.length < 2) return null;
+      activeIdx = (activeIdx + 1) % tokens.length;
+      const t = tokens[activeIdx];
+      return { slotId: t.slotId, name: t.name };
+    },
+    getSnapshot: async () => ({
+      version: 1,
+      revision: 1,
+      registry: {
+        activeSlotId: tokens[activeIdx]?.slotId,
+        slots: tokens.map((t) => ({
+          slotId: t.slotId,
+          name: t.name,
+          kind: t.kind,
+          value: '',
+          createdAt: '',
+        })),
+      },
+      state: {},
+    }),
+  };
   return {
-    TokenManager: {
-      maskToken: (v: string) => `${v.slice(0, 6)}…`,
-    },
-    tokenManager: {
-      getAllTokens: () => [...tokens],
-      getActiveToken: () => tokens[activeIdx],
-      setActiveToken: (name: string) => {
-        const i = tokens.findIndex((t) => t.name === name);
-        if (i < 0) return false;
-        activeIdx = i;
-        return true;
-      },
-      rotateToNext: () => {
-        if (tokens.length < 2) return false;
-        activeIdx = (activeIdx + 1) % tokens.length;
-        return true;
-      },
-    },
+    getTokenManager: () => tm,
   };
 });
 

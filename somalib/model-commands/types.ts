@@ -91,6 +91,12 @@ export interface ModelCommandPayloadMap {
   };
   ASK_USER_QUESTION: {
     question: UserChoice | UserChoices;
+    /**
+     * Soft quality warnings from `checkAskUserQuestionQuality`.
+     * Present only when at least one rule triggered; absent when the question
+     * is high-quality. Never causes validation failure — purely advisory.
+     */
+    warnings?: string[];
   };
   CONTINUE_SESSION: {
     continuation: Continuation;

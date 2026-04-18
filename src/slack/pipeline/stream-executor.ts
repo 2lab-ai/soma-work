@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
+import type { UsageSnapshot } from '../../cct-store/types';
 import { getChannelDescription } from '../../channel-description-cache';
 import { getChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
@@ -10,16 +12,15 @@ import {
   isApiLikeError,
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
-import { type ClaudeUsageSnapshot, fetchClaudeUsageSnapshot } from '../../claude-usage';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
-import { Logger } from '../../logger';
+import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
 import { getContextWindow, PRICING_VERSION } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
-import { parseCooldownTime, tokenManager } from '../../token-manager';
+import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
 import { determineTurnCategory, type TurnNotifier } from '../../turn-notifier';
 import type {
   Continuation,
@@ -52,7 +53,7 @@ import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flag
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
-import type { ThreadPanel } from '../thread-panel';
+import type { ThreadPanel, TurnContext } from '../thread-panel';
 import { MessageEvent, type SayFn } from './types';
 
 /**
@@ -117,14 +118,54 @@ interface StreamExecuteParams {
   isUserInput?: boolean;
 }
 
+/**
+ * Narrow per-window percent view (0..100) used by this file's footer and
+ * turn-notifier rendering. Derived from {@link UsageSnapshot} by
+ * {@link toUsagePercentSnapshot}. Kept local to decouple rendering from
+ * the wire-format `UsageSnapshot` (which carries `resetsAt` and utilization
+ * in raw 0..1 or 0..100 form).
+ */
+interface UsagePercentSnapshot {
+  fiveHour?: number;
+  sevenDay?: number;
+}
+
 interface FinalFooterData {
   startedAt: Date;
   durationMs?: number;
   contextUsagePercentBefore?: number;
   contextUsagePercentAfter?: number;
-  usageBefore?: ClaudeUsageSnapshot | null;
-  usageAfter?: ClaudeUsageSnapshot | null;
+  usageBefore?: UsagePercentSnapshot | null;
+  usageAfter?: UsagePercentSnapshot | null;
   toolStats?: RequestToolStats;
+}
+
+/**
+ * Normalize a UsageWindow's utilization (raw 0..1 or 0..100 from the
+ * Anthropic usage API) to a 0..100 percent, matching the legacy
+ * `ClaudeUsageSnapshot` contract that the footer/notifier expect.
+ */
+function normalizeUtilizationToPercent(raw: number | undefined): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  const percent = raw <= 1.5 ? raw * 100 : raw;
+  const clamped = Math.max(0, Math.min(100, percent));
+  return Math.round(clamped * 10) / 10;
+}
+
+/**
+ * Map slot-keyed {@link UsageSnapshot} to the narrow 0..100-percent shape
+ * the Slack footer / turn-notifier already know how to render. Returns
+ * `null` when the snapshot has neither window populated.
+ */
+function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePercentSnapshot | null {
+  if (!snap) return null;
+  const fiveHour = normalizeUtilizationToPercent(snap.fiveHour?.utilization);
+  const sevenDay = normalizeUtilizationToPercent(snap.sevenDay?.utilization);
+  if (fiveHour === undefined && sevenDay === undefined) return null;
+  const out: UsagePercentSnapshot = {};
+  if (fiveHour !== undefined) out.fiveHour = fiveHour;
+  if (sevenDay !== undefined) out.sevenDay = sevenDay;
+  return out;
 }
 
 /** Per-request tool call statistics */
@@ -275,11 +316,38 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
-    const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
+    // W3-B: slot-keyed usage fetch — identify the active slot at query-start
+    // so the slotId stays stable even if another session rotates mid-turn.
+    const activeSlotSnapshot = getTokenManager().getActiveToken();
+    const usageBeforePromise: Promise<UsagePercentSnapshot | null> = activeSlotSnapshot
+      ? getTokenManager()
+          .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+          .then((snap) => toUsagePercentSnapshot(snap))
+          .catch(() => null)
+      : Promise.resolve(null);
 
-    // Capture token at query start for CAS-safe rotation on rate limit.
-    // Reading process.env at error time is wrong — another session may have already rotated it.
-    const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+    // Issue #525 P1: per-turn identity for the 5-block UI façade. Computed
+    // BEFORE any try/catch so the finally block can call endTurn() even if
+    // preparePrompt/query-setup throws. TurnSurface.end is idempotent and
+    // gated on SOMA_UI_5BLOCK_PHASE>=1 — PHASE=0 deployments see no change.
+    //
+    // `randomUUID()` suffix guards against same-millisecond re-entry on the
+    // same sessionKey. Without it, `${sessionKey}:${ms}` would collide and
+    // the supersede branch in TurnSurface.begin (which compares prior vs new
+    // turnId) would silently skip — leaving the second turn without an open
+    // B1 stream.
+    const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    const turnContext: TurnContext = {
+      channelId: channel,
+      threadTs: threadTs || undefined,
+      sessionKey,
+      turnId,
+    };
+    await this.deps.threadPanel?.beginTurn(turnContext);
+
+    // W3-B: `activeSlotSnapshot` above captured the slot at query-start, so
+    // rate-limit rotation on error can use the stable slotId/name even if
+    // another session has already rotated the active slot.
 
     // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
     const turnCollector = new TurnResultCollector();
@@ -434,6 +502,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionKey,
         sessionId: session?.sessionId,
         botUserId: await this.deps.slackApi.getBotUserId(),
+        // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
+        // stream processor so it can route text chunks into the B1 stream.
+        // The façade is always populated (StreamExecutor receives it from
+        // session initialization); PHASE-gating lives inside
+        // `threadPanel.isTurnSurfaceActive()` so the stream-processor branch
+        // is a single conditional: PHASE=0 → legacy `say()`, PHASE>=1 →
+        // `appendText()` with graceful fallback on `false` return.
+        turnId,
+        threadPanel: this.deps.threadPanel,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -689,7 +766,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         buildFinalResponseFooter: async ({ usage, durationMs }) => {
           if (!isOutputEnabled(OutputFlag.SESSION_FOOTER)) return undefined;
 
-          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const usageAfter = activeSlotSnapshot
+            ? await getTokenManager()
+                .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+                .then((snap) => toUsagePercentSnapshot(snap))
+                .catch(() => null)
+            : null;
           const usageBefore = await usageBeforePromise;
 
           const footer = this.buildFinalResponseFooter({
@@ -822,7 +904,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Collect rich notification data (fire-and-forget, non-blocking)
         const enrichAndNotify = async () => {
           const usageBefore = await usageBeforePromise;
-          const usageAfter = await fetchClaudeUsageSnapshot(0).catch(() => null);
+          const usageAfter = activeSlotSnapshot
+            ? await getTokenManager()
+                .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+                .then((snap) => toUsagePercentSnapshot(snap))
+                .catch(() => null)
+            : null;
           const contextWindow = session.usage?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
           const contextUsagePercentAfter = this.getCurrentContextUsagePercent(session.usage);
           const contextUsageTokens = session.usage
@@ -927,6 +1014,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
+      // Issue #525 P1: close the B1 stream before handleError posts the
+      // error block — otherwise the stream would linger until finally and
+      // race with the error message rendering. PHASE=0 → no-op.
+      //
+      // Swallow any throw from the cleanup call so the original `error` still
+      // reaches handleError(): losing the error message to the user is worse
+      // than losing the stream-close log line.
+      try {
+        if (requestAborted) {
+          await this.deps.threadPanel?.endTurn(turnId, 'aborted');
+        } else {
+          await this.deps.threadPanel?.failTurn(turnId, error as Error);
+        }
+      } catch (cleanupErr) {
+        this.logger.warn('stream-executor: B1 close after catch failed', {
+          turnId,
+          requestAborted,
+          cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
+        });
+      }
       const retryAfterMs = await this.handleError(
         error,
         session,
@@ -936,10 +1043,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         processedFiles,
         say,
         requestAborted,
-        queryTokenValue,
+        activeSlotSnapshot,
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Idempotent: if end/fail already ran (catch or early-return path
+      // inside try), TurnSurface state is cleared and this is a no-op.
+      // Covers success-path exits via return from the try block.
+      //
+      // Swallow any throw so `cleanup()` below still runs — session cleanup
+      // is critical for correctness (stale per-session state would leak).
+      try {
+        await this.deps.threadPanel?.endTurn(turnId, 'completed');
+      } catch (cleanupErr) {
+        this.logger.warn('stream-executor: B1 close in finally failed', {
+          turnId,
+          cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
+        });
+      }
       await this.cleanup(session, sessionKey, abortController);
     }
   }
@@ -962,7 +1083,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     processedFiles: ProcessedFile[],
     say: SayFn,
     requestAborted: boolean = false,
-    queryTokenValue?: string,
+    activeSlotAtQueryStart: ActiveTokenInfo | null = null,
   ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state
     await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
@@ -1073,9 +1194,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.lastErrorContext = undefined;
         session.fileAccessRetryCount = 0;
 
-        // Auto-rotate token on rate limit (pass query-start token for CAS safety)
+        // Auto-rotate token on rate limit (pass query-start slot for CAS safety)
         if (this.isRateLimitError(error)) {
-          this.tryRotateToken(error, queryTokenValue);
+          await this.tryRotateToken(error, activeSlotAtQueryStart);
         }
 
         // Auto-retry only for known recoverable errors.
@@ -1285,34 +1406,54 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
-   * Attempt to rotate to the next available token on rate limit.
-   * Uses CAS pattern for idempotent handling across concurrent sessions.
+   * Attempt to rotate to the next available slot on rate limit.
+   * Uses the CCT-store's CAS-safe `rotateOnRateLimit` which records the
+   * cooldown on the slot that was active at the time the rate-limit was
+   * observed (which is why we pin the slot at query-start rather than
+   * reading the active slot at error time).
    *
-   * @param error - The error object (may contain stderrContent with rate limit details)
-   * @param queryTokenValue - Token value captured at query start time.
-   *   Using process.env at error time is incorrect because another session
-   *   may have already rotated the token, causing a double-rotation that
-   *   cycles back to the rate-limited token.
+   * NOTE: This is the FALLBACK path — triggered only by stderr/error-string
+   * pattern match (`isRateLimitError`). The Claude CLI spawns a subprocess
+   * and the SDK surfaces only its stdout/stderr here, so this file has no
+   * access to the raw HTTP response headers of the Anthropic API call. The
+   * primary `parseRateLimitHeaders` path runs inside `oauth/usage.ts` +
+   * TokenManager.fetchAndStoreUsage, which persist hints on the slot.
+   *
+   * TODO: when the Claude Code SDK exposes response headers from the
+   * streaming API call back to embedders, wire `parseRateLimitHeaders`
+   * here and trigger rotation with `source: 'response_header'` BEFORE
+   * the string-match catch-block sees the error.
+   *
+   * @param error The error object (may contain stderrContent with rate limit details)
+   * @param activeSlotAtQueryStart Slot captured at query-start for CAS safety
    */
-  private tryRotateToken(error: any, queryTokenValue?: string): void {
-    const failedToken = queryTokenValue || process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    if (!failedToken) return;
-
-    // Parse cooldown from both error message and stderr content
+  private async tryRotateToken(error: any, activeSlotAtQueryStart: ActiveTokenInfo | null): Promise<void> {
+    // Parse cooldown from both error message and stderr content.
     const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
-    const cooldownUntil = parseCooldownTime(errorText) ?? new Date(Date.now() + 3600000); // default 1 hour
+    const parsedCooldown = parseCooldownTime(errorText);
+    const cooldownMinutes = parsedCooldown
+      ? Math.max(1, Math.round((parsedCooldown.getTime() - Date.now()) / 60_000))
+      : 60; // default 1 hour
 
-    const result = tokenManager.rotateOnRateLimit(failedToken, cooldownUntil);
+    const reason = `stream-executor rate-limit${
+      activeSlotAtQueryStart ? ` on slot=${activeSlotAtQueryStart.name}` : ''
+    }`;
 
-    if (result.rotated) {
-      if (result.allOnCooldown) {
-        this.logger.warn('All CCT tokens on cooldown', {
-          newToken: result.newToken,
-          earliestRecovery: result.earliestRecovery?.toISOString(),
-        });
-      } else {
-        this.logger.info('CCT token auto-rotated', { newToken: result.newToken });
-      }
+    const rotated = await getTokenManager().rotateOnRateLimit(reason, {
+      source: 'error_string',
+      cooldownMinutes,
+    });
+
+    if (rotated) {
+      this.logger.info(
+        'CCT slot auto-rotated',
+        redactAnthropicSecrets({ newSlot: rotated.name, newSlotId: rotated.slotId }) as Record<string, unknown>,
+      );
+    } else {
+      this.logger.warn('CCT rotateOnRateLimit: no eligible replacement slot', {
+        rateLimitedSlot: activeSlotAtQueryStart?.name,
+        cooldownMinutes,
+      });
     }
   }
 
@@ -1536,24 +1677,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Issue #122: Append SDK stderr details so users can see the actual error cause
     if (error.stderrContent) {
       const raw = String(error.stderrContent);
-      // Sanitize: strip ANSI escape codes (CSI + OSC + charset) and mask credentials
-      const sanitized = raw
+      // Strip ANSI escape codes and mask non-Anthropic credentials locally;
+      // Anthropic tokens (sk-ant-{oat01,ort01,api03,admin01}-...) are handled
+      // by the shared `redactAnthropicSecrets` helper from logger.ts so every
+      // log path masks them the same way (W3-B consolidation).
+      const nonAnthropicSanitized = raw
         .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
         .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
         .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
-        .replace(/\bsk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]') // Anthropic API keys
         .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
         .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
         .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
+      const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
       // Take last 500 chars to keep message manageable
       const truncated = sanitized.length > 500 ? `…${sanitized.slice(-500)}` : sanitized;
       lines.push(`> *SDK Details:*`);
       lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
     }
 
-    // Append token rotation info if rate limit triggered rotation
-    if (this.isRateLimitError(error) && tokenManager.getAllTokens().length > 1) {
-      const active = tokenManager.getActiveToken();
+    // Append slot rotation info if rate limit triggered rotation
+    if (this.isRateLimitError(error) && getTokenManager().listTokens().length > 1) {
+      const active = getTokenManager().getActiveToken();
       if (active) {
         lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
       }

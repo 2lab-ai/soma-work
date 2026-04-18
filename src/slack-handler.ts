@@ -43,7 +43,7 @@ import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
-import { isWhitelistedNaked as isZWhitelistedNaked } from './slack/z/whitelist';
+import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
 import type { ConversationSession } from './types';
@@ -254,14 +254,33 @@ export class SlackHandler {
       if (handledCleanupRequest) {
         return;
       }
-      // Phase 1 of /z refactor (#506): 3 DM sub-paths.
-      // FIX #1 (PR #509): `/z …` DMs are routed through ZRouter here (same
-      //   normalization pipeline as slash and app_mention). Whitelisted naked
-      //   (session/new/renew/$*) still falls through to the legacy pipeline
-      //   because those commands need the full session-aware InputProcessor.
+
+      // DM policy (Issue #553):
+      //  - Admin:     plain text is allowed — falls through to the normal
+      //               pipeline, which opens an inline session and runs the
+      //               prompt.
+      //  - Non-admin: only safe `/z` topics + naked session/theme/%/help are
+      //               allowed. Plain prompts are rejected up-front so the bot
+      //               never silently ignores a DM.
+      //
+      // Gate A runs BEFORE the `/z` dispatch and BEFORE `processFiles`, so
+      // rejection does NOT leak 📎-processing messages or acknowledgement
+      // reactions into the DM thread.
+      if (!isAdminUser(event.user)) {
+        const gatedText = (event.text ?? '').trim();
+        if (!isDmAllowedForNonAdmin(gatedText)) {
+          await this.sendDmNonAdminRejection(event, 'disallowed-input');
+          return;
+        }
+      }
+
+      // `/z …` normalization — admins and non-admins share the same router
+      // when the text starts with `/z`. For non-admins, Gate A already
+      // verified the topic is in `SAFE_Z_TOPICS`.
+      //
       // FIX #1 followup (codex P1): honour `continueWithPrompt` so commands
-      //   like `/z new write a test` continue into the session pipeline
-      //   with the captured prompt rather than becoming a silent no-op.
+      // like `/z new write a test` continue into the session pipeline with
+      // the captured prompt rather than becoming a silent no-op.
       const dmText = (event.text ?? '').trim();
       if (stripZPrefix(dmText) !== null) {
         const routed = await this.routeDmViaZRouter(event);
@@ -269,23 +288,9 @@ export class SlackHandler {
           return;
         }
         if (routed.continueWithPrompt !== undefined) {
-          // ZRouter consumed the `/z <topic> …` prefix and handed back a
-          // prompt for the normal pipeline (e.g. `/z new write a test` →
-          // `write a test`). Substitute the event text and fall through.
           event.text = routed.continueWithPrompt;
         }
         // else: not terminal and no continuation — fall through with original text.
-      }
-      if (dmText.startsWith('/z') || isZWhitelistedNaked(dmText)) {
-        this.logger.info('DM /z or whitelisted naked accepted into pipeline', {
-          user: event.user,
-          channel,
-          preview: dmText.substring(0, 40),
-        });
-        // Fall through to the normal pipeline so the DM reaches CommandRouter.
-      } else {
-        this.logger.debug('Ignoring non-cleanup DM message', { user: event.user, channel });
-        return;
       }
     }
 
@@ -360,8 +365,24 @@ export class SlackHandler {
       return;
     }
 
-    // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead
-    const effectiveText = continueWithPrompt || event.text;
+    // Gate B (Issue #553 backstop): non-admin DM input that survived Gate A
+    // but was NOT claimed by any command handler must NOT fall through into
+    // session init. Covers edge cases like `/z <topic>` remainders that the
+    // router rejects silently, or commands that return `handled:false` for
+    // non-admin users. Remove the eyes ack before rejecting so the DM looks
+    // consistent with the Gate A rejection path.
+    if (channel.startsWith('D') && !isAdminUser(event.user) && !handled) {
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      await this.sendDmNonAdminRejection(event, 'unhandled-after-route');
+      return;
+    }
+
+    // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead.
+    // Codex P1 review of #555 — `event.text` may be `undefined` (file-only DM,
+    // some Slack event shapes). Normalize to an empty string so downstream
+    // `sessionInitializer.initialize` / `startWithContinuation` never receive
+    // `undefined` and skip text handling silently.
+    const effectiveText = continueWithPrompt ?? event.text ?? '';
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
@@ -623,6 +644,62 @@ export class SlackHandler {
         channel: event.channel,
       });
       return { terminal: false };
+    }
+  }
+
+  /**
+   * Issue #553 — reject a non-admin DM input with an ephemeral guide and an
+   * `heavy_multiplication_x` reaction so the user can tell the bot saw the
+   * message and refused it (distinct from the old silent-drop and from the
+   * `no_entry` reaction used elsewhere for "seen but no session").
+   *
+   * `reason` is logged to distinguish the two rejection call sites (Gate A
+   * upfront vs. Gate B backstop) — useful when triaging which grammar a user
+   * tried that slipped past the allowlist.
+   */
+  private async sendDmNonAdminRejection(
+    event: MessageEvent,
+    reason: 'disallowed-input' | 'unhandled-after-route',
+  ): Promise<void> {
+    this.logger.info('DM plain text from non-admin rejected', {
+      user: event.user,
+      channel: event.channel,
+      reason,
+      textPreview: (event.text ?? '').slice(0, 50),
+    });
+
+    const guide =
+      'DM에서는 관리자만 평문 프롬프트를 사용할 수 있습니다.\n' +
+      '사용 가능한 명령어:\n' +
+      '• `/z help` — 전체 도움말\n' +
+      '• `sessions` / `sessions public` — 세션 목록\n' +
+      '• `theme set <name>` — 테마 설정\n' +
+      '• `%model <v>`, `%verbosity <v>`, `%effort <v>` — 세션 설정\n' +
+      '• `/z persona`, `/z model`, `/z notify` 등';
+
+    // Wrap each Slack surface independently so one failure cannot kill the
+    // other. `SlackApiHelper.postEphemeral` re-throws on failure (slack-api-
+    // helper.ts:484) — that bubble was the live vector that re-created
+    // Issue #553's silent drop. `addReaction` today swallows internally and
+    // returns false, so its wrapper is defensive: against future contract
+    // changes and against direct-mock injection (see T19 regression test).
+    try {
+      await this.slackApi.postEphemeral(event.channel, event.user, guide, event.thread_ts ?? event.ts);
+    } catch (err: any) {
+      this.logger.warn('Failed to post non-admin rejection guide', {
+        user: event.user,
+        channel: event.channel,
+        err: err?.message,
+      });
+    }
+    try {
+      await this.slackApi.addReaction(event.channel, event.ts, 'heavy_multiplication_x');
+    } catch (err: any) {
+      this.logger.warn('Failed to add non-admin rejection reaction', {
+        user: event.user,
+        channel: event.channel,
+        err: err?.message,
+      });
     }
   }
 
