@@ -81,12 +81,15 @@ export interface KanbanSession {
     type: 'user_choice' | 'user_choices';
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
+    /** ID of the recommended choice (single-choice) */
+    recommendedChoiceId?: string;
     /** Multi-choice fields */
     questions?: Array<{
       id: string;
       question: string;
       choices: Array<{ id: string; label: string; description?: string }>;
       context?: string;
+      recommendedChoiceId?: string;
     }>;
     questionCount?: number;
     title?: string;
@@ -282,6 +285,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               label: c.label,
               description: c.description,
             })),
+            ...(s.actionPanel.pendingQuestion.recommendedChoiceId
+              ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
+              : {}),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -299,6 +305,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                   description: c.description,
                 })),
                 context: q.context,
+                ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
               })),
             }
           : undefined // Unknown question type — skip
@@ -1598,6 +1605,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   opacity: 0.5;
   cursor: not-allowed;
 }
+.btn-choice-recommended {
+  background: #36a64f;
+  color: white;
+  border: 2px solid #2d8644;
+  font-weight: 600;
+}
+.btn-choice-recommended:hover {
+  background: #2d8644;
+  color: white;
+  border-color: #2d8644;
+}
+.btn-choice-recommended::before { content: "\\2B50 "; }
+.choice-row-recommended .btn-choice-recommended {
+  width: 100%;
+  display: block;
+  text-align: center;
+}
+.choice-divider {
+  border: none;
+  border-top: 1px solid var(--border, #e0e0e0);
+  margin: 6px 0;
+}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -2426,11 +2455,23 @@ function renderPanelQuestion(s) {
   var q = s.pendingQuestion;
 
   if (q.type === 'user_choice' && q.choices) {
-    var btns = q.choices.map(function(c) {
-      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(c.label) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+    var pnlRecId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+    var pnlRecOpt = pnlRecId ? q.choices.find(function(c) { return c.id === pnlRecId; }) : null;
+    var pnlOthers = q.choices.filter(function(c) { return !pnlRecOpt || c.id !== pnlRecOpt.id; });
+    var pnlRecHtml = '';
+    if (pnlRecOpt) {
+      var recLbl = stripRecommendedMarker(pnlRecOpt.label);
+      pnlRecHtml = '<div class="choice-row-recommended">'
+        + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(pnlRecOpt.id) + '\\',\\'' + escJs(recLbl) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
+        + '</div>'
+        + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
+    }
+    var pnlOtherBtns = pnlOthers.map(function(c) {
+      var lbl2 = stripRecommendedMarker(c.label);
+      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl2) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
     }).join('');
     container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
-      + '<div class="panel-question-choices">' + btns + '</div>';
+      + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
   } else if (q.type === 'user_choices' && q.questions) {
     renderMultiChoicePanel(s);
     return;
@@ -2541,6 +2582,16 @@ function escAttr(s) {
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
+}
+// Strip trailing "(Recommended · N/M)" or "(Recommended)" from a label for display.
+function stripRecommendedMarker(label) {
+  return (label || '').replace(/\\s*\\(Recommended(?:\\s*·[^)]*)?\\)\\s*$/i, '').trim();
+}
+// Resolve recommended choiceId: explicit first, else legacy label scan.
+function resolveRecommendedId(explicitId, options) {
+  if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
+  var legacy = (options || []).find(function(o) { return /\\(Recommended\\b/i.test(o.label || ''); });
+  return legacy ? legacy.id : null;
 }
 async function resummarize(convId, turnId, btn) {
   btn.disabled = true;
@@ -2724,12 +2775,25 @@ function renderCard(s, col) {
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
-      const choiceBtns = s.pendingQuestion.choices.map(function(c) {
-        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(s.pendingQuestion.question) + '\\',this)" title="' + escAttr(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
+      var pq = s.pendingQuestion;
+      var recId = resolveRecommendedId(pq.recommendedChoiceId, pq.choices);
+      var recOpt = recId ? pq.choices.find(function(c) { return c.id === recId; }) : null;
+      var otherOpts = pq.choices.filter(function(c) { return !recOpt || c.id !== recOpt.id; });
+      var recHtml = '';
+      if (recOpt) {
+        var recLabel = stripRecommendedMarker(recOpt.label);
+        recHtml = '<div class="choice-row-recommended">'
+          + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recOpt.description || recLabel) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '</div>'
+          + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
+      }
+      var otherBtns = otherOpts.map(function(c) {
+        var lbl = stripRecommendedMarker(c.label);
+        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(c.description || lbl) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question).slice(0, 80) + '</div>'
-        + '<div class="card-question-choices">' + choiceBtns + '</div>'
+        + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+        + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
       questionHtml = renderMultiChoiceCard(s);
@@ -2933,13 +2997,26 @@ function renderMultiChoicePanel(s) {
         + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">\\uD83D\\uDD04 \\uBCC0\\uACBD</button>'
         + '</div>';
     } else {
-      // Show choice buttons
+      // Show choice buttons, recommended first
       html += '<div class="mc-q-choices">';
-      for (var ci = 0; ci < qItem.choices.length; ci++) {
-        var ch = qItem.choices[ci];
+      var mcRecId = resolveRecommendedId(qItem.recommendedChoiceId, qItem.choices);
+      var orderedChoices = [];
+      if (mcRecId) {
+        var mcRec = qItem.choices.find(function(c) { return c.id === mcRecId; });
+        if (mcRec) orderedChoices.push(mcRec);
+        for (var oi = 0; oi < qItem.choices.length; oi++) {
+          if (qItem.choices[oi].id !== mcRecId) orderedChoices.push(qItem.choices[oi]);
+        }
+      } else {
+        orderedChoices = qItem.choices.slice();
+      }
+      for (var ci = 0; ci < orderedChoices.length; ci++) {
+        var ch = orderedChoices[ci];
+        var chLbl = stripRecommendedMarker(ch.label);
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
-        html += '<button class="btn-choice" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(ch.label) + '\\')">'
-          + esc(ch.id) + '. ' + esc(ch.label) + desc + '</button>';
+        var isRecBtn = mcRecId && ch.id === mcRecId;
+        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(chLbl) + '\\')">'
+          + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
       }
       html += '</div>';
       // Custom input

@@ -89,6 +89,7 @@ Request user confirmation for all remaining medium+ issues **at once**:
 - Include the `[tier ~N lines]` prefix in each issue's question
 - Each issue should include the current code snippet + fix proposal + 3-agent review consensus
 - Options: Concrete implementation approaches Option A / Option B (each option must be a specific fix method for this PR. "Fix/Defer/Skip" three-choice format is forbidden.)
+- Prefer per-question `recommendedChoiceId` over the legacy `(Recommended)` label suffix.
 
 **Do not include autonomously fixed items in this question** — they are already handled.
 

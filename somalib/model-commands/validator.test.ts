@@ -628,3 +628,197 @@ describe('defensive — degenerate inputs', () => {
     expect(w.some((s) => s.includes('no Recommended marker'))).toBe(false);
   });
 });
+
+function parsePayload(args: unknown): UserChoice | UserChoices | null {
+  const result = validateModelCommandRunArgs(args);
+  if (!result.ok) return null;
+  if (result.request.commandId !== 'ASK_USER_QUESTION') return null;
+  return result.request.params.question;
+}
+
+describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
+  describe('user_choice (single)', () => {
+    it('preserves explicit recommendedChoiceId when it matches an option id', () => {
+      const question = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            recommendedChoiceId: '2',
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }) as UserChoice | null;
+      expect(question).not.toBeNull();
+      expect(question?.type).toBe('user_choice');
+      expect(question?.recommendedChoiceId).toBe('2');
+    });
+
+    it('drops explicit recommendedChoiceId silently when it does not match any option id', () => {
+      const question = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            recommendedChoiceId: 'zzz',
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }) as UserChoice | null;
+      expect(question).not.toBeNull();
+      expect(question?.recommendedChoiceId).toBeUndefined();
+    });
+
+    it('infers recommendedChoiceId from legacy "(Recommended · 3/3)" label suffix when field is missing', () => {
+      const question = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B (Recommended · 3/3)' },
+            ],
+          },
+        },
+      }) as UserChoice | null;
+      expect(question).not.toBeNull();
+      expect(question?.recommendedChoiceId).toBe('2');
+    });
+
+    it('falls back to legacy label scan when explicit id is unknown', () => {
+      const question = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            recommendedChoiceId: 'zzz',
+            choices: [
+              { id: '1', label: 'A (Recommended)' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }) as UserChoice | null;
+      expect(question?.recommendedChoiceId).toBe('1');
+    });
+
+    it('leaves recommendedChoiceId undefined when neither explicit nor legacy marker is present', () => {
+      const question = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice',
+            question: 'Choose',
+            choices: [
+              { id: '1', label: 'A' },
+              { id: '2', label: 'B' },
+            ],
+          },
+        },
+      }) as UserChoice | null;
+      expect(question).not.toBeNull();
+      expect(question?.recommendedChoiceId).toBeUndefined();
+    });
+  });
+
+  describe('user_choice_group (group → single/multi)', () => {
+    it('preserves per-question recommendedChoiceId (single collapses path)', () => {
+      const result = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice_group',
+            question: 'Pick',
+            choices: [
+              {
+                question: 'Which?',
+                recommendedChoiceId: '1',
+                options: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      // Single question collapses to a user_choices with 1 question
+      expect(result).not.toBeNull();
+      const choices = result as UserChoices;
+      expect(choices.type).toBe('user_choices');
+      expect(choices.questions[0].recommendedChoiceId).toBe('1');
+    });
+
+    it('preserves recommendedChoiceId on each question in a multi-question group', () => {
+      const result = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice_group',
+            question: 'Two decisions',
+            choices: [
+              {
+                question: 'First?',
+                recommendedChoiceId: '2',
+                options: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+              {
+                question: 'Second?',
+                options: [
+                  { id: 'x', label: 'X' },
+                  { id: 'y', label: 'Y (Recommended · 2/3)' },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      expect(result).not.toBeNull();
+      const choices = result as UserChoices;
+      expect(choices.type).toBe('user_choices');
+      expect(choices.questions).toHaveLength(2);
+      expect(choices.questions[0].recommendedChoiceId).toBe('2');
+      // Legacy label fallback on second question
+      expect(choices.questions[1].recommendedChoiceId).toBe('y');
+    });
+
+    it('drops unknown per-question recommendedChoiceId silently', () => {
+      const result = parsePayload({
+        commandId: 'ASK_USER_QUESTION',
+        params: {
+          payload: {
+            type: 'user_choice_group',
+            question: 'Pick',
+            choices: [
+              {
+                question: 'Which?',
+                recommendedChoiceId: 'bogus',
+                options: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      expect(result).not.toBeNull();
+      const choices = result as UserChoices;
+      expect(choices.questions[0].recommendedChoiceId).toBeUndefined();
+    });
+  });
+});
