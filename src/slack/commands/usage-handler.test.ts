@@ -142,6 +142,77 @@ describe('UsageHandler subcommand routing', () => {
     expect(aggregator.aggregateUsageCard).not.toHaveBeenCalled();
   });
 
+  // Scenario 15 (trace rev-2) — regression matrix: every non-`card` subcommand
+  // must keep the v1 text path untouched, regardless of USAGE_CARD_V2 flag.
+  // The legacy text path builds a fresh MetricsEventStore internally (no DI),
+  // so on fs failure we swallow the throw — the contract here is narrow:
+  //   * handleCard spy never fires
+  //   * carousel aggregator never fires (aggregateCarousel / aggregateUsageCard)
+  //   * privacy-gate subcommand still reaches postSystemMessage with the
+  //     rejection message instead of the card path.
+  describe('Scenario 15 — v1 text-command regression matrix', () => {
+    const originalFlag = process.env.USAGE_CARD_V2;
+    afterEach(() => {
+      if (originalFlag === undefined) delete process.env.USAGE_CARD_V2;
+      else process.env.USAGE_CARD_V2 = originalFlag;
+    });
+
+    it.each([
+      ['usage', 'bare /usage'],
+      ['usage today', '/usage today'],
+      ['usage 7d', '/usage 7d'],
+      ['usage 30d', '/usage 30d'],
+    ])('%s never invokes card path (flag on)', async (text, _label) => {
+      process.env.USAGE_CARD_V2 = 'true';
+      const { overrides, aggregator } = makeOverrides();
+      const carouselSpy = vi.fn();
+      (overrides.aggregator as unknown as { aggregateCarousel?: typeof carouselSpy }).aggregateCarousel = carouselSpy;
+
+      const handler = new UsageHandler(makeDeps(), overrides);
+      const cardSpy = vi.spyOn(handler, 'handleCard');
+      try {
+        await handler.execute(makeCtx({ text }));
+      } catch {
+        /* v1 text path hits filesystem — ignore, contract is routing-only */
+      }
+      expect(cardSpy).not.toHaveBeenCalled();
+      expect(aggregator.aggregateUsageCard).not.toHaveBeenCalled();
+      expect(carouselSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['usage', 'bare /usage'],
+      ['usage today', '/usage today'],
+      ['usage 7d', '/usage 7d'],
+      ['usage 30d', '/usage 30d'],
+    ])('%s never invokes card path (flag off)', async (text, _label) => {
+      delete process.env.USAGE_CARD_V2;
+      const { overrides, aggregator } = makeOverrides();
+      const handler = new UsageHandler(makeDeps(), overrides);
+      const cardSpy = vi.spyOn(handler, 'handleCard');
+      try {
+        await handler.execute(makeCtx({ text }));
+      } catch {
+        /* v1 text path hits filesystem — ignore */
+      }
+      expect(cardSpy).not.toHaveBeenCalled();
+      expect(aggregator.aggregateUsageCard).not.toHaveBeenCalled();
+    });
+
+    it('/usage <@OTHER_USER> hits privacy gate, never card path', async () => {
+      const { overrides, aggregator } = makeOverrides();
+      const deps = makeDeps();
+      const handler = new UsageHandler(deps, overrides);
+      const cardSpy = vi.spyOn(handler, 'handleCard');
+      await handler.execute(makeCtx({ text: 'usage <@U_BOB>', user: 'U_ALICE' }));
+      expect(cardSpy).not.toHaveBeenCalled();
+      expect(aggregator.aggregateUsageCard).not.toHaveBeenCalled();
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+      const msg = (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(msg).toContain('다른 사용자');
+    });
+  });
+
   it('`/usage card` invokes handleCard path', async () => {
     const { overrides, aggregator, renderer, filesUploadV2, postMessage } = makeOverrides();
     const handler = new UsageHandler(makeDeps(), overrides);
