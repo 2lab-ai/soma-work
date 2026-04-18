@@ -1,73 +1,149 @@
 /**
- * `/z cct` Block Kit topic — Phase 2 (#507). Admin-only.
+ * `/z cct` Block Kit topic — Wave 4 overhaul (#569).
  *
- * Card shows the currently active CCT token + one button per available
- * token (`set_<name>`) plus a `next` rotation button. Non-admins receive an
- * empty "🚫 Admin only" card with just a cancel button.
+ * The card now surfaces the per-slot rate-limit timestamp, usage
+ * utilisation, the ConsumerTosBadge for oauth_credentials slots, plus an
+ * Add/Remove/Rename action row driven by `src/slack/cct/builder.ts`. The
+ * text `/z cct set <name>` and `/z cct next` grammars remain wired
+ * through `applyCct` for back-compat.
+ *
+ * Add/Remove/Rename now open modals — handlers live in
+ * `src/slack/cct/actions.ts` and are registered on the shared Bolt app.
  */
 
 import { isAdminUser } from '../../../admin-utils';
+import type { CctStoreSnapshot, TokenSlot } from '../../../cct-store';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { buildSettingCard } from '../ui-builder';
+import { buildCctCardBlocks } from '../../cct/builder';
+
+/**
+ * Best-effort: pull the most recent `CctStoreSnapshot` from the token
+ * manager so we can hand full `SlotState`s to the builder. We access a
+ * non-public method via duck typing — when unavailable (tests), we fall
+ * back to an empty state map.
+ */
+async function loadSnapshotOrEmpty(): Promise<{
+  slots: TokenSlot[];
+  states: Record<string, NonNullable<CctStoreSnapshot['state'][string]>>;
+  activeSlotId?: string;
+}> {
+  const tm = getTokenManager() as unknown as {
+    // Duck-typed private store access.
+    store?: { load?: () => Promise<CctStoreSnapshot> };
+    listTokens: () => TokenSummary[];
+    getActiveToken: () => { slotId: string; name: string; kind: TokenSlot['kind'] } | null;
+  };
+  try {
+    if (tm.store?.load) {
+      const snap = await tm.store.load();
+      return {
+        slots: snap.registry.slots,
+        states: snap.state,
+        activeSlotId: snap.registry.activeSlotId,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  // Fallback: synthesise minimal slots from listTokens().
+  const summaries = tm.listTokens();
+  const active = tm.getActiveToken();
+  const slots = summaries.map((s) => ({
+    slotId: s.slotId,
+    name: s.name,
+    kind: s.kind,
+    // Minimal placeholders so the builder's type is satisfied. The builder
+    // only reads slotId/name/kind for non-state fields.
+    createdAt: '',
+    ...(s.kind === 'oauth_credentials'
+      ? {
+          credentials: { accessToken: '', refreshToken: '', expiresAtMs: 0, scopes: [] },
+          acknowledgedConsumerTosRisk: true as const,
+        }
+      : { value: '' }),
+  })) as unknown as TokenSlot[];
+  return {
+    slots,
+    states: {},
+    activeSlotId: active?.slotId,
+  };
+}
 
 export async function renderCctCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
-  const { userId, issuedAt } = args;
+  const { userId } = args;
   const admin = isAdminUser(userId);
   if (!admin) {
-    const blocks = buildSettingCard({
-      topic: 'cct',
-      icon: '🔑',
-      title: 'CCT Token',
-      currentLabel: 'Admin only',
-      currentDescription: '🚫 관리자만 CCT 토큰을 확인/변경할 수 있습니다.',
-      options: [],
-      issuedAt,
-    });
-    return { text: '🚫 CCT (admin only)', blocks };
+    return {
+      text: '🚫 CCT (admin only)',
+      blocks: [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: '🔑 CCT Tokens', emoji: true },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: '🚫 *CCT Token — admin only*\nOnly administrators may view or change CCT tokens.',
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              action_id: 'z_setting_cct_cancel',
+              text: { type: 'plain_text', text: '❌ 취소' },
+              style: 'danger',
+              value: 'cancel',
+            },
+          ],
+        },
+      ],
+    };
   }
 
-  const tm = getTokenManager();
-  const tokens = tm.listTokens();
-  const active = tokens.length > 0 ? tm.getActiveToken() : null;
-
-  const lines = tokens.map((t: TokenSummary) => {
-    const parts = [`\`${t.name}\` (${t.kind})`];
-    if (active && t.slotId === active.slotId) parts.push('*(active)*');
-    // TODO(Wave 4): render rateLimitedAt timestamp from SlotState
-    if (t.status.includes('cooling')) {
-      parts.push(`_(rate limited)_`);
-    } else if (t.status.includes('revoked')) {
-      parts.push(`_(revoked)_`);
-    }
-    return `• ${parts.join(' ')}`;
+  const { slots, states, activeSlotId } = await loadSnapshotOrEmpty();
+  const blocks = buildCctCardBlocks({
+    slots,
+    states,
+    activeSlotId,
+    nowMs: Date.now(),
   });
 
-  // NOTE: option.id is interpolated into `z_setting_cct_set_<id>`. Keep ids
-  // free of `_set_` substring so the greedy parser in z-settings-actions.ts
-  // splits topic=`cct` cleanly (regressed when ids were `set_<name>`).
-  const options = tokens.map((t: TokenSummary) => ({
-    id: t.name,
-    label: `🔑 ${t.name}${active && t.slotId === active.slotId ? ' •' : ''}`,
-    description: `활성 토큰을 ${t.name}으로 전환합니다.`,
+  // Back-compat: the text `/z cct` command still used legacy-named action
+  // IDs from the shared ui-builder. We add them here so the existing
+  // z-settings-actions router continues to resolve `set_<name>` / `next`.
+  const legacyActions: Record<string, unknown>[] = slots.map((s) => ({
+    type: 'button',
+    action_id: `z_setting_cct_set_${s.name}`,
+    text: { type: 'plain_text', text: `🔑 ${s.name}`, emoji: true },
+    value: s.name,
   }));
-  options.push({
-    id: 'next',
-    label: '🔄 Next (rotate)',
-    description: '다음 사용 가능한 토큰으로 순환합니다.',
+  legacyActions.push({
+    type: 'button',
+    action_id: 'z_setting_cct_set_next',
+    text: { type: 'plain_text', text: '🔄 Next (rotate)', emoji: true },
+    value: 'next',
+  });
+  blocks.push({ type: 'actions', elements: legacyActions });
+
+  // Always include the cancel/dismiss button for the ZSettings pipeline.
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        action_id: 'z_setting_cct_cancel',
+        text: { type: 'plain_text', text: '❌ 취소' },
+        style: 'danger',
+        value: 'cancel',
+      },
+    ],
   });
 
-  const blocks = buildSettingCard({
-    topic: 'cct',
-    icon: '🔑',
-    title: 'CCT Token',
-    currentLabel: active ? active.name : 'none',
-    currentDescription:
-      lines.length > 0 ? lines.join('\n') : 'No CCT tokens configured. Set `CLAUDE_CODE_OAUTH_TOKEN_LIST` env var.',
-    options,
-    additionalCommands: ['`/z cct set <name>` — 직접 지정', '`/z cct next` — 다음 토큰으로 순환'],
-    issuedAt,
-  });
+  const active = slots.find((s) => s.slotId === activeSlotId);
   return { text: `🔑 CCT (active: ${active?.name ?? 'none'})`, blocks };
 }
 
