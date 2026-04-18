@@ -26,8 +26,15 @@ import {
   type UserRanking,
   type WeeklyReport,
 } from './types';
+import { currentStreak, longestStreak } from './usage-render/streaks';
 import type {
+  CarouselRanking,
+  CarouselStats,
+  CarouselTabStats,
   EmptyStats,
+  EmptyTabStats,
+  TabId,
+  TabResult,
   UsageCardRanking,
   UsageCardResult,
   UsageCardSession,
@@ -541,6 +548,423 @@ export class ReportAggregator {
     };
     return stats;
   }
+
+  /**
+   * Aggregate carousel stats for a single target user across 4 windows in a
+   * single scan over events.
+   *
+   * Trace: docs/usage-card-dark/trace.md — Scenario 2.
+   *
+   * Windows:
+   * - `24h`: [now - 24h, now]
+   * - `7d` : [endOfDay - 6d, endOfDay]
+   * - `30d`: [endOfDay - 29d, endOfDay]
+   * - `all`: [min(event.ts, 365d ago), endOfDay]
+   *
+   * Rankings are computed from the 30d window only and shared (reference-equal)
+   * across all 4 tabs.
+   */
+  async aggregateCarousel(opts: {
+    targetUserId: string;
+    now: Date;
+    targetUserName?: string;
+    topN?: number;
+  }): Promise<CarouselStats> {
+    const { targetUserId, targetUserName } = opts;
+    const now = opts.now;
+    const topN = opts.topN ?? 10;
+    const MS_PER_DAY = 86_400_000;
+
+    const nowMs = now.getTime();
+    const todayKey = timestampToDateInTz(nowMs);
+    const endOfDayKey = todayKey; // windows end at today (KST)
+    const endOfDayMs = kstDayEndMs(endOfDayKey);
+
+    // Window boundaries (ms).
+    const w24Start = nowMs - 24 * 60 * 60 * 1000;
+    const w24End = nowMs;
+    const w7Start = kstDayStartMs(kstShiftDay(endOfDayKey, -6));
+    const w7End = endOfDayMs;
+    const w30Start = kstDayStartMs(kstShiftDay(endOfDayKey, -29));
+    const w30End = endOfDayMs;
+    const w365Start = nowMs - 365 * MS_PER_DAY;
+    const wAllEnd = endOfDayMs;
+
+    // readRange input dates: use KST-day keys. 'all' reads up to 365 days.
+    const firstDate = kstShiftDay(endOfDayKey, -365);
+    const events = await this.store.readRange(firstDate, endOfDayKey);
+
+    // Per-window builders for the target user.
+    const builders: Record<TabId, WindowBuilder> = {
+      '24h': makeWindowBuilder(),
+      '7d': makeWindowBuilder(),
+      '30d': makeWindowBuilder(),
+      all: makeWindowBuilder(),
+    };
+
+    // Global rankings accumulator — 30d only, shared across tabs.
+    const rankingsUsers = new Map<string, { tokens: number; userName?: string }>();
+
+    // Track earliest event timestamp for 'all' window start.
+    let earliestEventMs: number | null = null;
+    let resolvedTargetUserName = targetUserName;
+
+    for (const e of events) {
+      if (e.eventType !== 'token_usage') continue;
+      const m = e.metadata as unknown as TokenUsageMetadata | undefined;
+      if (!m) continue;
+      const tokens =
+        (m.inputTokens || 0) +
+        (m.outputTokens || 0) +
+        (m.cacheReadInputTokens || 0) +
+        (m.cacheCreationInputTokens || 0);
+      const cost = m.costUsd || 0;
+
+      // 365-day window cap — ignore events older than that for rankings/'all'.
+      if (e.timestamp < w365Start) continue;
+
+      // Global 30d rankings (skip system buckets — v1 parity).
+      if (e.timestamp >= w30Start && e.timestamp <= w30End) {
+        if (e.userId !== 'assistant' && e.userId !== 'unknown') {
+          const bucket = rankingsUsers.get(e.userId) || { tokens: 0, userName: e.userName };
+          bucket.tokens += tokens;
+          if (e.userName && e.userName !== 'unknown') bucket.userName = e.userName;
+          rankingsUsers.set(e.userId, bucket);
+        }
+      }
+
+      if (e.userId !== targetUserId) continue;
+
+      if (e.userName && e.userName !== 'unknown') {
+        resolvedTargetUserName = e.userName;
+      }
+
+      if (earliestEventMs === null || e.timestamp < earliestEventMs) {
+        earliestEventMs = e.timestamp;
+      }
+
+      const hour = getHourInTz(e.timestamp);
+      const dayKey = timestampToDateInTz(e.timestamp);
+      const sessionKey = m.sessionKey || e.sessionKey;
+
+      // Each of 4 windows: if event in range, accumulate.
+      const winRanges: Array<[TabId, number, number]> = [
+        ['24h', w24Start, w24End],
+        ['7d', w7Start, w7End],
+        ['30d', w30Start, w30End],
+        ['all', w365Start, wAllEnd],
+      ];
+      for (const [tabId, wStart, wEnd] of winRanges) {
+        if (e.timestamp < wStart || e.timestamp > wEnd) continue;
+        const b = builders[tabId];
+        b.tokens += tokens;
+        b.cost += cost;
+        b.hourly[hour] += tokens;
+        b.perDay.set(dayKey, (b.perDay.get(dayKey) || 0) + tokens);
+        // Per-(day,hour) accumulator — needed for 7d tab's 168-cell heatmap.
+        let dhArr = b.perDayHour.get(dayKey);
+        if (!dhArr) {
+          dhArr = new Array<number>(24).fill(0);
+          b.perDayHour.set(dayKey, dhArr);
+        }
+        dhArr[hour] += tokens;
+        b.daySet.add(dayKey);
+
+        if (sessionKey) {
+          const s = b.perSession.get(sessionKey) || {
+            tokens: 0,
+            firstMs: e.timestamp,
+            lastMs: e.timestamp,
+            count: 0,
+          };
+          s.tokens += tokens;
+          if (e.timestamp < s.firstMs) s.firstMs = e.timestamp;
+          if (e.timestamp > s.lastMs) s.lastMs = e.timestamp;
+          s.count += 1;
+          b.perSession.set(sessionKey, s);
+        }
+
+        if (m.modelBreakdown) {
+          for (const [model, u] of Object.entries(m.modelBreakdown)) {
+            const t =
+              (u.inputTokens || 0) +
+              (u.outputTokens || 0) +
+              (u.cacheReadInputTokens || 0) +
+              (u.cacheCreationInputTokens || 0);
+            b.perModel.set(model, (b.perModel.get(model) || 0) + t);
+          }
+        } else if (m.model) {
+          b.perModel.set(m.model, (b.perModel.get(m.model) || 0) + tokens);
+        }
+      }
+    }
+
+    // Build rankings (30d) — shared reference across all tabs.
+    const rankingEntries = Array.from(rankingsUsers.entries()).map(([userId, v]) => ({
+      userId,
+      userName: v.userName,
+      totalTokens: v.tokens,
+      rank: 0,
+    }));
+    const tokensSorted: CarouselRanking[] = [...rankingEntries]
+      .sort((a, b) => b.totalTokens - a.totalTokens || (a.userName || '').localeCompare(b.userName || ''))
+      .map((e, i) => ({ ...e, rank: i + 1 }));
+    const tokensTop = tokensSorted.slice(0, topN);
+    const targetTokenRow = tokensSorted.find((r) => r.userId === targetUserId) ?? null;
+    const sharedRankings = { tokensTop, targetTokenRow } as const;
+
+    // Compute per-tab window boundaries as YYYY-MM-DD strings.
+    const windowBoundsStr: Record<TabId, { start: string; end: string }> = {
+      '24h': { start: timestampToDateInTz(w24Start), end: endOfDayKey },
+      '7d': { start: kstShiftDay(endOfDayKey, -6), end: endOfDayKey },
+      '30d': { start: kstShiftDay(endOfDayKey, -29), end: endOfDayKey },
+      all: {
+        start: earliestEventMs !== null ? timestampToDateInTz(earliestEventMs) : endOfDayKey,
+        end: endOfDayKey,
+      },
+    };
+
+    const tabs: Record<TabId, TabResult> = {
+      '24h': buildTab(
+        '24h',
+        builders['24h'],
+        windowBoundsStr['24h'],
+        targetUserId,
+        resolvedTargetUserName,
+        sharedRankings,
+        todayKey,
+      ),
+      '7d': buildTab(
+        '7d',
+        builders['7d'],
+        windowBoundsStr['7d'],
+        targetUserId,
+        resolvedTargetUserName,
+        sharedRankings,
+        todayKey,
+      ),
+      '30d': buildTab(
+        '30d',
+        builders['30d'],
+        windowBoundsStr['30d'],
+        targetUserId,
+        resolvedTargetUserName,
+        sharedRankings,
+        todayKey,
+      ),
+      all: buildTab(
+        'all',
+        builders.all,
+        windowBoundsStr.all,
+        targetUserId,
+        resolvedTargetUserName,
+        sharedRankings,
+        todayKey,
+      ),
+    };
+
+    return {
+      targetUserId,
+      targetUserName: resolvedTargetUserName,
+      now: new Date(nowMs).toISOString(),
+      tabs,
+    };
+  }
+}
+
+// === Carousel helpers ===
+
+interface WindowBuilder {
+  tokens: number;
+  cost: number;
+  hourly: number[];
+  perDay: Map<string, number>;
+  /**
+   * Per-(dateKey, hour) token totals. Populated for every event; used by the
+   * 7d tab's heatmap to emit 168 per-(day,hour) cells (24 cols × 7 rows).
+   * Other tabs ignore this field.
+   */
+  perDayHour: Map<string, number[]>;
+  daySet: Set<string>;
+  perSession: Map<string, { tokens: number; firstMs: number; lastMs: number; count: number }>;
+  perModel: Map<string, number>;
+}
+
+function makeWindowBuilder(): WindowBuilder {
+  return {
+    tokens: 0,
+    cost: 0,
+    hourly: new Array<number>(24).fill(0),
+    perDay: new Map(),
+    perDayHour: new Map(),
+    daySet: new Set(),
+    perSession: new Map(),
+    perModel: new Map(),
+  };
+}
+
+/**
+ * Shift a KST 'YYYY-MM-DD' day key by N calendar days (UTC arithmetic anchor —
+ * safe because KST has no DST).
+ */
+function kstShiftDay(dayKey: string, deltaDays: number): string {
+  const [y, m, d] = dayKey.split('-').map((s) => parseInt(s, 10));
+  const t = Date.UTC(y, m - 1, d) + deltaDays * 86_400_000;
+  const nd = new Date(t);
+  const yy = nd.getUTCFullYear();
+  const mm = nd.getUTCMonth() + 1;
+  const dd = nd.getUTCDate();
+  return `${yy.toString().padStart(4, '0')}-${mm.toString().padStart(2, '0')}-${dd.toString().padStart(2, '0')}`;
+}
+
+/** Start-of-day (00:00:00 KST) in ms for a 'YYYY-MM-DD' KST day key. */
+function kstDayStartMs(dayKey: string): number {
+  return new Date(dayKey + 'T00:00:00+09:00').getTime();
+}
+
+/** End-of-day (23:59:59.999 KST) in ms for a 'YYYY-MM-DD' KST day key. */
+function kstDayEndMs(dayKey: string): number {
+  return new Date(dayKey + 'T23:59:59.999+09:00').getTime();
+}
+
+/** Diff (in days) between two KST day keys: b - a. */
+function kstDaysBetween(a: string, b: string): number {
+  const [ya, ma, da] = a.split('-').map((s) => parseInt(s, 10));
+  const [yb, mb, db] = b.split('-').map((s) => parseInt(s, 10));
+  return Math.round((Date.UTC(yb, mb - 1, db) - Date.UTC(ya, ma - 1, da)) / 86_400_000);
+}
+
+/** Month diff (calendar months) between two KST day keys: b - a. */
+function kstMonthsBetween(a: string, b: string): number {
+  const [ya, ma] = a.split('-').map((s) => parseInt(s, 10));
+  const [yb, mb] = b.split('-').map((s) => parseInt(s, 10));
+  return (yb - ya) * 12 + (mb - ma);
+}
+
+function buildTab(
+  tabId: TabId,
+  b: WindowBuilder,
+  bounds: { start: string; end: string },
+  targetUserId: string,
+  targetUserName: string | undefined,
+  sharedRankings: { tokensTop: CarouselRanking[]; targetTokenRow: CarouselRanking | null },
+  todayKey: string,
+): TabResult {
+  if (b.tokens <= 0 && b.daySet.size === 0) {
+    const empty: EmptyTabStats = {
+      empty: true,
+      tabId,
+      windowStart: bounds.start,
+      windowEnd: bounds.end,
+    };
+    return empty;
+  }
+
+  // Favorite model
+  let favoriteModel: { model: string; tokens: number } | null = null;
+  for (const [model, t] of b.perModel) {
+    if (!favoriteModel || t > favoriteModel.tokens) {
+      favoriteModel = { model, tokens: t };
+    }
+  }
+
+  // Hourly: only 24h/7d tabs expose activity; 30d/all all-zero per spec.
+  const hourly = tabId === '24h' || tabId === '7d' ? b.hourly.slice() : new Array<number>(24).fill(0);
+
+  // Heatmap shape per tab.
+  const heatmap: CarouselTabStats['heatmap'] = [];
+  if (tabId === '7d') {
+    // 7 days × 24 hours = 168 cells; dayIdx 0 = bounds.start, dayIdx 6 = bounds.end.
+    // cellIndex = dayIdx * 24 + hour — populated from `perDayHour` so every active
+    // (day,hour) cell is distinct. Zero-token cells are omitted (chart visualMap
+    // renders them as the zero-bucket color).
+    for (let d = 0; d < 7; d++) {
+      const dateKey = kstShiftDay(bounds.start, d);
+      const dh = b.perDayHour.get(dateKey);
+      if (!dh) continue;
+      for (let h = 0; h < 24; h++) {
+        const t = dh[h];
+        if (t <= 0) continue;
+        heatmap.push({
+          date: dateKey,
+          tokens: t,
+          cellIndex: d * 24 + h,
+          label: `${dateKey} ${h}시`,
+        });
+      }
+    }
+  } else if (tabId === '30d') {
+    // 5 rows × 7 cols = 35 cells. cellIndex = row*7 + col, row 0..4, col 0..6.
+    for (const [dateKey, tokens] of b.perDay) {
+      const dayIdx = kstDaysBetween(bounds.start, dateKey);
+      if (dayIdx < 0 || dayIdx > 29) continue;
+      const cellIndex = dayIdx; // 0..29 mapped to 5x7 grid via (row=dayIdx/7, col=dayIdx%7)
+      heatmap.push({ date: dateKey, tokens, cellIndex, label: dateKey });
+    }
+  } else if (tabId === 'all') {
+    // monthIdx * 7 + kstDayOfWeek(dayKey) — up to 12 months × 7 weekdays = 84 cells.
+    for (const [dateKey, tokens] of b.perDay) {
+      const monthIdx = kstMonthsBetween(bounds.start, dateKey);
+      if (monthIdx < 0) continue;
+      const cellMonth = Math.min(monthIdx, 11);
+      const dow = kstDayOfWeek(dateKey);
+      const cellIndex = cellMonth * 7 + dow;
+      heatmap.push({ date: dateKey, tokens, cellIndex, label: dateKey });
+    }
+  }
+  // tabId === '24h' → heatmap remains [].
+
+  // Streaks — uses daySet directly.
+  const activeDays = b.daySet.size;
+  const longestStreakDays = longestStreak(b.daySet);
+  const currentStreakDays = currentStreak(b.daySet, todayKey);
+
+  // Top sessions by tokens.
+  const sessionsArr = Array.from(b.perSession.entries()).map(([sessionKey, s]) => ({
+    sessionKey,
+    totalTokens: s.tokens,
+    durationMs: s.count >= 2 ? s.lastMs - s.firstMs : 0,
+  }));
+  const topSessions = [...sessionsArr].sort((a, b2) => b2.totalTokens - a.totalTokens).slice(0, 3);
+  const longestSessionArr = [...sessionsArr]
+    .filter((s) => s.durationMs > 0)
+    .sort((a, b2) => b2.durationMs - a.durationMs);
+  const longestSession = longestSessionArr.length
+    ? { sessionKey: longestSessionArr[0].sessionKey, durationMs: longestSessionArr[0].durationMs }
+    : null;
+
+  // Most active day.
+  let mostActiveDay: { date: string; tokens: number } | null = null;
+  for (const [dateKey, tokens] of b.perDay) {
+    if (!mostActiveDay || tokens > mostActiveDay.tokens) {
+      mostActiveDay = { date: dateKey, tokens };
+    }
+  }
+
+  const stats: CarouselTabStats = {
+    empty: false,
+    tabId,
+    targetUserId,
+    targetUserName,
+    windowStart: bounds.start,
+    windowEnd: bounds.end,
+    totals: {
+      tokens: b.tokens,
+      costUsd: b.cost,
+      sessions: b.perSession.size,
+    },
+    favoriteModel,
+    hourly,
+    heatmap,
+    rankings: sharedRankings,
+    activeDays,
+    longestStreakDays,
+    currentStreakDays,
+    topSessions,
+    longestSession,
+    mostActiveDay,
+  };
+  return stats;
 }
 
 // === Token Usage Helpers ===
