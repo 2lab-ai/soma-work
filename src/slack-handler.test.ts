@@ -1041,15 +1041,11 @@ describe('SlackHandler', () => {
     it('T17: admin DM plain text reaches sessionInitializer.initialize (happy path)', async () => {
       await withAdmins(async () => {
         const { handler, handlerAny } = buildHandler();
-        handlerAny.inputProcessor.processFiles = vi
-          .fn()
-          .mockResolvedValue({ files: [], shouldContinue: true });
+        handlerAny.inputProcessor.processFiles = vi.fn().mockResolvedValue({ files: [], shouldContinue: true });
         handlerAny.inputProcessor.routeCommand = vi
           .fn()
           .mockResolvedValue({ handled: false, continueWithPrompt: undefined });
-        handlerAny.sessionInitializer.validateWorkingDirectory = vi
-          .fn()
-          .mockResolvedValue({ valid: true });
+        handlerAny.sessionInitializer.validateWorkingDirectory = vi.fn().mockResolvedValue({ valid: true });
         // Short-circuit with halted:true so the test proves `initialize` was
         // reached without having to stub the downstream session/streaming setup.
         // Asserting that `initialize` was called is the T17 goal — anything
@@ -1065,11 +1061,7 @@ describe('SlackHandler', () => {
         expect(handlerAny.sessionInitializer.initialize).toHaveBeenCalledTimes(1);
         // Gate B must NOT fire for admins.
         expect(handlerAny.slackApi.postEphemeral).not.toHaveBeenCalled();
-        expect(handlerAny.slackApi.addReaction).not.toHaveBeenCalledWith(
-          'D123',
-          '17.17',
-          'heavy_multiplication_x',
-        );
+        expect(handlerAny.slackApi.addReaction).not.toHaveBeenCalledWith('D123', '17.17', 'heavy_multiplication_x');
       });
     });
 
@@ -1083,9 +1075,7 @@ describe('SlackHandler', () => {
           // routeCommand returns handled:false — the exact condition Gate B targets.
           routeCommandResult: { handled: false, continueWithPrompt: undefined },
         });
-        handlerAny.inputProcessor.processFiles = vi
-          .fn()
-          .mockResolvedValue({ files: [], shouldContinue: true });
+        handlerAny.inputProcessor.processFiles = vi.fn().mockResolvedValue({ files: [], shouldContinue: true });
 
         // `%model` passes Gate A (SAFE). Here we simulate routeCommand failing to
         // claim it — Gate B must catch and reject instead of falling through to
@@ -1096,11 +1086,7 @@ describe('SlackHandler', () => {
         // Gate B side effects.
         expect(slackApi.removeReaction).toHaveBeenCalledWith('D123', '18.18', 'eyes');
         expect(slackApi.postEphemeral).toHaveBeenCalledTimes(1);
-        expect(slackApi.addReaction).toHaveBeenCalledWith(
-          'D123',
-          '18.18',
-          'heavy_multiplication_x',
-        );
+        expect(slackApi.addReaction).toHaveBeenCalledWith('D123', '18.18', 'heavy_multiplication_x');
         // Pipeline did NOT advance to session init.
         expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
       });
@@ -1113,7 +1099,7 @@ describe('SlackHandler', () => {
     // `handleMessage` — precisely the Issue #553 silent-drop symptom.
     it('T19: sendDmNonAdminRejection swallows addReaction failures (no unhandled rejection)', async () => {
       await withAdmins(async () => {
-        const { handler, handlerAny, slackApi } = buildHandler();
+        const { handler, slackApi } = buildHandler();
         // Simulate a flaky Slack reaction endpoint.
         slackApi.addReaction = vi.fn().mockRejectedValue(new Error('slack 500'));
         slackApi.postEphemeral = vi.fn().mockResolvedValue({ ts: 'eph.1' });
