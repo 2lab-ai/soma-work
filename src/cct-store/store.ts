@@ -3,7 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { migrateLegacyCooldowns } from './migrate';
-import type { CctStoreSnapshot } from './types';
+import { migrateV1ToV2 } from './migrate-v2';
+import type { CctStoreSnapshot, OAuthCredentialsSlot } from './types';
 
 const MAX_CAS_RETRIES = 5;
 const CAS_BACKOFF_MS = 20;
@@ -21,7 +22,7 @@ export class RevisionConflictError extends Error {
 
 function emptySnapshot(): CctStoreSnapshot {
   return {
-    version: 1,
+    version: 2,
     revision: 0,
     registry: { slots: [] },
     state: {},
@@ -67,10 +68,12 @@ function randomHex(bytes: number): string {
 export class CctStore {
   private readonly filePath: string;
   private readonly lockPath: string;
+  private readonly dataDirPath: string;
 
   constructor(filePath: string) {
     this.filePath = filePath;
     this.lockPath = `${filePath}.lock`;
+    this.dataDirPath = path.dirname(filePath);
   }
 
   /** Absolute path to the JSON file that backs this store. */
@@ -79,12 +82,41 @@ export class CctStore {
   }
 
   /**
+   * Absolute path to the directory that holds the store file. Used by
+   * callers that need to co-locate per-slot state (e.g. each oauth slot's
+   * private `CLAUDE_CONFIG_DIR` lives under `<dataDir>/cct-store.dirs/<slotId>`).
+   */
+  dataDir(): string {
+    return this.dataDirPath;
+  }
+
+  /**
    * Load the current snapshot. If the file is missing we synthesize an empty
    * snapshot and then run legacy-cooldown migration (matching by slot name
    * and renaming the source file). The migration runs on every load but is
    * a no-op once the legacy file has been renamed.
+   *
+   * Read-only with respect to schema version: if the on-disk snapshot is
+   * still v1 we apply the pure {@link migrateV1ToV2} transform so callers
+   * always see a v2-shaped value — but we do NOT write it back from
+   * `load()`. Persistence is handled by {@link upgradeIfNeeded}.
    */
   async load(): Promise<CctStoreSnapshot> {
+    const raw = await this.readSnapshotRaw();
+    if (raw.version === 1) {
+      return migrateV1ToV2(raw, this.dataDirPath);
+    }
+    return raw;
+  }
+
+  /**
+   * Raw read helper — returns the snapshot as it exists on disk (after
+   * legacy-cooldowns migration) WITHOUT applying the v1→v2 transform.
+   *
+   * Used by {@link upgradeIfNeeded} so the upgrade routine can tell whether
+   * the on-disk file is still v1 (and therefore needs to be persisted).
+   */
+  private async readSnapshotRaw(): Promise<CctStoreSnapshot> {
     await this.ensureDir();
     let snap: CctStoreSnapshot;
     if (await pathExists(this.filePath)) {
@@ -92,9 +124,64 @@ export class CctStore {
     } else {
       snap = emptySnapshot();
     }
-    const dir = path.dirname(this.filePath);
-    snap = await migrateLegacyCooldowns(snap, dir);
+    snap = await migrateLegacyCooldowns(snap, this.dataDirPath);
     return snap;
+  }
+
+  /**
+   * One-shot disk upgrade from v1 → v2. Acquires the cross-process lock,
+   * re-reads raw (NOT `load()` — that would return a synthesized v2 and
+   * short-circuit the upgrade), and persists a v2 snapshot if the file is
+   * still v1.
+   *
+   * Side effects:
+   *   - Creates each oauth slot's `configDir` with mode 0o700 (recursive).
+   *   - Atomic tmp→fsync→rename of the store file with `revision = raw.revision + 1`.
+   *
+   * @returns `true` when a v2 write occurred; `false` if already v2 (no-op).
+   */
+  async upgradeIfNeeded(): Promise<boolean> {
+    await this.ensureDir();
+    await this.ensureFileForLock();
+
+    const release = await lockfile.lock(this.filePath, {
+      lockfilePath: this.lockPath,
+      stale: 30_000,
+      update: 5_000,
+      realpath: true,
+      retries: { retries: 50, minTimeout: 10, maxTimeout: 100 },
+    });
+    try {
+      const raw = await this.readSnapshotRaw();
+      if (raw.version === 2) return false;
+
+      const v2 = migrateV1ToV2(raw, this.dataDirPath);
+
+      // Provision each oauth slot's private config dir (0o700) — mkdir is
+      // idempotent via `recursive: true`.
+      for (const slot of v2.registry.slots) {
+        if (slot.kind !== 'oauth_credentials') continue;
+        const oauth = slot as OAuthCredentialsSlot;
+        if (!oauth.configDir) continue;
+        await fs.mkdir(oauth.configDir, { recursive: true, mode: 0o700 });
+      }
+
+      const next: CctStoreSnapshot = { ...v2, revision: raw.revision + 1 };
+
+      const tmp = `${this.filePath}.tmp.${randomHex(8)}`;
+      const fd = await fs.open(tmp, 'w');
+      try {
+        await fd.writeFile(JSON.stringify(next, null, 2));
+        await fd.sync();
+      } finally {
+        await fd.close();
+      }
+      await fs.rename(tmp, this.filePath);
+      await this.fsyncDir(this.dataDirPath);
+      return true;
+    } finally {
+      await release();
+    }
   }
 
   /**
@@ -206,7 +293,7 @@ export class CctStore {
   // ── internals ────────────────────────────────────────────────
 
   private async ensureDir(): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.mkdir(this.dataDirPath, { recursive: true });
   }
 
   /**

@@ -374,16 +374,22 @@ describe('TokenManager (slot-based)', () => {
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
 
       const beforeMs = Date.now();
-      const lease = await tm.acquireLease('stream-executor:C1:t1', 60_000);
-      expect(lease.leaseId).toBeTruthy();
-      expect(lease.ownerTag).toBe('stream-executor:C1:t1');
-      const ttl = new Date(lease.expiresAt).getTime() - beforeMs;
-      expect(ttl).toBeGreaterThan(59_000);
-      expect(ttl).toBeLessThan(61_000);
+      const acquired = await tm.acquireLease('stream-executor:C1:t1', 60_000);
+      expect(acquired.leaseId).toBeTruthy();
+      expect(acquired.slotId).toBe(s1.slotId);
+      expect(acquired.kind).toBe('setup_token');
+      expect(acquired.name).toBe('cct1');
+      expect(acquired.accessToken).toBe('v1');
 
+      // The persisted Lease carries ownerTag + expiresAt; AcquiredLease does not.
       const snap = await store.load();
       expect(snap.state[s1.slotId].activeLeases).toHaveLength(1);
-      expect(snap.state[s1.slotId].activeLeases[0].leaseId).toBe(lease.leaseId);
+      const persisted = snap.state[s1.slotId].activeLeases[0];
+      expect(persisted.leaseId).toBe(acquired.leaseId);
+      expect(persisted.ownerTag).toBe('stream-executor:C1:t1');
+      const ttl = new Date(persisted.expiresAt).getTime() - beforeMs;
+      expect(ttl).toBeGreaterThan(59_000);
+      expect(ttl).toBeLessThan(61_000);
     });
 
     it('heartbeatLease extends expiresAt', async () => {
@@ -392,11 +398,13 @@ describe('TokenManager (slot-based)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
-      const lease = await tm.acquireLease('svc', 2_000);
-      const firstExp = new Date(lease.expiresAt).getTime();
+      const acquired = await tm.acquireLease('svc', 2_000);
+      const snap0 = await store.load();
+      const activeId0 = snap0.registry.activeSlotId!;
+      const firstExp = new Date(snap0.state[activeId0].activeLeases[0].expiresAt).getTime();
 
       await new Promise((r) => setTimeout(r, 50));
-      await tm.heartbeatLease(lease.leaseId);
+      await tm.heartbeatLease(acquired.leaseId);
       const snap = await store.load();
       const active = snap.registry.activeSlotId;
       if (!active) throw new Error('active missing');
@@ -955,6 +963,345 @@ describe('TokenManager (slot-based)', () => {
       // assert no throw and re-calling stop() is a no-op.
       tm.stop();
       expect(true).toBe(true);
+    });
+  });
+
+  // ── schema-v2 per-slot configDir lifecycle ────────────────────
+
+  describe('schema-v2 configDir lifecycle', () => {
+    it('acquireLease returns the new AcquiredLease shape (leaseId/slotId/name/kind/accessToken/configDir)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({
+          accessToken: 'sk-ant-oat01-fresh',
+          expiresAtMs: Date.now() + 12 * 60 * 60 * 1000,
+        }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const acquired = await tm.acquireLease('t', 60_000);
+      expect(acquired.leaseId).toBeTruthy();
+      expect(acquired.slotId).toBe(s.slotId);
+      expect(acquired.name).toBe('oauth');
+      expect(acquired.kind).toBe('oauth_credentials');
+      expect(acquired.accessToken).toBe('sk-ant-oat01-fresh');
+      expect(acquired.configDir).toBe(path.join(tmp, 'cct-store.dirs', s.slotId));
+    });
+
+    it('acquireLease retries when the picked slot is tombstoned between mutate and revalidate', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      // Intercept `load` to tombstone s1 on the first post-mutate read — the
+      // retry loop should then pick s2 and succeed.
+      const originalLoad = store.load.bind(store);
+      let tombstonedOnce = false;
+      const loadSpy = vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!tombstonedOnce && snap.state[s1.slotId]?.activeLeases.length) {
+          tombstonedOnce = true;
+          // Mutate the snapshot the caller will see — but persist it too so
+          // the subsequent retry observes the tombstone.
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], tombstoned: true };
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], tombstoned: true };
+          });
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      expect(acquired.slotId).toBe(s2.slotId);
+      loadSpy.mockRestore();
+    });
+
+    it('acquireLease throws NoEligibleSlotError after 3 retries', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+
+      // Flip a flag to "revalidate mode" for the single load() immediately
+      // after each mutate commit. We detect "just after mutate" by wrapping
+      // mutate itself to set the flag post-commit, then the NEXT load call
+      // alters its returned view (dropping the slot) and clears the flag.
+      const originalMutate = store.mutate.bind(store);
+      const originalLoad = store.load.bind(store);
+      let revalidateNext = false;
+      vi.spyOn(store, 'mutate').mockImplementation(async (fn: any) => {
+        const result = await originalMutate(fn);
+        revalidateNext = true;
+        return result;
+      });
+      vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (revalidateNext) {
+          revalidateNext = false;
+          snap.registry.slots = [];
+        }
+        return snap;
+      });
+
+      await expect(tm.acquireLease('svc', 60_000)).rejects.toMatchObject({ name: 'NoEligibleSlotError' });
+      vi.restoreAllMocks();
+    });
+
+    it('acquireLease refresh error bubbles without retry', async () => {
+      const { mod, storeMod } = await importSut();
+      const { OAuthRefreshError } = await import('./oauth/refresher');
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ expiresAtMs: Date.now() + 60 * 1000 }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockRejectedValue(new OAuthRefreshError(401, '', 'unauthorized'));
+      await expect(tm.acquireLease('svc', 60_000)).rejects.toThrow();
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('acquireLease does not leak stale leases on retry (released before retrying)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      const originalLoad = store.load.bind(store);
+      let tombstonedOnce = false;
+      const loadSpy = vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!tombstonedOnce && snap.state[s1.slotId]?.activeLeases.length) {
+          tombstonedOnce = true;
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], tombstoned: true };
+          });
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], tombstoned: true };
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      expect(acquired.slotId).toBe(s2.slotId);
+      loadSpy.mockRestore();
+
+      // After the retry, the ORIGINAL (stale) lease must not be lingering on s1.
+      const snap = await store.load();
+      const s1Leases = snap.state[s1.slotId]?.activeLeases ?? [];
+      expect(s1Leases.map((l: any) => l.leaseId)).not.toContain(acquired.leaseId);
+      expect(s1Leases).toHaveLength(0);
+    });
+
+    it('init throws when store.upgradeIfNeeded fails (fail-fast, never persists unprovisioned configDir)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const upgradeErr = new Error('upgrade-boom: simulated mkdir denied');
+      vi.spyOn(store, 'upgradeIfNeeded').mockRejectedValue(upgradeErr);
+      const tm = new mod.TokenManager(store);
+      await expect(tm.init()).rejects.toThrow(/upgrade-boom/);
+      // Regression guard: no downstream mutate must have landed, so the
+      // on-disk file should not exist (or be empty v2). If the init had
+      // swallowed the error, ensureActiveSlot() would have written a v2
+      // snapshot via mutate(), creating the file on disk.
+      await expect(fs.stat(path.join(tmp, 'cct-store.json'))).rejects.toThrow();
+    });
+
+    it('acquireLease retries when slot goes refresh_failed mid-flight (isEligible revalidation)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      const originalLoad = store.load.bind(store);
+      let flipped = false;
+      vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!flipped && snap.state[s1.slotId]?.activeLeases.length) {
+          flipped = true;
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], authState: 'refresh_failed' };
+          });
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], authState: 'refresh_failed' };
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      // The retry must have routed around the refresh_failed slot — the old
+      // ad hoc subset (only tombstoned/revoked) would have returned s1.
+      expect(acquired.slotId).toBe(s2.slotId);
+    });
+
+    it('acquireLease retries when slot enters cooldown mid-flight (isEligible revalidation)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      const originalLoad = store.load.bind(store);
+      let flipped = false;
+      vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!flipped && snap.state[s1.slotId]?.activeLeases.length) {
+          flipped = true;
+          const cooldownUntil = new Date(Date.now() + 60_000).toISOString();
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], cooldownUntil };
+          });
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], cooldownUntil };
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      expect(acquired.slotId).toBe(s2.slotId);
+    });
+
+    it('addSlot(oauth) provisions the private configDir with 0o700 and stores it on the slot', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      expect(s.kind).toBe('oauth_credentials');
+      if (s.kind !== 'oauth_credentials') return;
+      const expectedDir = path.join(tmp, 'cct-store.dirs', s.slotId);
+      expect(s.configDir).toBe(expectedDir);
+      const st = await fs.stat(expectedDir);
+      expect(st.isDirectory()).toBe(true);
+      if (process.platform !== 'win32') {
+        expect(st.mode & 0o077).toBe(0);
+      }
+    });
+
+    it('addSlot(oauth) cleans up orphaned configDir when mutate fails', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // Seed a slot with the same name so the second addSlot will trip NAME_IN_USE.
+      await tm.addSlot({
+        name: 'dup',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const dirsRoot = path.join(tmp, 'cct-store.dirs');
+      const before = (await fs.readdir(dirsRoot).catch(() => [])).length;
+      await expect(
+        tm.addSlot({
+          name: 'dup',
+          kind: 'oauth_credentials',
+          credentials: makeOAuthCreds({ accessToken: 'sk-ant-oat01-other' }),
+          acknowledgedConsumerTosRisk: true,
+        }),
+      ).rejects.toThrow(/NAME_IN_USE/);
+      // No orphan dir left behind from the failed second attempt.
+      const after = (await fs.readdir(dirsRoot).catch(() => [])).length;
+      expect(after).toBe(before);
+    });
+
+    it('addSlot(setup_token) does NOT create a configDir on disk', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({ name: 'plain', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const dirsRoot = path.join(tmp, 'cct-store.dirs');
+      // Either the root was never created, or it exists but is empty.
+      const entries = await fs.readdir(dirsRoot).catch(() => []);
+      expect(entries).toHaveLength(0);
+    });
+
+    it('removeSlot force: zero-lease oauth slot dir is rm-rfd', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      if (s.kind !== 'oauth_credentials') throw new Error('expected oauth');
+      const dir = s.configDir!;
+      expect((await fs.stat(dir)).isDirectory()).toBe(true);
+      await tm.removeSlot(s.slotId, { force: true });
+      await expect(fs.stat(dir)).rejects.toThrow();
+    });
+
+    it('removeSlot force: ENOENT on the configDir is silently swallowed (no throw)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      if (s.kind !== 'oauth_credentials') throw new Error('expected oauth');
+      // Pre-delete the configDir to simulate external cleanup.
+      await fs.rm(s.configDir!, { recursive: true, force: true });
+      // removeSlot force must not throw even though the dir is already gone.
+      await expect(tm.removeSlot(s.slotId, { force: true })).resolves.toEqual({ removed: true });
+    });
+
+    it('removeSlot tombstone → reap path also cleans the oauth configDir', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+      void s2;
+      if (s1.kind !== 'oauth_credentials') throw new Error('expected oauth');
+      const dir = s1.configDir!;
+
+      await tm.applyToken(s1.slotId);
+      const acquired = await tm.acquireLease('svc', 60_000);
+
+      const result = await tm.removeSlot(s1.slotId);
+      expect(result.removed).toBe(false);
+      expect(result.pendingDrain).toBe(true);
+      // Dir still present while drain is in flight.
+      expect((await fs.stat(dir)).isDirectory()).toBe(true);
+
+      await tm.releaseLease(acquired.leaseId);
+      await tm.reapExpiredLeases();
+
+      // Dir cleaned up by the reaper.
+      await expect(fs.stat(dir)).rejects.toThrow();
     });
   });
 });
