@@ -35,9 +35,9 @@ vi.mock('../../channel-registry', () => ({
   getChannel: vi.fn().mockReturnValue(undefined),
 }));
 
-vi.mock('../../claude-usage', () => ({
-  fetchClaudeUsageSnapshot: vi.fn().mockResolvedValue(null),
-}));
+// W3-B: claude-usage.ts was removed; usage fetching now goes through
+// TokenManager.fetchAndStoreUsage() which is mocked via the token-manager
+// module mock below.
 
 vi.mock('../../conversation', () => ({
   createConversation: vi.fn().mockReturnValue('conv_1'),
@@ -60,12 +60,21 @@ vi.mock('../../session/compaction-context-builder', () => ({
   snapshotFromSession: vi.fn().mockReturnValue({}),
 }));
 
+// W3-B: token-manager now exposes `getTokenManager()` returning a
+// TokenManager instance with slotId-keyed APIs. We stub only the subset
+// that stream-executor actually calls.
+const rotateOnRateLimitMock = vi.fn().mockResolvedValue(null);
+const fetchAndStoreUsageMock = vi.fn().mockResolvedValue(null);
+const getActiveTokenMock = vi.fn().mockReturnValue(null);
+const listTokensMock = vi.fn().mockReturnValue([]);
+
 vi.mock('../../token-manager', () => ({
-  tokenManager: {
-    getAllTokens: vi.fn().mockReturnValue([]),
-    getActiveToken: vi.fn().mockReturnValue(''),
-    rotateOnRateLimit: vi.fn().mockReturnValue({ rotated: false }),
-  },
+  getTokenManager: () => ({
+    getActiveToken: getActiveTokenMock,
+    listTokens: listTokensMock,
+    rotateOnRateLimit: rotateOnRateLimitMock,
+    fetchAndStoreUsage: fetchAndStoreUsageMock,
+  }),
   parseCooldownTime: vi.fn(),
 }));
 
@@ -2325,5 +2334,69 @@ describe('Email guard in execute()', () => {
         text: expect.stringContaining('set email'),
       }),
     );
+  });
+});
+
+describe('W3-B rate-limit rotation wiring', () => {
+  function createMinimalDeps() {
+    return {
+      claudeHandler: { setActivityState: vi.fn(), clearSessionId: vi.fn() },
+      fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
+      contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined) },
+      toolTracker: {},
+      todoDisplayManager: {},
+      actionHandlers: {},
+      requestCoordinator: {},
+      slackApi: {},
+      assistantStatusManager: { clearStatus: vi.fn().mockResolvedValue(undefined) },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  afterEach(() => {
+    rotateOnRateLimitMock.mockClear();
+    rotateOnRateLimitMock.mockResolvedValue(null);
+    getActiveTokenMock.mockClear();
+    getActiveTokenMock.mockReturnValue(null);
+    listTokensMock.mockClear();
+    listTokensMock.mockReturnValue([]);
+  });
+
+  it('on rate-limit error, rotateOnRateLimit is called with source:"error_string"', async () => {
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
+    const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say, false, activeSlot);
+
+    expect(rotateOnRateLimitMock).toHaveBeenCalledTimes(1);
+    const [reason, opts] = rotateOnRateLimitMock.mock.calls[0];
+    expect(typeof reason).toBe('string');
+    expect(reason).toContain('cct1');
+    expect(opts).toEqual(
+      expect.objectContaining({
+        source: 'error_string',
+        cooldownMinutes: expect.any(Number),
+      }),
+    );
+    expect(opts.cooldownMinutes).toBeGreaterThan(0);
+  });
+
+  it('does not call rotateOnRateLimit when the error is not a rate-limit error', async () => {
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Unrelated transient failure');
+    const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
+
+    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say, false, activeSlot);
+
+    expect(rotateOnRateLimitMock).not.toHaveBeenCalled();
   });
 });
