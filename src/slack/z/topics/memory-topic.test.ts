@@ -68,6 +68,7 @@ import {
 import { improveAll as improveAllMock, improveEntry as improveEntryMock } from './memory-improve';
 import {
   applyMemory,
+  buildClearManageModal,
   buildMemoryAddModal,
   chunkByChars,
   createMemoryTopicBinding,
@@ -80,6 +81,21 @@ function actionIds(blocks: any[]): string[] {
   const out: string[] = [];
   for (const b of blocks) {
     if (b.type === 'actions') for (const e of b.elements) out.push(e.action_id);
+  }
+  return out;
+}
+
+/**
+ * v4 minimal: per-entry rows use section+accessory instead of a trailing
+ * actions block, so accessory buttons' action_ids need to be collected
+ * directly from section blocks for full coverage.
+ */
+function allActionIds(blocks: any[]): string[] {
+  const out = actionIds(blocks);
+  for (const b of blocks) {
+    if (b.type === 'section' && b.accessory?.action_id) {
+      out.push(b.accessory.action_id);
+    }
   }
   return out;
 }
@@ -99,24 +115,29 @@ beforeEach(() => {
 });
 
 describe('memory-topic.renderMemoryCard — legacy regression', () => {
-  it('shows clear_all + open_modal + cancel even when stores are empty', async () => {
+  it('shows clear_all + open_modal + clear_manage + cancel even when stores are empty', async () => {
     clearAllMemoryMock('U1');
     const { blocks, text } = await renderMemoryCard({ userId: 'U1', issuedAt: 1 });
     expect(text).toContain('Memory');
     const ids = actionIds(blocks);
     expect(ids).toContain('z_setting_memory_set_clear_all');
     expect(ids).toContain('z_setting_memory_open_modal');
+    expect(ids).toContain('z_setting_memory_open_modal_clear_manage');
     expect(ids).toContain('z_setting_memory_cancel');
   });
 
-  it('renders per-entry clear buttons for populated stores', async () => {
+  it('renders per-entry improve accessory buttons for populated stores (v4 minimal)', async () => {
     clearAllMemoryMock('U2');
     addMemoryMock('U2', 'memory', 'first entry');
     addMemoryMock('U2', 'user', 'first user entry');
     const { blocks } = await renderMemoryCard({ userId: 'U2', issuedAt: 2 });
-    const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_memory_set_clear_memory_1');
-    expect(ids).toContain('z_setting_memory_set_clear_user_1');
+    const ids = allActionIds(blocks);
+    // Accessory = improve only. Per-entry clear buttons are gone (moved
+    // to the global [🗑️ 삭제 관리] modal).
+    expect(ids).toContain('z_setting_memory_set_improve_memory_1');
+    expect(ids).toContain('z_setting_memory_set_improve_user_1');
+    expect(ids).not.toContain('z_setting_memory_set_clear_memory_1');
+    expect(ids).not.toContain('z_setting_memory_set_clear_user_1');
   });
 });
 
@@ -152,11 +173,45 @@ describe('memory-topic.buildMemoryAddModal', () => {
   it('produces a modal with target select + content input', () => {
     const view = buildMemoryAddModal();
     expect(view.callback_id).toBe('z_setting_memory_modal_submit');
+    expect(JSON.parse(view.private_metadata).kind).toBe('add');
     const target = view.blocks.find((b: any) => b.block_id === 'memory_target');
     const content = view.blocks.find((b: any) => b.block_id === 'memory_content');
     expect(target).toBeDefined();
     expect(content).toBeDefined();
     expect(content.element.multiline).toBe(true);
+  });
+});
+
+describe('memory-topic.buildClearManageModal', () => {
+  it('returns a submit-less view when both stores are empty', () => {
+    const view = buildClearManageModal({ memEntries: [], usrEntries: [] });
+    expect(view.callback_id).toBe('z_setting_memory_modal_submit');
+    expect(JSON.parse(view.private_metadata).kind).toBe('clear_manage');
+    // No input block, no submit button — user can only close.
+    expect(view.submit).toBeUndefined();
+    const inputBlock = view.blocks.find((b: any) => b.block_id === 'memory_clear_targets');
+    expect(inputBlock).toBeUndefined();
+  });
+
+  it('includes each mem + user entry as a multi_static_select option', () => {
+    const view = buildClearManageModal({
+      memEntries: ['mem-a', 'mem-b'],
+      usrEntries: ['usr-x'],
+    });
+    expect(view.submit).toBeDefined();
+    const inputBlock = view.blocks.find((b: any) => b.block_id === 'memory_clear_targets');
+    expect(inputBlock).toBeDefined();
+    expect(inputBlock.element.type).toBe('multi_static_select');
+    const values = inputBlock.element.options.map((o: any) => o.value);
+    expect(values).toEqual(['memory:1', 'memory:2', 'user:1']);
+  });
+
+  it('caps options at 100 (Slack multi_static_select limit)', () => {
+    const memEntries = Array.from({ length: 80 }, (_, i) => `m${i + 1}`);
+    const usrEntries = Array.from({ length: 80 }, (_, i) => `u${i + 1}`);
+    const view = buildClearManageModal({ memEntries, usrEntries });
+    const inputBlock = view.blocks.find((b: any) => b.block_id === 'memory_clear_targets');
+    expect(inputBlock.element.options.length).toBe(100);
   });
 });
 
@@ -189,6 +244,68 @@ describe('memory-topic.submitMemoryModal', () => {
     expect(r.ok).toBe(true);
     expect(r.summary).toContain('User profile');
   });
+
+  describe('kind = clear_manage', () => {
+    it('deletes selected entries in descending order per target', async () => {
+      clearAllMemoryMock('U7');
+      addMemoryMock('U7', 'memory', 'm1');
+      addMemoryMock('U7', 'memory', 'm2');
+      addMemoryMock('U7', 'memory', 'm3');
+      addMemoryMock('U7', 'user', 'u1');
+      addMemoryMock('U7', 'user', 'u2');
+      const r = await submitMemoryModal({
+        client: fakeClient,
+        userId: 'U7',
+        kind: 'clear_manage',
+        values: {
+          memory_clear_targets: {
+            value: {
+              selected_options: [{ value: 'memory:1' }, { value: 'memory:3' }, { value: 'user:2' }],
+            },
+          },
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.summary).toContain('3개 항목 삭제 완료');
+      // Verify the surviving entries — memory #1, #3 gone (m1, m3), user #2 gone (u2).
+      const { loadMemory } = await import('../../../user-memory-store');
+      expect((loadMemory as any)('U7', 'memory').entries).toEqual(['m2']);
+      expect((loadMemory as any)('U7', 'user').entries).toEqual(['u1']);
+    });
+
+    it('rejects when nothing is selected', async () => {
+      clearAllMemoryMock('U8');
+      addMemoryMock('U8', 'memory', 'keep');
+      const r = await submitMemoryModal({
+        client: fakeClient,
+        userId: 'U8',
+        kind: 'clear_manage',
+        values: { memory_clear_targets: { value: { selected_options: [] } } },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.summary).toContain('선택된 항목이 없습니다');
+    });
+
+    it('returns partial success when some targets are out of range', async () => {
+      clearAllMemoryMock('U9');
+      addMemoryMock('U9', 'memory', 'only');
+      const r = await submitMemoryModal({
+        client: fakeClient,
+        userId: 'U9',
+        kind: 'clear_manage',
+        values: {
+          memory_clear_targets: {
+            value: {
+              selected_options: [{ value: 'memory:1' }, { value: 'memory:99' }],
+            },
+          },
+        },
+      });
+      // 1 ok + 1 fail = ok=true overall (at least one succeeded).
+      expect(r.ok).toBe(true);
+      expect(r.summary).toContain('1개 항목 삭제 완료');
+    });
+  });
 });
 
 describe('createMemoryTopicBinding', () => {
@@ -200,85 +317,144 @@ describe('createMemoryTopicBinding', () => {
     expect(typeof b.openModal).toBe('function');
     expect(typeof b.submitModal).toBe('function');
   });
+
+  it('openModal routes to the ADD modal for z_setting_memory_open_modal', async () => {
+    clearAllMemoryMock('B1');
+    const binding = createMemoryTopicBinding();
+    if (!binding.openModal) throw new Error('binding.openModal undefined');
+    const opened: any[] = [];
+    const client = { views: { open: vi.fn(async (v: any) => opened.push(v)) } } as any;
+    await binding.openModal({
+      client,
+      triggerId: 'T1',
+      body: { actions: [{ action_id: 'z_setting_memory_open_modal' }] },
+      userId: 'B1',
+    });
+    expect(opened).toHaveLength(1);
+    expect(opened[0].view.callback_id).toBe('z_setting_memory_modal_submit');
+    // private_metadata must mark this as the 'add' kind.
+    expect(JSON.parse(opened[0].view.private_metadata).kind).toBe('add');
+    // Add modal has the content input block.
+    const ids = opened[0].view.blocks.map((b: any) => b.block_id).filter(Boolean);
+    expect(ids).toContain('memory_content');
+  });
+
+  it('openModal routes to the CLEAR_MANAGE modal for z_setting_memory_open_modal_clear_manage', async () => {
+    clearAllMemoryMock('B2');
+    addMemoryMock('B2', 'memory', 'keep me');
+    addMemoryMock('B2', 'user', 'persona');
+    const binding = createMemoryTopicBinding();
+    if (!binding.openModal) throw new Error('binding.openModal undefined');
+    const opened: any[] = [];
+    const client = { views: { open: vi.fn(async (v: any) => opened.push(v)) } } as any;
+    await binding.openModal({
+      client,
+      triggerId: 'T2',
+      body: { actions: [{ action_id: 'z_setting_memory_open_modal_clear_manage' }] },
+      userId: 'B2',
+    });
+    expect(opened).toHaveLength(1);
+    expect(JSON.parse(opened[0].view.private_metadata).kind).toBe('clear_manage');
+    // Clear-manage modal carries the selection input block.
+    const ids = opened[0].view.blocks.map((b: any) => b.block_id).filter(Boolean);
+    expect(ids).toContain('memory_clear_targets');
+  });
 });
 
 /* ------------------------------------------------------------------ *
- * v3 full-view rendering (Scenarios 1-5)
+ * v4 minimal rendering (Scenarios 1-5 updated)
  * ------------------------------------------------------------------ */
 
-describe('renderMemoryCard — v3 full view', () => {
-  it('produces 29 blocks for 5+5 entries (fixed 9 + 2*10 per-entry)', async () => {
+describe('renderMemoryCard — v4 minimal', () => {
+  it('produces 17 blocks for 5+5 entries (fixed 7 + 1*10 per-entry)', async () => {
     clearAllMemoryMock('V1');
     for (let i = 1; i <= 5; i++) addMemoryMock('V1', 'memory', `m${i}`);
     for (let i = 1; i <= 5; i++) addMemoryMock('V1', 'user', `u${i}`);
     const { blocks } = await renderMemoryCard({ userId: 'V1', issuedAt: 100 });
 
-    expect(blocks.length).toBe(29);
+    // Fixed blocks: header + summary-context + group_memory + divider +
+    // group_user + bottom_actions + help_context = 7.
+    // Per-entry blocks: 1 section each × 10 = 10. Total = 17.
+    expect(blocks.length).toBe(17);
 
-    // Each per-entry section has original text (post-escape).
+    // Each per-entry section has original text (post-escape) + accessory
+    // button pointing to the improve action.
     for (let i = 1; i <= 5; i++) {
       const sec = findBlockById(blocks, `z_memory_entry_memory_${i}`);
       expect(sec).toBeDefined();
       expect((sec as any).text.text).toContain(`*#${i}*`);
       expect((sec as any).text.text).toContain(`m${i}`);
+      const accessory = (sec as any).accessory;
+      expect(accessory).toBeDefined();
+      expect(accessory.type).toBe('button');
+      expect(accessory.action_id).toBe(`z_setting_memory_set_improve_memory_${i}`);
+      // Accessory button MUST be plain (no style: 'primary' / 'danger').
+      expect(accessory.style).toBeUndefined();
     }
     for (let j = 1; j <= 5; j++) {
       const sec = findBlockById(blocks, `z_memory_entry_user_${j}`);
       expect(sec).toBeDefined();
       expect((sec as any).text.text).toContain(`u${j}`);
+      expect((sec as any).accessory?.action_id).toBe(`z_setting_memory_set_improve_user_${j}`);
     }
 
-    // Per-entry actions: 2 buttons each (improve, clear).
+    // v4 removed the top-global actions row + per-entry actions rows + the
+    // separate extra-actions row. Only one bottom row remains with 6 buttons.
+    expect(findBlockById(blocks, 'z_memory_global_top')).toBeUndefined();
     for (let i = 1; i <= 5; i++) {
-      const act = findBlockById(blocks, `z_memory_memory_entry_${i}`);
-      expect(act).toBeDefined();
-      const elemIds = (act as any).elements.map((e: any) => e.action_id);
-      expect(elemIds).toEqual([`z_setting_memory_set_improve_memory_${i}`, `z_setting_memory_set_clear_memory_${i}`]);
+      expect(findBlockById(blocks, `z_memory_memory_entry_${i}`)).toBeUndefined();
+      expect(findBlockById(blocks, `z_memory_user_entry_${i}`)).toBeUndefined();
     }
+    expect(findBlockById(blocks, 'z_memory_extra')).toBeUndefined();
 
-    // Top + bottom global actions each have 3 buttons with expected action_ids.
-    const top = findBlockById(blocks, 'z_memory_global_top');
     const bot = findBlockById(blocks, 'z_memory_global_bottom');
-    expect(top).toBeDefined();
     expect(bot).toBeDefined();
-    const topIds = (top as any).elements.map((e: any) => e.action_id);
     const botIds = (bot as any).elements.map((e: any) => e.action_id);
-    expect(topIds).toEqual([
+    expect(botIds).toEqual([
       'z_setting_memory_set_improve_memory_all',
       'z_setting_memory_set_improve_user_all',
+      'z_setting_memory_open_modal_clear_manage',
       'z_setting_memory_set_clear_all',
+      'z_setting_memory_open_modal',
+      'z_setting_memory_cancel',
     ]);
-    expect(botIds).toEqual(topIds);
-
-    // Cancel + open_modal buttons still present (regression).
-    const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_memory_cancel');
-    expect(ids).toContain('z_setting_memory_open_modal');
   });
 
-  it('clear buttons have confirm dialog', async () => {
+  it('clear_all button in the bottom row has confirm dialog; clear_manage does not', async () => {
     clearAllMemoryMock('V2');
     addMemoryMock('V2', 'memory', 'mem1');
     const { blocks } = await renderMemoryCard({ userId: 'V2', issuedAt: 1 });
-    const memActions = findBlockById(blocks, 'z_memory_memory_entry_1');
-    const clearBtn = (memActions as any).elements.find(
-      (e: any) => e.action_id === 'z_setting_memory_set_clear_memory_1',
-    );
-    expect(clearBtn.confirm).toBeDefined();
-    expect(clearBtn.confirm.title.text).toContain('삭제 확인');
-    expect(clearBtn.confirm.confirm.text).toBe('삭제');
-    expect(clearBtn.confirm.deny.text).toBe('취소');
 
-    // clear_all (global) also has confirm
-    const top = findBlockById(blocks, 'z_memory_global_top');
-    const clearAllBtn = (top as any).elements.find((e: any) => e.action_id === 'z_setting_memory_set_clear_all');
+    // clear_all — danger + confirm
+    const bot = findBlockById(blocks, 'z_memory_global_bottom');
+    const clearAllBtn = (bot as any).elements.find((e: any) => e.action_id === 'z_setting_memory_set_clear_all');
+    expect(clearAllBtn).toBeDefined();
+    expect(clearAllBtn.style).toBe('danger');
     expect(clearAllBtn.confirm).toBeDefined();
     expect(clearAllBtn.confirm.title.text).toContain('전체 삭제 확인');
+
+    // clear_manage — opens a modal; plain button (no style, no confirm).
+    const clearManageBtn = (bot as any).elements.find(
+      (e: any) => e.action_id === 'z_setting_memory_open_modal_clear_manage',
+    );
+    expect(clearManageBtn).toBeDefined();
+    expect(clearManageBtn.style).toBeUndefined();
+    expect(clearManageBtn.confirm).toBeUndefined();
   });
 
-  it('collapse fallback: 20 memory + 5 user → blocks ≤ 50 + ⚠️ banner', async () => {
+  it('does NOT collapse when total ≤ 42 (v4 budget; 1 block per entry)', async () => {
+    clearAllMemoryMock('V3a');
+    for (let i = 1; i <= 20; i++) addMemoryMock('V3a', 'memory', `mem${i}`);
+    for (let i = 1; i <= 5; i++) addMemoryMock('V3a', 'user', `usr${i}`);
+    const { blocks } = await renderMemoryCard({ userId: 'V3a', issuedAt: 1 });
+    // 7 fixed + 25 per-entry = 32 blocks, no banner.
+    expect(blocks.length).toBeLessThanOrEqual(50);
+    expect(findBlockById(blocks, 'z_memory_collapse_banner')).toBeUndefined();
+  });
+
+  it('collapse fallback: 50 memory + 5 user → blocks ≤ 50 + ⚠️ banner', async () => {
     clearAllMemoryMock('V3');
-    for (let i = 1; i <= 20; i++) addMemoryMock('V3', 'memory', `mem${i}`);
+    for (let i = 1; i <= 50; i++) addMemoryMock('V3', 'memory', `mem${i}`);
     for (let i = 1; i <= 5; i++) addMemoryMock('V3', 'user', `usr${i}`);
     const { blocks } = await renderMemoryCard({ userId: 'V3', issuedAt: 1 });
 
