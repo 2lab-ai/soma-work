@@ -377,8 +377,12 @@ export class SlackHandler {
       return;
     }
 
-    // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead
-    const effectiveText = continueWithPrompt || event.text;
+    // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead.
+    // Codex P1 review of #555 — `event.text` may be `undefined` (file-only DM,
+    // some Slack event shapes). Normalize to an empty string so downstream
+    // `sessionInitializer.initialize` / `startWithContinuation` never receive
+    // `undefined` and skip text handling silently.
+    const effectiveText = continueWithPrompt ?? event.text ?? '';
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
@@ -673,6 +677,12 @@ export class SlackHandler {
       '• `%model <v>`, `%verbosity <v>`, `%effort <v>` — 세션 설정\n' +
       '• `/z persona`, `/z model`, `/z notify` 등';
 
+    // Wrap each Slack surface independently so one failure cannot kill the
+    // other. `SlackApiHelper.postEphemeral` re-throws on failure (slack-api-
+    // helper.ts:484) — that bubble was the live vector that re-created
+    // Issue #553's silent drop. `addReaction` today swallows internally and
+    // returns false, so its wrapper is defensive: against future contract
+    // changes and against direct-mock injection (see T19 regression test).
     try {
       await this.slackApi.postEphemeral(event.channel, event.user, guide, event.thread_ts ?? event.ts);
     } catch (err: any) {
@@ -682,7 +692,15 @@ export class SlackHandler {
         err: err?.message,
       });
     }
-    await this.slackApi.addReaction(event.channel, event.ts, 'heavy_multiplication_x');
+    try {
+      await this.slackApi.addReaction(event.channel, event.ts, 'heavy_multiplication_x');
+    } catch (err: any) {
+      this.logger.warn('Failed to add non-admin rejection reaction', {
+        user: event.user,
+        channel: event.channel,
+        err: err?.message,
+      });
+    }
   }
 
   private async handleDmCleanupRequest(event: MessageEvent, say: any): Promise<boolean> {
