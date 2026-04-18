@@ -290,11 +290,16 @@ export class TokenManager {
     // 1a. Persist any v1→v2 schema upgrade exactly once, before any further
     //     mutate (which would otherwise race with the upgrade). This also
     //     provisions each oauth slot's private CLAUDE_CONFIG_DIR.
-    try {
-      await this.store.upgradeIfNeeded();
-    } catch (err) {
-      logger.warn('upgradeIfNeeded failed (continuing with v1-on-disk shape)', err);
-    }
+    //
+    //     INVARIANT: upgrade failures MUST fail init. If we swallowed the
+    //     error, `load()` would still synthesize a v2 snapshot in memory and
+    //     the subsequent `ensureActiveSlot()` mutate would then persist v2 to
+    //     disk with `configDir` paths that were never actually provisioned
+    //     (no mkdir ever ran). The next `query()` call would pass that
+    //     phantom path to the Claude CLI as `CLAUDE_CONFIG_DIR`, which then
+    //     silently creates a world-readable dir at runtime (no 0700) —
+    //     defeating the whole point of per-slot isolation. Fail fast instead.
+    await this.store.upgradeIfNeeded();
 
     // 2. load() runs legacy-cooldowns migration inside cct-store. Since
     //    the file on disk may be empty/missing, this is safe.
@@ -710,14 +715,19 @@ export class TokenManager {
         accessToken = allocated.staticToken ?? '';
       }
 
-      // Re-validate: if the slot was tombstoned/removed/revoked while we
-      // were refreshing (or between the mutate and the re-check), drop the
-      // stale lease and retry. This is the race the 3-retry loop closes —
-      // `removeSlot` can tombstone between our pick and our caller's use.
+      // Re-validate: if the slot stopped being eligible while we were
+      // refreshing (or between the mutate and the re-check), drop the stale
+      // lease and retry. This is the race the 3-retry loop closes —
+      // `removeSlot` can tombstone, a refresh can flip authState to
+      // `refresh_failed` or `revoked`, or a parallel rate-limit response
+      // can install a cooldown. The revalidation must track the same
+      // rules the pick used (`isEligible`), not an ad hoc subset —
+      // otherwise we hand callers a lease on a slot our own pick logic
+      // would now reject.
       const snap = await this.store.load();
       const st = snap.registry.slots.find((s) => s.slotId === allocated.slotId);
       const slotState = snap.state[allocated.slotId];
-      const stillEligible = !!st && !slotState?.tombstoned && slotState?.authState !== 'revoked';
+      const stillEligible = !!st && isEligible(slotState, Date.now());
       if (stillEligible) {
         await this.refreshCache();
         logger.debug(`acquireLease ${leaseId} on ${allocated.slotId} (ownerTag=${ownerTag})`);
@@ -868,6 +878,15 @@ export class TokenManager {
       // Pre-compute + provision the per-slot config dir BEFORE the mutate
       // so the persisted snapshot always references a dir that exists on
       // disk. If the mutate subsequently fails we rm the dir (orphan cleanup).
+      //
+      // KNOWN LIMITATION (tracked as follow-up: crash-safe reconciler in a
+      // separate issue): this flow is rollback-safe, NOT crash-safe. A
+      // SIGKILL between the `mkdir` and the store commit, or between the
+      // store commit and the `removeSlot` `rm`, leaks an orphan directory
+      // under `<dataDir>/cct-store.dirs/`. No data corruption results — the
+      // orphan is simply unreferenced — but disk usage grows monotonically
+      // until a reconciler sweeps unreferenced dirs at startup. The
+      // reconciler is intentionally deferred to keep PR-2 scope tight.
       const configDir = path.join(this.store.dataDir(), 'cct-store.dirs', slotId);
       await fsPromises.mkdir(configDir, { recursive: true, mode: 0o700 });
       provisionedConfigDir = configDir;

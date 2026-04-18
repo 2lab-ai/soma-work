@@ -1106,6 +1106,75 @@ describe('TokenManager (slot-based)', () => {
       expect(s1Leases).toHaveLength(0);
     });
 
+    it('init throws when store.upgradeIfNeeded fails (fail-fast, never persists unprovisioned configDir)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const upgradeErr = new Error('upgrade-boom: simulated mkdir denied');
+      vi.spyOn(store, 'upgradeIfNeeded').mockRejectedValue(upgradeErr);
+      const tm = new mod.TokenManager(store);
+      await expect(tm.init()).rejects.toThrow(/upgrade-boom/);
+      // Regression guard: no downstream mutate must have landed, so the
+      // on-disk file should not exist (or be empty v2). If the init had
+      // swallowed the error, ensureActiveSlot() would have written a v2
+      // snapshot via mutate(), creating the file on disk.
+      await expect(fs.stat(path.join(tmp, 'cct-store.json'))).rejects.toThrow();
+    });
+
+    it('acquireLease retries when slot goes refresh_failed mid-flight (isEligible revalidation)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      const originalLoad = store.load.bind(store);
+      let flipped = false;
+      vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!flipped && snap.state[s1.slotId]?.activeLeases.length) {
+          flipped = true;
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], authState: 'refresh_failed' };
+          });
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], authState: 'refresh_failed' };
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      // The retry must have routed around the refresh_failed slot — the old
+      // ad hoc subset (only tombstoned/revoked) would have returned s1.
+      expect(acquired.slotId).toBe(s2.slotId);
+    });
+
+    it('acquireLease retries when slot enters cooldown mid-flight (isEligible revalidation)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+      const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
+
+      const originalLoad = store.load.bind(store);
+      let flipped = false;
+      vi.spyOn(store, 'load').mockImplementation(async () => {
+        const snap = await originalLoad();
+        if (!flipped && snap.state[s1.slotId]?.activeLeases.length) {
+          flipped = true;
+          const cooldownUntil = new Date(Date.now() + 60_000).toISOString();
+          await store.mutate((s) => {
+            s.state[s1.slotId] = { ...s.state[s1.slotId], cooldownUntil };
+          });
+          snap.state[s1.slotId] = { ...snap.state[s1.slotId], cooldownUntil };
+        }
+        return snap;
+      });
+
+      const acquired = await tm.acquireLease('svc', 60_000);
+      expect(acquired.slotId).toBe(s2.slotId);
+    });
+
     it('addSlot(oauth) provisions the private configDir with 0o700 and stores it on the slot', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
