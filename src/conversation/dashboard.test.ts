@@ -1083,7 +1083,7 @@ describe('Dashboard API', () => {
       // POSTs to the new endpoint
       expect(script).toContain('/submit-recommended');
       // CSRF header is set in the action
-      expect(script).toContain("X-CSRF-Token");
+      expect(script).toContain('X-CSRF-Token');
       // Active branch button class + onclick wiring
       expect(script).toContain('btn-hero-recommended');
       // Active branch label (escaped Unicode for ⭐ 추천대로 모두 선택)
@@ -1091,7 +1091,7 @@ describe('Dashboard API', () => {
       // Blocked branch label sentinel (🔒 추천 부족)
       expect(script).toContain('\\uD83D\\uDD12');
       // Skips 직접입력 sentinel when counting
-      expect(script).toContain("\\uC9C1\\uC811\\uC785\\uB825");
+      expect(script).toContain('\\uC9C1\\uC811\\uC785\\uB825');
       // CSS class definition is present in the page (style tag)
       expect(html).toContain('.btn-hero-recommended');
     });

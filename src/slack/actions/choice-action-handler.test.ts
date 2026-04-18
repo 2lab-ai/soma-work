@@ -475,11 +475,7 @@ describe('ChoiceActionHandler', () => {
 
       await handler.handleSubmitAllRecommended(makeBody({ blocked: true, n: 1, m: 2 }));
 
-      expect(slackApi.postEphemeral).toHaveBeenCalledWith(
-        'C123',
-        'U123',
-        expect.stringContaining('🔒'),
-      );
+      expect(slackApi.postEphemeral).toHaveBeenCalledWith('C123', 'U123', expect.stringContaining('🔒'));
       expect(messageHandler).not.toHaveBeenCalled();
     });
 
@@ -495,11 +491,7 @@ describe('ChoiceActionHandler', () => {
 
       await handler.handleSubmitAllRecommended(makeBody({ n: 2, m: 2 }));
 
-      expect(slackApi.postEphemeral).toHaveBeenCalledWith(
-        'C123',
-        'U123',
-        expect.stringContaining('이미 제출'),
-      );
+      expect(slackApi.postEphemeral).toHaveBeenCalledWith('C123', 'U123', expect.stringContaining('이미 제출'));
       expect(messageHandler).not.toHaveBeenCalled();
     });
 
@@ -699,9 +691,7 @@ describe('ChoiceActionHandler', () => {
 
     it('throws "Session not found" when session missing', async () => {
       claudeHandler.getSessionByKey.mockReturnValue(undefined);
-      await expect(handler.handleSubmitRecommendedFromDashboard(sessionKey, 'U1')).rejects.toThrow(
-        /Session not found/,
-      );
+      await expect(handler.handleSubmitRecommendedFromDashboard(sessionKey, 'U1')).rejects.toThrow(/Session not found/);
     });
 
     it('throws "Session is not waiting for a choice" when activityState != waiting', async () => {
