@@ -295,6 +295,35 @@ describe('TokenManager (slot-based)', () => {
       expect(until).toBeGreaterThan(beforeMs + 59 * 60 * 1000);
       expect(until).toBeLessThan(beforeMs + 61 * 60 * 1000);
     });
+
+    it('recordRateLimitHint refreshes rateLimitedAt once it ages past the 5h window (no cooldownUntil)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
+
+      // Seed a rate-limit hint with NO cooldownUntil (simulates a manual hint
+      // or a response_header hint where cooldown was not parseable).
+      await tm.recordRateLimitHint(s1.slotId, 'response_header');
+      const firstAt = (await store.load()).state[s1.slotId].rateLimitedAt;
+      expect(firstAt).toBeDefined();
+
+      // Second hint a few seconds later — should NOT overwrite.
+      await new Promise((r) => setTimeout(r, 5));
+      await tm.recordRateLimitHint(s1.slotId, 'response_header');
+      const secondAt = (await store.load()).state[s1.slotId].rateLimitedAt;
+      expect(secondAt).toBe(firstAt);
+
+      // Age the stored timestamp past the 5h window by rewriting it.
+      await store.mutate((snap) => {
+        snap.state[s1.slotId].rateLimitedAt = new Date(Date.now() - (5 * 60 + 1) * 60 * 1000).toISOString();
+      });
+
+      await tm.recordRateLimitHint(s1.slotId, 'error_string');
+      const thirdAt = (await store.load()).state[s1.slotId].rateLimitedAt as string;
+      expect(new Date(thirdAt).getTime()).toBeGreaterThan(new Date(firstAt as string).getTime());
+    });
   });
 
   // ── Leases ────────────────────────────────────────────────

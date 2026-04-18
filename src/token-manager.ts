@@ -55,6 +55,10 @@ const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const REFRESH_BUFFER_MS = 7 * 60 * 60 * 1000; // 7 hours
 const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
 const DEFAULT_REAPER_INTERVAL_MS = 30 * 1000; // 30 seconds
+// Anthropic's shortest rate-limit bucket is 5h. If a stale `rateLimitedAt`
+// survives past this window with no cooldownUntil to close it, treat it as
+// stale and refresh on the next hint — prevents indefinite stickiness.
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 60 * 1000;
 
 /** Month abbreviation → 0-based month index — preserved for legacy cooldown-string parsing. */
 const MONTH_MAP: Record<string, number> = {
@@ -493,10 +497,17 @@ export class TokenManager {
       const currentId = snap.registry.activeSlotId;
       if (!currentId) return null;
       const state = snap.state[currentId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
-      // rate-limit timestamp hygiene: only overwrite if previous window
-      // has expired (no cooldownUntil or cooldownUntil has passed).
+      // rate-limit timestamp hygiene: overwrite if previous window has
+      // expired (no cooldownUntil or cooldownUntil has passed), OR if the
+      // existing `rateLimitedAt` has aged past RATE_LIMIT_WINDOW_MS (5h)
+      // without a cooldown closing it — prevents a stale timestamp from
+      // sticking forever when the cooldown field is absent.
       const prevUntilMs = state.cooldownUntil ? new Date(state.cooldownUntil).getTime() : 0;
-      const windowOpen = !state.rateLimitedAt || (prevUntilMs > 0 && prevUntilMs <= nowMs);
+      const prevRateLimitedAtMs = state.rateLimitedAt ? new Date(state.rateLimitedAt).getTime() : 0;
+      const windowOpen =
+        !state.rateLimitedAt ||
+        (prevUntilMs > 0 && prevUntilMs <= nowMs) ||
+        nowMs - prevRateLimitedAtMs > RATE_LIMIT_WINDOW_MS;
       if (windowOpen) {
         state.rateLimitedAt = effectiveOpts.rateLimitedAt ?? nowIso;
         state.rateLimitSource = source;
@@ -539,7 +550,11 @@ export class TokenManager {
     await this.store.mutate((snap) => {
       const state = snap.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       const prevUntilMs = state.cooldownUntil ? new Date(state.cooldownUntil).getTime() : 0;
-      const windowOpen = !state.rateLimitedAt || (prevUntilMs > 0 && prevUntilMs <= nowMs);
+      const prevRateLimitedAtMs = state.rateLimitedAt ? new Date(state.rateLimitedAt).getTime() : 0;
+      const windowOpen =
+        !state.rateLimitedAt ||
+        (prevUntilMs > 0 && prevUntilMs <= nowMs) ||
+        nowMs - prevRateLimitedAtMs > RATE_LIMIT_WINDOW_MS;
       if (windowOpen) {
         state.rateLimitedAt = nowIso;
         state.rateLimitSource = source;
