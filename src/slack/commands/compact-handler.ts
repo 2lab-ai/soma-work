@@ -37,6 +37,11 @@ export class CompactHandler implements CommandHandler {
 
     await this.deps.slackApi.postSystemMessage(channel, '🗜️ Triggering context compaction...', { threadTs });
 
+    // Dashboard v2.1 — compactionCount is incremented on the SDK's
+    // onCompactBoundary callback inside stream-executor, not here.
+    // /compact delegates compaction to the SDK via continueWithPrompt, so
+    // the success signal is the callback — bumping twice would double-count.
+
     return { handled: true, continueWithPrompt: '/compact' };
   }
 }

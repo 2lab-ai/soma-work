@@ -199,6 +199,18 @@ export class SessionRegistry {
   }
 
   /**
+   * Fire the activity-state/session-update callback without changing session state.
+   * Used by turn-timer / compaction-counter paths so dashboard reflects changes.
+   */
+  broadcastSessionUpdate(): void {
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.debug('broadcastSessionUpdate failed', { error: err });
+    }
+  }
+
+  /**
    * Get session key - based on channel and thread only (shared session)
    */
   getSessionKey(channelId: string, threadTs?: string): string {
@@ -1069,7 +1081,26 @@ export class SessionRegistry {
       session.pendingRetryTimer = undefined;
     }
 
+    // Dashboard v2.1 — /new (and /renew) starts a fresh logical session.
+    // Orphan-sweep any open leg into the accumulator, then reset the
+    // session-level counters/timers so the new logical session starts clean.
+    // Thread aggregate is derived from the (in-memory) session history, so
+    // the prior session's totals remain visible at the thread level until
+    // the process restarts.
+    if (session.activeLegStartedAtMs) {
+      const elapsed = Math.min(Date.now() - session.activeLegStartedAtMs, MAX_LEG_MS);
+      session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      session.activeLegStartedAtMs = undefined;
+    }
+    session.activeAccumulatedMs = 0;
+    session.activeLegStartedAtMs = undefined;
+    session.compactionCount = 0;
+    session.summaryTitle = undefined;
+    session.summaryTitleTurnId = undefined;
+    session.summaryTitleLastUpdatedAtMs = undefined;
+
     this.saveSessions();
+    this.broadcastSessionUpdate();
     return true;
   }
 
