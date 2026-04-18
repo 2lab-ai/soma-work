@@ -1,6 +1,6 @@
-import crypto from 'crypto';
-import { promises as fs } from 'fs';
-import path from 'path';
+import crypto from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { migrateLegacyCooldowns } from './migrate';
 import type { CctStoreSnapshot } from './types';

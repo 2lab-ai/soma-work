@@ -2374,7 +2374,17 @@ describe('W3-B rate-limit rotation wiring', () => {
     const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
     const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
 
-    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say, false, activeSlot);
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      false,
+      activeSlot,
+    );
 
     expect(rotateOnRateLimitMock).toHaveBeenCalledTimes(1);
     const [reason, opts] = rotateOnRateLimitMock.mock.calls[0];
@@ -2395,7 +2405,17 @@ describe('W3-B rate-limit rotation wiring', () => {
     const error = new Error('Unrelated transient failure');
     const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
 
-    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say, false, activeSlot);
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      false,
+      activeSlot,
+    );
 
     expect(rotateOnRateLimitMock).not.toHaveBeenCalled();
   });

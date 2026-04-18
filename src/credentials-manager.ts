@@ -1,6 +1,6 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { config } from './config';
 import { Logger } from './logger';
 import { getTokenManager, type TokenManager } from './token-manager';
@@ -57,7 +57,7 @@ export function hasClaudeAiOauth(): boolean {
     return false;
   }
 
-  const hasOauth = !!(credentials.claudeAiOauth && credentials.claudeAiOauth.accessToken);
+  const hasOauth = !!credentials.claudeAiOauth?.accessToken;
   logger.debug('Checked for claudeAiOauth', { hasOauth });
   return hasOauth;
 }
