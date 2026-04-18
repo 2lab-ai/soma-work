@@ -103,6 +103,20 @@ describe('buildSlotRow', () => {
     const text = (blocks[1] as any).elements[0].text as string;
     expect(text).toMatch(/cooldown until/);
   });
+
+  it('emits per-slot Remove/Rename buttons with value = slotId', () => {
+    const slot = setupSlot();
+    const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-18T00:00:00Z'));
+    // Last block should be the actions row with Remove + Rename.
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    expect(actions).toBeDefined();
+    const removeBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_remove');
+    const renameBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_rename');
+    expect(removeBtn).toBeDefined();
+    expect(renameBtn).toBeDefined();
+    expect(removeBtn.value).toBe(slot.slotId);
+    expect(renameBtn.value).toBe(slot.slotId);
+  });
 });
 
 describe('buildCctCardBlocks', () => {
@@ -110,12 +124,14 @@ describe('buildCctCardBlocks', () => {
     const blocks = buildCctCardBlocks({ slots: [], states: {} });
     const anyBlock = blocks.find((b: any) => b.type === 'section') as any;
     expect(anyBlock.text.text).toMatch(/No CCT slots/);
-    // Next + Add row is always present; Remove/Rename hidden when no slots.
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const actionIds = actions.elements.map((e: any) => e.action_id);
+    // Card-level action row (Next + Add) is always present. Remove/Rename
+    // live on each slot row now, so they are absent when no slots exist.
+    const cardActions = blocks.find((b: any) => b.type === 'actions') as any;
+    const actionIds = cardActions.elements.map((e: any) => e.action_id);
     expect(actionIds).toContain('cct_next');
     expect(actionIds).toContain('cct_open_add');
     expect(actionIds).not.toContain('cct_open_remove');
+    expect(actionIds).not.toContain('cct_open_rename');
   });
 
   it('renders set-active selector only when >1 slot', () => {
@@ -126,6 +142,30 @@ describe('buildCctCardBlocks', () => {
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.type === 'static_select'),
     );
     expect(selectors.length).toBe(1);
+  });
+
+  it('each slot row carries per-slot Remove/Rename buttons whose value is that slotId', () => {
+    const slot1 = setupSlot('cct1');
+    const slot2 = { ...setupSlot('cct2'), slotId: 'slot-2' };
+    const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeSlotId: 'slot-1' });
+    // Collect every actions row whose elements include a cct_open_remove button.
+    const removeRows = blocks.filter(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_remove'),
+    );
+    expect(removeRows).toHaveLength(2);
+    const removeValues = removeRows.map((r: any) => {
+      const btn = r.elements.find((e: any) => e.action_id === 'cct_open_remove');
+      return btn.value as string;
+    });
+    expect(removeValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
+    // Same for rename.
+    const renameValues = blocks
+      .filter((b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'))
+      .map((r: any) => {
+        const btn = r.elements.find((e: any) => e.action_id === 'cct_open_rename');
+        return btn.value as string;
+      });
+    expect(renameValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
   });
 });
 

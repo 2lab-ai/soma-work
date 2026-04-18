@@ -87,13 +87,16 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
-      // Remove button posts a single "remove" sentinel — pick first slot as
-      // placeholder if the card doesn't carry a slotId. Real flows should
-      // route through the static_select first.
+      // Per-slot Remove button: `value` carries the target slotId. Reject
+      // if absent or unknown — no silent fallback to active/slots[0].
+      const bodyAction = (body as any).actions?.[0];
+      const targetSlotId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
       const slots = tokenManager.listTokens();
-      const active = tokenManager.getActiveToken();
-      const target = active ? slots.find((s) => s.slotId === active.slotId) : slots[0];
-      if (!target) return;
+      const target = targetSlotId ? slots.find((s) => s.slotId === targetSlotId) : undefined;
+      if (!target) {
+        logger.warn('cct_open_remove: target slot not found', { targetSlotId });
+        return;
+      }
       // Resolve the TokenSlot shape the modal expects.
       const slotShape = { slotId: target.slotId, name: target.name, kind: target.kind } as any;
       // Lease check — listTokens' status string carries 'leases:N' when active.
@@ -114,10 +117,15 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
+      // Per-slot Rename button: `value` carries the target slotId.
+      const bodyAction = (body as any).actions?.[0];
+      const targetSlotId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
       const slots = tokenManager.listTokens();
-      const active = tokenManager.getActiveToken();
-      const target = active ? slots.find((s) => s.slotId === active.slotId) : slots[0];
-      if (!target) return;
+      const target = targetSlotId ? slots.find((s) => s.slotId === targetSlotId) : undefined;
+      if (!target) {
+        logger.warn('cct_open_rename: target slot not found', { targetSlotId });
+        return;
+      }
       const slotShape = { slotId: target.slotId, name: target.name, kind: target.kind } as any;
       await client.views.open({
         trigger_id: triggerId,

@@ -6,9 +6,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { buildCardFromManager, parseOAuthBlob, validateAddSubmission } from './actions';
+import { buildCardFromManager, parseOAuthBlob, registerCctActions, validateAddSubmission } from './actions';
 import { buildAddSlotModal } from './builder';
-import { CCT_BLOCK_IDS } from './views';
+import { CCT_ACTION_IDS, CCT_BLOCK_IDS } from './views';
 
 type Values = Record<string, Record<string, any>>;
 
@@ -225,6 +225,90 @@ describe('buildCardFromManager (post-action ephemeral card)', () => {
     expect(tm.listTokens).toHaveBeenCalled();
     expect(Array.isArray(blocks)).toBe(true);
     expect(blocks.length).toBeGreaterThan(0);
+  });
+});
+
+describe('cct_open_remove / cct_open_rename routing', () => {
+  function makeApp() {
+    const handlers = new Map<string, (ctx: any) => Promise<void>>();
+    const app = {
+      action: (id: string, fn: (ctx: any) => Promise<void>) => {
+        handlers.set(id, fn);
+      },
+      view: () => {
+        /* noop */
+      },
+    } as any;
+    return { app, handlers };
+  }
+
+  it('open_remove routes to the slotId carried in the button value, not the active slot', async () => {
+    const { app, handlers } = makeApp();
+    const tm = {
+      listTokens: () => [
+        { slotId: 'slot-A', name: 'cctA', kind: 'setup_token', status: 'healthy' },
+        { slotId: 'slot-B', name: 'cctB', kind: 'setup_token', status: 'healthy' },
+      ],
+      getActiveToken: () => ({ slotId: 'slot-A', name: 'cctA', kind: 'setup_token' }),
+    } as any;
+    // admin-utils is only used by requireAdmin — stub via vi.doMock is heavy;
+    // the test manually sets user.id to a well-known admin via mock.
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const openRemove = handlers.get(CCT_ACTION_IDS.remove);
+      expect(openRemove).toBeDefined();
+      const openedViews: any[] = [];
+      const ctx = {
+        ack: vi.fn(async () => undefined),
+        body: {
+          trigger_id: 'T1',
+          user: { id: 'admin' },
+          actions: [{ value: 'slot-B' }],
+        },
+        client: {
+          views: { open: vi.fn(async (v: any) => openedViews.push(v)) },
+        },
+        respond: vi.fn(),
+      };
+      await openRemove?.(ctx);
+      expect(openedViews).toHaveLength(1);
+      expect(openedViews[0].view.private_metadata).toBe('slot-B');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('open_rename rejects (no view opens) when value is not a known slotId', async () => {
+    const { app, handlers } = makeApp();
+    const tm = {
+      listTokens: () => [{ slotId: 'slot-A', name: 'cctA', kind: 'setup_token', status: 'healthy' }],
+      getActiveToken: () => ({ slotId: 'slot-A', name: 'cctA', kind: 'setup_token' }),
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const openRename = handlers.get(CCT_ACTION_IDS.rename);
+      const openedViews: any[] = [];
+      const ctx = {
+        ack: vi.fn(async () => undefined),
+        body: {
+          trigger_id: 'T1',
+          user: { id: 'admin' },
+          actions: [{ value: 'slot-UNKNOWN' }],
+        },
+        client: {
+          views: { open: vi.fn(async (v: any) => openedViews.push(v)) },
+        },
+        respond: vi.fn(),
+      };
+      await openRename?.(ctx);
+      expect(openedViews).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

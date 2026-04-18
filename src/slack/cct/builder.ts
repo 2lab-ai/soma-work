@@ -129,6 +129,29 @@ export function buildSlotRow(
       elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
     });
   }
+
+  // Per-slot Remove/Rename action row. The button `value` carries the slotId
+  // so the open handler routes to the clicked slot rather than falling back
+  // to `active ?? slots[0]`.
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        action_id: CCT_ACTION_IDS.remove,
+        style: 'danger',
+        text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
+        value: slot.slotId,
+      },
+      {
+        type: 'button',
+        action_id: CCT_ACTION_IDS.rename,
+        text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
+        value: slot.slotId,
+      },
+    ],
+  });
+
   return blocks;
 }
 
@@ -167,7 +190,9 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     }
   }
 
-  // Action row: Next / Add / Remove / Rename.
+  // Card-level action row: Next / Add. Per-slot Remove/Rename buttons live
+  // on each slot row (emitted by `buildSlotRow`) so they carry the correct
+  // slotId via the button's `value`.
   const actionElements: ZBlock[] = [
     {
       type: 'button',
@@ -183,21 +208,6 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       value: 'add',
     },
   ];
-  if (input.slots.length > 0) {
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.remove,
-      style: 'danger',
-      text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
-      value: 'remove',
-    });
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.rename,
-      text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-      value: 'rename',
-    });
-  }
   blocks.push({ type: 'actions', elements: actionElements });
 
   // Set-active selector (only when >1 slot).
