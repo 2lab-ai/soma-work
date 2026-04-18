@@ -670,9 +670,7 @@ describe('TurnSurface', () => {
       // B1 stream for A was stopped (supersede), but B2 plan was NOT touched.
       expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
       // chat.update against plan-ts-A did NOT fire.
-      expect(
-        (client.chat.update?.mock.calls ?? []).some((call: any[]) => call[0]?.ts === 'plan-ts-A'),
-      ).toBe(false);
+      expect((client.chat.update?.mock.calls ?? []).some((call: any[]) => call[0]?.ts === 'plan-ts-A')).toBe(false);
 
       await surface.end(ctxB.turnId, 'completed');
     });
