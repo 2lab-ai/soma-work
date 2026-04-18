@@ -118,6 +118,11 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
     ],
   },
   {
+    title: '*📊 Usage*',
+    description: '토큰 사용량 조회 · 개인 통계 카드',
+    topics: [{ id: 'usage', label: 'usage' }],
+  },
+  {
     title: '*🛠️ Admin*',
     description: '관리자 전용 명령',
     topics: [
