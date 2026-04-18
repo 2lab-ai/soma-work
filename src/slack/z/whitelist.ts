@@ -70,9 +70,21 @@ export function isWhitelistedNaked(text: string): boolean {
  * `/z` topics that are considered "safe" for non-admin DM use.
  *
  * Derived from the registered topic set in `src/slack/z/topics/index.ts`.
- * Intentionally excludes topics that create or mutate a session (`new`,
- * `renew`, `compact`, etc.), plus topics that don't exist as first-class
- * `/z` verbs (`thinking`, `thinking_summary`).
+ * Intentionally excludes:
+ *  - session-creating topics that spawn a new AI session with the text as a
+ *    prompt: `new`, `renew`, `compact`. These are the DM silent-drop vector
+ *    Issue #553 targeted — non-admins must not be able to open prompt
+ *    sessions via the `/z` surface.
+ *  - topics that don't exist as first-class `/z` verbs: `thinking`,
+ *    `thinking_summary`.
+ *
+ * Note: topics in the list (persona, model, verbosity, effort, theme, cwd,
+ * email, memory, notify, sandbox, cct, bypass) configure user/session
+ * settings and do NOT execute prompts. `persona`/`model`/etc. are explicit
+ * settings topics surfaced to end users through the docs — keeping them
+ * accessible from DM for non-admins is intentional and matches the SSOT:
+ * "어드민이 아니면 프롬프트는 안받고 그냥 일반 커맨드만 받음 — 설정 처리나
+ * 세션리스트 확인 등".
  *
  * Matched against the text AFTER `stripZPrefix()` has removed the `/z`
  * marker. The trailing `(?:\s+.*)?` allows subcommands/args (e.g.

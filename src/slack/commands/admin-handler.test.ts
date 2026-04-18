@@ -21,17 +21,21 @@ vi.mock('../../env-paths', () => ({
   DATA_DIR: '/mock/data',
 }));
 
+const mockAddSlot = vi.fn();
+const mockListTokens = vi.fn();
+
 vi.mock('../../token-manager', () => ({
-  tokenManager: {
-    initialize: vi.fn(),
-  },
+  getTokenManager: vi.fn(() => ({
+    addSlot: mockAddSlot,
+    listTokens: mockListTokens,
+  })),
 }));
 
 vi.mock('fs');
 
 import fs from 'fs';
 import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
-import { tokenManager } from '../../token-manager';
+import { getTokenManager } from '../../token-manager';
 import { userSettingsStore } from '../../user-settings-store';
 import { AdminHandler } from './admin-handler';
 import type { CommandContext } from './types';
@@ -53,6 +57,10 @@ describe('AdminHandler', () => {
   beforeEach(() => {
     handler = new AdminHandler();
     vi.mocked(isAdminUser).mockReturnValue(true);
+    mockAddSlot.mockReset();
+    mockListTokens.mockReset();
+    mockListTokens.mockReturnValue([]);
+    mockAddSlot.mockResolvedValue({ slotId: 'SLOT1', name: 'cct1', kind: 'setup_token', createdAt: '' });
   });
 
   afterEach(() => {
@@ -291,11 +299,41 @@ describe('AdminHandler', () => {
       expect(resetAdminUsersCache).toHaveBeenCalled();
     });
 
-    it('resets token manager for CCT token list', async () => {
-      const ctx = makeCtx({ text: 'config CLAUDE_CODE_OAUTH_TOKEN_LIST=t1,t2' });
+    it('routes CLAUDE_CODE_OAUTH_TOKEN_LIST through TokenManager.addSlot (no .env write)', async () => {
+      const ctx = makeCtx({
+        text: 'config CLAUDE_CODE_OAUTH_TOKEN_LIST=a:sk-ant-oat01-aaaaAAAA,b:sk-ant-oat01-bbbbBBBB',
+      });
       await handler.execute(ctx);
 
-      expect(tokenManager.initialize).toHaveBeenCalled();
+      expect(getTokenManager).toHaveBeenCalled();
+      expect(mockAddSlot).toHaveBeenCalledTimes(2);
+      expect(mockAddSlot).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-aaaaAAAA' }),
+      );
+      expect(mockAddSlot).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'b', kind: 'setup_token', value: 'sk-ant-oat01-bbbbBBBB' }),
+      );
+      // .env must NOT be written for token list
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('skips already-existing slot names via listTokens pre-check', async () => {
+      mockListTokens.mockReturnValue([{ slotId: 'EXISTING', name: 'a', kind: 'setup_token', status: 'healthy' }]);
+      const ctx = makeCtx({ text: 'config CLAUDE_CODE_OAUTH_TOKEN_LIST=a:sk-ant-oat01-aaaa,b:sk-ant-oat01-bbbb' });
+      await handler.execute(ctx);
+
+      // only 'b' should be added
+      expect(mockAddSlot).toHaveBeenCalledTimes(1);
+      expect(mockAddSlot).toHaveBeenCalledWith(expect.objectContaining({ name: 'b' }));
+    });
+
+    it('redacts echoed token values (no sk-ant-… in reply)', async () => {
+      const ctx = makeCtx({ text: 'config CLAUDE_CODE_OAUTH_TOKEN_LIST=a:sk-ant-oat01-SUPERSECRETTOKEN1234' });
+      await handler.execute(ctx);
+
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).not.toContain('sk-ant-oat01-SUPERSECRETTOKEN1234');
+      expect(reply).not.toMatch(/sk-ant-oat01-[A-Za-z0-9_-]+/);
     });
 
     it('rejects non-admin', async () => {
