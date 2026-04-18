@@ -665,6 +665,27 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
   }
 }
 
+/**
+ * Dashboard v2.1 — targeted summaryTitle update. Sent in lieu of a full
+ * session_update to avoid re-sending the whole board for a title change.
+ * Clients patch the matching card's title in place.
+ */
+export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: string): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'summaryTitleChanged', sessionKey, summaryTitle });
+    for (const client of wsClients) {
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast summaryTitleChanged', error);
+  }
+}
+
 /** Broadcast session action feedback to all connected WebSocket clients */
 export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
@@ -3482,6 +3503,20 @@ function connectWs() {
         }
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
+      } else if (msg.type === 'summaryTitleChanged') {
+        // Dashboard v2.1 — targeted title patch. Update cache + single card.
+        var cached = _sessionCache[msg.sessionKey];
+        if (cached) {
+          cached.title = msg.summaryTitle;
+        }
+        var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
+        for (var i = 0; i < cardTitleEls.length; i++) {
+          cardTitleEls[i].textContent = msg.summaryTitle;
+        }
+        if (panelOpen && panelSessionKey === msg.sessionKey) {
+          var pt = document.getElementById('panel-title');
+          if (pt) pt.textContent = msg.summaryTitle;
+        }
       }
     } catch (e) { /* ignore */ }
   };
