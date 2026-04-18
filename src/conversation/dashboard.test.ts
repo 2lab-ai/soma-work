@@ -232,6 +232,98 @@ describe('Dashboard API', () => {
     });
   });
 
+  it('should project recommendedChoiceId on pendingQuestion (user_choice)', async () => {
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 's1',
+      title: 'Rec session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      activityState: 'waiting',
+      lastActivity: new Date(),
+      actionPanel: {
+        pendingQuestion: {
+          type: 'user_choice',
+          question: 'Pick one',
+          recommendedChoiceId: '2',
+          choices: [
+            { id: '1', label: 'A' },
+            { id: '2', label: 'B' },
+          ],
+        },
+      },
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const pq = body.board.waiting[0].pendingQuestion;
+    expect(pq).toBeDefined();
+    expect(pq.type).toBe('user_choice');
+    expect(pq.recommendedChoiceId).toBe('2');
+  });
+
+  it('should project per-question recommendedChoiceId on pendingQuestion (user_choices)', async () => {
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 's1',
+      title: 'Multi rec session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      activityState: 'waiting',
+      lastActivity: new Date(),
+      actionPanel: {
+        pendingQuestion: {
+          type: 'user_choices',
+          title: 'Two decisions',
+          questions: [
+            {
+              id: 'q1',
+              question: 'First?',
+              recommendedChoiceId: 'b',
+              choices: [
+                { id: 'a', label: 'A' },
+                { id: 'b', label: 'B' },
+              ],
+            },
+            {
+              id: 'q2',
+              question: 'Second?',
+              choices: [
+                { id: 'x', label: 'X' },
+                { id: 'y', label: 'Y' },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const pq = body.board.waiting[0].pendingQuestion;
+    expect(pq).toBeDefined();
+    expect(pq.type).toBe('user_choices');
+    expect(pq.questions).toHaveLength(2);
+    expect(pq.questions[0].recommendedChoiceId).toBe('b');
+    expect(pq.questions[1].recommendedChoiceId).toBeUndefined();
+  });
+
   it('should skip sessions without sessionId', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
@@ -624,8 +716,9 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 4 doAction calls × 1 sep + 1 resummarize + 2 answerChoice × 3 seps + 1 selectMc × 1 sep = 12 closing patterns
-    expect(actionClosings!.length).toBe(12);
+    // 4 doAction calls × 1 sep + 1 resummarize + 4 answerChoice × 3 seps + 1 selectMc × 1 sep = 18 closing patterns
+    // (answerChoice appears at 4 sites: card-recommended, card-non-recommended, panel-recommended, panel-non-recommended)
+    expect(actionClosings!.length).toBe(18);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──

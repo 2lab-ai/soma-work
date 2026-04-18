@@ -105,7 +105,23 @@ export class UserChoiceExtractor {
 
       // Format 1: UserChoices (multi-question form)
       if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
-        return { choice: null, choices: parsed as UserChoices };
+        // Preserve per-question recommendedChoiceId if present
+        const questions: UserChoiceQuestion[] = parsed.questions.map((q: any) => ({
+          id: q.id,
+          question: q.question,
+          choices: q.choices || [],
+          context: q.context,
+          ...(typeof q.recommendedChoiceId === 'string' ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
+        }));
+        return {
+          choice: null,
+          choices: {
+            type: 'user_choices',
+            title: parsed.title,
+            description: parsed.description,
+            questions,
+          },
+        };
       }
 
       // Format 2: UserChoice (single choice with type field)
@@ -118,6 +134,9 @@ export class UserChoiceExtractor {
               question: parsed.question,
               choices: opts,
               context: parsed.context,
+              ...(typeof parsed.recommendedChoiceId === 'string'
+                ? { recommendedChoiceId: parsed.recommendedChoiceId }
+                : {}),
             },
             choices: null,
           };
@@ -133,6 +152,7 @@ export class UserChoiceExtractor {
             question: c.question,
             choices: c.options || c.choices || [],
             context: c.context,
+            ...(typeof c.recommendedChoiceId === 'string' ? { recommendedChoiceId: c.recommendedChoiceId } : {}),
           }));
 
           if (questions.length === 1) {
@@ -142,6 +162,7 @@ export class UserChoiceExtractor {
                 question: questions[0].question,
                 choices: questions[0].choices,
                 context: questions[0].context,
+                ...(questions[0].recommendedChoiceId ? { recommendedChoiceId: questions[0].recommendedChoiceId } : {}),
               },
               choices: null,
             };

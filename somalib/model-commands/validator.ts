@@ -41,6 +41,7 @@ const ASK_USER_QUESTION_EXAMPLES = {
     payload: {
       type: 'user_choice',
       question: 'Choose next step',
+      recommendedChoiceId: '1',
       choices: [
         { id: '1', label: 'Write implementation spec', description: 'Document API and tasks first' },
         { id: '2', label: 'Start implementation', description: 'Code immediately from current context' },
@@ -55,6 +56,7 @@ const ASK_USER_QUESTION_EXAMPLES = {
       choices: [
         {
           question: 'Which approach?',
+          recommendedChoiceId: '1',
           options: [
             { id: '1', label: 'Option A' },
             { id: '2', label: 'Option B' },
@@ -71,10 +73,11 @@ const ASK_USER_QUESTION_INVALID_MESSAGE = [
   'Allowed payload.type values: "user_choice" | "user_choice_group".',
   'Do not send wrapper formats like params.user_choice or root question/options.',
   'Minimum user_choice schema:',
-  '{ "type":"user_choice", "question":"...", "choices":[{ "id":"1", "label":"Option A", "description":"optional" }] }',
+  '{ "type":"user_choice", "question":"...", "recommendedChoiceId":"1", "choices":[{ "id":"1", "label":"Option A", "description":"optional" }] }',
   'Minimum user_choice_group schema:',
-  '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "options":[{ "id":"1", "label":"Option A" }] }] }',
+  '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "recommendedChoiceId":"1", "options":[{ "id":"1", "label":"Option A" }] }] }',
   'Rules: "choices" or "options" must be a non-empty array of objects, and each item requires "label" (string).',
+  'Optional: "recommendedChoiceId" must match one of the option ids; if it does not, it is silently dropped.',
 ].join('\n');
 
 export function validateModelCommandRunArgs(args: unknown): ValidationResult {
@@ -423,6 +426,16 @@ export function checkAskUserQuestionQuality(params: AskUserQuestionParams): stri
 
 const TIER_PREFIX_RE = /^\[(tiny|small|medium|large|xlarge)(?:\s+~\d+(?:\s+lines?)?)?\]\s+/i;
 const RECOMMENDED_MARKER_RE = /\(Recommended\s*·\s*\d+\/\d+\)\s*$/i;
+
+/**
+ * Trailing "(Recommended)" or "(Recommended · N/M)" suffix — match-at-end-of-label only.
+ *
+ * Exported for reuse by Slack + dashboard legacy-fallback paths so all call sites agree on
+ * what counts as a "legacy Recommended marker". Tighter than `/\(Recommended\b/i` — must anchor
+ * at end-of-string (trailing whitespace allowed) so mid-label uses like
+ * `"Option A (Recommended for staging only)"` do NOT match.
+ */
+export const LEGACY_RECOMMENDED_SUFFIX_RE = /\(Recommended(?:\s*·\s*\d+\/\d+)?\)\s*$/i;
 const FORBIDDEN_META_LABELS = new Set([
   'fix_now',
   'defer',
@@ -467,7 +480,7 @@ function collectUserChoiceWarnings(payload: UserChoice, warnings: string[]): voi
   pushOptionCountWarnings(payload.choices, '', warnings);
 
   // Rule 5 — Recommended marker label-only exactly-one (also catches marker in description)
-  pushRecommendedWarnings(payload.choices, '', warnings);
+  pushRecommendedWarnings(payload.choices, '', warnings, payload.recommendedChoiceId);
 
   // Rule 4 — forbidden meta labels (strip Recommended marker first)
   pushForbiddenLabelWarnings(payload.choices, '', warnings);
@@ -521,7 +534,7 @@ function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): v
     pushOptionCountWarnings(q.choices, prefix, warnings);
 
     // Rule 5 — Recommended marker per-question
-    pushRecommendedWarnings(q.choices, prefix, warnings);
+    pushRecommendedWarnings(q.choices, prefix, warnings, q.recommendedChoiceId);
 
     // Rule 4 — forbidden meta labels
     pushForbiddenLabelWarnings(q.choices, prefix, warnings);
@@ -550,20 +563,40 @@ function pushOptionCountWarnings(choices: UserChoiceOption[], prefix: string, wa
   }
 }
 
-function pushRecommendedWarnings(choices: UserChoiceOption[], prefix: string, warnings: string[]): void {
-  let markerCount = 0;
+function pushRecommendedWarnings(
+  choices: UserChoiceOption[],
+  prefix: string,
+  warnings: string[],
+  recommendedChoiceId?: string,
+): void {
+  // Always flag marker-in-description — that's a data-shape issue regardless of how
+  // the recommended option is expressed at the question level.
   for (const choice of choices) {
-    if (typeof choice.label === 'string' && RECOMMENDED_MARKER_RE.test(choice.label)) {
-      markerCount += 1;
-    }
     if (typeof choice.description === 'string' && RECOMMENDED_MARKER_RE.test(choice.description)) {
       warnings.push(
         `${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`,
       );
     }
   }
+
   if (choices.length < 2) {
     return; // Rule 1 already warned; skip marker checks for degenerate cases.
+  }
+
+  // New API: explicit recommendedChoiceId satisfies the "Recommended" invariant.
+  // Only nudge toward the legacy label suffix when no valid id is provided.
+  if (
+    typeof recommendedChoiceId === 'string' &&
+    choices.some((c) => c.id === recommendedChoiceId)
+  ) {
+    return;
+  }
+
+  let markerCount = 0;
+  for (const choice of choices) {
+    if (typeof choice.label === 'string' && RECOMMENDED_MARKER_RE.test(choice.label)) {
+      markerCount += 1;
+    }
   }
   if (markerCount === 0) {
     warnings.push(`${prefix}no Recommended marker — mark one option as '(Recommended · N/M)'`);
@@ -778,11 +811,13 @@ function normalizeUserChoiceQuestion(raw: unknown, index: number): UserChoiceQue
     return null;
   }
   const id = toOptionalString(raw.id) || `q${index + 1}`;
+  const recommendedChoiceId = resolveRecommendedChoiceId(raw.recommendedChoiceId, options);
   return {
     id,
     question,
     context: toOptionalString(raw.context),
     choices: options,
+    ...(recommendedChoiceId ? { recommendedChoiceId } : {}),
   };
 }
 
@@ -792,12 +827,34 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
   if (!question || options.length === 0) {
     return null;
   }
+  const recommendedChoiceId = resolveRecommendedChoiceId(raw.recommendedChoiceId, options);
   return {
     type: 'user_choice',
     question,
     context: toOptionalString(raw.context),
     choices: options,
+    ...(recommendedChoiceId ? { recommendedChoiceId } : {}),
   };
+}
+
+/**
+ * Resolve the recommendedChoiceId:
+ * - If an explicit id is provided and it matches one of the options, keep it.
+ * - If explicit id is provided but doesn't match, drop silently.
+ * - If missing/invalid, scan options[].label for a legacy "(Recommended...)" marker; first match becomes implicit id.
+ */
+function resolveRecommendedChoiceId(
+  explicitId: unknown,
+  options: UserChoiceOption[],
+): string | undefined {
+  if (typeof explicitId === 'string' && explicitId.trim() !== '') {
+    if (options.some((o) => o.id === explicitId)) {
+      return explicitId;
+    }
+    // explicit but unknown — drop silently, fall through to legacy scan
+  }
+  const legacy = options.find((o) => LEGACY_RECOMMENDED_SUFFIX_RE.test(o.label));
+  return legacy?.id;
 }
 
 function normalizeChoiceOptions(raw: unknown): UserChoiceOption[] {
