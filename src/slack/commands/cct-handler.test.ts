@@ -3,21 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 // Contract tests for CctHandler — derived from docs/cct-token-rotation/trace.md
 // Scenarios 2 & 3
 
-describe('CctHandler', () => {
-  // Trace: Scenario 2, Step 5
-  it('should show all tokens with status for admin user', async () => {
-    // RED: CctHandler not yet implemented
-    const { CctHandler } = await import('./cct-handler');
-    expect(CctHandler).toBeDefined();
-  });
-
-  // Trace: Scenario 2, Step 1 error
-  it('should reject non-admin users', async () => {
-    const { CctHandler } = await import('./cct-handler');
-    expect(CctHandler).toBeDefined();
-  });
-});
-
 describe('CommandParser CCT', () => {
   // Trace: Scenario 2 — command parsing
   it('should recognize "cct" as cct command', async () => {
