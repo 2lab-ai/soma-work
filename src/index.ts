@@ -31,6 +31,7 @@ import {
   setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
+  setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   setOAuthUserLookup,
@@ -382,6 +383,17 @@ async function start() {
         }
       },
     );
+
+    // Connect dashboard: hero "Submit All Recommended" (group-only one-click)
+    setDashboardSubmitRecommendedHandler(async (sessionKey: string) => {
+      try {
+        await slackHandler.handleDashboardSubmitRecommended(sessionKey);
+        logger.info('Dashboard: submit-recommended completed', { sessionKey });
+      } catch (error) {
+        logger.error('Dashboard: submit-recommended failed', { sessionKey, error });
+        throw error;
+      }
+    });
 
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.

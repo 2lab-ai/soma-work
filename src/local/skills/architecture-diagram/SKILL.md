@@ -2,7 +2,7 @@
 name: architecture-diagram
 description: Draw a system architecture diagram as Excalidraw JSON + rendered PNG, then upload both to Slack. Triggers on "아키텍처 그려줘", "아키텍쳐 다이어그램", "구조도 그려줘", "architecture diagram", "system diagram", "draw architecture".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 2.0.0
+version: 2.1.0
 license: MIT
 ---
 
@@ -35,6 +35,33 @@ Runtime:
 
 List components + directional flows. Classify each component by semantic type (see palette). If input is too thin to render safely, ask a follow-up via structured UI (UIAskUserQuestion) — do not hallucinate.
 
+### 1.5. Plan (conditional)
+
+**Trigger:** Apply this step only when **either** condition holds:
+
+- Component count ≥ 10, OR
+- The user explicitly signals complexity (e.g. "multi-region", "end-to-end", "full platform", "하이 레벨 전체 구조").
+
+For simple diagrams (< 10 components, single concern), skip directly to Step 2 — Plan-then-Render has real overhead and is not worth it for small cases.
+
+**When triggered**, produce a short markdown plan **before** writing any JSON:
+
+```markdown
+## Components
+- <name> — <semantic type> — <1-line reason>
+- …
+
+## Edges
+- <from> → <to> — <label / protocol>
+- …
+
+## Grouping
+- <cluster name>: [<member>, <member>, …]
+- …
+```
+
+Then render the plan into JSON in Step 2. The plan is an internal artifact — do not upload it to Slack. Its purpose is to surface structural mistakes (missing component, wrong edge direction, bad clustering) at plan-level where they are cheap to fix, instead of at JSON or render level where they are expensive.
+
 ### 2. Generate `.excalidraw` JSON
 
 Write to `$(pwd)/arch-<slug>-<ts>.excalidraw` where `$(pwd)` is the session working directory (runtime guarantees `/tmp/{slackId}/session_*` — safe for Slack upload).
@@ -45,7 +72,7 @@ Required settings:
 - `appState.gridSize`: `20`
 - Rectangles: `roundness: { "type": 3 }`, `roughness: 0`
 - Arrows: `roundness: { "type": 2 }`, must set `startBinding` + `endBinding`
-- Text elements: `strokeColor` MUST be `#e2e8f0` (slate-200) or lighter — black text is invisible on dark bg
+- Text elements: `strokeColor` MUST be `#e2e8f0` (slate-200) **or** match the parent container's stroke color from the palette — black text is invisible on dark bg
 
 Semantic color palette (fill + stroke pair):
 
@@ -113,12 +140,33 @@ with open(p, "rb") as f:
 PY
 ```
 
+### 6.5. Visual Critic
+
+Mechanical checks in Step 6 catch missing files and degenerate dimensions — they do **not** catch visual mistakes (misrouted arrows, overlapping boxes, clipped labels, wrong semantic colors). Run a vision-based self-critique pass:
+
+1. **Re-read the PNG** with the `Read` tool (Claude is multimodal — the rendered image becomes part of the conversation).
+2. **Walk the checklist** in `references/critic-checklist.md` — all 6 items.
+3. **Decide**:
+   - All 6 items pass → proceed to Step 7.
+   - One or more items fail → identify the offending element IDs, revise **only** those elements in the JSON, re-run Step 5 (render) and Step 6 (validate), then re-critique. Each such revise+re-render+re-critique counts as **one** critic-driven revision against the Step 7 budget (max 2).
+
+Common failure modes to look for:
+
+- Arrows visually disconnected from their intended source/target (binding coords stale after element resize).
+- Label text overflowing its container or colliding with another element.
+- Two rectangles overlapping because the layout was packed too tightly.
+- Text rendered in near-black (`#1e1e1e`) on the dark background — invisible.
+- Same semantic role (e.g. two Database components) rendered in different colors.
+- Arrow direction reversed vs. the flow described in Step 1 (or in the plan from Step 1.5, if that step was triggered).
+
 ### 7. Retry policy
 
-If any check in step 5 or 6 fails:
+After the **initial render** (Step 5), the skill may perform up to **3 retries** before stopping. A retry is a full render+validate+critique pass that replaces the previous one. The 3-retry budget is partitioned by cause:
 
-- Adjust JSON (fix bindings, spacing, text color) and re-run steps 5–6 ONCE.
-- On 2nd failure: endTurn with the captured stderr from `uv run …`. Do not loop.
+- **Mechanical error** (render command fails, PNG missing, header invalid, dims < 400×300 in Step 6): retry **once** after fixing the root cause.
+- **Critic-identified visual issues** (any checklist item in Step 6.5 fails): revise + re-render up to **2 times**.
+
+These two allotments are independent — a mechanical failure followed later by a critic failure is legal, as long as each stays within its own cap. After the budget is exhausted, stop. `endTurn` with the captured stderr (for mechanical errors) or the final critique notes (for visual failures). Do not loop.
 
 ### 8. Dual upload to Slack
 
@@ -148,11 +196,13 @@ One-line confirmation. No preamble. No follow-up question unless the input was t
 - Do NOT omit `startBinding` / `endBinding` on arrows — breaks layout on resize.
 - Do NOT leave text `strokeColor` at the default `#1e1e1e` — it disappears on dark backgrounds.
 - Do NOT exceed ~20 components in one diagram. Split instead.
-- Do NOT retry more than once. Escalate to the user.
+- Do NOT exceed the Step 7 retry budget (1 mechanical + 2 critic-driven = 3 retries). Escalate to the user after the budget is exhausted.
+- Do NOT skip Step 6.5 on the assumption that the mechanical check is sufficient — it never is for visual correctness.
 
 ## References
 
 - `references/color-palette.md` — full semantic mapping
-- `references/element-templates.md` — copy-paste element JSON
+- `references/element-templates.md` — copy-paste element JSON + canonical archetype skeletons
+- `references/critic-checklist.md` — 6-item visual self-critique checklist used in Step 6.5
 - `references/json-schema.md` — Excalidraw JSON schema (minimal)
 - `templates/template.html` — legacy HTML/SVG visual reference (dev-only)

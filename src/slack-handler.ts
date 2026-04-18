@@ -148,9 +148,12 @@ export class SlackHandler {
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
     this.statusReporter = new StatusReporter(this.slackApi);
     this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
-    // Wire todo updates to trigger thread header re-render
+    // Wire todo updates to trigger thread header re-render + plan block render.
     this.todoDisplayManager.setRenderRequestCallback(async (session, sessionKey) => {
       await this.threadPanel?.updatePanel(session, sessionKey);
+    });
+    this.todoDisplayManager.setPlanRenderCallback(async (turnId, todos, ctx) => {
+      return (await this.threadPanel?.renderTasks(turnId, todos, ctx)) ?? false;
     });
 
     // Native Slack AI spinner
@@ -1088,6 +1091,15 @@ export class SlackHandler {
       throw new Error('Session not found');
     }
     await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
+  }
+
+  /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
+  async handleDashboardSubmitRecommended(sessionKey: string): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, session.ownerId);
   }
 
   /** Request re-render of the Slack thread header (e.g. after title change) */

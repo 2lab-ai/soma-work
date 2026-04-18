@@ -3,6 +3,7 @@ import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
 import { getTokenManager } from '../../token-manager';
 import { registerCctActions } from '../cct/actions';
+import { defaultTabCache } from '../commands/usage-carousel-cache';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
@@ -17,6 +18,7 @@ import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
+import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
@@ -40,6 +42,7 @@ export class ActionHandlers {
   private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
   private userAcceptanceHandler: UserAcceptanceActionHandler;
+  private usageCardHandler: UsageCardActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
   private zSettingsHandler: ZSettingsActionHandler;
@@ -109,6 +112,11 @@ export class ActionHandlers {
 
     this.userAcceptanceHandler = new UserAcceptanceActionHandler({
       slackApi: ctx.slackApi,
+    });
+
+    // Usage card carousel tab click handler — Trace: docs/usage-card-dark/trace.md, Scenarios 8/9/11
+    this.usageCardHandler = new UsageCardActionHandler({
+      tabCache: defaultTabCache,
     });
 
     this.mcpToolPermissionHandler = new McpToolPermissionActionHandler();
@@ -185,6 +193,12 @@ export class ActionHandlers {
       await this.sessionHandler.handleIdleKeep(body, respond);
     });
 
+    // Usage card carousel tab click — Trace: docs/usage-card-dark/trace.md, Scenario 8
+    app.action('usage_card_tab', async ({ ack, body, client, respond }) => {
+      await ack();
+      await this.usageCardHandler.handleTabClick(body, client, respond);
+    });
+
     // 사용자 선택 액션
     app.action(/^user_choice_/, async ({ ack, body }) => {
       await ack();
@@ -212,6 +226,15 @@ export class ActionHandlers {
     app.action(/^reset_form_/, async ({ ack, body }) => {
       await ack();
       await this.choiceHandler.handleFormReset(body);
+    });
+
+    // Hero "Submit All Recommended" — group-only one-click. Regex matches BOTH
+    // `submit_all_recommended_<formId>` (active) and
+    // `submit_all_recommended_blocked_<formId>` (blocked sentinel); the handler
+    // dispatches on the `_blocked_` substring inside the action_id.
+    app.action(/^submit_all_recommended_/, async ({ ack, body }) => {
+      await ack();
+      await this.choiceHandler.handleSubmitAllRecommended(body);
     });
 
     app.action('custom_input_single', async ({ ack, body, client }) => {
@@ -348,6 +371,11 @@ export class ActionHandlers {
     userId: string,
   ): Promise<void> {
     return this.choiceHandler.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
+  }
+
+  /** Delegate dashboard "Submit All Recommended" hero click to ChoiceActionHandler */
+  async handleDashboardSubmitRecommended(sessionKey: string, userId: string): Promise<void> {
+    return this.choiceHandler.handleSubmitRecommendedFromDashboard(sessionKey, userId);
   }
 
   // 폼 상태 관리 메서드 (기존 API 호환)

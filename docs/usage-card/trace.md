@@ -108,18 +108,19 @@ Total: 15 scenarios. Most are tiny/small. Medium: 2, 5, 9.
 3. `stats = await aggregator.aggregateUsageCard({...})`
 4. if `stats.empty` → ephemeral text + return
 5. `png = await renderer.renderUsageCard(stats)`
-6. `fileId = await slackApi.filesUploadV2({...png})`
-7. `await slackApi.postMessage({ blocks:[{ type:'image', slack_file:{id:fileId}, alt_text:... }], channel })`
-8. logger.info metrics (renderTime, pngBytes)
-**RED**: happy E2E with DI mocks → assert order of calls + payload shape.
+6. `await slackApi.filesUploadV2({ filename, file:png, channel_id, thread_ts, initial_comment: altText, alt_text, request_file_info:false })` — **single call** uploads + shares to the channel/thread + renders caption atomically. No follow-up `postMessage`.
+7. logger.info metrics (pngBytes)
+**RED**: happy E2E with DI mocks → assert `filesUploadV2` called once with `{channel_id, thread_ts, initial_comment}` and `postMessage` **not** called on the success path.
 
-### Scenario 10 — Slack upload + post
+**Why 1-step**: The previous 2-step design (uploadV2 + postMessage-with-image-block referencing `slack_file.id`) hit an intermittent Slack race: `filesUploadV2(channel_id)` already auto-posts the file to the channel, and Slack rejects a follow-up `image` block whose `slack_file.id` is evaluated before the file finishes sharing → `invalid_blocks: invalid slack file`. Collapsing to a single upload call with `thread_ts` + `initial_comment` eliminates the race entirely (issue #579).
+
+### Scenario 10 — Slack 1-step upload (channel + thread + initial_comment)
 
 **Internals** (covered in #9 but focused test):
-- uses `this.slack.filesUploadV2({filename, file: png, channels: undefined, request_file_info: false})` → returns file id
-- then `chat.postMessage({channel, blocks})`
-- error from uploadV2 → `SlackUploadError`; from postMessage → `SlackPostError`
-**RED**: mock WebClient throwing in each step → correct subclass emitted.
+- `this.slack.filesUploadV2({filename, file: png, channel_id: channel, thread_ts, initial_comment: altText, alt_text, request_file_info: false})` — Slack posts the file atomically into the originating thread with the caption.
+- error from uploadV2 → `SlackUploadError` wrap → safe-operational fallback (ephemeral + DM alert).
+- The previous `postMessage(blocks)` step and its `SlackPostError` wrap are removed from the success path.
+**RED**: mock WebClient `filesUploadV2` throwing → handler emits `SlackUploadError` + ephemeral fallback + DM alert; mock WebClient `filesUploadV2` happy → `postMessage` is **not** called on the success path.
 
 ### Scenario 11 — Zero-activity short-circuit
 
@@ -127,7 +128,11 @@ Total: 15 scenarios. Most are tiny/small. Medium: 2, 5, 9.
 
 ### Scenario 12 — Error fallback
 
-**RED**: renderer throws each of 5 subclasses in turn → handler logs + sends ephemeral text "카드 생성 실패, 잠시 후 다시 시도해 주세요." + DM 알림. Non-subclass error (e.g. `RangeError`) → re-throw (handler does NOT swallow).
+**RED**: any `SafeOperationalError` subclass thrown from the handler's work (`FontLoadError` / `EchartsInitError` / `ResvgNativeError` from renderer, `SlackUploadError` from uploadV2) → handler logs `usage_card_safe_failure` + sends ephemeral text "카드 생성 실패, 잠시 후 다시 시도해 주세요." + DM 알림.
+
+Non-subclass error (e.g. `RangeError`) → re-throw (handler does NOT swallow).
+
+`SlackPostError` is retained in `errors.ts` as a `SafeOperationalError` subclass for defensive coverage (Scenario 7 instanceof + handler-level safe-op gate via `handler.test.ts`). It is **unreachable on the current success path** because the 1-step `filesUploadV2` flow no longer performs a follow-up `chat.postMessage`. Kept to avoid a breaking API change and so any future re-introduction of a post step automatically inherits safe-op fallback.
 
 ### Scenario 13 — deploy.yml
 

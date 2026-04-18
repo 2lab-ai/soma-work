@@ -1,30 +1,10 @@
 /**
- * `/z memory` Block Kit topic — v3 full-view (issue #535).
+ * `/z memory` Block Kit topic.
  *
- * Renders the memory + user profile stores as per-entry section+actions rows
- * so every entry text is readable and each has its own improve/clear buttons.
- * Top and bottom "global" action rows expose bulk improve (memory/user) and
- * clear-all. A block-budget fallback collapses the larger store into a
- * summary section when N+M > 20, and a byte-payload guard truncates when
- * entries are long enough to hit Slack's ~13.2k cap.
- *
- * Exports preserved (public surface — do NOT change signatures):
- *   - buildMemoryAddModal
- *   - openMemoryModal
- *   - submitMemoryModal
- *   - createMemoryTopicBinding
- *
- * Exports rewritten / extended:
- *   - renderMemoryCard         — section+actions per entry (v3)
- *   - applyMemory              — improve_* branches + rerender flag
- *
- * New internal utilities:
- *   - escapeMrkdwn             — neutralize mention + mrkdwn tokens
- *   - chunkByChars             — split long text into <= N char chunks
- *   - enforceSectionCharCap    — 3000 char Slack section cap
- *   - bytePayloadGuard         — 12000 byte Buffer.byteLength cap
- *   - collapseFallback         — collapse old entries when block budget blown
- *   - renderPendingCard        — 2-stage rerender "working…" helper
+ * Each entry renders as a `section` with an `accessory` 🪄 개선 button. Bulk
+ * delete lives in a global modal (`multi_static_select`). The bottom actions
+ * row is the only actions block; entries past the 50-block cap collapse into
+ * a summary section with a banner.
  */
 
 import type { WebClient } from '@slack/web-api';
@@ -32,6 +12,7 @@ import { Logger } from '../../../logger';
 import {
   addMemory,
   clearAllMemory,
+  clearMemory,
   loadMemory,
   removeMemoryByIndex,
   replaceAllMemory,
@@ -43,16 +24,11 @@ import { improveAll, improveEntry } from './memory-improve';
 
 const logger = new Logger('MemoryTopic');
 
-/* ------------------------------------------------------------------ *
- * Confirm dialogs (shared by per-entry clear + global clear-all)
- * ------------------------------------------------------------------ */
+type MemoryModalKind = 'add' | 'clear_manage';
 
-const CONFIRM_CLEAR_ONE = {
-  title: { type: 'plain_text', text: '삭제 확인' },
-  text: { type: 'plain_text', text: '이 항목을 삭제합니다. 되돌릴 수 없습니다.' },
-  confirm: { type: 'plain_text', text: '삭제' },
-  deny: { type: 'plain_text', text: '취소' },
-};
+/* ------------------------------------------------------------------ *
+ * Confirm dialog (used by the global [🗑️ 전체 삭제] button)
+ * ------------------------------------------------------------------ */
 
 const CONFIRM_CLEAR_ALL = {
   title: { type: 'plain_text', text: '전체 삭제 확인' },
@@ -228,6 +204,7 @@ function summaryContextBlock(
 ): ZBlock {
   return {
     type: 'context',
+    block_id: 'z_memory_summary',
     elements: [
       {
         type: 'mrkdwn',
@@ -237,10 +214,10 @@ function summaryContextBlock(
   };
 }
 
-function globalActionsRow(blockId: 'z_memory_global_top' | 'z_memory_global_bottom'): ZBlock {
+function bottomActionsRow(): ZBlock {
   return {
     type: 'actions',
-    block_id: blockId,
+    block_id: 'z_memory_global_bottom',
     elements: [
       {
         type: 'button',
@@ -258,11 +235,29 @@ function globalActionsRow(blockId: 'z_memory_global_top' | 'z_memory_global_bott
       },
       {
         type: 'button',
+        text: { type: 'plain_text', text: '🗑️ 삭제 관리' },
+        action_id: 'z_setting_memory_open_modal_clear_manage',
+        value: 'open_modal_clear_manage',
+      },
+      {
+        type: 'button',
         text: { type: 'plain_text', text: '🗑️ 전체 삭제' },
         style: 'danger',
         confirm: CONFIRM_CLEAR_ALL,
         action_id: 'z_setting_memory_set_clear_all',
         value: 'clear_all',
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '➕ 사용자 정보 추가' },
+        action_id: 'z_setting_memory_open_modal',
+        value: 'open_modal',
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '❌ 닫기' },
+        action_id: 'z_setting_memory_cancel',
+        value: 'cancel',
       },
     ],
   };
@@ -277,58 +272,20 @@ function groupHeaderSection(kind: 'memory' | 'user', count: number): ZBlock {
   };
 }
 
-function perEntryBlocks(target: 'memory' | 'user', index1: number, text: string): ZBlock[] {
-  const section: ZBlock = {
+function perEntrySection(target: 'memory' | 'user', index1: number, text: string): ZBlock {
+  return {
     type: 'section',
     block_id: `z_memory_entry_${target}_${index1}`,
     text: {
       type: 'mrkdwn',
-      text: `*#${index1}* | ${escapeMrkdwn(text)}`,
+      text: `*#${index1}* · ${escapeMrkdwn(text)}`,
     },
-  };
-  const actions: ZBlock = {
-    type: 'actions',
-    block_id: `z_memory_${target}_entry_${index1}`,
-    elements: [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '🪄 개선' },
-        style: 'primary',
-        action_id: `z_setting_memory_set_improve_${target}_${index1}`,
-        value: `improve_${target}_${index1}`,
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '🗑️ 삭제' },
-        style: 'danger',
-        confirm: CONFIRM_CLEAR_ONE,
-        action_id: `z_setting_memory_set_clear_${target}_${index1}`,
-        value: `clear_${target}_${index1}`,
-      },
-    ],
-  };
-  return [section, actions];
-}
-
-function extraActionsRow(): ZBlock {
-  return {
-    type: 'actions',
-    block_id: 'z_memory_extra',
-    elements: [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '➕ 사용자 정보 추가' },
-        style: 'primary',
-        action_id: 'z_setting_memory_open_modal',
-        value: 'open_modal',
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '❌ 닫기' },
-        action_id: 'z_setting_memory_cancel',
-        value: 'cancel',
-      },
-    ],
+    accessory: {
+      type: 'button',
+      text: { type: 'plain_text', text: '🪄 개선' },
+      action_id: `z_setting_memory_set_improve_${target}_${index1}`,
+      value: `improve_${target}_${index1}`,
+    },
   };
 }
 
@@ -384,19 +341,24 @@ function collapseSectionsFor(kind: 'memory' | 'user', collapsed: string[], start
 
 /**
  * Plan how many old entries each store should collapse (move to a summary
- * section) to stay under the Block Kit 50-block cap. Rules:
+ * section) to stay under the Block Kit 50-block cap.
+ *
+ * Fixed blocks (v4 minimal): header(1) + summary(1) + group_memory(1) +
+ * divider(1) + group_user(1) + bottom_actions(1) + help(1) = 7.
+ * Per-entry blocks: 1 each (section with accessory). Plus optional
+ * collapse banner(1) + up to 2 collapsed sections per store (4).
+ *
+ * Budget: 7 fixed + (N+M kept) + 1 banner + 4 collapsed ≤ 50 → N+M ≤ 38.
+ * Safety margin: use 42 as post-collapse target when total > 42; collapse
+ * is only triggered above 42. Rules preserved:
  *   - Start pulling from the LARGER store first.
- *   - Keep at least 3 per-entry rows per store when possible; spill to the
- *     other store if the larger store hits the floor first.
- *   - When total ≤ 20 → no collapse.
- *   - Target: 2 * keptTotal + banner(1) + collapsedSections(≤2) ≤ 41
- *     i.e. keptTotal ≤ 19. Use 19 as the post-collapse target when total > 20.
+ *   - Keep at least 3 per-entry rows per store when possible; spill if
+ *     the larger store hits the floor first.
  */
 function planCollapse(memCount: number, usrCount: number): { memCollapseN: number; usrCollapseN: number } {
   const total = memCount + usrCount;
-  if (total <= 20) return { memCollapseN: 0, usrCollapseN: 0 };
-  // Leave 2 blocks for banner + per-store collapsed section headroom.
-  const keptTarget = 19;
+  if (total <= 42) return { memCollapseN: 0, usrCollapseN: 0 };
+  const keptTarget = 42;
   const overflow = total - keptTarget;
   const minPerStore = 3;
   const larger: 'memory' | 'user' = memCount >= usrCount ? 'memory' : 'user';
@@ -434,7 +396,6 @@ function buildBlocksWithCollapse(
   blocks.push(headerBlock());
   blocks.push(summaryContextBlock(memCount, memPct, usrCount, usrPct, memLimit, usrLimit));
   if (totalCollapsed > 0) blocks.push(collapseBannerContext(totalCollapsed));
-  blocks.push(globalActionsRow('z_memory_global_top'));
   blocks.push(groupHeaderSection('memory', memCount));
 
   // Collapsed memory section(s) first (oldest are at the top of the group)
@@ -442,7 +403,7 @@ function buildBlocksWithCollapse(
   // Kept memory entries: numbering continues from collapsed.length + 1
   for (let i = 0; i < memKept.length; i++) {
     const idx = memCollapsed.length + i + 1;
-    blocks.push(...perEntryBlocks('memory', idx, memKept[i]));
+    blocks.push(perEntrySection('memory', idx, memKept[i]));
   }
 
   blocks.push(dividerBlock());
@@ -450,11 +411,10 @@ function buildBlocksWithCollapse(
   blocks.push(...collapseSectionsFor('user', usrCollapsed, 1));
   for (let i = 0; i < usrKept.length; i++) {
     const idx = usrCollapsed.length + i + 1;
-    blocks.push(...perEntryBlocks('user', idx, usrKept[i]));
+    blocks.push(perEntrySection('user', idx, usrKept[i]));
   }
 
-  blocks.push(globalActionsRow('z_memory_global_bottom'));
-  blocks.push(extraActionsRow());
+  blocks.push(bottomActionsRow());
   blocks.push(helpContextBlock());
   return blocks;
 }
@@ -481,13 +441,12 @@ export async function renderMemoryCard(args: { userId: string; issuedAt: number 
   // stores), fold ALL user entries into collapsed summary sections and trim
   // oldest memory entries until we fit under the cap. Memory is the primary
   // store so we prefer to preserve its per-entry view. Reuses the same
-  // builder with an overridden plan (user fully collapsed, memory keeps ≤19
-  // per-entry rows).
+  // builder with an overridden plan (user fully collapsed, memory keeps ≤38
+  // per-entry rows — fixed 7 + banner 1 + collapsed ≤2 + kept 38 = 48).
   if (blocks.length > 50) {
     const memCount = mem.entries.length;
     const usrCount = usr.entries.length;
-    // 2*keep ≤ 38 → keep 19 memory rows (fixed ~9 + banner + collapsed ≤2)
-    const memCollapseN = Math.max(0, memCount - 19);
+    const memCollapseN = Math.max(0, memCount - 38);
     blocks = buildBlocksWithCollapse(
       mem.entries,
       usr.entries,
@@ -530,18 +489,18 @@ export async function renderPendingCard(args: {
   const blocks = card.blocks as ZBlock[];
 
   if (idx === 'all') {
-    // Replace the top-actions row text with a single "🔄 전체 {target} 개선 중…" marker.
-    const topIdx = blocks.findIndex(
-      (b) =>
-        (b as { type?: string }).type === 'actions' && (b as { block_id?: string }).block_id === 'z_memory_global_top',
-    );
-    if (topIdx !== -1) {
-      const label = target === 'memory' ? '전체 메모리 개선 중…' : '전체 프로필 개선 중…';
-      blocks[topIdx] = {
-        type: 'section',
-        block_id: 'z_memory_global_top',
-        text: { type: 'mrkdwn', text: `🔄 ${label}` },
-      };
+    // Insert pending banner after the summary context block.
+    const label = target === 'memory' ? '전체 메모리 개선 중…' : '전체 프로필 개선 중…';
+    const pendingBanner: ZBlock = {
+      type: 'context',
+      block_id: 'z_memory_pending_banner',
+      elements: [{ type: 'mrkdwn', text: `🔄 ${label}` }],
+    };
+    const summaryIdx = blocks.findIndex((b) => (b as { block_id?: string }).block_id === 'z_memory_summary');
+    if (summaryIdx !== -1) {
+      blocks.splice(summaryIdx + 1, 0, pendingBanner);
+    } else {
+      blocks.unshift(pendingBanner);
     }
   } else {
     // Replace the target entry's section with "🔄 #N 개선 중…" text.
@@ -710,6 +669,7 @@ export function buildMemoryAddModal(): Record<string, any> {
   return {
     type: 'modal',
     callback_id: 'z_setting_memory_modal_submit',
+    private_metadata: JSON.stringify({ kind: 'add' }),
     title: { type: 'plain_text', text: 'Add User Profile' },
     submit: { type: 'plain_text', text: '저장' },
     close: { type: 'plain_text', text: '취소' },
@@ -747,24 +707,181 @@ export function buildMemoryAddModal(): Record<string, any> {
   };
 }
 
-export async function openMemoryModal(args: { client: WebClient; triggerId: string }): Promise<void> {
-  const { client, triggerId } = args;
+/**
+ * Build the bulk "clear management" modal. Uses `multi_static_select` (max
+ * 100 options) so users can tick multiple entries across both stores and
+ * confirm once on submit. Option value format: `"memory:N"` / `"user:N"`
+ * (1-indexed, matches the card's displayed numbering).
+ *
+ * When both stores are empty we still build a view (no input block, no
+ * submit button) so the click doesn't silently fail.
+ */
+export function buildClearManageModal(args: { memEntries: string[]; usrEntries: string[] }): Record<string, any> {
+  const { memEntries, usrEntries } = args;
+  const truncate = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  const options: Array<{ text: any; value: string }> = [];
+  memEntries.forEach((t, i) => {
+    if (options.length >= 100) return;
+    options.push({
+      text: { type: 'plain_text', text: `📝 M#${i + 1}: ${truncate(t, 60)}` },
+      value: `memory:${i + 1}`,
+    });
+  });
+  usrEntries.forEach((t, i) => {
+    if (options.length >= 100) return;
+    options.push({
+      text: { type: 'plain_text', text: `👤 U#${i + 1}: ${truncate(t, 60)}` },
+      value: `user:${i + 1}`,
+    });
+  });
+
+  const hasAny = options.length > 0;
+  const blocks: any[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: hasAny
+          ? '*삭제할 항목을 선택하세요.* 저장 시 영구 삭제되며 되돌릴 수 없습니다.'
+          : '_비어있음 — 삭제할 항목이 없습니다._',
+      },
+    },
+  ];
+  if (hasAny) {
+    blocks.push({
+      type: 'input',
+      block_id: 'memory_clear_targets',
+      label: { type: 'plain_text', text: '삭제 항목 (여러 개 선택 가능)' },
+      element: {
+        type: 'multi_static_select',
+        action_id: 'value',
+        placeholder: { type: 'plain_text', text: '삭제할 항목 선택…' },
+        options,
+      },
+    });
+  }
+
+  const view: Record<string, any> = {
+    type: 'modal',
+    callback_id: 'z_setting_memory_modal_submit',
+    private_metadata: JSON.stringify({ kind: 'clear_manage' }),
+    title: { type: 'plain_text', text: '삭제 관리' },
+    close: { type: 'plain_text', text: '취소' },
+    blocks,
+  };
+  if (hasAny) view.submit = { type: 'plain_text', text: '삭제' };
+  return view;
+}
+
+/**
+ * Open the memory modal. `kind` selects which modal to build:
+ *   - `'add'` (default): the existing add-user-profile modal.
+ *   - `'clear_manage'`: bulk-delete modal; requires `userId` to load entries.
+ */
+export async function openMemoryModal(args: {
+  client: WebClient;
+  triggerId: string;
+  kind?: MemoryModalKind;
+  userId?: string;
+}): Promise<void> {
+  const { client, triggerId, kind = 'add', userId } = args;
   if (!triggerId) {
     logger.warn('openMemoryModal: missing trigger_id');
     return;
   }
-  await client.views.open({
-    trigger_id: triggerId,
-    view: buildMemoryAddModal() as any,
-  });
+  let view: Record<string, any>;
+  if (kind === 'clear_manage') {
+    if (!userId) {
+      logger.warn('openMemoryModal clear_manage: missing userId');
+      return;
+    }
+    const mem = loadMemory(userId, 'memory');
+    const usr = loadMemory(userId, 'user');
+    view = buildClearManageModal({ memEntries: mem.entries, usrEntries: usr.entries });
+  } else {
+    view = buildMemoryAddModal();
+  }
+  await client.views.open({ trigger_id: triggerId, view: view as any });
 }
 
+/**
+ * Submit the memory modal. `kind` is derived from `view.private_metadata`.
+ *   - `'add'`: validate + addMemory + DM confirmation (legacy behaviour).
+ *   - `'clear_manage'`: parse selected options, delete in index-descending
+ *     order per target (prevents index shifts), DM summary of results.
+ */
 export async function submitMemoryModal(args: {
   client: WebClient;
   userId: string;
   values: Record<string, Record<string, any>>;
+  kind?: MemoryModalKind;
 }): Promise<ApplyResult> {
-  const { client, userId, values } = args;
+  const { client, userId, values, kind = 'add' } = args;
+
+  if (kind === 'clear_manage') {
+    const selected =
+      (values?.memory_clear_targets?.value?.selected_options as Array<{ value?: string }> | undefined) ?? [];
+    if (selected.length === 0) {
+      return { ok: false, summary: '❌ 선택된 항목이 없습니다.' };
+    }
+    const perTarget: Record<'memory' | 'user', number[]> = { memory: [], user: [] };
+    for (const opt of selected) {
+      const v = opt?.value;
+      if (typeof v !== 'string') continue;
+      const m = v.match(/^(memory|user):(\d+)$/);
+      if (!m) continue;
+      perTarget[m[1] as 'memory' | 'user'].push(Number.parseInt(m[2], 10));
+    }
+    // Batch per target: 1 read + 1 write (vs N reads + N writes of
+    // removeMemoryByIndex). Indices are 1-based and match the modal's
+    // displayed numbering at the time the modal opened; concurrent edits
+    // are surfaced as "이미 삭제됨" in the error tail.
+    const okCounts: Record<'memory' | 'user', number> = { memory: 0, user: 0 };
+    const errors: string[] = [];
+    for (const target of ['memory', 'user'] as const) {
+      const selectedIdxs = perTarget[target];
+      if (selectedIdxs.length === 0) continue;
+      const cur = loadMemory(userId, target);
+      const selectedSet = new Set(selectedIdxs);
+      const remaining = cur.entries.filter((_, i) => !selectedSet.has(i + 1));
+      const removed = cur.entries.length - remaining.length;
+      if (removed === 0) {
+        errors.push(`${target}: 선택된 항목이 이미 삭제됨 (${selectedIdxs.length}건)`);
+        continue;
+      }
+      const r = remaining.length === 0 ? clearMemory(userId, target) : replaceAllMemory(userId, target, remaining);
+      if (r.ok) {
+        okCounts[target] = removed;
+        if (removed < selectedIdxs.length) {
+          errors.push(`${target}: ${selectedIdxs.length - removed}건 이미 삭제됨`);
+        }
+      } else {
+        const reason = 'reason' in r ? r.reason : (r as { message?: string }).message;
+        errors.push(`${target}: ${reason ?? 'unknown error'}`);
+      }
+    }
+    const totalOk = okCounts.memory + okCounts.user;
+    try {
+      const parts: string[] = [];
+      if (okCounts.memory > 0) parts.push(`memory ${okCounts.memory}개`);
+      if (okCounts.user > 0) parts.push(`user profile ${okCounts.user}개`);
+      const head = totalOk > 0 ? `🗑️ ${parts.join(' + ')} 삭제 완료` : '⚠️ 삭제된 항목 없음';
+      const errTail = errors.length > 0 ? `\n\n⚠️ ${errors.length}건 실패:\n- ${errors.slice(0, 5).join('\n- ')}` : '';
+      await client.chat.postMessage({
+        channel: userId,
+        text: `${head}${errTail}`,
+      });
+    } catch (err) {
+      logger.warn('memory clear_manage ack DM failed', { err: (err as Error).message });
+    }
+    if (totalOk === 0 && errors.length > 0) {
+      return { ok: false, summary: `❌ 삭제 실패 (${errors.length}건)` };
+    }
+    return { ok: true, summary: `🗑️ ${totalOk}개 항목 삭제 완료` };
+  }
+
+  // kind === 'add' (default)
   const target = (values?.memory_target?.value?.selected_option?.value as string | undefined) ?? 'user';
   const content = (values?.memory_content?.value?.value as string | undefined)?.trim() ?? '';
   if (!content) {
@@ -788,17 +905,57 @@ export async function submitMemoryModal(args: {
   return { ok: true, summary: `🧠 ${target === 'user' ? 'User profile' : 'Memory'} 저장 완료` };
 }
 
+/**
+ * Parse the `kind` discriminator from an `open_modal` action_id. Missing
+ * suffix means legacy `open_modal` (add). Unknown suffixes fall back to
+ * 'add' to preserve backward compat with future routing.
+ */
+function kindFromActionId(actionId: string | undefined): MemoryModalKind {
+  const m = actionId?.match(/^z_setting_memory_open_modal(?:_(.+))?$/);
+  return m?.[1] === 'clear_manage' ? 'clear_manage' : 'add';
+}
+
+/**
+ * Parse the `kind` discriminator from a view's private_metadata. Missing
+ * metadata (legacy modal) defaults to 'add'. Malformed JSON or unknown
+ * `kind` returns `null` so the caller can reject rather than silently run
+ * the add path.
+ */
+function kindFromPrivateMetadata(pm: string | undefined): MemoryModalKind | null {
+  if (!pm) return 'add';
+  try {
+    const kind = JSON.parse(pm)?.kind;
+    if (kind === 'clear_manage' || kind === 'add') return kind;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function createMemoryTopicBinding(): ZTopicBinding {
   return {
     topic: 'memory',
     apply: (args) => applyMemory({ userId: args.userId, value: args.value, respond: args.respond }),
     renderCard: (args) => renderMemoryCard({ userId: args.userId, issuedAt: args.issuedAt }),
-    openModal: (args) => openMemoryModal({ client: args.client, triggerId: args.triggerId }),
+    openModal: (args) => {
+      const actionId: string | undefined = args.body?.actions?.[0]?.action_id;
+      const kind = kindFromActionId(actionId);
+      return openMemoryModal({ client: args.client, triggerId: args.triggerId, kind, userId: args.userId });
+    },
     submitModal: async (args) => {
       // ack() already fired in the framework wrapper — surface validation
       // failures as a DM so users get visible feedback instead of a silently
-      // closed modal (codex P1 #5).
-      const result = await submitMemoryModal({ client: args.client, userId: args.userId, values: args.values });
+      // closed modal.
+      const kind = kindFromPrivateMetadata(args.body?.view?.private_metadata);
+      const result =
+        kind === null
+          ? ({ ok: false, summary: '❌ Malformed modal metadata.' } as ApplyResult)
+          : await submitMemoryModal({
+              client: args.client,
+              userId: args.userId,
+              values: args.values,
+              kind,
+            });
       if (!result.ok) {
         try {
           const desc = result.description ? `\n${result.description}` : '';

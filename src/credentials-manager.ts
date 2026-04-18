@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { config } from './config';
 import { Logger } from './logger';
-import { getTokenManager, type TokenManager } from './token-manager';
+import { type AcquiredLease, getTokenManager, type TokenManager } from './token-manager';
 
 const logger = new Logger('CredentialsManager');
 
@@ -126,9 +126,18 @@ export class NoHealthySlotError extends Error {
  */
 export interface SlotAuthLease {
   readonly slotId: string;
+  /** Human-facing slot name (not guaranteed unique over time; display only). */
+  readonly name: string;
   /** The access token to use for this request. */
   readonly accessToken: string;
   readonly kind: 'setup_token' | 'oauth_credentials';
+  /**
+   * Private `CLAUDE_CONFIG_DIR` for oauth_credentials slots. Populated on
+   * schema-v2 upgrade and on `addSlot({ kind: 'oauth_credentials' })`.
+   * Absent for setup_token slots. Consumed by
+   * `buildQueryEnv` → `env.CLAUDE_CONFIG_DIR`.
+   */
+  readonly configDir?: string;
   /** Free the lease. Safe to call more than once. */
   release(): Promise<void>;
   /** Extend the lease TTL — use for long-running requests. */
@@ -142,8 +151,10 @@ export interface SlotAuthLease {
  * - For `oauth_credentials` slots, proactively refreshes via
  *   `tokenManager.getValidAccessToken(slotId)` (7h buffer, in-process dedupe,
  *   lock-safe). Returned `accessToken` is guaranteed-fresh at the moment of
- *   return — callers should set `process.env.CLAUDE_CODE_OAUTH_TOKEN` from
- *   `lease.accessToken` before spawning the Claude CLI.
+ *   return — callers MUST pass the lease through `buildQueryEnv(lease)` and
+ *   thread the resulting env into the Agent SDK's `options.env`. Do NOT
+ *   mutate `process.env.CLAUDE_CODE_OAUTH_TOKEN`; concurrent dispatches on
+ *   different slots would race each other on a process-global.
  * - If no healthy slot exists, throws `NoHealthySlotError`.
  *
  * The returned lease MUST be released in a `finally` block.
@@ -153,57 +164,33 @@ export async function ensureActiveSlotAuth(
   ownerTag: string,
   ttlMs?: number,
 ): Promise<SlotAuthLease> {
-  let lease;
+  let acquired: AcquiredLease;
   try {
-    lease = await tokenManager.acquireLease(ownerTag, ttlMs);
+    acquired = await tokenManager.acquireLease(ownerTag, ttlMs);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new NoHealthySlotError(`No healthy CCT slot available — check /z cct (${message})`);
   }
 
-  // After acquireLease, the active slot is the one we got the lease on.
-  const active = tokenManager.getActiveToken();
-  if (!active) {
-    // Fail-safe: release then throw.
-    try {
-      await tokenManager.releaseLease(lease.leaseId);
-    } catch {
-      /* ignore */
-    }
-    throw new NoHealthySlotError();
-  }
-
-  // Pre-refresh for oauth_credentials slots (7h buffer); setup_token returns the static value.
-  let accessToken: string;
-  try {
-    accessToken = await tokenManager.getValidAccessToken(active.slotId);
-  } catch (err) {
-    try {
-      await tokenManager.releaseLease(lease.leaseId);
-    } catch {
-      /* ignore */
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    throw new NoHealthySlotError(`Failed to obtain valid access token for slot ${active.name}: ${message}`);
-  }
-
   let released = false;
   const slotAuthLease: SlotAuthLease = {
-    slotId: active.slotId,
-    accessToken,
-    kind: active.kind,
+    slotId: acquired.slotId,
+    name: acquired.name,
+    accessToken: acquired.accessToken,
+    kind: acquired.kind,
+    configDir: acquired.configDir,
     async release(): Promise<void> {
       if (released) return;
       released = true;
       try {
-        await tokenManager.releaseLease(lease.leaseId);
+        await tokenManager.releaseLease(acquired.leaseId);
       } catch (err) {
         logger.warn('releaseLease failed', err);
       }
     },
     async heartbeat(): Promise<void> {
       if (released) return;
-      await tokenManager.heartbeatLease(lease.leaseId);
+      await tokenManager.heartbeatLease(acquired.leaseId);
     },
   };
   return slotAuthLease;

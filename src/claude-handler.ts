@@ -13,6 +13,7 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { isAdminUser } from './admin-utils';
+import { buildQueryEnv } from './auth/query-env-builder';
 import {
   bypassBashPermissionDecision,
   isCrossUserAccess,
@@ -400,10 +401,15 @@ export class ClaudeHandler {
       }, CLAUDE_LEASE_HEARTBEAT_MS);
       if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
+      // Build a per-call env map (containing the lease's fresh token) and
+      // thread it through to `query()` via `options.env`. This never mutates
+      // `process.env`, so concurrent dispatches on different slots are
+      // isolated by construction.
+      const { env } = buildQueryEnv(lease);
       return await this.dispatchOneShotInner(
         userMessage,
         dispatchPrompt,
-        lease.accessToken,
+        env,
         model,
         abortController,
         resumeSessionId,
@@ -418,21 +424,21 @@ export class ClaudeHandler {
   private async dispatchOneShotInner(
     userMessage: string,
     dispatchPrompt: string,
-    accessToken: string,
+    env: Record<string, string>,
     model?: string,
     abortController?: AbortController,
     resumeSessionId?: string,
     cwd?: string,
   ): Promise<string> {
-    // Build query options for one-shot dispatch.
-    // The lease's fresh access token is forwarded via options.env so it
-    // never crosses the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN` slot —
-    // concurrent dispatches therefore cannot clobber each other's auth.
+    // Build query options for one-shot dispatch. `env` is the per-call map
+    // from `buildQueryEnv(lease)` — it carries the lease's fresh access
+    // token without ever touching `process.env`, so concurrent dispatches
+    // cannot clobber each other's auth.
     const options: Options = {
       settingSources: [],
       plugins: [],
       systemPrompt: dispatchPrompt,
-      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: accessToken },
+      env,
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
       stderr: (data: string) => {
@@ -589,17 +595,18 @@ export class ClaudeHandler {
       }, CLAUDE_LEASE_HEARTBEAT_MS);
       if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
-      // Build query options. The lease's fresh access token is forwarded via
-      // options.env so it never crosses the shared
-      // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable — concurrent streams
-      // holding leases on different slots therefore cannot clobber each
-      // other's auth.
+      // Build query options. The per-call env map (from `buildQueryEnv`)
+      // carries the lease's fresh access token via `options.env`, so it
+      // never crosses the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN`
+      // variable — concurrent streams holding leases on different slots
+      // therefore cannot clobber each other's auth.
+      const { env: queryEnv } = buildQueryEnv(lease);
       const options: Options = {
         // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
         settingSources: ['project'],
         // Load plugins from PluginManager or fallback to local directory
         plugins: this.getEffectivePluginPaths(),
-        env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
+        env: queryEnv,
       };
 
       // Get MCP configuration
