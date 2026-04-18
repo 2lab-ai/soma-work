@@ -677,10 +677,12 @@ export class SlackHandler {
       '• `%model <v>`, `%verbosity <v>`, `%effort <v>` — 세션 설정\n' +
       '• `/z persona`, `/z model`, `/z notify` 등';
 
-    // Both surfaces MUST be wrapped independently. A throw from `addReaction`
-    // was previously unhandled, which (after codex P0 review of #555) could
-    // bubble up as an unhandled rejection inside `handleMessage` and re-create
-    // the exact silent-drop symptom Issue #553 was supposed to kill.
+    // Wrap each Slack surface independently so one failure cannot kill the
+    // other. `SlackApiHelper.postEphemeral` re-throws on failure (slack-api-
+    // helper.ts:484) — that bubble was the live vector that re-created
+    // Issue #553's silent drop. `addReaction` today swallows internally and
+    // returns false, so its wrapper is defensive: against future contract
+    // changes and against direct-mock injection (see T19 regression test).
     try {
       await this.slackApi.postEphemeral(event.channel, event.user, guide, event.thread_ts ?? event.ts);
     } catch (err: any) {
