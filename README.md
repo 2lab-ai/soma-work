@@ -16,6 +16,8 @@
   <a href="./README.ko.md">한국어</a>
 </p>
 
+<!-- CI re-trigger marker: PR #593 -->
+
 ---
 
 ## What is soma-work?
