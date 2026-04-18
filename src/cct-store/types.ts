@@ -87,6 +87,9 @@ export interface SlotState {
   lastUsageFetchedAt?: string;
   nextUsageFetchAllowedAt?: string;
   usage?: UsageSnapshot;
+  /** Count of consecutive usage-fetch failures; reset to 0 on success.
+   *  Used as the ladder index for {@link nextUsageBackoffMs}. */
+  consecutiveUsageFailures?: number;
 }
 
 export interface CctRegistry {

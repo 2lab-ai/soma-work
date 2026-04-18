@@ -135,3 +135,19 @@ export function nextUsageBackoffMs(currentBackoffMs: number | undefined): number
   }
   return cap;
 }
+
+/**
+ * Return the backoff duration for the Nth consecutive failure (0-indexed).
+ *
+ * Ladder: 2m → 5m → 10m → 15m (capped). Pass `0` on the first failure after a
+ * success to start at 2m; values beyond the ladder length clamp to the cap.
+ *
+ * This is the count-based variant of {@link nextUsageBackoffMs}. Prefer it at
+ * call sites that track a `consecutiveUsageFailures` counter, because it
+ * avoids the "initial 2-minute post-success throttle masquerades as the
+ * first failure" ambiguity that bites the duration-based helper.
+ */
+export function usageBackoffForFailureCount(failureCount: number): number {
+  const idx = Math.max(0, Math.min(BACKOFF_LADDER_MS.length - 1, Math.floor(failureCount)));
+  return BACKOFF_LADDER_MS[idx];
+}

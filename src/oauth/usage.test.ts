@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CLAUDE_USAGE_URL, fetchUsage, nextUsageBackoffMs, UsageFetchError } from './usage';
+import {
+  CLAUDE_USAGE_URL,
+  fetchUsage,
+  nextUsageBackoffMs,
+  UsageFetchError,
+  usageBackoffForFailureCount,
+} from './usage';
 
 describe('nextUsageBackoffMs', () => {
   it('returns 2min for first attempt (undefined)', () => {
@@ -28,6 +34,28 @@ describe('nextUsageBackoffMs', () => {
 
   it('caps arbitrary large values at 15m', () => {
     expect(nextUsageBackoffMs(60 * 60 * 1000)).toBe(15 * 60 * 1000);
+  });
+});
+
+describe('usageBackoffForFailureCount', () => {
+  // Regression: previously the initial 2m post-success throttle would be
+  // fed back into `nextUsageBackoffMs` on the first failure, causing the
+  // ladder to skip the 2m rung and start at 5m.
+  it('progresses 2m -> 5m -> 10m -> 15m across consecutive failures after success', () => {
+    expect(usageBackoffForFailureCount(0)).toBe(2 * 60 * 1000);
+    expect(usageBackoffForFailureCount(1)).toBe(5 * 60 * 1000);
+    expect(usageBackoffForFailureCount(2)).toBe(10 * 60 * 1000);
+    expect(usageBackoffForFailureCount(3)).toBe(15 * 60 * 1000);
+  });
+
+  it('caps at 15m for failure counts beyond the ladder length', () => {
+    expect(usageBackoffForFailureCount(4)).toBe(15 * 60 * 1000);
+    expect(usageBackoffForFailureCount(99)).toBe(15 * 60 * 1000);
+  });
+
+  it('treats negative / non-integer counts as the first rung', () => {
+    expect(usageBackoffForFailureCount(-1)).toBe(2 * 60 * 1000);
+    expect(usageBackoffForFailureCount(0.9)).toBe(2 * 60 * 1000);
   });
 });
 

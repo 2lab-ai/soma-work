@@ -46,7 +46,7 @@ import { CctStore, defaultCctStorePath } from './cct-store';
 import { Logger, redactAnthropicSecrets } from './logger';
 import { OAuthRefreshError, refreshClaudeCredentials } from './oauth/refresher';
 import { hasRequiredScopes, missingScopes } from './oauth/scope-check';
-import { fetchUsage, nextUsageBackoffMs, UsageFetchError } from './oauth/usage';
+import { fetchUsage, UsageFetchError, usageBackoffForFailureCount } from './oauth/usage';
 
 const logger = new Logger('TokenManager');
 
@@ -943,20 +943,19 @@ export class TokenManager {
       st.usage = settled.snapshot;
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;
       st.nextUsageFetchAllowedAt = new Date(settled.nextFetchAllowedAtMs).toISOString();
+      st.consecutiveUsageFailures = 0;
       snap2.state[slotId] = st;
     });
     return settled.snapshot;
   }
 
   private async applyUsageFailureBackoff(slotId: string): Promise<void> {
-    const snap = await this.store.load();
-    const state = snap.state[slotId];
-    const prev = state?.nextUsageFetchAllowedAt
-      ? Math.max(0, new Date(state.nextUsageFetchAllowedAt).getTime() - Date.now())
-      : 0;
-    const next = nextUsageBackoffMs(prev);
     await this.store.mutate((s) => {
       const st = s.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      const failureCount = (st.consecutiveUsageFailures ?? 0) + 1;
+      // Ladder is 1-indexed from the caller's perspective — first failure → rung 0 (2m).
+      const next = usageBackoffForFailureCount(failureCount - 1);
+      st.consecutiveUsageFailures = failureCount;
       st.nextUsageFetchAllowedAt = new Date(Date.now() + next).toISOString();
       s.state[slotId] = st;
     });
