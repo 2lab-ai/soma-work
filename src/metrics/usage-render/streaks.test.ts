@@ -31,10 +31,7 @@ describe('activeDays', () => {
   it('timezone boundary — two UTC-adjacent events cross KST midnight → 2', () => {
     // 14:30Z = 23:30 KST on 2026-04-09
     // 15:30Z = 00:30 KST on 2026-04-10
-    const events = [
-      { ts: new Date('2026-04-09T14:30:00Z') },
-      { ts: new Date('2026-04-09T15:30:00Z') },
-    ];
+    const events = [{ ts: new Date('2026-04-09T14:30:00Z') }, { ts: new Date('2026-04-09T15:30:00Z') }];
     expect(activeDays(events, windowStart, windowEnd)).toBe(2);
   });
 
@@ -77,16 +74,12 @@ describe('longestStreak', () => {
   });
 
   it('split runs, returns max (2 + 3 → 3)', () => {
-    expect(
-      longestStreak(
-        new Set(['2026-04-10', '2026-04-11', '2026-04-13', '2026-04-14', '2026-04-15']),
-      ),
-    ).toBe(3);
+    expect(longestStreak(new Set(['2026-04-10', '2026-04-11', '2026-04-13', '2026-04-14', '2026-04-15']))).toBe(3);
   });
 });
 
 describe('currentStreak', () => {
-  it("today missing from set → 0", () => {
+  it('today missing from set → 0', () => {
     const set = new Set(['2026-04-15', '2026-04-16', '2026-04-17']);
     expect(currentStreak(set, '2026-04-18')).toBe(0);
   });

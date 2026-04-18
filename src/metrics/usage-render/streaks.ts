@@ -24,9 +24,7 @@ function toKstDayKey(ts: Date | number): string {
   const y = shifted.getUTCFullYear();
   const m = shifted.getUTCMonth() + 1;
   const d = shifted.getUTCDate();
-  return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d
-    .toString()
-    .padStart(2, '0')}`;
+  return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
 }
 
 /**
@@ -43,20 +41,14 @@ function formatUtcDate(date: Date): string {
   const y = date.getUTCFullYear();
   const m = date.getUTCMonth() + 1;
   const d = date.getUTCDate();
-  return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d
-    .toString()
-    .padStart(2, '0')}`;
+  return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
 }
 
 /**
  * Distinct KST 'YYYY-MM-DD' days among events whose timestamp is
  * within the inclusive window `[windowStart, windowEnd]`.
  */
-export function activeDayKeys(
-  events: Array<{ ts: Date | number }>,
-  windowStart: Date,
-  windowEnd: Date,
-): Set<string> {
+export function activeDayKeys(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): Set<string> {
   const startMs = windowStart.getTime();
   const endMs = windowEnd.getTime();
   const out = new Set<string>();
@@ -69,11 +61,7 @@ export function activeDayKeys(
 }
 
 /** Count of distinct KST days in window — sugar for `activeDayKeys(...).size`. */
-export function activeDays(
-  events: Array<{ ts: Date | number }>,
-  windowStart: Date,
-  windowEnd: Date,
-): number {
+export function activeDays(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): number {
   return activeDayKeys(events, windowStart, windowEnd).size;
 }
 
