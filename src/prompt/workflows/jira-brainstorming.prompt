@@ -87,9 +87,10 @@ Then use `UIAskUserQuestion` to prompt for the next step:
 {
   "type": "UIAskUserQuestion",
   "question": "What would you like to do next? (Linked: issue=<Jira URL>, pr=<PR URL or none>)",
+  "recommendedChoiceId": "plan",
   "options": [
     {
-      "label": "Create Implementation Spec (Recommended)",
+      "label": "Create Implementation Spec",
       "value": "plan",
       "description": "Finalize the implementation plan via the jira-planning workflow"
     },

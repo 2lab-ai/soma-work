@@ -1,113 +1,111 @@
 /**
- * LlmRuntime — Backend adapter interface for LLM MCP server.
+ * LlmRuntime — Backend adapter interface for the llm MCP server.
  *
  * Each backend (Codex, Gemini) implements this interface to encapsulate
  * its protocol-specific logic (tool names, session ID format, config expansion).
  * The router (llm-mcp-server.ts) delegates to runtimes without backend branches.
- *
- * @see Issue #332 — Backend Runtime Adapter Layer
  */
 
-// ── Types ───────────────────────────────────────────────────
+// ── Session types ──────────────────────────────────────────
+
+export type Backend = 'codex' | 'gemini';
 
 /**
- * SessionRecord — Durable session metadata stored by the router.
- * Decouples the public session ID (app-owned UUID) from the backend-native ID.
- * @see Issue #333 — Durable Session Store
+ * SessionStatus tri-state (D10).
+ *   pending   — record exists but backend has not yet confirmed a sessionId
+ *   ready     — backendSessionId is durable; resume is permitted
+ *   corrupted — mid-transition crash or legacy record; resume rejected
+ */
+export type SessionStatus = 'pending' | 'ready' | 'corrupted';
+
+/**
+ * SessionRecord — Durable session metadata persisted as JSONL (one per line).
+ *
+ * Invariants (enforced by loader and by mutators):
+ *   status === 'ready'     ⇒ backendSessionId !== null
+ *   status === 'pending'   ⇒ backendSessionId === null
+ *   status === 'corrupted' ⇒ backendSessionId may be either
  */
 export interface SessionRecord {
-  publicId: string;          // app-owned UUID (decoupled from backend)
+  publicId: string;
   backend: Backend;
-  backendSessionId: string;  // codex threadId or gemini sessionId
+  /** null iff status === 'pending'. */
+  backendSessionId: string | null;
   model: string;
-  createdAt: string;         // ISO timestamp
-  updatedAt: string;         // ISO timestamp
+  cwd?: string;
+  /**
+   * Config overrides actually applied at spawn, as echoed by runtime.startSession.
+   * Threaded into runtime.resumeSession so resume spawns with identical overrides.
+   * Legacy records lacking this field are marked `corrupted` at load time.
+   */
+  resolvedConfig: Record<string, unknown>;
+  status: SessionStatus;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
 }
 
 /**
  * SessionStore — Persistence abstraction for session records.
- * @see Issue #333 — Durable Session Store
+ *
+ * All mutations are serialized through a store-internal WriteQueue and
+ * use snapshot/rollback on atomicRewrite failure.
  */
 export interface SessionStore {
   get(publicId: string): SessionRecord | undefined;
-  save(record: SessionRecord): void;
+
+  /** Insert-or-update a full record (used on create + full-rewrite callers). */
+  save(record: SessionRecord): Promise<void>;
+
+  /** Partial in-place update; throws if publicId missing. */
+  update(publicId: string, patch: Partial<SessionRecord>): Promise<void>;
+
   /** Refresh updatedAt to prevent TTL expiry on active sessions. */
-  touch(publicId: string): void;
-  updateBackendSessionId(publicId: string, newBackendSessionId: string): void;
-  delete(publicId: string): void;
-  prune(): void;  // remove expired sessions
+  touch(publicId: string): Promise<void>;
+
+  updateBackendSessionId(publicId: string, newBackendSessionId: string): Promise<void>;
+
+  delete(publicId: string): Promise<void>;
+
+  /** Remove expired records (24h TTL on updatedAt). */
+  prune(): Promise<void>;
 }
 
-export type Backend = 'codex' | 'gemini';
+// ── Runtime interface ──────────────────────────────────────
 
-export interface SessionOptions {
-  model: string;
+/**
+ * RuntimeCallOptions — Shared call-site options for runtime invocations.
+ *
+ * `timeoutMs` and `signal` are enforced by the shared watchdog helper,
+ * which is the sole cancellation path (runtime.cancel was removed in v8).
+ * `resolvedConfig` is the stored config dictionary threaded into resume
+ * so the resumed child spawns with identical overrides.
+ */
+export interface RuntimeCallOptions {
   cwd?: string;
-  /** User-provided config overrides (already in correct format). */
-  config?: Record<string, unknown>;
-  /** Backend-specific defaults from routing config (e.g. Codex reasoning_effort). */
-  configOverride?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  resolvedConfig?: Record<string, unknown>;
 }
 
-export interface SessionResult {
-  /** Backend-native session ID (threadId for Codex, sessionId for Gemini). */
+export interface StartSessionResult {
+  /** Backend-native session ID (Codex threadId / Gemini sessionId). */
   backendSessionId: string;
   content: string;
-  backend: Backend;
-  model: string;
+  /** Echo of the config dictionary actually applied at spawn (D22). */
+  resolvedConfig: Record<string, unknown>;
 }
 
-// ── Job System (Issue #334) ─────────────────────────────────
-
-export type JobKind = 'chat' | 'review' | 'task';
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type JobPhase = 'starting' | 'investigating' | 'editing' | 'verifying' | 'finalizing' | 'done';
-
-/**
- * Job — Tracked unit of work with lifecycle and result.
- * The router creates jobs; the JobRunner executes them asynchronously.
- * @see Issue #334 — Persistent Job System
- */
-export interface Job {
-  id: string;                  // e.g. "chat-m5x9k2-a3b1c2"
-  kind: JobKind;
-  status: JobStatus;
-  phase: JobPhase;
-  backend: Backend;
-  model: string;
-  sessionId?: string;          // public session ID (links to SessionRecord)
-  backendSessionId?: string;   // backend-native thread/session ID
-  promptSummary: string;       // first 120 chars of prompt
-  cwd?: string;
-  startedAt: string;           // ISO timestamp
-  completedAt?: string;        // ISO timestamp
-  logFile: string;             // path to job log
-  result?: string;             // final content (populated on completion)
-  error?: string;              // error message (populated on failure)
-  sessionSaved?: boolean;      // true once router has persisted the session for this job
-}
-
-/**
- * JobStore — Persistence abstraction for job records.
- * @see Issue #334 — Persistent Job System
- */
-export interface JobStore {
-  get(jobId: string): Job | undefined;
-  getAll(): Job[];
-  getRunning(): Job[];
-  save(job: Job): void;
-  delete(jobId: string): void;
-  prune(): void;
+export interface ResumeSessionResult {
+  backendSessionId: string;
+  content: string;
 }
 
 export interface RuntimeCapabilities {
-  supportsReview: boolean;       // #337
-  supportsInterrupt: boolean;    // #334
-  supportsResume: boolean;       // always true for now
-  supportsEventStream: boolean;  // #336
+  supportsReview: boolean;
+  supportsInterrupt: boolean;
+  supportsResume: boolean;
+  supportsEventStream: boolean;
 }
-
-// ── Interface ───────────────────────────────────────────────
 
 export interface LlmRuntime {
   readonly name: Backend;
@@ -122,17 +120,25 @@ export interface LlmRuntime {
   ensureReady(): Promise<void>;
 
   /**
-   * Start a new chat session.
-   * The runtime does NOT store sessions — it returns backendSessionId
-   * for the router to track in its own session map.
+   * Start a new chat session. Must echo the applied config dictionary
+   * back as `resolvedConfig` so the router can persist it for resume.
    */
-  startSession(prompt: string, options: SessionOptions): Promise<SessionResult>;
+  startSession(
+    model: string,
+    prompt: string,
+    opts: RuntimeCallOptions,
+  ): Promise<StartSessionResult>;
 
   /**
-   * Continue an existing session.
-   * Takes backendSessionId directly (router owns the public→backend mapping).
+   * Continue an existing session. `opts.resolvedConfig` carries the
+   * stored config from the original spawn so the resumed child spawns
+   * with identical overrides.
    */
-  resumeSession(backendSessionId: string, prompt: string): Promise<SessionResult>;
+  resumeSession(
+    backendSessionId: string,
+    prompt: string,
+    opts: RuntimeCallOptions,
+  ): Promise<ResumeSessionResult>;
 
   /** Clean shutdown — stop the underlying MCP client process. */
   shutdown(): Promise<void>;

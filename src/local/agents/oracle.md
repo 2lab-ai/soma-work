@@ -10,7 +10,6 @@ tools:
   - TodoWrite
   - AskUserQuestion
   - mcp__llm__chat
-  - mcp__llm__chat-reply
 color: "#FFD700"
 ---
 
