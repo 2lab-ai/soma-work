@@ -73,8 +73,13 @@ export function captureFingerprint(pid: number): Fingerprint | null {
     }).trim();
     if (!out) return null;
     // `ps -o lstart=,args=` emits start-time followed by args on ONE line.
-    // lstart on macOS/Linux is always 24 chars: "Fri Apr 18 10:23:45 2026"
-    // Be defensive: take first 24 chars if ≥25; else split on last space pair.
+    // `lstart` is 24 chars on macOS and on C/POSIX-locale Linux ("Fri Apr 18
+    // 10:23:45 2026"); some exotic locales pad differently. We require ≥25
+    // total so the args split is guaranteed non-empty, then take the first 24
+    // as a best-effort token. A wrong token on an exotic locale merely skips
+    // the PID-reuse fingerprint shortcut — no false kill, just a fallthrough
+    // to the plain-PID reap (safe, logged as llm.fingerprint.unavailable by
+    // the caller if `current` also mismatches).
     const line = out.split('\n')[0];
     if (line.length < 25) return null;
     const startTimeToken = line.slice(0, 24);
@@ -301,10 +306,20 @@ export class ChildRegistry {
       try { process.kill(r.pid, 'SIGTERM'); } catch { /* ignore */ }
     }
     await Promise.all(targets.map((r) => pollUntilDead(r.pid, 3_000)));
+    const sigkilled: ChildRecord[] = [];
     for (const r of targets) {
       if (isAlive(r.pid)) {
         try { process.kill(r.pid, 'SIGKILL'); } catch { /* ignore */ }
+        sigkilled.push(r);
       }
+    }
+    // SIGKILL delivery is asynchronous: on a busy host the reaped state may
+    // not yet be observable when the isAlive() below runs, which would
+    // retain a PID we already killed. Give the kernel a short window to
+    // update the process table before the survivor filter. Matches the
+    // post-SIGKILL polling pattern in replayAndReap.
+    if (sigkilled.length > 0) {
+      await Promise.all(sigkilled.map((r) => pollUntilDead(r.pid, 500)));
     }
     await this.mutateAndPersist((recs) => {
       const still = recs.filter((r) => isAlive(r.pid));

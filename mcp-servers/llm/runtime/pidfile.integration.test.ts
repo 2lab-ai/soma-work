@@ -222,6 +222,119 @@ describe('Pidfile + shutdown ordering', () => {
     expect(fs.existsSync(pidPath)).toBe(false);
   });
 
+  it('track() rejects ABORTED after graceful() flips accepting (test 63c)', async () => {
+    // Without this gate a chat call arriving during drain could mutate session
+    // state after the WriteQueue drain barrier fired; the close-barrier would
+    // then reject the inner write, leaving the caller with a failed chat and
+    // a potentially corrupt partial record. The test ensures accepting=false
+    // is observed by track() synchronously on the next invocation.
+    const handle = acquirePidfile(pidPath);
+    const sessionStore = new FileSessionStore(path.join(dir, 'sessions.jsonl'));
+    const childRegistry = new ChildRegistry(path.join(dir, 'children.jsonl'), {
+      captureFingerprint: () => ({ startTimeToken: 't', cmdFingerprint: 'f' }),
+    });
+    const runtimes: Record<Backend, LlmRuntime> = {
+      codex: makeFakeRuntime('codex'),
+      gemini: makeFakeRuntime('gemini'),
+    };
+    await sessionStore.prune();
+
+    const coord = new ShutdownCoordinator({
+      pidfile: handle,
+      sessionStore,
+      childRegistry,
+      runtimes,
+      drainTimeoutMs: 500,
+    });
+
+    expect(coord.accepting).toBe(true);
+    const gracefulPromise = coord.graceful('programmatic');
+    expect(coord.accepting).toBe(false);
+
+    await expect(coord.track(async () => 'result')).rejects.toThrow(/Server shutting down/);
+    try {
+      await coord.track(async () => 'result');
+    } catch (e: any) {
+      expect(e.code).toBe('aborted');
+    }
+    await gracefulPromise;
+  });
+
+  it('graceful() executes steps in documented order (test 63d)', async () => {
+    // Regression guard: silent reordering (e.g. pidfile.release() before
+    // childRegistry.shutdownAll(), or runtime.shutdown() before drain) would
+    // pass individual tests but break real shutdown semantics. Record every
+    // step via spy and assert the sequence.
+    const handle = acquirePidfile(pidPath);
+    const sessionStore = new FileSessionStore(path.join(dir, 'sessions.jsonl'));
+    const childRegistry = new ChildRegistry(path.join(dir, 'children.jsonl'), {
+      captureFingerprint: () => ({ startTimeToken: 't', cmdFingerprint: 'f' }),
+    });
+    const codexRuntime = makeFakeRuntime('codex');
+    const geminiRuntime = makeFakeRuntime('gemini');
+    const runtimes: Record<Backend, LlmRuntime> = {
+      codex: codexRuntime,
+      gemini: geminiRuntime,
+    };
+    await sessionStore.prune();
+
+    const order: string[] = [];
+    vi.spyOn(childRegistry, 'shutdownAll').mockImplementation(async () => {
+      order.push('childRegistry.shutdownAll');
+    });
+    const origSessionDrain = sessionStore.writeQueue.drain.bind(sessionStore.writeQueue);
+    vi.spyOn(sessionStore.writeQueue, 'drain').mockImplementation(async () => {
+      order.push('sessionStore.drain');
+      return origSessionDrain();
+    });
+    const origChildDrain = childRegistry.writeQueue.drain.bind(childRegistry.writeQueue);
+    vi.spyOn(childRegistry.writeQueue, 'drain').mockImplementation(async () => {
+      order.push('childRegistry.drain');
+      return origChildDrain();
+    });
+    const releaseSpy = vi.spyOn(handle, 'release').mockImplementation(() => {
+      order.push('pidfile.release');
+    });
+    vi.spyOn(codexRuntime, 'shutdown').mockImplementation(async () => {
+      order.push('runtime.codex.shutdown');
+    });
+    vi.spyOn(geminiRuntime, 'shutdown').mockImplementation(async () => {
+      order.push('runtime.gemini.shutdown');
+    });
+
+    const coord = new ShutdownCoordinator({
+      pidfile: handle,
+      sessionStore,
+      childRegistry,
+      runtimes,
+      drainTimeoutMs: 100,
+    });
+    await coord.graceful('programmatic');
+
+    const childIdx = order.indexOf('childRegistry.shutdownAll');
+    const sessionDrainIdx = order.indexOf('sessionStore.drain');
+    const childDrainIdx = order.indexOf('childRegistry.drain');
+    const releaseIdx = order.indexOf('pidfile.release');
+    const runtimeIdxs = [
+      order.indexOf('runtime.codex.shutdown'),
+      order.indexOf('runtime.gemini.shutdown'),
+    ];
+
+    // 3 childRegistry.shutdownAll < 4 sessionStore.drain, childRegistry.drain < 5 pidfile.release < 6 runtime.shutdown
+    expect(childIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBeLessThan(sessionDrainIdx);
+    expect(childIdx).toBeLessThan(childDrainIdx);
+    expect(sessionDrainIdx).toBeLessThan(releaseIdx);
+    expect(childDrainIdx).toBeLessThan(releaseIdx);
+    for (const i of runtimeIdxs) {
+      expect(i).toBeGreaterThan(releaseIdx);
+    }
+    releaseSpy.mockRestore();
+
+    // Clean up the pidfile manually since we stubbed release().
+    try { fs.unlinkSync(pidPath); } catch { /* already gone */ }
+  });
+
   it('concurrent graceful() calls share one drain (test 63b)', async () => {
     // Review fix: a second signal (or BaseMcpServer.run()'s own SIGINT/SIGTERM
     // handler falling through to our override) used to return immediately from

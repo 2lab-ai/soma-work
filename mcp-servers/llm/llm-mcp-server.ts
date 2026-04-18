@@ -305,11 +305,11 @@ export class LlmMCPServer extends BaseMcpServer {
       );
     }
 
-    // D10 invariant defense: a blank `backendSessionId` means the extract
-    // helper fell through every branch. Promoting to `ready` with '' would
-    // be silently corrupt — resume would pass '' to the backend, and the
-    // loader's tri-state rule (`ready ⇒ backendSessionId != null`) only
-    // rejects null. Treat this as a backend failure; purge placeholder.
+    // D10 invariant defense: runtimes may return an empty or whitespace-only
+    // `backendSessionId` (unexpected backend output, provider hiccup).
+    // Promoting to `ready` with '' would be silently corrupt — resume would
+    // pass '' to the backend, and session-store.assertInvariant now rejects
+    // blank. Normalize + reject here so the store never sees a blank id.
     const normalizedBsid =
       typeof startResult.backendSessionId === 'string'
         ? startResult.backendSessionId.trim()
