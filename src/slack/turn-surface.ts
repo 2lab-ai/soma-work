@@ -58,10 +58,13 @@ export interface TurnContext {
 
 /**
  * Reason handed to `end()` for observability only — not a business signal.
- * P1 only wires `'completed'` / `'aborted'` (from stream-executor) and `'superseded'`
- * (internally from begin() race). Additional reasons will be added as P2~P5 wire them.
+ * P1 wires exactly two values from stream-executor: `'completed'` (success path,
+ * finally block) and `'aborted'` (catch path, non-error abort). The supersede race
+ * goes through `fail()` with `new Error('superseded')`, not `end()` — so 'superseded'
+ * is an Error message, not a TurnEndReason value. Additional reasons will be added
+ * when P2~P5 wire them (e.g. 'waiting-for-choice' for UIAsk pause in P3).
  */
-export type TurnEndReason = 'completed' | 'aborted' | 'superseded';
+export type TurnEndReason = 'completed' | 'aborted';
 
 interface TurnState {
   ctx: TurnContext;
