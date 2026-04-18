@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
-import { summarizeResponse } from './summarizer';
+import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
 import type { ConversationRecord, ConversationTurn } from './types';
 
 const logger = new Logger('ConversationRecorder');
@@ -23,6 +23,37 @@ let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) 
 // Optional callback fired when a summary is generated for an assistant turn.
 // Used to update session title on Slack thread header.
 let _onSummaryGenerated: ((conversationId: string, turn: ConversationTurn, summaryTitle: string) => void) | null = null;
+
+// Dashboard v2.1 — session summary title bridge. Populated by the app at
+// startup to wire the recorder ↔ session-registry without a cyclical import.
+// Returned object is a live pointer into the session; mutations are visible
+// to subsequent reads.
+export interface SessionTitleBridgeSnapshot {
+  sessionKey: string;
+  userMessages: string[];
+  lastAssistantTurnId?: string;
+  summaryTitleLastUpdatedAtMs?: number;
+  links?: SessionSummaryTitleLinks;
+}
+export interface SessionTitleBridge {
+  getSnapshot(conversationId: string): SessionTitleBridgeSnapshot | null;
+  setLastAssistantTurnId(conversationId: string, turnId: string): void;
+  applyTitle(sessionKey: string, title: string, turnId: string, model: 'haiku' | 'sonnet'): void;
+}
+let _sessionTitleBridge: SessionTitleBridge | null = null;
+export function setSessionTitleBridge(bridge: SessionTitleBridge | null): void {
+  _sessionTitleBridge = bridge;
+}
+
+// In-flight summary-title generation guard (module-level Map).
+// Key: sessionKey. Drop additional requests while one is pending so
+// simultaneous turns trigger at most one LLM call per session.
+const _summaryTitleInFlight = new Map<string, Promise<void>>();
+
+// 60s debounce between successful title regenerations.
+const SUMMARY_TITLE_DEBOUNCE_MS = 60_000;
+// Minimum user-message count before we attempt title generation.
+const SUMMARY_TITLE_MIN_USER_MSG = 3;
 
 /**
  * Set a callback that fires after each turn is recorded.
@@ -220,6 +251,16 @@ async function _recordAssistantTurnAsync(conversationId: string, content: string
   await serializedSave(conversationId, record);
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 
+  // Dashboard v2.1 — advance session's lastAssistantTurnId for stale-write
+  // guards in summary-title regeneration.
+  if (_sessionTitleBridge) {
+    try {
+      _sessionTitleBridge.setLastAssistantTurnId(conversationId, turn.id);
+    } catch (err) {
+      logger.debug('sessionTitleBridge.setLastAssistantTurnId failed', { error: err });
+    }
+  }
+
   // Then generate summary asynchronously (don't block)
   generateSummary(conversationId, turn.id, content).catch((err) => {
     logger.error(`Failed to generate summary for turn ${turn.id}`, err);
@@ -278,6 +319,63 @@ async function generateSummary(conversationId: string, turnId: string, content: 
         logger.warn('onSummaryGenerated callback failed', { conversationId, turnId, error: err });
       }
     }
+  }
+
+  // Dashboard v2.1 — trigger session summary title regeneration.
+  // Fire-and-forget; guards + debounce + stale-check happen inside.
+  maybeRegenerateSessionSummaryTitle(conversationId, turnId).catch((err) => {
+    logger.debug('session summary title regeneration failed', { conversationId, turnId, error: err });
+  });
+}
+
+/**
+ * Debounce / version-guarded session-summary-title regeneration.
+ * Triggered after each assistant turn is persisted.
+ */
+async function maybeRegenerateSessionSummaryTitle(conversationId: string, turnId: string): Promise<void> {
+  if (!_sessionTitleBridge) return;
+  const snap = _sessionTitleBridge.getSnapshot(conversationId);
+  if (!snap) return;
+  const { sessionKey, userMessages, summaryTitleLastUpdatedAtMs, links } = snap;
+
+  // Skip: not enough user signal yet.
+  if (!userMessages || userMessages.length < SUMMARY_TITLE_MIN_USER_MSG) return;
+
+  // Skip: 60s debounce window.
+  if (summaryTitleLastUpdatedAtMs && Date.now() - summaryTitleLastUpdatedAtMs < SUMMARY_TITLE_DEBOUNCE_MS) {
+    return;
+  }
+
+  // Skip (trailing): if a generation is already in flight for this session,
+  // let it finish — the next turn will re-trigger if still stale.
+  if (_summaryTitleInFlight.has(sessionKey)) return;
+
+  // Version guard — record the turn id we're building against. If the
+  // session's lastAssistantTurnId moves past this by the time we get the
+  // response, discard our write.
+  const startTurnId = turnId;
+
+  const work = (async () => {
+    const result = await generateSessionSummaryTitle(userMessages, links);
+    if (!result || !_sessionTitleBridge) return;
+    const latest = _sessionTitleBridge.getSnapshot(conversationId);
+    if (!latest || latest.sessionKey !== sessionKey) return;
+    if (latest.lastAssistantTurnId && latest.lastAssistantTurnId !== startTurnId) {
+      logger.debug('Discarding stale summary title write (turn advanced)', {
+        sessionKey,
+        startTurnId,
+        latest: latest.lastAssistantTurnId,
+      });
+      return;
+    }
+    _sessionTitleBridge.applyTitle(sessionKey, result.title, startTurnId, result.model);
+  })();
+
+  _summaryTitleInFlight.set(sessionKey, work);
+  try {
+    await work;
+  } finally {
+    _summaryTitleInFlight.delete(sessionKey);
   }
 }
 

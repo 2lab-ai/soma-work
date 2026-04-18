@@ -19,6 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
@@ -76,6 +77,14 @@ export interface KanbanSession {
   }>;
   /** Slack thread permalink */
   slackThreadUrl?: string;
+  /** Dashboard v2.1 — live turn timer + counters (per session) */
+  activeLegStartedAtMs?: number;
+  activeAccumulatedMs?: number;
+  compactionCount?: number;
+  /** Dashboard v2.1 — thread aggregate (derived, not persisted) */
+  threadTotalActiveMs?: number;
+  threadSessionCount?: number;
+  threadCompactionCount?: number;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -238,11 +247,40 @@ export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandle
 
 // ── Kanban transformation ──────────────────────────────────────────
 
+// Dashboard v2.1 — max active-leg duration cap (mirrors session-registry).
+// Duplicated here (not imported) so dashboard.ts stays independent of
+// session-registry in the mcp-servers split.
+const DASHBOARD_MAX_LEG_MS = Number(process.env.MAX_LEG_MS) || 30 * 60 * 1000;
+
+function computeThreadAggregate(
+  channelId: string,
+  threadTs: string | undefined,
+  allSessions: Map<string, any>,
+  now: number,
+): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
+  const threadKey = `${channelId}-${threadTs || 'direct'}`;
+  let totalActiveMs = 0;
+  let sessionCount = 0;
+  let compactionCount = 0;
+  for (const [k, s] of allSessions.entries()) {
+    if (k !== threadKey) continue;
+    sessionCount += 1;
+    compactionCount += s.compactionCount || 0;
+    let acc = s.activeAccumulatedMs || 0;
+    if (s.activeLegStartedAtMs) {
+      acc += Math.min(now - s.activeLegStartedAtMs, DASHBOARD_MAX_LEG_MS);
+    }
+    totalActiveMs += acc;
+  }
+  return { totalActiveMs, sessionCount, compactionCount };
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
+  const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   return {
     key,
-    title: s.title || 'Untitled',
+    title: displayTitle(s),
     ownerName: s.ownerName || s.ownerId || 'unknown',
     ownerId: s.ownerId || '',
     workflow: s.workflow || 'default',
@@ -286,6 +324,13 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tasks,
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
+    // Dashboard v2.1 — timer + compaction fields
+    activeLegStartedAtMs: s.activeLegStartedAtMs,
+    activeAccumulatedMs: s.activeAccumulatedMs || 0,
+    compactionCount: s.compactionCount || 0,
+    threadTotalActiveMs: aggregate.totalActiveMs,
+    threadSessionCount: aggregate.sessionCount,
+    threadCompactionCount: aggregate.compactionCount,
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -334,7 +379,7 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 export function archivedToKanban(archived: ArchivedSession): KanbanSession {
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
-    title: archived.title || 'Untitled',
+    title: displayTitle(archived),
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
     ownerId: archived.ownerId || '',
     workflow: archived.workflow || 'default',
@@ -371,6 +416,13 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
       archived.channelId && archived.threadTs
         ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
         : undefined,
+    // Dashboard v2.1 — derive from archive snapshot fields.
+    activeLegStartedAtMs: undefined, // archived sessions never have an open leg
+    activeAccumulatedMs: archived.busyMs || 0,
+    compactionCount: archived.compactionCount || 0,
+    threadTotalActiveMs: archived.busyMs || 0,
+    threadSessionCount: 1,
+    threadCompactionCount: archived.compactionCount || 0,
   };
 }
 
@@ -661,6 +713,27 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
     }
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/**
+ * Dashboard v2.1 — targeted summaryTitle update. Sent in lieu of a full
+ * session_update to avoid re-sending the whole board for a title change.
+ * Clients patch the matching card's title in place.
+ */
+export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: string): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'summaryTitleChanged', sessionKey, summaryTitle });
+    for (const client of wsClients) {
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast summaryTitleChanged', error);
   }
 }
 
@@ -2692,6 +2765,28 @@ function formatTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
   return String(n);
 }
+// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
+function formatNmSSs(ms) {
+  if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
+  var totalSec = Math.floor(ms / 1000);
+  var m = Math.floor(totalSec / 60);
+  var s = totalSec % 60;
+  return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
+}
+// 1-Hz tick: update every .card-timer-live element from its data-* attrs.
+// Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
+function updateTimers() {
+  var now = Date.now();
+  var els = document.querySelectorAll('.card-timer-live');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var started = Number(el.dataset.legStarted) || 0;
+    var accumulated = Number(el.dataset.accumulated) || 0;
+    var elapsed = (started ? now - started : 0) + accumulated;
+    el.textContent = formatNmSSs(elapsed);
+  }
+}
+setInterval(updateTimers, 1000);
 
 // ── Card Aura ──
 function getAuraClass(isoStr) {
@@ -2891,8 +2986,23 @@ function renderCard(s, col) {
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
+  // Dashboard v2.1 — timer + counter row (live 1s tick updates .card-timer-live).
+  const legStarted = s.activeLegStartedAtMs || 0;
+  const accumulated = s.activeAccumulatedMs || 0;
+  const compactions = s.compactionCount || 0;
+  const threadTotal = s.threadTotalActiveMs || 0;
+  const threadSessions = s.threadSessionCount || 0;
+  const timerRowHtml =
+    '<div class="card-timer-row">'
+    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
+    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
+    + '<span class="card-timer-compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
+    + '<span class="card-timer-sessions">#' + threadSessions + '</span>'
+    + '</div>';
+
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
     + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + timerRowHtml
     + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
     + linksHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
@@ -3481,6 +3591,20 @@ function connectWs() {
         }
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
+      } else if (msg.type === 'summaryTitleChanged') {
+        // Dashboard v2.1 — targeted title patch. Update cache + single card.
+        var cached = _sessionCache[msg.sessionKey];
+        if (cached) {
+          cached.title = msg.summaryTitle;
+        }
+        var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
+        for (var i = 0; i < cardTitleEls.length; i++) {
+          cardTitleEls[i].textContent = msg.summaryTitle;
+        }
+        if (panelOpen && panelSessionKey === msg.sessionKey) {
+          var pt = document.getElementById('panel-title');
+          if (pt) pt.textContent = msg.summaryTitle;
+        }
       }
     } catch (e) { /* ignore */ }
   };
