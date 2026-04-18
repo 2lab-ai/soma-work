@@ -988,6 +988,3 @@ export function __resetTokenManagerSingleton(): void {
   if (singleton) singleton.stop();
   singleton = null;
 }
-
-// Avoid a dangling import warning for `path` when tree-shaking misbehaves.
-void path;
