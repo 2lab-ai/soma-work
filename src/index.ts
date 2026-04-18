@@ -23,6 +23,7 @@ import { config, runPreflightChecks, validateConfig } from './config';
 import {
   broadcastConversationUpdate,
   broadcastSessionUpdate,
+  broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
   initRecorder,
   setDashboardChoiceAnswerHandler,
@@ -35,7 +36,6 @@ import {
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   setOAuthUserLookup,
-  broadcastSummaryTitleChanged,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   setSessionTitleBridge,

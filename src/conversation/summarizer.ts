@@ -150,7 +150,10 @@ function titlePassesQuality(title: string): boolean {
   return true;
 }
 
-function buildPromptParts(userMessages: string[], links?: SessionSummaryTitleLinks): { system: string; prompt: string } {
+function buildPromptParts(
+  userMessages: string[],
+  links?: SessionSummaryTitleLinks,
+): { system: string; prompt: string } {
   const joined = userMessages
     .map((m, i) => `[${i + 1}] ${m}`)
     .join('\n\n')
@@ -173,7 +176,12 @@ ${joined || '(empty)'}${linkBlock}`;
   return { system, prompt };
 }
 
-async function runTitleQuery(model: string, system: string, prompt: string, lease: SlotAuthLease): Promise<string | null> {
+async function runTitleQuery(
+  model: string,
+  system: string,
+  prompt: string,
+  lease: SlotAuthLease,
+): Promise<string | null> {
   const { env } = buildQueryEnv(lease);
   const options: Options = {
     model,

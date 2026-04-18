@@ -2,11 +2,7 @@ import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
-import {
-  generateSessionSummaryTitle,
-  type SessionSummaryTitleLinks,
-  summarizeResponse,
-} from './summarizer';
+import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
 import type { ConversationRecord, ConversationTurn } from './types';
 
 const logger = new Logger('ConversationRecorder');
@@ -42,12 +38,7 @@ export interface SessionTitleBridgeSnapshot {
 export interface SessionTitleBridge {
   getSnapshot(conversationId: string): SessionTitleBridgeSnapshot | null;
   setLastAssistantTurnId(conversationId: string, turnId: string): void;
-  applyTitle(
-    sessionKey: string,
-    title: string,
-    turnId: string,
-    model: 'haiku' | 'sonnet',
-  ): void;
+  applyTitle(sessionKey: string, title: string, turnId: string, model: 'haiku' | 'sonnet'): void;
 }
 let _sessionTitleBridge: SessionTitleBridge | null = null;
 export function setSessionTitleBridge(bridge: SessionTitleBridge | null): void {
