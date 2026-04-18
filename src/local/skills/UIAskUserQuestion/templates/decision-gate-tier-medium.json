@@ -1,0 +1,19 @@
+{
+  "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
+  "_comment": "Reference template for local:decision-gate tier=medium branch — autonomous vs user-ask decision. Delegated target for local:zwork (zwork must not own its own template per UIAskUserQuestion/SKILL.md Caller templates rule).",
+  "type": "user_choice",
+  "question": "[medium] 이 결정을 자율 판단으로 진행할까, 사용자 확인을 받을까?",
+  "context": "결정 요약: {decision_summary}. Switching cost tier: medium. 영향 범위: {impact_scope}. 되돌리기 비용: {rollback_cost}. 자율 판단 시 3-person review majority vote (codex + oracle-reviewer + oracle-gemini) 거쳐 결정 후 간결한 보고. 사용자 확인 시 structured UIAskUserQuestion 템플릿으로 2~4 option 제시.",
+  "choices": [
+    {
+      "id": "a",
+      "label": "Option A: Decide autonomously with 3-reviewer vote (Recommended · 1/2)",
+      "description": "3-person review majority로 자율 결정 후 요약 보고. Switching cost가 낮고 복구 가능한 결정에 적합."
+    },
+    {
+      "id": "b",
+      "label": "Option B: Ask user with structured UIAskUserQuestion",
+      "description": "사용자 확인 요청. UIAskUserQuestion 템플릿으로 structured choices 제시하여 명시적 승인."
+    }
+  ]
+}

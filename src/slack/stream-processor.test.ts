@@ -624,4 +624,192 @@ describe('StreamProcessor', () => {
       expect(mockSay).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #525 P1 — B1 per-turn stream routing contract
+  //
+  // Verifies the PHASE>=1 path through `sayWithBlockKit`: when a turnId +
+  // active ThreadPanel façade are present, assistant text is routed to
+  // `threadPanel.appendText()` instead of `context.say`. The graceful-fallback
+  // contract (appendText returning `false` → legacy `context.say`) is the
+  // codex MAJOR finding and must stay covered against regression.
+  // -------------------------------------------------------------------------
+
+  describe('Issue #525 P1 — ThreadPanel appendText routing', () => {
+    it('routes narrative text to threadPanel.appendText when the façade is active', async () => {
+      const appendText = vi.fn().mockResolvedValue(true);
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'streamed reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'streamed reply');
+      // Legacy Block Kit path must be bypassed on success.
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('falls back to context.say when threadPanel.appendText returns false', async () => {
+      // Codex MAJOR: a transient `chat.startStream` failure must NOT silently
+      // eat the assistant's reply. appendText returning false is the contract
+      // signal for "fall through to legacy Block Kit".
+      const appendText = vi.fn().mockResolvedValue(false);
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'rescue reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'rescue reply');
+      // Fallback path: legacy `context.say` carries the reply.
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('rescue reply'),
+          thread_ts: 'thread_ts',
+        }),
+      );
+    });
+
+    it('takes the legacy path when the façade reports inactive (PHASE=0)', async () => {
+      const appendText = vi.fn();
+      const threadPanel = {
+        isTurnSurfaceActive: () => false,
+        appendText,
+      };
+      const context: StreamContext = {
+        ...mockContext,
+        turnId: 'C123:thread_ts:1',
+        threadPanel,
+      };
+      const messages = [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'legacy reply' }] },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      // Façade short-circuits at the `isTurnSurfaceActive()` guard.
+      expect(appendText).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #525 P1 — handleToolUseMessage / handleThinkingContent PHASE guards
+  //
+  // Under PHASE>=1 the consolidated B1 stream is the single writer. The
+  // legacy in-function `context.say` calls (RPG skill banner, tool-call
+  // block, thinking quote) MUST be suppressed so the surface stays single.
+  // A regression here reintroduces exactly the duplicate-banner noise
+  // Issue #525 set out to eliminate, and there's no downstream signal to
+  // catch it — hence explicit coverage.
+  // -------------------------------------------------------------------------
+
+  describe('Issue #525 P1 — PHASE>=1 legacy-write suppression', () => {
+    function phase1Context(): StreamContext {
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText: vi.fn().mockResolvedValue(true),
+      };
+      return { ...mockContext, turnId: 'C123:thread_ts:1', threadPanel };
+    }
+
+    it('suppresses the RPG skill banner under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu1',
+                name: 'Skill',
+                input: { skill: 'some-skill' },
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
+
+      // Banner + tool-call block both silenced. PHASE=0 equivalent is already
+      // covered by the existing `process tool use` test above.
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the compact tool-call block under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu-bash',
+                name: 'Bash',
+                input: { command: 'ls' },
+              },
+            ],
+          },
+        },
+      ];
+      // Default logVerbosity (LOG_DETAIL) → tool-call render mode = compact.
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
+
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the thinking quote-block under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'thinking', thinking: 'some hidden chain of thought' },
+              { type: 'text', text: 'visible reply' },
+            ],
+          },
+        },
+      ];
+      const context = phase1Context();
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      // handleThinkingContent's context.say must be silenced; the text chunk
+      // already routes through threadPanel.appendText (covered above).
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+  });
 });

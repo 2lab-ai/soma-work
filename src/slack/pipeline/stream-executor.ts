@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
@@ -52,7 +53,7 @@ import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flag
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
-import type { ThreadPanel } from '../thread-panel';
+import type { ThreadPanel, TurnContext } from '../thread-panel';
 import { MessageEvent, type SayFn } from './types';
 
 /**
@@ -277,6 +278,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     const usageBeforePromise = fetchClaudeUsageSnapshot().catch(() => null);
 
+    // Issue #525 P1: per-turn identity for the 5-block UI façade. Computed
+    // BEFORE any try/catch so the finally block can call endTurn() even if
+    // preparePrompt/query-setup throws. TurnSurface.end is idempotent and
+    // gated on SOMA_UI_5BLOCK_PHASE>=1 — PHASE=0 deployments see no change.
+    //
+    // `randomUUID()` suffix guards against same-millisecond re-entry on the
+    // same sessionKey. Without it, `${sessionKey}:${ms}` would collide and
+    // the supersede branch in TurnSurface.begin (which compares prior vs new
+    // turnId) would silently skip — leaving the second turn without an open
+    // B1 stream.
+    const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    const turnContext: TurnContext = {
+      channelId: channel,
+      threadTs: threadTs || undefined,
+      sessionKey,
+      turnId,
+    };
+    await this.deps.threadPanel?.beginTurn(turnContext);
+
     // Capture token at query start for CAS-safe rotation on rate limit.
     // Reading process.env at error time is wrong — another session may have already rotated it.
     const queryTokenValue = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
@@ -434,6 +454,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionKey,
         sessionId: session?.sessionId,
         botUserId: await this.deps.slackApi.getBotUserId(),
+        // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
+        // stream processor so it can route text chunks into the B1 stream.
+        // The façade is always populated (StreamExecutor receives it from
+        // session initialization); PHASE-gating lives inside
+        // `threadPanel.isTurnSurfaceActive()` so the stream-processor branch
+        // is a single conditional: PHASE=0 → legacy `say()`, PHASE>=1 →
+        // `appendText()` with graceful fallback on `false` return.
+        turnId,
+        threadPanel: this.deps.threadPanel,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -927,6 +956,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
+      // Issue #525 P1: close the B1 stream before handleError posts the
+      // error block — otherwise the stream would linger until finally and
+      // race with the error message rendering. PHASE=0 → no-op.
+      //
+      // Swallow any throw from the cleanup call so the original `error` still
+      // reaches handleError(): losing the error message to the user is worse
+      // than losing the stream-close log line.
+      try {
+        if (requestAborted) {
+          await this.deps.threadPanel?.endTurn(turnId, 'aborted');
+        } else {
+          await this.deps.threadPanel?.failTurn(turnId, error as Error);
+        }
+      } catch (cleanupErr) {
+        this.logger.warn('stream-executor: B1 close after catch failed', {
+          turnId,
+          requestAborted,
+          cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
+        });
+      }
       const retryAfterMs = await this.handleError(
         error,
         session,
@@ -940,6 +989,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Idempotent: if end/fail already ran (catch or early-return path
+      // inside try), TurnSurface state is cleared and this is a no-op.
+      // Covers success-path exits via return from the try block.
+      //
+      // Swallow any throw so `cleanup()` below still runs — session cleanup
+      // is critical for correctness (stale per-session state would leak).
+      try {
+        await this.deps.threadPanel?.endTurn(turnId, 'completed');
+      } catch (cleanupErr) {
+        this.logger.warn('stream-executor: B1 close in finally failed', {
+          turnId,
+          cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
+        });
+      }
       await this.cleanup(session, sessionKey, abortController);
     }
   }
