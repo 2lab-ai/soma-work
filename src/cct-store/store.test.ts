@@ -2,7 +2,6 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { makeV2Snapshot } from './__fixtures__/snapshots';
 import { migrateLegacyCooldowns } from './migrate';
 import { CctStore, RevisionConflictError } from './store';
 import type { CctStoreSnapshot, OAuthCredentialsSlot, SetupTokenSlot } from './types';
@@ -53,7 +52,12 @@ describe('CctStore.load', () => {
   it('creates empty snapshot when file is missing', async () => {
     const store = new CctStore(path.join(tmp, 'cct-store.json'));
     const snap = await store.load();
-    expect(snap).toEqual(makeV2Snapshot());
+    expect(snap).toEqual({
+      version: 1,
+      revision: 0,
+      registry: { slots: [] },
+      state: {},
+    });
   });
 });
 
@@ -274,10 +278,12 @@ describe('migrateLegacyCooldowns', () => {
     await fs.writeFile(legacyPath, JSON.stringify({ entries }), 'utf8');
 
     const s1 = setupSlot({ name: 'cct1' });
-    const snap: CctStoreSnapshot = makeV2Snapshot({
+    const snap: CctStoreSnapshot = {
+      version: 1,
+      revision: 0,
       registry: { slots: [s1] },
       state: { [s1.slotId]: { authState: 'healthy', activeLeases: [] } },
-    });
+    };
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const after = await migrateLegacyCooldowns(snap, tmp);
@@ -293,175 +299,13 @@ describe('migrateLegacyCooldowns', () => {
   });
 
   it('is a no-op when legacy file does not exist', async () => {
-    const snap: CctStoreSnapshot = makeV2Snapshot();
-    const after = await migrateLegacyCooldowns(snap, tmp);
-    expect(after).toEqual(snap);
-  });
-});
-
-describe('CctStore v2 upgrade', () => {
-  let tmp: string;
-  beforeEach(async () => {
-    tmp = await makeTmpDir();
-  });
-  afterEach(async () => {
-    await fs.rm(tmp, { recursive: true, force: true });
-  });
-
-  async function writeV1SnapshotFile(filePath: string, snap: any): Promise<void> {
-    await fs.writeFile(filePath, JSON.stringify(snap, null, 2), 'utf8');
-  }
-
-  it('repeated load() on a v1 file returns synthesized v2 without writing to disk', async () => {
-    const filePath = path.join(tmp, 'cct-store.json');
-    const v1Oauth = {
-      slotId: '01HZZZAAAA0000000000000200',
-      name: 'oauth1',
-      kind: 'oauth_credentials',
-      credentials: {
-        accessToken: 'at',
-        refreshToken: 'rt',
-        expiresAtMs: 1_900_000_000_000,
-        scopes: ['user:profile', 'user:inference'],
-      },
-      createdAt: '2026-04-18T00:00:00.000Z',
-      acknowledgedConsumerTosRisk: true,
-    };
-    const v1Snap = {
-      version: 1,
-      revision: 2,
-      registry: { slots: [v1Oauth] },
-      state: { [v1Oauth.slotId]: { authState: 'healthy', activeLeases: [] } },
-    };
-    await writeV1SnapshotFile(filePath, v1Snap);
-    const mtimeBefore = (await fs.stat(filePath)).mtimeMs;
-
-    const store = new CctStore(filePath);
-    const a = await store.load();
-    const b = await store.load();
-    expect(a.version).toBe(2);
-    expect(b.version).toBe(2);
-    // Synthesised configDir points under the dataDir
-    const [slotA] = a.registry.slots as OAuthCredentialsSlot[];
-    expect(slotA.configDir).toBe(path.join(tmp, 'cct-store.dirs', v1Oauth.slotId));
-
-    const mtimeAfter = (await fs.stat(filePath)).mtimeMs;
-    expect(mtimeAfter).toBe(mtimeBefore);
-    // And the raw bytes on disk are still v1.
-    const rawBytes = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    expect(rawBytes.version).toBe(1);
-  });
-
-  it('upgradeIfNeeded persists v2, mkdir 0700 each oauth configDir, revision +1', async () => {
-    const filePath = path.join(tmp, 'cct-store.json');
-    const v1Oauth = {
-      slotId: '01HZZZAAAA0000000000000201',
-      name: 'oauth1',
-      kind: 'oauth_credentials',
-      credentials: {
-        accessToken: 'at',
-        refreshToken: 'rt',
-        expiresAtMs: 1_900_000_000_000,
-        scopes: ['user:profile', 'user:inference'],
-      },
-      createdAt: '2026-04-18T00:00:00.000Z',
-      acknowledgedConsumerTosRisk: true,
-    };
-    const v1Setup = {
-      slotId: '01HZZZAAAA0000000000000202',
-      name: 'setup1',
-      kind: 'setup_token',
-      value: 'sk-ant-oat01-aaa',
-      createdAt: '2026-04-18T00:00:00.000Z',
-    };
-    const v1Snap = {
-      version: 1,
-      revision: 5,
-      registry: { slots: [v1Oauth, v1Setup] },
-      state: {},
-    };
-    await writeV1SnapshotFile(filePath, v1Snap);
-
-    const store = new CctStore(filePath);
-    const upgraded = await store.upgradeIfNeeded();
-    expect(upgraded).toBe(true);
-
-    // Post-upgrade on-disk bytes must be v2, revision=6.
-    const rawBytes = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    expect(rawBytes.version).toBe(2);
-    expect(rawBytes.revision).toBe(6);
-    const expectedDir = path.join(tmp, 'cct-store.dirs', v1Oauth.slotId);
-    expect(rawBytes.registry.slots[0].configDir).toBe(expectedDir);
-    // setup_token slot should NOT have a configDir field.
-    expect(rawBytes.registry.slots[1].configDir).toBeUndefined();
-
-    // The configDir exists and has mode 0o700 bits set.
-    const st = await fs.stat(expectedDir);
-    expect(st.isDirectory()).toBe(true);
-    // On POSIX, check that no group/other bits leak through (mask 0o077 must be 0).
-    if (process.platform !== 'win32') {
-      expect(st.mode & 0o077).toBe(0);
-    }
-  });
-
-  it('upgradeIfNeeded on an already-v2 file is a no-op and returns false', async () => {
-    const filePath = path.join(tmp, 'cct-store.json');
-    const store = new CctStore(filePath);
-    // First call bootstraps (file was missing → synthesised v2 on lock acquire).
-    const first = await store.upgradeIfNeeded();
-    expect(first).toBe(false);
-
-    const rev1 = (await store.load()).revision;
-    const second = await store.upgradeIfNeeded();
-    expect(second).toBe(false);
-    expect((await store.load()).revision).toBe(rev1);
-  });
-
-  it('upgradeIfNeeded serialises concurrent calls via the cross-process lock (single persist)', async () => {
-    const filePath = path.join(tmp, 'cct-store.json');
-    const v1Snap = {
+    const snap: CctStoreSnapshot = {
       version: 1,
       revision: 0,
       registry: { slots: [] },
       state: {},
     };
-    await writeV1SnapshotFile(filePath, v1Snap);
-
-    const store = new CctStore(filePath);
-    const results = await Promise.all([store.upgradeIfNeeded(), store.upgradeIfNeeded(), store.upgradeIfNeeded()]);
-    // Exactly one call should have persisted a v2 write.
-    const trueCount = results.filter((r) => r === true).length;
-    expect(trueCount).toBe(1);
-    const rawBytes = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    expect(rawBytes.version).toBe(2);
-    // Revision jumped exactly once.
-    expect(rawBytes.revision).toBe(1);
-  });
-
-  it('upgradeIfNeeded uses the raw read (not load()) — stale v1 file is still persisted', async () => {
-    // If upgradeIfNeeded were to call `load()` instead of `readSnapshotRaw()`,
-    // the synthesised v2 from the load-time migrator would cause the routine
-    // to return `false` without ever persisting — that is the exact bug the
-    // codex nit protects against. We verify by spying on store.load and
-    // asserting it is NOT consulted during the upgrade path.
-    const filePath = path.join(tmp, 'cct-store.json');
-    const v1Snap = {
-      version: 1,
-      revision: 1,
-      registry: { slots: [] },
-      state: {},
-    };
-    await writeV1SnapshotFile(filePath, v1Snap);
-    const store = new CctStore(filePath);
-
-    const loadSpy = vi.spyOn(store, 'load');
-    const upgraded = await store.upgradeIfNeeded();
-    expect(upgraded).toBe(true);
-    expect(loadSpy).not.toHaveBeenCalled();
-    loadSpy.mockRestore();
-
-    const rawBytes = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    expect(rawBytes.version).toBe(2);
-    expect(rawBytes.revision).toBe(2);
+    const after = await migrateLegacyCooldowns(snap, tmp);
+    expect(after).toEqual(snap);
   });
 });
