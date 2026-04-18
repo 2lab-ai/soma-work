@@ -170,7 +170,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await ack({ response_action: 'errors', errors });
       return;
     }
-    await ack();
 
     const name = readPlainText(values, CCT_BLOCK_IDS.add_name, CCT_ACTION_IDS.name_input);
     const kind = readRadio(values, CCT_BLOCK_IDS.add_kind, CCT_ACTION_IDS.kind_radio);
@@ -189,8 +188,22 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         const value = readPlainText(values, CCT_BLOCK_IDS.add_setup_token_value, CCT_ACTION_IDS.setup_token_input);
         await tokenManager.addSlot({ name, kind: 'setup_token', value });
       }
+      await ack();
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
+      // Surface CAS-level name collisions (lost a race with a parallel Add
+      // for the same name) as a modal-level validation error.
+      const msg = (err as Error)?.message ?? '';
+      if (msg.startsWith('NAME_IN_USE:')) {
+        await ack({
+          response_action: 'errors',
+          errors: { [CCT_BLOCK_IDS.add_name]: `Name \`${name}\` is already in use.` },
+        });
+        return;
+      }
+      // Unknown failure — ack without errors so the modal closes; the
+      // caller will see the ephemeral card (or its absence) as feedback.
+      await ack();
       logger.error('cct view_submission add failed', err);
     }
   });
@@ -237,13 +250,26 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       });
       return;
     }
-    await ack();
     try {
       const slotId = ((body as any)?.view?.private_metadata ?? '') as string;
-      if (!slotId) return;
+      if (!slotId) {
+        await ack();
+        return;
+      }
       await tokenManager.renameSlot(slotId, newName);
+      await ack();
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
+      // Race-lost path: parallel rename landed the same name first.
+      const msg = (err as Error)?.message ?? '';
+      if (msg.startsWith('NAME_IN_USE:')) {
+        await ack({
+          response_action: 'errors',
+          errors: { [CCT_BLOCK_IDS.rename_name]: `Name \`${newName}\` is already in use.` },
+        });
+        return;
+      }
+      await ack();
       logger.error('cct view_submission rename failed', err);
     }
   });

@@ -261,6 +261,13 @@ export class AdminHandler implements CommandHandler {
         existingNames.add(entry.name);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
+        // Treat the CAS name-uniqueness collision the same as a pre-check
+        // skip — another caller landed the name between our `existingNames`
+        // snapshot and our `addSlot` attempt.
+        if (reason.startsWith('NAME_IN_USE:')) {
+          skipped.push(entry.name);
+          continue;
+        }
         failed.push({ name: entry.name, reason });
       }
     }

@@ -148,6 +148,24 @@ describe('TokenManager (slot-based)', () => {
       expect(snap.registry.activeSlotId).toBe(slot.slotId);
       expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-aaa');
     });
+
+    it('two parallel addSlot calls with the same name — one wins, one throws NAME_IN_USE', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const results = await Promise.allSettled([
+        tm.addSlot({ name: 'shared', kind: 'setup_token', value: 'sk-ant-oat01-aaa' }),
+        tm.addSlot({ name: 'shared', kind: 'setup_token', value: 'sk-ant-oat01-bbb' }),
+      ]);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected') as Array<PromiseRejectedResult>;
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0].reason as Error).message).toMatch(/^NAME_IN_USE:shared$/);
+      const snap = await store.load();
+      expect(snap.registry.slots.filter((s: any) => s.name === 'shared')).toHaveLength(1);
+    });
   });
 
   // ── applyToken ─────────────────────────────────────────────

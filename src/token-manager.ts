@@ -751,6 +751,13 @@ export class TokenManager {
     }
 
     await this.store.mutate((snap) => {
+      // CAS-protect name uniqueness: re-check inside the mutate callback so
+      // two parallel `addSlot` calls for the same name can't both succeed —
+      // the `CctStore.mutate` retry loop will re-run the loser's callback
+      // against the winner's persisted snapshot, where the guard now trips.
+      if (snap.registry.slots.some((s) => s.name === newSlot.name)) {
+        throw new Error(`NAME_IN_USE:${newSlot.name}`);
+      }
       snap.registry.slots.push(newSlot);
       snap.state[newSlot.slotId] = { authState: 'healthy', activeLeases: [] };
       if (!snap.registry.activeSlotId) {
@@ -772,6 +779,11 @@ export class TokenManager {
     await this.store.mutate((snap) => {
       const slot = snap.registry.slots.find((s) => s.slotId === slotId);
       if (!slot) throw new Error(`renameSlot: unknown slotId ${slotId}`);
+      // CAS-protect name uniqueness (excluding self) so two parallel renames
+      // can't both land the same name.
+      if (snap.registry.slots.some((s) => s.slotId !== slotId && s.name === newName)) {
+        throw new Error(`NAME_IN_USE:${newName}`);
+      }
       slot.name = newName;
     });
     await this.refreshCache();
