@@ -8,7 +8,7 @@ import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import { ThreadSurface } from './thread-surface';
-import { type TurnContext, type TurnEndReason, TurnSurface } from './turn-surface';
+import { type TurnAddress, type TurnContext, type TurnEndReason, TurnSurface } from './turn-surface';
 import type { SlackMessagePayload } from './user-choice-handler';
 
 interface ThreadPanelDeps {
@@ -20,7 +20,7 @@ interface ThreadPanelDeps {
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
-export type { TurnContext, TurnEndReason } from './turn-surface';
+export type { TurnAddress, TurnContext, TurnEndReason } from './turn-surface';
 
 /**
  * ThreadPanel — combined header+panel rendering (legacy) + per-turn B1 stream
@@ -166,11 +166,7 @@ export class ThreadPanel {
    * it did not (PHASE<2, missing ctx + no state, or SDK error). Callers treat
    * `false` as "fall back to legacy `onRenderRequest`".
    */
-  async renderTasks(
-    turnId: string,
-    todos: Todo[],
-    ctx?: { channelId: string; threadTs?: string; sessionKey: string },
-  ): Promise<boolean> {
+  async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
     if (config.ui.fiveBlockPhase < 2) return false;
     return this.turnSurface.renderTasks(turnId, todos, ctx);
   }

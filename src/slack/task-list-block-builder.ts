@@ -30,14 +30,16 @@ export interface TaskListBuildOptions {
   theme?: SessionTheme;
 }
 
+/** Derived status union used by the static `buildPlanTasks` path.
+ * `blocked` is NOT a raw Todo.status value — it's computed from dependencies.
+ */
+type EffectiveStatus = 'completed' | 'in_progress' | 'pending' | 'blocked';
+
 /** Effective status ignoring the TodoManager instance — used by the static
  * `buildPlanTasks` path which does not own a TodoManager. Mirrors the logic
  * in `TodoManager.getEffectiveStatus` (pending + non-completed dep = blocked).
  */
-function computeEffectiveStatus(
-  todo: Todo,
-  allTodos: Todo[],
-): 'completed' | 'in_progress' | 'pending' | 'blocked' {
+function computeEffectiveStatus(todo: Todo, allTodos: Todo[]): EffectiveStatus {
   if (todo.status === 'completed') return 'completed';
   if (todo.status === 'in_progress') return 'in_progress';
   // todo.status === 'pending' from here
@@ -52,7 +54,7 @@ function computeEffectiveStatus(
 }
 
 /** Icon prefix for the top-level plain-text fallback view. */
-const STATUS_ICON: Record<'completed' | 'in_progress' | 'pending' | 'blocked', string> = {
+const STATUS_ICON: Record<EffectiveStatus, string> = {
   completed: '✅',
   in_progress: '⏳',
   pending: '⬜',
@@ -63,9 +65,7 @@ const STATUS_ICON: Record<'completed' | 'in_progress' | 'pending' | 'blocked', s
  * task_card only has `pending | in_progress | complete | error`, so our
  * `blocked` derived state collapses to `pending` for the card itself — the
  * 🚧 signal is preserved in the top-level text and in the section fallback. */
-function toTaskCardStatus(
-  effective: 'completed' | 'in_progress' | 'pending' | 'blocked',
-): 'complete' | 'in_progress' | 'pending' {
+function toTaskCardStatus(effective: EffectiveStatus): 'complete' | 'in_progress' | 'pending' {
   if (effective === 'completed') return 'complete';
   if (effective === 'in_progress') return 'in_progress';
   return 'pending';

@@ -60,6 +60,12 @@ export interface TurnContext {
 }
 
 /**
+ * Address-only slice of `TurnContext` (no turnId). Used by callers that drive
+ * a render BEFORE a turn exists (e.g. `renderTasks` without a prior `begin`).
+ */
+export type TurnAddress = Omit<TurnContext, 'turnId'>;
+
+/**
  * Reason handed to `end()` for observability only — not a business signal.
  * P1 wires exactly two values from stream-executor: `'completed'` (success path,
  * finally block) and `'aborted'` (catch path, non-error abort). Supersede goes
@@ -89,12 +95,6 @@ interface TurnState {
   appendedChunks: number;
   /** True once `end()` or `fail()` has been entered for this turn. */
   closing: boolean;
-  /**
-   * True when the state entry was created by `renderTasks(ctx?)` without a
-   * prior `begin()`. Ad-hoc entries are NOT registered in `activeTurn`, so
-   * they don't participate in supersede logic.
-   */
-  adHoc: boolean;
 }
 
 /**
@@ -127,7 +127,7 @@ export class TurnSurface {
   /** sessionKey → active turnId (for supersede on rapid re-entry). */
   private activeTurn = new Map<string, string>();
 
-  /** P2 B2 plan block — 500ms trailing-edge debouncer per turnId. */
+  /** 500ms trailing-edge debouncer per turnId (coalesces rapid renderTasks). */
   private renderDebouncer = new TurnRenderDebouncer<string>(500);
 
   constructor(private deps: TurnSurfaceDeps) {}
@@ -189,7 +189,6 @@ export class TurnSurface {
       startedAt: Date.now(),
       appendedChunks: 0,
       closing: false,
-      adHoc: false,
     });
     this.activeTurn.set(ctx.sessionKey, ctx.turnId);
 
@@ -290,28 +289,24 @@ export class TurnSurface {
   }
 
   /**
-   * B2 (plan block) entry point — activated in P2.
-   *
-   * Schedules a trailing-edge (500ms) rerender of the task list on the plan
-   * message owned by this turn. Each call replaces the pending snapshot, so
-   * rapid TodoWrite ticks collapse into a single Slack update.
+   * B2 plan block entry point — schedules a trailing-edge (500ms) rerender
+   * of the task list on the plan message owned by this turn. Each call
+   * replaces the pending snapshot, so rapid TodoWrite ticks collapse into a
+   * single Slack update.
    *
    * Flow:
    *   1. First call on a turn → `chat.postMessage` stores `planTs` on state.
    *   2. Subsequent calls → `chat.update` against `planTs`.
    *   3. `ctx` is only consulted when no existing turn state is found (ad-hoc
    *      path, e.g. renderTasks called before begin()). It seeds a state
-   *      entry that does NOT participate in `activeTurn` supersede logic.
+   *      entry with streamTs=undefined so end/fail skip `stopStream`, and is
+   *      NOT registered in `activeTurn` (never supersedes another turn).
    *
    * Returns `true` when the render was scheduled (caller's "we owned the
    * render" signal). Returns `false` when we fell through to the legacy path
    * — PHASE<2, empty todos, or missing context.
    */
-  async renderTasks(
-    turnId: string,
-    todos: Todo[],
-    ctx?: { channelId: string; threadTs?: string; sessionKey: string },
-  ): Promise<boolean> {
+  async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
     if (this.phase() < 2) return false;
     if (!todos || todos.length === 0) return false;
 
@@ -323,21 +318,11 @@ export class TurnSurface {
         this.logger.warn('renderTasks called without ctx and no existing turn', { turnId });
         return false;
       }
-      // Ad-hoc entry: create a TurnState with streamTs=undefined so end/fail
-      // skip `stopStream` (guarded at end()/fail()). Not registered in
-      // activeTurn — ad-hoc entries never supersede another turn.
-      const adHocCtx: TurnContext = {
-        channelId: ctx.channelId,
-        threadTs: ctx.threadTs,
-        sessionKey: ctx.sessionKey,
-        turnId,
-      };
       state = {
-        ctx: adHocCtx,
+        ctx: { ...ctx, turnId },
         startedAt: Date.now(),
         appendedChunks: 0,
         closing: false,
-        adHoc: true,
       };
       this.turns.set(turnId, state);
     }

@@ -5,6 +5,7 @@ import type { ConversationSession } from '../types';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
 import type { ReactionManager } from './reaction-manager';
 import type { SlackApiHelper } from './slack-api-helper';
+import type { TurnAddress } from './turn-surface';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
@@ -26,11 +27,7 @@ export type RenderRequestCallback = (session: ConversationSession, sessionKey: s
  * stream-executor turn). The callback returns `false` when it decided not
  * to render — callers treat that as "stay with the legacy path only".
  */
-export type PlanRenderCallback = (
-  turnId: string,
-  todos: Todo[],
-  ctx: { channelId: string; threadTs?: string; sessionKey: string },
-) => Promise<boolean>;
+export type PlanRenderCallback = (turnId: string, todos: Todo[], ctx: TurnAddress) => Promise<boolean>;
 
 /**
  * Manages todo list display and updates in Slack.
@@ -95,7 +92,7 @@ export class TodoDisplayManager {
     logVerbosity?: number,
     session?: ConversationSession,
     turnId?: string,
-    turnCtx?: { channelId: string; threadTs?: string; sessionKey: string },
+    turnCtx?: TurnAddress,
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -137,10 +134,10 @@ export class TodoDisplayManager {
         }
       }
 
-      // P2 B2 (#577): fan out to TurnSurface.renderTasks BEFORE the legacy
-      // render request. We don't gate on onRenderRequest's success — the
-      // two surfaces are independent Slack messages (planTs vs combined
-      // header), so a failure on one must not block the other.
+      // Fan out to TurnSurface.renderTasks BEFORE the legacy render request.
+      // The two surfaces are independent Slack messages (planTs vs combined
+      // header), so a failure on one must not block the other — hence no
+      // gating on onRenderRequest's success.
       if (
         config.ui.fiveBlockPhase >= 2 &&
         this.onPlanRender &&

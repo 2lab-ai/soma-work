@@ -567,11 +567,9 @@ export class ThreadSurface {
         : [];
     const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
 
-    // P2 B2 migration (Issue #577): under PHASE>=2 the task-list is rendered
-    // as its own `planTs` Slack message by TurnSurface.renderTasks. Skipping
-    // the embed here prevents dual rendering (combined header + plan message)
-    // from showing the same todos twice. PHASE<2 keeps the legacy embed so
-    // existing deployments see identical output.
+    // Under PHASE>=2 the task list renders as its own `planTs` message via
+    // TurnSurface.renderTasks. Skip the embed here to avoid dual rendering
+    // (combined header + plan message) showing the same todos twice.
     const todos =
       config.ui.fiveBlockPhase < 2 && session.sessionId
         ? this.deps.todoManager.getTodos(session.sessionId)
