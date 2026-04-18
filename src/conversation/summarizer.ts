@@ -1,7 +1,9 @@
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
-import { ensureValidCredentials } from '../credentials-manager';
+import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
+import { getTokenManager } from '../token-manager';
 
 const logger = new Logger('Summarizer');
 
@@ -26,67 +28,81 @@ function getSummaryModel(): string {
  * Returns null on failure (graceful degradation).
  */
 export async function summarizeResponse(content: string): Promise<SummaryResult | null> {
-  // Validate credentials (shared with all Agent SDK calls)
-  const credentialResult = await ensureValidCredentials();
-  if (!credentialResult.valid) {
-    logger.warn('Credentials invalid, summarization disabled', { error: credentialResult.error });
-    return null;
-  }
+  let lease: SlotAuthLease | null = null;
+  try {
+    try {
+      lease = await ensureActiveSlotAuth(getTokenManager(), 'summarizer');
+    } catch (credErr) {
+      if (credErr instanceof NoHealthySlotError) {
+        logger.warn('Credentials invalid, summarization disabled', { error: credErr.message });
+        return null;
+      }
+      throw credErr;
+    }
 
-  // Truncate very long content to save tokens
-  const maxContentLength = 8000;
-  const truncatedContent =
-    content.length > maxContentLength ? `${content.substring(0, maxContentLength)}\n...[truncated]` : content;
+    // Truncate very long content to save tokens
+    const maxContentLength = 8000;
+    const truncatedContent =
+      content.length > maxContentLength ? `${content.substring(0, maxContentLength)}\n...[truncated]` : content;
 
-  const prompt = `Summarize this AI assistant response. Output ONLY a JSON object with "title" (1 short line, max 60 chars) and "body" (3 concise lines separated by \\n). No markdown, no code blocks, just raw JSON.
+    const prompt = `Summarize this AI assistant response. Output ONLY a JSON object with "title" (1 short line, max 60 chars) and "body" (3 concise lines separated by \\n). No markdown, no code blocks, just raw JSON.
 
 Response to summarize:
 ${truncatedContent}`;
 
-  const options: Options = {
-    model: getSummaryModel(),
-    maxTurns: 1,
-    tools: [],
-    systemPrompt: 'You are a concise summarizer. Output only what is requested.',
-    settingSources: [],
-    plugins: [],
-    stderr: (data: string) => {
-      logger.warn('Summarizer stderr', { data: data.trimEnd() });
-    },
-  };
+    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
+    // so concurrent summariser / title-generator / dispatch calls don't
+    // clobber each other's token on the shared
+    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
+    const { env } = buildQueryEnv(lease);
+    const options: Options = {
+      model: getSummaryModel(),
+      maxTurns: 1,
+      tools: [],
+      systemPrompt: 'You are a concise summarizer. Output only what is requested.',
+      settingSources: [],
+      plugins: [],
+      env,
+      stderr: (data: string) => {
+        logger.warn('Summarizer stderr', { data: data.trimEnd() });
+      },
+    };
 
-  try {
-    let assistantText = '';
+    try {
+      let assistantText = '';
 
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            assistantText += block.text;
+      for await (const message of query({ prompt, options })) {
+        if (message.type === 'assistant' && message.message?.content) {
+          for (const block of message.message.content) {
+            if (block.type === 'text') {
+              assistantText += block.text;
+            }
           }
         }
       }
-    }
 
-    // Strip markdown code block wrappers (LLMs frequently add them despite instructions)
-    let cleanText = assistantText.trim();
-    if (cleanText.startsWith('```')) {
-      cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
+      // Strip markdown code block wrappers (LLMs frequently add them despite instructions)
+      let cleanText = assistantText.trim();
+      if (cleanText.startsWith('```')) {
+        cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
 
-    // Parse JSON response
-    const parsed = JSON.parse(cleanText);
-    if (parsed.title && parsed.body) {
-      return {
-        title: String(parsed.title).substring(0, 100),
-        body: String(parsed.body).substring(0, 500),
-      };
-    }
+      // Parse JSON response
+      const parsed = JSON.parse(cleanText);
+      if (parsed.title && parsed.body) {
+        return {
+          title: String(parsed.title).substring(0, 100),
+          body: String(parsed.body).substring(0, 500),
+        };
+      }
 
-    logger.warn('Summarizer returned unexpected format', { text: assistantText.substring(0, 200) });
-    return null;
-  } catch (error) {
-    logger.error('Summarization failed', error);
-    return null;
+      logger.warn('Summarizer returned unexpected format', { text: assistantText.substring(0, 200) });
+      return null;
+    } catch (error) {
+      logger.error('Summarization failed', error);
+      return null;
+    }
+  } finally {
+    if (lease) await lease.release();
   }
 }
