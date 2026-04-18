@@ -138,13 +138,7 @@ export class TodoDisplayManager {
       // The two surfaces are independent Slack messages (planTs vs combined
       // header), so a failure on one must not block the other — hence no
       // gating on onRenderRequest's success.
-      if (
-        config.ui.fiveBlockPhase >= 2 &&
-        this.onPlanRender &&
-        turnId &&
-        turnCtx &&
-        newTodos.length > 0
-      ) {
+      if (config.ui.fiveBlockPhase >= 2 && this.onPlanRender && turnId && turnCtx && newTodos.length > 0) {
         try {
           await this.onPlanRender(turnId, newTodos, turnCtx);
         } catch (error) {

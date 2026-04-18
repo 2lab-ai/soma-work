@@ -571,9 +571,7 @@ export class ThreadSurface {
     // TurnSurface.renderTasks. Skip the embed here to avoid dual rendering
     // (combined header + plan message) showing the same todos twice.
     const todos =
-      config.ui.fiveBlockPhase < 2 && session.sessionId
-        ? this.deps.todoManager.getTodos(session.sessionId)
-        : [];
+      config.ui.fiveBlockPhase < 2 && session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
     if (todos.length > 0 && budgetForTaskList >= 4) {
       const taskListTheme = userSettingsStore.getUserSessionTheme(session.ownerId);
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
