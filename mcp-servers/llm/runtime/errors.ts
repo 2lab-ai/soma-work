@@ -27,7 +27,3 @@ export class LlmChatError extends Error {
     this.name = 'LlmChatError';
   }
 }
-
-export function isLlmChatError(e: unknown): e is LlmChatError {
-  return e instanceof LlmChatError;
-}

@@ -31,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { StderrLogger } from '../../_shared/stderr-logger.js';
+import { writeJsonlAtomic } from './fs-utils.js';
 import { WriteQueue } from './write-queue.js';
 import type { Backend } from './types.js';
 
@@ -97,7 +98,7 @@ function sleep(ms: number): Promise<void> {
  * Poll kill(pid, 0) until it throws (process gone) or maxMs elapses.
  * Returns true iff confirmed dead.
  */
-export async function pollUntilDead(pid: number, maxMs: number): Promise<boolean> {
+async function pollUntilDead(pid: number, maxMs: number): Promise<boolean> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
@@ -333,19 +334,8 @@ export class ChildRegistry {
   }
 
   private async atomicRewrite(): Promise<void> {
-    const dir = path.dirname(this.filePath);
-    await fs.promises.mkdir(dir, { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
     const lines = this.records.map((r) => JSON.stringify(r));
-    const body = lines.length > 0 ? `${lines.join('\n')}\n` : '';
-    await fs.promises.writeFile(tmpPath, body, 'utf-8');
-    const fh = await fs.promises.open(tmpPath, 'r+');
-    try {
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    await fs.promises.rename(tmpPath, this.filePath);
+    await writeJsonlAtomic(this.filePath, lines);
   }
 
   private ensureLoaded(): void {

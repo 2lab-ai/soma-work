@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StderrLogger } from '../../_shared/stderr-logger.js';
+import { writeJsonlAtomic, writeJsonlAtomicSync } from './fs-utils.js';
 import { WriteQueue } from './write-queue.js';
 import type { SessionRecord, SessionStore, SessionStatus } from './types.js';
 
@@ -277,23 +278,11 @@ export class FileSessionStore implements SessionStore {
   }
 
   private async atomicRewrite(): Promise<void> {
-    const dir = path.dirname(this.filePath);
-    await fs.promises.mkdir(dir, { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
     const lines: string[] = [];
     for (const r of this.records!.values()) {
       lines.push(JSON.stringify(r));
     }
-    const body = lines.length > 0 ? `${lines.join('\n')}\n` : '';
-    await fs.promises.writeFile(tmpPath, body, 'utf-8');
-    // fsync via open+close for durability.
-    const fh = await fs.promises.open(tmpPath, 'r+');
-    try {
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    await fs.promises.rename(tmpPath, this.filePath);
+    await writeJsonlAtomic(this.filePath, lines);
   }
 
   // ── Invariants & pruning ──────────────────────────────
@@ -416,23 +405,12 @@ export class FileSessionStore implements SessionStore {
     logger.info('llm.store.migrated', { count: this.records!.size, coerced: coercedCount });
 
     // Persist the migrated state to JSONL, then rename the legacy blob to .bak.
-    // This migration path is pre-WriteQueue (init-time) so we call atomicRewrite synchronously.
-    const dir = path.dirname(this.filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
+    // Init-time path (pre-WriteQueue): sync rewrite keeps the constructor atomic.
     const lines: string[] = [];
     for (const r of this.records!.values()) {
       lines.push(JSON.stringify(r));
     }
-    const body = lines.length > 0 ? `${lines.join('\n')}\n` : '';
-    fs.writeFileSync(tmpPath, body, 'utf-8');
-    const fd = fs.openSync(tmpPath, 'r+');
-    try {
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpPath, this.filePath);
+    writeJsonlAtomicSync(this.filePath, lines);
     try {
       fs.renameSync(this.legacyPath, `${this.legacyPath}.bak`);
     } catch {

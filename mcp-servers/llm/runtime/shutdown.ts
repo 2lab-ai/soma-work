@@ -24,6 +24,8 @@ import { StderrLogger } from '../../_shared/stderr-logger.js';
 
 const logger = new StderrLogger('Shutdown');
 
+export type ShutdownTrigger = NodeJS.Signals | 'programmatic';
+
 export interface ShutdownDeps {
   pidfile: PidfileHandle;
   sessionStore: FileSessionStore;
@@ -80,14 +82,14 @@ export class ShutdownCoordinator {
    * per call, breaking reference-identity memoization. We return the stored
    * promise directly.
    */
-  graceful(signal: NodeJS.Signals | 'programmatic'): Promise<void> {
+  graceful(signal: ShutdownTrigger): Promise<void> {
     if (this.gracefulPromise) return this.gracefulPromise;
     this._accepting = false;
     this.gracefulPromise = this.runGraceful(signal);
     return this.gracefulPromise;
   }
 
-  private async runGraceful(signal: NodeJS.Signals | 'programmatic'): Promise<void> {
+  private async runGraceful(signal: ShutdownTrigger): Promise<void> {
     logger.info('llm.shutdown.begin', { signal });
 
     // 2. drain inflight handlers (bounded)
