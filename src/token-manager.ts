@@ -127,6 +127,8 @@ export interface ActiveTokenInfo {
   readonly slotId: string;
   readonly name: string;
   readonly kind: TokenSlot['kind'];
+  /** Private CLAUDE_CONFIG_DIR for oauth_credentials slots (schema v2). */
+  readonly configDir?: string;
 }
 
 export interface AddSetupTokenInput {
@@ -143,6 +145,33 @@ export interface AddOAuthCredentialsInput {
 }
 
 export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput;
+
+/**
+ * The result of {@link TokenManager.acquireLease} — a bundle of everything
+ * a caller needs to spawn a Claude CLI call against the picked slot:
+ * the lease identifier (for release/heartbeat), the slot identity, the
+ * fresh access token, and the optional per-slot `configDir`.
+ */
+export interface AcquiredLease {
+  readonly leaseId: string;
+  readonly slotId: string;
+  readonly name: string;
+  readonly kind: 'setup_token' | 'oauth_credentials';
+  readonly accessToken: string;
+  readonly configDir?: string;
+}
+
+/**
+ * Thrown by {@link TokenManager.acquireLease} when every retry attempt
+ * observed the picked slot disappearing or transitioning to an
+ * ineligible state mid-flight.
+ */
+export class NoEligibleSlotError extends Error {
+  constructor(message: string = 'acquireLease: no eligible slot after retries') {
+    super(message);
+    this.name = 'NoEligibleSlotError';
+  }
+}
 
 export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
@@ -203,6 +232,21 @@ function resolveActiveTokenValue(slot: TokenSlot): string {
   return slot.credentials.accessToken;
 }
 
+/**
+ * Best-effort rm-rf of a per-slot `configDir`. ENOENT is silent (the dir
+ * was already cleaned up — no-op); other errors log a warning but never
+ * throw so lifecycle mutations stay resilient to filesystem quirks.
+ */
+async function removeConfigDirBestEffort(dir: string): Promise<void> {
+  try {
+    await fsPromises.rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return;
+    logger.warn(`configDir rm-rf failed for ${dir}`, err);
+  }
+}
+
 // ── TokenManager class ─────────────────────────────────────────
 
 export class TokenManager {
@@ -242,6 +286,15 @@ export class TokenManager {
     //    become "orphans". We capture them here so we can re-apply them
     //    to matching slot names after env seeding.
     const legacyCooldownsByName = await this.peekLegacyCooldownsByName();
+
+    // 1a. Persist any v1→v2 schema upgrade exactly once, before any further
+    //     mutate (which would otherwise race with the upgrade). This also
+    //     provisions each oauth slot's private CLAUDE_CONFIG_DIR.
+    try {
+      await this.store.upgradeIfNeeded();
+    } catch (err) {
+      logger.warn('upgradeIfNeeded failed (continuing with v1-on-disk shape)', err);
+    }
 
     // 2. load() runs legacy-cooldowns migration inside cct-store. Since
     //    the file on disk may be empty/missing, this is safe.
@@ -437,7 +490,16 @@ export class TokenManager {
       status: deriveStatus(snap.state[s.slotId], now),
     }));
     const active = this.getActiveSlotFromSnap(snap);
-    this.cachedActive = active ? { slotId: active.slotId, name: active.name, kind: active.kind } : null;
+    if (active) {
+      this.cachedActive = {
+        slotId: active.slotId,
+        name: active.name,
+        kind: active.kind,
+        configDir: active.kind === 'oauth_credentials' ? active.configDir : undefined,
+      };
+    } else {
+      this.cachedActive = null;
+    }
   }
 
   getActiveToken(): ActiveTokenInfo | null {
@@ -575,40 +637,108 @@ export class TokenManager {
 
   // ── Leases ────────────────────────────────────────────────
 
-  async acquireLease(ownerTag: string, ttlMs: number = DEFAULT_LEASE_TTL_MS): Promise<Lease> {
-    const leaseId = ulid();
-    const acquiredAt = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-    const lease: Lease = { leaseId, ownerTag, acquiredAt, expiresAt };
+  /**
+   * Pick an eligible slot, append a {@link Lease} in a single CAS, and
+   * return everything the caller needs to dispatch a Claude CLI call:
+   * `leaseId`, the slot identity, a fresh access token (refreshed outside
+   * the store lock for oauth_credentials slots), and the per-slot
+   * `configDir` when present.
+   *
+   * Retry loop: after the mutate commits we re-validate the picked slot —
+   * if the slot has since been removed / tombstoned / revoked (race with
+   * `removeSlot` or `markAuthState`), we release the stale lease and try
+   * again. `MAX_RETRIES = 3` by design: one normal pick + two revalidation
+   * retries.
+   *
+   * Refresh-errors (401/403/network) bubble WITHOUT a retry — preserves the
+   * existing semantics where a refresh failure is a client-visible error.
+   */
+  async acquireLease(ownerTag: string, ttlMs: number = DEFAULT_LEASE_TTL_MS): Promise<AcquiredLease> {
+    const MAX_RETRIES = 3;
 
-    const chosenSlotId = await this.store.mutate<string>((snap) => {
-      if (snap.registry.slots.length === 0) {
-        throw new Error('acquireLease: no slots available');
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const leaseId = ulid();
+      const acquiredAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      const lease: Lease = { leaseId, ownerTag, acquiredAt, expiresAt };
+
+      interface Allocated {
+        slotId: string;
+        name: string;
+        kind: 'setup_token' | 'oauth_credentials';
+        configDir?: string;
+        staticToken?: string;
       }
-      const now = Date.now();
-      // Prefer the current active slot if eligible; otherwise rotate to next.
-      const activeId = snap.registry.activeSlotId;
-      const activeSlot = activeId ? snap.registry.slots.find((s) => s.slotId === activeId) : undefined;
-      let picked: string;
-      if (activeSlot && isEligible(snap.state[activeSlot.slotId], now)) {
-        picked = activeSlot.slotId;
-      } else {
-        const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.slotId], now));
-        if (!candidate) {
-          throw new Error('acquireLease: no healthy slot available');
+
+      const allocated: Allocated = await this.store.mutate<Allocated>((snap) => {
+        if (snap.registry.slots.length === 0) {
+          throw new Error('acquireLease: no slots available');
         }
-        picked = candidate.slotId;
-        snap.registry.activeSlotId = candidate.slotId;
-      }
-      const state = snap.state[picked] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
-      state.activeLeases = [...state.activeLeases, lease];
-      snap.state[picked] = state;
-      return picked;
-    });
+        const now = Date.now();
+        const activeId = snap.registry.activeSlotId;
+        const activeSlot = activeId ? snap.registry.slots.find((s) => s.slotId === activeId) : undefined;
+        let picked: TokenSlot;
+        if (activeSlot && isEligible(snap.state[activeSlot.slotId], now)) {
+          picked = activeSlot;
+        } else {
+          const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.slotId], now));
+          if (!candidate) {
+            throw new Error('acquireLease: no healthy slot available');
+          }
+          picked = candidate;
+          snap.registry.activeSlotId = candidate.slotId;
+        }
+        const state = snap.state[picked.slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+        state.activeLeases = [...state.activeLeases, lease];
+        snap.state[picked.slotId] = state;
+        const out: Allocated = {
+          slotId: picked.slotId,
+          name: picked.name,
+          kind: picked.kind,
+          configDir: picked.kind === 'oauth_credentials' ? picked.configDir : undefined,
+          staticToken: picked.kind === 'setup_token' ? picked.value : undefined,
+        };
+        return out;
+      });
 
-    await this.refreshCache();
-    logger.debug(`acquireLease ${leaseId} on ${chosenSlotId} (ownerTag=${ownerTag})`);
-    return lease;
+      // Resolve the fresh access token OUTSIDE the store lock so HTTP
+      // calls can't starve other writers.
+      let accessToken: string;
+      if (allocated.kind === 'oauth_credentials') {
+        accessToken = await this.getValidAccessToken(allocated.slotId);
+      } else {
+        accessToken = allocated.staticToken ?? '';
+      }
+
+      // Re-validate: if the slot was tombstoned/removed/revoked while we
+      // were refreshing (or between the mutate and the re-check), drop the
+      // stale lease and retry. This is the race the 3-retry loop closes —
+      // `removeSlot` can tombstone between our pick and our caller's use.
+      const snap = await this.store.load();
+      const st = snap.registry.slots.find((s) => s.slotId === allocated.slotId);
+      const slotState = snap.state[allocated.slotId];
+      const stillEligible = !!st && !slotState?.tombstoned && slotState?.authState !== 'revoked';
+      if (stillEligible) {
+        await this.refreshCache();
+        logger.debug(`acquireLease ${leaseId} on ${allocated.slotId} (ownerTag=${ownerTag})`);
+        return {
+          leaseId,
+          slotId: allocated.slotId,
+          name: allocated.name,
+          kind: allocated.kind,
+          accessToken,
+          configDir: allocated.configDir,
+        };
+      }
+
+      // Slot disappeared / transitioned mid-flight — release the stale
+      // lease (best-effort) and try again.
+      await this.releaseLease(leaseId).catch((relErr) => {
+        logger.warn('acquireLease: stale-lease release failed', relErr);
+      });
+    }
+
+    throw new NoEligibleSlotError('acquireLease: no eligible slot after retries');
   }
 
   async heartbeatLease(leaseId: string): Promise<void> {
@@ -652,6 +782,9 @@ export class TokenManager {
 
   async reapExpiredLeases(): Promise<void> {
     const nowMs = Date.now();
+    // Collect configDirs of oauth slots that get fully reaped so we can
+    // clean them up on disk after the mutate commits.
+    const reapedConfigDirs: string[] = [];
     await this.store.mutate((snap) => {
       for (const [slotId, state] of Object.entries(snap.state)) {
         const kept = state.activeLeases.filter((l) => new Date(l.expiresAt).getTime() > nowMs);
@@ -664,6 +797,9 @@ export class TokenManager {
       for (const slot of snap.registry.slots) {
         const state = snap.state[slot.slotId];
         if (state?.tombstoned && state.activeLeases.length === 0) {
+          if (slot.kind === 'oauth_credentials' && slot.configDir) {
+            reapedConfigDirs.push(slot.configDir);
+          }
           delete snap.state[slot.slotId];
           if (snap.registry.activeSlotId === slot.slotId) {
             delete snap.registry.activeSlotId;
@@ -677,6 +813,11 @@ export class TokenManager {
     // self-heal active if we just removed the active slot
     await this.ensureActiveSlot();
     await this.refreshCache();
+    // Best-effort dir cleanup AFTER the mutate commits — ENOENT is silent,
+    // other errors warn but do not throw.
+    for (const dir of reapedConfigDirs) {
+      await removeConfigDirBestEffort(dir);
+    }
   }
 
   private startReaperTimer(): void {
@@ -705,6 +846,8 @@ export class TokenManager {
     const slotId = ulid();
     const createdAt = new Date().toISOString();
     let newSlot: TokenSlot;
+    let provisionedConfigDir: string | null = null;
+
     if (input.kind === 'setup_token') {
       const slot: SetupTokenSlot = {
         slotId,
@@ -722,6 +865,13 @@ export class TokenManager {
       if (input.acknowledgedConsumerTosRisk !== true) {
         throw new Error('addSlot: oauth_credentials requires acknowledgedConsumerTosRisk=true');
       }
+      // Pre-compute + provision the per-slot config dir BEFORE the mutate
+      // so the persisted snapshot always references a dir that exists on
+      // disk. If the mutate subsequently fails we rm the dir (orphan cleanup).
+      const configDir = path.join(this.store.dataDir(), 'cct-store.dirs', slotId);
+      await fsPromises.mkdir(configDir, { recursive: true, mode: 0o700 });
+      provisionedConfigDir = configDir;
+
       const slot: OAuthCredentialsSlot = {
         slotId,
         name: input.name,
@@ -729,24 +879,36 @@ export class TokenManager {
         credentials: input.credentials,
         createdAt,
         acknowledgedConsumerTosRisk: true,
+        configDir,
       };
       newSlot = slot;
     }
 
-    await this.store.mutate((snap) => {
-      // CAS-protect name uniqueness: re-check inside the mutate callback so
-      // two parallel `addSlot` calls for the same name can't both succeed —
-      // the `CctStore.mutate` retry loop will re-run the loser's callback
-      // against the winner's persisted snapshot, where the guard now trips.
-      if (snap.registry.slots.some((s) => s.name === newSlot.name)) {
-        throw new Error(`NAME_IN_USE:${newSlot.name}`);
+    try {
+      await this.store.mutate((snap) => {
+        // CAS-protect name uniqueness: re-check inside the mutate callback so
+        // two parallel `addSlot` calls for the same name can't both succeed —
+        // the `CctStore.mutate` retry loop will re-run the loser's callback
+        // against the winner's persisted snapshot, where the guard now trips.
+        if (snap.registry.slots.some((s) => s.name === newSlot.name)) {
+          throw new Error(`NAME_IN_USE:${newSlot.name}`);
+        }
+        snap.registry.slots.push(newSlot);
+        snap.state[newSlot.slotId] = { authState: 'healthy', activeLeases: [] };
+        if (!snap.registry.activeSlotId) {
+          snap.registry.activeSlotId = newSlot.slotId;
+        }
+      });
+    } catch (err) {
+      // Orphan-cleanup: the dir on disk has no corresponding persisted
+      // slot — remove it (best-effort; a failure to clean up is not fatal).
+      if (provisionedConfigDir) {
+        await fsPromises.rm(provisionedConfigDir, { recursive: true, force: true }).catch((cleanupErr) => {
+          logger.warn('addSlot: orphan configDir cleanup failed', cleanupErr);
+        });
       }
-      snap.registry.slots.push(newSlot);
-      snap.state[newSlot.slotId] = { authState: 'healthy', activeLeases: [] };
-      if (!snap.registry.activeSlotId) {
-        snap.registry.activeSlotId = newSlot.slotId;
-      }
-    });
+      throw err;
+    }
     await this.refreshCache();
     logger.info(
       `addSlot: ${newSlot.name} kind=${newSlot.kind} slotId=${newSlot.slotId}`,
@@ -769,6 +931,20 @@ export class TokenManager {
     await this.refreshCache();
   }
 
+  /**
+   * Remove a slot. Two paths:
+   *
+   * - **Non-force / tombstone-drain** (default): when a slot has active
+   *   leases, mark it `tombstoned` and let in-flight callers finish.
+   *   The {@link reapExpiredLeases} sweeper eventually removes both the
+   *   persisted slot entry AND its on-disk configDir (best-effort).
+   *
+   * - **Force**: remove immediately regardless of leases. The persisted
+   *   slot is dropped in one `mutate`, then the oauth configDir is rm-rf'd
+   *   best-effort. `force` is intentionally destructive — in-flight leases
+   *   may observe ENOENT on transcripts if they race the rm. Reserved for
+   *   operator intervention (`cct rm --force` / UI destructive action).
+   */
   async removeSlot(
     slotId: string,
     opts: { force?: boolean } = {},
@@ -776,12 +952,14 @@ export class TokenManager {
     const force = opts.force === true;
     let removed = false;
     let pendingDrain = false;
+    let removedConfigDir: string | null = null;
     await this.store.mutate((snap) => {
       const idx = snap.registry.slots.findIndex((s) => s.slotId === slotId);
       if (idx < 0) {
         removed = false;
         return;
       }
+      const slot = snap.registry.slots[idx];
       const state = snap.state[slotId];
       const hasLeases = state ? state.activeLeases.length > 0 : false;
       if (hasLeases && !force) {
@@ -798,7 +976,11 @@ export class TokenManager {
         removed = false;
         return;
       }
-      // Full removal
+      // Full removal — remember the oauth configDir (if any) for best-effort
+      // rm-rf after the mutate commits.
+      if (slot.kind === 'oauth_credentials' && slot.configDir) {
+        removedConfigDir = slot.configDir;
+      }
       snap.registry.slots.splice(idx, 1);
       delete snap.state[slotId];
       if (snap.registry.activeSlotId === slotId) {
@@ -809,6 +991,9 @@ export class TokenManager {
       removed = true;
     });
     await this.refreshCache();
+    if (removedConfigDir) {
+      await removeConfigDirBestEffort(removedConfigDir);
+    }
     return pendingDrain ? { removed: false, pendingDrain: true } : { removed };
   }
 
