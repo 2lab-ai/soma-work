@@ -32,7 +32,7 @@ vi.mock('../../../token-manager', () => {
       return { slotId: t.slotId, name: t.name };
     },
     getSnapshot: async () => ({
-      version: 1,
+      version: 2,
       revision: 1,
       registry: {
         activeSlotId: tokens[activeIdx]?.slotId,
