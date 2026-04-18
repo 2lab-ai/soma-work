@@ -16,7 +16,6 @@ allowed-tools:
   - mcp__github__get_pull_request_comments
   - mcp__github__get_pull_request_files
   - mcp__llm__chat
-  - mcp__llm__chat-reply
 ---
 
 @include(${CLAUDE_PLUGIN_ROOT}/.commands-body/pr-summary.md)

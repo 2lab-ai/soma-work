@@ -1,26 +1,37 @@
+/**
+ * GeminiRuntime — LlmRuntime adapter for the Gemini MCP server.
+ *
+ * Same architecture as CodexRuntime: shared long-lived McpClient child, PID
+ * registered with ChildRegistry, watchdog-controlled kill on timeout/abort.
+ */
+
 import { execFileSync } from 'child_process';
 import { McpClient } from '../../_shared/mcp-client.js';
 import type { McpClientConfig } from '../../_shared/mcp-client.js';
-import type { LlmRuntime, RuntimeCapabilities, SessionOptions, SessionResult } from './types.js';
+import type {
+  LlmRuntime,
+  RuntimeCapabilities,
+  RuntimeCallOptions,
+  StartSessionResult,
+  ResumeSessionResult,
+} from './types.js';
+import type { ChildRegistry } from './child-registry.js';
+import { runWithWatchdog } from './watchdog.js';
+import { ErrorCode, LlmChatError } from './errors.js';
 
-// ── Session ID Extraction ─────────────────────────────────
+// ── Session ID / response helpers ─────────────────────────
 
 function extractSessionId(parsed: any, rawResult?: any): string {
   const key = 'sessionId';
-
   if (rawResult?.structuredContent?.[key]) return rawResult.structuredContent[key];
   if (parsed[key]) return parsed[key];
   if (rawResult?.[key]) return rawResult[key];
   if (rawResult?._meta?.[key]) return rawResult._meta[key];
-
   const text = rawResult?.content?.find((c: any) => c.type === 'text')?.text || '';
   const match = text.match(/Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   if (match) return match[1];
-
   return '';
 }
-
-// ── Response Parsing ──────────────────────────────────────
 
 function parseResponse(result: any): { parsed: any; text: string } {
   const text = result?.content?.find((c: any) => c.type === 'text')?.text || '';
@@ -37,9 +48,14 @@ function extractContent(result: any, parsed: any, text: string): string {
   return content;
 }
 
-// ── GeminiRuntime ─────────────────────────────────────────
+// ── Runtime ───────────────────────────────────────────────
 
-const GEMINI_TIMEOUT = 600_000;
+const GEMINI_DEFAULT_TIMEOUT = 600_000;
+
+export interface GeminiRuntimeOptions {
+  clientConfig?: McpClientConfig;
+  childRegistry?: ChildRegistry;
+}
 
 export class GeminiRuntime implements LlmRuntime {
   readonly name = 'gemini' as const;
@@ -52,10 +68,13 @@ export class GeminiRuntime implements LlmRuntime {
 
   private client: McpClient | null = null;
   private readyPromise: Promise<void> | null = null;
+  private registeredPid: number | null = null;
   private readonly clientConfig: McpClientConfig;
+  private readonly childRegistry?: ChildRegistry;
 
-  constructor(clientConfig?: McpClientConfig) {
-    this.clientConfig = clientConfig ?? { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
+  constructor(opts: GeminiRuntimeOptions = {}) {
+    this.clientConfig = opts.clientConfig ?? { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
+    this.childRegistry = opts.childRegistry;
   }
 
   async ensureReady(): Promise<void> {
@@ -65,38 +84,80 @@ export class GeminiRuntime implements LlmRuntime {
     return this.readyPromise;
   }
 
-  async startSession(prompt: string, options: SessionOptions): Promise<SessionResult> {
+  async startSession(
+    model: string,
+    prompt: string,
+    opts: RuntimeCallOptions,
+  ): Promise<StartSessionResult> {
     await this.ensureReady();
 
-    const backendArgs: Record<string, unknown> = { prompt, model: options.model };
-    const result = await this.client!.callTool('chat', backendArgs, GEMINI_TIMEOUT);
+    // Gemini MCP server does not consume flat dot-notation config the way Codex does;
+    // the resolvedConfig passed to the child is the merged dictionary as-is.
+    const mergedConfig: Record<string, unknown> = { ...(opts.resolvedConfig ?? {}) };
+
+    const backendArgs: Record<string, unknown> = { prompt, model };
+    if (opts.cwd) backendArgs.cwd = opts.cwd;
+
+    const result = await this.invoke('chat', backendArgs, opts);
     const { parsed, text } = parseResponse(result);
     const backendSessionId = extractSessionId(parsed, result);
     const content = extractContent(result, parsed, text);
 
-    return { backendSessionId, content, backend: 'gemini', model: options.model };
+    return { backendSessionId, content, resolvedConfig: mergedConfig };
   }
 
-  async resumeSession(backendSessionId: string, prompt: string): Promise<SessionResult> {
+  async resumeSession(
+    backendSessionId: string,
+    prompt: string,
+    opts: RuntimeCallOptions,
+  ): Promise<ResumeSessionResult> {
     await this.ensureReady();
 
     const backendArgs: Record<string, unknown> = { prompt, sessionId: backendSessionId };
-    const result = await this.client!.callTool('chat-reply', backendArgs, GEMINI_TIMEOUT);
+    const result = await this.invoke('chat-reply', backendArgs, opts);
     const { parsed, text } = parseResponse(result);
     const newSessionId = extractSessionId(parsed, result) || backendSessionId;
     const content = extractContent(result, parsed, text);
 
-    return { backendSessionId: newSessionId, content, backend: 'gemini', model: '' };
+    return { backendSessionId: newSessionId, content };
   }
 
   async shutdown(): Promise<void> {
     if (this.client) {
+      const pid = this.client.getPid();
       try { await this.client.stop(); } catch { /* ignore */ }
       this.client = null;
+      if (pid !== undefined && this.registeredPid === pid) {
+        try { await this.childRegistry?.remove(pid); } catch { /* ignore */ }
+        this.registeredPid = null;
+      }
     }
   }
 
-  // ── Private ─────────────────────────────────────────────
+  // ── Internal ────────────────────────────────────────────
+
+  private async invoke(
+    tool: string,
+    args: Record<string, unknown>,
+    opts: RuntimeCallOptions,
+  ): Promise<any> {
+    const client = this.client;
+    if (!client) throw new LlmChatError(ErrorCode.BACKEND_FAILED, 'Gemini client not initialized');
+
+    const timeoutMs = opts.timeoutMs ?? GEMINI_DEFAULT_TIMEOUT;
+    const work = client.callTool(tool, args, timeoutMs).catch((err) => {
+      if (err instanceof LlmChatError) throw err;
+      throw new LlmChatError(ErrorCode.BACKEND_FAILED, err?.message ?? String(err), err);
+    });
+
+    return runWithWatchdog(work, {
+      timeoutMs,
+      signal: opts.signal,
+      killChild: (sig) => {
+        client.killProcess(sig);
+      },
+    });
+  }
 
   private async doInitialize(): Promise<void> {
     if (!this.cliExists('gemini')) {
@@ -104,11 +165,26 @@ export class GeminiRuntime implements LlmRuntime {
     }
 
     if (this.client) {
+      const oldPid = this.registeredPid;
       try { await this.client.stop(); } catch { /* ignore */ }
+      this.client = null;
+      if (oldPid !== null) {
+        try { await this.childRegistry?.remove(oldPid); } catch { /* ignore */ }
+        this.registeredPid = null;
+      }
     }
 
-    this.client = new McpClient(this.clientConfig, 'LlmMCP:gemini');
-    await this.client.start();
+    const client = new McpClient(this.clientConfig, 'LlmMCP:gemini');
+    await client.start();
+    this.client = client;
+
+    const pid = client.getPid();
+    if (pid !== undefined && this.childRegistry) {
+      try {
+        await this.childRegistry.append(pid, 'gemini');
+        this.registeredPid = pid;
+      } catch { /* non-fatal */ }
+    }
   }
 
   private cliExists(command: string): boolean {

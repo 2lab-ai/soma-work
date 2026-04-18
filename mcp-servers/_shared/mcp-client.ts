@@ -171,6 +171,26 @@ export class McpClient extends EventEmitter {
   }
 
   /**
+   * PID of the underlying child process (undefined if not started or already exited).
+   */
+  getPid(): number | undefined {
+    return this.process?.pid;
+  }
+
+  /**
+   * Send a signal to the child process. Returns true on success.
+   * Used by the llm MCP server's watchdog to enforce timeouts.
+   */
+  killProcess(signal: NodeJS.Signals = 'SIGTERM'): boolean {
+    if (!this.process || this.process.killed) return false;
+    try {
+      return this.process.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Get server info
    */
   getServerInfo(): any {
