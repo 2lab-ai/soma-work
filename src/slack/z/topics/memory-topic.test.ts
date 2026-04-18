@@ -359,6 +359,22 @@ describe('createMemoryTopicBinding', () => {
     const ids = opened[0].view.blocks.map((b: any) => b.block_id).filter(Boolean);
     expect(ids).toContain('memory_clear_targets');
   });
+
+  it('submitModal sends failure DM when private_metadata is malformed JSON', async () => {
+    clearAllMemoryMock('B3');
+    const binding = createMemoryTopicBinding();
+    if (!binding.submitModal) throw new Error('binding.submitModal undefined');
+    const posted: any[] = [];
+    const client = { chat: { postMessage: vi.fn(async (p: any) => posted.push(p)) } } as any;
+    await binding.submitModal({
+      client,
+      userId: 'B3',
+      body: { view: { private_metadata: '{not-json' } },
+      values: {},
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].text).toContain('Malformed modal metadata');
+  });
 });
 
 /* ------------------------------------------------------------------ *

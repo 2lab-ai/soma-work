@@ -1,33 +1,10 @@
 /**
- * `/z memory` Block Kit topic — v4 minimal redesign.
+ * `/z memory` Block Kit topic.
  *
- * Renders each entry as a single `section` block with an `accessory` plain
- * button (🪄 개선) — Slack-native right-aligned affordance, no color noise.
- * Delete is no longer per-row; users click the global [🗑️ 삭제 관리] button
- * to open a modal with `multi_static_select` for bulk selection (single
- * confirm at submit). Bottom "actions" row is the only actions block and
- * exposes: 전체 memory 개선, 전체 user 개선, 삭제 관리, 전체 삭제, 추가, 닫기.
- *
- * Block budget changed: 1 block per entry (was 2) → planCollapse target
- * raised from N+M ≤ 19 to N+M ≤ 42 under the 50-block cap.
- *
- * Exports preserved (public surface — do NOT change signatures where used
- * by callers outside this file):
- *   - buildMemoryAddModal
- *   - openMemoryModal           (signature extended: optional kind)
- *   - submitMemoryModal         (signature extended: optional kind)
- *   - createMemoryTopicBinding
- *   - renderMemoryCard
- *   - applyMemory
- *
- * Internal utilities unchanged:
- *   - escapeMrkdwn, chunkByChars, enforceSectionCharCap, bytePayloadGuard,
- *     renderPendingCard.
- *
- * New:
- *   - perEntrySection           — single section with accessory button
- *   - bottomActionsRow          — unified actions row (replaces top + extra)
- *   - buildClearManageModal     — modal for bulk delete selection
+ * Each entry renders as a `section` with an `accessory` 🪄 개선 button. Bulk
+ * delete lives in a global modal (`multi_static_select`). The bottom actions
+ * row is the only actions block; entries past the 50-block cap collapse into
+ * a summary section with a banner.
  */
 
 import type { WebClient } from '@slack/web-api';
@@ -35,6 +12,7 @@ import { Logger } from '../../../logger';
 import {
   addMemory,
   clearAllMemory,
+  clearMemory,
   loadMemory,
   removeMemoryByIndex,
   replaceAllMemory,
@@ -45,6 +23,8 @@ import type { ZBlock } from '../types';
 import { improveAll, improveEntry } from './memory-improve';
 
 const logger = new Logger('MemoryTopic');
+
+type MemoryModalKind = 'add' | 'clear_manage';
 
 /* ------------------------------------------------------------------ *
  * Confirm dialog (used by the global [🗑️ 전체 삭제] button)
@@ -224,6 +204,7 @@ function summaryContextBlock(
 ): ZBlock {
   return {
     type: 'context',
+    block_id: 'z_memory_summary',
     elements: [
       {
         type: 'mrkdwn',
@@ -233,11 +214,6 @@ function summaryContextBlock(
   };
 }
 
-/**
- * Single bottom actions row — replaces the prior top+bottom+extra rows.
- * Order follows scan priority: bulk improve (primary) → delete management →
- * danger clear-all → add → close. Max 25 elements per actions block (we use 6).
- */
 function bottomActionsRow(): ZBlock {
   return {
     type: 'actions',
@@ -296,11 +272,6 @@ function groupHeaderSection(kind: 'memory' | 'user', count: number): ZBlock {
   };
 }
 
-/**
- * Minimal per-entry row: single `section` with an `accessory` plain button
- * (🪄 개선). Delete moved to the global "삭제 관리" modal for bulk ops — each
- * row stays quiet and readable, matching Slack's section+accessory pattern.
- */
 function perEntrySection(target: 'memory' | 'user', index1: number, text: string): ZBlock {
   return {
     type: 'section',
@@ -518,18 +489,14 @@ export async function renderPendingCard(args: {
   const blocks = card.blocks as ZBlock[];
 
   if (idx === 'all') {
-    // Insert a "🔄 전체 {target} 개선 중…" context banner immediately after
-    // the summary context block — there is no longer a top-actions row to
-    // replace in v4 minimal. Falls back to prepend if summary block missing.
+    // Insert pending banner after the summary context block.
     const label = target === 'memory' ? '전체 메모리 개선 중…' : '전체 프로필 개선 중…';
     const pendingBanner: ZBlock = {
       type: 'context',
       block_id: 'z_memory_pending_banner',
       elements: [{ type: 'mrkdwn', text: `🔄 ${label}` }],
     };
-    const summaryIdx = blocks.findIndex(
-      (b) => (b as { type?: string }).type === 'context' && !(b as { block_id?: string }).block_id,
-    );
+    const summaryIdx = blocks.findIndex((b) => (b as { block_id?: string }).block_id === 'z_memory_summary');
     if (summaryIdx !== -1) {
       blocks.splice(summaryIdx + 1, 0, pendingBanner);
     } else {
@@ -815,7 +782,7 @@ export function buildClearManageModal(args: { memEntries: string[]; usrEntries: 
 export async function openMemoryModal(args: {
   client: WebClient;
   triggerId: string;
-  kind?: 'add' | 'clear_manage';
+  kind?: MemoryModalKind;
   userId?: string;
 }): Promise<void> {
   const { client, triggerId, kind = 'add', userId } = args;
@@ -848,7 +815,7 @@ export async function submitMemoryModal(args: {
   client: WebClient;
   userId: string;
   values: Record<string, Record<string, any>>;
-  kind?: 'add' | 'clear_manage';
+  kind?: MemoryModalKind;
 }): Promise<ApplyResult> {
   const { client, userId, values, kind = 'add' } = args;
 
@@ -858,26 +825,40 @@ export async function submitMemoryModal(args: {
     if (selected.length === 0) {
       return { ok: false, summary: '❌ 선택된 항목이 없습니다.' };
     }
-    // Parse + group by target; sort descending so deleting entry #5 doesn't
-    // shift entry #3's index before we process it.
     const perTarget: Record<'memory' | 'user', number[]> = { memory: [], user: [] };
     for (const opt of selected) {
       const v = opt?.value;
       if (typeof v !== 'string') continue;
       const m = v.match(/^(memory|user):(\d+)$/);
       if (!m) continue;
-      const target = m[1] as 'memory' | 'user';
-      const idx = Number.parseInt(m[2], 10);
-      if (idx >= 1) perTarget[target].push(idx);
+      perTarget[m[1] as 'memory' | 'user'].push(Number.parseInt(m[2], 10));
     }
+    // Batch per target: 1 read + 1 write (vs N reads + N writes of
+    // removeMemoryByIndex). Indices are 1-based and match the modal's
+    // displayed numbering at the time the modal opened; concurrent edits
+    // are surfaced as "이미 삭제됨" in the error tail.
     const okCounts: Record<'memory' | 'user', number> = { memory: 0, user: 0 };
     const errors: string[] = [];
     for (const target of ['memory', 'user'] as const) {
-      const idxs = perTarget[target].sort((a, b) => b - a);
-      for (const idx of idxs) {
-        const r = removeMemoryByIndex(userId, target, idx);
-        if (r.ok) okCounts[target] += 1;
-        else errors.push(`${target} #${idx}: ${r.message}`);
+      const selectedIdxs = perTarget[target];
+      if (selectedIdxs.length === 0) continue;
+      const cur = loadMemory(userId, target);
+      const selectedSet = new Set(selectedIdxs);
+      const remaining = cur.entries.filter((_, i) => !selectedSet.has(i + 1));
+      const removed = cur.entries.length - remaining.length;
+      if (removed === 0) {
+        errors.push(`${target}: 선택된 항목이 이미 삭제됨 (${selectedIdxs.length}건)`);
+        continue;
+      }
+      const r = remaining.length === 0 ? clearMemory(userId, target) : replaceAllMemory(userId, target, remaining);
+      if (r.ok) {
+        okCounts[target] = removed;
+        if (removed < selectedIdxs.length) {
+          errors.push(`${target}: ${selectedIdxs.length - removed}건 이미 삭제됨`);
+        }
+      } else {
+        const reason = 'reason' in r ? r.reason : (r as { message?: string }).message;
+        errors.push(`${target}: ${reason ?? 'unknown error'}`);
       }
     }
     const totalOk = okCounts.memory + okCounts.user;
@@ -925,25 +906,29 @@ export async function submitMemoryModal(args: {
 }
 
 /**
- * Parse the `kind` discriminator out of an action body. Accepts both
- * `z_setting_memory_open_modal` (add — default) and
- * `z_setting_memory_open_modal_<kind>` (e.g. clear_manage).
+ * Parse the `kind` discriminator from an `open_modal` action_id. Missing
+ * suffix means legacy `open_modal` (add). Unknown suffixes fall back to
+ * 'add' to preserve backward compat with future routing.
  */
-function kindFromActionId(actionId: string | undefined): 'add' | 'clear_manage' {
-  if (!actionId) return 'add';
-  const m = actionId.match(/^z_setting_memory_open_modal(?:_(.+))?$/);
-  const suffix = m?.[1];
-  return suffix === 'clear_manage' ? 'clear_manage' : 'add';
+function kindFromActionId(actionId: string | undefined): MemoryModalKind {
+  const m = actionId?.match(/^z_setting_memory_open_modal(?:_(.+))?$/);
+  return m?.[1] === 'clear_manage' ? 'clear_manage' : 'add';
 }
 
-/** Parse the `kind` discriminator from a view's private_metadata. */
-function kindFromPrivateMetadata(pm: string | undefined): 'add' | 'clear_manage' {
+/**
+ * Parse the `kind` discriminator from a view's private_metadata. Missing
+ * metadata (legacy modal) defaults to 'add'. Malformed JSON or unknown
+ * `kind` returns `null` so the caller can reject rather than silently run
+ * the add path.
+ */
+function kindFromPrivateMetadata(pm: string | undefined): MemoryModalKind | null {
   if (!pm) return 'add';
   try {
-    const parsed = JSON.parse(pm);
-    return parsed?.kind === 'clear_manage' ? 'clear_manage' : 'add';
+    const kind = JSON.parse(pm)?.kind;
+    if (kind === 'clear_manage' || kind === 'add') return kind;
+    return null;
   } catch {
-    return 'add';
+    return null;
   }
 }
 
@@ -960,14 +945,17 @@ export function createMemoryTopicBinding(): ZTopicBinding {
     submitModal: async (args) => {
       // ack() already fired in the framework wrapper — surface validation
       // failures as a DM so users get visible feedback instead of a silently
-      // closed modal (codex P1 #5).
+      // closed modal.
       const kind = kindFromPrivateMetadata(args.body?.view?.private_metadata);
-      const result = await submitMemoryModal({
-        client: args.client,
-        userId: args.userId,
-        values: args.values,
-        kind,
-      });
+      const result =
+        kind === null
+          ? ({ ok: false, summary: '❌ Malformed modal metadata.' } as ApplyResult)
+          : await submitMemoryModal({
+              client: args.client,
+              userId: args.userId,
+              values: args.values,
+              kind,
+            });
       if (!result.ok) {
         try {
           const desc = result.description ? `\n${result.description}` : '';
