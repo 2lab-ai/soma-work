@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { parseOAuthBlob, validateAddSubmission } from './actions';
+import { buildCardFromManager, parseOAuthBlob, validateAddSubmission } from './actions';
 import { buildAddSlotModal } from './builder';
 import { CCT_BLOCK_IDS } from './views';
 
@@ -172,6 +172,59 @@ describe('parseOAuthBlob', () => {
 
   it('rejects invalid JSON', () => {
     expect(parseOAuthBlob('{not json')).toBeNull();
+  });
+});
+
+describe('buildCardFromManager (post-action ephemeral card)', () => {
+  it('uses snapshot state so the card reflects persisted per-slot state after Add', async () => {
+    const snap = {
+      version: 1 as const,
+      revision: 2,
+      registry: {
+        activeSlotId: 'slot-1',
+        slots: [
+          {
+            slotId: 'slot-1',
+            name: 'cct1',
+            kind: 'setup_token' as const,
+            value: 'sk-ant-oat01-abc',
+            createdAt: '2026-04-18T00:00:00Z',
+          },
+        ],
+      },
+      state: {
+        'slot-1': {
+          authState: 'healthy' as const,
+          activeLeases: [],
+          rateLimitedAt: '2026-04-18T05:00:00Z',
+          rateLimitSource: 'response_header' as const,
+        },
+      },
+    };
+    const tm = {
+      getSnapshot: vi.fn(async () => snap),
+      listTokens: vi.fn(() => []),
+      getActiveToken: vi.fn(() => null),
+    } as any;
+    const blocks = await buildCardFromManager(tm);
+    expect(tm.getSnapshot).toHaveBeenCalledTimes(1);
+    const flat = JSON.stringify(blocks);
+    // rate-limit state from the snapshot must surface — not an empty state map.
+    expect(flat).toContain('rate-limited');
+  });
+
+  it('falls back to listTokens() when getSnapshot throws', async () => {
+    const tm = {
+      getSnapshot: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      listTokens: vi.fn(() => [{ slotId: 'slot-2', name: 'cct2', kind: 'setup_token', status: 'healthy' }]),
+      getActiveToken: vi.fn(() => ({ slotId: 'slot-2', name: 'cct2', kind: 'setup_token' })),
+    } as any;
+    const blocks = await buildCardFromManager(tm);
+    expect(tm.listTokens).toHaveBeenCalled();
+    expect(Array.isArray(blocks)).toBe(true);
+    expect(blocks.length).toBeGreaterThan(0);
   });
 });
 

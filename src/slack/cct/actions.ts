@@ -388,21 +388,33 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
   }
 }
 
-async function buildCardFromManager(tokenManager: TokenManager): Promise<Record<string, unknown>[]> {
-  const summaries = tokenManager.listTokens();
-  const active = tokenManager.getActiveToken();
-  // The card builder wants full TokenSlot shapes. For display it only reads
-  // `slotId`, `name`, `kind`. We proxy the summary into a minimal shape.
-  const slots = summaries.map((s) => ({
-    slotId: s.slotId,
-    name: s.name,
-    kind: s.kind,
-  })) as any;
-  return buildCctCardBlocks({
-    slots,
-    states: {},
-    activeSlotId: active?.slotId,
-  });
+export async function buildCardFromManager(tokenManager: TokenManager): Promise<Record<string, unknown>[]> {
+  // Always load the authoritative snapshot so post-action ephemeral cards
+  // reflect current per-slot state (rate-limit timestamps, usage, cooldown)
+  // rather than rendering with an empty `states` map.
+  try {
+    const snap = await tokenManager.getSnapshot();
+    return buildCctCardBlocks({
+      slots: snap.registry.slots,
+      states: snap.state ?? {},
+      activeSlotId: snap.registry.activeSlotId,
+      nowMs: Date.now(),
+    });
+  } catch (err) {
+    logger.warn('buildCardFromManager: getSnapshot failed, falling back to listTokens()', { err });
+    const summaries = tokenManager.listTokens();
+    const active = tokenManager.getActiveToken();
+    const slots = summaries.map((s) => ({
+      slotId: s.slotId,
+      name: s.name,
+      kind: s.kind,
+    })) as any;
+    return buildCctCardBlocks({
+      slots,
+      states: {},
+      activeSlotId: active?.slotId,
+    });
+  }
 }
 
 async function resolveActorDm(client: WebClient, userId: string | undefined): Promise<string | null> {
