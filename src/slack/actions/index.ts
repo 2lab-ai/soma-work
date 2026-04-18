@@ -214,6 +214,15 @@ export class ActionHandlers {
       await this.choiceHandler.handleFormReset(body);
     });
 
+    // Hero "Submit All Recommended" — group-only one-click. Regex matches BOTH
+    // `submit_all_recommended_<formId>` (active) and
+    // `submit_all_recommended_blocked_<formId>` (blocked sentinel); the handler
+    // dispatches on the `_blocked_` substring inside the action_id.
+    app.action(/^submit_all_recommended_/, async ({ ack, body }) => {
+      await ack();
+      await this.choiceHandler.handleSubmitAllRecommended(body);
+    });
+
     app.action('custom_input_single', async ({ ack, body, client }) => {
       await ack();
       await this.formHandler.handleCustomInputSingle(body, client);
@@ -348,6 +357,11 @@ export class ActionHandlers {
     userId: string,
   ): Promise<void> {
     return this.choiceHandler.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
+  }
+
+  /** Delegate dashboard "Submit All Recommended" hero click to ChoiceActionHandler */
+  async handleDashboardSubmitRecommended(sessionKey: string, userId: string): Promise<void> {
+    return this.choiceHandler.handleSubmitRecommendedFromDashboard(sessionKey, userId);
   }
 
   // 폼 상태 관리 메서드 (기존 API 호환)

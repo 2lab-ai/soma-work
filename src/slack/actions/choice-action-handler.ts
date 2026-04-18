@@ -1,6 +1,7 @@
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import type { UserChoices } from '../../types';
+import { ChoiceMessageBuilder } from '../choice-message-builder';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
@@ -468,6 +469,195 @@ export class ChoiceActionHandler {
         '❌ 세션을 찾을 수 없습니다. 대화가 만료되었을 수 있습니다.',
       );
     }
+  }
+
+  /**
+   * Hero "Submit All Recommended" button click (Slack).
+   *
+   * Behavior matrix (driven by N/M counts encoded in the button value):
+   *   - blocked variant (action_id contains `_blocked_`) → ephemeral notice, no submit
+   *   - active variant + all questions have a recommendation → fill missing selections
+   *     (preserving any existing user picks) and call completeMultiChoiceForm
+   *   - active variant + partial recommendations → fill what we can, update UI, ask user
+   *     to finish the rest manually
+   *
+   * Lock relies on synchronous `formStore.set` of `submitting=true` BEFORE the await
+   * boundary inside completeMultiChoiceForm; do not refactor formStore.set to async
+   * without revisiting the cross-surface (Slack ↔ dashboard) race.
+   */
+  async handleSubmitAllRecommended(body: any): Promise<void> {
+    try {
+      const action = body.actions?.[0];
+      if (!action || typeof action.value !== 'string') {
+        this.logger.warn('Hero submit-all-recommended: missing action payload');
+        return;
+      }
+      const valueData = JSON.parse(action.value);
+      const { formId, sessionKey, n: heroN, m: heroM } = valueData;
+      const userId = body.user?.id;
+      const session = sessionKey ? this.ctx.claudeHandler.getSessionByKey(sessionKey) : undefined;
+      const channel = body.channel?.id || session?.channelId;
+      const messageTs = body.message?.ts;
+      const isBlocked = typeof action.action_id === 'string' && action.action_id.includes('_blocked_');
+
+      if (isBlocked) {
+        this.logger.info('hero_recommended_blocked', {
+          surface: 'slack',
+          n: heroN,
+          m: heroM,
+          sessionKey,
+          formId,
+        });
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(
+            channel,
+            userId,
+            `🔒 추천이 ${heroN}/${heroM}개만 있어 일괄 처리 불가. 직접 선택해주세요.`,
+          );
+        }
+        return;
+      }
+
+      this.logger.info('hero_recommended_clicked', {
+        surface: 'slack',
+        n: heroN,
+        m: heroM,
+        sessionKey,
+        formId,
+      });
+
+      // Cross-surface lock part 1: session activityState gate
+      if (session && session.activityState !== 'waiting') {
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(channel, userId, '⚠️ 세션이 응답 대기 중이 아닙니다.');
+        }
+        return;
+      }
+
+      const pendingForm = this.formStore.get(formId);
+      if (!pendingForm) {
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(
+            channel,
+            userId,
+            '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
+          );
+        }
+        return;
+      }
+
+      if (pendingForm.submitting) {
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(channel, userId, '⏳ 이미 제출 처리 중입니다.');
+        }
+        return;
+      }
+
+      // Partial-fill loop: preserve existing user selections, fill only unanswered+recommended.
+      for (const q of pendingForm.questions) {
+        if (pendingForm.selections[q.id]) continue;
+        const rid = ChoiceMessageBuilder.resolveRecommendedId(q.recommendedChoiceId, q.choices);
+        if (!rid || rid === CUSTOM_INPUT_CHOICE_ID) continue;
+        const choice = q.choices.find((c) => c.id === rid);
+        if (!choice) continue;
+        pendingForm.selections[q.id] = { choiceId: choice.id, label: choice.label };
+      }
+
+      const answeredCount = Object.keys(pendingForm.selections).length;
+      const totalCount = pendingForm.questions.length;
+
+      if (answeredCount === totalCount) {
+        try {
+          pendingForm.submitting = true;
+          this.formStore.set(formId, pendingForm);
+          const fallbackThreadTs = pendingForm.threadTs || body.message?.thread_ts || messageTs;
+          const sessionForThread = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+          const threadTs = this.resolveSessionThreadTs(sessionForThread, fallbackThreadTs);
+          await this.completeMultiChoiceForm(pendingForm, userId, channel, threadTs, messageTs);
+        } catch (error) {
+          // Reset submitting so user can retry. Form may have been deleted by complete()
+          // on the success path — guard the read.
+          const stillExists = this.formStore.get(formId);
+          if (stillExists) {
+            stillExists.submitting = false;
+            this.formStore.set(formId, stillExists);
+          }
+          throw error;
+        }
+      } else {
+        // Partial fill: refresh UI, then nudge user.
+        await this.updateFormUI(pendingForm, channel, messageTs);
+        if (channel && userId) {
+          await this.ctx.slackApi.postEphemeral(
+            channel,
+            userId,
+            `✏️ ${totalCount - answeredCount}개는 직접 선택해주세요.`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error processing hero submit-all-recommended', error);
+    }
+  }
+
+  /**
+   * Hero "Submit All Recommended" from dashboard.
+   *
+   * Dashboard variant only allows full-recommendations submission (the dashboard UI
+   * disables the button when N < M). Cross-surface lock: refuses if any Slack form
+   * for this session is mid-submit.
+   */
+  async handleSubmitRecommendedFromDashboard(sessionKey: string, userId: string): Promise<void> {
+    const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    if (session.activityState !== 'waiting') {
+      throw new Error('Session is not waiting for a choice');
+    }
+
+    const pendingQ = session.actionPanel?.pendingQuestion;
+    if (!pendingQ || pendingQ.type !== 'user_choices' || !pendingQ.questions) {
+      throw new Error('Session has no pending multi-choice question');
+    }
+
+    // Cross-surface lock: any in-flight Slack form for this session blocks.
+    const sessionForms = this.formStore.getFormsBySession(sessionKey);
+    for (const [, f] of sessionForms) {
+      if (f.submitting) {
+        throw new Error('Submission in progress');
+      }
+    }
+
+    // Build selections from per-question recommendations.
+    const selections: Record<string, { choiceId: string; label: string }> = {};
+    let validCount = 0;
+    for (const q of pendingQ.questions) {
+      const rid = ChoiceMessageBuilder.resolveRecommendedId(q.recommendedChoiceId, q.choices);
+      if (!rid || rid === CUSTOM_INPUT_CHOICE_ID) continue;
+      const choice = q.choices.find((c: { id: string; label: string }) => c.id === rid);
+      if (!choice) continue;
+      selections[q.id] = { choiceId: choice.id, label: choice.label };
+      validCount++;
+    }
+
+    if (validCount === 0) {
+      throw new Error('No recommendation available');
+    }
+    if (validCount !== pendingQ.questions.length) {
+      // Dashboard surface only supports full-fill (the blocked button is disabled client-side).
+      throw new Error('Recommendations incomplete');
+    }
+
+    this.logger.info('hero_recommended_clicked', {
+      surface: 'dashboard',
+      n: validCount,
+      m: pendingQ.questions.length,
+      sessionKey,
+    });
+
+    // Reuse the existing dashboard multi-choice flow (validation, UI cleanup, Claude dispatch).
+    await this.handleMultiChoiceFromDashboard(sessionKey, selections, userId);
   }
 
   /**
