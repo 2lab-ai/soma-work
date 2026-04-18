@@ -145,20 +145,21 @@ export class UsageHandler implements CommandHandler {
       const renderer = this.overrides.renderer ?? renderUsageCard;
       const png = await renderer(stats);
 
-      // 1-step upload: `filesUploadV2` with `channel_id` + `thread_ts` +
-      // `initial_comment` atomically uploads, shares to the channel/thread, and
-      // renders the caption — eliminating the race where a follow-up
+      // 1-step upload: a single `filesUploadV2` with `channel_id` +
+      // `thread_ts` + `initial_comment` uploads the file, shares it into the
+      // originating thread, and renders the caption in one call — removing the
+      // second-call race where a follow-up
       // `postMessage({ blocks: [image slack_file.id] })` could fire before
-      // Slack finished sharing the file and be rejected with
-      // `invalid_blocks: invalid slack file`. See issue #579.
-      const altText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
+      // Slack finished propagating the file-share to the channel and be
+      // rejected with `invalid_blocks: invalid slack file`. See issue #579.
+      const captionText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
       try {
         const uploadArgs = {
           filename: 'usage-card.png',
           file: png,
           channel_id: channel,
           thread_ts: threadTs,
-          initial_comment: altText,
+          initial_comment: captionText,
           alt_text: `Usage card for ${stats.targetUserName || stats.targetUserId}`,
           request_file_info: false,
         };

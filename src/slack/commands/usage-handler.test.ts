@@ -152,7 +152,7 @@ describe('UsageHandler.handleCard — happy path', () => {
     expect(aggregator.aggregateUsageCard).toHaveBeenCalled();
     expect(renderer).toHaveBeenCalled();
     // filesUploadV2 must carry channel_id + thread_ts + initial_comment so Slack
-    // posts the file atomically into the originating thread. This is the whole
+    // posts the file into the originating thread in one call. This is the whole
     // point of the 1-step fix (issue #579) — no follow-up Block Kit postMessage.
     expect(filesUploadV2).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -160,8 +160,14 @@ describe('UsageHandler.handleCard — happy path', () => {
         channel_id: 'C_TEST',
         thread_ts: '1.1',
         initial_comment: expect.stringContaining('Usage Card'),
+        alt_text: expect.stringContaining('Usage card for'),
+        request_file_info: false,
       }),
     );
+    // Legacy field `channels` (plural) must NOT be passed — the SDK would
+    // silently prefer it over `channel_id` and we'd lose the thread placement.
+    const uploadArgs = filesUploadV2.mock.calls[0][0] as Record<string, unknown>;
+    expect(uploadArgs).not.toHaveProperty('channels');
     expect(postMessage).not.toHaveBeenCalled();
   });
 
@@ -356,6 +362,23 @@ describe('UsageHandler.handleCard — DM alert (spec §4.4)', () => {
     const result = await handler.handleCard(makeCtx({ user: 'U_ALICE' }));
     expect(result.handled).toBe(true);
     // Ephemeral channel fallback still sent.
+    expect(postEphemeral).toHaveBeenCalled();
+  });
+
+  it('DM postMessage rejection is swallowed (does not bubble out of handler)', async () => {
+    // The 1-step upload fix removed the success-path postMessage, but
+    // `postDmAlert` still calls postMessage to deliver the DM notification.
+    // A rejection there must not mask the ephemeral channel fallback.
+    const { overrides, openDmChannel, postMessage, postEphemeral } = makeOverrides({
+      rendererError: new EchartsInitError('boom'),
+    });
+    postMessage.mockRejectedValueOnce(new Error('chat.postMessage to DM failed'));
+    const handler = new UsageHandler(makeDeps(), overrides);
+
+    const result = await handler.handleCard(makeCtx({ user: 'U_ALICE' }));
+    expect(result.handled).toBe(true);
+    expect(openDmChannel).toHaveBeenCalledWith('U_ALICE');
+    expect(postMessage).toHaveBeenCalledTimes(1);
     expect(postEphemeral).toHaveBeenCalled();
   });
 
