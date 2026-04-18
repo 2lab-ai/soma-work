@@ -1,3 +1,7 @@
+import { installConsoleRedaction } from './logger';
+
+installConsoleRedaction();
+
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
