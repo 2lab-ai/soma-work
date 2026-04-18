@@ -632,9 +632,26 @@ export class EventRouter {
 
   /**
    * 스레드 메시지 처리 (멘션 없이)
+   *
+   * Issue #553: DMs are handled authoritatively by `app.message()`
+   * (setupMessageHandlers, line ~91). Slack delivers DM events on BOTH
+   * `app.message` and `app.event('message')`, so without this guard DMs
+   * without an existing session get a 🚫 `no_entry` from this path at the
+   * same time `handleMessage` is running Gate A — causing a spurious
+   * "ignored" signal on messages the bot is actually processing. Skip DMs
+   * here entirely; the DM path has its own Gate A/Gate B rejection UX.
    */
   private async handleThreadMessage(messageEvent: any, say: SayFn): Promise<void> {
     const { user, channel, thread_ts: threadTs, ts, text = '' } = messageEvent;
+
+    if (channel?.startsWith('D')) {
+      this.logger.debug('Skipping DM in handleThreadMessage (app.message is authoritative)', {
+        user,
+        channel,
+        threadTs,
+      });
+      return;
+    }
 
     // 봇 멘션이 포함된 경우 스킵 (app_mention에서 처리)
     const botId = await this.deps.slackApi.getBotUserId();

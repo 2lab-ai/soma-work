@@ -117,12 +117,17 @@ jobs:
 
       - name: Pack deploy bundle
         run: |
+          # NOTE: node_modules is intentionally NOT packed.
+          # Native-optional deps (e.g. @resvg/resvg-js) ship per-platform
+          # binaries; the prepare runner (oudwood-512 / linux-x64) binary
+          # would crash when rsync'd to mac-mini-dev (darwin-arm64).
+          # Each deploy target runs `npm ci --omit=dev` below.
           tar -czf deploy-bundle.tar.gz \
             dist \
             mcp-servers \
             somalib \
-            node_modules \
             package.json \
+            package-lock.json \
             service.sh
 
       - name: Upload deploy bundle
@@ -159,6 +164,33 @@ jobs:
         run: |
           echo "Deploying ${{ matrix.name }} to $TARGET..."
 
+          # Self-hosted runners launch non-login shells; nvm-installed node
+          # is not on PATH until we source nvm.sh. Without this, the
+          # `npm ci --omit=dev` and resvg smoke test below would fail with
+          # "command not found" on targets using nvm.
+          if ! command -v node >/dev/null 2>&1; then
+            if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+              # shellcheck disable=SC1091
+              source "$HOME/.nvm/nvm.sh"
+            fi
+            # Final fallback: a specific nvm-installed binary path.
+            if ! command -v node >/dev/null 2>&1; then
+              NVM_BIN="$(ls -1d "$HOME"/.nvm/versions/node/v*/bin 2>/dev/null | sort -V | tail -1 || true)"
+              if [[ -n "$NVM_BIN" ]]; then
+                export PATH="$NVM_BIN:$PATH"
+              fi
+            fi
+          fi
+          command -v node >/dev/null 2>&1 || {
+            echo "::error::node not found on PATH after nvm sourcing — cannot deploy."
+            exit 1
+          }
+          command -v npm >/dev/null 2>&1 || {
+            echo "::error::npm not found on PATH after nvm sourcing — cannot deploy."
+            exit 1
+          }
+          echo "Using node: $(node -v) at $(command -v node)"
+
           if [[ "$ENV" == "main" ]]; then
             DEV_SOURCE="/opt/soma-work/dev" \
             LEGACY_ROOT="/Users/dd/app.claude-code-slack-bot" \
@@ -178,13 +210,22 @@ jobs:
             --exclude='.claude/' \
             dist/ "$TARGET/dist/"
 
-          rsync -a --delete node_modules/ "$TARGET/node_modules/"
           rsync -a --delete mcp-servers/ "$TARGET/mcp-servers/"
           rsync -a --delete somalib/ "$TARGET/somalib/"
           rsync -a \
             package.json \
+            package-lock.json \
             service.sh \
             "$TARGET/"
+
+          # Install runtime deps on the target host so native-optional
+          # packages (e.g. @resvg/resvg-js) resolve to the correct arch.
+          (cd "$TARGET" && npm ci --omit=dev --no-audit --no-fund)
+
+          # Smoke test: confirm the native binary loaded for this arch.
+          # Fails the deploy fast instead of crashing the /usage card
+          # handler in production.
+          (cd "$TARGET" && node -e "require('@resvg/resvg-js'); console.log('resvg native binary OK on ${{ matrix.name }}')")
 
           bash service.sh "$ENV" install
 
