@@ -7,7 +7,7 @@
  */
 
 import { isAdminUser } from '../../../admin-utils';
-import { TokenManager, tokenManager } from '../../../token-manager';
+import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildSettingCard } from '../ui-builder';
 
@@ -27,16 +27,18 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     return { text: '🚫 CCT (admin only)', blocks };
   }
 
-  const tokens = tokenManager.getAllTokens();
-  const active = tokens.length > 0 ? tokenManager.getActiveToken() : null;
-  const now = new Date();
+  const tm = getTokenManager();
+  const tokens = tm.listTokens();
+  const active = tokens.length > 0 ? tm.getActiveToken() : null;
 
-  const lines = tokens.map((t) => {
-    const masked = TokenManager.maskToken(t.value);
-    const parts = [`\`${t.name}\` (${masked})`];
-    if (active && t.name === active.name) parts.push('*(active)*');
-    if (t.cooldownUntil && t.cooldownUntil > now) {
+  const lines = tokens.map((t: TokenSummary) => {
+    const parts = [`\`${t.name}\` (${t.kind})`];
+    if (active && t.slotId === active.slotId) parts.push('*(active)*');
+    // TODO(Wave 4): render rateLimitedAt timestamp from SlotState
+    if (t.status.includes('cooling')) {
       parts.push(`_(rate limited)_`);
+    } else if (t.status.includes('revoked')) {
+      parts.push(`_(revoked)_`);
     }
     return `• ${parts.join(' ')}`;
   });
@@ -44,9 +46,9 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
   // NOTE: option.id is interpolated into `z_setting_cct_set_<id>`. Keep ids
   // free of `_set_` substring so the greedy parser in z-settings-actions.ts
   // splits topic=`cct` cleanly (regressed when ids were `set_<name>`).
-  const options = tokens.map((t) => ({
+  const options = tokens.map((t: TokenSummary) => ({
     id: t.name,
-    label: `🔑 ${t.name}${active && t.name === active.name ? ' •' : ''}`,
+    label: `🔑 ${t.name}${active && t.slotId === active.slotId ? ' •' : ''}`,
     description: `활성 토큰을 ${t.name}으로 전환합니다.`,
   }));
   options.push({
@@ -74,21 +76,22 @@ export async function applyCct(args: { userId: string; value: string }): Promise
   if (!isAdminUser(userId)) {
     return { ok: false, summary: '🚫 Admin only: CCT는 관리자만 변경할 수 있습니다.' };
   }
-  const tokens = tokenManager.getAllTokens();
+  const tm = getTokenManager();
+  const tokens = tm.listTokens();
   if (tokens.length === 0) {
     return { ok: false, summary: '⚠️ No CCT tokens configured.' };
   }
 
   if (value === 'next') {
-    const rotated = tokenManager.rotateToNext();
+    const rotated = await tm.rotateToNext();
     if (!rotated) {
       return { ok: false, summary: '⚠️ 하나의 토큰만 있어 rotate할 수 없습니다.' };
     }
-    const active = tokenManager.getActiveToken();
+    const active = tm.getActiveToken();
     return {
       ok: true,
-      summary: `🔄 Rotated → *${active.name}*`,
-      description: `\`${TokenManager.maskToken(active.value)}\``,
+      summary: `🔄 Rotated → *${active?.name ?? rotated.name}*`,
+      description: `kind: \`${active?.kind ?? 'setup_token'}\``,
     };
   }
   // Support both the new bare-name form (`value = t.name`) emitted by Block
@@ -96,20 +99,21 @@ export async function applyCct(args: { userId: string; value: string }): Promise
   // text invocations, so the same handler serves both paths.
   const setMatch = value.match(/^set_(.+)$/);
   const target = setMatch ? setMatch[1] : value;
-  const ok = tokenManager.setActiveToken(target);
-  if (!ok) {
-    const available = tokens.map((t) => `\`${t.name}\``).join(', ');
+  const match = tokens.find((t: TokenSummary) => t.name === target);
+  if (!match) {
+    const available = tokens.map((t: TokenSummary) => `\`${t.name}\``).join(', ');
     return {
       ok: false,
       summary: `❌ Unknown token: \`${target}\``,
       description: `Available: ${available}`,
     };
   }
-  const active = tokenManager.getActiveToken();
+  await tm.applyToken(match.slotId);
+  const active = tm.getActiveToken();
   return {
     ok: true,
-    summary: `🔑 Active → *${active.name}*`,
-    description: `\`${TokenManager.maskToken(active.value)}\``,
+    summary: `🔑 Active → *${active?.name ?? match.name}*`,
+    description: `kind: \`${active?.kind ?? match.kind}\``,
   };
 }
 

@@ -1,5 +1,5 @@
 import { isAdminUser } from '../../admin-utils';
-import { TokenManager, tokenManager } from '../../token-manager';
+import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { CommandParser } from '../command-parser';
 import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -30,7 +30,8 @@ export class CctHandler implements CommandHandler {
     }
 
     const action = CommandParser.parseCctCommand(text);
-    const tokens = tokenManager.getAllTokens();
+    const tm = getTokenManager();
+    const tokens = tm.listTokens();
 
     if (tokens.length === 0) {
       await say({
@@ -48,11 +49,11 @@ export class CctHandler implements CommandHandler {
       });
       await say({ text: fallback ?? '🔑 CCT', blocks, thread_ts: threadTs });
     } else if (action.action === 'next') {
-      const result = tokenManager.rotateToNext();
+      const result = await tm.rotateToNext();
       if (result) {
-        const active = tokenManager.getActiveToken();
+        const active = tm.getActiveToken();
         await say({
-          text: `🔄 Rotated to next token: *${active.name}* (\`${TokenManager.maskToken(active.value)}\`)`,
+          text: `🔄 Rotated to next token: *${active?.name ?? result.name}* (${active?.kind ?? 'setup_token'})`,
           thread_ts: threadTs,
         });
       } else {
@@ -62,15 +63,16 @@ export class CctHandler implements CommandHandler {
         });
       }
     } else if (action.action === 'set') {
-      const success = tokenManager.setActiveToken(action.target);
-      if (success) {
-        const active = tokenManager.getActiveToken();
+      const match = tokens.find((t: TokenSummary) => t.name === action.target);
+      if (match) {
+        await tm.applyToken(match.slotId);
+        const active = tm.getActiveToken();
         await say({
-          text: `✅ Active token switched to *${active.name}* (\`${TokenManager.maskToken(active.value)}\`)`,
+          text: `✅ Active token switched to *${active?.name ?? match.name}* (${active?.kind ?? match.kind})`,
           thread_ts: threadTs,
         });
       } else {
-        const available = tokens.map((t) => `\`${t.name}\``).join(', ');
+        const available = tokens.map((t: TokenSummary) => `\`${t.name}\``).join(', ');
         await say({
           text: `❌ Unknown token: \`${action.target}\`\nAvailable: ${available}`,
           thread_ts: threadTs,
