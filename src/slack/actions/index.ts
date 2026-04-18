@@ -1,8 +1,6 @@
 import type { App } from '@slack/bolt';
 import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
-import { getTokenManager } from '../../token-manager';
-import { registerCctActions } from '../cct/actions';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
@@ -323,11 +321,6 @@ export class ActionHandlers {
     // Registers: z_setting_*_set_*, z_setting_*_cancel, z_setting_*_open_modal,
     //            z_help_nav_*, and view z_setting_*_modal_submit.
     this.zSettingsHandler.register(app);
-
-    // CCT slot overhaul (#569, Wave 4) — Add/Remove/Rename modals + rotate +
-    // set-active. Distinct action_id namespace from the z_setting_* pipeline
-    // (see src/slack/cct/views.ts).
-    registerCctActions(app, getTokenManager());
   }
 
   /** Delegate dashboard choice answer to ChoiceActionHandler */

@@ -4,13 +4,7 @@
 
 import { EFFORT_LEVELS } from '../user-settings-store';
 
-export type CctAction =
-  | { action: 'status' }
-  | { action: 'set'; target: string }
-  | { action: 'next' }
-  | { action: 'usage'; target?: string }
-  | { action: 'add-forbidden' }
-  | { action: 'rm-forbidden' };
+export type CctAction = { action: 'status' } | { action: 'set'; target: string } | { action: 'next' };
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
@@ -121,51 +115,22 @@ export class CommandParser {
    * forms are accepted. Legacy `set_cct <n>` / `nextcct` underscore aliases
    * are no longer recognised — ZRouter.translateToLegacy bridges the `/z` form
    * before we reach here.
-   *
-   * Wave 5 (#569): the text grammar is now READ-ONLY for write operations.
-   * `cct usage [<name>]` is accepted; `cct add …` and `cct rm …` are matched
-   * so the handler can emit a "use the card" error — token mutation via text
-   * is disabled in favour of the `/z cct` Block Kit modal buttons.
    */
   static isCctCommand(text: string): boolean {
-    return /^\/?cct(?:\s+(?:next|set\s+\S+|usage(?:\s+\S+)?|add(?:\s+.*)?|rm(?:\s+.*)?|remove(?:\s+.*)?))?$/i.test(
-      text.trim(),
-    );
+    return /^\/?cct(?:\s+(?:next|set\s+\S+))?$/i.test(text.trim());
   }
 
   /**
-   * Parse cct command.
-   *
-   * Accepted forms:
-   *   - `cct`                          → { action: 'status' }
-   *   - `cct set <name>`               → { action: 'set', target }
-   *   - `cct next`                     → { action: 'next' }
-   *   - `cct usage`                    → { action: 'usage' }
-   *   - `cct usage <name>`             → { action: 'usage', target }
-   *   - `cct add …`                    → { action: 'add-forbidden' } (handler emits error)
-   *   - `cct rm …` / `cct remove …`    → { action: 'rm-forbidden' } (handler emits error)
+   * Parse cct command: "cct" → status, "cct set cctN" → set, "cct next" → next.
    */
   static parseCctCommand(text: string): CctAction {
     const trimmed = text.trim();
     if (/^\/?cct\s+next$/i.test(trimmed)) {
       return { action: 'next' };
     }
-    const setMatch = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
-    if (setMatch) {
-      return { action: 'set', target: setMatch[1] };
-    }
-    // usage with optional name
-    const usageMatch = trimmed.match(/^\/?cct\s+usage(?:\s+(\S+))?$/i);
-    if (usageMatch) {
-      const target = usageMatch[1];
-      return target ? { action: 'usage', target } : { action: 'usage' };
-    }
-    // add / rm / remove — forbidden via text; handler returns error referencing the card.
-    if (/^\/?cct\s+add\b/i.test(trimmed)) {
-      return { action: 'add-forbidden' };
-    }
-    if (/^\/?cct\s+(?:rm|remove)\b/i.test(trimmed)) {
-      return { action: 'rm-forbidden' };
+    const match = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
+    if (match) {
+      return { action: 'set', target: match[1] };
     }
     return { action: 'status' };
   }
@@ -1129,11 +1094,9 @@ export class CommandParser {
       '• `show instructions` - Show user instructions stored in this session',
       '',
       '*Token Management (Admin):*',
-      '• `cct` - Show OAuth token pool status (Block Kit card)',
+      '• `cct` - Show OAuth token pool status',
       '• `cct set <name>` - Switch active token (e.g., `cct set cct2`)',
       '• `cct next` - Rotate to next available token',
-      '• `cct usage [<name>]` - Show usage snapshot (5h/7d) for a slot; defaults to active',
-      '• _Note: token add/remove via text is disabled — use the *Add* / *Remove* buttons on the `/z cct` card._',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',

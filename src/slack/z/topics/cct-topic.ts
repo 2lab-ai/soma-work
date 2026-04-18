@@ -1,122 +1,71 @@
 /**
- * `/z cct` Block Kit topic — Wave 4 overhaul (#569).
+ * `/z cct` Block Kit topic — Phase 2 (#507). Admin-only.
  *
- * The card now surfaces the per-slot rate-limit timestamp, usage
- * utilisation, the ConsumerTosBadge for oauth_credentials slots, plus an
- * Add/Remove/Rename action row driven by `src/slack/cct/builder.ts`. The
- * text `/z cct set <name>` and `/z cct next` grammars remain wired
- * through `applyCct` for back-compat.
- *
- * Add/Remove/Rename now open modals — handlers live in
- * `src/slack/cct/actions.ts` and are registered on the shared Bolt app.
+ * Card shows the currently active CCT token + one button per available
+ * token (`set_<name>`) plus a `next` rotation button. Non-admins receive an
+ * empty "🚫 Admin only" card with just a cancel button.
  */
 
 import { isAdminUser } from '../../../admin-utils';
-import type { CctStoreSnapshot, TokenSlot } from '../../../cct-store';
-import { Logger } from '../../../logger';
-import { getTokenManager, type TokenSummary } from '../../../token-manager';
+import { TokenManager, tokenManager } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { buildCctCardBlocks } from '../../cct/builder';
-
-const logger = new Logger('CctTopic');
-
-/**
- * Pull the latest `CctStoreSnapshot` via the public `getSnapshot()` API so
- * we can hand full `SlotState`s to the builder. Wrapped in try/catch to
- * preserve defensive behaviour — a broken store must not brick the card.
- */
-async function loadSnapshotOrEmpty(): Promise<{
-  slots: TokenSlot[];
-  states: Record<string, NonNullable<CctStoreSnapshot['state'][string]>>;
-  activeSlotId?: string;
-}> {
-  try {
-    const snap = await getTokenManager().getSnapshot();
-    return {
-      slots: snap.registry.slots,
-      states: snap.state,
-      activeSlotId: snap.registry.activeSlotId,
-    };
-  } catch (err) {
-    logger.warn(`loadSnapshotOrEmpty: getSnapshot failed — rendering empty card: ${(err as Error).message}`);
-    return { slots: [], states: {} };
-  }
-}
+import { buildSettingCard } from '../ui-builder';
 
 export async function renderCctCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
-  const { userId } = args;
+  const { userId, issuedAt } = args;
   const admin = isAdminUser(userId);
   if (!admin) {
-    return {
-      text: '🚫 CCT (admin only)',
-      blocks: [
-        {
-          type: 'header',
-          text: { type: 'plain_text', text: '🔑 CCT Tokens', emoji: true },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: '🚫 *CCT Token — admin only*\nOnly administrators may view or change CCT tokens.',
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              action_id: 'z_setting_cct_cancel',
-              text: { type: 'plain_text', text: '❌ 취소' },
-              style: 'danger',
-              value: 'cancel',
-            },
-          ],
-        },
-      ],
-    };
+    const blocks = buildSettingCard({
+      topic: 'cct',
+      icon: '🔑',
+      title: 'CCT Token',
+      currentLabel: 'Admin only',
+      currentDescription: '🚫 관리자만 CCT 토큰을 확인/변경할 수 있습니다.',
+      options: [],
+      issuedAt,
+    });
+    return { text: '🚫 CCT (admin only)', blocks };
   }
 
-  const { slots, states, activeSlotId } = await loadSnapshotOrEmpty();
-  const blocks = buildCctCardBlocks({
-    slots,
-    states,
-    activeSlotId,
-    nowMs: Date.now(),
+  const tokens = tokenManager.getAllTokens();
+  const active = tokens.length > 0 ? tokenManager.getActiveToken() : null;
+  const now = new Date();
+
+  const lines = tokens.map((t) => {
+    const masked = TokenManager.maskToken(t.value);
+    const parts = [`\`${t.name}\` (${masked})`];
+    if (active && t.name === active.name) parts.push('*(active)*');
+    if (t.cooldownUntil && t.cooldownUntil > now) {
+      parts.push(`_(rate limited)_`);
+    }
+    return `• ${parts.join(' ')}`;
   });
 
-  // Back-compat: the text `/z cct` command still used legacy-named action
-  // IDs from the shared ui-builder. We add them here so the existing
-  // z-settings-actions router continues to resolve `set_<name>` / `next`.
-  const legacyActions: Record<string, unknown>[] = slots.map((s) => ({
-    type: 'button',
-    action_id: `z_setting_cct_set_${s.name}`,
-    text: { type: 'plain_text', text: `🔑 ${s.name}`, emoji: true },
-    value: s.name,
+  // NOTE: option.id is interpolated into `z_setting_cct_set_<id>`. Keep ids
+  // free of `_set_` substring so the greedy parser in z-settings-actions.ts
+  // splits topic=`cct` cleanly (regressed when ids were `set_<name>`).
+  const options = tokens.map((t) => ({
+    id: t.name,
+    label: `🔑 ${t.name}${active && t.name === active.name ? ' •' : ''}`,
+    description: `활성 토큰을 ${t.name}으로 전환합니다.`,
   }));
-  legacyActions.push({
-    type: 'button',
-    action_id: 'z_setting_cct_set_next',
-    text: { type: 'plain_text', text: '🔄 Next (rotate)', emoji: true },
-    value: 'next',
-  });
-  blocks.push({ type: 'actions', elements: legacyActions });
-
-  // Always include the cancel/dismiss button for the ZSettings pipeline.
-  blocks.push({
-    type: 'actions',
-    elements: [
-      {
-        type: 'button',
-        action_id: 'z_setting_cct_cancel',
-        text: { type: 'plain_text', text: '❌ 취소' },
-        style: 'danger',
-        value: 'cancel',
-      },
-    ],
+  options.push({
+    id: 'next',
+    label: '🔄 Next (rotate)',
+    description: '다음 사용 가능한 토큰으로 순환합니다.',
   });
 
-  const active = slots.find((s) => s.slotId === activeSlotId);
+  const blocks = buildSettingCard({
+    topic: 'cct',
+    icon: '🔑',
+    title: 'CCT Token',
+    currentLabel: active ? active.name : 'none',
+    currentDescription:
+      lines.length > 0 ? lines.join('\n') : 'No CCT tokens configured. Set `CLAUDE_CODE_OAUTH_TOKEN_LIST` env var.',
+    options,
+    additionalCommands: ['`/z cct set <name>` — 직접 지정', '`/z cct next` — 다음 토큰으로 순환'],
+    issuedAt,
+  });
   return { text: `🔑 CCT (active: ${active?.name ?? 'none'})`, blocks };
 }
 
@@ -125,22 +74,21 @@ export async function applyCct(args: { userId: string; value: string }): Promise
   if (!isAdminUser(userId)) {
     return { ok: false, summary: '🚫 Admin only: CCT는 관리자만 변경할 수 있습니다.' };
   }
-  const tm = getTokenManager();
-  const tokens = tm.listTokens();
+  const tokens = tokenManager.getAllTokens();
   if (tokens.length === 0) {
     return { ok: false, summary: '⚠️ No CCT tokens configured.' };
   }
 
   if (value === 'next') {
-    const rotated = await tm.rotateToNext();
+    const rotated = tokenManager.rotateToNext();
     if (!rotated) {
       return { ok: false, summary: '⚠️ 하나의 토큰만 있어 rotate할 수 없습니다.' };
     }
-    const active = tm.getActiveToken();
+    const active = tokenManager.getActiveToken();
     return {
       ok: true,
-      summary: `🔄 Rotated → *${active?.name ?? rotated.name}*`,
-      description: `kind: \`${active?.kind ?? 'setup_token'}\``,
+      summary: `🔄 Rotated → *${active.name}*`,
+      description: `\`${TokenManager.maskToken(active.value)}\``,
     };
   }
   // Support both the new bare-name form (`value = t.name`) emitted by Block
@@ -148,21 +96,20 @@ export async function applyCct(args: { userId: string; value: string }): Promise
   // text invocations, so the same handler serves both paths.
   const setMatch = value.match(/^set_(.+)$/);
   const target = setMatch ? setMatch[1] : value;
-  const match = tokens.find((t: TokenSummary) => t.name === target);
-  if (!match) {
-    const available = tokens.map((t: TokenSummary) => `\`${t.name}\``).join(', ');
+  const ok = tokenManager.setActiveToken(target);
+  if (!ok) {
+    const available = tokens.map((t) => `\`${t.name}\``).join(', ');
     return {
       ok: false,
       summary: `❌ Unknown token: \`${target}\``,
       description: `Available: ${available}`,
     };
   }
-  await tm.applyToken(match.slotId);
-  const active = tm.getActiveToken();
+  const active = tokenManager.getActiveToken();
   return {
     ok: true,
-    summary: `🔑 Active → *${active?.name ?? match.name}*`,
-    description: `kind: \`${active?.kind ?? match.kind}\``,
+    summary: `🔑 Active → *${active.name}*`,
+    description: `\`${TokenManager.maskToken(active.value)}\``,
   };
 }
 

@@ -1,8 +1,7 @@
 import fs from 'fs';
 import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
-import { ENV_FILE } from '../../env-paths';
-import { redactAnthropicSecrets } from '../../logger';
-import { getTokenManager } from '../../token-manager';
+import { DATA_DIR, ENV_FILE } from '../../env-paths';
+import { tokenManager } from '../../token-manager';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -11,47 +10,12 @@ const SENSITIVE_PATTERNS = /TOKEN|SECRET|KEY|PASSWORD|PRIVATE/i;
 
 const CACHE_RESET_MAP: Partial<Record<string, () => void>> = {
   ADMIN_USERS: () => resetAdminUsersCache(),
+  CLAUDE_CODE_OAUTH_TOKEN_LIST: () => tokenManager.initialize(DATA_DIR),
 };
 
 function maskSecret(value: string): string {
   if (value.length <= 8) return '****';
   return value.slice(0, 4) + '...' + value.slice(-4);
-}
-
-/** Redact potential Anthropic secrets in a string before echoing to Slack. */
-function redactForReply(value: string): string {
-  const out = redactAnthropicSecrets(value);
-  return typeof out === 'string' ? out : value;
-}
-
-/**
- * Parse `CLAUDE_CODE_OAUTH_TOKEN_LIST`-style payloads: `name:value,name2:value2`.
- * Accepts both `name:value` (preferred) and `name=value` (legacy).
- */
-interface ParsedSlotEntry {
-  readonly name: string;
-  readonly value: string;
-}
-function parseTokenListEntries(raw: string): ParsedSlotEntry[] {
-  const entries = raw
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
-  const out: ParsedSlotEntry[] = [];
-  entries.forEach((entry, i) => {
-    const ci = entry.indexOf(':');
-    const ei = entry.indexOf('=');
-    let sep: number;
-    if (ci === -1) sep = ei;
-    else if (ei === -1) sep = ci;
-    else sep = Math.min(ci, ei);
-    if (sep > 0) {
-      out.push({ name: entry.slice(0, sep), value: entry.slice(sep + 1) });
-    } else {
-      out.push({ name: `cct${i + 1}`, value: entry });
-    }
-  });
-  return out;
 }
 
 /**
@@ -185,14 +149,6 @@ export class AdminHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // CLAUDE_CODE_OAUTH_TOKEN_LIST is no longer stored in .env. The CctStore
-    // is the SSOT for CCT slots, so we rewire the admin `config` setter to
-    // route through TokenManager.addSlot() for each parsed entry, skipping
-    // names already present in the registry.
-    if (key === 'CLAUDE_CODE_OAUTH_TOKEN_LIST') {
-      return this.handleTokenListConfig(ctx, value);
-    }
-
     // Step 3: Update process.env
     process.env[key] = value;
 
@@ -215,73 +171,20 @@ export class AdminHandler implements CommandHandler {
     const resetFn = CACHE_RESET_MAP[key];
     if (resetFn) resetFn();
 
-    // Step 6: Confirm (redact any anthropic secrets that might have been echoed)
+    // Step 6: Confirm
     if (envWriteOk) {
       const cacheNote = resetFn ? '\n🔄 Cache refreshed' : '';
       await ctx.say({
-        text: redactForReply(`✅ \`${key}\` updated to \`${value}\`${cacheNote}`),
+        text: `✅ \`${key}\` updated to \`${value}\`${cacheNote}`,
         thread_ts: ctx.threadTs,
       });
     } else {
       await ctx.say({
-        text: redactForReply(
-          `⚠️ process.env updated but .env write failed. \`${key}=\`\`${value}\`\` active until restart.`,
-        ),
+        text: `⚠️ process.env updated but .env write failed. \`${key}=\`\`${value}\`\` active until restart.`,
         thread_ts: ctx.threadTs,
       });
     }
 
-    return { handled: true };
-  }
-
-  private async handleTokenListConfig(ctx: CommandContext, value: string): Promise<CommandResult> {
-    const parsed = parseTokenListEntries(value);
-    if (parsed.length === 0) {
-      await ctx.say({
-        text: '⚠️ No token entries parsed. Expected: `name1:value1,name2:value2`',
-        thread_ts: ctx.threadTs,
-      });
-      return { handled: true };
-    }
-
-    const tm = getTokenManager();
-    const existingNames = new Set(tm.listTokens().map((s) => s.name));
-    const added: string[] = [];
-    const skipped: string[] = [];
-    const failed: Array<{ name: string; reason: string }> = [];
-
-    for (const entry of parsed) {
-      if (existingNames.has(entry.name)) {
-        skipped.push(entry.name);
-        continue;
-      }
-      try {
-        await tm.addSlot({ name: entry.name, kind: 'setup_token', value: entry.value });
-        added.push(entry.name);
-        existingNames.add(entry.name);
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        // Treat the CAS name-uniqueness collision the same as a pre-check
-        // skip — another caller landed the name between our `existingNames`
-        // snapshot and our `addSlot` attempt.
-        if (reason.startsWith('NAME_IN_USE:')) {
-          skipped.push(entry.name);
-          continue;
-        }
-        failed.push({ name: entry.name, reason });
-      }
-    }
-
-    const lines: string[] = [];
-    if (added.length > 0) lines.push(`✅ Added ${added.length} slot(s): ${added.join(', ')}`);
-    if (skipped.length > 0) lines.push(`↩️ Skipped existing: ${skipped.join(', ')}`);
-    if (failed.length > 0) {
-      const rendered = failed.map((f) => `${f.name} (${f.reason})`).join(', ');
-      lines.push(`❌ Failed: ${rendered}`);
-    }
-    if (lines.length === 0) lines.push('No changes.');
-
-    await ctx.say({ text: redactForReply(lines.join('\n')), thread_ts: ctx.threadTs });
     return { handled: true };
   }
 }

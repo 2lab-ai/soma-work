@@ -17,12 +17,6 @@ export interface CommandContext {
   threadTs: string;
   text: string;
   say: SayFn;
-  /**
-   * Slack `trigger_id`, required when opening modals (`views.open`).
-   * Populated from `block_actions` / slash-command payloads when available.
-   * Missing for paths where Slack doesn't provide one (e.g. `app_home_opened`).
-   */
-  triggerId?: string;
 }
 
 /**

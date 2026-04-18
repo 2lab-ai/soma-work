@@ -54,10 +54,6 @@ export class SlashCommandAdapter {
       threadTs: command.channel_id, // placeholder — session-dependent commands are filtered in EventRouter
       text: command.text || '',
       say,
-      // Slash commands carry trigger_id for opening modals (views.open). The
-      // field is optional on CommandContext so DM/mention paths without one
-      // remain valid.
-      triggerId: command.trigger_id,
     };
   }
 
