@@ -35,6 +35,11 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 // Default session timeout: 24 hours (Active → Sleep)
 const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
 
+// Dashboard improvements (v2.1): max duration of a single active-leg before we
+// assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
+// 30min default. idle은 대부분 이내 재개, OS sleep/crash는 이보다 길다고 가정.
+export const MAX_LEG_MS = Number(process.env.MAX_LEG_MS) || 30 * 60 * 1000;
+
 // Maximum sleep duration: 7 days (Sleep → Delete)
 const MAX_SLEEP_DURATION = 7 * 24 * 60 * 60 * 1000;
 
@@ -120,6 +125,13 @@ interface SerializedSession {
   };
   // User SSOT instructions (persisted)
   instructions?: SessionInstruction[];
+  // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
+  compactionCount?: number;
+  activeLegStartedAtMs?: number;
+  activeAccumulatedMs?: number;
+  summaryTitle?: string;
+  summaryTitleTurnId?: string;
+  summaryTitleLastUpdatedAtMs?: number;
 }
 
 /**
@@ -239,6 +251,54 @@ export class SessionRegistry {
    */
   getAllSessions(): Map<string, ConversationSession> {
     return this.sessions;
+  }
+
+  /**
+   * Dashboard v2.1 — Turn timer hooks (called from stream-executor).
+   * Kept on the registry so tests can exercise the timer + persistence path
+   * without booting the full Slack pipeline.
+   */
+  beginTurn(session: ConversationSession, now: number = Date.now()): void {
+    // Fold any stale leg first (MAX_LEG_MS cap covers crash / missed endTurn).
+    if (session.activeLegStartedAtMs) {
+      const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
+      session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+    }
+    session.activeLegStartedAtMs = now;
+  }
+
+  endTurn(session: ConversationSession, now: number = Date.now()): void {
+    if (session.activeLegStartedAtMs) {
+      const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
+      session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+    }
+    session.activeLegStartedAtMs = undefined;
+  }
+
+  /**
+   * Live thread-level aggregate derived from in-memory sessions sharing a threadKey.
+   * Returns derived totals — never a persisted top-level store.
+   */
+  getThreadAggregate(
+    channelId: string,
+    threadTs: string | undefined,
+    now: number = Date.now(),
+  ): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
+    const threadKey = `${channelId}-${threadTs || 'direct'}`;
+    let totalActiveMs = 0;
+    let sessionCount = 0;
+    let compactionCount = 0;
+    for (const [key, s] of this.sessions.entries()) {
+      if (key !== threadKey) continue;
+      sessionCount += 1;
+      compactionCount += s.compactionCount || 0;
+      let acc = s.activeAccumulatedMs || 0;
+      if (s.activeLegStartedAtMs) {
+        acc += Math.min(now - s.activeLegStartedAtMs, MAX_LEG_MS);
+      }
+      totalActiveMs += acc;
+    }
+    return { totalActiveMs, sessionCount, compactionCount };
   }
 
   /**
@@ -1342,6 +1402,13 @@ export class SessionRegistry {
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
+            // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
+            compactionCount: session.compactionCount,
+            activeLegStartedAtMs: session.activeLegStartedAtMs,
+            activeAccumulatedMs: session.activeAccumulatedMs,
+            summaryTitle: session.summaryTitle,
+            summaryTitleTurnId: session.summaryTitleTurnId,
+            summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
           });
         }
       }
@@ -1503,7 +1570,22 @@ export class SessionRegistry {
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk)
           instructions: Array.isArray(serialized.instructions) ? serialized.instructions : [],
+          // Dashboard v2.1 — restore aggregate snapshot
+          compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
+          activeLegStartedAtMs: serialized.activeLegStartedAtMs,
+          activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
+          summaryTitle: serialized.summaryTitle,
+          summaryTitleTurnId: serialized.summaryTitleTurnId,
+          summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,
         };
+        // Orphan sweep: if process crashed while a turn was active, fold the elapsed
+        // leg (capped by MAX_LEG_MS) into the accumulator and clear the marker so
+        // the next beginTurn starts a fresh leg.
+        if (session.activeLegStartedAtMs) {
+          const elapsed = Math.min(Date.now() - session.activeLegStartedAtMs, MAX_LEG_MS);
+          session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+          session.activeLegStartedAtMs = undefined;
+        }
         this.ensureSessionLinkState(session);
         this.sessions.set(serialized.key, session);
         loaded++;
