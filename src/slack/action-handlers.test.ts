@@ -109,7 +109,7 @@ describe('ActionHandlers', () => {
       expect(viewPatterns).toContain('^z_setting_(.+)_modal_submit$');
     });
 
-    it('exposes getZTopicRegistry with all 11 Phase 2 topics', () => {
+    it('exposes getZTopicRegistry with every Phase 2 topic', () => {
       const registry = handlers.getZTopicRegistry();
       const topics = registry.topics().sort();
       expect(topics).toEqual(
@@ -124,6 +124,7 @@ describe('ActionHandlers', () => {
           'persona',
           'sandbox',
           'theme',
+          'usage',
           'verbosity',
         ].sort(),
       );
