@@ -78,6 +78,7 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
+import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
   issue: 'issues',
@@ -569,12 +570,14 @@ export function runModelCommand(
   }
 
   if (request.commandId === 'ASK_USER_QUESTION') {
+    const warnings = checkAskUserQuestionQuality(request.params);
     return {
       type: 'model_command_result',
       commandId: 'ASK_USER_QUESTION',
       ok: true,
       payload: {
         question: request.params.question,
+        ...(warnings.length > 0 ? { warnings } : {}),
       },
     };
   }

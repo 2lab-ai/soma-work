@@ -391,6 +391,208 @@ function parseAskUserQuestionParams(
   };
 }
 
+/**
+ * Soft quality rules for ASK_USER_QUESTION payloads.
+ *
+ * These run AFTER schema validation (`parseAskUserQuestionParams`) and never
+ * reject a request — they only advise. The returned array carries warning
+ * strings for any failing rule; an empty array means the question is
+ * high-quality.
+ *
+ * Six rules (per Epic #544 Defect B spec):
+ *   1. options count must be 2..4
+ *   2. question must start with a tier prefix [tiny|small|medium|large|xlarge]
+ *   3. context must be present and ≥ 80 chars (trimmed)
+ *   4. option labels must not be forbidden meta/approval verbs
+ *   5. exactly one option must carry the Recommended marker (label only)
+ *   6. question field must be non-empty (not whitespace-only)
+ */
+export function checkAskUserQuestionQuality(params: AskUserQuestionParams): string[] {
+  const warnings: string[] = [];
+  const question = params?.question;
+  if (!question) {
+    return warnings;
+  }
+  if (question.type === 'user_choice') {
+    collectUserChoiceWarnings(question, warnings);
+  } else if (question.type === 'user_choices') {
+    collectUserChoicesWarnings(question, warnings);
+  }
+  return warnings;
+}
+
+const TIER_PREFIX_RE = /^\[(tiny|small|medium|large|xlarge)(?:\s+~\d+(?:\s+lines?)?)?\]\s+/i;
+const RECOMMENDED_MARKER_RE = /\(Recommended\s*·\s*\d+\/\d+\)\s*$/i;
+const FORBIDDEN_META_LABELS = new Set([
+  'fix_now',
+  'defer',
+  'skip',
+  'confirm',
+  'approve',
+  'reject',
+  'yes',
+  'no',
+  'ok',
+  'cancel',
+  'continue',
+  'retry',
+  'reset',
+  'done',
+  'next',
+  'back',
+  'proceed',
+  'abort',
+]);
+const MIN_CONTEXT_LENGTH = 80;
+
+function collectUserChoiceWarnings(payload: UserChoice, warnings: string[]): void {
+  // Rule 6 — question non-empty
+  const questionText = typeof payload.question === 'string' ? payload.question : '';
+  const questionTrimmed = questionText.trim();
+  if (questionTrimmed.length < 1) {
+    warnings.push('question is empty or whitespace-only');
+  }
+
+  // Rule 2 — tier prefix
+  if (questionTrimmed.length >= 1 && !TIER_PREFIX_RE.test(questionText)) {
+    warnings.push(
+      'question missing tier prefix — expected [tiny|small|medium|large|xlarge] (optionally with ~N lines)',
+    );
+  }
+
+  // Rule 3 — context required + trimmed length ≥ 80
+  pushContextWarnings(payload.context, '', warnings);
+
+  // Rule 1 — 2..4 options
+  pushOptionCountWarnings(payload.choices, '', warnings);
+
+  // Rule 5 — Recommended marker label-only exactly-one (also catches marker in description)
+  pushRecommendedWarnings(payload.choices, '', warnings);
+
+  // Rule 4 — forbidden meta labels (strip Recommended marker first)
+  pushForbiddenLabelWarnings(payload.choices, '', warnings);
+}
+
+function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): void {
+  const title = typeof payload.title === 'string' ? payload.title : undefined;
+  const titleTrimmed = title?.trim() ?? '';
+
+  // Rule 6 — if title is provided, it must be non-empty
+  if (title !== undefined && titleTrimmed.length < 1) {
+    warnings.push('question is empty or whitespace-only');
+  }
+
+  // Rule 2 — require tier prefix at the group level. When title is absent
+  // (direct UserChoices construction with no title) we still warn so callers
+  // can't silently bypass Rule 2 by omitting the title. When title has the
+  // prefix the per-question prefix is not required ("Epic atomicity").
+  const titleHasPrefix = titleTrimmed.length >= 1 && TIER_PREFIX_RE.test(title as string);
+  if (!titleHasPrefix) {
+    warnings.push(
+      'question missing tier prefix — expected [tiny|small|medium|large|xlarge] (optionally with ~N lines)',
+    );
+  }
+
+  // Rule 3 — accept group-level `description` as a substitute for per-question
+  // `context`. After `user_choice_group` normalization the raw top-level
+  // `context` lands in `description`; requiring per-question duplication would
+  // force every single-question approval template to repeat itself.
+  const description = typeof payload.description === 'string' ? payload.description : undefined;
+  const descriptionTrimmed = description?.trim() ?? '';
+  const descriptionSatisfiesRule3 = descriptionTrimmed.length >= MIN_CONTEXT_LENGTH;
+
+  for (const q of payload.questions) {
+    const prefix = `question[${q.id}]: `;
+
+    // Rule 6 — each question.question non-empty
+    const qText = typeof q.question === 'string' ? q.question : '';
+    const qTrimmed = qText.trim();
+    if (qTrimmed.length < 1) {
+      warnings.push(`${prefix}question is empty or whitespace-only`);
+    }
+
+    // Rule 3 — per-question context required only when group description
+    // doesn't already satisfy the minimum length.
+    if (!descriptionSatisfiesRule3) {
+      pushContextWarnings(q.context, prefix, warnings);
+    }
+
+    // Rule 1 — 2..4 options
+    pushOptionCountWarnings(q.choices, prefix, warnings);
+
+    // Rule 5 — Recommended marker per-question
+    pushRecommendedWarnings(q.choices, prefix, warnings);
+
+    // Rule 4 — forbidden meta labels
+    pushForbiddenLabelWarnings(q.choices, prefix, warnings);
+  }
+}
+
+function pushContextWarnings(context: string | undefined, prefix: string, warnings: string[]): void {
+  const trimmed = typeof context === 'string' ? context.trim() : '';
+  if (trimmed.length === 0) {
+    warnings.push(`${prefix}context missing — stakeholder needs decision rationale`);
+    return;
+  }
+  if (trimmed.length < MIN_CONTEXT_LENGTH) {
+    warnings.push(
+      `${prefix}context too short (${trimmed.length} chars, min ${MIN_CONTEXT_LENGTH}) — expand rationale`,
+    );
+  }
+}
+
+function pushOptionCountWarnings(choices: UserChoiceOption[], prefix: string, warnings: string[]): void {
+  const count = choices.length;
+  if (count < 2) {
+    warnings.push(`${prefix}options count (${count}) below minimum 2 — provide at least 2 choices`);
+  } else if (count > 4) {
+    warnings.push(`${prefix}options count (${count}) exceeds maximum 4 — Slack button row readability`);
+  }
+}
+
+function pushRecommendedWarnings(choices: UserChoiceOption[], prefix: string, warnings: string[]): void {
+  let markerCount = 0;
+  for (const choice of choices) {
+    if (typeof choice.label === 'string' && RECOMMENDED_MARKER_RE.test(choice.label)) {
+      markerCount += 1;
+    }
+    if (typeof choice.description === 'string' && RECOMMENDED_MARKER_RE.test(choice.description)) {
+      warnings.push(
+        `${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`,
+      );
+    }
+  }
+  if (choices.length < 2) {
+    return; // Rule 1 already warned; skip marker checks for degenerate cases.
+  }
+  if (markerCount === 0) {
+    warnings.push(`${prefix}no Recommended marker — mark one option as '(Recommended · N/M)'`);
+  } else if (markerCount > 1) {
+    warnings.push(`${prefix}multiple Recommended markers (${markerCount}) — exactly one expected`);
+  }
+}
+
+function pushForbiddenLabelWarnings(choices: UserChoiceOption[], prefix: string, warnings: string[]): void {
+  for (const choice of choices) {
+    if (typeof choice.label !== 'string') continue;
+    const stripped = choice.label.replace(RECOMMENDED_MARKER_RE, '');
+    if (isForbiddenMetaLabel(stripped)) {
+      warnings.push(
+        `${prefix}option [${choice.id}] label '${choice.label}' is a meta/approval verb — use actionable domain-specific verb phrase`,
+      );
+    }
+  }
+}
+
+function isForbiddenMetaLabel(label: string): boolean {
+  // Normalize: trim, strip leading/trailing non-word characters, lowercase.
+  // Exact match against the forbidden set — substring match would incorrectly
+  // flag valid domain labels like "Proceed to zwork".
+  const normalized = label.trim().replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase();
+  if (normalized.length === 0) return false;
+  return FORBIDDEN_META_LABELS.has(normalized);
+}
+
 function parseSaveContextResultParams(
   raw: unknown,
 ): { ok: true; value: SaveContextResultParams } | { ok: false; error: ModelCommandError } {
