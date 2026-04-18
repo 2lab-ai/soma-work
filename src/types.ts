@@ -238,6 +238,23 @@ export interface ConversationSession {
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
   instructions?: SessionInstruction[];
+
+  // Dashboard improvements (v2.1):
+  // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
+  compactionCount?: number;
+  // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
+  activeLegStartedAtMs?: number;
+  // Accumulated busy time (ms) across closed legs of the current session.
+  activeAccumulatedMs?: number;
+  // LLM-generated concise task title (falls back to `title` when absent).
+  summaryTitle?: string;
+  // Turn id that produced `summaryTitle` — used as a stale-write guard.
+  summaryTitleTurnId?: string;
+  // Last time `summaryTitle` was regenerated (ms) — used for 60s debounce.
+  summaryTitleLastUpdatedAtMs?: number;
+  // Last recorded assistant-turn id (monotonic, updated by the recorder).
+  // Used as the version token for the stale-write guard in summary-title generation.
+  lastAssistantTurnId?: string;
 }
 
 /**

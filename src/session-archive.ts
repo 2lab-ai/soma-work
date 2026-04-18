@@ -74,6 +74,12 @@ export interface ArchivedSession {
   // State at time of archive
   finalState?: SessionState;
   finalActivityState?: ActivityState;
+
+  // Dashboard v2.1 — snapshot so closed sessions still contribute to
+  // thread-level totals once the live session is gone from memory.
+  busyMs?: number;
+  compactionCount?: number;
+  summaryTitle?: string;
 }
 
 /**
@@ -132,6 +138,15 @@ function sessionToArchive(
 
     finalState: session.state,
     finalActivityState: session.activityState,
+
+    // Dashboard v2.1 — snapshot busy time + compactionCount so thread
+    // aggregate keeps rendering historic totals after the live session
+    // leaves memory. Fold any open leg first (MAX_LEG_MS cap lives in
+    // session-registry; here we take the accumulator at face value since
+    // archive is called post endTurn on the happy path).
+    busyMs: session.activeAccumulatedMs,
+    compactionCount: session.compactionCount,
+    summaryTitle: session.summaryTitle,
   };
 }
 
