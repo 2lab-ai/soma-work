@@ -99,6 +99,20 @@ export class ChoiceMessageBuilder {
       },
     });
 
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const defaultCtx = choice.context?.trim();
+    if (defaultCtx) {
+      attachmentBlocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${defaultCtx}`,
+          },
+        ],
+      });
+    }
+
     attachmentBlocks.push({ type: 'divider' });
 
     // Build fields for horizontal layout (2 columns) with number emojis
@@ -188,6 +202,20 @@ export class ChoiceMessageBuilder {
       },
     });
 
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const compactCtx = choice.context?.trim();
+    if (compactCtx) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${compactCtx}`,
+          },
+        ],
+      });
+    }
+
     const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
     buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
 
@@ -216,6 +244,20 @@ export class ChoiceMessageBuilder {
         },
       ],
     });
+
+    // Context (if provided, trimmed — renderer-level defense against whitespace-only)
+    const minimalCtx = choice.context?.trim();
+    if (minimalCtx) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `💡 ${minimalCtx}`,
+          },
+        ],
+      });
+    }
 
     const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
     buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));

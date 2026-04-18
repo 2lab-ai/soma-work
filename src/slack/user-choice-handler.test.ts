@@ -342,18 +342,17 @@ this is not valid json
       expect(questionBlock).toBeDefined();
     });
 
-    it('should not include a separate context block in default theme (context is omitted)', () => {
+    it('should include a 💡 context block in default theme when choice.context is provided (#545)', () => {
       const choiceWithContext: UserChoice = {
         ...sampleChoice,
         context: 'Important context',
       };
       const payload = UserChoiceHandler.buildUserChoiceBlocks(choiceWithContext, 'session-key', 'default');
       const blocks = getBlocks(payload);
-      // The new default theme (based on former Theme D) does not render a context block for choice.context
-      const contextBlock = blocks.find(
-        (b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('Important context'),
-      );
-      expect(contextBlock).toBeUndefined();
+      // Since #545: single user_choice path renders a `💡 <context>` block in all 3 themes.
+      const contextBlock = blocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.startsWith('💡 '));
+      expect(contextBlock).toBeDefined();
+      expect(contextBlock.elements[0].text).toBe('💡 Important context');
     });
 
     it('should include custom input button', () => {
