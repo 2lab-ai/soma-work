@@ -1106,6 +1106,7 @@ export class CommandParser {
       "• `usage week` - Show this week's token usage",
       "• `usage month` - Show this month's token usage",
       "• `usage @user` - Show specific user's token usage",
+      '• `usage card` or `/usage card` - Post your personal 30-day usage card (PNG) to the channel',
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',
