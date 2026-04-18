@@ -4,8 +4,10 @@
  *
  * Responsibilities:
  *   - Maintain the registry of slots (setup_token or oauth_credentials).
- *   - Select the active slot; expose it to downstream children via
- *     `process.env.CLAUDE_CODE_OAUTH_TOKEN` for backward compat.
+ *   - Select the active slot; surface its fresh access token through
+ *     `acquireLease()`. Callers forward the lease's token to the Claude
+ *     Agent SDK per-call via `buildQueryEnv(lease)` → `options.env`.
+ *     TokenManager NEVER writes to `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
  *   - Rotate on rate-limit and manual requests, skipping tombstoned /
  *     revoked / cooling / refresh_failed slots.
  *   - Manage leases (replaces refcount): acquire / heartbeat / release,
