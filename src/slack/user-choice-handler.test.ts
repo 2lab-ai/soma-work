@@ -560,5 +560,132 @@ this is not valid json
         expect(customButton).toBeDefined();
       }
     });
+
+    it('still includes custom_input buttons in every actions block when recommendedChoiceId is set (invariant)', () => {
+      const recChoices: UserChoices = {
+        type: 'user_choices',
+        title: 'With rec',
+        questions: [
+          {
+            id: 'q1',
+            question: 'Q1?',
+            recommendedChoiceId: '2',
+            choices: [
+              { id: '1', label: 'One' },
+              { id: '2', label: 'Two' },
+            ],
+          },
+          {
+            id: 'q2',
+            question: 'Q2?',
+            recommendedChoiceId: 'a',
+            choices: [
+              { id: 'a', label: 'A' },
+              { id: 'b', label: 'B' },
+            ],
+          },
+        ],
+      };
+      const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(recChoices, 'form-1', 'session-key');
+      const blocks = getBlocks(payload);
+      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
+      expect(actionBlocks).toHaveLength(2);
+      for (const actionBlock of actionBlocks) {
+        const customButton = actionBlock.elements.find((e: any) => e.action_id.startsWith('custom_input_multi_'));
+        expect(customButton).toBeDefined();
+      }
+    });
+  });
+
+  describe('extractUserChoice preserves recommendedChoiceId', () => {
+    it('single user_choice preserves recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choice",
+  "question": "Pick one",
+  "recommendedChoiceId": "2",
+  "choices": [
+    {"id": "1", "label": "A"},
+    {"id": "2", "label": "B"}
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice?.recommendedChoiceId).toBe('2');
+    });
+
+    it('user_choices with per-question recommendedChoiceId preserves the field', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choices",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "One?",
+      "recommendedChoiceId": "b",
+      "choices": [
+        {"id": "a", "label": "A"},
+        {"id": "b", "label": "B"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBeNull();
+      expect(result.choices?.questions[0].recommendedChoiceId).toBe('b');
+    });
+
+    it('user_choice_group with two questions preserves per-question recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "question": "Decisions",
+  "choices": [
+    {
+      "question": "First?",
+      "recommendedChoiceId": "2",
+      "options": [
+        {"id": "1", "label": "A"},
+        {"id": "2", "label": "B"}
+      ]
+    },
+    {
+      "question": "Second?",
+      "recommendedChoiceId": "y",
+      "options": [
+        {"id": "x", "label": "X"},
+        {"id": "y", "label": "Y"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBeNull();
+      expect(result.choices?.questions).toHaveLength(2);
+      expect(result.choices?.questions[0].recommendedChoiceId).toBe('2');
+      expect(result.choices?.questions[1].recommendedChoiceId).toBe('y');
+    });
+
+    it('user_choice_group with single question collapses to user_choice and preserves recommendedChoiceId', () => {
+      const text = `\`\`\`json
+{
+  "question": "Decision",
+  "choices": [
+    {
+      "question": "Pick",
+      "recommendedChoiceId": "2",
+      "options": [
+        {"id": "1", "label": "A"},
+        {"id": "2", "label": "B"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBeNull();
+      expect(result.choice?.recommendedChoiceId).toBe('2');
+    });
   });
 });
