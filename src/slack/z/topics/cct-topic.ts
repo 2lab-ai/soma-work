@@ -13,61 +13,34 @@
 
 import { isAdminUser } from '../../../admin-utils';
 import type { CctStoreSnapshot, TokenSlot } from '../../../cct-store';
+import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildCctCardBlocks } from '../../cct/builder';
 
+const logger = new Logger('CctTopic');
+
 /**
- * Best-effort: pull the most recent `CctStoreSnapshot` from the token
- * manager so we can hand full `SlotState`s to the builder. We access a
- * non-public method via duck typing — when unavailable (tests), we fall
- * back to an empty state map.
+ * Pull the latest `CctStoreSnapshot` via the public `getSnapshot()` API so
+ * we can hand full `SlotState`s to the builder. Wrapped in try/catch to
+ * preserve defensive behaviour — a broken store must not brick the card.
  */
 async function loadSnapshotOrEmpty(): Promise<{
   slots: TokenSlot[];
   states: Record<string, NonNullable<CctStoreSnapshot['state'][string]>>;
   activeSlotId?: string;
 }> {
-  const tm = getTokenManager() as unknown as {
-    // Duck-typed private store access.
-    store?: { load?: () => Promise<CctStoreSnapshot> };
-    listTokens: () => TokenSummary[];
-    getActiveToken: () => { slotId: string; name: string; kind: TokenSlot['kind'] } | null;
-  };
   try {
-    if (tm.store?.load) {
-      const snap = await tm.store.load();
-      return {
-        slots: snap.registry.slots,
-        states: snap.state,
-        activeSlotId: snap.registry.activeSlotId,
-      };
-    }
-  } catch {
-    /* ignore */
+    const snap = await getTokenManager().getSnapshot();
+    return {
+      slots: snap.registry.slots,
+      states: snap.state,
+      activeSlotId: snap.registry.activeSlotId,
+    };
+  } catch (err) {
+    logger.warn(`loadSnapshotOrEmpty: getSnapshot failed — rendering empty card: ${(err as Error).message}`);
+    return { slots: [], states: {} };
   }
-  // Fallback: synthesise minimal slots from listTokens().
-  const summaries = tm.listTokens();
-  const active = tm.getActiveToken();
-  const slots = summaries.map((s) => ({
-    slotId: s.slotId,
-    name: s.name,
-    kind: s.kind,
-    // Minimal placeholders so the builder's type is satisfied. The builder
-    // only reads slotId/name/kind for non-state fields.
-    createdAt: '',
-    ...(s.kind === 'oauth_credentials'
-      ? {
-          credentials: { accessToken: '', refreshToken: '', expiresAtMs: 0, scopes: [] },
-          acknowledgedConsumerTosRisk: true as const,
-        }
-      : { value: '' }),
-  })) as unknown as TokenSlot[];
-  return {
-    slots,
-    states: {},
-    activeSlotId: active?.slotId,
-  };
 }
 
 export async function renderCctCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {

@@ -137,23 +137,19 @@ async function buildStatusTextFallback(cardFallback: string | undefined): Promis
   return `${header}\nrate-limited ${ts}${source}`;
 }
 
-/** Duck-typed snapshot read — mirrors the helper in `cct-topic.ts`. */
+/** Defensive snapshot read through the public `getSnapshot()` API. */
 async function loadSnapshotSafe(): Promise<CctStoreSnapshot | null> {
-  const tm = getTokenManager() as unknown as {
-    store?: { load?: () => Promise<CctStoreSnapshot> };
-  };
   try {
-    if (tm.store?.load) return await tm.store.load();
+    return await getTokenManager().getSnapshot();
   } catch {
-    /* ignore */
+    return null;
   }
-  return null;
 }
 
 interface UsageCapableTokenManager {
   fetchAndStoreUsage: (slotId: string) => Promise<UsageSnapshot | null>;
   getActiveToken: () => { slotId: string; name: string; kind: TokenSlot['kind'] } | null;
-  store?: { load?: () => Promise<CctStoreSnapshot> };
+  getSnapshot?: () => Promise<CctStoreSnapshot>;
 }
 
 /**

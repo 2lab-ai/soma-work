@@ -31,6 +31,21 @@ vi.mock('../../../token-manager', () => {
       const t = tokens[activeIdx];
       return { slotId: t.slotId, name: t.name };
     },
+    getSnapshot: async () => ({
+      version: 1,
+      revision: 1,
+      registry: {
+        activeSlotId: tokens[activeIdx]?.slotId,
+        slots: tokens.map((t) => ({
+          slotId: t.slotId,
+          name: t.name,
+          kind: t.kind,
+          value: '',
+          createdAt: '',
+        })),
+      },
+      state: {},
+    }),
   };
   return {
     getTokenManager: () => tm,

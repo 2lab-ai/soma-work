@@ -118,7 +118,7 @@ describe('CctHandler — Wave 5', () => {
       fetchAndStoreUsage: overrides.fetchAndStoreUsage ?? (async () => null),
       rotateToNext: overrides.rotateToNext ?? (async () => null),
       applyToken: overrides.applyToken ?? (async () => undefined),
-      store: overrides.snapshot !== undefined ? { load: async () => overrides.snapshot } : undefined,
+      getSnapshot: overrides.snapshot !== undefined ? async () => overrides.snapshot : undefined,
     };
     vi.doMock('../../token-manager', () => ({
       getTokenManager: () => fakeTm,

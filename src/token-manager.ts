@@ -413,6 +413,16 @@ export class TokenManager {
     return this.loadCachedSync();
   }
 
+  /**
+   * Public, authoritative read of the persisted CCT store snapshot.
+   *
+   * Prefer this over duck-typing `(tm as any).store.load()` at call sites
+   * that need the full {@link CctStoreSnapshot} (registry + per-slot state).
+   */
+  async getSnapshot(): Promise<CctStoreSnapshot> {
+    return this.store.load();
+  }
+
   /** Cached synchronous summary — refreshed on each write-through API. */
   private cachedSummary: TokenSummary[] = [];
   private cachedActive: ActiveTokenInfo | null = null;
