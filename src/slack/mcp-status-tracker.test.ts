@@ -151,6 +151,39 @@ describe('McpStatusDisplay', () => {
       expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
     });
 
+    it('should fall back to startTime-based elapsed when duration is null', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      // 5s pass before completion (first tick is at 10s, so no tick fires yet)
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // Abort / untracked path: duration comes through as null
+      display.completeCall('call1', null);
+
+      // Next tick renders the completed state
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('🟢');
+      expect(postText).toContain('5.0s');
+    });
+
+    it('should show elapsed for every call in multi-call session even when one is null', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(3000);
+
+      display.completeCall('call1', null); // fallback to 3s
+      display.completeCall('call2', 7000); // explicit
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('3.0s'); // from startTime fallback
+      expect(postText).toContain('7.0s'); // from explicit duration
+    });
+
     it('should render mixed state (some complete, some running)', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
