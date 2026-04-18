@@ -39,9 +39,6 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
       throw credErr;
     }
 
-    // Freshly-refreshed token for oauth_credentials slots.
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
-
     // Truncate very long content to save tokens
     const maxContentLength = 8000;
     const truncatedContent =
@@ -52,6 +49,9 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
 Response to summarize:
 ${truncatedContent}`;
 
+    // Pass the fresh lease token via options.env so concurrent summariser /
+    // title-generator / dispatch calls don't clobber each other's token on
+    // the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
     const options: Options = {
       model: getSummaryModel(),
       maxTurns: 1,
@@ -59,6 +59,7 @@ ${truncatedContent}`;
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
       settingSources: [],
       plugins: [],
+      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
       stderr: (data: string) => {
         logger.warn('Summarizer stderr', { data: data.trimEnd() });
       },

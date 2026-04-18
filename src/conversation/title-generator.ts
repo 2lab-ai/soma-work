@@ -24,9 +24,6 @@ export async function generateTitle(conversationContent: string): Promise<string
       throw credErr;
     }
 
-    // Freshly-refreshed token for oauth_credentials slots; static value for setup_token.
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
-
     const truncated =
       conversationContent.length > 3000
         ? `${conversationContent.substring(0, 3000)}\n...[truncated]`
@@ -34,6 +31,10 @@ export async function generateTitle(conversationContent: string): Promise<string
 
     const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;
 
+    // Pass the fresh lease token via options.env (merged onto process.env inside
+    // the SDK) so concurrent spawns each see their own token — mutating
+    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against other
+    // in-flight dispatches holding leases on different slots.
     const options: Options = {
       model: config.conversation.summaryModel,
       maxTurns: 1,
@@ -41,6 +42,7 @@ export async function generateTitle(conversationContent: string): Promise<string
       systemPrompt: 'You generate concise conversation titles. Output only the title text.',
       settingSources: [],
       plugins: [],
+      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
       stderr: (data: string) => {
         logger.warn('TitleGenerator stderr', { data: data.trimEnd() });
       },

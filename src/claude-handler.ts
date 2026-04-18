@@ -395,19 +395,20 @@ export class ClaudeHandler {
         throw credErr;
       }
 
-      // TokenManager.applyToken/mirrorToEnv already keeps this env var synced
-      // with the active slot, BUT for oauth_credentials slots we must
-      // overwrite it with the freshly-refreshed lease.accessToken before
-      // spawning Claude CLI (env mutation is atomic-per-process and the
-      // freshest value is only guaranteed by lease.accessToken).
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
-
       heartbeatTimer = setInterval(() => {
         lease?.heartbeat().catch((err) => this.logger.debug('lease heartbeat failed', err));
       }, CLAUDE_LEASE_HEARTBEAT_MS);
       if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
-      return await this.dispatchOneShotInner(userMessage, dispatchPrompt, model, abortController, resumeSessionId, cwd);
+      return await this.dispatchOneShotInner(
+        userMessage,
+        dispatchPrompt,
+        lease.accessToken,
+        model,
+        abortController,
+        resumeSessionId,
+        cwd,
+      );
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (lease) await lease.release();
@@ -417,16 +418,21 @@ export class ClaudeHandler {
   private async dispatchOneShotInner(
     userMessage: string,
     dispatchPrompt: string,
+    accessToken: string,
     model?: string,
     abortController?: AbortController,
     resumeSessionId?: string,
     cwd?: string,
   ): Promise<string> {
-    // Build query options for one-shot dispatch
+    // Build query options for one-shot dispatch.
+    // The lease's fresh access token is forwarded via options.env so it
+    // never crosses the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN` slot —
+    // concurrent dispatches therefore cannot clobber each other's auth.
     const options: Options = {
       settingSources: [],
       plugins: [],
       systemPrompt: dispatchPrompt,
+      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: accessToken },
       tools: [], // No tool use for dispatch
       maxTurns: 1, // Single turn only
       stderr: (data: string) => {
@@ -578,22 +584,22 @@ export class ClaudeHandler {
         throw credErr;
       }
 
-      // TokenManager mirrors the active slot token to this env var, but for
-      // oauth_credentials slots the freshest token (post-refresh) is only
-      // guaranteed by lease.accessToken — overwrite before Claude CLI spawns.
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
-
       heartbeatTimer = setInterval(() => {
         lease?.heartbeat().catch((err) => this.logger.debug('lease heartbeat failed', err));
       }, CLAUDE_LEASE_HEARTBEAT_MS);
       if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
-      // Build query options
+      // Build query options. The lease's fresh access token is forwarded via
+      // options.env so it never crosses the shared
+      // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable — concurrent streams
+      // holding leases on different slots therefore cannot clobber each
+      // other's auth.
       const options: Options = {
         // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
         settingSources: ['project'],
         // Load plugins from PluginManager or fallback to local directory
         plugins: this.getEffectivePluginPaths(),
+        env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
       };
 
       // Get MCP configuration

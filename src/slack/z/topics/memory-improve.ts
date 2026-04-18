@@ -28,9 +28,9 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       throw credErr;
     }
 
-    // Freshly-refreshed token for oauth_credentials slots.
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
-
+    // Pass the fresh lease token via options.env (SDK merges it on top of
+    // process.env) so this call and any concurrent Claude spawn each use
+    // their own lease's token.
     const options: Options = {
       model: config.conversation.summaryModel,
       maxTurns: 1,
@@ -38,6 +38,7 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       systemPrompt,
       settingSources: [],
       plugins: [],
+      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
       stderr: (data: string) => {
         logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
       },

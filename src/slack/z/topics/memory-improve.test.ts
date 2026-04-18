@@ -69,7 +69,7 @@ const mockLease = (
   }
 ).__mockLease;
 
-beforeEach(() => {
+beforeEach(async () => {
   mockAssistantText = '';
   capturedOptions = null;
   capturedPrompt = null;
@@ -77,6 +77,21 @@ beforeEach(() => {
   mockLease.heartbeat.mockClear();
   vi.mocked(ensureValidCredentials).mockResolvedValue({ valid: true } as any);
   vi.mocked(ensureActiveSlotAuth).mockResolvedValue(mockLease as any);
+  // Reset the SDK query mock to the default capture-and-yield behavior so
+  // per-test mockImplementationOnce / mockImplementation overrides don't
+  // leak across tests.
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  vi.mocked(sdk.query).mockImplementation((({ prompt, options }: { prompt: string; options: any }) => {
+    capturedOptions = options;
+    capturedPrompt = prompt;
+    const text = mockAssistantText;
+    return (async function* () {
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text }] },
+      };
+    })();
+  }) as any);
 });
 
 describe('improveEntry', () => {
@@ -146,6 +161,45 @@ describe('improveEntry', () => {
     mockAssistantText = '  hello\n\nworld\n  ';
     const result = await improveEntry('o', 'memory');
     expect(result).toBe('hello world');
+  });
+
+  it('forwards lease.accessToken via options.env (not process.env)', async () => {
+    // Regression: previously each caller mutated
+    // process.env.CLAUDE_CODE_OAUTH_TOKEN, which raced across concurrent
+    // spawns. The fix routes the fresh token through options.env so the SDK
+    // merges it onto the child env without touching the parent process.
+    mockAssistantText = 'ok';
+    await improveEntry('o', 'memory');
+    expect(capturedOptions).not.toBeNull();
+    expect(capturedOptions.env).toBeDefined();
+    expect(capturedOptions.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(mockLease.accessToken);
+  });
+
+  it('parallel spawns with distinct lease tokens do not clobber each other', async () => {
+    // Drive two concurrent runQuery() invocations through
+    // ensureActiveSlotAuth with different lease accessTokens and verify the
+    // per-call options.env captured by the SDK mock carries each call's own
+    // token — proving process.env no longer serializes the auth path.
+    const leaseA = { ...mockLease, accessToken: 'tok-A', slotId: 'slot-A' };
+    const leaseB = { ...mockLease, accessToken: 'tok-B', slotId: 'slot-B' };
+
+    vi.mocked(ensureActiveSlotAuth)
+      .mockResolvedValueOnce(leaseA as any)
+      .mockResolvedValueOnce(leaseB as any);
+
+    const seenEnvTokens: string[] = [];
+    const sdk = await import('@anthropic-ai/claude-agent-sdk');
+    vi.mocked(sdk.query).mockImplementation((({ options }: { prompt: string; options: any }) => {
+      // Capture the token the SDK sees at invocation time.
+      seenEnvTokens.push(options?.env?.CLAUDE_CODE_OAUTH_TOKEN ?? '<unset>');
+      return (async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } };
+      })();
+    }) as any);
+
+    await Promise.all([improveEntry('a', 'memory'), improveEntry('b', 'memory')]);
+    expect(seenEnvTokens).toHaveLength(2);
+    expect(new Set(seenEnvTokens)).toEqual(new Set(['tok-A', 'tok-B']));
   });
 });
 
