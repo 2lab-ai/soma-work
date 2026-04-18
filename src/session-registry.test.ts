@@ -73,6 +73,47 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.threadRootTs).toBe('777.888');
   });
 
+  it('backfills effort from user default on legacy sessions without effort field', () => {
+    // Simulate a sessions.json written before the effort field existed. Without
+    // backfill, the restored session would have effort=undefined and the handler
+    // would fall through to the SDK internal default instead of the app's
+    // DEFAULT_EFFORT ('xhigh'). See review finding on PR #527 (risk vector P3).
+    const sessionsFile = `${TEST_DATA_DIR}/sessions.json`;
+    fs.writeFileSync(
+      sessionsFile,
+      JSON.stringify(
+        [
+          {
+            key: 'C-legacy-170.000',
+            ownerId: 'U-legacy',
+            userId: 'U-legacy',
+            channelId: 'C-legacy',
+            threadTs: '170.000',
+            sessionId: 'legacy-session-1',
+            isActive: true,
+            lastActivity: new Date().toISOString(),
+            state: 'MAIN',
+            workflow: 'default',
+            // effort deliberately omitted to mimic legacy payload
+          },
+        ],
+        null,
+        2,
+      ),
+    );
+
+    const reader = new SessionRegistry();
+    const loaded = reader.loadSessions();
+    const restored = reader.getSession('C-legacy', '170.000');
+
+    // Sanity: the session must actually be loaded (not filtered out by age).
+    expect(loaded).toBe(1);
+    expect(restored).toBeDefined();
+    // DEFAULT_EFFORT is 'xhigh' per user-settings-store; user has no stored
+    // effort override so legacy restore should backfill to that default.
+    expect(restored?.effort).toBe('xhigh');
+  });
+
   it('persists linkHistory and sequence for session resources', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C123', '171.003');

@@ -42,7 +42,7 @@ Check `<context>` for `jira-name`:
 
 ### 3. Settings Confirmation
 Explain current settings from `<context>` first, then explain defaults:
-- Model default: Opus 4.6
+- Model default: Opus 4.7
 - Persona default: `default`
 - Permission bypass default: off
 

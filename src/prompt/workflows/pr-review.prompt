@@ -161,6 +161,7 @@ for each finding:
     → Send via `mcp__model-command__run` → `ASK_USER_QUESTION`
     → Include review results from all 3 agents + recommendation
     → [tier ~N lines] label is required
+    → Prefer `recommendedChoiceId` over the legacy `(Recommended)` label suffix.
     → Warning: Questions like "Should we fix this? (fix/defer/skip)" are forbidden — must be in the form "How should we fix this? (Option A / Option B)"
 ```
 

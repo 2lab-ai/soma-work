@@ -1,0 +1,19 @@
+{
+  "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
+  "_comment": "Reference template for local:z phase2.9 PR approval (after ztrace briefing). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality. Placeholders {braces} substituted by caller. Use zcheck-pr-approve.json for the 4-option zcheck variant.",
+  "type": "user_choice",
+  "question": "[small] PR #{pr_number} 머지 승인?",
+  "context": "CI: {ci_status} (run {ci_run_id}). 리뷰 스레드: {unresolved_threads} unresolved. 변경: {files_changed} 파일 {loc_add}/{loc_del} LoC. 머지 상태: {merge_state} · {mergeable}. Codex 리뷰: {codex_summary}. ztrace 결과: {ztrace_verdict}. Approve 시 squash merge → branch delete → phase3 local:es executive summary 생성하여 stakeholder에게 전달.",
+  "choices": [
+    {
+      "id": "a",
+      "label": "Option A: Merge PR and run local:es executive summary (Recommended · 1/2)",
+      "description": "squash merge + branch delete → phase3 local:es로 stakeholder 요약 생성 → Slack post."
+    },
+    {
+      "id": "b",
+      "label": "Option B: Request rework — specify which checks failed",
+      "description": "리팩토링 필요. 어떤 검증이 통과 못 했는지 지시하면 phase2 zwork로 복귀하여 fix."
+    }
+  ]
+}

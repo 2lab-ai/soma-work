@@ -1,17 +1,17 @@
 /**
- * Unit Tests — CodexRuntime
- * Issue #332: Backend Runtime Adapter Layer
+ * Unit Tests — CodexRuntime (post-refactor signatures).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { CodexRuntime } from './codex-runtime.js';
-
-// ── Mock McpClient ────────────────────────────────────────
+import { ErrorCode, LlmChatError } from './errors.js';
 
 function createMockClient(overrides: Record<string, any> = {}) {
   return {
     isReady: vi.fn().mockReturnValue(true),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
+    getPid: vi.fn().mockReturnValue(12345),
+    killProcess: vi.fn().mockReturnValue(true),
     callTool: vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ content: 'mock response' }) }],
       structuredContent: { threadId: 'thread-abc-123' },
@@ -20,12 +20,10 @@ function createMockClient(overrides: Record<string, any> = {}) {
   };
 }
 
-// Mock child_process for CLI existence check
 vi.mock('child_process', () => ({
   execFileSync: vi.fn(() => '/usr/local/bin/codex'),
 }));
 
-// Mock McpClient constructor
 vi.mock('../../_shared/mcp-client.js', () => {
   let mockInstance: any = null;
   return {
@@ -34,12 +32,12 @@ vi.mock('../../_shared/mcp-client.js', () => {
       isReady() { return mockInstance?.isReady() ?? false; }
       start() { return mockInstance?.start() ?? Promise.resolve(); }
       stop() { return mockInstance?.stop() ?? Promise.resolve(); }
+      getPid() { return mockInstance?.getPid?.(); }
+      killProcess(sig?: any) { return mockInstance?.killProcess?.(sig) ?? true; }
       callTool(...args: any[]) { return mockInstance?.callTool(...args) ?? Promise.resolve({}); }
     },
   };
 });
-
-// ── Tests ─────────────────────────────────────────────────
 
 describe('CodexRuntime', () => {
   let runtime: CodexRuntime;
@@ -60,10 +58,7 @@ describe('CodexRuntime', () => {
     });
 
     it('reuses live client', async () => {
-      // First call initializes (this.client is null, so isReady is not called)
       await runtime.ensureReady();
-
-      // Second call — client is now set, isReady returns true → skip init
       mockClient.isReady.mockReturnValue(true);
       mockClient.start.mockClear();
       await runtime.ensureReady();
@@ -77,18 +72,16 @@ describe('CodexRuntime', () => {
         startCount++;
         await new Promise(r => setTimeout(r, 10));
       });
-
       await Promise.all([runtime.ensureReady(), runtime.ensureReady(), runtime.ensureReady()]);
       expect(startCount).toBe(1);
     });
   });
 
   describe('startSession()', () => {
-    it('calls codex tool with correct args', async () => {
-      const result = await runtime.startSession('hello', {
-        model: 'gpt-5.4',
+    it('calls codex tool with expanded config', async () => {
+      const result = await runtime.startSession('gpt-5.4', 'hello', {
         cwd: '/tmp/test',
-        configOverride: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
+        resolvedConfig: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
       });
 
       expect(mockClient.callTool).toHaveBeenCalledWith(
@@ -105,36 +98,56 @@ describe('CodexRuntime', () => {
         600_000,
       );
       expect(result.backendSessionId).toBe('thread-abc-123');
-      expect(result.backend).toBe('codex');
-    });
-
-    it('merges user config over defaults', async () => {
-      await runtime.startSession('hello', {
-        model: 'gpt-5.4',
-        configOverride: { model_reasoning_effort: 'xhigh' },
-        config: { model_reasoning_effort: 'low' },
+      expect(result.resolvedConfig).toEqual({
+        model_reasoning_effort: 'xhigh',
+        'features.fast_mode': 'true',
       });
-
-      const callArgs = mockClient.callTool.mock.calls[0][1];
-      expect(callArgs.config.model_reasoning_effort).toBe('low');
     });
 
-    it('extracts threadId from response', async () => {
-      const result = await runtime.startSession('hello', { model: 'gpt-5.4' });
+    it('echoes resolvedConfig unchanged (pre-expansion)', async () => {
+      const input = { model_reasoning_effort: 'low', custom_flag: 'on' };
+      const result = await runtime.startSession('gpt-5.4', 'hi', { resolvedConfig: input });
+      expect(result.resolvedConfig).toEqual(input);
+    });
+
+    it('extracts threadId from structuredContent', async () => {
+      const result = await runtime.startSession('gpt-5.4', 'hi', {});
       expect(result.backendSessionId).toBe('thread-abc-123');
+    });
+
+    it('passes timeoutMs to McpClient.callTool', async () => {
+      await runtime.startSession('gpt-5.4', 'hi', { timeoutMs: 12345 });
+      const [, , timeout] = mockClient.callTool.mock.calls[0];
+      expect(timeout).toBe(12345);
     });
   });
 
   describe('resumeSession()', () => {
     it('calls codex-reply with threadId', async () => {
-      const result = await runtime.resumeSession('thread-abc-123', 'continue');
-
+      const result = await runtime.resumeSession('thread-abc-123', 'continue', {});
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'codex-reply',
         { prompt: 'continue', threadId: 'thread-abc-123' },
         600_000,
       );
-      expect(result.backend).toBe('codex');
+      expect(result.backendSessionId).toBe('thread-abc-123');
+    });
+  });
+
+  describe('watchdog integration', () => {
+    it('kills child on backend timeout', async () => {
+      mockClient.callTool.mockImplementation(() => new Promise(() => {})); // never resolves
+      await expect(
+        runtime.startSession('gpt-5.4', 'x', { timeoutMs: 50 }),
+      ).rejects.toBeInstanceOf(LlmChatError);
+      expect(mockClient.killProcess).toHaveBeenCalledWith('SIGTERM');
+    }, 10_000);
+
+    it('wraps non-LlmChatError from callTool as BACKEND_FAILED', async () => {
+      mockClient.callTool.mockRejectedValue(new Error('boom'));
+      const err = await runtime.startSession('gpt-5.4', 'x', {}).catch((e) => e);
+      expect(err).toBeInstanceOf(LlmChatError);
+      expect((err as LlmChatError).code).toBe(ErrorCode.BACKEND_FAILED);
     });
   });
 
@@ -142,7 +155,7 @@ describe('CodexRuntime', () => {
     it('stops the client', async () => {
       await runtime.ensureReady();
       await runtime.shutdown();
-      // shutdown should not throw
+      expect(mockClient.stop).toHaveBeenCalled();
     });
   });
 

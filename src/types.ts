@@ -39,6 +39,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from 'somalib/model-commands/session-types';
+import type { EffortLevel } from './user-settings-store';
 
 /**
  * Session state machine states
@@ -167,8 +168,8 @@ export interface ConversationSession {
   actionPanel?: ActionPanelState;
   // Log verbosity bitmask (controls which output types are shown in Slack)
   logVerbosity?: number;
-  // Effort level for Claude thinking (low/medium/high/max)
-  effort?: 'low' | 'medium' | 'high' | 'max';
+  // Effort level for Claude thinking
+  effort?: EffortLevel;
   // Whether extended thinking (adaptive reasoning) is enabled for this session
   thinkingEnabled?: boolean;
   // Whether thinking output is shown in Slack for this session
@@ -192,6 +193,11 @@ export interface ConversationSession {
     channel: string;
     threadTs: string;
   };
+  // Bot message ts posted to the SOURCE thread during session init
+  // (dispatch status, conversation-history link, etc.). These are the ONLY
+  // messages cleaned up on mid-thread migration or channel-route move/stay —
+  // model conversation replies are never included here, so they survive migration.
+  sourceThreadCleanupTs?: string[];
   // Error auto-retry tracking: count of consecutive retries for the current error sequence.
   // Reset to 0 on successful execution. Max 3 retries with 30s delay between each.
   errorRetryCount?: number;

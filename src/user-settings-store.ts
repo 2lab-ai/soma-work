@@ -9,6 +9,7 @@ const logger = new Logger('UserSettingsStore');
 
 // Available models
 export const AVAILABLE_MODELS = [
+  'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
@@ -23,19 +24,25 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-7',
+  'opus-4.7': 'claude-opus-4-7',
   'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
   haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
 };
 
-export const DEFAULT_MODEL: ModelId = 'claude-opus-4-6';
+export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
 
 // Effort levels
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
-export const DEFAULT_EFFORT: EffortLevel = 'high';
-export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'max'] as const;
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
+
+/** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */
+export function coerceEffort(value: unknown): EffortLevel {
+  return (EFFORT_LEVELS as readonly unknown[]).includes(value) ? (value as EffortLevel) : DEFAULT_EFFORT;
+}
 
 // Thinking (adaptive reasoning) toggle
 export const DEFAULT_THINKING_ENABLED = true;
@@ -195,6 +202,14 @@ export class UserSettingsStore {
           if ((userSettings as any).accepted === undefined) {
             userSettings.accepted = true;
             didUpdate = true;
+          }
+          // Coerce unknown defaultEffort values to DEFAULT_EFFORT
+          if (userSettings.defaultEffort !== undefined) {
+            const coerced = coerceEffort(userSettings.defaultEffort);
+            if (coerced !== userSettings.defaultEffort) {
+              userSettings.defaultEffort = coerced;
+              didUpdate = true;
+            }
           }
         }
         if (didUpdate) {
@@ -653,6 +668,8 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: ModelId): string {
     switch (model) {
+      case 'claude-opus-4-7':
+        return 'Opus 4.7';
       case 'claude-sonnet-4-6':
         return 'Sonnet 4.6';
       case 'claude-sonnet-4-5-20250929':
