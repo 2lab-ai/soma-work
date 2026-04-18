@@ -38,8 +38,11 @@ export class ChoiceMessageBuilder {
   /**
    * Resolve recommended choiceId: explicit id (if it matches one of the options) > legacy label scan.
    * Returns undefined if neither path yields a match.
+   *
+   * Public so handler code (hero "Submit All Recommended") can count recommendations
+   * across questions without duplicating the legacy-suffix detection logic.
    */
-  private static resolveRecommendedId(explicitId: string | undefined, options: UserChoiceOption[]): string | undefined {
+  static resolveRecommendedId(explicitId: string | undefined, options: UserChoiceOption[]): string | undefined {
     if (explicitId && options.some((o) => o.id === explicitId)) {
       return explicitId;
     }
@@ -387,6 +390,38 @@ export class ChoiceMessageBuilder {
     const totalQuestions = choices.questions.length;
     const answeredCount = Object.keys(selections).length;
     const isComplete = answeredCount === totalQuestions;
+
+    // ── Hero block: "Submit All Recommended" (group-only, recommendedChoiceId-aware) ──
+    // Counts questions where resolveRecommendedId returns a real choice id
+    // (excluding the custom-input sentinel '직접입력'). Three states:
+    //   - N == M  → primary button (one-click submit-all)
+    //   - 0 < N < M → blocked button labelled `🔒 추천 부족 (N/M)`
+    //   - N == 0  → block omitted
+    const heroM = choices.questions.length;
+    const heroN = choices.questions.filter((q) => {
+      const rid = ChoiceMessageBuilder.resolveRecommendedId(q.recommendedChoiceId, q.choices);
+      return rid !== undefined && rid !== '직접입력';
+    }).length;
+
+    if (heroN > 0) {
+      const heroValue = JSON.stringify({ formId, sessionKey, n: heroN, m: heroM });
+      const heroButton =
+        heroN === heroM
+          ? {
+              type: 'button',
+              text: { type: 'plain_text', text: '⭐ 추천대로 모두 선택', emoji: true },
+              style: 'primary',
+              value: heroValue,
+              action_id: `submit_all_recommended_${formId}`,
+            }
+          : {
+              type: 'button',
+              text: { type: 'plain_text', text: `🔒 추천 부족 (${heroN}/${heroM})`, emoji: true },
+              value: heroValue,
+              action_id: `submit_all_recommended_blocked_${formId}`,
+            };
+      attachmentBlocks.push({ type: 'actions', elements: [heroButton] });
+    }
 
     // Header with emoji
     attachmentBlocks.push({
