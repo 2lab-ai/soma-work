@@ -29,6 +29,11 @@ export interface PendingChoiceFormData {
   questions: UserChoiceQuestion[];
   selections: Record<string, { choiceId: string; label: string }>;
   createdAt: number;
+  /**
+   * Submission lock for hero "Submit All Recommended" — set to true while
+   * `completeMultiChoiceForm` is in flight. Cross-surface lock (Slack ↔ dashboard).
+   */
+  submitting?: boolean;
 }
 
 export interface ActionHandlerContext {

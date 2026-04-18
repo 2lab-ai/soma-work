@@ -588,9 +588,15 @@ this is not valid json
       };
       const payload = UserChoiceHandler.buildMultiChoiceFormBlocks(recChoices, 'form-1', 'session-key');
       const blocks = getBlocks(payload);
-      const actionBlocks = blocks.filter((b: any) => b.type === 'actions');
-      expect(actionBlocks).toHaveLength(2);
-      for (const actionBlock of actionBlocks) {
+      // Exclude the hero "submit-all-recommended" actions block (#581) — it intentionally has
+      // no custom_input button. Invariant we still check: every PER-QUESTION actions block
+      // (multi_choice + custom_input) carries a custom_input button.
+      const perQuestionActionBlocks = blocks.filter(
+        (b: any) =>
+          b.type === 'actions' && !b.elements?.some((e: any) => e.action_id?.startsWith('submit_all_recommended_')),
+      );
+      expect(perQuestionActionBlocks).toHaveLength(2);
+      for (const actionBlock of perQuestionActionBlocks) {
         const customButton = actionBlock.elements.find((e: any) => e.action_id.startsWith('custom_input_multi_'));
         expect(customButton).toBeDefined();
       }
