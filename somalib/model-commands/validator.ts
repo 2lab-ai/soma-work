@@ -482,14 +482,24 @@ function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): v
     warnings.push('question is empty or whitespace-only');
   }
 
-  // Rule 2 — title tier prefix (if title is non-empty). When title has prefix
-  // the per-question prefix is not required ("Epic atomicity").
+  // Rule 2 — require tier prefix at the group level. When title is absent
+  // (direct UserChoices construction with no title) we still warn so callers
+  // can't silently bypass Rule 2 by omitting the title. When title has the
+  // prefix the per-question prefix is not required ("Epic atomicity").
   const titleHasPrefix = titleTrimmed.length >= 1 && TIER_PREFIX_RE.test(title as string);
-  if (titleTrimmed.length >= 1 && !titleHasPrefix) {
+  if (!titleHasPrefix) {
     warnings.push(
       'question missing tier prefix — expected [tiny|small|medium|large|xlarge] (optionally with ~N lines)',
     );
   }
+
+  // Rule 3 — accept group-level `description` as a substitute for per-question
+  // `context`. After `user_choice_group` normalization the raw top-level
+  // `context` lands in `description`; requiring per-question duplication would
+  // force every single-question approval template to repeat itself.
+  const description = typeof payload.description === 'string' ? payload.description : undefined;
+  const descriptionTrimmed = description?.trim() ?? '';
+  const descriptionSatisfiesRule3 = descriptionTrimmed.length >= MIN_CONTEXT_LENGTH;
 
   for (const q of payload.questions) {
     const prefix = `question[${q.id}]: `;
@@ -501,8 +511,11 @@ function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): v
       warnings.push(`${prefix}question is empty or whitespace-only`);
     }
 
-    // Rule 3 — per-question context required + length ≥ 80
-    pushContextWarnings(q.context, prefix, warnings);
+    // Rule 3 — per-question context required only when group description
+    // doesn't already satisfy the minimum length.
+    if (!descriptionSatisfiesRule3) {
+      pushContextWarnings(q.context, prefix, warnings);
+    }
 
     // Rule 1 — 2..4 options
     pushOptionCountWarnings(q.choices, prefix, warnings);

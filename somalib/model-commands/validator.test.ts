@@ -167,6 +167,26 @@ describe('Rule 2 — tier prefix', () => {
     const matches = warnings(q).filter((s) => s === prefixMissingMsg);
     expect(matches.length).toBe(1);
   });
+
+  it('user_choices with undefined title still warns (no silent bypass)', () => {
+    // Direct UserChoices construction with omitted title must not silently
+    // skip Rule 2 — caller would otherwise sidestep tier annotation entirely.
+    const q: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        {
+          id: 'q1',
+          question: '[small] Pick',
+          context: withLen(80),
+          choices: [
+            { id: '1', label: 'A (Recommended · 1/2)' },
+            { id: '2', label: 'B' },
+          ],
+        },
+      ],
+    };
+    expect(warnings(q)).toContain(prefixMissingMsg);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -209,8 +229,9 @@ describe('Rule 3 — context presence and length', () => {
     expect(warnings(q).some((s) => s.includes('context too short'))).toBe(false);
   });
 
-  it('user_choices: per-question context check with prefix', () => {
+  it('user_choices: per-question context required when description is absent', () => {
     const q = makeUserChoices({
+      description: undefined,
       questions: [
         {
           id: 'q1',
@@ -224,6 +245,47 @@ describe('Rule 3 — context presence and length', () => {
       ],
     });
     expect(warnings(q)).toContain('question[q1]: context missing — stakeholder needs decision rationale');
+  });
+
+  it('user_choices: per-question context required when description < 80 chars', () => {
+    const q = makeUserChoices({
+      description: withLen(79),
+      questions: [
+        {
+          id: 'q1',
+          question: '[small] Pick',
+          context: undefined,
+          choices: [
+            { id: '1', label: 'Option A (Recommended · 1/2)' },
+            { id: '2', label: 'Option B' },
+          ],
+        },
+      ],
+    });
+    expect(warnings(q)).toContain('question[q1]: context missing — stakeholder needs decision rationale');
+  });
+
+  it('user_choices: group-level description ≥ 80 covers per-question context', () => {
+    // After user_choice_group normalization the raw top-level context lands
+    // in `description`. Accept that as a substitute for per-question context
+    // so single-question approval templates don't have to duplicate text.
+    const q = makeUserChoices({
+      description: withLen(80),
+      questions: [
+        {
+          id: 'q1',
+          question: '[small] Pick',
+          context: undefined,
+          choices: [
+            { id: '1', label: 'Option A (Recommended · 1/2)' },
+            { id: '2', label: 'Option B' },
+          ],
+        },
+      ],
+    });
+    const w = warnings(q);
+    expect(w.some((s) => s.includes('context missing'))).toBe(false);
+    expect(w.some((s) => s.includes('context too short'))).toBe(false);
   });
 });
 
@@ -478,6 +540,72 @@ describe('Integration — catalog handler + JSON round-trip', () => {
     };
     const result = validateModelCommandRunArgs(args);
     expect(result.ok).toBe(false);
+  });
+
+  it('user_choice_group with top-level context ≥ 80: normalized → 0 warnings', () => {
+    // Raw user_choice_group lands in description after normalization.
+    // This is the PR3 single-question approval template pattern.
+    const args = {
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice_group',
+          question: '[small] Approve this merge?',
+          context: withLen(80),
+          choices: [
+            {
+              question: 'Approve this merge?',
+              options: [
+                { id: '1', label: 'Merge now (Recommended · 1/2)' },
+                { id: '2', label: 'Request rework' },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const validated = validateModelCommandRunArgs(args);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+
+    const result = runModelCommand(validated.request, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as { warnings?: string[] };
+    expect(payload.warnings).toBeUndefined();
+  });
+
+  it('user_choice_group with short top-level context: per-question context still required', () => {
+    const args = {
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice_group',
+          question: '[small] Approve this merge?',
+          context: 'short',
+          choices: [
+            {
+              question: 'Approve this merge?',
+              options: [
+                { id: '1', label: 'Merge now (Recommended · 1/2)' },
+                { id: '2', label: 'Request rework' },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const validated = validateModelCommandRunArgs(args);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+
+    const result = runModelCommand(validated.request, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as { warnings?: string[] };
+    expect(payload.warnings).toBeDefined();
+    // Normalized question id defaults to "q1" via normalizeUserChoiceQuestion.
+    expect((payload.warnings ?? []).some((s) => s.startsWith('question[q1]: context missing'))).toBe(true);
   });
 });
 
