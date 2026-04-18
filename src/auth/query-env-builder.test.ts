@@ -2,11 +2,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotAuthLease } from '../credentials-manager';
 import { buildQueryEnv } from './query-env-builder';
 
-function makeLease(slotId: string, accessToken: string, kind: SlotAuthLease['kind'] = 'setup_token'): SlotAuthLease {
+function makeLease(
+  slotId: string,
+  accessToken: string,
+  kind: SlotAuthLease['kind'] = 'setup_token',
+  extras: Partial<Pick<SlotAuthLease, 'name' | 'configDir'>> = {},
+): SlotAuthLease {
   return {
     slotId,
+    name: extras.name ?? slotId,
     accessToken,
     kind,
+    configDir: extras.configDir,
     async release() {
       /* no-op */
     },
@@ -108,6 +115,36 @@ describe('buildQueryEnv', () => {
     const { env } = buildQueryEnv(lease);
     for (const v of Object.values(env)) {
       expect(typeof v).toBe('string');
+    }
+  });
+
+  it('sets CLAUDE_CONFIG_DIR to lease.configDir when present (oauth_credentials)', () => {
+    const lease = makeLease('slot-o', 'TOKEN', 'oauth_credentials', { configDir: '/var/soma/cct-store.dirs/slot-o' });
+    const { env } = buildQueryEnv(lease);
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/var/soma/cct-store.dirs/slot-o');
+  });
+
+  it('omits CLAUDE_CONFIG_DIR from the returned env when lease has no configDir', () => {
+    const lease = makeLease('slot-a', 'TOKEN', 'setup_token');
+    const { env } = buildQueryEnv(lease);
+    expect('CLAUDE_CONFIG_DIR' in env).toBe(false);
+  });
+
+  it('strips inherited process.env.CLAUDE_CONFIG_DIR when lease carries none', () => {
+    // Simulate an operator-inherited CLAUDE_CONFIG_DIR that would otherwise
+    // leak into subprocesses. With no configDir on the lease, buildQueryEnv
+    // must DELETE the key so the subprocess falls back to the CLI's default.
+    const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = '/inherited/config-dir';
+    try {
+      const lease = makeLease('slot-a', 'TOKEN', 'setup_token');
+      const { env } = buildQueryEnv(lease);
+      expect('CLAUDE_CONFIG_DIR' in env).toBe(false);
+      // And process.env itself must not be mutated.
+      expect(process.env.CLAUDE_CONFIG_DIR).toBe('/inherited/config-dir');
+    } finally {
+      if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
     }
   });
 });

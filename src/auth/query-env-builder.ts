@@ -32,12 +32,17 @@ export interface QueryEnvResult {
  *   - `CLAUDE_CODE_OAUTH_TOKEN` is always set to `lease.accessToken`.
  *     For both current lease kinds (`setup_token`, `oauth_credentials`) this
  *     is the value the Agent SDK hands to the Claude CLI over OAuth.
+ *   - `CLAUDE_CONFIG_DIR` is set to `lease.configDir` when present
+ *     (oauth_credentials slots own a private config dir on disk). When the
+ *     lease carries no configDir we DELETE the key from the returned env so
+ *     an operator-inherited `CLAUDE_CONFIG_DIR` does not leak into the
+ *     subprocess — each lease's subprocess either has its own private dir
+ *     or falls back to the CLI's default.
  *   - All other `process.env` variables are copied through untouched, so the
  *     subprocess still sees PATH, NODE_ENV, HOME, etc.
  *
- * Non-goals for this module (tracked in #575 PR-2 / v2.1):
+ * Non-goals for this module (tracked in #575 v2.1):
  *   - `api_key` lease kind + `ANTHROPIC_API_KEY` env var.
- *   - `CLAUDE_CONFIG_DIR` credential-directory isolation.
  */
 export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
   // Shallow-copy process.env into a plain record. process.env is a proxy
@@ -51,6 +56,14 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
   // Override the token slot on the per-call map only. process.env is never
   // touched.
   env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
+
+  if (lease.configDir) {
+    env.CLAUDE_CONFIG_DIR = lease.configDir;
+  } else {
+    // Inherited-leak guard: if the lease has no private configDir, ensure
+    // the subprocess does not pick up an operator-inherited one.
+    delete env.CLAUDE_CONFIG_DIR;
+  }
 
   return { env };
 }
