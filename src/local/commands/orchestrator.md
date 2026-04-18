@@ -15,7 +15,6 @@ allowed-tools:
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat-reply
   - mcp__llm__chat
-  - mcp__llm__chat-reply
 ---
 
 **Always read commands body** even if you knew it.**
