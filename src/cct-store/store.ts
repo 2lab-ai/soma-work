@@ -73,6 +73,11 @@ export class CctStore {
     this.lockPath = `${filePath}.lock`;
   }
 
+  /** Absolute path to the JSON file that backs this store. */
+  getFilePath(): string {
+    return this.filePath;
+  }
+
   /**
    * Load the current snapshot. If the file is missing we synthesize an empty
    * snapshot and then run legacy-cooldown migration (matching by slot name
