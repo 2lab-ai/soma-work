@@ -1,3 +1,4 @@
+import { LEGACY_RECOMMENDED_SUFFIX_RE } from 'somalib/model-commands/validator';
 import type { UserChoice, UserChoiceOption, UserChoices } from '../types';
 import type { SessionTheme } from '../user-settings-store';
 
@@ -8,6 +9,18 @@ export interface SlackMessagePayload {
 
 // Option number emojis for visual distinction
 const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+
+/**
+ * Escape user-controlled text for inclusion inside a Slack `mrkdwn` block.
+ *
+ * Slack only requires `&`, `<`, `>` to be entity-encoded for text embedded in
+ * `mrkdwn`; this prevents labels like `<@U123>` from triggering mentions and
+ * `<url|label>` from rendering as links. Formatting chars (`*_~`) remain intact
+ * — banner is already bold via surrounding `*…*`, so wrapping cancels out.
+ */
+function escapeSlackMrkdwn(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 /**
  * Slack 블록 UI 빌딩 로직
@@ -30,7 +43,7 @@ export class ChoiceMessageBuilder {
     if (explicitId && options.some((o) => o.id === explicitId)) {
       return explicitId;
     }
-    const legacy = options.find((o) => /\(Recommended\b/i.test(o.label));
+    const legacy = options.find((o) => LEGACY_RECOMMENDED_SUFFIX_RE.test(o.label));
     return legacy?.id;
   }
 
@@ -90,8 +103,9 @@ export class ChoiceMessageBuilder {
       return blocks;
     }
 
-    // Banner section
-    const recLabel = recommended[0].opt.label;
+    // Banner section — escape user-controlled label for Slack mrkdwn so content like
+    // `<@U123>`, `<!channel>`, or `<url|text>` can't inject mentions/links into the banner.
+    const recLabel = escapeSlackMrkdwn(recommended[0].opt.label);
     blocks.push({
       type: 'section',
       text: {

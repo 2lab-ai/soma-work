@@ -1606,15 +1606,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: not-allowed;
 }
 .btn-choice-recommended {
-  background: #36a64f;
+  /* WCAG AA: #2d8644 vs white = 4.56:1 (meets 4.5:1 for normal text) */
+  background: #2d8644;
   color: white;
-  border: 2px solid #2d8644;
+  border: 2px solid #256f38;
   font-weight: 600;
 }
 .btn-choice-recommended:hover {
-  background: #2d8644;
+  background: #256f38;
   color: white;
-  border-color: #2d8644;
+  border-color: #256f38;
 }
 .btn-choice-recommended::before { content: "\\2B50 "; }
 .choice-row-recommended .btn-choice-recommended {
@@ -2588,9 +2589,13 @@ function stripRecommendedMarker(label) {
   return (label || '').replace(/\\s*\\(Recommended(?:\\s*·[^)]*)?\\)\\s*$/i, '').trim();
 }
 // Resolve recommended choiceId: explicit first, else legacy label scan.
+// Matches trailing "(Recommended)" / "(Recommended · N/M)" only — mirrors
+// LEGACY_RECOMMENDED_SUFFIX_RE in somalib/model-commands/validator.ts. Kept
+// duplicated because dashboard CSS/JS is a server-rendered string bundle, not
+// an import graph.
 function resolveRecommendedId(explicitId, options) {
   if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
-  var legacy = (options || []).find(function(o) { return /\\(Recommended\\b/i.test(o.label || ''); });
+  var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
 }
 async function resummarize(convId, turnId, btn) {

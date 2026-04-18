@@ -359,3 +359,55 @@ describe('ChoiceMessageBuilder.buildMultiChoiceFormBlocks — recommendedChoiceI
     expect(actionsBlock.elements[0].text.text.startsWith('⭐')).toBe(false);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Recommended banner — Slack mrkdwn escape (security regression)
+// -----------------------------------------------------------------------------
+
+describe('ChoiceMessageBuilder.buildUserChoiceBlocks — recommended banner mrkdwn escape', () => {
+  it('escapes `<`, `>`, `&` in recommended label before embedding in banner mrkdwn', () => {
+    const choice: UserChoice = {
+      type: 'user_choice',
+      question: 'Who deploys?',
+      recommendedChoiceId: '1',
+      choices: [
+        { id: '1', label: '<@U123> & team' },
+        { id: '2', label: 'Option B' },
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildUserChoiceBlocks(choice, 'sk-1', 'default');
+    const blocks = getBlocks(payload);
+    const banner = blocks.find(
+      (b) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes('⭐ *Recommended'),
+    );
+    expect(banner).toBeDefined();
+    const bannerText: string = banner.text.text;
+    // Escaped entities present
+    expect(bannerText).toContain('&lt;@U123&gt;');
+    expect(bannerText).toContain('&amp;');
+    // Raw mention/token absent (would trigger Slack mention render)
+    expect(bannerText).not.toContain('<@U123>');
+  });
+
+  it('escape applies across all three themes (default/compact/minimal)', () => {
+    for (const theme of ['default', 'compact', 'minimal'] as const) {
+      const choice: UserChoice = {
+        type: 'user_choice',
+        question: 'Pick',
+        recommendedChoiceId: '1',
+        choices: [
+          { id: '1', label: '<!channel> fan-out' },
+          { id: '2', label: 'Option B' },
+        ],
+      };
+      const payload = ChoiceMessageBuilder.buildUserChoiceBlocks(choice, 'sk-1', theme);
+      const blocks = getBlocks(payload);
+      const banner = blocks.find(
+        (b) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes('⭐ *Recommended'),
+      );
+      expect(banner, `theme=${theme} banner missing`).toBeDefined();
+      expect(banner.text.text).toContain('&lt;!channel&gt;');
+      expect(banner.text.text).not.toContain('<!channel>');
+    }
+  });
+});

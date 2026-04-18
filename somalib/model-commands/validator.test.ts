@@ -822,3 +822,149 @@ describe('validator — ASK_USER_QUESTION recommendedChoiceId', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rule 5 × recommendedChoiceId — new API satisfies the invariant
+// ---------------------------------------------------------------------------
+
+describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', () => {
+  it('user_choice: recommendedChoiceId set + clean labels → no "no Recommended marker" warning', () => {
+    const q: UserChoice = {
+      type: 'user_choice',
+      question: '[small] Which approach?',
+      context: withLen(80),
+      recommendedChoiceId: '2',
+      choices: [
+        { id: '1', label: 'Write docs' },
+        { id: '2', label: 'Write tests' },
+      ],
+    };
+    const w = warnings(q);
+    expect(w.some((s) => s.includes('no Recommended marker'))).toBe(false);
+    expect(w.some((s) => s.includes('multiple Recommended markers'))).toBe(false);
+  });
+
+  it('user_choice: recommendedChoiceId matches + legacy-marker on another option → no multiple-markers warning either', () => {
+    // The explicit id satisfies the invariant; legacy marker count is irrelevant.
+    const q: UserChoice = {
+      type: 'user_choice',
+      question: '[small] Which approach?',
+      context: withLen(80),
+      recommendedChoiceId: '2',
+      choices: [
+        { id: '1', label: 'Legacy marker path (Recommended · 1/2)' },
+        { id: '2', label: 'Explicit id path' },
+      ],
+    };
+    const w = warnings(q);
+    expect(w.some((s) => s.includes('Recommended marker'))).toBe(false);
+  });
+
+  it('user_choice: legacy mid-label "(Recommended for staging)" does NOT trigger legacy fallback', () => {
+    // Regression: tightened LEGACY_RECOMMENDED_SUFFIX_RE — mid-label parenthesised
+    // "Recommended" must not be picked up as an implicit recommendedChoiceId.
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice',
+          question: '[small] Which env?',
+          context: withLen(80),
+          choices: [
+            { id: '1', label: 'Option A (Recommended for staging only)' },
+            { id: '2', label: 'Option B' },
+          ],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const q = (result.request.params as AskUserQuestionParams).question as UserChoice;
+    expect(q.recommendedChoiceId).toBeUndefined();
+  });
+
+  it('user_choice: trailing "(Recommended)" (no N/M) is matched as legacy fallback', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice',
+          question: '[small] Which?',
+          context: withLen(80),
+          choices: [
+            { id: '1', label: 'Option A (Recommended)' },
+            { id: '2', label: 'Option B' },
+          ],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const q = (result.request.params as AskUserQuestionParams).question as UserChoice;
+    expect(q.recommendedChoiceId).toBe('1');
+  });
+
+  it('user_choice: recommendedChoiceId does NOT suppress marker-in-description warning', () => {
+    // The marker-in-description diagnostic is orthogonal — it flags bad data shape
+    // regardless of how the recommended option is expressed at the question level.
+    const q: UserChoice = {
+      type: 'user_choice',
+      question: '[small] Which approach?',
+      context: withLen(80),
+      recommendedChoiceId: '1',
+      choices: [
+        { id: '1', label: 'Write docs', description: 'Some hint (Recommended · 1/2)' },
+        { id: '2', label: 'Write tests' },
+      ],
+    };
+    const w = warnings(q);
+    expect(w).toContain('Recommended marker in description (option [1]) — must be in label only');
+  });
+
+  it('user_choice: unknown recommendedChoiceId + clean labels → still warns (id did not resolve)', () => {
+    // When the explicit id doesn't match any option, validator drops it during
+    // normalization — so by the time quality checker runs the field is gone and the
+    // legacy-suffix check should fire normally.
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choice',
+          question: '[small] Which?',
+          context: withLen(80),
+          recommendedChoiceId: 'zzz',
+          choices: [
+            { id: '1', label: 'A' },
+            { id: '2', label: 'B' },
+          ],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const params = result.request.params as AskUserQuestionParams;
+    const q = params.question as UserChoice;
+    expect(q.recommendedChoiceId).toBeUndefined();
+    const w = checkAskUserQuestionQuality(params);
+    expect(w).toContain("no Recommended marker — mark one option as '(Recommended · N/M)'");
+  });
+
+  it('user_choices: per-question recommendedChoiceId satisfies Rule 5 with prefix', () => {
+    const q = makeUserChoices({
+      questions: [
+        {
+          id: 'q1',
+          question: 'First?',
+          context: withLen(80),
+          recommendedChoiceId: '2',
+          choices: [
+            { id: '1', label: 'A' },
+            { id: '2', label: 'B' },
+          ],
+        },
+      ],
+    });
+    const w = warnings(q);
+    expect(w.some((s) => s.includes('no Recommended marker'))).toBe(false);
+  });
+});

@@ -426,6 +426,16 @@ export function checkAskUserQuestionQuality(params: AskUserQuestionParams): stri
 
 const TIER_PREFIX_RE = /^\[(tiny|small|medium|large|xlarge)(?:\s+~\d+(?:\s+lines?)?)?\]\s+/i;
 const RECOMMENDED_MARKER_RE = /\(Recommended\s*·\s*\d+\/\d+\)\s*$/i;
+
+/**
+ * Trailing "(Recommended)" or "(Recommended · N/M)" suffix — match-at-end-of-label only.
+ *
+ * Exported for reuse by Slack + dashboard legacy-fallback paths so all call sites agree on
+ * what counts as a "legacy Recommended marker". Tighter than `/\(Recommended\b/i` — must anchor
+ * at end-of-string (trailing whitespace allowed) so mid-label uses like
+ * `"Option A (Recommended for staging only)"` do NOT match.
+ */
+export const LEGACY_RECOMMENDED_SUFFIX_RE = /\(Recommended(?:\s*·\s*\d+\/\d+)?\)\s*$/i;
 const FORBIDDEN_META_LABELS = new Set([
   'fix_now',
   'defer',
@@ -470,7 +480,7 @@ function collectUserChoiceWarnings(payload: UserChoice, warnings: string[]): voi
   pushOptionCountWarnings(payload.choices, '', warnings);
 
   // Rule 5 — Recommended marker label-only exactly-one (also catches marker in description)
-  pushRecommendedWarnings(payload.choices, '', warnings);
+  pushRecommendedWarnings(payload.choices, '', warnings, payload.recommendedChoiceId);
 
   // Rule 4 — forbidden meta labels (strip Recommended marker first)
   pushForbiddenLabelWarnings(payload.choices, '', warnings);
@@ -524,7 +534,7 @@ function collectUserChoicesWarnings(payload: UserChoices, warnings: string[]): v
     pushOptionCountWarnings(q.choices, prefix, warnings);
 
     // Rule 5 — Recommended marker per-question
-    pushRecommendedWarnings(q.choices, prefix, warnings);
+    pushRecommendedWarnings(q.choices, prefix, warnings, q.recommendedChoiceId);
 
     // Rule 4 — forbidden meta labels
     pushForbiddenLabelWarnings(q.choices, prefix, warnings);
@@ -553,20 +563,40 @@ function pushOptionCountWarnings(choices: UserChoiceOption[], prefix: string, wa
   }
 }
 
-function pushRecommendedWarnings(choices: UserChoiceOption[], prefix: string, warnings: string[]): void {
-  let markerCount = 0;
+function pushRecommendedWarnings(
+  choices: UserChoiceOption[],
+  prefix: string,
+  warnings: string[],
+  recommendedChoiceId?: string,
+): void {
+  // Always flag marker-in-description — that's a data-shape issue regardless of how
+  // the recommended option is expressed at the question level.
   for (const choice of choices) {
-    if (typeof choice.label === 'string' && RECOMMENDED_MARKER_RE.test(choice.label)) {
-      markerCount += 1;
-    }
     if (typeof choice.description === 'string' && RECOMMENDED_MARKER_RE.test(choice.description)) {
       warnings.push(
         `${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`,
       );
     }
   }
+
   if (choices.length < 2) {
     return; // Rule 1 already warned; skip marker checks for degenerate cases.
+  }
+
+  // New API: explicit recommendedChoiceId satisfies the "Recommended" invariant.
+  // Only nudge toward the legacy label suffix when no valid id is provided.
+  if (
+    typeof recommendedChoiceId === 'string' &&
+    choices.some((c) => c.id === recommendedChoiceId)
+  ) {
+    return;
+  }
+
+  let markerCount = 0;
+  for (const choice of choices) {
+    if (typeof choice.label === 'string' && RECOMMENDED_MARKER_RE.test(choice.label)) {
+      markerCount += 1;
+    }
   }
   if (markerCount === 0) {
     warnings.push(`${prefix}no Recommended marker — mark one option as '(Recommended · N/M)'`);
@@ -823,7 +853,7 @@ function resolveRecommendedChoiceId(
     }
     // explicit but unknown — drop silently, fall through to legacy scan
   }
-  const legacy = options.find((o) => /\(Recommended\b/i.test(o.label));
+  const legacy = options.find((o) => LEGACY_RECOMMENDED_SUFFIX_RE.test(o.label));
   return legacy?.id;
 }
 
