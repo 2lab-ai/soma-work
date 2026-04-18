@@ -1,3 +1,7 @@
+import { installConsoleRedaction } from './logger';
+
+installConsoleRedaction();
+
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
@@ -48,7 +52,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { SlackHandler } from './slack-handler';
 import { notifyStartup } from './startup-notifier';
-import { tokenManager } from './token-manager';
+import { getTokenManager } from './token-manager';
 import { loadUnifiedConfig } from './unified-config-loader';
 
 const logger = new Logger('Main');
@@ -75,7 +79,11 @@ async function start() {
     timing('PID lock acquired');
 
     // Initialize token manager (before preflight — tokens may be needed for API calls)
-    tokenManager.initialize(DATA_DIR);
+    // Align DATA_DIR so getTokenManager()'s singleton resolves the same cct-store.json
+    // path as env-paths computed above (branch detection + dotenv already ran).
+    process.env.DATA_DIR = DATA_DIR;
+    const tokenManager = getTokenManager();
+    await tokenManager.init({ startReaper: true });
     timing('TokenManager initialized');
 
     // Run preflight checks
@@ -613,6 +621,9 @@ async function start() {
         if (cronScheduler) {
           cronScheduler.stop();
         }
+
+        // Stop TokenManager lease reaper
+        tokenManager.stop();
 
         // Notify all active sessions about shutdown
         await slackHandler.notifyShutdown();

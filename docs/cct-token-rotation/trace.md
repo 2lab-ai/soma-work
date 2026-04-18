@@ -1,427 +1,421 @@
-# CCT Token Rotation — Vertical Trace
+# CCT Token Rotation — Vertical Traces
 
-> STV Trace | Created: 2026-03-05
-> Spec: docs/cct-token-rotation/spec.md
+> Updated: 2026-04-18 — Wave 5 of the slot-model overhaul (#569). Each
+> scenario references the implementation files in `src/cct-store/*`,
+> `src/oauth/*`, `src/slack/cct/*`, `src/slack/commands/cct-handler.ts`,
+> and `src/token-manager.ts`.
 
-## 목차
-1. [Scenario 1 — Token Initialization](#scenario-1--token-initialization)
-2. [Scenario 2 — `cct` Status Command](#scenario-2--cct-status-command)
-3. [Scenario 3 — `set_cct` Manual Switch](#scenario-3--set_cct-manual-switch)
-4. [Scenario 4 — Auto-Rotation on Rate Limit](#scenario-4--auto-rotation-on-rate-limit)
-5. [Scenario 5 — All Tokens on Cooldown](#scenario-5--all-tokens-on-cooldown)
+Conventions:
 
----
-
-## Scenario 1 — Token Initialization
-
-### 1.1 ASCII Diagram
-
-```
- App Startup (src/index.ts)
-       │
-       │  validateConfig() → runPreflightChecks()
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  tokenManager.initialize()                          │
- │  src/token-manager.ts                               │
- │                                                     │
- │  Step 1: Read CLAUDE_CODE_OAUTH_TOKEN_LIST env      │
- │    const list = process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST │
- │                                                     │
- │  Step 2: Fallback to single token                   │
- │    if (!list) → read CLAUDE_CODE_OAUTH_TOKEN        │
- │    if neither → tokens = [] (no-op, SDK handles)    │
- │                                                     │
- │  Step 3: Parse comma-separated list                 │
- │    "tokenA,tokenB,tokenC".split(",")                │
- │    → [{name:"cct1", value:"tokenA"},                │
- │       {name:"cct2", value:"tokenB"},                │
- │       {name:"cct3", value:"tokenC"}]                │
- │                                                     │
- │  Step 4: Set activeIndex = 0                        │
- │    applyToken() → process.env.CLAUDE_CODE_OAUTH_TOKEN = tokens[0].value │
- │                                                     │
- │  Step 5: Load ADMIN_USERS env                       │
- │    config.adminUsers = "U09F1M5MML1".split(",")     │
- │                                                     │
- │  Error paths:                                       │
- │    Empty list after split → use single token fallback │
- │    No tokens at all → log warning, continue (SDK    │
- │    may use ~/.claude credentials)                   │
- └─────────────────────────────────────────────────────┘
-       │
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  Log: "TokenManager initialized: N tokens loaded,   │
- │        active=cct1"                                 │
- │  (token values always masked in logs)               │
- └─────────────────────────────────────────────────────┘
-```
-
-### 1.2 State
-```typescript
-interface TokenEntry {
-  name: string;            // "cct1", "cct2", ...
-  value: string;           // actual token value
-  cooldownUntil: Date | null;  // null = available
-}
-// In-memory only, no file persistence needed
-```
-
-### 1.3 Error Paths
-
-| Condition | Behavior |
-|-----------|----------|
-| `CLAUDE_CODE_OAUTH_TOKEN_LIST` not set | Fallback to single `CLAUDE_CODE_OAUTH_TOKEN` |
-| Neither env var set | Empty token pool, log warning |
-| Empty string in comma split | Filter out empty entries |
-
-### 1.4 Contract Tests (RED)
-
-| Test Name | Category | Trace Reference |
-|-----------|----------|-----------------|
-| `initialize_withTokenList_loadsMultipleTokens` | Happy Path | Step 3 |
-| `initialize_withSingleToken_fallsBackToSingle` | Happy Path | Step 2 |
-| `initialize_withNoTokens_logsWarning` | Sad Path | Error path 3 |
-| `initialize_appliesFirstTokenToProcessEnv` | Side-Effect | Step 4 |
-| `initialize_filtersEmptyEntries` | Contract | Step 3 edge |
+- "tm" refers to the `TokenManager` singleton returned by
+  `getTokenManager()` in `src/token-manager.ts`.
+- "store" refers to the `CctStore` held by `tm.store`.
+- Invariants are checked at the end of each scenario; they must hold on
+  the persisted `cct-store.json` snapshot.
 
 ---
 
-## Scenario 2 — `cct` Status Command
+## Scenario 1 — Add `setup_token` slot via Block Kit
 
-### 2.1 ASCII Diagram
+**Goal:** Operator adds a legacy setup token through the Slack card.
 
-```
- Slack User (admin)
-       │
-       │  "cct" message
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  CommandParser.isCctCommand("cct")                  │
- │  src/slack/command-parser.ts                        │
- │                                                     │
- │  Pattern: /^\/?(?:cct|set_cct)(?:\s+\S+)?$/i       │
- │  Returns: true                                      │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  CctHandler.execute(ctx)                            │
- │  src/slack/commands/cct-handler.ts                  │
- │                                                     │
- │  Step 1: Admin check                                │
- │    isAdminUser(ctx.user) → check config.adminUsers  │
- │    if (!admin) → say("⛔ Admin only") → return      │
- │                                                     │
- │  Step 2: Parse action                               │
- │    CommandParser.parseCctCommand("cct")              │
- │    → { action: "status" }                           │
- │                                                     │
- │  Step 3: Get all tokens                             │
- │    tokenManager.getAllTokens()                       │
- │    → readonly TokenEntry[]                          │
- │                                                     │
- │  Step 4: Get active token                           │
- │    tokenManager.getActiveToken()                    │
- │    → TokenEntry { name: "cct1", ... }               │
- │                                                     │
- │  Step 5: Format output                              │
- │    For each token:                                  │
- │      mask value: "sk-a...xyz"                       │
- │      if active: "(active)"                          │
- │      if cooldown: "(rate limited until 7:00 PM)"    │
- │      if available: "" (no suffix)                   │
- │                                                     │
- │  Error paths:                                       │
- │    Not admin → "⛔ Admin only command"               │
- │    No tokens configured → "No tokens configured"    │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  Response: Slack message                            │
- │  "🔑 *CCT Token Status*                            │
- │   cct1=sk-a...xyz *(active)*                       │
- │   cct2=sk-b...abc                                  │
- │   cct3=sk-c...def _(rate limited until 7:00 PM)_"  │
- └─────────────────────────────────────────────────────┘
-```
+### Preconditions
 
-### 2.2 Error Paths
+- User is in `ADMIN_USERS`.
+- `cct-store.json` exists (may have zero or more slots).
+- A bound Bolt `App` has had `registerCctActions(app, tm)` called on it
+  during startup.
 
-| Condition | Error | Response |
-|-----------|-------|----------|
-| Non-admin user | Permission denied | "⛔ Admin only command" |
-| No tokens configured | Empty pool | "No CCT tokens configured" |
+### Flow
 
-### 2.3 Contract Tests (RED)
+1. User runs `/z cct`. `CctHandler.execute` (in
+   `src/slack/commands/cct-handler.ts`) calls `renderCctCard(…)` which
+   calls `buildCctCardBlocks(…)`
+   (`src/slack/cct/builder.ts`). Card includes an `Add` button with
+   `action_id = CCT_ACTION_IDS.add`.
+2. Click dispatches to the handler registered by
+   `registerCctActions` → `app.action(CCT_ACTION_IDS.add, …)`
+   (`src/slack/cct/actions.ts`). Handler acks within 3 s and calls
+   `views.open` with `buildAddSlotModal('setup_token')`.
+3. The modal has three input blocks:
+   - `CCT_BLOCK_IDS.add_name` (plain_text_input, max 64 chars)
+   - `CCT_BLOCK_IDS.add_kind` (radio, `dispatch_action: true`)
+   - `CCT_BLOCK_IDS.add_setup_token_value` (plain_text_input)
 
-| Test Name | Category | Trace Reference |
-|-----------|----------|-----------------|
-| `cctStatus_adminUser_showsAllTokens` | Happy Path | Steps 3-5 |
-| `cctStatus_nonAdmin_rejectsWithError` | Sad Path | Step 1 error |
-| `cctStatus_showsActiveIndicator` | Contract | Step 5 active |
-| `cctStatus_showsCooldownTime` | Contract | Step 5 cooldown |
-| `cctStatus_masksTokenValues` | Contract | Step 5 mask |
-| `cctStatus_noTokens_showsMessage` | Sad Path | Error path 2 |
+   User types `name=cct4` and pastes `sk-ant-oat01-<chars>`; the kind
+   radio stays on `setup_token`.
+4. User clicks **Add**. Slack sends `view_submission`. The
+   `app.view(CCT_VIEW_IDS.add, …)` handler in `actions.ts`:
+   - Calls `validateAddSubmission(values)` — returns per-`block_id`
+     error strings if name / value is empty or malformed.
+   - On success, calls
+     `tm.addSlot({ kind: 'setup_token', name, value })`.
+5. `TokenManager.addSlot` constructs `SetupTokenSlot` with a new
+   `slotId = ulid()`, pushes it into `snap.registry.slots` via
+   `store.mutate`, creates
+   `snap.state[slotId] = { authState: 'healthy', activeLeases: [] }`,
+   assigns `snap.registry.activeSlotId` if the registry was empty, and
+   mirrors the token to `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
+
+### Invariants verified
+
+- `snap.revision` increments by exactly 1.
+- `snap.registry.slots.find(s => s.slotId === newId).kind === 'setup_token'`.
+- `snap.state[newId].authState === 'healthy'`.
+- No `acknowledgedConsumerTosRisk` field on the slot (it is undefined /
+  `false`).
+- `process.env.CLAUDE_CODE_OAUTH_TOKEN` matches the pasted value if the
+  new slot is active.
+
+### Log / store side effects
+
+- `addSlot: cct4 kind=setup_token slotId=<ulid>` (redacted).
+- `cct-store.json` committed with the new slot + state.
+- No network call is made — `setup_token` slots never hit
+  `platform.claude.com`.
 
 ---
 
-## Scenario 3 — `set_cct` Manual Switch
+## Scenario 2 — Add `oauth_credentials` slot (ToS ack + scope check)
 
-### 3.1 ASCII Diagram
+**Goal:** Operator pastes a full `claudeAiOauth` blob harvested from
+`~/.claude/.credentials.json`.
 
-```
- Slack User (admin)
-       │
-       │  "set_cct cct2" message
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  CommandParser.parseCctCommand("set_cct cct2")      │
- │  src/slack/command-parser.ts                        │
- │                                                     │
- │  → { action: "set", target: "cct2" }                │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  CctHandler.execute(ctx)                            │
- │  src/slack/commands/cct-handler.ts                  │
- │                                                     │
- │  Step 1: Admin check (same as Scenario 2)           │
- │                                                     │
- │  Step 2: Call tokenManager.setActiveToken("cct2")   │
- │    - Find token by name                             │
- │    - Set activeIndex to matching index              │
- │    - Call applyToken()                              │
- │      → process.env.CLAUDE_CODE_OAUTH_TOKEN = token.value │
- │    - Clear cooldown on target if any                │
- │    - Return true                                    │
- │                                                     │
- │  Step 3: Respond with confirmation                  │
- │    "✅ Active token switched to cct2 (sk-b...abc)"  │
- │                                                     │
- │  Error paths:                                       │
- │    Not admin → "⛔ Admin only command"               │
- │    Unknown token name → "❌ Unknown token: cctX"     │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  Side-Effect:                                       │
- │    process.env.CLAUDE_CODE_OAUTH_TOKEN = new value  │
- │    All subsequent SDK query() calls use new token   │
- └─────────────────────────────────────────────────────┘
-```
+### Preconditions
 
-### 3.2 Error Paths
+- User is admin.
+- User has a valid `claudeAiOauth` blob with at least the `user:profile`
+  scope.
 
-| Condition | Error | Response |
-|-----------|-------|----------|
-| Non-admin user | Permission denied | "⛔ Admin only command" |
-| Unknown token name | Not found | "❌ Unknown token: cctX" |
+### Flow
 
-### 3.3 Contract Tests (RED)
+1. `/z cct` → click *Add* (same as Scenario 1 up through modal open).
+2. User flips the kind radio to `oauth_credentials`. Because the radio
+   input has `dispatch_action: true`, Slack sends a `block_actions`
+   event on `CCT_ACTION_IDS.kind_radio`. The action handler calls
+   `views.update` with `buildAddSlotModal('oauth_credentials')`. The
+   modal re-renders with:
+   - the same `CCT_BLOCK_IDS.add_name` input (value preserved — Slack
+     honours stable block_id/action_id pairs),
+   - the blob input (`CCT_BLOCK_IDS.add_oauth_credentials_blob`,
+     multiline, `SLACK_PLAIN_TEXT_INPUT_MAX` char cap),
+   - the ToS ack checkbox (`CCT_BLOCK_IDS.add_tos_ack`).
+3. User pastes the JSON blob and checks the ToS box, clicks **Add**.
+4. The `view_submission` handler:
+   - Calls `validateAddSubmission(values)`. This calls
+     `parseOAuthBlob(raw)` (`actions.ts`) which extracts
+     `claudeAiOauth.{accessToken, refreshToken, expiresAt, scopes}` and
+     returns an `OAuthCredentials` or `null`. On null → per-block_id
+     error `"Could not parse claudeAiOauth JSON"`.
+   - Calls `hasRequiredScopes(scopes)`
+     (`src/oauth/scope-check.ts`). Missing `user:profile` →
+     per-block_id error `"Missing required scope: user:profile"`.
+   - Confirms the ToS checkbox is ticked → else error on
+     `CCT_BLOCK_IDS.add_tos_ack`.
+5. On success:
+   `tm.addSlot({kind:'oauth_credentials', name, credentials, acknowledgedConsumerTosRisk:true})`.
+   `TokenManager.addSlot` re-runs `hasRequiredScopes` as a
+   belt-and-braces check and throws if it fails (caught by the handler
+   which surfaces a `response_action:errors`).
 
-| Test Name | Category | Trace Reference |
-|-----------|----------|-----------------|
-| `setCct_validToken_switchesActive` | Happy Path | Step 2 |
-| `setCct_updatesProcessEnv` | Side-Effect | Step 2 applyToken |
-| `setCct_clearsCooldownOnTarget` | Side-Effect | Step 2 clear cooldown |
-| `setCct_nonAdmin_rejects` | Sad Path | Step 1 error |
-| `setCct_unknownToken_rejects` | Sad Path | Error path 2 |
-| `setCct_showsConfirmation` | Contract | Step 3 |
+### Invariants verified
+
+- The stored slot has `kind: 'oauth_credentials'` and
+  `acknowledgedConsumerTosRisk: true`.
+- `credentials.scopes` includes `'user:profile'`.
+- `state.authState === 'healthy'` on creation.
+- `expiresAtMs` is an absolute epoch-ms, not a `Date`.
+
+### Log / store side effects
+
+- `addSlot: <name> kind=oauth_credentials slotId=<ulid>` (with secrets
+  redacted by `redactAnthropicSecrets`).
+- `cct-store.json` revision bumped; new slot present.
 
 ---
 
-## Scenario 4 — Auto-Rotation on Rate Limit
+## Scenario 3 — Proactive refresh dedupe (10 concurrent callers)
 
-### 4.1 ASCII Diagram
+**Goal:** Under load, only one HTTP POST to `platform.claude.com` is
+issued even when 10 concurrent streams need a fresh access token.
 
-```
- Claude SDK query() → Error
-       │
-       │  "You've hit your limit · resets 7pm (Asia/Seoul)"
-       │  OR process exit code 1
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  StreamExecutor.handleError(error, ...)             │
- │  src/slack/pipeline/stream-executor.ts:539          │
- │                                                     │
- │  Step 1: Detect rate limit                          │
- │    isRecoverableClaudeSdkError(error) → true        │
- │    isRateLimitError(error) → true (NEW check)       │
- │      Pattern: "you've hit your limit"               │
- │                                                     │
- │  Step 2: Parse cooldown time from error message     │
- │    parseCooldownTime(error.message)                 │
- │      regex: /resets?\s+(\d{1,2}(?::\d{2})?\s*[ap]m)/i │
- │      "resets 7pm" → today 19:00 KST                │
- │      "resets 7:30pm" → today 19:30 KST             │
- │      null if no match → default 1 hour cooldown     │
- │                                                     │
- │  Step 3: Capture current token value BEFORE rotate  │
- │    const failedToken = process.env.CLAUDE_CODE_OAUTH_TOKEN │
- │                                                     │
- │  Step 4: Call TokenManager.rotateOnRateLimit()      │
- │    tokenManager.rotateOnRateLimit(                  │
- │      failedToken, cooldownUntil)                    │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  TokenManager.rotateOnRateLimit(                    │
- │    failedTokenValue, cooldownUntil)                 │
- │  src/token-manager.ts                               │
- │                                                     │
- │  Step 5: CAS check (idempotent)                     │
- │    if (tokens[activeIndex].value !== failedTokenValue) │
- │      → return { rotated: false, reason: "already_rotated" } │
- │      (Another session already rotated this token)   │
- │                                                     │
- │  Step 6: Set cooldown on failed token               │
- │    tokens[activeIndex].cooldownUntil = cooldownUntil │
- │                                                     │
- │  Step 7: Find next available token                  │
- │    for i in 1..tokens.length:                       │
- │      nextIdx = (activeIndex + i) % tokens.length    │
- │      if tokens[nextIdx].cooldownUntil == null       │
- │         OR tokens[nextIdx].cooldownUntil < now:     │
- │        → activeIndex = nextIdx                      │
- │        → applyToken()                               │
- │        → return { rotated: true, newToken: name }   │
- │                                                     │
- │  Step 8: All on cooldown (fallback)                 │
- │    → Pick token with earliest cooldownUntil         │
- │    → return { rotated: true, newToken: name,        │
- │               allOnCooldown: true }                 │
- │                                                     │
- │  Invariants:                                        │
- │    - Only rotates if caller's token matches current │
- │    - process.env always reflects activeIndex        │
- │    - cooldownUntil is always set on failed token    │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  Back in StreamExecutor.handleError():              │
- │                                                     │
- │  Step 9: Log rotation result                        │
- │    if rotated: logger.info("Token rotated: cct1→cct2") │
- │    if already_rotated: logger.debug("Already rotated") │
- │                                                     │
- │  Step 10: Append rotation info to error message     │
- │    "❌ [Bot Error] You've hit your limit..."         │
- │    "🔄 Token auto-rotated: cct1 → cct2"            │
- │    OR "⚠️ All tokens on cooldown, using cct2        │
- │        (resets at 7:00 PM)"                         │
- └─────────────────────────────────────────────────────┘
-```
+### Preconditions
 
-### 4.2 Error Paths
+- A single `oauth_credentials` slot is active.
+- The slot's `credentials.expiresAtMs - Date.now() < 7h` (inside the
+  refresh buffer).
+- No refresh is currently in flight.
 
-| Condition | Error | Response |
-|-----------|-------|----------|
-| Cannot parse cooldown time | Default 1hr | Uses Date.now() + 3600000 |
-| Only 1 token in pool | Same token re-selected | Warning: "Only one token available" |
-| TokenManager not initialized | No tokens | Skip rotation, normal error flow |
+### Flow
 
-### 4.3 Contract Tests (RED)
+1. Ten `stream-executor` turns call `ensureActiveSlotAuth` concurrently
+   (tick 0). This delegates to `tm.getValidAccessToken(activeSlotId)`.
+2. `getValidAccessToken` sees `expiresAtMs - now < REFRESH_BUFFER_MS`
+   and calls `this.refreshAccessToken(slot)`
+   (`src/token-manager.ts`).
+3. The first caller creates an async IIFE promise, stores it under
+   `this.refreshInFlight.set(slotId, promise)`, and starts the HTTP
+   POST via `refreshClaudeCredentials(current)`
+   (`src/oauth/refresher.ts`).
+4. Callers 2..10 hit
+   `this.refreshInFlight.get(slotId)` and short-circuit to the same
+   Promise — `refreshInFlight` is checked **before** the HTTP call.
+5. `refreshClaudeCredentials` POSTs to
+   `https://platform.claude.com/v1/oauth/token` with
+   `{ grant_type: 'refresh_token', refresh_token, client_id: CLAUDE_OAUTH_CLIENT_ID }`.
+6. On 2xx, the IIFE takes the store lock via
+   `store.mutate(fn)`, overwrites `credentials`, sets
+   `state.authState = 'healthy'`, commits (bumps revision). Finally
+   `refreshInFlight.delete(slotId)` clears the dedupe entry.
+7. All ten callers resolve with the same new `accessToken`.
 
-| Test Name | Category | Trace Reference |
-|-----------|----------|-----------------|
-| `rotateOnRateLimit_switchesToNextToken` | Happy Path | Steps 5-7 |
-| `rotateOnRateLimit_idempotent_alreadyRotated` | Contract | Step 5 CAS |
-| `rotateOnRateLimit_setsCooldownOnFailed` | Side-Effect | Step 6 |
-| `rotateOnRateLimit_updatesProcessEnv` | Side-Effect | Step 7 applyToken |
-| `rotateOnRateLimit_skipsTokensOnCooldown` | Contract | Step 7 loop |
-| `parseCooldownTime_parsesHourOnly` | Contract | Step 2 "7pm" |
-| `parseCooldownTime_parsesHourMinute` | Contract | Step 2 "7:30pm" |
-| `parseCooldownTime_returnsNullOnNoMatch` | Sad Path | Step 2 null |
-| `handleError_rateLimitDetected_triggersRotation` | Integration | Steps 1-4 |
-| `handleError_appendsRotationInfoToMessage` | Contract | Step 10 |
+### Invariants verified
+
+- Exactly **one** network fetch to `platform.claude.com/v1/oauth/token`
+  (assert via a mock-fetch spy in tests).
+- `cct-store.json` revision increments by exactly 1.
+- `credentials.expiresAtMs` is now > `Date.now() + 7h` for all ten
+  callers (they see the same post-refresh snapshot).
+- `refreshInFlight.size === 0` after all promises resolve.
+
+### Log / store side effects
+
+- One `refreshAccessToken: success` log line (with redacted slotId
+  context).
+- `cct-store.json` has a single new revision even though ten callers
+  raced.
 
 ---
 
-## Scenario 5 — All Tokens on Cooldown
+## Scenario 4 — Revoke → quarantine
 
-### 5.1 ASCII Diagram
+**Goal:** A 403 on refresh moves the slot to `authState='revoked'` and
+excludes it from future rotation.
 
-```
- Rate limit on last available token
-       │
-       ▼
- ┌─────────────────────────────────────────────────────┐
- │  TokenManager.rotateOnRateLimit(failedToken, cooldown) │
- │  src/token-manager.ts                               │
- │                                                     │
- │  Step 1: CAS check passes (token matches)           │
- │  Step 2: Set cooldown on current                    │
- │  Step 3: Scan all tokens — ALL have cooldownUntil > now │
- │                                                     │
- │  Step 4: Find earliest recovery                     │
- │    tokens.reduce((earliest, t) =>                   │
- │      t.cooldownUntil < earliest.cooldownUntil       │
- │        ? t : earliest)                              │
- │                                                     │
- │  Step 5: Switch to earliest-recovery token          │
- │    activeIndex = earliestIndex                      │
- │    applyToken()                                     │
- │                                                     │
- │  Return: { rotated: true, newToken: "cct2",         │
- │            allOnCooldown: true,                     │
- │            earliestRecovery: Date }                 │
- └──────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
- ┌─────────────────────────────────────────────────────┐
- │  StreamExecutor: Enhanced error message              │
- │                                                     │
- │  "❌ [Bot Error] Rate limit reached                  │
- │   ⚠️ All tokens on cooldown!                        │
- │   Using cct2 (earliest recovery: 7:00 PM)           │
- │   Next request may fail until then."                │
- └─────────────────────────────────────────────────────┘
-```
+### Preconditions
 
-### 5.2 Contract Tests (RED)
+- An `oauth_credentials` slot `A` is active; its access token is near
+  expiry.
+- A second healthy slot `B` exists.
 
-| Test Name | Category | Trace Reference |
-|-----------|----------|-----------------|
-| `allCooldown_selectsEarliestRecovery` | Happy Path | Steps 3-5 |
-| `allCooldown_returnsAllOnCooldownFlag` | Contract | Return value |
-| `allCooldown_singleToken_reusesIt` | Edge Case | 1 token pool |
+### Flow
+
+1. Stream calls `tm.getValidAccessToken(A.slotId)`; inside the refresh
+   buffer.
+2. `refreshAccessToken(A)` calls
+   `refreshClaudeCredentials(A.credentials)` which throws
+   `OAuthRefreshError { status: 403, body: … }`.
+3. The catch in `refreshAccessToken` inspects `err.status`:
+   - `401` → `markAuthState(slotId, 'refresh_failed')`.
+   - `403` → `markAuthState(slotId, 'revoked')`.
+4. The error rethrows; the caller (usually `ensureActiveSlotAuth`)
+   treats it as a rotation trigger and calls `tm.rotateOnRateLimit(…)`
+   or `tm.rotateToNext()`.
+5. `rotateToNext` walks slots starting at `A + 1`;
+   `isEligible(snap.state[A.slotId], now)` returns false because
+   `authState === 'revoked'`. `B` is picked.
+
+### Invariants verified
+
+- `snap.state[A.slotId].authState === 'revoked'`.
+- `snap.registry.activeSlotId === B.slotId` post-rotation.
+- `A` never re-enters the active pointer via `pickNextHealthy`
+  (`isEligible` returns false for any state where
+  `authState !== 'healthy'`).
+- No further HTTP requests use `A`'s credentials.
+
+### Log / store side effects
+
+- `refreshAccessToken: failed 403` (redacted).
+- `markAuthState: <A.slotId> → revoked` store mutation.
+- `rotateOnRateLimit: oauth_refresh_403 source=manual rotated=B`.
 
 ---
 
-## Auto-Decisions
+## Scenario 5 — Remove active slot while busy
 
-| Decision | Tier | Rationale |
-|----------|------|-----------|
-| `isRateLimitError()` 별도 메서드 | tiny | 기존 isRecoverable에 추가하지 않고 분리하여 rotation 전용 |
-| Cooldown 파싱 정규식 | tiny | "resets Xpm" 형태만 파싱, 실패 시 1시간 기본값 |
-| process.env snapshot before rotate | tiny | CAS 비교를 위한 필수 단계 |
-| 에러 메시지에 rotation 정보 추가 | tiny | 유저에게 전환 사실 고지 |
-| Token은 in-memory only | small | 재시작 시 env에서 다시 로드, 파일 영속화 불필요 |
+**Goal:** Operator removes the currently-active slot while in-flight
+streams hold leases on it. Remove is deferred (tombstoned) until leases
+drain.
 
-## Implementation Status
+### Preconditions
 
-| Scenario | Trace | Tests | Verify | Status |
-|----------|-------|-------|--------|--------|
-| 1. Token Initialization | done | GREEN | Verified | Complete |
-| 2. `cct` Status Command | done | GREEN | Verified | Complete |
-| 3. `set_cct` Manual Switch | done | GREEN | Verified | Complete |
-| 4. Auto-Rotation on Rate Limit | done | GREEN | Verified | Complete |
-| 5. All Tokens on Cooldown | done | GREEN | Verified | Complete |
+- Slot `A` is active and has two live leases from in-flight stream
+  executions.
+- Slot `B` is healthy and idle.
 
-## Trace Deviations
+### Flow
 
-None — 구현이 trace와 정확히 일치.
+1. Operator runs `/z cct` → clicks **Remove** on slot `A`.
+2. `app.action(CCT_ACTION_IDS.remove, …)` opens
+   `buildRemoveSlotModal(A, hasActiveLeases=true)` which surfaces a
+   warning — *"Slot has active leases; the slot will be tombstoned and
+   removed once in-flight requests drain."* `private_metadata` carries
+   `A.slotId`.
+3. Operator clicks **Remove**. `view_submission` handler calls
+   `tm.removeSlot(slotId)`.
+4. `TokenManager.removeSlot` runs under `store.mutate`:
+   - Sees `state.activeLeases.length > 0` and `force=false`.
+   - Sets `state.tombstoned = true`.
+   - If `snap.registry.activeSlotId === A.slotId`, picks the next
+     healthy slot (`B`) and sets it as active.
+   - Returns `{ removed: false, pendingDrain: true }`.
+5. `process.env.CLAUDE_CODE_OAUTH_TOKEN` is re-mirrored to `B`'s token.
+6. The two in-flight turns complete and call `releaseLease(leaseId)` —
+   `state.activeLeases.length` drops to 0.
+7. The reaper timer (every 30 s) fires `reapExpiredLeases`, which also
+   performs the second pass: any slot with
+   `tombstoned && activeLeases.length === 0` is fully removed from
+   `snap.registry.slots` and its state entry is deleted.
 
-## Verified At
+### Invariants verified
 
-2026-03-05 — All 5 scenarios GREEN + Verified
-- Tests: 31/31 passed (token-manager + cct-handler)
-- Full suite: 869 passed, 0 failed
-- Type check: clean
+- At step 4: `snap.state[A.slotId].tombstoned === true`,
+  `snap.registry.activeSlotId === B.slotId`, `A` is still in
+  `snap.registry.slots`.
+- Between steps 6 and 7: no new work is accepted on `A`
+  (`isEligible` false due to tombstone).
+- After step 7:
+  `snap.registry.slots.find(s => s.slotId === A.slotId)` is
+  `undefined`; `snap.state[A.slotId]` is `undefined`.
+- `tm.removeSlot` is idempotent — re-running it on `A.slotId` post-reap
+  returns `{ removed: false }`.
+
+### Log / store side effects
+
+- `removeSlot: A → tombstoned, pending drain (2 leases)`.
+- Reaper pass logs `reapExpiredLeases: removed tombstoned slot A`.
+- Two `cct-store.json` revisions: the tombstone commit and the reap
+  commit.
+
+---
+
+## Scenario 6 — Usage 429 backoff ladder
+
+**Goal:** `/api/oauth/usage` returns 429 repeatedly; the slot's
+`nextUsageFetchAllowedAt` advances 2m → 5m → 10m → 15m.
+
+### Preconditions
+
+- An `oauth_credentials` slot with a valid access token.
+- `state.nextUsageFetchAllowedAt` is either absent or in the past.
+
+### Flow
+
+1. Operator runs `/z cct usage`. `CctHandler.execute` routes to the
+   `usage` branch
+   (`src/slack/commands/cct-handler.ts::handleUsage`), which calls
+   `tm.fetchAndStoreUsage(slotId)`.
+2. `fetchAndStoreUsage` confirms kind is `oauth_credentials`, checks
+   `nextUsageFetchAllowedAt > now` (false on first call), calls
+   `getValidAccessToken` (no refresh needed), then `fetchUsage(token)`
+   (`src/oauth/usage.ts`).
+3. Server returns 429. `fetchUsage` throws
+   `UsageFetchError { status: 429 }`. The manager catches and calls
+   `applyUsageFailureBackoff(slotId)`:
+   - Reads current remaining backoff (0 on first failure).
+   - Calls `nextUsageBackoffMs(0)` → `2 * 60_000`.
+   - Persists `state.nextUsageFetchAllowedAt = Date.now() + 2m`.
+   - Returns `null` to the handler.
+4. Handler renders
+   `"Usage not available yet — next fetch in 2m. Try again later."`.
+5. Operator retries immediately. `fetchAndStoreUsage` sees
+   `nextUsageFetchAllowedAt > now` and returns null without any HTTP
+   call.
+6. Two minutes later, operator retries. Server returns 429 again.
+   `applyUsageFailureBackoff` reads the previous remaining backoff and
+   `nextUsageBackoffMs(prev)` walks the ladder to the next step (5m).
+7. Subsequent 429s advance 5m → 10m → 15m (cap). 15m is the terminal
+   step; further 429s keep `nextUsageFetchAllowedAt` at `now + 15m`.
+
+### Invariants verified
+
+- `state.nextUsageFetchAllowedAt` is strictly non-decreasing across
+  successive 429 failures (until a 2xx resets it to `now + 2m` via the
+  success path).
+- The ladder is `[2m, 5m, 10m, 15m]` — see `BACKOFF_LADDER_MS` in
+  `src/oauth/usage.ts`.
+- `nextUsageBackoffMs(15m) === 15m` (capped, not throwing).
+- No partial mutation: a 429 leaves `state.usage` untouched (it is only
+  overwritten on a 2xx).
+
+### Log / store side effects
+
+- No `console.error` on 429 — `applyUsageFailureBackoff` logs at WARN
+  only for non-classified errors.
+- `cct-store.json` revision increments on each failure to persist the
+  new `nextUsageFetchAllowedAt`.
+
+---
+
+## Scenario 7 — Response-header rate-limit detection
+
+**Goal:** A successful response carrying
+`anthropic-ratelimit-unified-5h-remaining: 0` triggers rotation with
+`rateLimitSource = 'response_header'`.
+
+### Preconditions
+
+- Active slot `A` is mid-stream on a turn (a real Anthropic API
+  response is being consumed by the stream-executor).
+- A second healthy slot `B` exists.
+
+### Flow
+
+1. `stream-executor` reads the HTTP response headers via
+   `parseRateLimitHeaders(response.headers)`
+   (`src/oauth/header-parser.ts`). The parser returns an array of
+   `RateLimitHint`:
+
+   ```typescript
+   {
+     window: '5h' | '7d',
+     remaining: number,
+     limit?: number,
+     resetAt?: string,
+   }
+   ```
+
+2. `hintsIndicateExhausted(hints)` returns true when any
+   `hint.remaining === 0`. Stream-executor calls:
+
+   ```
+   tm.rotateOnRateLimit(
+     '5h-remaining=0',
+     {
+       source: 'response_header',
+       rateLimitedAt: new Date().toISOString(),
+       cooldownMinutes: 60,
+     }
+   );
+   ```
+
+3. `TokenManager.rotateOnRateLimit` runs under `store.mutate`:
+   - Locates `snap.registry.activeSlotId === A.slotId`.
+   - Reads current `state.rateLimitedAt`; if the previous window is
+     still open (`cooldownUntil > now`), preserves the first timestamp;
+     otherwise overwrites with `now`.
+   - Sets `state.rateLimitSource = 'response_header'`.
+   - Sets `state.cooldownUntil = now + 60min`.
+   - Rotates to the next eligible slot (`B`), sets
+     `snap.registry.activeSlotId = B.slotId`.
+4. `mirrorToEnv(B)` overwrites `process.env.CLAUDE_CODE_OAUTH_TOKEN`.
+5. The current turn re-issues its next HTTP request using `B`'s token.
+6. `/z cct` now shows `A` with a context line including
+   `rate-limited 2026-04-18 13:42 KST / 03:42Z (now) via response_header`
+   (rendered by `formatRateLimitedAt` in `buildSlotRow`).
+
+### Invariants verified
+
+- `snap.state[A.slotId].rateLimitSource === 'response_header'`.
+- `snap.state[A.slotId].rateLimitedAt` is a valid ISO 8601 UTC string.
+- `snap.state[A.slotId].cooldownUntil > now`.
+- `snap.registry.activeSlotId === B.slotId`.
+- `A` cannot be re-picked by `rotateToNext` until `cooldownUntil` has
+  passed (`isEligible` returns false while `cooldownUntil > now`).
+
+### Log / store side effects
+
+- `rotateOnRateLimit: 5h-remaining=0 source=response_header rotated=B`.
+- `cct-store.json` revision incremented once with the combined mutation
+  (timestamp + source + cooldown + active switch).
