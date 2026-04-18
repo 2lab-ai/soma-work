@@ -168,6 +168,23 @@ describe('McpStatusDisplay', () => {
       expect(postText).toContain('5.0s');
     });
 
+    it('should preserve explicit duration=0 (do not fall back on 0)', async () => {
+      // Regression guard: `duration ?? fallback` must treat 0 as a real value,
+      // unlike `duration || fallback` which would clobber 0.
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+
+      // Advance 4s, then report a 0ms duration (e.g. cached response).
+      await vi.advanceTimersByTimeAsync(4000);
+      display.completeCall('call1', 0);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      // Expect 0ms-style formatting, not the 4s fallback.
+      expect(postText).toContain('0ms');
+      expect(postText).not.toContain('4.0s');
+    });
+
     it('should show elapsed for every call in multi-call session even when one is null', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
