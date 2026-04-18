@@ -142,8 +142,10 @@ export interface SlotAuthLease {
  * - For `oauth_credentials` slots, proactively refreshes via
  *   `tokenManager.getValidAccessToken(slotId)` (7h buffer, in-process dedupe,
  *   lock-safe). Returned `accessToken` is guaranteed-fresh at the moment of
- *   return — callers should set `process.env.CLAUDE_CODE_OAUTH_TOKEN` from
- *   `lease.accessToken` before spawning the Claude CLI.
+ *   return — callers MUST pass the lease through `buildQueryEnv(lease)` and
+ *   thread the resulting env into the Agent SDK's `options.env`. Do NOT
+ *   mutate `process.env.CLAUDE_CODE_OAUTH_TOKEN`; concurrent dispatches on
+ *   different slots would race each other on a process-global.
  * - If no healthy slot exists, throws `NoHealthySlotError`.
  *
  * The returned lease MUST be released in a `finally` block.
