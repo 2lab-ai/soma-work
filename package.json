@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "npm run check && npm run build:somalib && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/",
+    "build": "npm run check && npm run build:somalib && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/",
     "build:somalib": "tsc -p somalib/tsconfig.json",
     "prod": "node dist/index.js",
     "check": "biome check src/ somalib/ scripts/",
@@ -19,7 +19,9 @@
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
     "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
   },
-  "workspaces": ["somalib"],
+  "workspaces": [
+    "somalib"
+  ],
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -27,26 +29,32 @@
     "@biomejs/biome": "^2.4.10",
     "@types/ioredis": "^4.28.10",
     "@types/node": "=24.0.4",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.97",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
     "@anthropic-ai/sdk": "^0.86.1",
     "@clickhouse/client": "^1.18.2",
     "@fastify/websocket": "^11.2.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
-    "@slack/bolt": "=4.4.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "@slack/bolt": "=4.7.0",
+    "@slack/web-api": "^7.15.1",
     "@types/jsonwebtoken": "=9.0.10",
     "@types/node-fetch": "=2.6.12",
     "dotenv": "=16.6.0",
+    "echarts": "^6.0.0",
     "fastify": "^5.7.2",
     "ioredis": "^5.10.1",
     "jsonwebtoken": "=9.0.2",
     "markdown-to-slack-blocks": "^1.4.1",
     "mongodb": "^7.1.1",
     "mysql2": "^3.20.0",
-    "node-fetch": "=3.3.2"
+    "node-fetch": "=3.3.2",
+    "proper-lockfile": "^4.1.2",
+    "ulid": "^3.0.2"
   }
 }

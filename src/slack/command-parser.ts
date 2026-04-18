@@ -2,7 +2,15 @@
  * Command parsing utilities for Slack bot commands
  */
 
-export type CctAction = { action: 'status' } | { action: 'set'; target: string } | { action: 'next' };
+import { EFFORT_LEVELS } from '../user-settings-store';
+
+export type CctAction =
+  | { action: 'status' }
+  | { action: 'set'; target: string }
+  | { action: 'next' }
+  | { action: 'usage'; target?: string }
+  | { action: 'add-forbidden' }
+  | { action: 'rm-forbidden' };
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
@@ -113,22 +121,51 @@ export class CommandParser {
    * forms are accepted. Legacy `set_cct <n>` / `nextcct` underscore aliases
    * are no longer recognised — ZRouter.translateToLegacy bridges the `/z` form
    * before we reach here.
+   *
+   * Wave 5 (#569): the text grammar is now READ-ONLY for write operations.
+   * `cct usage [<name>]` is accepted; `cct add …` and `cct rm …` are matched
+   * so the handler can emit a "use the card" error — token mutation via text
+   * is disabled in favour of the `/z cct` Block Kit modal buttons.
    */
   static isCctCommand(text: string): boolean {
-    return /^\/?cct(?:\s+(?:next|set\s+\S+))?$/i.test(text.trim());
+    return /^\/?cct(?:\s+(?:next|set\s+\S+|usage(?:\s+\S+)?|add(?:\s+.*)?|rm(?:\s+.*)?|remove(?:\s+.*)?))?$/i.test(
+      text.trim(),
+    );
   }
 
   /**
-   * Parse cct command: "cct" → status, "cct set cctN" → set, "cct next" → next.
+   * Parse cct command.
+   *
+   * Accepted forms:
+   *   - `cct`                          → { action: 'status' }
+   *   - `cct set <name>`               → { action: 'set', target }
+   *   - `cct next`                     → { action: 'next' }
+   *   - `cct usage`                    → { action: 'usage' }
+   *   - `cct usage <name>`             → { action: 'usage', target }
+   *   - `cct add …`                    → { action: 'add-forbidden' } (handler emits error)
+   *   - `cct rm …` / `cct remove …`    → { action: 'rm-forbidden' } (handler emits error)
    */
   static parseCctCommand(text: string): CctAction {
     const trimmed = text.trim();
     if (/^\/?cct\s+next$/i.test(trimmed)) {
       return { action: 'next' };
     }
-    const match = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
-    if (match) {
-      return { action: 'set', target: match[1] };
+    const setMatch = trimmed.match(/^\/?cct\s+set\s+(\S+)$/i);
+    if (setMatch) {
+      return { action: 'set', target: setMatch[1] };
+    }
+    // usage with optional name
+    const usageMatch = trimmed.match(/^\/?cct\s+usage(?:\s+(\S+))?$/i);
+    if (usageMatch) {
+      const target = usageMatch[1];
+      return target ? { action: 'usage', target } : { action: 'usage' };
+    }
+    // add / rm / remove — forbidden via text; handler returns error referencing the card.
+    if (/^\/?cct\s+add\b/i.test(trimmed)) {
+      return { action: 'add-forbidden' };
+    }
+    if (/^\/?cct\s+(?:rm|remove)\b/i.test(trimmed)) {
+      return { action: 'rm-forbidden' };
     }
     return { action: 'status' };
   }
@@ -1051,7 +1088,7 @@ export class CommandParser {
       '• `verbosity` - Show current log verbosity',
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '• `effort` - Show current default effort level',
-      '• `effort <level>` - Set default effort (low/medium/high/max). Persists for all future sessions.',
+      `• \`effort <level>\` - Set default effort (${EFFORT_LEVELS.join('/')}). Persists for all future sessions.`,
       '',
       '*LLM Chat Config:*',
       '• `show llm_chat` - Show current llm_chat model configuration',
@@ -1066,7 +1103,7 @@ export class CommandParser {
       '• `%model` - Show session model',
       '• `%model <name>` - Change model for this session only',
       '• `%effort` - Show session effort level',
-      '• `%effort <level>` - Change effort for this session only (low/medium/high/max)',
+      `• \`%effort <level>\` - Change effort for this session only (${EFFORT_LEVELS.join('/')})`,
       '• `%verbosity` - Show session verbosity',
       '• `%verbosity <level>` - Change verbosity for this session only',
       '• `%thinking` - Show extended thinking (adaptive reasoning) status',
@@ -1092,9 +1129,11 @@ export class CommandParser {
       '• `show instructions` - Show user instructions stored in this session',
       '',
       '*Token Management (Admin):*',
-      '• `cct` - Show OAuth token pool status',
+      '• `cct` - Show OAuth token pool status (Block Kit card)',
       '• `cct set <name>` - Switch active token (e.g., `cct set cct2`)',
       '• `cct next` - Rotate to next available token',
+      '• `cct usage [<name>]` - Show usage snapshot (5h/7d) for a slot; defaults to active',
+      '• _Note: token add/remove via text is disabled — use the *Add* / *Remove* buttons on the `/z cct` card._',
       '',
       '*Credentials:*',
       '• `restore` or `/restore` - Restore Claude credentials from backup',
@@ -1104,6 +1143,7 @@ export class CommandParser {
       "• `usage week` - Show this week's token usage",
       "• `usage month` - Show this month's token usage",
       "• `usage @user` - Show specific user's token usage",
+      '• `usage card` or `/usage card` - Post your personal 30-day usage card (PNG) to the channel',
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',

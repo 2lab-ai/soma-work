@@ -898,6 +898,7 @@ describe('CommandParser', () => {
       'effort low',
       'effort medium',
       'effort high',
+      'effort xhigh',
       'effort max',
       '/effort',
       '/effort high',
@@ -930,7 +931,7 @@ describe('CommandParser', () => {
       expect(CommandParser.parseEffortCommand('effort status')).toEqual({ action: 'status' });
     });
 
-    it.each(['low', 'medium', 'high', 'max'])('parses "effort %s" as set', (level) => {
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'])('parses "effort %s" as set', (level) => {
       expect(CommandParser.parseEffortCommand(`effort ${level}`)).toEqual({ action: 'set', level });
     });
 
@@ -1020,6 +1021,14 @@ describe('CommandParser', () => {
         type: 'effort',
         action: 'set',
         level: 'high',
+      });
+    });
+
+    it('parses "%effort xhigh" as effort set', () => {
+      expect(CommandParser.parseSessionCommand('%effort xhigh')).toEqual({
+        type: 'effort',
+        action: 'set',
+        level: 'xhigh',
       });
     });
 
@@ -1402,6 +1411,51 @@ describe('CommandParser', () => {
       expect(help).toContain('`sandbox network`');
       expect(help).toContain('`sandbox network on`');
       expect(help).toContain('`sandbox network off`');
+    });
+  });
+
+  // Wave 5 (#569): usage subcommand + forbidden add/rm pass-through.
+  describe('parseCctCommand — Wave 5 grammar', () => {
+    it('parses "cct usage" with no name as usage with undefined target', () => {
+      expect(CommandParser.parseCctCommand('cct usage')).toEqual({ action: 'usage' });
+      expect(CommandParser.parseCctCommand('/cct usage')).toEqual({ action: 'usage' });
+    });
+
+    it('parses "cct usage <name>" as usage with target', () => {
+      expect(CommandParser.parseCctCommand('cct usage foo')).toEqual({ action: 'usage', target: 'foo' });
+      expect(CommandParser.parseCctCommand('/cct usage team-shared')).toEqual({
+        action: 'usage',
+        target: 'team-shared',
+      });
+    });
+
+    it('recognises "cct usage" via isCctCommand', () => {
+      expect(CommandParser.isCctCommand('cct usage')).toBe(true);
+      expect(CommandParser.isCctCommand('cct usage foo')).toBe(true);
+    });
+
+    it('parses "cct add …" as add-forbidden (handler returns "use card" error)', () => {
+      expect(CommandParser.parseCctCommand('cct add')).toEqual({ action: 'add-forbidden' });
+      expect(CommandParser.parseCctCommand('cct add foo sk-ant-oat01-xyz')).toEqual({ action: 'add-forbidden' });
+      expect(CommandParser.parseCctCommand('/cct add some-slot')).toEqual({ action: 'add-forbidden' });
+    });
+
+    it('parses "cct rm …" and "cct remove …" as rm-forbidden', () => {
+      expect(CommandParser.parseCctCommand('cct rm foo')).toEqual({ action: 'rm-forbidden' });
+      expect(CommandParser.parseCctCommand('cct remove foo')).toEqual({ action: 'rm-forbidden' });
+      expect(CommandParser.parseCctCommand('/cct rm team-shared')).toEqual({ action: 'rm-forbidden' });
+    });
+
+    it('recognises "cct add …" and "cct rm …" via isCctCommand', () => {
+      expect(CommandParser.isCctCommand('cct add foo')).toBe(true);
+      expect(CommandParser.isCctCommand('cct rm foo')).toBe(true);
+      expect(CommandParser.isCctCommand('cct remove foo')).toBe(true);
+    });
+
+    it('preserves existing cct / cct set / cct next parse shapes', () => {
+      expect(CommandParser.parseCctCommand('cct')).toEqual({ action: 'status' });
+      expect(CommandParser.parseCctCommand('cct set cct2')).toEqual({ action: 'set', target: 'cct2' });
+      expect(CommandParser.parseCctCommand('cct next')).toEqual({ action: 'next' });
     });
   });
 });

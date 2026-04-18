@@ -266,6 +266,151 @@ describe('ZSettingsActionHandler.handleSet', () => {
   });
 });
 
+describe('handleSet rerender routing (Scenario 15)', () => {
+  it('passes respond closure to binding.apply', async () => {
+    const apply = vi.fn(async () => ({ ok: true, summary: '✅ ok' }));
+    const render = vi.fn(async () => ({
+      text: '🧠 Memory',
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'card' } }],
+    }));
+    const binding: ZTopicBinding = {
+      topic: 'memory',
+      apply: apply as any,
+      renderCard: render as any,
+    };
+    const registry = new ZTopicRegistry();
+    registry.register(binding);
+    const handler = new ZSettingsActionHandler({ registry });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+    } as any);
+    const body = buildActionBody({
+      source: 'channel',
+      actionId: 'z_setting_memory_set_improve_memory_1',
+    });
+    await handler.handleSet(body, {} as any);
+    expect(apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'U1',
+        value: 'improve_memory_1',
+        actionId: 'z_setting_memory_set_improve_memory_1',
+        respond: expect.any(Function),
+      }),
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('respond closure pushes an intermediate replace when invoked', async () => {
+    const pendingBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: '🔄 개선 중…' } }];
+    const apply = vi.fn(async (args: any) => {
+      await args.respond?.(pendingBlocks);
+      return { ok: true, summary: '✅ done', rerender: 'topic' as const };
+    });
+    const render = vi.fn(async () => ({
+      text: '🧠 Memory',
+      blocks: [{ type: 'header', text: { type: 'plain_text', text: '🧠 Memory' } }],
+    }));
+    const binding: ZTopicBinding = {
+      topic: 'memory',
+      apply: apply as any,
+      renderCard: render as any,
+    };
+    const registry = new ZTopicRegistry();
+    registry.register(binding);
+    const handler = new ZSettingsActionHandler({ registry });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+    } as any);
+    const body = buildActionBody({
+      source: 'channel',
+      actionId: 'z_setting_memory_set_improve_memory_1',
+    });
+    await handler.handleSet(body, {} as any);
+    // First fetch: pending card from respond closure.
+    // Second fetch: renderCard replacement.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const firstPayload = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);
+    expect(firstPayload.replace_original).toBe(true);
+    expect(firstPayload.blocks).toEqual(pendingBlocks);
+    fetchSpy.mockRestore();
+  });
+
+  it("re-renders topic card when rerender flag is 'topic'", async () => {
+    const apply = vi.fn(async () => ({
+      ok: true,
+      summary: '✅ 개선 완료',
+      rerender: 'topic' as const,
+    }));
+    const cardBlocks = [
+      { type: 'header', text: { type: 'plain_text', text: '🧠 Memory' } },
+      { type: 'section', text: { type: 'mrkdwn', text: 'RERENDERED' } },
+    ];
+    const render = vi.fn(async () => ({ text: '🧠 Memory', blocks: cardBlocks }));
+    const binding: ZTopicBinding = {
+      topic: 'memory',
+      apply: apply as any,
+      renderCard: render as any,
+    };
+    const registry = new ZTopicRegistry();
+    registry.register(binding);
+    const handler = new ZSettingsActionHandler({ registry });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+    } as any);
+    const body = buildActionBody({
+      source: 'channel',
+      actionId: 'z_setting_memory_set_improve_memory_all',
+    });
+    await handler.handleSet(body, {} as any);
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({ userId: 'U1', issuedAt: expect.any(Number) }));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);
+    expect(payload.replace_original).toBe(true);
+    expect(payload.text).toBe('🧠 Memory');
+    expect(payload.blocks).toEqual(cardBlocks);
+    fetchSpy.mockRestore();
+  });
+
+  it('falls back to confirmation card when rerender is undefined', async () => {
+    const apply = vi.fn(async () => ({ ok: true, summary: '✅ done' }));
+    const render = vi.fn();
+    const binding: ZTopicBinding = {
+      topic: 'memory',
+      apply: apply as any,
+      renderCard: render as any,
+    };
+    const registry = new ZTopicRegistry();
+    registry.register(binding);
+    const handler = new ZSettingsActionHandler({ registry });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+    } as any);
+    const body = buildActionBody({
+      source: 'channel',
+      actionId: 'z_setting_memory_set_clear_memory_1',
+    });
+    await handler.handleSet(body, {} as any);
+    expect(render).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string);
+    expect(payload.replace_original).toBe(true);
+    // Confirmation card: section block with ✅ + summary inline.
+    expect(payload.blocks).toBeDefined();
+    expect(payload.blocks[0]?.type).toBe('section');
+    expect(payload.blocks[0]?.text?.text).toContain('✅');
+    expect(payload.blocks[0]?.text?.text).toContain('done');
+    fetchSpy.mockRestore();
+  });
+});
+
 describe('ZSettingsActionHandler.handleCancel', () => {
   it('DM source: calls chat.delete with stored botMessageTs', async () => {
     const { registry } = makeRegistry();
