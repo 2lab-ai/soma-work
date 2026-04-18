@@ -1,0 +1,453 @@
+# Trace: `/usage card` v2 (dark-theme + carousel)
+
+> STV Phase 2. Each scenario = one work unit for `stv:do-work` / `local:zwork`.
+> Follows v1 style (`docs/usage-card/trace.md`) — compact Entry/Flow/Contract/RED blocks, not the generic 7-section HTTP form (this is Slack action + file upload, no HTTP path).
+
+Spec: `docs/usage-card-dark/spec.md`
+Issue: [#591](https://github.com/2lab-ai/soma-work/issues/591)
+Supersedes v1 render path from: [#557](https://github.com/2lab-ai/soma-work/issues/557) / PR #561 (merged)
+
+---
+
+## Implementation Status
+
+| #  | Scenario                                                             | Size   | Depends     | Status | RED test                                                   |
+| -- | -------------------------------------------------------------------- | ------ | ----------- | ------ | ---------------------------------------------------------- |
+| 1  | `/usage card` happy path — dark 30d post + 4 tab buttons             | medium | 2,6,7,8,10  | Ready  | `usage-handler.test.ts` (carousel happy)                   |
+| 2  | `aggregateCarousel({targetUserId, now})` single-scan → 4 periods     | medium | —           | Ready  | `report-aggregator.test.ts` (carousel 4-period)            |
+| 3  | Period layout contract — 24h/7d/30d/all axis shapes                  | small  | 2           | Ready  | `buildCarouselOption.test.ts`                              |
+| 4  | `activeDays` = distinct KST YYYY-MM-DD per period                    | small  | 2           | Ready  | `streaks.test.ts`                                          |
+| 5  | `longestStreak` = max run of consecutive active days                 | small  | 2           | Ready  | `streaks.test.ts`                                          |
+| 6  | `currentStreak` = run to today; today-inactive → 0                   | small  | 2           | Ready  | `streaks.test.ts`                                          |
+| 7  | `TabCache` set/get with TTL 24h + LRU cap 500                        | small  | —           | Ready  | `usage-carousel-cache.test.ts`                             |
+| 8  | `usage_card_tab` action → `respond({replace_original, blocks})`      | small  | 1,7         | Ready  | `action-handlers.test.ts` (usage_card_tab happy)           |
+| 9  | Non-owner click → ephemeral reject (no replace_original)             | tiny   | 8           | Ready  | `action-handlers.test.ts` (usage_card_tab non-owner)       |
+| 10 | `carousel-renderer.renderCarousel(stats,selected)` → 4 PNG Buffers   | medium | 3,14        | Ready  | `carousel-renderer.test.ts`                                |
+| 11 | TabCache miss (restart) → ephemeral "session expired"                | tiny   | 7,8         | Ready  | `action-handlers.test.ts` (usage_card_tab miss)            |
+| 12 | Partial empty — per-tab stub PNG; all empty → v1 text fallback       | small  | 2,10        | Ready  | `empty.test.ts` (partial+all)                              |
+| 13 | 5 whitelist `SafeOperationalError` subclass catch → text fallback    | small  | 1           | Ready  | `usage-handler.test.ts` (carousel error fallback)          |
+| 14 | Dark palette 8 hex tokens pinned + heatmap 5-step monotonic scale    | tiny   | —           | Ready  | `dark-palette.test.ts`                                     |
+| 15 | Regression — bare `/usage`, `/usage 7d|30d|today` unchanged          | tiny   | 1           | Ready  | `usage-handler.test.ts` (regression matrix)                |
+
+Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
+
+---
+
+## Vertical Trace per Scenario
+
+### Scenario 1 — `/usage card` happy path
+
+**Entry**: `src/slack/commands/usage-handler.ts::UsageHandler.handleCard(ctx)`
+**Flow (replaces v1 single-render path)**:
+1. strict param gate + privacy gate (unchanged from v1)
+2. `now = clock()`; compute 4 `{startDate,endDate}` windows (24h / 7d / 30d / all — all starts at earliest event day, lazily from aggregator)
+3. `carouselStats = await aggregator.aggregateCarousel({ targetUserId: user, now })` — single scan, 4 `UsageCardStats | {empty:true}`
+4. if **all 4** empty → v1 text ephemeral fallback (Scenario 12)
+5. `pngMap = await renderer.renderCarousel(carouselStats, '30d')` → `{ '24h': Buffer, '7d': Buffer, '30d': Buffer, 'all': Buffer }`
+6. upload 4 PNGs in parallel via `Promise.all([filesUploadV2 × 4])` → `fileIds: Record<tabId, string>`
+7. `messageTs = await slackApi.postMessage({ channel, blocks: buildCarouselBlocks(fileIds, '30d', user) })`
+8. `tabCache.set(messageTs, { fileIds, userId: user, expiresAt: now + 24h })`
+9. logger.info `{ renderMs, uploadMs, bytesTotal, userId }`
+
+**Contract**:
+- `postMessage` call count = 1; `filesUploadV2` call count = 4
+- initial `blocks[1].type === 'image' && blocks[1].slack_file.id === fileIds['30d']`
+- `blocks[2].type === 'actions'` with 4 buttons, value set = `{24h, 7d, 30d, all}`, 30d button has `style:'primary'`
+- tabCache has entry keyed by messageTs with userId === ctx.user
+
+**RED**: `usage-handler.test.ts` describe `handleCard (carousel)` — DI mocks for aggregator (4 non-empty), renderer (4 buffers), slackApi (track calls), clock (fixed ts). Assert call order + payload shape + tabCache populated.
+
+**File touch**:
+- Modify: `src/slack/commands/usage-handler.ts` (replace v1 body of `handleCard` — keep gates)
+- Modify: `src/slack/commands/usage-handler.test.ts` (rewrite happy path)
+- New: `src/slack/commands/usage-carousel-blocks.ts` (`buildCarouselBlocks` helper — pure fn)
+- Untouched: DI `UsageCardOverrides` interface (extend with `tabCache?`, `renderer?` remains)
+
+---
+
+### Scenario 2 — `aggregateCarousel` single scan
+
+**Entry**: `src/metrics/report-aggregator.ts::ReportAggregator.aggregateCarousel(opts)`
+**Input**: `{ targetUserId: string, now: Date }`
+**Output**: `CarouselStats = { '24h': UsageCardResult, '7d': UsageCardResult, '30d': UsageCardResult, 'all': UsageCardResult }`
+  (`UsageCardResult = UsageCardStats | EmptyStats` — v1 type union reused)
+
+**Internals**:
+1. one pass over `metrics-events-*.jsonl` files — do NOT call `aggregateUsageCard` 4× (would cost 4× disk I/O)
+2. per event: compute KST timestamp + day key + hour key
+3. for each of 4 windows, if event falls inside, accumulate into that window's mutable builder: totals, per-hour, per-day, per-model, per-session, activeDays Set
+4. after scan: convert each builder → `UsageCardStats` (or `{empty:true}` if 0 events)
+5. rankings: global top-N using **period=30d** only (v1 parity — carousel tabs share rankings; shown on card footer)
+
+**Contract**:
+- `all` window start = min(event.ts, 365d ago) — never more than 365 days of data even if retention grows
+- `24h` window: `[now - 24h, now]` inclusive; uses hour bins, not day bins
+- `7d`: `[endDate - 6, endDate]` day range; hourly enabled
+- `30d`: `[endDate - 29, endDate]`; no hourly
+- empty window = `{ empty: true }` when that window's builder sees 0 events
+
+**RED**: `report-aggregator.test.ts` describe `aggregateCarousel` — synthetic fixture with events straddling windows. Assert:
+- 4 keys present (`'24h'|'7d'|'30d'|'all'`)
+- disjoint counts — 24h only contains events in last 24h
+- single disk read (spy on `iterateEvents` call count === 1)
+
+**File touch**:
+- Modify: `src/metrics/report-aggregator.ts` (add method, reuse private helpers)
+- Modify: `src/metrics/report-aggregator.test.ts`
+
+---
+
+### Scenario 3 — Period layout contract
+
+**Entry**: `src/metrics/usage-render/buildCarouselOption.ts::buildTabOption(period, stats)`
+**Contract (option shape per period — values, NOT SVG DOM)**:
+
+| Period | Main chart     | grid series[0].type | xAxis       | yAxis       | data length |
+| ------ | -------------- | ------------------- | ----------- | ----------- | ----------- |
+| `24h`  | hourly bar     | `bar`               | 24 hour nums| tokens      | 24          |
+| `7d`   | day×hour heat  | `heatmap`           | 24 hours    | 7 days      | ≤ 168       |
+| `30d`  | week matrix    | `heatmap`           | 7 cols      | 5 rows      | ≤ 35        |
+| `all`  | month×weekday  | `heatmap`           | ≤ 12 months | 7 weekdays  | ≤ 84        |
+
+**Contract**:
+- 색상 팔레트: dark palette `accentBg → accentSoft → accent` (monotonic)
+- `visualMap.pieces` = 5 steps, upper bound = p95 or max (whichever finite)
+- title text embeds selected tab badge — option is keyed by `selectedTab` param
+
+**RED**: `buildCarouselOption.test.ts` — fixture per period, assert data length + series[0].type + xAxis tick count + visualMap piece count === 5. SVG DOM grep 금지.
+
+**File touch**:
+- New: `src/metrics/usage-render/buildCarouselOption.ts` (exports `buildTabOption(period, stats, palette)` and `buildOptionForPeriod`)
+- New: `src/metrics/usage-render/buildCarouselOption.test.ts`
+
+---
+
+### Scenario 4 — `activeDays`
+
+**Entry**: `src/metrics/usage-render/streaks.ts::activeDays(events, windowStart, windowEnd)`
+**Definition**: count of distinct KST `YYYY-MM-DD` strings among events whose ts ∈ [windowStart, windowEnd].
+**Contract**:
+- events spanning same UTC day but different KST days → counted separately (timezone boundary correctness)
+- empty event array → 0
+
+**RED**: `streaks.test.ts` describe `activeDays` — fixture with 3 events on 2026-04-10 KST, 1 event on 2026-04-11 KST → 2. One UTC event at 14:30Z on 2026-04-09 (which is 2026-04-09 23:30 KST) + another at 15:30Z (2026-04-10 00:30 KST) → 2.
+
+**File touch**:
+- New: `src/metrics/usage-render/streaks.ts`
+- New: `src/metrics/usage-render/streaks.test.ts`
+
+---
+
+### Scenario 5 — `longestStreak`
+
+**Entry**: `src/metrics/usage-render/streaks.ts::longestStreak(activeDaySet, windowStart, windowEnd)`
+**Definition**: maximum run length of consecutive days (calendar) where every day is in `activeDaySet`.
+**Contract**:
+- empty set → 0
+- single day → 1
+- gap in middle → split into runs, return max
+
+**RED**: `streaks.test.ts` describe `longestStreak` —
+  - `['2026-04-10', '2026-04-11', '2026-04-12']` → 3
+  - `['2026-04-10', '2026-04-12']` → 1 (gap)
+  - `['2026-04-10', '2026-04-11', '2026-04-13', '2026-04-14', '2026-04-15']` → 3
+
+**File touch**: `src/metrics/usage-render/streaks.ts` (same file as #4)
+
+---
+
+### Scenario 6 — `currentStreak`
+
+**Entry**: `src/metrics/usage-render/streaks.ts::currentStreak(activeDaySet, today)`
+**Definition**:
+- if today ∉ activeDaySet → **0** (break rule)
+- else walk backwards from today, counting consecutive active days, stop at first gap
+
+**Contract**:
+- today = '2026-04-18', set = `['2026-04-15', '2026-04-16', '2026-04-17']` → 0 (today missing)
+- today = '2026-04-18', set = `['2026-04-16', '2026-04-17', '2026-04-18']` → 3
+- today = '2026-04-18', set = `['2026-04-17', '2026-04-18']` → 2 (run length 2, gap at 04-16)
+
+**RED**: `streaks.test.ts` describe `currentStreak` — 3 cases above.
+
+**File touch**: `src/metrics/usage-render/streaks.ts` (same file)
+
+---
+
+### Scenario 7 — `TabCache` set/get
+
+**Entry**: `src/slack/commands/usage-carousel-cache.ts::TabCache`
+**API**:
+```ts
+class TabCache {
+  set(messageTs: string, entry: { fileIds: Record<TabId,string>; userId: string; expiresAt: number }): void;
+  get(messageTs: string, now: number): CacheEntry | undefined;
+  constructor(opts?: { cap?: number; now?: () => number });
+}
+```
+**Contract**:
+- TTL 24h — `get()` returns undefined if `now >= entry.expiresAt`
+- LRU cap 500 — insert beyond cap evicts oldest (Map iteration order — delete + reinsert on read to move to end)
+- expired entries are purged lazily on next `get()` hitting them + opportunistically on `set()` (scan first N=10)
+- no persistence — fresh `new TabCache()` has 0 entries
+
+**RED**: `usage-carousel-cache.test.ts` — injected fake `now`. Cases:
+  - set → get within TTL → returns entry
+  - set → advance now +25h → get returns undefined, internal map size = 0
+  - insert 501 entries → size = 500, first-inserted entry gone
+  - re-set same key updates entry (not duplicate)
+
+**File touch**:
+- New: `src/slack/commands/usage-carousel-cache.ts`
+- New: `src/slack/commands/usage-carousel-cache.test.ts`
+
+---
+
+### Scenario 8 — `usage_card_tab` action → replace_original
+
+**Entry**: `src/slack/action-handlers.ts::ActionHandlers.registerHandlers(app)` — register `app.action('usage_card_tab', handler)`
+**Flow on click**:
+1. `ack()`
+2. look up `entry = tabCache.get(messageTs, now)` — `messageTs` parsed from `body.container.message_ts` (fallback `body.message.ts`)
+3. gate: `body.user.id === entry.userId` (Scenario 9 handles fail)
+4. `selectedTab = body.actions[0].value` ∈ `{'24h','7d','30d','all'}`
+5. `blocks = buildCarouselBlocks(entry.fileIds, selectedTab, entry.userId)`
+6. `await respond({ replace_original: true, blocks })`
+
+**Contract**:
+- `respond` called exactly once, with `replace_original: true`
+- selected tab button has `style:'primary'`, others plain
+- image block slack_file.id === `entry.fileIds[selectedTab]`
+
+**RED**: `action-handlers.test.ts` describe `usage_card_tab` happy — fake tabCache with populated entry, body.user.id matches entry.userId, body.actions[0].value='7d'. Assert `respond` called with `replace_original:true` and the 7d image.
+
+**File touch**:
+- Modify: `src/slack/action-handlers.ts` (add handler + bind to injected tabCache from DI)
+- Modify: `src/slack/action-handlers.test.ts`
+
+---
+
+### Scenario 9 — Non-owner click
+
+**Contract**:
+- `body.user.id !== entry.userId` → `respond({ response_type: 'ephemeral', replace_original: false, text: '⚠️ 본인 카드만 조작할 수 있습니다.' })`
+- tabCache left **untouched** (no eviction)
+- no image swap
+
+**RED**: `action-handlers.test.ts` describe `usage_card_tab non-owner` — entry.userId='U111', body.user.id='U999'. Assert respond called with `response_type:'ephemeral'` + `replace_original:false`. Assert tabCache still has entry.
+
+---
+
+### Scenario 10 — `renderCarousel`
+
+**Entry**: `src/metrics/usage-render/carousel-renderer.ts::renderCarousel(stats: CarouselStats, selectedTab: TabId): Promise<Record<TabId, Buffer>>`
+**Flow** (extends v1 `renderer.ts`):
+1. for each of 4 periods (parallel — `Promise.all`):
+   - if `stats[period].empty` → render stub PNG (`buildStubOption(period, palette)`, same resvg path, compact layout)
+   - else → `buildTabOption(period, stats[period], palette, selectedTab === period)` → ECharts SSR → SVG → resvg PNG
+2. fonts loaded once (module-level lazy promise — reuse v1 cache)
+3. each output PNG 1600×2200, dark background
+
+**Errors** (re-thrown typed):
+- font load → `FontLoadError` (once, shared)
+- ECharts init per-tab → `EchartsInitError`
+- resvg per-tab → `ResvgNativeError`
+
+**Contract**:
+- returned object has exactly 4 keys `{'24h','7d','30d','all'}`
+- every value is a Buffer with PNG magic bytes `89 50 4E 47`
+- selected tab's Buffer differs from non-selected tab's Buffer for same period stats (selection state baked into image)
+- running twice with same input yields bitwise-identical output (determinism — for eventual snapshot cache)
+
+**RED**: `carousel-renderer.test.ts` — fixture `CarouselStats` with all 4 periods non-empty. Call `renderCarousel(stats, '30d')`. Assert:
+- 4 Buffers returned
+- each has PNG magic
+- `renderCarousel(stats, '30d')` ≠ `renderCarousel(stats, '7d')` (at byte level)
+
+**File touch**:
+- New: `src/metrics/usage-render/carousel-renderer.ts`
+- New: `src/metrics/usage-render/carousel-renderer.test.ts`
+- Untouched: `src/metrics/usage-render/renderer.ts` (v1 path kept for any other future callers — v2 handler uses carousel only)
+
+---
+
+### Scenario 11 — TabCache miss → ephemeral
+
+**Contract**:
+- `tabCache.get(ts, now)` returns undefined (TTL expired, LRU evicted, or process restart)
+- handler responds `{ response_type: 'ephemeral', replace_original: false, text: '⌛ 세션이 만료되었습니다. `/usage card` 를 다시 실행해 주세요.' }`
+- no exception thrown
+
+**RED**: `action-handlers.test.ts` describe `usage_card_tab miss` — empty tabCache, any body. Assert respond called with `response_type:'ephemeral'` + `replace_original:false`, text contains "만료".
+
+---
+
+### Scenario 12 — Partial empty / all empty
+
+**Partial empty** (some period has events, at least one is empty):
+- `renderCarousel` renders empty tab as **stub PNG** (dark background + centered message "최근 {period} 활동 없음" + muted icon)
+- non-empty tabs render normally
+- handler still uploads 4 PNGs + posts carousel (user can cycle)
+
+**All empty**:
+- `aggregateCarousel` returns all 4 `{empty:true}`
+- handler skips render + upload entirely
+- posts v1 text ephemeral: "최근 30일간 기록된 사용량이 없습니다. `/usage` 로 기본 집계를 먼저 확인하세요."
+- logger.info `{ event:'carousel_all_empty', userId }`
+
+**RED**: `empty.test.ts` —
+- partial: fixture with 24h=empty, rest populated → `renderCarousel` returns 4 buffers, 24h buffer is stub (compare to baseline stub rendered in isolation)
+- all: fixture with 0 events → `handleCard` issues text ephemeral only, renderer never called, upload never called
+
+**File touch**: `src/metrics/usage-render/empty.test.ts` (may already exist — extend)
+
+---
+
+### Scenario 13 — 5 whitelist errors → text fallback
+
+**Flow in `handleCard`** try/catch:
+- catch block checks `isSafeOperational(err)` (v1 `errors.ts` predicate, reused)
+- if yes → logger.warn + ephemeral text "카드 생성 실패, 잠시 후 다시 시도해 주세요." + return `{handled:true}`
+- if no → `throw err` (silent failure 금지)
+
+**Contract**:
+- renderer throws `FontLoadError` / `EchartsInitError` / `ResvgNativeError` / upload throws `SlackUploadError` / postMessage throws `SlackPostError` → each → ephemeral text, no throw escapes
+- renderer throws `RangeError` (non-subclass) → re-throws, handler does NOT swallow
+
+**RED**: `usage-handler.test.ts` describe `handleCard error fallback` — parametrized over 5 subclasses + 1 non-subclass. Assert ephemeral text path for whitelist, assert throw for non-whitelist.
+
+---
+
+### Scenario 14 — Dark palette + heatmap scale
+
+**Entry**: `src/metrics/usage-render/dark-palette.ts::DARK_PALETTE`
+**Content**:
+```ts
+export const DARK_PALETTE = {
+  bg:         '#1A1A1A',
+  surface:    '#242424',
+  accent:     '#CD7F5C',
+  accentSoft: '#8F5B45',
+  accentBg:   '#3A231C',
+  text:       '#F0E8E0',
+  textMuted:  '#8F8880',
+  grid:       '#2E2E2E',
+} as const;
+
+export const HEATMAP_SCALE = ['#2A2A2A', '#3A231C', '#6B3F30', '#A06048', '#CD7F5C'] as const;
+```
+
+**Contract**:
+- 8 keys present, lowercase hex strings matching `/^#[0-9A-Fa-f]{6}$/`
+- HEATMAP_SCALE length = 5
+- HEATMAP_SCALE luminance monotonically non-decreasing (low → high gradient; accentBg darker than accent)
+
+**RED**: `dark-palette.test.ts` — hex regex per token, scale length check, luminance monotonicity via simple `0.299 R + 0.587 G + 0.114 B` formula.
+
+**File touch**:
+- New: `src/metrics/usage-render/dark-palette.ts`
+- New: `src/metrics/usage-render/dark-palette.test.ts`
+
+---
+
+### Scenario 15 — Regression: text commands unchanged
+
+**Contract**: none of the following paths are modified:
+- `UsageHandler.execute(ctx)` when `!isCardSubcommand(text)` — falls through to existing `aggregateTokenUsage` + `formatReport` + `postSystemMessage`
+- `/usage` (no period), `/usage today`, `/usage 7d`, `/usage 30d`, `/usage @user` — all plain-text responses identical byte-for-byte to v1
+
+**RED**: `usage-handler.test.ts` describe `regression (v1 text path)` —
+- run 5 commands through handler with pinned fixture output
+- assert `postSystemMessage` called with text containing expected section headers ("📊 Token Usage", "Rankings", etc.)
+- assert `filesUploadV2` + `postMessage` never called (card path not taken)
+- existing v1 test assertions still green
+
+**File touch**: `src/slack/commands/usage-handler.test.ts` (add regression describe block — no production code change)
+
+---
+
+## Suggested Ordering (for zwork)
+
+```
+[4,5,6,7,14]   standalone pieces — streaks / TabCache / palette (parallelizable)
+  ↓
+[2]            aggregateCarousel (needs streaks helpers from 4-6)
+  ↓
+[3,10]         buildCarouselOption + carousel-renderer (needs #2 output type)
+  ↓
+[1,8]          handleCard wiring + usage_card_tab action (needs 2,10,7)
+  ↓
+[9,11,12,13]   edge cases + fallbacks (polish)
+  ↓
+[15]           regression assertions (final safety net)
+```
+
+---
+
+## Auto-Decisions (per STV Decision Gate — all small/below, no user prompt)
+
+| Decision                                                           | Choice                                                           | Rationale                                                                     |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `TabId` union ordering in code                                     | `'24h' \| '7d' \| '30d' \| 'all'` (spec §3 order)                | Match button render order; consistent lookup                                  |
+| `buildCarouselBlocks` location                                     | new file `src/slack/commands/usage-carousel-blocks.ts`           | Pure fn, reused by both `handleCard` and `usage_card_tab` handler             |
+| TabCache singleton vs DI                                           | singleton module default + DI override in `UsageHandlerOverrides`| Matches v1 pattern (renderer/aggregator do the same)                          |
+| `tabCache.get` staleness vs `get`-then-set reinsertion for LRU     | reinsert on hit (move-to-end via delete+set)                     | Pure map-based LRU is simpler than doubly-linked list, perf enough at cap 500 |
+| `aggregateCarousel` rankings source                                | 30d window (v1 parity) shared across tabs                        | Spec §4.3 "Ranking row" uses single global window                             |
+| Stub PNG per-empty-tab: dedicated builder or full renderer reuse   | `buildStubOption(period, palette)` — minimal ECharts, same pipe  | Keeps 1 render pipe (easier font reuse, resvg reuse), avoids raw PNG bundling |
+| Stub text copy                                                     | `"최근 {period} 활동 없음"`                                        | Mirrors v1 empty text voice                                                   |
+| Persistent LRU on disk                                             | No                                                               | In-process is enough (see spec §4.6)                                          |
+| New npm deps                                                       | None                                                              | echarts + resvg + fonts all reused                                            |
+| deploy.yml change                                                  | None                                                              | No new native dep, no new bundle path                                         |
+
+---
+
+## File Touch Map (aggregate)
+
+### New (7 files)
+
+- `src/metrics/usage-render/dark-palette.ts`
+- `src/metrics/usage-render/dark-palette.test.ts`
+- `src/metrics/usage-render/buildCarouselOption.ts`
+- `src/metrics/usage-render/buildCarouselOption.test.ts`
+- `src/metrics/usage-render/carousel-renderer.ts`
+- `src/metrics/usage-render/carousel-renderer.test.ts`
+- `src/metrics/usage-render/streaks.ts`
+- `src/metrics/usage-render/streaks.test.ts`
+- `src/slack/commands/usage-carousel-cache.ts`
+- `src/slack/commands/usage-carousel-cache.test.ts`
+- `src/slack/commands/usage-carousel-blocks.ts`
+
+### Modified (5 files)
+
+- `src/metrics/report-aggregator.ts` (+ `aggregateCarousel`; `aggregateUsageCard` kept for any remaining callers — delete only if unused post-v2)
+- `src/metrics/report-aggregator.test.ts` (extend)
+- `src/slack/commands/usage-handler.ts` (`handleCard` body replaced — gates kept)
+- `src/slack/commands/usage-handler.test.ts` (extend + regression describe)
+- `src/slack/action-handlers.ts` (register `usage_card_tab`)
+- `src/slack/action-handlers.test.ts` (extend)
+- `src/slack/z/topics/usage-topic.ts` (help text reflects "4기간 캐러셀" not "30일")
+
+### Existing test files extended
+
+- `src/metrics/usage-render/empty.test.ts` (partial + all-empty cases)
+
+### Untouched (explicit)
+
+- `.github/workflows/deploy.yml` — no workflow change needed
+- `package.json` / `package-lock.json` — no new deps
+- `src/metrics/usage-render/assets/*` — fonts reused as-is
+- `src/metrics/usage-render/renderer.ts` — v1 single-renderer path kept
+- `src/metrics/usage-render/errors.ts` — v1 error taxonomy reused
+- `src/metrics/usage-render/types.ts` — `UsageCardStats` reused; `CarouselStats` added inline in carousel-renderer.ts
+
+---
+
+## Changelog
+
+### 2026-04-18 — Initial v2 trace
+
+Initial creation from `docs/usage-card-dark/spec.md` (main approved via UIAskUserQuestion `approve_as_is`). 15 scenarios across carousel rendering, tab cache, streak metrics, dark palette, partial-empty fallback, action handler, and regression.
+
+## Next Step
+
+→ `local:zwork` — implementation following the suggested ordering above. RED tests listed per scenario.
