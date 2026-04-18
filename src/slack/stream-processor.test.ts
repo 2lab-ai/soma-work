@@ -761,11 +761,7 @@ describe('StreamProcessor', () => {
       ];
 
       const processor = new StreamProcessor();
-      await processor.process(
-        createMockStream(messages) as any,
-        phase1Context(),
-        abortController.signal,
-      );
+      await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
 
       // Banner + tool-call block both silenced. PHASE=0 equivalent is already
       // covered by the existing `process tool use` test above.
@@ -790,11 +786,7 @@ describe('StreamProcessor', () => {
       ];
       // Default logVerbosity (LOG_DETAIL) → tool-call render mode = compact.
       const processor = new StreamProcessor();
-      await processor.process(
-        createMockStream(messages) as any,
-        phase1Context(),
-        abortController.signal,
-      );
+      await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
 
       expect(mockSay).not.toHaveBeenCalled();
     });
