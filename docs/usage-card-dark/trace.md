@@ -20,7 +20,7 @@ Supersedes v1 render path from: [#557](https://github.com/2lab-ai/soma-work/issu
 | 5  | `longestStreak` = max run of consecutive active days                 | small  | 2           | Ready  | `streaks.test.ts`                                          |
 | 6  | `currentStreak` = run to today; today-inactive → 0                   | small  | 2           | Ready  | `streaks.test.ts`                                          |
 | 7  | `TabCache` set/get with TTL 24h + LRU cap 500                        | small  | —           | Ready  | `usage-carousel-cache.test.ts`                             |
-| 8  | `usage_card_tab` action → `respond({replace_original, blocks})`      | small  | 1,7         | Ready  | `action-handlers.test.ts` (usage_card_tab happy)           |
+| 8  | `usage_card_tab` action → `client.chat.update({channel, ts, blocks})`| small  | 1,7         | Ready  | `action-handlers.test.ts` (usage_card_tab happy)           |
 | 9  | Non-owner click → ephemeral reject (no replace_original)             | tiny   | 8           | Ready  | `action-handlers.test.ts` (usage_card_tab non-owner)       |
 | 10 | `carousel-renderer.renderCarousel(stats,selected)` → 4 PNG Buffers   | medium | 3,14        | Ready  | `carousel-renderer.test.ts`                                |
 | 11 | TabCache miss (restart) → ephemeral "session expired"                | tiny   | 7,8         | Ready  | `action-handlers.test.ts` (usage_card_tab miss)            |
@@ -38,22 +38,29 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 ### Scenario 1 — `/usage card` happy path
 
 **Entry**: `src/slack/commands/usage-handler.ts::UsageHandler.handleCard(ctx)`
-**Flow (replaces v1 single-render path)**:
+**Feature flag**: `USAGE_CARD_V2` env. false/unset → v1 single-render path (untouched). true → this flow.
+
+**Flow (replaces v1 single-render path when flag active)**:
 1. strict param gate + privacy gate (unchanged from v1)
 2. `now = clock()`; compute 4 `{startDate,endDate}` windows (24h / 7d / 30d / all — all starts at earliest event day, lazily from aggregator)
 3. `carouselStats = await aggregator.aggregateCarousel({ targetUserId: user, now })` — single scan, 4 `UsageCardStats | {empty:true}`
 4. if **all 4** empty → v1 text ephemeral fallback (Scenario 12)
 5. `pngMap = await renderer.renderCarousel(carouselStats, '30d')` → `{ '24h': Buffer, '7d': Buffer, '30d': Buffer, 'all': Buffer }`
 6. upload 4 PNGs in parallel via `Promise.all([filesUploadV2 × 4])` → `fileIds: Record<tabId, string>`
-7. `messageTs = await slackApi.postMessage({ channel, blocks: buildCarouselBlocks(fileIds, '30d', user) })`
+   - `filesUploadV2` args: `{ filename, file: buffer }` — **no `channels` / `channel_id`** (guard against Slack auto-posting orphan file messages)
+   - `request_file_info: false`, `initial_comment: undefined`
+   - post-upload retry loop: if first `chat.postMessage` with embedded `slack_file.id` returns `invalid_blocks` referencing unknown file → wait 500ms, retry ≤ 3× (cold-cache race)
+7. `messageTs = (await slackApi.postMessage({ channel, blocks: buildCarouselBlocks(fileIds, '30d', user) })).ts`
 8. `tabCache.set(messageTs, { fileIds, userId: user, expiresAt: now + 24h })`
 9. logger.info `{ renderMs, uploadMs, bytesTotal, userId }`
 
 **Contract**:
 - `postMessage` call count = 1; `filesUploadV2` call count = 4
+- every `filesUploadV2` invocation's args have **no `channels` / `channel_id`** key set (spy assertion)
 - initial `blocks[1].type === 'image' && blocks[1].slack_file.id === fileIds['30d']`
-- `blocks[2].type === 'actions'` with 4 buttons, value set = `{24h, 7d, 30d, all}`, 30d button has `style:'primary'`
+- `blocks[2].type === 'actions'` with `block_id === 'usage_card_tabs'` (static, not messageTs-embedded), 4 buttons, value set = `{24h, 7d, 30d, all}`, 30d button has `style:'primary'`
 - tabCache has entry keyed by messageTs with userId === ctx.user
+- feature flag off (`USAGE_CARD_V2=false`) → v1 path executes; no `aggregateCarousel`/`renderCarousel`/4-upload calls
 
 **RED**: `usage-handler.test.ts` describe `handleCard (carousel)` — DI mocks for aggregator (4 non-empty), renderer (4 buffers), slackApi (track calls), clock (fixed ts). Assert call order + payload shape + tabCache populated.
 
@@ -203,38 +210,45 @@ class TabCache {
 
 ---
 
-### Scenario 8 — `usage_card_tab` action → replace_original
+### Scenario 8 — `usage_card_tab` action → client.chat.update
 
 **Entry**: `src/slack/action-handlers.ts::ActionHandlers.registerHandlers(app)` — register `app.action('usage_card_tab', handler)`
-**Flow on click**:
-1. `ack()`
-2. look up `entry = tabCache.get(messageTs, now)` — `messageTs` parsed from `body.container.message_ts` (fallback `body.message.ts`)
-3. gate: `body.user.id === entry.userId` (Scenario 9 handles fail)
-4. `selectedTab = body.actions[0].value` ∈ `{'24h','7d','30d','all'}`
-5. `blocks = buildCarouselBlocks(entry.fileIds, selectedTab, entry.userId)`
-6. `await respond({ replace_original: true, blocks })`
+**Flow on click** (`{ack, body, client, respond}`):
+1. `ack()` (< 3s, before any other work)
+2. `messageTs = body.container.message_ts` — Bolt-provided on block_actions payload
+3. `channel = body.container.channel_id`
+4. look up `entry = tabCache.get(messageTs, now)`
+   - miss → Scenario 11 path (ephemeral via `respond`)
+5. gate: `body.user.id === entry.userId` → fail → Scenario 9 path
+6. `selectedTab = body.actions[0].value` ∈ `{'24h','7d','30d','all'}`
+7. `blocks = buildCarouselBlocks(entry.fileIds, selectedTab, entry.userId)`
+8. `await client.chat.update({ channel, ts: messageTs, blocks })` — bot token path; **not** `respond({replace_original:true})` (response_url has 30min/5-call limit).
 
 **Contract**:
-- `respond` called exactly once, with `replace_original: true`
+- `client.chat.update` called exactly once with `{channel, ts: messageTs, blocks}` — spy on Bolt `client` proxy
+- `respond` NOT called in happy path (ack-only)
 - selected tab button has `style:'primary'`, others plain
 - image block slack_file.id === `entry.fileIds[selectedTab]`
+- `block_id === 'usage_card_tabs'` (static, not messageTs-embedded)
 
-**RED**: `action-handlers.test.ts` describe `usage_card_tab` happy — fake tabCache with populated entry, body.user.id matches entry.userId, body.actions[0].value='7d'. Assert `respond` called with `replace_original:true` and the 7d image.
+**RED**: `action-handlers.test.ts` describe `usage_card_tab` happy — fake tabCache with populated entry, body.user.id matches entry.userId, body.actions[0].value='7d', body.container={message_ts:'X', channel_id:'C1'}. Assert `client.chat.update` called with `{channel:'C1', ts:'X', blocks:<7d-selected>}`. Assert `respond` NOT called.
 
 **File touch**:
-- Modify: `src/slack/action-handlers.ts` (add handler + bind to injected tabCache from DI)
+- Modify: `src/slack/action-handlers.ts` (add handler + bind to injected tabCache + client from DI)
 - Modify: `src/slack/action-handlers.test.ts`
 
 ---
 
 ### Scenario 9 — Non-owner click
 
-**Contract**:
-- `body.user.id !== entry.userId` → `respond({ response_type: 'ephemeral', replace_original: false, text: '⚠️ 본인 카드만 조작할 수 있습니다.' })`
-- tabCache left **untouched** (no eviction)
-- no image swap
+**Flow**: gate fails → `await respond({ response_type: 'ephemeral', replace_original: false, text: '⚠️ 본인 카드만 조작할 수 있습니다.' })`. Note: `respond` (not `client.chat.update`) is correct here — ephemeral reject is single-shot, within response_url limits.
 
-**RED**: `action-handlers.test.ts` describe `usage_card_tab non-owner` — entry.userId='U111', body.user.id='U999'. Assert respond called with `response_type:'ephemeral'` + `replace_original:false`. Assert tabCache still has entry.
+**Contract**:
+- `body.user.id !== entry.userId` → ephemeral via `respond` with `replace_original:false`
+- `client.chat.update` NOT called (original message untouched)
+- tabCache left **untouched** (no eviction)
+
+**RED**: `action-handlers.test.ts` describe `usage_card_tab non-owner` — entry.userId='U111', body.user.id='U999'. Assert `respond` called with `response_type:'ephemeral'` + `replace_original:false`. Assert `client.chat.update` NOT called. Assert tabCache still has entry.
 
 ---
 
@@ -256,13 +270,14 @@ class TabCache {
 **Contract**:
 - returned object has exactly 4 keys `{'24h','7d','30d','all'}`
 - every value is a Buffer with PNG magic bytes `89 50 4E 47`
+- PNG width = 1600, height = 2200 (parsed from IHDR chunk bytes 16-23)
 - selected tab's Buffer differs from non-selected tab's Buffer for same period stats (selection state baked into image)
-- running twice with same input yields bitwise-identical output (determinism — for eventual snapshot cache)
+- **NOT** asserting bitwise-identical across runs — resvg+zlib embed timestamp-dependent data; determinism guarantee is out of scope
 
 **RED**: `carousel-renderer.test.ts` — fixture `CarouselStats` with all 4 periods non-empty. Call `renderCarousel(stats, '30d')`. Assert:
 - 4 Buffers returned
-- each has PNG magic
-- `renderCarousel(stats, '30d')` ≠ `renderCarousel(stats, '7d')` (at byte level)
+- each has PNG magic + 1600×2200 dims
+- `renderCarousel(stats, '30d')` ≠ `renderCarousel(stats, '7d')` (at byte level — selection state baked)
 
 **File touch**:
 - New: `src/metrics/usage-render/carousel-renderer.ts`
@@ -334,15 +349,21 @@ export const DARK_PALETTE = {
   grid:       '#2E2E2E',
 } as const;
 
-export const HEATMAP_SCALE = ['#2A2A2A', '#3A231C', '#6B3F30', '#A06048', '#CD7F5C'] as const;
+// luminance-monotonic: 31.0 → 41.1 → 72.9 → 109.7 → 143.4
+export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F5C'] as const;
 ```
 
 **Contract**:
-- 8 keys present, lowercase hex strings matching `/^#[0-9A-Fa-f]{6}$/`
+- 8 keys present, hex strings matching `/^#[0-9A-Fa-f]{6}$/`
 - HEATMAP_SCALE length = 5
-- HEATMAP_SCALE luminance monotonically non-decreasing (low → high gradient; accentBg darker than accent)
+- HEATMAP_SCALE luminance **strictly increasing** — `Y = 0.299R + 0.587G + 0.114B`, each step > previous (not merely ≥; strict monotonicity catches the `#2A2A2A` regression from rev-1 draft)
+- expected luminances: `[31.0, 41.1, 72.9, 109.7, 143.4]` within ±1.0 rounding tolerance
 
-**RED**: `dark-palette.test.ts` — hex regex per token, scale length check, luminance monotonicity via simple `0.299 R + 0.587 G + 0.114 B` formula.
+**RED**: `dark-palette.test.ts`:
+- hex regex per token (all 8)
+- scale length check (=== 5)
+- strict monotonic luminance (`for i in 1..4: Y[i] > Y[i-1]`)
+- explicit values pinned: expect `Y[0] ≈ 31.0`, `Y[4] ≈ 143.4` — catch anyone swapping `#1F1F1F` back to a brighter value.
 
 **File touch**:
 - New: `src/metrics/usage-render/dark-palette.ts`
@@ -398,6 +419,12 @@ export const HEATMAP_SCALE = ['#2A2A2A', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 | Persistent LRU on disk                                             | No                                                               | In-process is enough (see spec §4.6)                                          |
 | New npm deps                                                       | None                                                              | echarts + resvg + fonts all reused                                            |
 | deploy.yml change                                                  | None                                                              | No new native dep, no new bundle path                                         |
+| Tab swap mechanism                                                 | `client.chat.update({channel, ts, blocks})` (bot token)          | response_url has 30min/5-call limit — unreliable for 24h window; Oracle P0 #3 + Linus P0 #1 |
+| `block_id` for actions block                                       | Static `'usage_card_tabs'` (no messageTs embed)                  | messageTs unknown pre-postMessage; `body.container.message_ts` already provided by Bolt — Linus P0 #3 |
+| Multi-instance readiness                                           | Single-instance assumption PINNED (§4.6); Redis migration = separate ticket | Current prod = single systemd unit; Redis-backed TabCache premature — Linus P0 #2 |
+| `filesUploadV2` auto-post risk                                     | `channel_id: undefined` + contract test spies upload args         | Passing `channels` would post 4 orphan file messages — Oracle P0 #1            |
+| Heatmap scale step 0 hex                                           | `#1F1F1F` (L=31.0) replacing `#2A2A2A` (L=42.0)                   | strict monotonicity over `#3A231C` (L=41.1) — Oracle P1                        |
+| `USAGE_CARD_V2` feature flag                                       | Added; false → v1 path, true → carousel path                     | Oracle MISSING: rollback path needed without code revert                      |
 
 ---
 
@@ -443,6 +470,58 @@ export const HEATMAP_SCALE = ['#2A2A2A', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 ---
 
 ## Changelog
+
+### 2026-04-18 (rev-2) — Linus + Oracle review integration
+
+Applied P0/P1 findings from parallel local:reviewer (SIMPLIFY) + local:oracle (88/100 REQUEST_CHANGES). All P0 resolved; no scenario count change, contracts tightened.
+
+#### MODIFIED Scenarios
+
+- **Scenario 1 — `/usage card` happy path**
+  - **Before**: `filesUploadV2` args unspecified re: `channels`; post-upload race unhandled; `block_id` embedded messageTs
+  - **After**: explicit `no channels/channel_id` contract; 500ms×3 retry on `invalid_blocks` race; static `block_id='usage_card_tabs'`; `USAGE_CARD_V2` feature flag branch added
+  - **Trigger**: Oracle P0 #1 (orphan post), Oracle P0 #2 (cold-cache race), Linus P0 #3 (block_id chicken-and-egg), Oracle MISSING (rollback path)
+  - **Contract tests updated**: upload args spy, flag off → v1 path
+
+- **Scenario 8 — `usage_card_tab` action**
+  - **Before**: `respond({replace_original:true, blocks})` — uses response_url (30min/5-call limit)
+  - **After**: `client.chat.update({channel, ts: messageTs, blocks})` — bot token, unlimited; `respond` reserved for ephemeral rejects only; `messageTs` from `body.container.message_ts` (static block_id)
+  - **Trigger**: Linus P0 #1, Oracle P0 #3
+  - **Contract tests updated**: `client.chat.update` spy replaces `respond` happy assertion
+
+- **Scenario 9 — Non-owner click**
+  - **Before**: `respond({replace_original:false, ...})` — consistent with happy path
+  - **After**: same `respond` call, but clarifying note that ephemeral rejects STILL use response_url (single-shot within limits), while happy path now uses `client.chat.update`
+  - **Trigger**: clarification from Scenario 8 change
+  - **Contract tests updated**: assert `client.chat.update` NOT called
+
+- **Scenario 10 — renderCarousel**
+  - **Before**: "running twice with same input yields bitwise-identical output" (determinism asserted)
+  - **After**: determinism NOT asserted (resvg+zlib non-deterministic); replaced with PNG magic + 1600×2200 dims + selected-tab byte-level differentiation
+  - **Trigger**: Oracle NIT
+  - **Contract tests updated**: IHDR parse for width/height; removed bitwise-identical assertion
+
+- **Scenario 14 — Dark palette + heatmap scale**
+  - **Before**: `HEATMAP_SCALE = ['#2A2A2A', '#3A231C', '#6B3F30', '#A06048', '#CD7F5C']` (L = [42.0, 41.1, 72.9, 109.7, 143.4] — step 0→1 DECREASING)
+  - **After**: `HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F5C']` (L = [31.0, 41.1, 72.9, 109.7, 143.4] — strictly increasing); contract tightened to `strictly increasing` + explicit pinned luminance values
+  - **Trigger**: Oracle P1 (RED test would fail immediately as written)
+  - **Contract tests updated**: strict `>` instead of `≥`; pinned `Y[0]≈31.0`, `Y[4]≈143.4`
+
+- **Auto-Decisions table**: 6 new rows added for tab swap mechanism, block_id strategy, multi-instance, filesUploadV2 args, heatmap step 0, feature flag
+
+#### ADDED Scenarios
+
+None (P0/P1 all resolvable within existing 15 scenarios).
+
+#### REMOVED Scenarios
+
+None.
+
+#### Pushback (not adopted)
+
+- Linus "reduce 6 new impl files to 4": partial — palette kept separate for testing; streaks kept separate (3 functions, distinct edge cases). Total impl files: 5 (palette, buildCarouselOption, carousel-renderer, streaks, carousel-cache) + 1 pure helper (carousel-blocks) = 6. Retained.
+- Linus "aggregateCarousel single-scan unmeasured": profiling post-implementation only; structural test (`iterateEvents` spy count === 1) is sufficient RED gate.
+- Oracle MISSING "deploy.yml SHA guard": PR changes no workflow file.
 
 ### 2026-04-18 — Initial v2 trace
 
