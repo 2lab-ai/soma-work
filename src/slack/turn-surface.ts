@@ -56,8 +56,12 @@ export interface TurnContext {
   turnId: string;
 }
 
-/** Reason handed to `end()` for observability only — not a business signal. */
-export type TurnEndReason = 'completed' | 'waiting-for-choice' | 'max_tokens' | 'aborted' | 'superseded' | 'shutdown';
+/**
+ * Reason handed to `end()` for observability only — not a business signal.
+ * P1 only wires `'completed'` / `'aborted'` (from stream-executor) and `'superseded'`
+ * (internally from begin() race). Additional reasons will be added as P2~P5 wire them.
+ */
+export type TurnEndReason = 'completed' | 'aborted' | 'superseded';
 
 interface TurnState {
   ctx: TurnContext;
