@@ -237,7 +237,7 @@ describe('CctHandler — Wave 5', () => {
       active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
       fetchAndStoreUsage: async () => null,
       snapshot: {
-        version: 2,
+        version: 1,
         revision: 1,
         registry: { activeSlotId: 'slot-1', slots: [] },
         state: {
@@ -306,7 +306,7 @@ describe('CctHandler — Wave 5', () => {
       tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'rate-limited' }],
       active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
       snapshot: {
-        version: 2,
+        version: 1,
         revision: 1,
         registry: {
           activeSlotId: 'slot-1',
