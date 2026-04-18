@@ -19,6 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
@@ -242,7 +243,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   return {
     key,
-    title: s.title || 'Untitled',
+    title: displayTitle(s),
     ownerName: s.ownerName || s.ownerId || 'unknown',
     ownerId: s.ownerId || '',
     workflow: s.workflow || 'default',
@@ -334,7 +335,7 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 export function archivedToKanban(archived: ArchivedSession): KanbanSession {
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
-    title: archived.title || 'Untitled',
+    title: displayTitle(archived),
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
     ownerId: archived.ownerId || '',
     workflow: archived.workflow || 'default',

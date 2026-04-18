@@ -41,8 +41,12 @@ export class ThreadHeaderBuilder {
     session: ConversationSession,
     overrides?: { closed?: boolean; theme?: SessionTheme },
   ): ThreadHeaderPayload {
+    // Dashboard v2.1 — prefer LLM-generated summaryTitle when available,
+    // then raw title. Undefined when neither is set so resolveTitle's
+    // existing pr/issue fallback chain still runs.
+    const resolvedTitle = session.summaryTitle?.trim() || session.title?.trim() || undefined;
     return ThreadHeaderBuilder.build({
-      title: session.title,
+      title: resolvedTitle,
       workflow: session.workflow,
       ownerName: session.ownerName,
       ownerId: session.ownerId,
