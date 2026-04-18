@@ -1090,6 +1090,15 @@ export class SlackHandler {
     await this.actionHandlers.handleDashboardMultiChoiceAnswer(sessionKey, selections, session.ownerId);
   }
 
+  /** Handle hero "Submit All Recommended" from dashboard (group-only one-click) */
+  async handleDashboardSubmitRecommended(sessionKey: string): Promise<void> {
+    const session = this.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    await this.actionHandlers.handleDashboardSubmitRecommended(sessionKey, session.ownerId);
+  }
+
   /** Request re-render of the Slack thread header (e.g. after title change) */
   requestThreadSurfaceRender(session: ConversationSession): void {
     if (!this.threadPanel) {

@@ -240,6 +240,51 @@ Slack action은 `src/slack/actions/index.ts`에서 등록됩니다:
   - 멀티 질문: 해당 질문의 선택으로 저장(`choiceId: '직접입력'`)
     - 현재 구현은 **마지막 미응답 질문이 직접입력으로 채워져 전체가 완료되면 자동 제출**합니다.
 
+### 7.5 Hero "Submit-All-Recommended" (Issue #581)
+`user_choice_group`(복수 질문) 폼 상단에 **추천대로 모두 선택** 히어로 버튼을 추가합니다.
+단일 `user_choice`에는 적용하지 않습니다(질문 1개는 기존 ⭐ 추천 버튼으로 충분).
+
+**상태 전이 (Slack & Dashboard 공통)**
+- `N`: `recommendedChoiceId`가 실제 옵션과 매치되는 질문 수 (`'직접입력'` sentinel 제외)
+- `M`: `questions.length`
+- `N == M` → 활성 primary 버튼 `⭐ 추천대로 모두 선택` (`action_id: submit_all_recommended_<formId>`)
+- `0 < N < M` → blocked sentinel `🔒 추천 부족 (N/M)` (`action_id: submit_all_recommended_blocked_<formId>`)
+  - Slack: 클릭 시 ephemeral 안내, 제출 없음
+  - Dashboard: `disabled` + `aria-disabled="true"` + `aria-label`
+- `N == 0` → 히어로 블록 자체를 omit
+
+**Partial-fill (Slack only)**
+사용자가 일부 질문에 이미 답한 상태에서 활성 버튼 클릭 시:
+- 기존 선택은 보존
+- 미응답 + 추천 가능한 질문만 추천값으로 채움
+- 모두 차면 `completeMultiChoiceForm` 즉시 호출
+- 부족하면 UI를 새 선택으로 갱신 후 ephemeral 안내(`✏️ X개는 직접 선택해주세요.`)
+
+**Cross-surface lock (Slack ↔ Dashboard)**
+- `PendingChoiceFormData.submitting?: boolean` 필드가 락 역할
+- Slack 핸들러: `completeMultiChoiceForm` 진입 직전 `submitting=true` 동기 set, 실패 시 false 복구
+- Dashboard 핸들러: 진입 시 `formStore.getFormsBySession(sessionKey)`에서 `submitting=true` 폼 발견 시 `'Submission in progress'` throw → 409
+- `session.activityState !== 'waiting'`도 별도로 가드
+
+**Endpoint**: `POST /api/dashboard/session/:key/submit-recommended` (CSRF + auth + ownership)
+
+| 상태 코드 | 조건 |
+|-----------|------|
+| 200 | 정상 처리 |
+| 401 | 인증 실패 |
+| 403 | 세션 소유자 아님 (admin 제외) |
+| 404 | `Session not found` |
+| 409 | `Session is not waiting for a choice` / `Session has no pending multi-choice question` / `Submission in progress` / `Recommendations incomplete` |
+| 422 | `No recommendation available` (N=0인데 호출됨) |
+| 500 | 그 외 |
+
+Dashboard는 N==M 한 가지만 활성화하므로(`Recommendations incomplete` 분기는 server-side defense),
+Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question form은 server-side selections
+경로를 그대로 사용해 Slack 50-block 메시지 한도를 우회합니다.
+
+**Telemetry**: `logger.info('hero_recommended_clicked', { surface, n, m, sessionKey, formId? })`
+및 blocked 분기는 `'hero_recommended_blocked'`.
+
 ## 8. Session/Status Integration
 
 ### 8.1 모델 응답이 “선택 대기”로 끝난 경우
