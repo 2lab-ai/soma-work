@@ -802,6 +802,93 @@ describe('Dashboard API', () => {
     expect(toggleFn![1]).toContain('removeItem');
     expect(toggleFn![1]).toContain('osTheme');
   });
+
+  // ── pendingQuestion projection preserves recommendedChoiceId (#563) ──
+  it('projects pendingQuestion.recommendedChoiceId for user_choice', async () => {
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 'sid-uc',
+      title: 'Waiting uc',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'waiting',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T09:00:00Z'),
+      actionPanel: {
+        pendingQuestion: {
+          type: 'user_choice',
+          question: 'Pick',
+          choices: [
+            { id: '1', label: 'A' },
+            { id: '2', label: 'B' },
+          ],
+          recommendedChoiceId: '2',
+        },
+      },
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+    const body = JSON.parse(res.body);
+    const s = body.board.waiting[0];
+    expect(s.pendingQuestion).toBeDefined();
+    expect(s.pendingQuestion.type).toBe('user_choice');
+    expect(s.pendingQuestion.recommendedChoiceId).toBe('2');
+  });
+
+  it('projects per-sub-question recommendedChoiceId for user_choices', async () => {
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 'sid-ucs',
+      title: 'Waiting ucs',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'waiting',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T09:00:00Z'),
+      actionPanel: {
+        pendingQuestion: {
+          type: 'user_choices',
+          title: 'Multi',
+          questions: [
+            {
+              id: 'q1',
+              question: 'First',
+              choices: [
+                { id: 'a', label: 'A' },
+                { id: 'b', label: 'B' },
+              ],
+              recommendedChoiceId: 'b',
+            },
+          ],
+        },
+      },
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+    const body = JSON.parse(res.body);
+    const s = body.board.waiting[0];
+    expect(s.pendingQuestion).toBeDefined();
+    expect(s.pendingQuestion.type).toBe('user_choices');
+    expect(s.pendingQuestion.questions[0].recommendedChoiceId).toBe('b');
+  });
 });
 
 describe('Ghost session filtering (#438)', () => {

@@ -184,6 +184,7 @@ export interface UserChoiceQuestion {
   question: string; // The question being asked
   choices: UserChoiceOption[]; // 2-5 options
   context?: string; // Optional context
+  recommendedChoiceId?: string; // Optional id of the recommended choice; renderer highlights it
 }
 
 /**
@@ -195,6 +196,7 @@ export interface UserChoice {
   question: string; // The question being asked
   choices: UserChoiceOption[]; // 2-5 options
   context?: string; // Optional context about why this choice matters
+  recommendedChoiceId?: string; // Optional id of the recommended choice; renderer highlights it
 }
 
 /**

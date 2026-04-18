@@ -1,4 +1,4 @@
-import type { UserChoice, UserChoices } from '../types';
+import type { UserChoice, UserChoiceOption, UserChoices } from '../types';
 import type { SessionTheme } from '../user-settings-store';
 
 export interface SlackMessagePayload {
@@ -8,6 +8,15 @@ export interface SlackMessagePayload {
 
 // Option number emojis for visual distinction
 const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+
+interface PartitionedChoice {
+  opt: UserChoiceOption;
+  origIndex: number;
+}
+interface PartitionedChoices {
+  recommended: PartitionedChoice | null;
+  rest: PartitionedChoice[];
+}
 
 /**
  * Slack 블록 UI 빌딩 로직
@@ -34,6 +43,51 @@ export class ChoiceMessageBuilder {
   // ---------------------------------------------------------------------------
   // Helper: build standard action buttons (shared across themes)
   // ---------------------------------------------------------------------------
+
+  private static partition(choices: UserChoiceOption[], recId?: string): PartitionedChoices {
+    const all = choices.slice(0, 4).map((opt, i) => ({ opt, origIndex: i }));
+    if (!recId) return { recommended: null, rest: all };
+    const idx = all.findIndex((e) => e.opt.id === recId);
+    if (idx < 0) return { recommended: null, rest: all };
+    return { recommended: all[idx], rest: all.filter((_, i) => i !== idx) };
+  }
+
+  private static buildChoiceButton(
+    entry: PartitionedChoice,
+    sessionKey: string,
+    question: string,
+    opts: { primary?: boolean; labelMaxLen?: number } = {},
+  ): any {
+    const maxLen = opts.labelMaxLen ?? 25;
+    const button: any = {
+      type: 'button',
+      text: {
+        type: 'plain_text',
+        text: `${OPTION_EMOJIS[entry.origIndex]} ${entry.opt.label.substring(0, maxLen)}`,
+        emoji: true,
+      },
+      value: JSON.stringify({
+        sessionKey,
+        choiceId: entry.opt.id,
+        label: entry.opt.label,
+        question,
+      }),
+      action_id: `user_choice_${entry.opt.id}`,
+    };
+    if (opts.primary) button.style = 'primary';
+    return button;
+  }
+
+  private static buildRecommendedBannerSection(rec: PartitionedChoice): any {
+    const descLine = rec.opt.description ? `\n_${rec.opt.description}_` : '';
+    return {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `⭐ *Recommended* — *${rec.opt.label}*${descLine}`,
+      },
+    };
+  }
 
   private static buildOptionButtons(choice: UserChoice, sessionKey: string): any[] {
     const options = choice.choices.slice(0, 4);
@@ -115,13 +169,17 @@ export class ChoiceMessageBuilder {
 
     attachmentBlocks.push({ type: 'divider' });
 
+    const partition = ChoiceMessageBuilder.partition(choice.choices, choice.recommendedChoiceId);
+    const hasRecommended = !!partition.recommended;
+
     // Build fields for horizontal layout (2 columns) with number emojis
-    const options = choice.choices.slice(0, 4);
-    const fields: any[] = options.map((opt, idx) => ({
+    // When a recommended choice is present, exclude it from fields (banner covers it).
+    const fieldEntries = hasRecommended ? partition.rest : [...partition.rest];
+    const fields: any[] = fieldEntries.map((entry) => ({
       type: 'mrkdwn',
-      text: opt.description
-        ? `${OPTION_EMOJIS[idx]} *${opt.label}*\n_${opt.description}_`
-        : `${OPTION_EMOJIS[idx]} *${opt.label}*`,
+      text: entry.opt.description
+        ? `${OPTION_EMOJIS[entry.origIndex]} *${entry.opt.label}*\n_${entry.opt.description}_`
+        : `${OPTION_EMOJIS[entry.origIndex]} *${entry.opt.label}*`,
     }));
 
     if (fields.length > 0) {
@@ -138,43 +196,81 @@ export class ChoiceMessageBuilder {
       }
     }
 
-    // Action buttons
-    const buttons: any[] = options.map((opt, idx) => ({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        choiceId: opt.id,
-        label: opt.label,
-        question: choice.question,
-      }),
-      action_id: `user_choice_${opt.id}`,
-    }));
+    if (hasRecommended && partition.recommended) {
+      // Banner + solo primary actions + divider
+      attachmentBlocks.push(ChoiceMessageBuilder.buildRecommendedBannerSection(partition.recommended));
+      attachmentBlocks.push({
+        type: 'actions',
+        elements: [
+          ChoiceMessageBuilder.buildChoiceButton(partition.recommended, sessionKey, choice.question, {
+            primary: true,
+          }),
+        ],
+      });
+      attachmentBlocks.push({ type: 'divider' });
 
-    // Custom input button
-    buttons.push({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: '✏️ 직접 입력',
-        emoji: true,
-      },
-      value: JSON.stringify({
-        sessionKey,
-        question: choice.question,
-        type: 'single',
-      }),
-      action_id: 'custom_input_single',
-    });
+      // Remaining buttons (preserving original ordinals) + custom input
+      const restButtons: any[] = partition.rest.map((entry) =>
+        ChoiceMessageBuilder.buildChoiceButton(entry, sessionKey, choice.question),
+      );
+      restButtons.push({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '✏️ 직접 입력',
+          emoji: true,
+        },
+        value: JSON.stringify({
+          sessionKey,
+          question: choice.question,
+          type: 'single',
+        }),
+        action_id: 'custom_input_single',
+      });
 
-    attachmentBlocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+      attachmentBlocks.push({
+        type: 'actions',
+        elements: restButtons,
+      });
+    } else {
+      // Original layout (no recommended)
+      const options = choice.choices.slice(0, 4);
+      const buttons: any[] = options.map((opt, idx) => ({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: `${OPTION_EMOJIS[idx]} ${opt.label.substring(0, 25)}`,
+          emoji: true,
+        },
+        value: JSON.stringify({
+          sessionKey,
+          choiceId: opt.id,
+          label: opt.label,
+          question: choice.question,
+        }),
+        action_id: `user_choice_${opt.id}`,
+      }));
+
+      buttons.push({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '✏️ 직접 입력',
+          emoji: true,
+        },
+        value: JSON.stringify({
+          sessionKey,
+          question: choice.question,
+          type: 'single',
+        }),
+        action_id: 'custom_input_single',
+      });
+
+      attachmentBlocks.push({
+        type: 'actions',
+        elements: buttons,
+      });
+    }
 
     return {
       attachments: [
@@ -216,13 +312,36 @@ export class ChoiceMessageBuilder {
       });
     }
 
-    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
-    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    const partition = ChoiceMessageBuilder.partition(choice.choices, choice.recommendedChoiceId);
+    if (partition.recommended) {
+      blocks.push(ChoiceMessageBuilder.buildRecommendedBannerSection(partition.recommended));
+      blocks.push({
+        type: 'actions',
+        elements: [
+          ChoiceMessageBuilder.buildChoiceButton(partition.recommended, sessionKey, choice.question, {
+            primary: true,
+          }),
+        ],
+      });
+      blocks.push({ type: 'divider' });
 
-    blocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+      const restButtons = partition.rest.map((entry) =>
+        ChoiceMessageBuilder.buildChoiceButton(entry, sessionKey, choice.question),
+      );
+      restButtons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+      blocks.push({
+        type: 'actions',
+        elements: restButtons,
+      });
+    } else {
+      const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
+      buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+
+      blocks.push({
+        type: 'actions',
+        elements: buttons,
+      });
+    }
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
@@ -259,13 +378,36 @@ export class ChoiceMessageBuilder {
       });
     }
 
-    const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
-    buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    const partition = ChoiceMessageBuilder.partition(choice.choices, choice.recommendedChoiceId);
+    if (partition.recommended) {
+      blocks.push(ChoiceMessageBuilder.buildRecommendedBannerSection(partition.recommended));
+      blocks.push({
+        type: 'actions',
+        elements: [
+          ChoiceMessageBuilder.buildChoiceButton(partition.recommended, sessionKey, choice.question, {
+            primary: true,
+          }),
+        ],
+      });
+      blocks.push({ type: 'divider' });
 
-    blocks.push({
-      type: 'actions',
-      elements: buttons,
-    });
+      const restButtons = partition.rest.map((entry) =>
+        ChoiceMessageBuilder.buildChoiceButton(entry, sessionKey, choice.question),
+      );
+      restButtons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+      blocks.push({
+        type: 'actions',
+        elements: restButtons,
+      });
+    } else {
+      const buttons = ChoiceMessageBuilder.buildOptionButtons(choice, sessionKey);
+      buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+
+      blocks.push({
+        type: 'actions',
+        elements: buttons,
+      });
+    }
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
@@ -390,13 +532,16 @@ export class ChoiceMessageBuilder {
           });
         }
 
-        // Options with number emojis
-        const options = q.choices.slice(0, 4);
-        const fields: any[] = options.map((opt, optIdx) => ({
+        const partition = ChoiceMessageBuilder.partition(q.choices, q.recommendedChoiceId);
+        const hasRecommended = !!partition.recommended;
+
+        // Options fields (exclude recommended when present)
+        const fieldEntries = hasRecommended ? partition.rest : [...partition.rest];
+        const fields: any[] = fieldEntries.map((entry) => ({
           type: 'mrkdwn',
-          text: opt.description
-            ? `${OPTION_EMOJIS[optIdx]} *${opt.label}*\n_${opt.description}_`
-            : `${OPTION_EMOJIS[optIdx]} *${opt.label}*`,
+          text: entry.opt.description
+            ? `${OPTION_EMOJIS[entry.origIndex]} *${entry.opt.label}*\n_${entry.opt.description}_`
+            : `${OPTION_EMOJIS[entry.origIndex]} *${entry.opt.label}*`,
         }));
 
         if (fields.length > 0) {
@@ -413,46 +558,102 @@ export class ChoiceMessageBuilder {
           }
         }
 
-        // Action buttons with number emojis
-        const buttons: any[] = options.map((opt, optIdx) => ({
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: `${OPTION_EMOJIS[optIdx]} ${opt.label.substring(0, 22)}`,
-            emoji: true,
-          },
-          value: JSON.stringify({
-            formId,
-            sessionKey,
-            questionId: q.id,
-            choiceId: opt.id,
-            label: opt.label,
-          }),
-          action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
-        }));
+        const makeMultiButton = (entry: PartitionedChoice, primary: boolean): any => {
+          const button: any = {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: `${OPTION_EMOJIS[entry.origIndex]} ${entry.opt.label.substring(0, 22)}`,
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+              choiceId: entry.opt.id,
+              label: entry.opt.label,
+            }),
+            action_id: `multi_choice_${formId}_${q.id}_${entry.opt.id}`,
+          };
+          if (primary) button.style = 'primary';
+          return button;
+        };
 
-        // Custom input button
-        buttons.push({
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: '✏️ 직접 입력',
-            emoji: true,
-          },
-          value: JSON.stringify({
-            formId,
-            sessionKey,
-            questionId: q.id,
-            question: q.question,
-            type: 'multi',
-          }),
-          action_id: `custom_input_multi_${formId}_${q.id}`,
-        });
+        if (hasRecommended && partition.recommended) {
+          // Banner
+          attachmentBlocks.push(ChoiceMessageBuilder.buildRecommendedBannerSection(partition.recommended));
+          // Solo primary action for recommended
+          attachmentBlocks.push({
+            type: 'actions',
+            elements: [makeMultiButton(partition.recommended, true)],
+          });
+          attachmentBlocks.push({ type: 'divider' });
 
-        attachmentBlocks.push({
-          type: 'actions',
-          elements: buttons,
-        });
+          // Remaining buttons + custom input
+          const restButtons: any[] = partition.rest.map((entry) => makeMultiButton(entry, false));
+          restButtons.push({
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '✏️ 직접 입력',
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+              question: q.question,
+              type: 'multi',
+            }),
+            action_id: `custom_input_multi_${formId}_${q.id}`,
+          });
+
+          attachmentBlocks.push({
+            type: 'actions',
+            elements: restButtons,
+          });
+        } else {
+          // Original layout (no recommended)
+          const options = q.choices.slice(0, 4);
+          const buttons: any[] = options.map((opt, optIdx) => ({
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: `${OPTION_EMOJIS[optIdx]} ${opt.label.substring(0, 22)}`,
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+              choiceId: opt.id,
+              label: opt.label,
+            }),
+            action_id: `multi_choice_${formId}_${q.id}_${opt.id}`,
+          }));
+
+          buttons.push({
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: '✏️ 직접 입력',
+              emoji: true,
+            },
+            value: JSON.stringify({
+              formId,
+              sessionKey,
+              questionId: q.id,
+              question: q.question,
+              type: 'multi',
+            }),
+            action_id: `custom_input_multi_${formId}_${q.id}`,
+          });
+
+          attachmentBlocks.push({
+            type: 'actions',
+            elements: buttons,
+          });
+        }
       }
     });
 

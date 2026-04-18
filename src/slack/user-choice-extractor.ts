@@ -6,6 +6,11 @@ export interface ExtractedChoice {
   textWithoutChoice: string;
 }
 
+function validateRecommendedChoiceId(raw: unknown, opts: { id: string }[]): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  return opts.some((o) => o.id === raw) ? raw : undefined;
+}
+
 /**
  * JSON 추출 및 파싱 로직
  */
@@ -105,7 +110,25 @@ export class UserChoiceExtractor {
 
       // Format 1: UserChoices (multi-question form)
       if (parsed.type === 'user_choices' && Array.isArray(parsed.questions)) {
-        return { choice: null, choices: parsed as UserChoices };
+        const normalizedQuestions: UserChoiceQuestion[] = parsed.questions.map((q: any, idx: number) => {
+          const subOpts = Array.isArray(q?.choices) ? q.choices : Array.isArray(q?.options) ? q.options : [];
+          return {
+            id: typeof q?.id === 'string' && q.id ? q.id : `q${idx + 1}`,
+            question: q?.question,
+            choices: subOpts,
+            context: q?.context,
+            recommendedChoiceId: validateRecommendedChoiceId(q?.recommendedChoiceId, subOpts),
+          };
+        });
+        return {
+          choice: null,
+          choices: {
+            type: 'user_choices',
+            title: parsed.title,
+            description: parsed.description,
+            questions: normalizedQuestions,
+          },
+        };
       }
 
       // Format 2: UserChoice (single choice with type field)
@@ -118,6 +141,7 @@ export class UserChoiceExtractor {
               question: parsed.question,
               choices: opts,
               context: parsed.context,
+              recommendedChoiceId: validateRecommendedChoiceId(parsed.recommendedChoiceId, opts),
             },
             choices: null,
           };
@@ -128,12 +152,16 @@ export class UserChoiceExtractor {
       if (parsed.question && Array.isArray(parsed.choices) && (!parsed.type || parsed.type === 'user_choice_group')) {
         const firstChoice = parsed.choices[0];
         if (firstChoice && (firstChoice.type === 'user_choice' || firstChoice.options || firstChoice.choices)) {
-          const questions: UserChoiceQuestion[] = parsed.choices.map((c: any, idx: number) => ({
-            id: `q${idx + 1}`,
-            question: c.question,
-            choices: c.options || c.choices || [],
-            context: c.context,
-          }));
+          const questions: UserChoiceQuestion[] = parsed.choices.map((c: any, idx: number) => {
+            const subOpts = c.options || c.choices || [];
+            return {
+              id: `q${idx + 1}`,
+              question: c.question,
+              choices: subOpts,
+              context: c.context,
+              recommendedChoiceId: validateRecommendedChoiceId(c.recommendedChoiceId, subOpts),
+            };
+          });
 
           if (questions.length === 1) {
             return {
@@ -142,6 +170,7 @@ export class UserChoiceExtractor {
                 question: questions[0].question,
                 choices: questions[0].choices,
                 context: questions[0].context,
+                recommendedChoiceId: questions[0].recommendedChoiceId,
               },
               choices: null,
             };

@@ -28,9 +28,10 @@ Call `mcp__model-command__run`:
       "type": "user_choice",
       "question": "[medium ~50 lines] <question>",
       "context": "<current state · problem · impact · fix code · review consensus>",
+      "recommendedChoiceId": "1",
       "choices": [
-        { "id": "1", "label": "Option A: <action> (Recommended · 3/3)", "description": "<trade-offs>" },
-        { "id": "2", "label": "Option B: <action>",                     "description": "<trade-offs>" }
+        { "id": "1", "label": "Option A: <action>", "description": "<trade-offs>" },
+        { "id": "2", "label": "Option B: <action>", "description": "<trade-offs>" }
       ]
     }
   }
@@ -52,7 +53,7 @@ If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [
    - Trade-offs for each option
    - 3-person review consensus (Codex + oracle-reviewer + oracle-gemini-reviewer)
 4. **2-4 options** — Slack UI renders `1️⃣-4️⃣` buttons up to 4. The 5th and beyond get cut off. `multiSelect` not supported (single-select only).
-5. **Recommended option goes first** — Mark in label with `(Recommended · N/M)`. N/M is the review vote count.
+5. **Recommended option** — Set `recommendedChoiceId: '<option id>'` at the payload level (single) or per sub-question (group). The renderer shows the recommended button on its own row with ⭐ Recommended banner + primary style. Do NOT embed 'Recommended' in the label anymore.
 6. **Actionable label** — Specific action that can be executed immediately upon selection. Meta options like "I'll think about it" are prohibited.
 7. **Do not mention `plan` in Plan mode** — The user cannot see the plan in the UI. Plan approval is the responsibility of `ExitPlanMode`; this tool is for confirming requirements.
 8. **Specify fallback default** — Adding a default action like "If no response, proceeding with Option A" at the end of `context` prevents blocking progress (optional).
@@ -105,10 +106,11 @@ No tier, no code snippets, no problem description, no review consensus → User 
       "type": "user_choice",
       "question": "[medium ~50 lines] P1-1: Missing DbUpdateException filter — choose implementation approach",
       "context": "▸ Current (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) { return Result.Conflict(); }\n```\n▸ Problem: All DB exceptions including network/timeout are treated as Conflict → risk of data loss.\n▸ Review consensus (3/3 Option A): Codex · oracle-reviewer · oracle-gemini unanimous.\n▸ Default if no response: Proceeding with Option A.",
+      "recommendedChoiceId": "option_a",
       "choices": [
         {
           "id": "option_a",
-          "label": "Option A: Add when filter (Recommended · 3/3)",
+          "label": "Option A: Add when filter",
           "description": "`catch (DbUpdateException ex) when (IsDuplicateKeyException(ex))` — Bulk update 4 files, add 4 tests. Minimal change, intuitive."
         },
         {

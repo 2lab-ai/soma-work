@@ -41,6 +41,7 @@ const ASK_USER_QUESTION_EXAMPLES = {
     payload: {
       type: 'user_choice',
       question: 'Choose next step',
+      recommendedChoiceId: '1',
       choices: [
         { id: '1', label: 'Write implementation spec', description: 'Document API and tasks first' },
         { id: '2', label: 'Start implementation', description: 'Code immediately from current context' },
@@ -55,6 +56,7 @@ const ASK_USER_QUESTION_EXAMPLES = {
       choices: [
         {
           question: 'Which approach?',
+          recommendedChoiceId: '1',
           options: [
             { id: '1', label: 'Option A' },
             { id: '2', label: 'Option B' },
@@ -74,6 +76,7 @@ const ASK_USER_QUESTION_INVALID_MESSAGE = [
   '{ "type":"user_choice", "question":"...", "choices":[{ "id":"1", "label":"Option A", "description":"optional" }] }',
   'Minimum user_choice_group schema:',
   '{ "type":"user_choice_group", "question":"...", "choices":[{ "question":"...", "options":[{ "id":"1", "label":"Option A" }] }] }',
+  'Optional: recommendedChoiceId (string) — must match an existing choice id; renderer highlights this option.',
   'Rules: "choices" or "options" must be a non-empty array of objects, and each item requires "label" (string).',
 ].join('\n');
 
@@ -566,6 +569,12 @@ function normalizeChoicePayload(raw: unknown): UserChoice | UserChoices | null {
   return normalizeUserChoice(raw);
 }
 
+function validateRecommendedChoiceId(raw: unknown, opts: UserChoiceOption[]): string | undefined {
+  const id = toOptionalString(raw);
+  if (!id) return undefined;
+  return opts.some(o => o.id === id) ? id : undefined;
+}
+
 function normalizeUserChoiceQuestion(raw: unknown, index: number): UserChoiceQuestion | null {
   if (!isRecord(raw)) {
     return null;
@@ -581,6 +590,7 @@ function normalizeUserChoiceQuestion(raw: unknown, index: number): UserChoiceQue
     question,
     context: toOptionalString(raw.context),
     choices: options,
+    recommendedChoiceId: validateRecommendedChoiceId(raw.recommendedChoiceId, options),
   };
 }
 
@@ -595,6 +605,7 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
     question,
     context: toOptionalString(raw.context),
     choices: options,
+    recommendedChoiceId: validateRecommendedChoiceId(raw.recommendedChoiceId, options),
   };
 }
 

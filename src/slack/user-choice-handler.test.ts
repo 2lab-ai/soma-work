@@ -561,4 +561,109 @@ this is not valid json
       }
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #563: recommendedChoiceId extraction
+  // ---------------------------------------------------------------------------
+  describe('extractUserChoice — recommendedChoiceId', () => {
+    it('should preserve recommendedChoiceId on raw user_choice', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choice",
+  "question": "Pick one",
+  "recommendedChoiceId": "2",
+  "choices": [
+    {"id": "1", "label": "A"},
+    {"id": "2", "label": "B"}
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.recommendedChoiceId).toBe('2');
+    });
+
+    it('should drop recommendedChoiceId on user_choice when id is not in choices', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choice",
+  "question": "Pick one",
+  "recommendedChoiceId": "nonexistent",
+  "choices": [
+    {"id": "1", "label": "A"},
+    {"id": "2", "label": "B"}
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choice).not.toBe(null);
+      expect(result.choice?.recommendedChoiceId).toBeUndefined();
+    });
+
+    it('should preserve per-sub-question recommendedChoiceId on user_choices', () => {
+      const text = `\`\`\`json
+{
+  "type": "user_choices",
+  "title": "Multi",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "First",
+      "recommendedChoiceId": "b",
+      "choices": [
+        {"id": "a", "label": "A"},
+        {"id": "b", "label": "B"}
+      ]
+    },
+    {
+      "id": "q2",
+      "question": "Second",
+      "recommendedChoiceId": "bad",
+      "choices": [
+        {"id": "x", "label": "X"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBe(null);
+      const q = result.choices!.questions!;
+      expect(q[0].recommendedChoiceId).toBe('b');
+      expect(q[1].recommendedChoiceId).toBeUndefined();
+    });
+
+    it('should preserve per-sub-question recommendedChoiceId on user_choice_group', () => {
+      const text = `\`\`\`json
+{
+  "question": "Group",
+  "choices": [
+    {
+      "type": "user_choice",
+      "question": "Sub1",
+      "recommendedChoiceId": "1",
+      "options": [
+        {"id": "1", "label": "A"},
+        {"id": "2", "label": "B"}
+      ]
+    },
+    {
+      "type": "user_choice",
+      "question": "Sub2",
+      "recommendedChoiceId": "999",
+      "options": [
+        {"id": "x", "label": "X"},
+        {"id": "y", "label": "Y"}
+      ]
+    }
+  ]
+}
+\`\`\``;
+      const result = UserChoiceHandler.extractUserChoice(text);
+      expect(result.choices).not.toBe(null);
+      const q = result.choices!.questions!;
+      expect(q[0].recommendedChoiceId).toBe('1');
+      expect(q[1].recommendedChoiceId).toBeUndefined();
+    });
+  });
 });

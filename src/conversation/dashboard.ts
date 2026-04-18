@@ -87,10 +87,12 @@ export interface KanbanSession {
       question: string;
       choices: Array<{ id: string; label: string; description?: string }>;
       context?: string;
+      recommendedChoiceId?: string;
     }>;
     questionCount?: number;
     title?: string;
     description?: string;
+    recommendedChoiceId?: string;
   };
 }
 
@@ -282,6 +284,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
               label: c.label,
               description: c.description,
             })),
+            recommendedChoiceId: (s.actionPanel.pendingQuestion as any).recommendedChoiceId,
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -299,6 +302,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                   description: c.description,
                 })),
                 context: q.context,
+                recommendedChoiceId: q.recommendedChoiceId,
               })),
             }
           : undefined // Unknown question type — skip
@@ -1598,6 +1602,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   opacity: 0.5;
   cursor: not-allowed;
 }
+.btn-choice-recommended {
+  background: #2e7d32 !important;
+  color: #fff !important;
+  border: 2px solid #43a047;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(67,160,71,0.3);
+}
+.btn-choice-recommended::before { content: "\\2B50 "; }
+.card-question-recommended,
+.panel-question-rec-divider {
+  margin: 8px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border-color, #444);
+}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -2426,11 +2444,24 @@ function renderPanelQuestion(s) {
   var q = s.pendingQuestion;
 
   if (q.type === 'user_choice' && q.choices) {
-    var btns = q.choices.map(function(c) {
-      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(c.label) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
-    }).join('');
-    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
-      + '<div class="panel-question-choices">' + btns + '</div>';
+    var mkPanelBtn = function(c, extraClass) {
+      var cls = 'btn-choice' + (extraClass ? ' ' + extraClass : '');
+      return '<button class="' + cls + '" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(c.label) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+    };
+    var recId2 = q.recommendedChoiceId;
+    var recIdx2 = recId2 ? q.choices.findIndex(function(c) { return c.id === recId2; }) : -1;
+    if (recIdx2 >= 0) {
+      var recChoice2 = q.choices[recIdx2];
+      var rest2 = q.choices.filter(function(_, i) { return i !== recIdx2; });
+      var restBtns2 = rest2.map(function(c) { return mkPanelBtn(c, ''); }).join('');
+      container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
+        + '<div class="panel-question-rec-divider">&#x2B50; Recommended &mdash; ' + mkPanelBtn(recChoice2, 'btn-choice-recommended') + '</div>'
+        + '<div class="panel-question-choices">' + restBtns2 + '</div>';
+    } else {
+      var btns = q.choices.map(function(c) { return mkPanelBtn(c, ''); }).join('');
+      container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
+        + '<div class="panel-question-choices">' + btns + '</div>';
+    }
   } else if (q.type === 'user_choices' && q.questions) {
     renderMultiChoicePanel(s);
     return;
@@ -2724,13 +2755,30 @@ function renderCard(s, col) {
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
-      const choiceBtns = s.pendingQuestion.choices.map(function(c) {
-        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(s.pendingQuestion.question) + '\\',this)" title="' + escAttr(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
-      }).join('');
-      questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(s.pendingQuestion.question).slice(0, 80) + '</div>'
-        + '<div class="card-question-choices">' + choiceBtns + '</div>'
-        + '</div>';
+      const pq = s.pendingQuestion;
+      const recId = pq.recommendedChoiceId;
+      const recIdx = recId ? pq.choices.findIndex(function(c) { return c.id === recId; }) : -1;
+      const mkBtn = function(c, extraClass) {
+        var cls = 'btn-choice' + (extraClass ? ' ' + extraClass : '');
+        return '<button class="' + cls + '" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(c.label) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(c.description || c.label) + '">' + esc(c.id) + '. ' + esc(c.label) + '</button>';
+      };
+      if (recIdx >= 0) {
+        var recChoice = pq.choices[recIdx];
+        var rest = pq.choices.filter(function(_, i) { return i !== recIdx; });
+        var recBlock = '<div class="card-question-recommended">&#x2B50; Recommended &mdash; ' + mkBtn(recChoice, 'btn-choice-recommended') + '</div>';
+        var restBtns = rest.map(function(c) { return mkBtn(c, ''); }).join('');
+        questionHtml = '<div class="card-question">'
+          + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+          + recBlock
+          + '<div class="card-question-choices">' + restBtns + '</div>'
+          + '</div>';
+      } else {
+        var choiceBtns = pq.choices.map(function(c) { return mkBtn(c, ''); }).join('');
+        questionHtml = '<div class="card-question">'
+          + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+          + '<div class="card-question-choices">' + choiceBtns + '</div>'
+          + '</div>';
+      }
     } else if (s.pendingQuestion.type === 'user_choices') {
       questionHtml = renderMultiChoiceCard(s);
     }
@@ -2933,15 +2981,31 @@ function renderMultiChoicePanel(s) {
         + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">\\uD83D\\uDD04 \\uBCC0\\uACBD</button>'
         + '</div>';
     } else {
-      // Show choice buttons
-      html += '<div class="mc-q-choices">';
-      for (var ci = 0; ci < qItem.choices.length; ci++) {
-        var ch = qItem.choices[ci];
+      // Show choice buttons — partition by recommendedChoiceId
+      var mkMcBtn = function(ch, extraClass) {
+        var cls = 'btn-choice' + (extraClass ? ' ' + extraClass : '');
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
-        html += '<button class="btn-choice" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(ch.label) + '\\')">'
+        return '<button class="' + cls + '" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(ch.label) + '\\')">'
           + esc(ch.id) + '. ' + esc(ch.label) + desc + '</button>';
+      };
+      var mcRecId = qItem.recommendedChoiceId;
+      var mcRecIdx = mcRecId ? qItem.choices.findIndex(function(c) { return c.id === mcRecId; }) : -1;
+      if (mcRecIdx >= 0) {
+        var mcRec = qItem.choices[mcRecIdx];
+        html += '<div class="panel-question-rec-divider">&#x2B50; Recommended &mdash; ' + mkMcBtn(mcRec, 'btn-choice-recommended') + '</div>';
+        html += '<div class="mc-q-choices">';
+        for (var ci = 0; ci < qItem.choices.length; ci++) {
+          if (ci === mcRecIdx) continue;
+          html += mkMcBtn(qItem.choices[ci], '');
+        }
+        html += '</div>';
+      } else {
+        html += '<div class="mc-q-choices">';
+        for (var ci = 0; ci < qItem.choices.length; ci++) {
+          html += mkMcBtn(qItem.choices[ci], '');
+        }
+        html += '</div>';
       }
-      html += '</div>';
       // Custom input
       html += '<div class="mc-custom-input">'
         + '<input type="text" id="mc-custom-' + qi + '" placeholder="\\uC9C1\\uC811\\uC785\\uB825..." onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'

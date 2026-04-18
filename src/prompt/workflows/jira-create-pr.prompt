@@ -87,6 +87,7 @@ After the Red phase is complete, confirm with the user whether to proceed with G
 {
   "type": "user_choice",
   "question": "The Red phase (PR skeleton) is complete. Would you like to continue with the Green phase?",
+  "recommendedChoiceId": "1",
   "options": [
     {"id": "1", "label": "Proceed with Green", "description": "Implement actual logic and pass all tests"},
     {"id": "2", "label": "Stop here", "description": "End with current Draft PR status"}
@@ -114,6 +115,7 @@ After the Green phase is complete, confirm whether to proceed with Refactor:
 {
   "type": "user_choice",
   "question": "The Green phase is complete. Would you like to proceed with the Refactor phase?",
+  "recommendedChoiceId": "1",
   "options": [
     {"id": "1", "label": "Proceed with Refactor", "description": "Clean up structure/improve readability and finalize PR"},
     {"id": "2", "label": "Stop here", "description": "End with implementation complete status"}

@@ -164,6 +164,7 @@ const ASK_USER_QUESTION_SCHEMA = {
             type: { type: 'string', enum: ['user_choice'] },
             question: { type: 'string' },
             context: { type: 'string' },
+            recommendedChoiceId: { type: 'string' },
             choices: {
               type: 'array',
               minItems: 1,
@@ -194,6 +195,7 @@ const ASK_USER_QUESTION_SCHEMA = {
                 properties: {
                   question: { type: 'string' },
                   context: { type: 'string' },
+                  recommendedChoiceId: { type: 'string' },
                   options: {
                     type: 'array',
                     minItems: 1,

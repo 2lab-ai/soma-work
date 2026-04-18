@@ -201,7 +201,7 @@ After the review results are finalized, the following loop **must** be performed
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "new fix <PR_URL>\n\n## Selected Implementation Approach\n| # | Finding | Selected Option | Description |\n|---|---------|----------------|-------------|\n| 1 | [P1] Issue title | Option A: ... | Recommended 2/3, rationale... |",
+    "prompt": "new fix <PR_URL>\n\n## Selected Implementation Approach\n| # | Finding | Selected Option | Description |\n|---|---------|----------------|-------------|\n| 1 | [P1] Issue title | Option A: ... | rationale... |",
     "resetSession": true,
     "dispatchText": "<PR_URL>",
     "forceWorkflow": "pr-fix-and-update"
@@ -301,7 +301,7 @@ For P1+ issues, there is no need to ask "whether to fix it or not." **It must be
 // problematic code
 ```
 - **Problem**: Description + actual impact
-- **Implementation Option A** (recommended 2/3):
+- **Implementation Option A** (set `recommendedChoiceId` to this option's id):
 ```suggestion
 // fixed code A
 ```
