@@ -29,6 +29,7 @@
     "@biomejs/biome": "^2.4.10",
     "@types/ioredis": "^4.28.10",
     "@types/node": "=24.0.4",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
@@ -52,6 +53,8 @@
     "markdown-to-slack-blocks": "^1.4.1",
     "mongodb": "^7.1.1",
     "mysql2": "^3.20.0",
-    "node-fetch": "=3.3.2"
+    "node-fetch": "=3.3.2",
+    "proper-lockfile": "^4.1.2",
+    "ulid": "^3.0.2"
   }
 }
