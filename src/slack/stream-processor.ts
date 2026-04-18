@@ -431,6 +431,14 @@ export class StreamProcessor {
     // Respect per-session/user showThinking toggle (independent of verbosity)
     if (context.showThinking === false) return;
 
+    // Issue #525 P1: preserve the B1 single-writer invariant. Thinking is
+    // narrative flavor (same category as the RPG skill banner dropped below
+    // in handleToolUseMessage) and would render as a second message next to
+    // the consolidated stream under PHASE>=1. Suppress entirely until a later
+    // phase wires thinking chunks into the B1 stream.
+    const inTurn = Boolean(context.turnId && context.threadPanel?.isTurnSurfaceActive());
+    if (inTurn) return;
+
     const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
     if (thinkingMode === 'hidden') return;
 

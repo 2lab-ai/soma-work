@@ -22,11 +22,20 @@ The 5-block per-turn UI (from plan v2, §3):
 
 Single-writer invariant enforced in this PR:
 
-> When `SOMA_UI_5BLOCK_PHASE >= 1`, **only `TurnSurface` writes B1**. No other
-> component may call `chat.postMessage` / `chat.update` with B1 content for an
+> When `SOMA_UI_5BLOCK_PHASE >= 1`, **only `TurnSurface` writes the B1 stream
+> message** (`streamTs` returned by `chat.startStream`). No other component
+> may call `chat.appendStream` / `chat.update` against that `ts` during an
 > active turn. `stream-processor.ts` and `stream-executor.ts` route to
 > `ThreadPanel.appendText(turnId, …)` instead of the legacy `context.say`
 > path.
+
+Scope boundary: **B1 single-writer** means the B1 stream message, not "only
+one thread message per turn." In P1 the legacy `tool-event-processor.ts`
+still posts **standalone** tool-result messages into the thread under
+`LOG_VERBOSE` (compact / hidden verbosity already suppresses them). Those
+messages are a different surface from B1 and move into `TurnSurface` only
+when P2 lands. If you run P1 on verbose verbosity, expect separate tool
+result messages next to B1 — that is the designed boundary, not a leak.
 
 ## Rollout flag
 
@@ -129,6 +138,6 @@ invariant intact across rapid follow-up user messages in the same thread.
 | `src/slack/turn-surface.test.ts` | **New** — unit tests (PHASE 0/1 paths, supersede, idempotency) |
 | `src/slack/thread-panel.ts` | Add `beginTurn` / `appendText` / `endTurn` / `failTurn` / `isTurnSurfaceActive` façade methods; mark `ThreadSurface` as `@internal` |
 | `src/slack/stream-processor.ts` | PHASE>=1 guard: route narrative chunks to `threadPanel.appendText(turnId, …)`; skip `handleToolUseMessage` self `context.say`; skip `rebuildCompactMessage` |
-| `src/slack/pipeline/stream-executor.ts` | Compute `turnId = ${sessionKey}:${turnStartTs}`; call `threadPanel.beginTurn` before turn; `endTurn('completed')` in `finally`; `failTurn(err)` / `endTurn('aborted')` in `catch` |
+| `src/slack/pipeline/stream-executor.ts` | Emits turn lifecycle around each execute: `beginTurn` on entry, `endTurn('completed')` in `finally`, `failTurn(err)` / `endTurn('aborted')` in the error path |
 | `.env.example` | Add `SOMA_UI_5BLOCK_PHASE=0` |
 | `docs/slack-ui-phase1.md` | This document |

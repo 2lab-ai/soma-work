@@ -722,4 +722,102 @@ describe('StreamProcessor', () => {
       expect(mockSay).toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #525 P1 — handleToolUseMessage / handleThinkingContent PHASE guards
+  //
+  // Under PHASE>=1 the consolidated B1 stream is the single writer. The
+  // legacy in-function `context.say` calls (RPG skill banner, tool-call
+  // block, thinking quote) MUST be suppressed so the surface stays single.
+  // A regression here reintroduces exactly the duplicate-banner noise
+  // Issue #525 set out to eliminate, and there's no downstream signal to
+  // catch it — hence explicit coverage.
+  // -------------------------------------------------------------------------
+
+  describe('Issue #525 P1 — PHASE>=1 legacy-write suppression', () => {
+    function phase1Context(): StreamContext {
+      const threadPanel = {
+        isTurnSurfaceActive: () => true,
+        appendText: vi.fn().mockResolvedValue(true),
+      };
+      return { ...mockContext, turnId: 'C123:thread_ts:1', threadPanel };
+    }
+
+    it('suppresses the RPG skill banner under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu1',
+                name: 'Skill',
+                input: { skill: 'some-skill' },
+              },
+            ],
+          },
+        },
+      ];
+
+      const processor = new StreamProcessor();
+      await processor.process(
+        createMockStream(messages) as any,
+        phase1Context(),
+        abortController.signal,
+      );
+
+      // Banner + tool-call block both silenced. PHASE=0 equivalent is already
+      // covered by the existing `process tool use` test above.
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the compact tool-call block under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu-bash',
+                name: 'Bash',
+                input: { command: 'ls' },
+              },
+            ],
+          },
+        },
+      ];
+      // Default logVerbosity (LOG_DETAIL) → tool-call render mode = compact.
+      const processor = new StreamProcessor();
+      await processor.process(
+        createMockStream(messages) as any,
+        phase1Context(),
+        abortController.signal,
+      );
+
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the thinking quote-block under PHASE>=1', async () => {
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'thinking', thinking: 'some hidden chain of thought' },
+              { type: 'text', text: 'visible reply' },
+            ],
+          },
+        },
+      ];
+      const context = phase1Context();
+      const processor = new StreamProcessor();
+      await processor.process(createMockStream(messages) as any, context, abortController.signal);
+
+      // handleThinkingContent's context.say must be silenced; the text chunk
+      // already routes through threadPanel.appendText (covered above).
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+  });
 });

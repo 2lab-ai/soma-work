@@ -17,8 +17,11 @@ export interface PreflightResult {
  * back to 0 (all legacy) with a warn log. This is the single rollout variable
  * for the whole refactor; cumulative prefix semantics (see
  * docs/slack-ui-phase1.md §Rollout).
+ *
+ * @internal exported for unit tests; runtime consumers should read
+ *           `config.ui.fiveBlockPhase` instead.
  */
-function parseFiveBlockPhase(raw: string | undefined): number {
+export function parseFiveBlockPhase(raw: string | undefined): number {
   if (raw === undefined || raw === '') return 0;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0 || n > 5) {
@@ -41,7 +44,9 @@ export const config = {
      *   1 = B1 stream consolidation new path
      *   2 = + B2 plan
      *   3 = + B3 choice
-     *   4 = + B4 status (requires Assistant container registration; clamped to 3 if missing)
+     *   4 = + B4 status (requires Assistant container registration — must be
+     *                    wired at app-init; see slack-handler.ts app.assistant
+     *                    (P4 scope))
      *   5 = + B5 completion marker
      */
     fiveBlockPhase: parseFiveBlockPhase(process.env.SOMA_UI_5BLOCK_PHASE),

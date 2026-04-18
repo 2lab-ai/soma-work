@@ -227,16 +227,42 @@ describe('TurnSurface', () => {
       expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
     });
 
-    it('swallows stopStream errors and still clears state', async () => {
+    it('on stopStream failure: logs channel + streamTs + Slack error, then clears state (memory-leak prevention > retry)', async () => {
+      // Design intent: TurnSurface does NOT retry a failed stopStream. If it
+      // kept the TurnState around, a later supersede-driven fail() would hit
+      // the `state.closing` fence and silently no-op, so "retry later" never
+      // actually happens. Instead we clear the state (no memory leak) and
+      // emit enough forensics for an operator to chase the orphaned stream
+      // manually. The rollout plan (docs/slack-ui-phase1.md §Rollout
+      // sequence) monitors `chat.stopStream` errors via these warn fields.
+      const warnSpy = vi.fn();
+      const slackErr = Object.assign(new Error('slack down'), {
+        data: { error: 'streaming_mode_mismatch' },
+      });
       const client = makeClient({
-        stopStream: vi.fn().mockRejectedValue(new Error('slack down')),
+        stopStream: vi.fn().mockRejectedValue(slackErr),
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      (surface as any).logger.warn = warnSpy;
 
       const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
       await surface.begin(ctx);
       await expect(surface.fail(ctx.turnId, new Error('upstream'))).resolves.toBeUndefined();
+
+      // State cleared (memory-leak prevention)
       expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+
+      // Forensics emitted (operator can chase the leaked stream)
+      expect(warnSpy).toHaveBeenCalledWith(
+        'chat.stopStream failed',
+        expect.objectContaining({
+          turnId: ctx.turnId,
+          channelId: 'C1',
+          streamTs: 'stream-ts-1',
+          origin: 'fail',
+          error: expect.objectContaining({ code: 'streaming_mode_mismatch' }),
+        }),
+      );
     });
 
     it('is a no-op when the turn is unknown', async () => {
@@ -245,6 +271,22 @@ describe('TurnSurface', () => {
 
       await surface.fail('never-began', new Error('x'));
       expect(client.chat.stopStream).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent under double fail() on the same turn', async () => {
+      // The `state.closing` fence at turn-surface.ts:324 must not be bypassed
+      // by a second fail() — otherwise a defensive caller pattern (catch +
+      // finally both calling fail) would double-close the Slack stream.
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      await surface.fail(ctx.turnId, new Error('first'));
+      await surface.fail(ctx.turnId, new Error('second'));
+
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
     });
   });
 

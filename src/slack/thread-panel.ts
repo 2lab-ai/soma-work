@@ -19,8 +19,7 @@ interface ThreadPanelDeps {
   completionMessageTracker?: CompletionMessageTracker;
 }
 
-// Re-export turn types so pipeline/stream-executor can address them without
-// importing the underlying surface directly. Keeps TurnSurface `@internal`.
+// Keeps TurnSurface `@internal` while exposing the public type contract.
 export type { TurnContext, TurnEndReason } from './turn-surface';
 
 /**

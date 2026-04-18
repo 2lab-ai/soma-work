@@ -16,7 +16,7 @@ import type { SlackApiHelper } from './slack-api-helper';
  * (`renderTasks`, `askUser`) are phase-guarded no-ops in P1 and will be
  * activated in P2/P3.
  *
- * **Chunks-mode invariant** (verified on live Slack, 2026-04-17):
+ * **Chunks-mode invariant**:
  *   Once `chat.appendStream` is called with `chunks: [...]`, the stream is
  *   locked into chunks mode. `chat.stopStream` MUST also pass `chunks: [...]`
  *   — a top-level `markdown_text` raises `streaming_mode_mismatch`.
@@ -41,7 +41,7 @@ import type { SlackApiHelper } from './slack-api-helper';
  */
 export interface TurnContext {
   /** Slack channel ID (DM `D...`, channel `C...`, group `G...`). */
-  channelId: string;
+  readonly channelId: string;
   /**
    * Thread anchor. For bot-initiated sessions this is the workflow root; for
    * user-initiated, the user's first message in the thread. Omit (undefined)
@@ -49,20 +49,20 @@ export interface TurnContext {
    * missing `thread_ts` as "open a new DM stream", which is the intended
    * fallback for phase-0 harness runs.
    */
-  threadTs?: string;
+  readonly threadTs?: string;
   /** Session key (`${channelId}:${threadRootTs ?? threadTs}`). */
-  sessionKey: string;
+  readonly sessionKey: string;
   /** Unique turn id — stream-executor uses `${sessionKey}:${turnStartTs}`. */
-  turnId: string;
+  readonly turnId: string;
 }
 
 /**
  * Reason handed to `end()` for observability only — not a business signal.
  * P1 wires exactly two values from stream-executor: `'completed'` (success path,
- * finally block) and `'aborted'` (catch path, non-error abort). The supersede race
- * goes through `fail()` with `new Error('superseded')`, not `end()` — so 'superseded'
- * is an Error message, not a TurnEndReason value. Additional reasons will be added
- * when P2~P5 wire them (e.g. 'waiting-for-choice' for UIAsk pause in P3).
+ * finally block) and `'aborted'` (catch path, non-error abort). Supersede goes
+ * through `fail()` with `new Error('superseded')` rather than `end()`, so
+ * 'superseded' is an Error message — not a TurnEndReason value. Later phases
+ * will widen this union if they wire additional reasons.
  */
 export type TurnEndReason = 'completed' | 'aborted';
 
@@ -75,6 +75,19 @@ interface TurnState {
   appendedChunks: number;
   /** True once `end()` or `fail()` has been entered for this turn. */
   closing: boolean;
+}
+
+/**
+ * Extract Slack error code (`streaming_mode_mismatch`, `channel_not_found`,
+ * rate-limit, etc.) plus the message from whatever shape the SDK threw. The
+ * rollout plan wants these distinguishable in logs — a bare `catch {}` erases
+ * the very signal operators need.
+ */
+function describeSlackError(error: unknown): { code?: string; message: string } {
+  const err = error as { data?: { error?: string }; code?: string; message?: string };
+  const code = err?.data?.error ?? err?.code;
+  const message = err?.message ?? String(error);
+  return code ? { code, message } : { message };
 }
 
 export interface TurnSurfaceDeps {
@@ -340,16 +353,21 @@ export class TurnSurface {
   // -------------------------------------------------------------------------
 
   /**
-   * Raw `chat.stopStream` with chunks-mode symmetry. Returns `true` on
-   * success, `false` on any Slack/network error. Callers layer their own
-   * structured logging on top so the context (turn vs orphan) is preserved.
+   * Raw `chat.stopStream` with chunks-mode symmetry. Returns a discriminated
+   * result so callers can log the Slack error code (`streaming_mode_mismatch`,
+   * `channel_not_found`, rate limits, etc.) — operators need this to diagnose
+   * stream-close failures that the rollout plan (docs/slack-ui-phase1.md
+   * §Monitoring) explicitly expects to track.
    *
    * Chunks-mode symmetry: an empty chunks array closes without inserting a
    * trailing marker, which would be a B5-responsibility leak (P5 scope).
    * The `as any` bridges the same SDK typing gap documented on startStream
    * in `begin()` above.
    */
-  private async stopStreamRaw(channelId: string, streamTs: string): Promise<boolean> {
+  private async stopStreamRaw(
+    channelId: string,
+    streamTs: string,
+  ): Promise<{ ok: true } | { ok: false; error: unknown }> {
     try {
       const client = this.deps.slackApi.getClient();
       await (client.chat as any).stopStream({
@@ -357,9 +375,9 @@ export class TurnSurface {
         ts: streamTs,
         chunks: [],
       });
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error };
     }
   }
 
@@ -369,9 +387,12 @@ export class TurnSurface {
    * fail() had already removed the state — open-then-immediately-close.
    */
   private async closeOrphanStream(channelId: string, streamTs: string): Promise<void> {
-    const ok = await this.stopStreamRaw(channelId, streamTs);
-    if (!ok) {
-      this.logger.warn('orphan stopStream failed', { streamTs });
+    const result = await this.stopStreamRaw(channelId, streamTs);
+    if (!result.ok) {
+      this.logger.warn('orphan stopStream failed', {
+        streamTs,
+        error: describeSlackError(result.error),
+      });
     }
   }
 
@@ -382,8 +403,8 @@ export class TurnSurface {
    */
   private async closeStream(state: TurnState, origin: 'end' | 'fail', reason: TurnEndReason): Promise<void> {
     if (!state.streamTs) return;
-    const ok = await this.stopStreamRaw(state.ctx.channelId, state.streamTs);
-    if (ok) {
+    const result = await this.stopStreamRaw(state.ctx.channelId, state.streamTs);
+    if (result.ok) {
       this.logger.debug('B1 stream closed', {
         turnId: state.ctx.turnId,
         streamTs: state.streamTs,
@@ -393,10 +414,18 @@ export class TurnSurface {
         elapsedMs: Date.now() - state.startedAt,
       });
     } else {
+      // State is cleared after we return (see end()/fail() finally blocks).
+      // That trades retryability for memory-leak prevention — but the trade
+      // means an operator can ONLY chase the leaked stream via these fields.
+      // Keep channel + streamTs + Slack error code in the warn payload so
+      // `streaming_mode_mismatch` (rollout monitor §3) stays diagnosable.
       this.logger.warn('chat.stopStream failed', {
         turnId: state.ctx.turnId,
+        channelId: state.ctx.channelId,
+        streamTs: state.streamTs,
         origin,
         reason,
+        error: describeSlackError(result.error),
       });
     }
   }
