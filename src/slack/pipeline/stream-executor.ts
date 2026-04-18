@@ -640,6 +640,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
           // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
+          //
+          // P2 B2 (#577): pass the live turnId + turn context so the manager
+          // can fan out to TurnSurface.renderTasks under PHASE>=2. Both values
+          // are already in closure from `turnId`/`turnContext` declared at
+          // :339-345 (turn-open). Under PHASE<2 handleTodoUpdate ignores them.
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
@@ -649,6 +654,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.say,
             getVerbosity(),
             session,
+            turnId,
+            {
+              channelId: turnContext.channelId,
+              threadTs: turnContext.threadTs,
+              sessionKey: turnContext.sessionKey,
+            },
           );
         },
         onPendingFormCreate: (formId, form) => {

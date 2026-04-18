@@ -1,5 +1,6 @@
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import type { ClaudeHandler } from '../claude-handler';
+import { config } from '../config';
 import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import type { TodoManager } from '../todo-manager';
@@ -566,7 +567,15 @@ export class ThreadSurface {
         : [];
     const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
 
-    const todos = session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
+    // P2 B2 migration (Issue #577): under PHASE>=2 the task-list is rendered
+    // as its own `planTs` Slack message by TurnSurface.renderTasks. Skipping
+    // the embed here prevents dual rendering (combined header + plan message)
+    // from showing the same todos twice. PHASE<2 keeps the legacy embed so
+    // existing deployments see identical output.
+    const todos =
+      config.ui.fiveBlockPhase < 2 && session.sessionId
+        ? this.deps.todoManager.getTodos(session.sessionId)
+        : [];
     if (todos.length > 0 && budgetForTaskList >= 4) {
       const taskListTheme = userSettingsStore.getUserSessionTheme(session.ownerId);
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {

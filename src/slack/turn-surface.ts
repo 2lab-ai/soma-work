@@ -1,6 +1,9 @@
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { Todo } from '../todo-manager';
 import type { SlackApiHelper } from './slack-api-helper';
+import { TaskListBlockBuilder } from './task-list-block-builder';
+import { TurnRenderDebouncer } from './turn-render-debouncer';
 
 /**
  * TurnSurface — single-writer for a per-turn streaming surface (Issue #525).
@@ -70,11 +73,28 @@ interface TurnState {
   ctx: TurnContext;
   /** ts returned by `chat.startStream` — identifies the B1 stream message. */
   streamTs?: string;
+  /**
+   * ts returned by the first `chat.postMessage` in `renderTasks` — identifies
+   * the B2 plan message. Once set, subsequent renderTasks calls use
+   * `chat.update` against this ts instead of posting a new message.
+   *
+   * Intentionally NOT cleared on end/fail/supersede: the plan message is
+   * persistent Slack history, so closing a turn must leave the final
+   * rendered plan visible to the user. Ad-hoc state entries (created by
+   * renderTasks without a prior begin()) also use this field.
+   */
+  planTs?: string;
   startedAt: number;
   /** Monotonic counter of appended chunks (debug/observability). */
   appendedChunks: number;
   /** True once `end()` or `fail()` has been entered for this turn. */
   closing: boolean;
+  /**
+   * True when the state entry was created by `renderTasks(ctx?)` without a
+   * prior `begin()`. Ad-hoc entries are NOT registered in `activeTurn`, so
+   * they don't participate in supersede logic.
+   */
+  adHoc: boolean;
 }
 
 /**
@@ -106,6 +126,9 @@ export class TurnSurface {
 
   /** sessionKey → active turnId (for supersede on rapid re-entry). */
   private activeTurn = new Map<string, string>();
+
+  /** P2 B2 plan block — 500ms trailing-edge debouncer per turnId. */
+  private renderDebouncer = new TurnRenderDebouncer<string>(500);
 
   constructor(private deps: TurnSurfaceDeps) {}
 
@@ -166,6 +189,7 @@ export class TurnSurface {
       startedAt: Date.now(),
       appendedChunks: 0,
       closing: false,
+      adHoc: false,
     });
     this.activeTurn.set(ctx.sessionKey, ctx.turnId);
 
@@ -268,16 +292,128 @@ export class TurnSurface {
   /**
    * B2 (plan block) entry point — activated in P2.
    *
-   * In P1 (PHASE<2) this is a no-op: the legacy ThreadSurface keeps rendering
-   * the task list embedded in the header/panel message. Callers who target
-   * B2 must therefore gate their call behind `config.ui.fiveBlockPhase >= 2`.
+   * Schedules a trailing-edge (500ms) rerender of the task list on the plan
+   * message owned by this turn. Each call replaces the pending snapshot, so
+   * rapid TodoWrite ticks collapse into a single Slack update.
+   *
+   * Flow:
+   *   1. First call on a turn → `chat.postMessage` stores `planTs` on state.
+   *   2. Subsequent calls → `chat.update` against `planTs`.
+   *   3. `ctx` is only consulted when no existing turn state is found (ad-hoc
+   *      path, e.g. renderTasks called before begin()). It seeds a state
+   *      entry that does NOT participate in `activeTurn` supersede logic.
+   *
+   * Returns `true` when the render was scheduled (caller's "we owned the
+   * render" signal). Returns `false` when we fell through to the legacy path
+   * — PHASE<2, empty todos, or missing context.
    */
-  async renderTasks(turnId: string, _todos: unknown[]): Promise<void> {
-    if (this.phase() < 2) return;
-    // P2 scope: implement via TaskListBlockBuilder → chat.update on the plan
-    // message ts tracked in TurnState. Intentionally not implemented in P1
-    // to keep the diff contained to B1 behavior.
-    this.logger.debug('renderTasks invoked before P2 wiring', { turnId });
+  async renderTasks(
+    turnId: string,
+    todos: Todo[],
+    ctx?: { channelId: string; threadTs?: string; sessionKey: string },
+  ): Promise<boolean> {
+    if (this.phase() < 2) return false;
+    if (!todos || todos.length === 0) return false;
+
+    let state = this.turns.get(turnId);
+    if (!state) {
+      if (!ctx) {
+        // Ad-hoc renderTasks call with no prior begin() and no context — we
+        // cannot address a Slack channel, so fall through to the legacy path.
+        this.logger.warn('renderTasks called without ctx and no existing turn', { turnId });
+        return false;
+      }
+      // Ad-hoc entry: create a TurnState with streamTs=undefined so end/fail
+      // skip `stopStream` (guarded at end()/fail()). Not registered in
+      // activeTurn — ad-hoc entries never supersede another turn.
+      const adHocCtx: TurnContext = {
+        channelId: ctx.channelId,
+        threadTs: ctx.threadTs,
+        sessionKey: ctx.sessionKey,
+        turnId,
+      };
+      state = {
+        ctx: adHocCtx,
+        startedAt: Date.now(),
+        appendedChunks: 0,
+        closing: false,
+        adHoc: true,
+      };
+      this.turns.set(turnId, state);
+    }
+
+    if (state.closing) {
+      // Turn already shutting down — drop the render rather than flushing
+      // onto a just-cleaned-up state.
+      return false;
+    }
+
+    // Schedule a trailing render. Each call replaces the closure so the
+    // LATEST todos snapshot wins (matches TodoWrite's full-snapshot contract).
+    this.renderDebouncer.schedule(turnId, async () => {
+      await this.renderTasksNow(turnId, todos);
+    });
+    return true;
+  }
+
+  /**
+   * Fire the actual `chat.postMessage` (first call) or `chat.update`
+   * (subsequent) against the plan message ts. Called by the debouncer's
+   * tail trigger.
+   *
+   * Deliberately does NOT short-circuit on `state.closing`: end() / fail()
+   * flush the debouncer while `closing=true` so the final plan state lands
+   * on Slack before cleanup. The cleanupTurn() handler cancels the
+   * debouncer, so any later trigger that fires after cleanup finds
+   * `state === undefined` below and skips on its own.
+   */
+  private async renderTasksNow(turnId: string, todos: Todo[]): Promise<void> {
+    const state = this.turns.get(turnId);
+    if (!state) return;
+    const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos);
+    if (blocks.length === 0) return;
+
+    const client = this.deps.slackApi.getClient();
+
+    if (!state.planTs) {
+      try {
+        const postArgs: Record<string, unknown> = {
+          channel: state.ctx.channelId,
+          text,
+          blocks,
+        };
+        if (state.ctx.threadTs) postArgs.thread_ts = state.ctx.threadTs;
+        const result: { ts?: string } = await (client.chat as any).postMessage(postArgs);
+        if (result?.ts) {
+          state.planTs = result.ts;
+          this.logger.debug('B2 plan message posted', { turnId, planTs: result.ts });
+        } else {
+          this.logger.warn('chat.postMessage returned no ts', { turnId });
+        }
+      } catch (err) {
+        this.logger.warn('chat.postMessage for plan block failed', {
+          turnId,
+          error: (err as Error).message,
+        });
+      }
+      return;
+    }
+
+    try {
+      await (client.chat as any).update({
+        channel: state.ctx.channelId,
+        ts: state.planTs,
+        text,
+        blocks,
+      });
+      this.logger.debug('B2 plan message updated', { turnId, planTs: state.planTs });
+    } catch (err) {
+      this.logger.warn('chat.update for plan block failed', {
+        turnId,
+        planTs: state.planTs,
+        error: (err as Error).message,
+      });
+    }
   }
 
   /**
@@ -307,10 +443,17 @@ export class TurnSurface {
     // concurrent callers cannot both pass this gate.
     if (!state || state.closing) return;
 
-    // Mark closing so a concurrent appendText() call during shutdown is
-    // dropped rather than racing with stopStream, and so a concurrent
-    // end()/fail() call bounces off the idempotency check above.
+    // Mark closing synchronously FIRST so a concurrent appendText() call
+    // during the debouncer flush / stopStream await is dropped rather than
+    // racing. Any scheduled B2 render still runs during flush — renderTasksNow
+    // deliberately does not short-circuit on `closing` so the final plan
+    // state can be landed on Slack before cleanup.
     state.closing = true;
+
+    // Drain any pending B2 render so the final plan state lands on Slack
+    // before we drop the TurnState. Debouncer's internal catch handles fn
+    // errors — no need to wrap here.
+    await this.renderDebouncer.flush(turnId);
 
     try {
       if (state.streamTs) {
@@ -336,7 +479,12 @@ export class TurnSurface {
     // closed (state cleaned up) → no-op. See end() for the same rationale.
     if (!state || state.closing) return;
 
+    // Set closing FIRST (same race-avoidance as end()), THEN drain the B2
+    // debouncer so the final plan state lands on Slack before we drop the
+    // TurnState. Supersede (begin()→fail(A)) drives this path most often.
     state.closing = true;
+    await this.renderDebouncer.flush(turnId);
+
     this.logger.debug('turn fail()', { turnId, error: error.message });
 
     try {
@@ -439,6 +587,10 @@ export class TurnSurface {
     if (this.activeTurn.get(state.ctx.sessionKey) === turnId) {
       this.activeTurn.delete(state.ctx.sessionKey);
     }
+    // Drop any future-scheduled renders for this turn; the plan message in
+    // Slack (planTs) is deliberately left intact — history preserves the
+    // final state even after the turn closes.
+    this.renderDebouncer.cancel(turnId);
   }
 
   // -------------------------------------------------------------------------

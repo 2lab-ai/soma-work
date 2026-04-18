@@ -30,6 +30,47 @@ export interface TaskListBuildOptions {
   theme?: SessionTheme;
 }
 
+/** Effective status ignoring the TodoManager instance — used by the static
+ * `buildPlanTasks` path which does not own a TodoManager. Mirrors the logic
+ * in `TodoManager.getEffectiveStatus` (pending + non-completed dep = blocked).
+ */
+function computeEffectiveStatus(
+  todo: Todo,
+  allTodos: Todo[],
+): 'completed' | 'in_progress' | 'pending' | 'blocked' {
+  if (todo.status === 'completed') return 'completed';
+  if (todo.status === 'in_progress') return 'in_progress';
+  // todo.status === 'pending' from here
+  if (!todo.dependencies || todo.dependencies.length === 0) return 'pending';
+  const blocked = todo.dependencies.some((depId) => {
+    const dep = allTodos.find((t) => t.id === depId);
+    // Missing dep → treat as blocked (matches TodoManager.isBlocked behavior)
+    if (!dep) return true;
+    return dep.status !== 'completed';
+  });
+  return blocked ? 'blocked' : 'pending';
+}
+
+/** Icon prefix for the top-level plain-text fallback view. */
+const STATUS_ICON: Record<'completed' | 'in_progress' | 'pending' | 'blocked', string> = {
+  completed: '✅',
+  in_progress: '⏳',
+  pending: '⬜',
+  blocked: '🚧',
+};
+
+/** Map internal effective status → Slack task_card `status` enum. Slack
+ * task_card only has `pending | in_progress | complete | error`, so our
+ * `blocked` derived state collapses to `pending` for the card itself — the
+ * 🚧 signal is preserved in the top-level text and in the section fallback. */
+function toTaskCardStatus(
+  effective: 'completed' | 'in_progress' | 'pending' | 'blocked',
+): 'complete' | 'in_progress' | 'pending' {
+  if (effective === 'completed') return 'complete';
+  if (effective === 'in_progress') return 'in_progress';
+  return 'pending';
+}
+
 /**
  * Renders a task list as Slack Block Kit blocks for embedding in the thread header.
  *
@@ -40,6 +81,80 @@ export interface TaskListBuildOptions {
  */
 export class TaskListBlockBuilder {
   constructor(private todoManager: TodoManager) {}
+
+  /**
+   * P2 entry point — build plan + task_card blocks for the `TurnSurface` B2
+   * slot, plus a plain-text top-level fallback and a classic mrkdwn section
+   * fallback block.
+   *
+   * Returns `{ text, blocks }` where:
+   *   - `text`: newline-separated emoji-prefixed summary (renders in push
+   *     notifications and old Slack clients).
+   *   - `blocks`:
+   *       1. `{ type: 'plan', tasks: [task_card, ...] }` — rich rendering on
+   *          new clients (Block Kit 2026-02+).
+   *       2. `{ type: 'section', text: { type: 'mrkdwn', text: '...' } }` —
+   *          fallback visible on old clients that silently drop unknown plan
+   *          blocks. Content is mrkdwn-escaped to prevent injection from
+   *          user-supplied todo content.
+   *
+   * Static: this path does NOT depend on a TodoManager instance. Blocked
+   * state is computed inline via `computeEffectiveStatus`.
+   *
+   * Empty / undefined input returns `{ text: '', blocks: [] }` so callers
+   * can short-circuit without a special-case branch.
+   */
+  static buildPlanTasks(todos: Todo[]): { text: string; blocks: any[] } {
+    if (!todos || todos.length === 0) {
+      return { text: '', blocks: [] };
+    }
+
+    // ── 1. Top-level text (plain, unescaped — Slack renders verbatim) ──
+    const textLines: string[] = [];
+    const taskCards: Record<string, unknown>[] = [];
+    const fallbackLines: string[] = [];
+
+    for (let i = 0; i < todos.length; i++) {
+      const todo = todos[i];
+      const effective = computeEffectiveStatus(todo, todos);
+      const icon = STATUS_ICON[effective];
+      const num = i + 1;
+
+      // Top-level text line — uses raw content so push notifications read
+      // naturally. Slack treats this field as plain text, so mrkdwn-escaping
+      // is not required here.
+      textLines.push(`${icon} ${todo.content}`);
+
+      // task_card — title is plain text per Slack schema.
+      taskCards.push({
+        type: 'task_card',
+        task_id: todo.id || `todo-${num}`,
+        title: todo.content,
+        status: toTaskCardStatus(effective),
+      });
+
+      // Fallback mrkdwn line — escaped against injection.
+      fallbackLines.push(`${icon} ${escapeMrkdwn(todo.content)}`);
+    }
+
+    const planBlock: Record<string, unknown> = {
+      type: 'plan',
+      tasks: taskCards,
+    };
+
+    const sectionFallback: Record<string, unknown> = {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: fallbackLines.join('\n'),
+      },
+    };
+
+    return {
+      text: textLines.join('\n'),
+      blocks: [planBlock, sectionFallback],
+    };
+  }
 
   /**
    * Build Block Kit blocks for the task list.
