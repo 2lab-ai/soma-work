@@ -1,4 +1,5 @@
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
@@ -49,9 +50,11 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
 Response to summarize:
 ${truncatedContent}`;
 
-    // Pass the fresh lease token via options.env so concurrent summariser /
-    // title-generator / dispatch calls don't clobber each other's token on
-    // the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
+    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
+    // so concurrent summariser / title-generator / dispatch calls don't
+    // clobber each other's token on the shared
+    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
+    const { env } = buildQueryEnv(lease);
     const options: Options = {
       model: getSummaryModel(),
       maxTurns: 1,
@@ -59,7 +62,7 @@ ${truncatedContent}`;
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
       settingSources: [],
       plugins: [],
-      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
+      env,
       stderr: (data: string) => {
         logger.warn('Summarizer stderr', { data: data.trimEnd() });
       },

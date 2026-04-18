@@ -895,6 +895,207 @@ describe('Dashboard API', () => {
     expect(toggleFn![1]).toContain('removeItem');
     expect(toggleFn![1]).toContain('osTheme');
   });
+
+  // ── Hero "Submit All Recommended" endpoint (#581) ──
+
+  describe('POST /api/dashboard/session/:key/submit-recommended', () => {
+    let setDashboardSubmitRecommendedHandler: any;
+
+    beforeEach(async () => {
+      const dashboard = await import('./dashboard');
+      setDashboardSubmitRecommendedHandler = dashboard.setDashboardSubmitRecommendedHandler;
+    });
+
+    it('Test 13a — returns 200 and { ok: true } on successful submission', async () => {
+      const handler = vi.fn().mockResolvedValue(undefined);
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect(handler).toHaveBeenCalledWith('C1:t1');
+    });
+
+    it('Test 13b — returns 401 without auth', async () => {
+      const handler = vi.fn().mockResolvedValue(undefined);
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('Test 13c — returns 404 when session not found', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('Session not found'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Session not found' });
+    });
+
+    it('Test 13d — returns 409 when session not waiting', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('Session is not waiting for a choice'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toContain('not waiting');
+    });
+
+    it('Test 13e — returns 409 when no pending multi-choice question', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('Session has no pending multi-choice question'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toContain('no pending multi-choice');
+    });
+
+    it('Test 13f — returns 409 when submission in progress (cross-surface lock)', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('Submission in progress'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Submission in progress' });
+    });
+
+    it('Test 13g — returns 409 when recommendations incomplete', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('Recommendations incomplete'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Recommendations incomplete' });
+    });
+
+    it('Test 13h — returns 422 when no recommendation available', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('No recommendation available'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(422);
+      expect(JSON.parse(res.body)).toEqual({ error: 'No recommendation available' });
+    });
+
+    it('Test 13i — returns 500 on unexpected handler error', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('boom unrelated'));
+      setDashboardSubmitRecommendedHandler(handler);
+
+      const res = await injectWebServer({
+        method: 'POST',
+        url: '/api/dashboard/session/C1%3At1/submit-recommended',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Internal Server Error' });
+    });
+
+    it('Test 13j — returns 501 when no handler is configured', async () => {
+      // Reset handler to null by re-importing fresh module (vi.resetModules in outer beforeEach)
+      // but we never registered one for this test
+      vi.resetModules();
+      mockConfig.conversation.viewerToken = 'test-token';
+      const webServer = await import('./web-server');
+      const dashboard = await import('./dashboard');
+      const startFresh = webServer.startWebServer;
+      const injectFresh = webServer.injectWebServer;
+      const stopFresh = webServer.stopWebServer;
+
+      // Register session accessor but NOT submit-recommended handler
+      dashboard.setDashboardSessionAccessor(() => new Map());
+      await startFresh({ listen: false });
+
+      try {
+        const res = await injectFresh({
+          method: 'POST',
+          url: '/api/dashboard/session/C1%3At1/submit-recommended',
+          headers: AUTH_HEADER,
+        });
+
+        expect(res.statusCode).toBe(501);
+        expect(JSON.parse(res.body).error).toContain('handler not configured');
+      } finally {
+        await stopFresh();
+      }
+    });
+  });
+
+  // ── Hero button render (Test 10) ──
+
+  describe('renderMultiChoicePanel hero button', () => {
+    it('Test 10 — inline JS includes submitAllRecommended function and hero button branches', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/dashboard',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(200);
+      const html: string = res.body;
+      const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+      expect(scriptMatch).not.toBeNull();
+      const script = scriptMatch![1];
+
+      // submitAllRecommended function exists
+      expect(script).toContain('function submitAllRecommended');
+      // POSTs to the new endpoint
+      expect(script).toContain('/submit-recommended');
+      // CSRF header is set in the action
+      expect(script).toContain('X-CSRF-Token');
+      // Active branch button class + onclick wiring
+      expect(script).toContain('btn-hero-recommended');
+      // Active branch label (escaped Unicode for ⭐ 추천대로 모두 선택)
+      expect(script).toContain('\\u2B50');
+      // Blocked branch label sentinel (🔒 추천 부족)
+      expect(script).toContain('\\uD83D\\uDD12');
+      // Skips 직접입력 sentinel when counting
+      expect(script).toContain('\\uC9C1\\uC811\\uC785\\uB825');
+      // CSS class definition is present in the page (style tag)
+      expect(html).toContain('.btn-hero-recommended');
+    });
+  });
 });
 
 describe('Ghost session filtering (#438)', () => {

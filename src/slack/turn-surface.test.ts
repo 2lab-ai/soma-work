@@ -21,6 +21,8 @@ interface MockClient {
     startStream: ReturnType<typeof vi.fn>;
     appendStream: ReturnType<typeof vi.fn>;
     stopStream: ReturnType<typeof vi.fn>;
+    postMessage: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -36,6 +38,9 @@ function makeClient(overrides?: Partial<MockClient['chat']>): MockClient {
       startStream: vi.fn().mockResolvedValue({ ts: 'stream-ts-1' }),
       appendStream: vi.fn().mockResolvedValue(undefined),
       stopStream: vi.fn().mockResolvedValue(undefined),
+      // P2 additions — renderTasks uses postMessage (first call) + update (subsequent).
+      postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-default' }),
+      update: vi.fn().mockResolvedValue(undefined),
       ...overrides,
     },
   };
@@ -484,10 +489,11 @@ describe('TurnSurface', () => {
       config.ui.fiveBlockPhase = 1;
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-      await expect(surface.renderTasks('any-turn', [{ id: '1' }])).resolves.toBeUndefined();
+      await expect(surface.renderTasks('any-turn', [{ id: '1' } as any])).resolves.toBe(false);
       // Placeholder must not initiate any Slack traffic in P1
       expect(client.chat.startStream).not.toHaveBeenCalled();
       expect(client.chat.appendStream).not.toHaveBeenCalled();
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
     });
 
     it('askUser returns empty string below PHASE=3', async () => {
@@ -495,6 +501,203 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
       await expect(surface.askUser('any-turn', { x: 1 })).resolves.toBe('');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // B2 plan block (P2) — renderTasks
+  // -------------------------------------------------------------------------
+
+  describe('renderTasks (PHASE>=2)', () => {
+    const todos = [
+      { id: '1', content: 'done task', status: 'completed', priority: 'high' },
+      { id: '2', content: 'running task', status: 'in_progress', priority: 'high' },
+      { id: '3', content: 'waiting task', status: 'pending', priority: 'medium' },
+    ];
+
+    beforeEach(() => {
+      config.ui.fiveBlockPhase = 2;
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('first call posts a new message and stores planTs on turn state', async () => {
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      await expect(surface.renderTasks(ctx.turnId, todos as any)).resolves.toBe(true);
+      // Drain the 500ms debounce window.
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+      const postArgs = client.chat.postMessage.mock.calls[0][0];
+      expect(postArgs.channel).toBe('C1');
+      expect(postArgs.thread_ts).toBe('t1');
+      expect(typeof postArgs.text).toBe('string');
+      expect(Array.isArray(postArgs.blocks)).toBe(true);
+      // chat.update NOT called on first render
+      expect(client.chat.update).not.toHaveBeenCalled();
+
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it('second call uses chat.update with the stored planTs (no second postMessage)', async () => {
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+
+      await surface.renderTasks(ctx.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+      await surface.renderTasks(ctx.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+      expect(client.chat.update).toHaveBeenCalledTimes(1);
+      expect(client.chat.update.mock.calls[0][0]).toMatchObject({
+        channel: 'C1',
+        ts: 'plan-ts-1',
+      });
+
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it('5 rapid calls coalesce into 1 trailing update (debounce)', async () => {
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+
+      // First render: postMessage — drain debounce so planTs is committed
+      await surface.renderTasks(ctx.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+      // 5 rapid updates — only 1 trailing chat.update call
+      for (let i = 0; i < 5; i += 1) {
+        await surface.renderTasks(ctx.turnId, todos as any);
+      }
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.update).toHaveBeenCalledTimes(1);
+
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it('works with an ad-hoc state entry when begin() was not called (ctx required)', async () => {
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-adhoc' }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      // No begin() — pass ctx to let renderTasks create an ad-hoc state entry
+      const turnId = 'ad-hoc-turn';
+      const ctx = { channelId: 'C2', threadTs: 't2', sessionKey: 'C2:t2' };
+
+      await expect(surface.renderTasks(turnId, todos as any, ctx)).resolves.toBe(true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+      // streamTs is undefined (no begin() ever ran) — endTurn must not call stopStream
+      await surface.end(turnId, 'completed');
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+    });
+
+    it('returns false and warns when no ctx provided and no existing turn state', async () => {
+      const warnSpy = vi.fn();
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      (surface as any).logger.warn = warnSpy;
+
+      await expect(surface.renderTasks('unknown-turn', todos as any)).resolves.toBe(false);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith('renderTasks called without ctx and no existing turn', {
+        turnId: 'unknown-turn',
+      });
+    });
+
+    it('returns false when todos is empty (nothing to render, spares a Slack call)', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      await surface.begin(ctx);
+      await expect(surface.renderTasks(ctx.turnId, [])).resolves.toBe(false);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+      expect(client.chat.update).not.toHaveBeenCalled();
+
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it('supersede: planTs on the old turn is intentionally orphaned (Slack message survives)', async () => {
+      // Under PHASE>=2, the B2 plan message is a separate ts from B1 streamTs.
+      // Supersede closes B1 (stream) but leaves B2 (plan) untouched — the
+      // Slack message history keeps the final plan state visible to users.
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-A' }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const sessionKey = 'C1:t1';
+      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
+      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+
+      await surface.begin(ctxA);
+      await surface.renderTasks(ctxA.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+      // Supersede — new turn opens; old plan message is not updated or deleted.
+      await surface.begin(ctxB);
+
+      // B1 stream for A was stopped (supersede), but B2 plan was NOT touched.
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      // chat.update against plan-ts-A did NOT fire.
+      expect((client.chat.update?.mock.calls ?? []).some((call: any[]) => call[0]?.ts === 'plan-ts-A')).toBe(false);
+
+      await surface.end(ctxB.turnId, 'completed');
+    });
+
+    it('end(turnId) with ad-hoc entry does not call stopStream (no streamTs)', async () => {
+      const client = makeClient({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-adhoc' }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const turnId = 'ad-hoc-end-test';
+      await surface.renderTasks(turnId, todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' });
+      await vi.advanceTimersByTimeAsync(500);
+      await surface.end(turnId, 'completed');
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+      expect(surface._getTurnStateSnapshot(turnId)).toBeUndefined();
+    });
+
+    it('below PHASE=2 returns false and does not call postMessage', async () => {
+      config.ui.fiveBlockPhase = 1;
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      await expect(
+        surface.renderTasks('t', todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' }),
+      ).resolves.toBe(false);
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
     });
   });
 });

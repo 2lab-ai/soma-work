@@ -2,28 +2,57 @@ import { Logger } from '../../logger';
 import { MetricsEventStore } from '../../metrics/event-store';
 import { ReportAggregator } from '../../metrics/report-aggregator';
 import type { UsageReport } from '../../metrics/types';
+import { renderCarousel as defaultRenderCarousel } from '../../metrics/usage-render/carousel-renderer';
 import { isSafeOperational, SlackPostError, SlackUploadError } from '../../metrics/usage-render/errors';
 import { renderUsageCard } from '../../metrics/usage-render/renderer';
-import type { UsageCardResult } from '../../metrics/usage-render/types';
+import type { CarouselStats, TabId, UsageCardResult } from '../../metrics/usage-render/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+import { buildCarouselBlocks } from './usage-carousel-blocks';
+import { defaultTabCache, type TabCache } from './usage-carousel-cache';
 
 /**
  * Injection seam for /usage card pipeline — allows tests to fake out
  * aggregator / renderer / slack-api / clock.
  * Trace: docs/usage-card/trace.md, Scenario 8
+ * Trace: docs/usage-card-dark/trace.md, Scenario 1 (carousel extensions).
  */
 export interface UsageCardOverrides {
-  aggregator?: { aggregateUsageCard: ReportAggregator['aggregateUsageCard'] };
+  aggregator?: {
+    aggregateUsageCard: ReportAggregator['aggregateUsageCard'];
+    /** Carousel branch (v2). Optional so v1-only call sites stay valid. */
+    aggregateCarousel?: ReportAggregator['aggregateCarousel'];
+  };
   renderer?: (stats: Parameters<typeof renderUsageCard>[0]) => Promise<Buffer>;
+  /** Carousel SSR renderer (v2). */
+  renderCarousel?: (stats: CarouselStats, selectedTab: TabId) => Promise<Record<TabId, Buffer>>;
   slackApi?: {
     filesUploadV2: (args: Record<string, unknown>) => Promise<unknown>;
-    postMessage: (args: { channel: string; text: string; blocks?: unknown[]; thread_ts?: string }) => Promise<unknown>;
+    postMessage: (args: {
+      channel: string;
+      text: string;
+      blocks?: unknown[];
+      thread_ts?: string;
+    }) => Promise<{ ts: string } | unknown>;
     postEphemeral: (args: { channel: string; user: string; text: string; thread_ts?: string }) => Promise<unknown>;
     /** Opens a DM channel with the user and returns the channel id. */
     openDmChannel: (userId: string) => Promise<string>;
   };
   clock?: () => Date;
+  /** TabCache DI — defaults to the module-singleton `defaultTabCache`. */
+  tabCache?: TabCache;
+}
+
+// ─── Cold-cache retry sleep (DI for tests) ──────────────────────────────
+// `postMessage` with a freshly-uploaded `slack_file.id` can race Slack's
+// internal file propagation and fail with `invalid_blocks`. We retry up to
+// 3× with 500ms spacing. `sleepImpl` is swappable by tests so fake timers
+// (or an instant-return stub) can drive the loop without real wall time.
+let sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Test-only: replace the retry sleep (call with `null` to reset). */
+export function __setSleepImplForTests(fn: ((ms: number) => Promise<void>) | null): void {
+  sleepImpl = fn ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 }
 
 /**
@@ -90,13 +119,15 @@ export class UsageHandler implements CommandHandler {
   /**
    * Handle `/usage card` — personal 30-day PNG card.
    * Trace: docs/usage-card/trace.md, Scenarios 1, 9, 10, 11, 12
+   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (carousel branch).
    */
   async handleCard(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, text, user } = ctx;
+    const { channel, text, threadTs, user } = ctx;
 
     // Strict param gate — v1 spec §3 forbids *any* argument on `/usage card`.
     // `/usage card @someone`, `/usage card foo` → reject explicitly rather
-    // than silently produce the caller's own card.
+    // than silently produce the caller's own card. Shared with both v1 and v2
+    // branches.
     if (hasExtraCardArgs(text)) {
       await this.deps.slackApi.postSystemMessage(
         channel,
@@ -110,7 +141,7 @@ export class UsageHandler implements CommandHandler {
 
     // Privacy gate — redundant safety net (strict param gate above should
     // already catch this). Kept so the privacy rule can never regress even
-    // if the parser grows new cases.
+    // if the parser grows new cases. Shared with both v1 and v2 branches.
     if (parsed.userId && parsed.userId !== user) {
       await this.deps.slackApi.postSystemMessage(
         channel,
@@ -119,6 +150,21 @@ export class UsageHandler implements CommandHandler {
       );
       return { handled: true };
     }
+
+    // Feature-flag gate — v2 carousel when explicitly on; otherwise v1.
+    if (process.env.USAGE_CARD_V2 === 'true') {
+      return this.handleCardCarousel(ctx);
+    }
+    return this.handleCardV1(ctx);
+  }
+
+  /**
+   * v1 single-render path — UNCHANGED byte-for-byte from pre-carousel build.
+   * Extracted only so the feature-flag branch can delegate cleanly. Do NOT
+   * modify without updating `docs/usage-card/trace.md` scenarios.
+   */
+  private async handleCardV1(ctx: CommandContext): Promise<CommandResult> {
+    const { channel, threadTs, user } = ctx;
 
     const clock = this.overrides.clock ?? (() => new Date());
     const now = clock();
@@ -145,43 +191,31 @@ export class UsageHandler implements CommandHandler {
       const renderer = this.overrides.renderer ?? renderUsageCard;
       const png = await renderer(stats);
 
-      let fileId: string | undefined;
+      // 1-step upload: a single `filesUploadV2` with `channel_id` +
+      // `thread_ts` + `initial_comment` uploads the file, shares it into the
+      // originating thread, and renders the caption in one call — removing the
+      // second-call race where a follow-up
+      // `postMessage({ blocks: [image slack_file.id] })` could fire before
+      // Slack finished propagating the file-share to the channel and be
+      // rejected with `invalid_blocks: invalid slack file`. See issue #579.
+      const captionText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
       try {
         const uploadArgs = {
           filename: 'usage-card.png',
           file: png,
           channel_id: channel,
+          thread_ts: threadTs,
+          initial_comment: captionText,
           alt_text: `Usage card for ${stats.targetUserName || stats.targetUserId}`,
           request_file_info: false,
         };
-        const uploadResp = this.overrides.slackApi
-          ? await this.overrides.slackApi.filesUploadV2(uploadArgs)
-          : await this.deps.slackApi.getClient().filesUploadV2(uploadArgs);
-        fileId = extractFileId(uploadResp);
-      } catch (err) {
-        throw new SlackUploadError('filesUploadV2 failed', err);
-      }
-
-      // Post Block Kit image block referencing the uploaded file.
-      const altText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
-      const blocks = fileId ? [{ type: 'image', slack_file: { id: fileId }, alt_text: altText }] : undefined;
-
-      try {
         if (this.overrides.slackApi) {
-          await this.overrides.slackApi.postMessage({
-            channel,
-            text: altText,
-            blocks,
-            thread_ts: threadTs,
-          });
-        } else if (blocks) {
-          await this.deps.slackApi.postMessage(channel, altText, { threadTs, blocks });
+          await this.overrides.slackApi.filesUploadV2(uploadArgs);
         } else {
-          // filesUploadV2 returned no file id — file is still attached to the channel.
-          await this.deps.slackApi.postSystemMessage(channel, altText, { threadTs });
+          await this.deps.slackApi.getClient().filesUploadV2(uploadArgs);
         }
       } catch (err) {
-        throw new SlackPostError('chat.postMessage failed', err);
+        throw new SlackUploadError('filesUploadV2 failed', err);
       }
 
       this.logger.info('usage_card_rendered', {
@@ -204,6 +238,134 @@ export class UsageHandler implements CommandHandler {
         return { handled: true };
       }
       // Non-operational error: re-throw so upstream handler/logging sees it.
+      throw err;
+    }
+  }
+
+  /**
+   * v2 carousel path — gated by `process.env.USAGE_CARD_V2 === 'true'`.
+   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (+ 12 all-empty, 13 errors).
+   */
+  private async handleCardCarousel(ctx: CommandContext): Promise<CommandResult> {
+    const { channel, threadTs, user } = ctx;
+
+    const clock = this.overrides.clock ?? (() => new Date());
+    const now = clock();
+
+    try {
+      // Aggregator DI — fall back to real `aggregateCarousel` on a fresh store.
+      const aggregateCarousel =
+        this.overrides.aggregator?.aggregateCarousel ??
+        (async (opts: Parameters<ReportAggregator['aggregateCarousel']>[0]) => {
+          const store = new MetricsEventStore();
+          const agg = new ReportAggregator(store);
+          return agg.aggregateCarousel(opts);
+        });
+
+      const carouselStats = await aggregateCarousel({ targetUserId: user, now });
+
+      // All-empty short-circuit (Scenario 12) — no events in any window at all.
+      const tabIds: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
+      const allEmpty = tabIds.every((t) => carouselStats.tabs[t].empty === true);
+      if (allEmpty) {
+        this.logger.info('carousel_all_empty', { userId: user });
+        await this.postEphemeral(ctx, '최근 30일간 기록된 사용량이 없습니다. `/usage` 로 기본 집계를 먼저 확인하세요.');
+        return { handled: true };
+      }
+
+      // Render 4 tab PNGs in parallel (renderer handles stub PNGs for empty tabs).
+      const renderCarousel = this.overrides.renderCarousel ?? defaultRenderCarousel;
+      const pngMap = await renderCarousel(carouselStats, '30d');
+
+      // Upload 4 PNGs — NO `channel_id` / `channels` / `thread_ts` / `initial_comment`
+      // so Slack does NOT auto-post 4 orphan file messages into the channel.
+      const slackApi = this.overrides.slackApi;
+      const filesUploadV2: (args: Record<string, unknown>) => Promise<unknown> = slackApi
+        ? (args) => slackApi.filesUploadV2(args)
+        : // biome-ignore lint/suspicious/noExplicitAny: Slack SDK `FilesUploadV2Arguments` is a tagged union with `file_uploads` required on the multi-file branch; single-file branch types collide when passed through `Record<string, unknown>`.
+          (args) => this.deps.slackApi.getClient().filesUploadV2(args as any);
+
+      const uploadTab = async (tabId: TabId): Promise<[TabId, string]> => {
+        let res: unknown;
+        try {
+          res = await filesUploadV2({
+            filename: `usage-card-${tabId}.png`,
+            file: pngMap[tabId],
+            request_file_info: false,
+          });
+        } catch (err) {
+          throw new SlackUploadError('filesUploadV2 failed', err);
+        }
+        return [tabId, extractFileId(res)];
+      };
+      const uploadResults = await Promise.all(tabIds.map((t) => uploadTab(t)));
+      const fileIds = Object.fromEntries(uploadResults) as Record<TabId, string>;
+
+      // Post carousel message with cold-cache retry. `postMessage` may reject
+      // with `invalid_blocks` if Slack's internal file index hasn't propagated
+      // the freshly-uploaded file IDs yet; retry up to 3× with 500ms spacing.
+      const blocks = buildCarouselBlocks(fileIds, '30d', user);
+      const caption = `${carouselStats.targetUserName || carouselStats.targetUserId} — Usage Card`;
+      const postMessage =
+        slackApi?.postMessage ??
+        (async (args: { channel: string; text: string; blocks?: unknown[]; thread_ts?: string }) => {
+          return this.deps.slackApi.getClient().chat.postMessage(args as any);
+        });
+
+      let postRes: { ts: string } | undefined;
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = (await postMessage({
+            channel,
+            thread_ts: threadTs,
+            blocks,
+            text: caption,
+          })) as { ts: string };
+          postRes = res;
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (!isInvalidBlocksError(err)) {
+            throw new SlackPostError('postMessage failed', err);
+          }
+          if (attempt < 2) {
+            await sleepImpl(500);
+          }
+        }
+      }
+      if (!postRes) {
+        throw new SlackPostError('postMessage invalid_blocks retry exhausted', lastErr);
+      }
+      const messageTs = postRes.ts;
+
+      // Populate tabCache — keyed by messageTs, 24h TTL.
+      const tabCache = this.overrides.tabCache ?? defaultTabCache;
+      tabCache.set(messageTs, {
+        fileIds,
+        userId: user,
+        expiresAt: now.getTime() + 24 * 60 * 60 * 1000,
+      });
+
+      const pngBytes = Object.values(pngMap).reduce((s, b) => s + b.byteLength, 0);
+      this.logger.info('usage_card_v2_posted', {
+        userId: user,
+        messageTs,
+        pngBytes,
+      });
+      return { handled: true };
+    } catch (err) {
+      if (isSafeOperational(err)) {
+        const kind = err.constructor.name;
+        this.logger.error('usage_card_safe_failure', {
+          kind,
+          message: err.message,
+        });
+        await this.postEphemeral(ctx, '카드 생성 실패, 잠시 후 다시 시도해 주세요.');
+        await this.postDmAlert(user, kind);
+        return { handled: true };
+      }
       throw err;
     }
   }
@@ -328,22 +490,39 @@ export function hasExtraCardArgs(text: string): boolean {
   return parts.length > 2;
 }
 
-interface FilesUploadV2RespFileInner {
-  id?: string;
-}
-interface FilesUploadV2RespFile {
-  id?: string;
-  files?: FilesUploadV2RespFileInner[];
-}
-interface FilesUploadV2Resp {
-  files?: FilesUploadV2RespFile[];
+/**
+ * Defensive `filesUploadV2` response file-id extractor.
+ *
+ * Bolt v2 normalizes to a nested `{ files: [{ files: [{id}] }] }` shape, but
+ * legacy Slack SDK responses use a flat `{ file: { id } }` or
+ * `{ files: [{id}] }`. Probe all three before giving up.
+ */
+function extractFileId(res: unknown): string {
+  const r = res as Record<string, unknown> | null | undefined;
+  if (r && Array.isArray(r.files) && r.files.length > 0) {
+    const first = r.files[0] as Record<string, unknown>;
+    if (first && Array.isArray(first.files) && (first.files as unknown[]).length > 0) {
+      const inner = (first.files as unknown[])[0] as Record<string, unknown>;
+      if (typeof inner?.id === 'string') return inner.id;
+    }
+    if (typeof first?.id === 'string') return first.id;
+  }
+  const f = r?.file as Record<string, unknown> | undefined;
+  if (typeof f?.id === 'string') return f.id;
+  throw new SlackUploadError('filesUploadV2 response missing file id', res);
 }
 
-function extractFileId(resp: unknown): string | undefined {
-  if (!resp || typeof resp !== 'object') return undefined;
-  const r = resp as FilesUploadV2Resp;
-  // @slack/web-api v7 filesUploadV2 shape: { files: [{ files: [{ id }] }] }
-  const first = r.files?.[0];
-  const inner: FilesUploadV2RespFileInner | FilesUploadV2RespFile | undefined = first?.files?.[0] ?? first;
-  return inner?.id;
+/**
+ * True if `err` is a Slack `invalid_blocks` API rejection. Retryable because
+ * it usually indicates the freshly-uploaded file ID hasn't yet propagated
+ * through Slack's internal file index.
+ *
+ * Only the structured `err.data.error` field is trusted — substring-matching
+ * `err.message` was rejected because any wrapped error whose stringified
+ * message happens to contain the literal (e.g. a log line or a different
+ * upstream error) would spuriously trigger retry.
+ */
+function isInvalidBlocksError(err: unknown): boolean {
+  const e = err as { data?: { error?: string } } | null | undefined;
+  return e?.data?.error === 'invalid_blocks';
 }

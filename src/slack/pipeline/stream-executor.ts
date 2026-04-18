@@ -649,6 +649,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.say,
             getVerbosity(),
             session,
+            turnId,
+            {
+              channelId: turnContext.channelId,
+              threadTs: turnContext.threadTs,
+              sessionKey: turnContext.sessionKey,
+            },
           );
         },
         onPendingFormCreate: (formId, form) => {

@@ -225,6 +225,17 @@ export function setDashboardMultiChoiceAnswerHandler(fn: MultiChoiceAnswerHandle
   _multiChoiceAnswerHandlerFn = fn;
 }
 
+// Hero "Submit All Recommended" handler (group-only). The dashboard does not
+// pass selections — the implementation derives them from session.pendingQuestion
+// recommendations. Returns rejected promise on validation failure for
+// status-code mapping in the route handler.
+type SubmitRecommendedHandler = (sessionKey: string) => Promise<void>;
+let _submitRecommendedHandlerFn: SubmitRecommendedHandler | null = null;
+
+export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandler): void {
+  _submitRecommendedHandlerFn = fn;
+}
+
 // ── Kanban transformation ──────────────────────────────────────────
 
 function sessionToKanban(key: string, s: any): KanbanSession {
@@ -1137,6 +1148,42 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Submit-all-recommended from dashboard (hero one-click) ──
+
+  server.post<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/submit-recommended',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { key } = request.params;
+      if (!requireSessionOwner(request, reply, key)) return;
+      try {
+        if (!_submitRecommendedHandlerFn) {
+          reply.status(501).send({ error: 'Submit-recommended handler not configured' });
+          return;
+        }
+        await _submitRecommendedHandlerFn(key);
+        reply.send({ ok: true });
+      } catch (error) {
+        const errMsg = (error as Error).message || '';
+        if (errMsg === 'Session not found') {
+          reply.status(404).send({ error: 'Session not found' });
+        } else if (
+          errMsg === 'Session is not waiting for a choice' ||
+          errMsg === 'Session has no pending multi-choice question' ||
+          errMsg === 'Submission in progress' ||
+          errMsg === 'Recommendations incomplete'
+        ) {
+          reply.status(409).send({ error: errMsg });
+        } else if (errMsg === 'No recommendation available') {
+          reply.status(422).send({ error: errMsg });
+        } else {
+          logger.error('Error submitting recommended from dashboard', error);
+          reply.status(500).send({ error: 'Internal Server Error' });
+        }
+      }
+    },
+  );
+
   // ── HTML Dashboard ──
 
   server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
@@ -1622,6 +1669,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   width: 100%;
   display: block;
   text-align: center;
+}
+/* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
+.btn-hero-recommended {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  font-size: 1.05em;
+  background: #2d8644;
+  color: white;
+  border: 2px solid #256f38;
+  border-radius: 6px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+.btn-hero-recommended:hover:not(:disabled) {
+  background: #256f38;
+  border-color: #1f5c2e;
+}
+.btn-hero-recommended:disabled,
+.btn-hero-recommended[aria-disabled="true"] {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 .choice-divider {
   border: none;
@@ -2966,6 +3036,26 @@ function renderMultiChoicePanel(s) {
   }
   html += '</div>';
 
+  // Hero "Submit All Recommended" — group-only one-click. N=count of questions
+  // with a resolvable recommendation (excluding 직접입력 sentinel); M=total.
+  // States: N==M primary | 0<N<M blocked sentinel | N==0 omitted.
+  var heroM = total;
+  var heroN = 0;
+  for (var hi = 0; hi < total; hi++) {
+    var hq = q.questions[hi];
+    var rid = resolveRecommendedId(hq.recommendedChoiceId, hq.choices);
+    if (rid && rid !== '\\uC9C1\\uC811\\uC785\\uB825') heroN++;
+  }
+  if (heroN > 0) {
+    if (heroN === heroM) {
+      html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
+        + '\\u2B50 \\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
+    } else {
+      html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
+        + '\\uD83D\\uDD12 \\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
+    }
+  }
+
   // Progress dots
   html += '<div class="mc-progress">';
   for (var d = 0; d < total; d++) {
@@ -3204,6 +3294,40 @@ function resetMultiChoice(key) {
   _mcState[key] = { selections: {}, activeQ: 0 };
   var s = _sessionCache[key];
   if (s) renderMultiChoicePanel(s);
+}
+
+// Hero "Submit All Recommended" — group-only one-click. Mirrors the CSRF retry
+// pattern used by submitMultiChoice. Server derives selections from session
+// state, so the body is empty.
+async function submitAllRecommended(key) {
+  var heroBtn = document.querySelector('.btn-hero-recommended');
+  if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+    }
+    if (!res.ok) {
+      var errData = {};
+      try { errData = await res.json(); } catch(_) {}
+      var errMsg = errData.error || ('Failed (status ' + res.status + ')');
+      alert('\\u274C ' + errMsg);
+      if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
+    } else {
+      // Success — clear local state; WebSocket will re-render.
+      delete _mcState[key];
+    }
+  } catch (e) {
+    console.error('submitAllRecommended error', e);
+    alert('\\u274C ' + e.message);
+    if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
+  }
 }
 
 // ── Stats ──
