@@ -661,6 +661,13 @@ export class ReportAggregator {
         b.cost += cost;
         b.hourly[hour] += tokens;
         b.perDay.set(dayKey, (b.perDay.get(dayKey) || 0) + tokens);
+        // Per-(day,hour) accumulator — needed for 7d tab's 168-cell heatmap.
+        let dhArr = b.perDayHour.get(dayKey);
+        if (!dhArr) {
+          dhArr = new Array<number>(24).fill(0);
+          b.perDayHour.set(dayKey, dhArr);
+        }
+        dhArr[hour] += tokens;
         b.daySet.add(dayKey);
 
         if (sessionKey) {
@@ -772,6 +779,12 @@ interface WindowBuilder {
   cost: number;
   hourly: number[];
   perDay: Map<string, number>;
+  /**
+   * Per-(dateKey, hour) token totals. Populated for every event; used by the
+   * 7d tab's heatmap to emit 168 per-(day,hour) cells (24 cols × 7 rows).
+   * Other tabs ignore this field.
+   */
+  perDayHour: Map<string, number[]>;
   daySet: Set<string>;
   perSession: Map<string, { tokens: number; firstMs: number; lastMs: number; count: number }>;
   perModel: Map<string, number>;
@@ -783,6 +796,7 @@ function makeWindowBuilder(): WindowBuilder {
     cost: 0,
     hourly: new Array<number>(24).fill(0),
     perDay: new Map(),
+    perDayHour: new Map(),
     daySet: new Set(),
     perSession: new Map(),
     perModel: new Map(),
@@ -861,22 +875,21 @@ function buildTab(
   const heatmap: CarouselTabStats['heatmap'] = [];
   if (tabId === '7d') {
     // 7 days × 24 hours = 168 cells; dayIdx 0 = bounds.start, dayIdx 6 = bounds.end.
-    // We only populate cells that have data from perDay+hourly-per-day; but the
-    // per-hour bin in `hourly` is summed across all 7 days, so we reconstruct
-    // per-(day,hour) from daySet+perDay totals is insufficient. Instead we
-    // populate daily totals — consumer renders per-day rows, hour bins come
-    // from the shared `hourly` array via the chart. For structural tests we
-    // expose (date,tokens) per day at hour=0 cell and skip sub-hour detail.
+    // cellIndex = dayIdx * 24 + hour — populated from `perDayHour` so every active
+    // (day,hour) cell is distinct. Zero-token cells are omitted (chart visualMap
+    // renders them as the zero-bucket color).
     for (let d = 0; d < 7; d++) {
       const dateKey = kstShiftDay(bounds.start, d);
-      const dayTokens = b.perDay.get(dateKey) || 0;
-      if (dayTokens > 0) {
-        // Place day token total at cellIndex = d*24 + 0 as a day-summary cell.
+      const dh = b.perDayHour.get(dateKey);
+      if (!dh) continue;
+      for (let h = 0; h < 24; h++) {
+        const t = dh[h];
+        if (t <= 0) continue;
         heatmap.push({
           date: dateKey,
-          tokens: dayTokens,
-          cellIndex: d * 24,
-          label: dateKey,
+          tokens: t,
+          cellIndex: d * 24 + h,
+          label: `${dateKey} ${h}시`,
         });
       }
     }

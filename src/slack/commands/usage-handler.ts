@@ -513,13 +513,16 @@ function extractFileId(res: unknown): string {
 }
 
 /**
- * True if `err` looks like a Slack `invalid_blocks` API rejection. Retryable
- * because it usually indicates the freshly-uploaded file ID hasn't yet
- * propagated through Slack's internal file index.
+ * True if `err` is a Slack `invalid_blocks` API rejection. Retryable because
+ * it usually indicates the freshly-uploaded file ID hasn't yet propagated
+ * through Slack's internal file index.
+ *
+ * Only the structured `err.data.error` field is trusted — substring-matching
+ * `err.message` was rejected because any wrapped error whose stringified
+ * message happens to contain the literal (e.g. a log line or a different
+ * upstream error) would spuriously trigger retry.
  */
 function isInvalidBlocksError(err: unknown): boolean {
-  const e = err as { data?: { error?: string }; message?: string } | null | undefined;
-  if (e?.data?.error === 'invalid_blocks') return true;
-  if (String(e?.message ?? '').includes('invalid_blocks')) return true;
-  return false;
+  const e = err as { data?: { error?: string } } | null | undefined;
+  return e?.data?.error === 'invalid_blocks';
 }

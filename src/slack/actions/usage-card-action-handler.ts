@@ -93,9 +93,17 @@ export class UsageCardActionHandler {
     }
 
     // Scenario 8 — owner happy path. Rebuild blocks with selected tab, in-place update.
+    // `text` is a notification/accessibility fallback (Slack logs a warning
+    // when `blocks` is sent without `text`; it's also used for push preview
+    // and screen-reader output).
     const blocks = buildCarouselBlocks(entry.fileIds, selectedTab, entry.userId);
     try {
-      await client.chat.update({ channel, ts: messageTs, blocks });
+      await client.chat.update({
+        channel,
+        ts: messageTs,
+        text: `📊 Usage card · ${selectedTab}`,
+        blocks,
+      });
     } catch (err) {
       this.logger.error('usage_card_tab chat.update failed', {
         messageTs,

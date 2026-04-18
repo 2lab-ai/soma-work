@@ -86,7 +86,8 @@ function heatmapTuples(tabId: TabId, cells: CarouselTabStats['heatmap']): Array<
         return [i % 24, Math.floor(i / 24), c.tokens] as [number, number, number];
       }
       case '30d': {
-        // cellIndex = row * 7 + col → xIndex = col (0..6), yIndex = row (0..4)
+        // cellIndex = dayIdx (0..29, linear from windowStart) → (col, row) in 5×7 grid.
+        // col = day-within-week-chunk (0..6), row = chunk index (0..4). NOT weekday.
         return [i % 7, Math.floor(i / 7), c.tokens] as [number, number, number];
       }
       case 'all': {
@@ -97,6 +98,27 @@ function heatmapTuples(tabId: TabId, cells: CarouselTabStats['heatmap']): Array<
         return [i, 0, c.tokens] as [number, number, number];
     }
   });
+}
+
+/**
+ * Shift a KST 'YYYY-MM-DD' day key by N days. Duplicated from report-aggregator
+ * to keep buildCarouselOption self-contained (no runtime dep on aggregator).
+ * KST has no DST so UTC arithmetic is safe.
+ */
+function shiftDayKey(dayKey: string, delta: number): string {
+  const [y, m, d] = dayKey.split('-').map((s) => parseInt(s, 10));
+  const t = Date.UTC(y, m - 1, d) + delta * 86_400_000;
+  const nd = new Date(t);
+  const yy = nd.getUTCFullYear();
+  const mm = nd.getUTCMonth() + 1;
+  const dd = nd.getUTCDate();
+  return `${yy.toString().padStart(4, '0')}-${mm.toString().padStart(2, '0')}-${dd.toString().padStart(2, '0')}`;
+}
+
+/** 'YYYY-MM-DD' → 'MM/DD' short label for axis display. */
+function shortDateLabel(dayKey: string): string {
+  const [, mm, dd] = dayKey.split('-');
+  return `${mm}/${dd}`;
 }
 
 // ─── Axis builders ─────────────────────────────────────────────────────
@@ -152,11 +174,16 @@ function buildHeatmapOption(
   let xAxisData: string[];
   let yAxisData: string[];
   if (tabId === '7d') {
+    // Row = dayIdx (linear from windowStart, NOT weekday). Label with real MM/DD
+    // per-row so the axis cannot be read as weekday.
     xAxisData = Array.from({ length: 24 }, (_, h) => `${h}`);
-    yAxisData = ['일', '월', '화', '수', '목', '금', '토'];
+    yAxisData = Array.from({ length: 7 }, (_, d) => shortDateLabel(shiftDayKey(stats.windowStart, d)));
   } else if (tabId === '30d') {
-    xAxisData = ['일', '월', '화', '수', '목', '금', '토'];
-    yAxisData = ['W1', 'W2', 'W3', 'W4', 'W5'];
+    // Column = day-within-chunk (1..7, NOT weekday — bounds.start defines the first column).
+    // Row = weekly chunk index. 5 rows × 7 cols = 35 cells; first row starts at windowStart,
+    // second row at windowStart+7, etc.
+    xAxisData = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'];
+    yAxisData = Array.from({ length: 5 }, (_, w) => shortDateLabel(shiftDayKey(stats.windowStart, w * 7)));
   } else {
     xAxisData = Array.from({ length: 12 }, (_, m) => `${m + 1}월`);
     yAxisData = ['일', '월', '화', '수', '목', '금', '토'];
