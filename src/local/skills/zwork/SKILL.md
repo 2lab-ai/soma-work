@@ -26,7 +26,7 @@ Receives a confirmed plan and task list from `local:z`. Executes implementation 
    c. **Dispatch Code quality reviewer subagent** — verify code quality (only after spec passes)
       - If fail, implementer fixes and re-reviews
    d. Mark task as complete in TodoWrite
-   - **Loop exit**: If review retries exceed 3, request user judgment via `local:decision-gate`
+   - **Loop exit**: If review retries exceed 3, request user judgment via `local:decision-gate` (which uses [`../UIAskUserQuestion/templates/decision-gate-tier-medium.json`](../UIAskUserQuestion/templates/decision-gate-tier-medium.json)). **`zwork` MUST NOT own its own UIAskUserQuestion template** — always delegate through `decision-gate` so the "when to ask" decision stays centralized.
 
 3. Create PR.
 

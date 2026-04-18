@@ -1,17 +1,16 @@
 /**
- * Unit Tests — GeminiRuntime
- * Issue #332: Backend Runtime Adapter Layer
+ * Unit Tests — GeminiRuntime (post-refactor signatures).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { GeminiRuntime } from './gemini-runtime.js';
-
-// ── Mock McpClient ────────────────────────────────────────
 
 function createMockClient(overrides: Record<string, any> = {}) {
   return {
     isReady: vi.fn().mockReturnValue(true),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
+    getPid: vi.fn().mockReturnValue(22222),
+    killProcess: vi.fn().mockReturnValue(true),
     callTool: vi.fn().mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ content: 'gemini response' }) }],
       structuredContent: { sessionId: 'gemini-session-xyz' },
@@ -32,12 +31,12 @@ vi.mock('../../_shared/mcp-client.js', () => {
       isReady() { return mockInstance?.isReady() ?? false; }
       start() { return mockInstance?.start() ?? Promise.resolve(); }
       stop() { return mockInstance?.stop() ?? Promise.resolve(); }
+      getPid() { return mockInstance?.getPid?.(); }
+      killProcess(sig?: any) { return mockInstance?.killProcess?.(sig) ?? true; }
       callTool(...args: any[]) { return mockInstance?.callTool(...args) ?? Promise.resolve({}); }
     },
   };
 });
-
-// ── Tests ─────────────────────────────────────────────────
 
 describe('GeminiRuntime', () => {
   let runtime: GeminiRuntime;
@@ -64,43 +63,39 @@ describe('GeminiRuntime', () => {
         startCount++;
         await new Promise(r => setTimeout(r, 10));
       });
-
       await Promise.all([runtime.ensureReady(), runtime.ensureReady()]);
       expect(startCount).toBe(1);
     });
   });
 
   describe('startSession()', () => {
-    it('calls chat tool with correct args (no config expansion)', async () => {
-      const result = await runtime.startSession('hello', {
-        model: 'gemini-3.1-pro-preview',
-      });
-
+    it('calls chat tool with correct args', async () => {
+      const result = await runtime.startSession('gemini-3.1-pro-preview', 'hello', {});
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'chat',
         { prompt: 'hello', model: 'gemini-3.1-pro-preview' },
         600_000,
       );
       expect(result.backendSessionId).toBe('gemini-session-xyz');
-      expect(result.backend).toBe('gemini');
+      expect(result.resolvedConfig).toEqual({});
     });
 
-    it('extracts sessionId from response', async () => {
-      const result = await runtime.startSession('hello', { model: 'gemini-3.1-pro' });
-      expect(result.backendSessionId).toBe('gemini-session-xyz');
+    it('echoes resolvedConfig verbatim', async () => {
+      const input = { temperature: 0.2 };
+      const result = await runtime.startSession('gemini-3.1-pro', 'hi', { resolvedConfig: input });
+      expect(result.resolvedConfig).toEqual(input);
     });
   });
 
   describe('resumeSession()', () => {
     it('calls chat-reply with sessionId', async () => {
-      const result = await runtime.resumeSession('gemini-session-xyz', 'continue');
-
+      const result = await runtime.resumeSession('gemini-session-xyz', 'continue', {});
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'chat-reply',
         { prompt: 'continue', sessionId: 'gemini-session-xyz' },
         600_000,
       );
-      expect(result.backend).toBe('gemini');
+      expect(result.backendSessionId).toBe('gemini-session-xyz');
     });
   });
 

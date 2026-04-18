@@ -80,19 +80,18 @@ RED-TEAM CLAUSE: End with "What would make this answer wrong?" —
 list ≥3 concrete disconfirming observations.
 ```
 
-### Phase 1: Background dispatch
+### Phase 1: Parallel dispatch
 
-- `Models = both` (default):
-  - `mcp__llm__chat({ model:"codex", prompt:<forged>, background:true })` → jobA
-  - `mcp__llm__chat({ model:"gemini", prompt:<forged>, background:true })` → jobB
+- `Models = both` (default): 두 개의 `mcp__llm__chat` 호출을 **동일 턴에 병렬**로 디스패치 (동시 tool-use 블록).
+  - `mcp__llm__chat({ model:"codex", prompt:<forged>, timeoutMs: Budget.timeout_min*60000 })` → sessionA + content
+  - `mcp__llm__chat({ model:"gemini", prompt:<forged>, timeoutMs: Budget.timeout_min*60000 })` → sessionB + content
 - `Models` 단일: 한쪽만.
-- **background:true 필수**. foreground 금지 (UI 블로킹 + timeout 리스크).
+- 단일 턴 병렬 dispatch는 두 호출이 동시 진행되게 만들며, 각 호출은 동기적으로 content를 반환한다(background 모드 없음).
 
-### Phase 2: Poll, collect, persist
+### Phase 2: Collect, persist, follow-up
 
-- `mcp__llm__status({ jobId })` 30–60s 간격 폴링.
-- 완료 → `mcp__llm__result({ jobId })`로 raw 수거.
-- Budget.timeout_min 초과 → 1회 `mcp__llm__chat-reply`로 재촉 → 그래도 미완이면 실패 기록.
+- 두 병렬 호출의 결과(`content`, `sessionId`)를 수거.
+- Budget.timeout_min 초과(`BACKEND_TIMEOUT`) → 1회 `mcp__llm__chat({ resumeSessionId: sessionX, prompt: "Please continue and finalize." })`로 재촉 → 그래도 미완이면 실패 기록.
 - **Artifact 저장**: 각 raw 출력을 파일로 보존.
   - 경로: `.claude/tasks/{sessionId}/zdeepresearch/{topic-slug}__{model}.raw.md`
   - 프롬프트도 같이 저장: `…__prompt.md`
