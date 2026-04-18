@@ -33,7 +33,7 @@ Invoke `local:zreflect` before proceeding to phase0.
 2. Create an issue with `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
 4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, use the feedback to update the plan and go back to step 1 to update it again.
-5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`.
+5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the template [`../UIAskUserQuestion/templates/z-phase1-plan-approval.json`](../UIAskUserQuestion/templates/z-phase1-plan-approval.json) — it already passes the 6 quality rules; fill in `{plan_summary}` / `{files_changed}` / `{loc_estimate}` / `{test_plan}` / `{codex_score}` and send.
 6. Update the issue with the confirmed plan.
 
 ### phase2: Implementation (dispatch to `local:zwork`)
@@ -50,7 +50,7 @@ Invoke `local:zcheck` with the PR URL.
 
 1. `local:ztrace`로 PR 변경사항이 이슈의 각 시나리오에서 어떻게 작동하는지 콜스택 수준으로 추적.
 2. ztrace 결과를 유저에게 출력 — 각 시나리오별 트리거, 콜스택, "왜 작동하는가" 포함.
-3. `local:UIAskUserQuestion`으로 Approve 요청. context에 ztrace 요약 + PR 링크 + 이슈 링크 포함.
+3. `local:UIAskUserQuestion`으로 Approve 요청. context에 ztrace 요약 + PR 링크 + 이슈 링크 포함. 기본 템플릿은 [`../UIAskUserQuestion/templates/z-phase2.9-pr-approval.json`](../UIAskUserQuestion/templates/z-phase2.9-pr-approval.json) 사용 — `{pr_number}` / `{ci_status}` / `{unresolved_threads}` / `{merge_state}` / `{codex_summary}` / `{ztrace_verdict}` placeholder 채워 전송.
 
 ### phase3: After Work Completion
 
