@@ -80,22 +80,35 @@ RED-TEAM CLAUSE: End with "What would make this answer wrong?" —
 list ≥3 concrete disconfirming observations.
 ```
 
-### Phase 1: Parallel dispatch
+### Phase 1: Dispatch
 
-- `Models = both` (default): 두 개의 `mcp__llm__chat` 호출을 **동일 턴에 병렬**로 디스패치 (동시 tool-use 블록).
-  - `mcp__llm__chat({ model:"codex", prompt:<forged>, timeoutMs: Budget.timeout_min*60000 })` → sessionA + content
-  - `mcp__llm__chat({ model:"gemini", prompt:<forged>, timeoutMs: Budget.timeout_min*60000 })` → sessionB + content
-- `Models` 단일: 한쪽만.
-- 단일 턴 병렬 dispatch는 두 호출이 동시 진행되게 만들며, 각 호출은 동기적으로 content를 반환한다(background 모드 없음).
+- 각 모델 호출은 `local:llm-dispatch`에 위임한다. 이 스킬은 모델-측 통신 프로토콜(Bash bg / Monitor / TaskStop / mcp__llm__chat)을 직접 다루지 않는다. 모델은 pass-through: codex는 `local:llm-dispatch`의 primary path로, 그 외 모델은 fallback path로 라우팅된다.
+- `Models = both` (default): codex용 dispatch 1건, 다른 모델용 dispatch 1건을 각각 `local:llm-dispatch`로 보낸다. 병렬 실행.
+- `Models` 단일: 해당 모델용 dispatch 1건만 보낸다.
+- 각 위임 호출의 payload:
+  ```
+  model:         <caller가 원하는 모델명, pass-through>
+  prompt:        <Phase 0에서 forge한 문자열>
+  timeout_min:   Budget.timeout_min (default 10)
+  artifact_path: .claude/tasks/{sessionId}/zdeepresearch/{topic-slug}__{model}__{attempt}__{epoch}.raw.md
+  ```
+- `artifact_path`는 dispatch마다 고유해야 한다 — `{attempt}`(1/2/…) + `{epoch}`(unix ms) 접미사로 재시도·동시실행 충돌을 방지한다.
+- 프롬프트 원문은 `local:llm-dispatch`가 `{artifact_path%.raw.md}__prompt.md` 로 자동 저장한다. 실패 시 본 스킬에서 fallback write.
 
-### Phase 2: Collect, persist, follow-up
+### Phase 2: Collect
 
-- 두 병렬 호출의 결과(`content`, `sessionId`)를 수거.
-- Budget.timeout_min 초과(`BACKEND_TIMEOUT`) → 1회 `mcp__llm__chat({ resumeSessionId: sessionX, prompt: "Please continue and finalize." })`로 재촉 → 그래도 미완이면 실패 기록.
-- **Artifact 저장**: 각 raw 출력을 파일로 보존.
-  - 경로: `.claude/tasks/{sessionId}/zdeepresearch/{topic-slug}__{model}.raw.md`
-  - 프롬프트도 같이 저장: `…__prompt.md`
-  - 저장 실패해도 brief 반환은 계속(artifact는 선택적).
+- `local:llm-dispatch`가 돌려주는 completion envelope를 기다린다. 폴링·타임아웃·취소는 전부 그 스킬 책임이다.
+- envelope.status 별 처리:
+  - `completed`: envelope.artifact_path 파일을 `Read`하여 해당 모델 raw로 기록. envelope.trace_path는 디버깅용으로만 참조, Brief 생성에는 사용 금지.
+  - `failed`: 해당 모델을 failure로 기록. 재시도하지 않는다 (failure는 모델 측 오류이거나 artifact purity 위반이므로 같은 prompt 반복은 무의미).
+  - `timeout`: **새로운 `artifact_path`로 (attempt+1)** 1회 재-dispatch. 절대 `resume:true` 쓰지 않는다 — timeout된 turn은 continue 불가이며 신규 dispatch가 유일한 재시도 경로다.
+  - `cancelled`: 유저 correction으로 취소됐으면 Phase 종료 + 상위에 알림.
+- 재시도 후에도 미완이면 해당 모델은 failure로 기록하고 계속 진행 (두 모델 전부 실패면 Hard Rules에 따라 **failure report** 반환).
+- artifact 경로 규칙:
+  - raw: `.claude/tasks/{sessionId}/zdeepresearch/{topic-slug}__{model}__{attempt}__{epoch}.raw.md`
+  - prompt: `{artifact_path%.raw.md}__prompt.md` (dispatcher가 자동 생성)
+  - 저장 실패해도 brief 반환은 계속 (artifact는 선택적).
+- **Supersede note:** 이 Phase 2 재시도 규칙은 이후 Operating Limits 섹션의 "동일 모델로 새 mcp__llm__chat 1회 재실행" 문장보다 우선한다. Operating Limits의 해당 구 문장은 delegation 이전 prose이며, Phase 2 "envelope.status = timeout → new artifact_path 재-dispatch" 로 대체된다.
 
 ### Phase 3: Normalize → Brief
 

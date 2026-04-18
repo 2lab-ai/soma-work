@@ -13,11 +13,12 @@ const EXPECTED_TOPICS = [
   'persona',
   'sandbox',
   'theme',
+  'usage',
   'verbosity',
 ];
 
 describe('topics/index.registerAllTopics', () => {
-  it('registers all 11 Phase 2 topic bindings', () => {
+  it('registers all Phase 2 topic bindings', () => {
     const registry = new ZTopicRegistry();
     registerAllTopics(registry);
     const topics = registry.topics().sort();

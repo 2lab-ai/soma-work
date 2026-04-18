@@ -20,10 +20,11 @@ import { createNotifyTopicBinding } from './notify-topic';
 import { createPersonaTopicBinding } from './persona-topic';
 import { createSandboxTopicBinding } from './sandbox-topic';
 import { createThemeTopicBinding } from './theme-topic';
+import { createUsageTopicBinding } from './usage-topic';
 import { createVerbosityTopicBinding } from './verbosity-topic';
 
 /**
- * Register all 11 Phase 2 topic bindings into the given registry.
+ * Register every Phase 2 topic binding into the given registry.
  *
  * Order is alphabetical (by topic id) and does not affect behaviour —
  * `ZTopicRegistry` stores one binding per topic name.
@@ -39,6 +40,7 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createPersonaTopicBinding());
   registry.register(createSandboxTopicBinding());
   registry.register(createThemeTopicBinding());
+  registry.register(createUsageTopicBinding());
   registry.register(createVerbosityTopicBinding());
 }
 
