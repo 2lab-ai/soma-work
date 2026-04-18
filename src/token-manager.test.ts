@@ -43,6 +43,25 @@ async function importSut() {
 
 const VALID_OAUTH_SCOPES = ['user:profile', 'user:inference'];
 
+/**
+ * Resolve the CURRENT active-slot access token via the new lease API.
+ * Pre-#575 this was checked by asserting on `process.env.CLAUDE_CODE_OAUTH_TOKEN`
+ * (mirrored via `mirrorToEnv`). That mirror was removed to close a cross-tenant
+ * race; consumers now obtain the token through
+ * `credentials-manager#ensureActiveSlotAuth`, which wraps the TokenManager
+ * primitive and resolves `accessToken` + `release()`. We use the same seam in
+ * tests so the assertions exercise the real contract.
+ */
+async function activeAccessToken(tm: import('./token-manager').TokenManager): Promise<string> {
+  const { ensureActiveSlotAuth } = await import('./credentials-manager');
+  const lease = await ensureActiveSlotAuth(tm, 'test:activeAccessToken');
+  try {
+    return lease.accessToken;
+  } finally {
+    await lease.release();
+  }
+}
+
 function makeOAuthCreds(
   overrides: Partial<import('./cct-store').OAuthCredentials> = {},
 ): import('./cct-store').OAuthCredentials {
@@ -146,7 +165,7 @@ describe('TokenManager (slot-based)', () => {
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       const snap = await store.load();
       expect(snap.registry.activeSlotId).toBe(slot.slotId);
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-aaa');
+      expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-aaa');
     });
 
     it('two parallel addSlot calls with the same name — one wins, one throws NAME_IN_USE', async () => {
@@ -171,7 +190,7 @@ describe('TokenManager (slot-based)', () => {
   // ── applyToken ─────────────────────────────────────────────
 
   describe('applyToken', () => {
-    it('updates activeSlotId + process.env for setup_token', async () => {
+    it('updates activeSlotId + surfaces new access token via lease for setup_token', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -182,15 +201,15 @@ describe('TokenManager (slot-based)', () => {
       await tm.applyToken(s2.slotId);
       const snap = await store.load();
       expect(snap.registry.activeSlotId).toBe(s2.slotId);
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('val-b');
+      expect(await activeAccessToken(tm)).toBe('val-b');
 
       await tm.applyToken(s1.slotId);
       const snap2 = await store.load();
       expect(snap2.registry.activeSlotId).toBe(s1.slotId);
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('val-a');
+      expect(await activeAccessToken(tm)).toBe('val-a');
     });
 
-    it('applies oauth_credentials accessToken to process.env', async () => {
+    it('surfaces oauth_credentials accessToken via lease', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -204,7 +223,7 @@ describe('TokenManager (slot-based)', () => {
       });
       void s1;
       await tm.applyToken(s2.slotId);
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-ooo');
+      expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-ooo');
     });
   });
 
@@ -232,7 +251,7 @@ describe('TokenManager (slot-based)', () => {
       expect(result?.slotId).toBe(s4.slotId);
       const cur = tm.getActiveToken();
       expect(cur?.slotId).toBe(s4.slotId);
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('v4');
+      expect(await activeAccessToken(tm)).toBe('v4');
       void s1;
     });
 
@@ -880,7 +899,7 @@ describe('TokenManager (slot-based)', () => {
       await tm.init();
       const snap = await store.load();
       expect(snap.registry.activeSlotId).toBe('01HZZZAAAA0000000000000111');
-      expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-zzz');
+      expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-zzz');
     });
   });
 
