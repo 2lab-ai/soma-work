@@ -59,7 +59,6 @@ function makeOverrides(
     stats?: UsageCardStats | { empty: true; windowStart: string; windowEnd: string; targetUserId: string };
     rendererError?: Error;
     uploadError?: Error;
-    postError?: Error;
     aggregatorError?: Error;
   } = {},
 ): {
@@ -85,10 +84,9 @@ function makeOverrides(
     if (opts.uploadError) throw opts.uploadError;
     return { files: [{ files: [{ id: 'F_TEST' }] }] };
   });
-  const postMessage = vi.fn(async () => {
-    if (opts.postError) throw opts.postError;
-    return {};
-  });
+  // postMessage is no longer used on the success path — it only fires from
+  // `postDmAlert` when a safe-operational error falls back to DM notification.
+  const postMessage = vi.fn().mockResolvedValue({});
   const postEphemeral = vi.fn().mockResolvedValue({});
   const openDmChannel = vi.fn().mockResolvedValue('D_DM');
   const overrides: UsageCardOverrides = {
@@ -139,12 +137,13 @@ describe('UsageHandler subcommand routing', () => {
     expect(aggregator.aggregateUsageCard).toHaveBeenCalledTimes(1);
     expect(renderer).toHaveBeenCalledTimes(1);
     expect(filesUploadV2).toHaveBeenCalledTimes(1);
-    expect(postMessage).toHaveBeenCalledTimes(1);
+    // 1-step upload: no follow-up postMessage on the success path.
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });
 
 describe('UsageHandler.handleCard — happy path', () => {
-  it('calls aggregator → renderer → filesUploadV2 → postMessage in order', async () => {
+  it('calls aggregator → renderer → filesUploadV2 (1-step upload, no separate postMessage)', async () => {
     const { overrides, aggregator, renderer, filesUploadV2, postMessage } = makeOverrides();
     const handler = new UsageHandler(makeDeps(), overrides);
 
@@ -152,15 +151,24 @@ describe('UsageHandler.handleCard — happy path', () => {
 
     expect(aggregator.aggregateUsageCard).toHaveBeenCalled();
     expect(renderer).toHaveBeenCalled();
+    // filesUploadV2 must carry channel_id + thread_ts + initial_comment so Slack
+    // posts the file into the originating thread in one call. This is the whole
+    // point of the 1-step fix (issue #579) — no follow-up Block Kit postMessage.
     expect(filesUploadV2).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: 'usage-card.png', channel_id: 'C_TEST' }),
-    );
-    expect(postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        channel: 'C_TEST',
-        blocks: expect.arrayContaining([expect.objectContaining({ type: 'image', slack_file: { id: 'F_TEST' } })]),
+        filename: 'usage-card.png',
+        channel_id: 'C_TEST',
+        thread_ts: '1.1',
+        initial_comment: expect.stringContaining('Usage Card'),
+        alt_text: expect.stringContaining('Usage card for'),
+        request_file_info: false,
       }),
     );
+    // Legacy field `channels` (plural) must NOT be passed — the SDK would
+    // silently prefer it over `channel_id` and we'd lose the thread placement.
+    const uploadArgs = filesUploadV2.mock.calls[0][0] as Record<string, unknown>;
+    expect(uploadArgs).not.toHaveProperty('channels');
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it('passes 30d window (startDate, endDate) to aggregator', async () => {
@@ -274,18 +282,7 @@ describe('UsageHandler.handleCard — error fallback', () => {
     );
   });
 
-  it('SlackPostError wraps postMessage failure → ephemeral fallback', async () => {
-    const { overrides, postEphemeral } = makeOverrides({ postError: new Error('post boom') });
-    const handler = new UsageHandler(makeDeps(), overrides);
-
-    const result = await handler.handleCard(makeCtx());
-    expect(result.handled).toBe(true);
-    expect(postEphemeral).toHaveBeenCalledWith(
-      expect.objectContaining({ text: '카드 생성 실패, 잠시 후 다시 시도해 주세요.' }),
-    );
-  });
-
-  it('directly-thrown SlackUploadError / SlackPostError (already safe) → fallback', async () => {
+  it('directly-thrown SlackUploadError (already safe) → fallback', async () => {
     // Even if the error is already the expected subclass, handler must still fallback.
     const { overrides, postEphemeral } = makeOverrides({ uploadError: new SlackUploadError('raw') });
     const handler = new UsageHandler(makeDeps(), overrides);
@@ -365,6 +362,23 @@ describe('UsageHandler.handleCard — DM alert (spec §4.4)', () => {
     const result = await handler.handleCard(makeCtx({ user: 'U_ALICE' }));
     expect(result.handled).toBe(true);
     // Ephemeral channel fallback still sent.
+    expect(postEphemeral).toHaveBeenCalled();
+  });
+
+  it('DM postMessage rejection is swallowed (does not bubble out of handler)', async () => {
+    // The 1-step upload fix removed the success-path postMessage, but
+    // `postDmAlert` still calls postMessage to deliver the DM notification.
+    // A rejection there must not mask the ephemeral channel fallback.
+    const { overrides, openDmChannel, postMessage, postEphemeral } = makeOverrides({
+      rendererError: new EchartsInitError('boom'),
+    });
+    postMessage.mockRejectedValueOnce(new Error('chat.postMessage to DM failed'));
+    const handler = new UsageHandler(makeDeps(), overrides);
+
+    const result = await handler.handleCard(makeCtx({ user: 'U_ALICE' }));
+    expect(result.handled).toBe(true);
+    expect(openDmChannel).toHaveBeenCalledWith('U_ALICE');
+    expect(postMessage).toHaveBeenCalledTimes(1);
     expect(postEphemeral).toHaveBeenCalled();
   });
 
