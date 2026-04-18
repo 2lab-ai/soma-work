@@ -28,16 +28,25 @@ Call `mcp__model-command__run`:
       "type": "user_choice",
       "question": "[medium ~50 lines] <question>",
       "context": "<current state · problem · impact · fix code · review consensus>",
+      "recommendedChoiceId": "1",
       "choices": [
-        { "id": "1", "label": "Option A: <action> (Recommended · 3/3)", "description": "<trade-offs>" },
-        { "id": "2", "label": "Option B: <action>",                     "description": "<trade-offs>" }
+        { "id": "1", "label": "Option A: <action>", "description": "<trade-offs>" },
+        { "id": "2", "label": "Option B: <action>", "description": "<trade-offs>" }
       ]
     }
   }
 }
 ```
 
-If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [{question, options:[...]}]` array.
+If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [{question, recommendedChoiceId, options:[...]}]` array.
+
+## Recommended option
+
+Mark the recommended option with the top-level `recommendedChoiceId` field (single choice) or per-question `recommendedChoiceId` (group). It must match one of the option `id`s. If it doesn't match, it is silently dropped (no error).
+
+- **Slack single-choice** renders the recommended option as a solo emphasized row (`style: 'primary'`) with a `⭐ Recommended — <label>` banner above and a divider between the recommended row and the other options.
+- **Slack multi-form** styles it inline (reordered to the front of the buttons row with `style='primary'` + `⭐` prefix) so the 50-block per-message budget is preserved.
+- **Legacy fallback**: if `recommendedChoiceId` is missing, the renderer scans option labels for a trailing `(Recommended · N/M)` (or plain `(Recommended)`) marker and treats that option as recommended. The marker is auto-stripped from the displayed label. **Prefer explicit `recommendedChoiceId` over the label suffix.**
 
 > Fallback (tool unavailable): Output the same structured JSON directly in the message. **In PR review context, plain text is strictly prohibited** — always use structured JSON or tool call.
 
@@ -52,7 +61,7 @@ If multiple decisions are bundled, use `type: "user_choice_group"` + `choices: [
    - Trade-offs for each option
    - 3-person review consensus (Codex + oracle-reviewer + oracle-gemini-reviewer)
 4. **2-4 options** — Slack UI renders `1️⃣-4️⃣` buttons up to 4. The 5th and beyond get cut off. `multiSelect` not supported (single-select only).
-5. **Recommended option goes first** — Mark in label with `(Recommended · N/M)`. N/M is the review vote count.
+5. **Recommended option** — Set `recommendedChoiceId` to the id of the recommended option. (Legacy `(Recommended · N/M)` label suffix is still accepted as a fallback and is auto-stripped from display; prefer the explicit field.) N/M is the review vote count and should go into the `description` or `context` instead of the label.
 6. **Actionable label** — Specific action that can be executed immediately upon selection. Meta options like "I'll think about it" are prohibited.
 7. **Do not reference plan text in Claude Code native Plan mode (`ExitPlanMode`)** — The user cannot see the plan in the Plan mode UI, so plan approval there is `ExitPlanMode`'s responsibility, not this tool's.
    - *Outside Plan mode* — In custom controller skills like `local:z` (phase1 plan confirmation, phase2.9 PR approval), `local:zcheck` (Step 4 PR approve), `local:ztrace` (Phase 0 scenario confirmation), `local:zexplore`, and `local:decision-gate` (tier=medium branch), structured plan/PR/scope confirmation via this tool is the **correct** pattern. Use the pre-built templates below.
@@ -106,11 +115,12 @@ No tier, no code snippets, no problem description, no review consensus → User 
       "type": "user_choice",
       "question": "[medium ~50 lines] P1-1: Missing DbUpdateException filter — choose implementation approach",
       "context": "▸ Current (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) { return Result.Conflict(); }\n```\n▸ Problem: All DB exceptions including network/timeout are treated as Conflict → risk of data loss.\n▸ Review consensus (3/3 Option A): Codex · oracle-reviewer · oracle-gemini unanimous.\n▸ Default if no response: Proceeding with Option A.",
+      "recommendedChoiceId": "option_a",
       "choices": [
         {
           "id": "option_a",
-          "label": "Option A: Add when filter (Recommended · 3/3)",
-          "description": "`catch (DbUpdateException ex) when (IsDuplicateKeyException(ex))` — Bulk update 4 files, add 4 tests. Minimal change, intuitive."
+          "label": "Option A: Add when filter",
+          "description": "`catch (DbUpdateException ex) when (IsDuplicateKeyException(ex))` — Bulk update 4 files, add 4 tests. Minimal change, intuitive. (Review consensus 3/3.)"
         },
         {
           "id": "option_b",
