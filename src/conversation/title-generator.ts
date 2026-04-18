@@ -1,4 +1,5 @@
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
@@ -31,10 +32,11 @@ export async function generateTitle(conversationContent: string): Promise<string
 
     const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;
 
-    // Pass the fresh lease token via options.env (merged onto process.env inside
-    // the SDK) so concurrent spawns each see their own token — mutating
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against other
-    // in-flight dispatches holding leases on different slots.
+    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
+    // so concurrent spawns each see their own token — mutating
+    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against
+    // other in-flight dispatches holding leases on different slots.
+    const { env } = buildQueryEnv(lease);
     const options: Options = {
       model: config.conversation.summaryModel,
       maxTurns: 1,
@@ -42,7 +44,7 @@ export async function generateTitle(conversationContent: string): Promise<string
       systemPrompt: 'You generate concise conversation titles. Output only the title text.',
       settingSources: [],
       plugins: [],
-      env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: lease.accessToken },
+      env,
       stderr: (data: string) => {
         logger.warn('TitleGenerator stderr', { data: data.trimEnd() });
       },

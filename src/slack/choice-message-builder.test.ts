@@ -314,7 +314,18 @@ describe('ChoiceMessageBuilder.buildMultiChoiceFormBlocks — recommendedChoiceI
 
     const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'form-1', 'sk-1');
     const blocks = getBlocks(payload);
-    const actionBlocks = blocks.filter((b) => b.type === 'actions');
+    // Filter out the hero "Submit All Recommended" actions block (#581) so this
+    // test continues to assert per-question structure only.
+    const actionBlocks = blocks.filter(
+      (b) =>
+        b.type === 'actions' &&
+        !(
+          Array.isArray(b.elements) &&
+          b.elements.length === 1 &&
+          typeof b.elements[0].action_id === 'string' &&
+          b.elements[0].action_id.startsWith('submit_all_recommended_')
+        ),
+    );
     // One actions block per unanswered question
     expect(actionBlocks).toHaveLength(2);
 
@@ -409,5 +420,204 @@ describe('ChoiceMessageBuilder.buildUserChoiceBlocks — recommended banner mrkd
       expect(banner.text.text).toContain('&lt;!channel&gt;');
       expect(banner.text.text).not.toContain('<!channel>');
     }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Hero "Submit All Recommended" — group-only (#581)
+// -----------------------------------------------------------------------------
+
+const findHeroAction = (blocks: any[]): any | undefined =>
+  blocks.find(
+    (b) =>
+      b.type === 'actions' &&
+      Array.isArray(b.elements) &&
+      b.elements.length === 1 &&
+      typeof b.elements[0].action_id === 'string' &&
+      b.elements[0].action_id.startsWith('submit_all_recommended_'),
+  );
+
+const makeMultiQuestion = (id: string, recId: string | undefined) => ({
+  id,
+  question: `Q${id}?`,
+  recommendedChoiceId: recId,
+  choices: [
+    { id: '1', label: 'A' },
+    { id: '2', label: 'B' },
+  ],
+});
+
+describe('ChoiceMessageBuilder.buildMultiChoiceFormBlocks — hero "Submit All Recommended" (#581)', () => {
+  it('Test 1: 5/5 → primary hero button with action_id submit_all_recommended_<formId>, value JSON {formId,sessionKey,n:5,m:5}', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        makeMultiQuestion('q1', '1'),
+        makeMultiQuestion('q2', '2'),
+        makeMultiQuestion('q3', '1'),
+        makeMultiQuestion('q4', '2'),
+        makeMultiQuestion('q5', '1'),
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F-555', 'sk-A');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    const heroBtn = hero.elements[0];
+    expect(heroBtn.action_id).toBe('submit_all_recommended_F-555');
+    expect(heroBtn.style).toBe('primary');
+    const v = JSON.parse(heroBtn.value);
+    expect(v).toEqual({ formId: 'F-555', sessionKey: 'sk-A', n: 5, m: 5 });
+  });
+
+  it('Test 2: 3/5 → blocked hero button with exact label `🔒 추천 부족 (3/5)` and action_id submit_all_recommended_blocked_<formId>', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        makeMultiQuestion('q1', '1'),
+        makeMultiQuestion('q2', '2'),
+        makeMultiQuestion('q3', '1'),
+        makeMultiQuestion('q4', undefined),
+        makeMultiQuestion('q5', undefined),
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F-blk', 'sk-B');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    const heroBtn = hero.elements[0];
+    expect(heroBtn.action_id).toBe('submit_all_recommended_blocked_F-blk');
+    expect(heroBtn.style).toBeUndefined();
+    expect(heroBtn.text.text).toBe('🔒 추천 부족 (3/5)');
+    const v = JSON.parse(heroBtn.value);
+    expect(v).toEqual({ formId: 'F-blk', sessionKey: 'sk-B', n: 3, m: 5 });
+  });
+
+  it('Test 3: 0/5 → no hero block; first block is the existing 📋 header section', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      title: 'No recs',
+      questions: [
+        makeMultiQuestion('q1', undefined),
+        makeMultiQuestion('q2', undefined),
+        makeMultiQuestion('q3', undefined),
+        makeMultiQuestion('q4', undefined),
+        makeMultiQuestion('q5', undefined),
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F-zero', 'sk-C');
+    const blocks = getBlocks(payload);
+    expect(findHeroAction(blocks)).toBeUndefined();
+    // First block is the header section
+    expect(blocks[0].type).toBe('section');
+    expect(blocks[0].text.text).toContain('📋');
+    expect(blocks[0].text.text).toContain('No recs');
+  });
+
+  it('Test 5: button value JSON shape exactly {formId, sessionKey, n, m} (no extra keys)', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [makeMultiQuestion('q1', '1'), makeMultiQuestion('q2', '2')],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'FX', 'SK');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    const v = JSON.parse(hero.elements[0].value);
+    expect(Object.keys(v).sort()).toEqual(['formId', 'm', 'n', 'sessionKey']);
+    expect(v.formId).toBe('FX');
+    expect(v.sessionKey).toBe('SK');
+    expect(v.n).toBe(2);
+    expect(v.m).toBe(2);
+  });
+
+  it('Test 7: resolveRecommendedId returns undefined when explicit id does not match any option → that question is not counted in N', () => {
+    // Q with recommendedChoiceId='zzz' (not in choices) and no legacy suffix → not counted
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        makeMultiQuestion('q1', '1'), // valid recommendation
+        {
+          id: 'q2',
+          question: 'Bad rec',
+          recommendedChoiceId: 'zzz', // invalid
+          choices: [
+            { id: '1', label: 'A' },
+            { id: '2', label: 'B' },
+          ],
+        },
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F7', 'SK');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    // 1/2 → blocked variant
+    expect(hero.elements[0].action_id).toBe('submit_all_recommended_blocked_F7');
+    const v = JSON.parse(hero.elements[0].value);
+    expect(v.n).toBe(1);
+    expect(v.m).toBe(2);
+  });
+
+  it('Test 14: recommendedChoiceId === "직접입력" → that question is NOT counted in N (custom-input sentinel skip)', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        makeMultiQuestion('q1', '1'),
+        {
+          id: 'q2',
+          question: 'Custom input?',
+          recommendedChoiceId: '직접입력',
+          choices: [
+            { id: '직접입력', label: 'Custom' }, // sentinel happens to be in choices
+            { id: '1', label: 'A' },
+          ],
+        },
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F14', 'SK');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    // 1/2 because q2's recommendation resolves to '직접입력' sentinel (skipped)
+    const v = JSON.parse(hero.elements[0].value);
+    expect(v.n).toBe(1);
+    expect(v.m).toBe(2);
+    expect(hero.elements[0].action_id).toBe('submit_all_recommended_blocked_F14');
+  });
+
+  it('Test 15: questions.length === 1 (boundary user_choices) → hero still applies at 1/1 with primary variant', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [makeMultiQuestion('q1', '2')],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F15', 'SK');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    expect(hero.elements[0].style).toBe('primary');
+    const v = JSON.parse(hero.elements[0].value);
+    expect(v.n).toBe(1);
+    expect(v.m).toBe(1);
+  });
+
+  it('Test 16: blocked label exact string `🔒 추천 부족 (N/M)` (i18n drift guard)', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [
+        makeMultiQuestion('q1', '1'),
+        makeMultiQuestion('q2', undefined),
+        makeMultiQuestion('q3', undefined),
+        makeMultiQuestion('q4', undefined),
+        makeMultiQuestion('q5', undefined),
+        makeMultiQuestion('q6', undefined),
+        makeMultiQuestion('q7', undefined),
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F16', 'SK');
+    const blocks = getBlocks(payload);
+    const hero = findHeroAction(blocks);
+    expect(hero).toBeDefined();
+    expect(hero.elements[0].text.text).toBe('🔒 추천 부족 (1/7)');
   });
 });

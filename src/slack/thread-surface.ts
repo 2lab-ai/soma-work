@@ -1,5 +1,6 @@
 import type { EndTurnInfo } from '../agent-session/agent-session-types.js';
 import type { ClaudeHandler } from '../claude-handler';
+import { config } from '../config';
 import { fetchGitHubPRDetails, fetchGitHubPRReviewStatus, isPRMergeable } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import type { TodoManager } from '../todo-manager';
@@ -566,7 +567,11 @@ export class ThreadSurface {
         : [];
     const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
 
-    const todos = session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
+    // Under PHASE>=2 the task list renders as its own `planTs` message via
+    // TurnSurface.renderTasks. Skip the embed here to avoid dual rendering
+    // (combined header + plan message) showing the same todos twice.
+    const todos =
+      config.ui.fiveBlockPhase < 2 && session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
     if (todos.length > 0 && budgetForTaskList >= 4) {
       const taskListTheme = userSettingsStore.getUserSessionTheme(session.ownerId);
       const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {

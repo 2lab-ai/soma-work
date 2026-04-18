@@ -5,6 +5,15 @@
  * `setup_token` (sk-ant-oat01-...) or an `oauth_credentials` bundle
  * owned by the operator. Slot identity (`slotId`) is immutable; the
  * human-facing `name` is mutable.
+ *
+ * Schema versioning:
+ *   - `version: 1` — original shape (no per-slot `configDir`).
+ *   - `version: 2` — adds optional `configDir` on
+ *     {@link OAuthCredentialsSlot} so each oauth slot can own a private
+ *     `CLAUDE_CONFIG_DIR`. `setup_token` slots are unchanged.
+ *
+ * Migrations are implemented in `migrate-v2.ts` (pure) and consumed by
+ * `CctStore.upgradeIfNeeded()` on `TokenManager.init()`.
  */
 
 export type SlotKind = 'setup_token' | 'oauth_credentials';
@@ -43,6 +52,16 @@ export interface OAuthCredentialsSlot {
   createdAt: string;
   /** Required true for oauth_credentials slots. */
   acknowledgedConsumerTosRisk: true;
+  /**
+   * Private `CLAUDE_CONFIG_DIR` for this slot. Populated on schema-v2
+   * upgrade and on `addSlot({ kind: 'oauth_credentials' })`. Owned by the
+   * CCT data dir (`<dataDir>/cct-store.dirs/<slotId>`, mode 0o700).
+   *
+   * Optional for historical/test fixtures that pre-date v2; in practice
+   * every oauth slot created through {@link TokenManager.addSlot} after
+   * v2 carries a populated value.
+   */
+  configDir?: string;
 }
 
 export type TokenSlot = SetupTokenSlot | OAuthCredentialsSlot;
@@ -97,11 +116,32 @@ export interface CctRegistry {
   slots: TokenSlot[];
 }
 
+/**
+ * Current on-disk shape. `version` is widened to `1 | 2` so that a v1
+ * snapshot can still be read raw; any consumer of a v2-shape-only value
+ * should use {@link SnapshotV2} for clarity.
+ */
 export interface CctStoreSnapshot {
-  version: 1;
+  version: 1 | 2;
   /** Monotonic counter for optimistic CAS on save. */
   revision: number;
   registry: CctRegistry;
   /** Keyed by slotId. */
   state: Record<string, SlotState>;
 }
+
+/**
+ * Internal v1 shape — only used as input to the v1→v2 migrator. Same
+ * structure as {@link CctStoreSnapshot} but with the literal `version: 1`
+ * narrowed.
+ */
+export interface SnapshotV1 extends Omit<CctStoreSnapshot, 'version'> {
+  version: 1;
+}
+
+/**
+ * Alias for the v2 shape exposed by `CctStore.load()` post-migration.
+ * Structurally identical to {@link CctStoreSnapshot}; aliased for
+ * migrator signature readability.
+ */
+export type SnapshotV2 = CctStoreSnapshot;
