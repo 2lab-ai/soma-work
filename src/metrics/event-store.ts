@@ -100,7 +100,12 @@ async function cleanupStaleTmp(metricsDir: string): Promise<void> {
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(metricsDir, { withFileTypes: true });
-  } catch {
+  } catch (err: any) {
+    // ENOENT = dir doesn't exist yet (first boot before mkdir effect) — expected.
+    // Anything else (EACCES/EIO) is a real problem; log for observability.
+    if (err?.code !== 'ENOENT') {
+      logger.warn('[metrics] cleanupStaleTmp readdir failed', err);
+    }
     return;
   }
   const now = Date.now();
@@ -127,7 +132,15 @@ async function migrateLegacyFiles(dataDir: string, metricsDir: string): Promise<
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(dataDir, { withFileTypes: true });
-  } catch {
+  } catch (err: any) {
+    // ENOENT on DATA_DIR is expected on a completely fresh install — nothing to migrate.
+    // EACCES/EIO/EPERM here means legacy files (if any) would be silently orphaned and
+    // invisible to readRange. Rethrow so the caller's ensureDirOnce cache holds the
+    // failure and the error surfaces (instead of looking like a successful no-op boot).
+    if (err?.code !== 'ENOENT') {
+      logger.error('[metrics] migrateLegacyFiles readdir failed', err);
+      throw err;
+    }
     return;
   }
   const legacy = entries.filter((d) => d.isFile() && LEGACY_FILE_PATTERN.test(d.name));
@@ -161,9 +174,14 @@ async function migrateOne(
   src: string,
   dst: string,
 ): Promise<{ mergedWithExisting: boolean; duplicates: number; corrupt: number }> {
+  // Only treat ENOENT as "doesn't exist". EACCES/EIO must propagate — otherwise we'd
+  // mis-classify an unreadable dst as missing and overwrite with src via rename.
   const dstExists = await fs.promises.stat(dst).then(
     () => true,
-    () => false,
+    (err: any) => {
+      if (err?.code === 'ENOENT') return false;
+      throw err;
+    },
   );
 
   if (!dstExists) {

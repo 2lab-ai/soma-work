@@ -323,11 +323,16 @@ describe('MetricsEventStore', () => {
     });
     const corrupt = '{not valid json';
     const noId = JSON.stringify({ timestamp: 1, eventType: 'x' });
+    const badTs = JSON.stringify({ id: 'badTs', timestamp: 'not-a-number', eventType: 'x' });
 
-    const { out, duplicates, corrupt: corruptCount } = mergeJsonl(`${a}\n${corrupt}\n${noId}\n`, `${b}\n${aDup}\n`);
+    const { out, duplicates, corrupt: corruptCount } = mergeJsonl(
+      `${a}\n${corrupt}\n${noId}\n${badTs}\n`,
+      `${b}\n${aDup}\n`,
+    );
 
     expect(duplicates).toBe(1);
-    expect(corruptCount).toBe(2);
+    // 3 corrupt = JSON syntax error + missing id + non-number timestamp
+    expect(corruptCount).toBe(3);
 
     const lines = out.split('\n').filter((l) => l.trim());
     expect(lines).toHaveLength(2);
