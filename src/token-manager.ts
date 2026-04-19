@@ -885,6 +885,122 @@ export class TokenManager {
     await this.refreshCache();
   }
 
+  // ── Attach / detach OAuth on setup-source CCT slots (Z2) ─
+
+  /**
+   * Narrowed helper: mutates a setup-source CCT slot that currently carries
+   * an OAuthAttachment, removing the attachment field and clearing any
+   * cached usage. Called only from inside a CAS `store.mutate` callback
+   * where the slot has been narrowed to this shape.
+   *
+   * Centralising the erase-side mutation keeps the type narrowing in one
+   * place — the public `detachOAuth(keyId)` surface is string-keyed, and
+   * only here do we know the slot matches this union arm.
+   */
+  #detachOAuthOnSetupSlot(
+    snap: CctStoreSnapshot,
+    slot: CctSlotWithSetup & { oauthAttachment: OAuthAttachment },
+  ): void {
+    // Delete the optional attachment field; source stays 'setup'.
+    delete (slot as CctSlotWithSetup).oauthAttachment;
+    const st = snap.state[slot.keyId];
+    if (st) {
+      delete st.usage;
+      delete st.lastUsageFetchedAt;
+      delete st.nextUsageFetchAllowedAt;
+      delete st.consecutiveUsageFailures;
+    }
+  }
+
+  /**
+   * Attach an `oauthAttachment` to an existing setup-source CCT slot (Z2).
+   *
+   * Guards (every call, not cached):
+   *   - Unknown keyId → throw.
+   *   - `slot.kind !== 'cct'` → throw `attachOAuth: slot kind must be cct`.
+   *     api_key slots have no attachment surface in phase 1.
+   *   - `slot.source !== 'setup'` → throw
+   *     `attachOAuth: only setup-source slots accept attachment`.
+   *     legacy-attachment slots already carry a mandatory attachment; the
+   *     replace path is "remove + re-add", not attach-on-top.
+   *   - `!hasRequiredScopes(creds.scopes)` → re-validated every call even
+   *     when the slot previously had a good attachment (blobs can shrink).
+   *   - `ack !== true` → throw `attachOAuth: ack required`.
+   *
+   * On success: `source: 'setup'` stays unchanged; we only set
+   * `oauthAttachment`. A usage fetch is *triggered* (fire-and-forget) so
+   * the next card open has fresh numbers — we do NOT await it (the Z1
+   * `fetchUsageForAllAttached` path will pick it up).
+   */
+  async attachOAuth(keyId: string, creds: OAuthCredentials, ack: true): Promise<void> {
+    if (ack !== true) {
+      throw new Error('attachOAuth: ack required (acknowledgedConsumerTosRisk)');
+    }
+    if (!hasRequiredScopes(creds.scopes)) {
+      const missing = missingScopes(creds.scopes);
+      throw new Error(`attachOAuth: missing required scope(s): ${missing.join(', ')}`);
+    }
+    await this.store.mutate((snap) => {
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`attachOAuth: unknown keyId ${keyId}`);
+      if (slot.kind !== 'cct') {
+        throw new Error('attachOAuth: slot kind must be cct');
+      }
+      if (slot.source !== 'setup') {
+        throw new Error('attachOAuth: only setup-source slots accept attachment');
+      }
+      const attachment: OAuthAttachment = {
+        accessToken: creds.accessToken,
+        refreshToken: creds.refreshToken,
+        expiresAtMs: creds.expiresAtMs,
+        scopes: [...creds.scopes],
+        acknowledgedConsumerTosRisk: true,
+      };
+      if (creds.subscriptionType !== undefined) attachment.subscriptionType = creds.subscriptionType;
+      if (creds.rateLimitTier !== undefined) attachment.rateLimitTier = creds.rateLimitTier;
+      slot.oauthAttachment = attachment;
+    });
+    await this.refreshCache();
+    // Fire-and-forget usage fetch — the renderCctCard path will also pick
+    // this up via fetchUsageForAllAttached on next open. Swallow errors so
+    // attach response is not blocked.
+    void this.fetchAndStoreUsage(keyId).catch(() => {});
+  }
+
+  /**
+   * Remove the oauthAttachment from a setup-source CCT slot (Z2).
+   *
+   * Guards:
+   *   - Unknown keyId → throw.
+   *   - `slot.kind !== 'cct'` → throw `detachOAuth: api_key slots have no attachment`.
+   *   - `slot.source !== 'setup'` → throw
+   *     `detachOAuth: legacy-attachment slots cannot detach; use removeSlot`.
+   *     That union arm has `oauthAttachment` as a REQUIRED field; dropping
+   *     it would violate the type.
+   *
+   * On success: `slot.oauthAttachment` is deleted, and the state entry's
+   * usage cache is cleared (avoids rendering stale percentages against a
+   * now-attachmentless slot).
+   */
+  async detachOAuth(keyId: string): Promise<void> {
+    await this.store.mutate((snap) => {
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`detachOAuth: unknown keyId ${keyId}`);
+      if (slot.kind !== 'cct') {
+        throw new Error('detachOAuth: api_key slots have no attachment');
+      }
+      if (slot.source !== 'setup') {
+        throw new Error('detachOAuth: legacy-attachment slots cannot detach; use removeSlot');
+      }
+      if (slot.oauthAttachment === undefined) {
+        // No-op for setup slots without an attachment — idempotent.
+        return;
+      }
+      this.#detachOAuthOnSetupSlot(snap, slot as CctSlotWithSetup & { oauthAttachment: OAuthAttachment });
+    });
+    await this.refreshCache();
+  }
+
   // ── Proactive refresh ─────────────────────────────────────
 
   async getValidAccessToken(keyId: string): Promise<string> {

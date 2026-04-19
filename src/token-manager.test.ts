@@ -1001,6 +1001,106 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── T3-T5c: attachOAuth / detachOAuth (Z2) ─────────────────
+
+  describe('attachOAuth / detachOAuth (Z2 — setup-source only)', () => {
+    it('T3: attachOAuth on a setup-source slot sets oauthAttachment, keeps source="setup", re-validates scopes', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const creds = makeOAuthCreds({ accessToken: 'sk-ant-oat01-attach' });
+      await tm.attachOAuth(slot.keyId, creds, true);
+      const snap = await store.load();
+      const updated = snap.registry.slots.find((s) => s.keyId === slot.keyId);
+      if (!updated || updated.kind !== 'cct' || updated.source !== 'setup') {
+        throw new Error('expected setup-source cct slot');
+      }
+      expect(updated.source).toBe('setup');
+      expect(updated.oauthAttachment?.accessToken).toBe('sk-ant-oat01-attach');
+      expect(updated.oauthAttachment?.acknowledgedConsumerTosRisk).toBe(true);
+    });
+
+    it('T4: attachOAuth with insufficient scopes (missing user:profile) rejects', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const badCreds = makeOAuthCreds({ scopes: ['user:inference'] });
+      await expect(tm.attachOAuth(slot.keyId, badCreds, true)).rejects.toThrow(/user:profile/);
+    });
+
+    it('T4b: attachOAuth requires ack=true', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await expect(tm.attachOAuth(slot.keyId, makeOAuthCreds(), false as any)).rejects.toThrow(/ack/);
+    });
+
+    it('T5: detachOAuth on a setup-source slot with attachment clears oauthAttachment + usage cache', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Seed some usage state so detach clears it.
+      await store.mutate((snap) => {
+        snap.state[slot.keyId] = {
+          ...(snap.state[slot.keyId] ?? { authState: 'healthy', activeLeases: [] }),
+          usage: {
+            fetchedAt: new Date().toISOString(),
+            fiveHour: { utilization: 0.42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          },
+          lastUsageFetchedAt: new Date().toISOString(),
+        };
+      });
+      await tm.detachOAuth(slot.keyId);
+      const snap = await store.load();
+      const after = snap.registry.slots.find((s) => s.keyId === slot.keyId);
+      if (!after || after.kind !== 'cct' || after.source !== 'setup') throw new Error('expected setup cct');
+      expect(after.oauthAttachment).toBeUndefined();
+      expect(snap.state[slot.keyId]?.usage).toBeUndefined();
+      expect(snap.state[slot.keyId]?.lastUsageFetchedAt).toBeUndefined();
+    });
+
+    it('T5b: detachOAuth on a legacy-attachment slot throws (mandatory-attachment arm)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'legacy',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      await expect(tm.detachOAuth(slot.keyId)).rejects.toThrow(/legacy-attachment/);
+    });
+
+    it('T5c: attachOAuth on an api_key slot throws', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.attachOAuth(slot.keyId, makeOAuthCreds(), true)).rejects.toThrow(/slot kind must be cct/);
+    });
+
+    it('T5d: detachOAuth on an api_key slot throws (no attachment surface)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.detachOAuth(slot.keyId)).rejects.toThrow(/api_key slots have no attachment/);
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {
