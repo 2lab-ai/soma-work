@@ -21,7 +21,7 @@ function withName(name: string, extra: Values = {}): Values {
   };
 }
 
-function withKind(kind: 'setup_token' | 'oauth_credentials', extra: Values = {}): Values {
+function withKind(kind: 'setup_token' | 'oauth_credentials' | 'api_key', extra: Values = {}): Values {
   return {
     [CCT_BLOCK_IDS.add_kind]: {
       cct_kind_radio: { type: 'radio_buttons', selected_option: { value: kind } },
@@ -354,6 +354,238 @@ describe('cct_open_remove / cct_open_rename routing', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ── T8: api_key validation + attach/detach routing (Z2 + Z3) ──
+
+function apiKeyValue(val: string): Values {
+  return {
+    [CCT_BLOCK_IDS.add_api_key_value]: {
+      cct_api_key_value: { type: 'plain_text_input', value: val },
+    },
+  };
+}
+
+describe('validateAddSubmission — api_key arm (Z3)', () => {
+  it('T8a: valid sk-ant-api03- value → null', () => {
+    const values = mergeValues(withName('api-1'), withKind('api_key'), apiKeyValue('sk-ant-api03-abcdefghij'));
+    expect(validateAddSubmission(values, fakeManager())).toBeNull();
+  });
+
+  it('T8a-ii: non-matching value → error keyed by cct_add_api_key_value', () => {
+    const values = mergeValues(withName('api-1'), withKind('api_key'), apiKeyValue('not-an-api-key'));
+    const errors = validateAddSubmission(values, fakeManager());
+    expect(errors?.[CCT_BLOCK_IDS.add_api_key_value]).toMatch(/sk-ant-api03/);
+  });
+});
+
+describe('attach/detach action routing (Z2)', () => {
+  function makeApp() {
+    const actionHandlers = new Map<string, (ctx: any) => Promise<void>>();
+    const viewHandlers = new Map<string, (ctx: any) => Promise<void>>();
+    const app = {
+      action: (id: string, fn: (ctx: any) => Promise<void>) => {
+        actionHandlers.set(id, fn);
+      },
+      view: (id: string, fn: (ctx: any) => Promise<void>) => {
+        viewHandlers.set(id, fn);
+      },
+    } as any;
+    return { app, actionHandlers, viewHandlers };
+  }
+
+  it('T8b: cct_open_attach opens the attach modal when the target is a setup-source cct slot', async () => {
+    const { app, actionHandlers } = makeApp();
+    const setupSlot = {
+      kind: 'cct' as const,
+      source: 'setup' as const,
+      keyId: 'slot-B',
+      name: 'bare',
+      setupToken: '',
+      createdAt: '',
+    };
+    const tm = {
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-B', slots: [setupSlot] },
+        state: {},
+      }),
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const openAttach = actionHandlers.get(CCT_ACTION_IDS.attach);
+      expect(openAttach).toBeDefined();
+      const openedViews: any[] = [];
+      await openAttach?.({
+        ack: vi.fn(async () => undefined),
+        body: { trigger_id: 'T1', user: { id: 'admin' }, actions: [{ value: 'slot-B' }] },
+        client: { views: { open: vi.fn(async (v: any) => openedViews.push(v)) } },
+      });
+      expect(openedViews).toHaveLength(1);
+      expect(openedViews[0].view.private_metadata).toBe('slot-B');
+      expect(openedViews[0].view.callback_id).toBe('cct_attach_oauth');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('T8b-ii: cct_open_attach refuses to open against a legacy-attachment slot', async () => {
+    const { app, actionHandlers } = makeApp();
+    const legacySlot = {
+      kind: 'cct' as const,
+      source: 'legacy-attachment' as const,
+      keyId: 'slot-L',
+      name: 'legacy',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 1,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true as const,
+      },
+      createdAt: '',
+    };
+    const tm = {
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-L', slots: [legacySlot] },
+        state: {},
+      }),
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const openAttach = actionHandlers.get(CCT_ACTION_IDS.attach);
+      const openedViews: any[] = [];
+      await openAttach?.({
+        ack: vi.fn(async () => undefined),
+        body: { trigger_id: 'T1', user: { id: 'admin' }, actions: [{ value: 'slot-L' }] },
+        client: { views: { open: vi.fn(async (v: any) => openedViews.push(v)) } },
+      });
+      expect(openedViews).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('T8c: cct_detach calls TokenManager.detachOAuth(keyId)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const detachOAuth = vi.fn(async () => undefined);
+    const tm = {
+      detachOAuth,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-X', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const detach = actionHandlers.get(CCT_ACTION_IDS.detach);
+      expect(detach).toBeDefined();
+      const ack = vi.fn(async () => undefined);
+      await detach?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'slot-X' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(detachOAuth).toHaveBeenCalledWith('slot-X');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('T8d: attach view_submission validate→ack→attachOAuth (happy path)', async () => {
+    const { app, viewHandlers } = makeApp();
+    const attachOAuth = vi.fn(async () => undefined);
+    const tm = {
+      attachOAuth,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-B', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    registerCctActions(app, tm);
+    const submit = viewHandlers.get('cct_attach_oauth');
+    expect(submit).toBeDefined();
+    const ack = vi.fn(async () => undefined);
+    await submit?.({
+      ack,
+      body: {
+        user: { id: 'admin' },
+        container: { channel_id: 'C1' },
+        view: {
+          private_metadata: 'slot-B',
+          state: {
+            values: {
+              [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+              },
+              [CCT_BLOCK_IDS.attach_tos_ack]: {
+                [CCT_ACTION_IDS.attach_tos_ack]: { selected_options: [{ value: 'ack' }] },
+              },
+            },
+          },
+        },
+      },
+      client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+    });
+    // Plain ack (not an errors-ack) fires after the successful attach.
+    expect(ack).toHaveBeenCalledWith();
+    expect(attachOAuth).toHaveBeenCalledWith('slot-B', expect.objectContaining({ accessToken: expect.any(String) }), true);
+  });
+
+  it('T8e: attach view_submission surfaces validation errors (no ack checkbox) as response_action:errors', async () => {
+    const { app, viewHandlers } = makeApp();
+    const attachOAuth = vi.fn(async () => undefined);
+    const tm = { attachOAuth } as any;
+    registerCctActions(app, tm);
+    const submit = viewHandlers.get('cct_attach_oauth');
+    const ack = vi.fn(async () => undefined);
+    await submit?.({
+      ack,
+      body: {
+        user: { id: 'admin' },
+        view: {
+          private_metadata: 'slot-B',
+          state: {
+            values: {
+              [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+              },
+              // Intentionally omit the tos_ack block so "ack" is missing.
+            },
+          },
+        },
+      },
+      client: {},
+    });
+    expect(attachOAuth).not.toHaveBeenCalled();
+    // Single ack call with errors payload keyed by the tos block_id.
+    expect(ack).toHaveBeenCalledTimes(1);
+    const ackArg = (ack.mock.calls[0] as any[])[0];
+    expect(ackArg.response_action).toBe('errors');
+    expect(ackArg.errors).toHaveProperty(CCT_BLOCK_IDS.attach_tos_ack);
   });
 });
 

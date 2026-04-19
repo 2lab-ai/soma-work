@@ -25,12 +25,23 @@ import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
-import { buildAddSlotModal, buildCctCardBlocks, buildRemoveSlotModal, buildRenameSlotModal } from './builder';
+import {
+  type AddSlotFormKind,
+  buildAddSlotModal,
+  buildAttachOAuthModal,
+  buildCctCardBlocks,
+  buildRemoveSlotModal,
+  buildRenameSlotModal,
+} from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
 const logger = new Logger('CctActions');
 
 const SETUP_TOKEN_REGEX = /^sk-ant-oat01-[A-Za-z0-9_-]{8,}$/;
+// Z3 — mirror of TokenManager.API_KEY_REGEX. Duplicated here to keep modal
+// validation synchronous (no await on the TM export). A drift guard is
+// unnecessary because the TM throws on a shape mismatch too.
+const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
 /**
  * Register all CCT block actions + view submissions on the Bolt app.
@@ -70,7 +81,8 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const view = (body as any)?.view;
       if (!view?.id) return;
       const selected = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
-      const kind = selected === 'oauth_credentials' ? 'oauth_credentials' : 'setup_token';
+      const kind: AddSlotFormKind =
+        selected === 'oauth_credentials' || selected === 'api_key' ? selected : 'setup_token';
       await client.views.update({
         view_id: view.id,
         hash: view.hash,
@@ -109,6 +121,65 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       });
     } catch (err) {
       logger.error('cct_open_remove failed', err);
+    }
+  });
+
+  // Z2 — Open Attach OAuth modal. Button `value` carries the target keyId;
+  // we re-check the slot shape (kind=cct + source='setup') server-side
+  // before opening the modal so a stale card (where the user already
+  // detached / re-attached elsewhere) never opens an attach flow against a
+  // legacy-attachment slot or an api_key slot.
+  app.action(CCT_ACTION_IDS.attach, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const triggerId: string | undefined = (body as any)?.trigger_id;
+      if (!triggerId) return;
+      const bodyAction = (body as any).actions?.[0];
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_open_attach: missing keyId on action value');
+        return;
+      }
+      const snap = await tokenManager.getSnapshot();
+      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
+      if (!target) {
+        logger.warn('cct_open_attach: target slot not found', { targetKeyId });
+        return;
+      }
+      if (target.kind !== 'cct' || target.source !== 'setup') {
+        logger.warn('cct_open_attach: target slot is not a setup-source cct slot', {
+          targetKeyId,
+          kind: target.kind,
+        });
+        return;
+      }
+      await client.views.open({
+        trigger_id: triggerId,
+        view: buildAttachOAuthModal(target) as any,
+      });
+    } catch (err) {
+      logger.error('cct_open_attach failed', err);
+    }
+  });
+
+  // Z2 — Detach OAuth. Inline action (no modal): validate → ack → mutate.
+  // The card is re-posted ephemerally so the user immediately sees the
+  // Attach button replace the Detach button for that slot.
+  app.action(CCT_ACTION_IDS.detach, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const bodyAction = (body as any).actions?.[0];
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_detach: missing keyId on action value');
+        return;
+      }
+      await tokenManager.detachOAuth(targetKeyId);
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_detach failed', err);
     }
   });
 
@@ -189,6 +260,12 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
           credentials: creds!,
           acknowledgedConsumerTosRisk: true,
         });
+      } else if (kind === 'api_key') {
+        // Z3 — store-only api_key slot. validateAddSubmission already
+        // enforced the sk-ant-api03-<chars> regex, but TokenManager.addSlot
+        // re-checks before persist.
+        const value = readPlainText(values, CCT_BLOCK_IDS.add_api_key_value, CCT_ACTION_IDS.api_key_input);
+        await tokenManager.addSlot({ name, kind: 'api_key', value });
       } else {
         const value = readPlainText(values, CCT_BLOCK_IDS.add_setup_token_value, CCT_ACTION_IDS.setup_token_input);
         await tokenManager.addSlot({ name, kind: 'setup_token', value });
@@ -278,6 +355,56 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       logger.error('cct view_submission rename failed', err);
     }
   });
+
+  // Z2 — View submission: Attach OAuth. Validate-then-ack-then-mutate so
+  // validation errors surface as `response_action: 'errors'` keyed by the
+  // input block_id (NOT the action_id — Slack's Block Kit spec requires
+  // block_id). Ordering matters: we ack with 'errors' before any mutation,
+  // or ack plainly before invoking `attachOAuth` so the 3s ack budget is
+  // safe.
+  app.view(CCT_VIEW_IDS.attach, async ({ ack, body, client }) => {
+    const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
+    const blob = readPlainText(values, CCT_BLOCK_IDS.attach_oauth_blob, CCT_ACTION_IDS.attach_oauth_input);
+    const creds = parseOAuthBlob(blob);
+    const errors: Record<string, string> = {};
+    if (!creds) {
+      errors[CCT_BLOCK_IDS.attach_oauth_blob] =
+        'Paste a valid claudeAiOauth JSON object with accessToken, refreshToken, expiresAt, and scopes.';
+    } else if (!hasRequiredScopes(creds.scopes)) {
+      errors[CCT_BLOCK_IDS.attach_oauth_blob] = 'OAuth credentials missing required scope(s): user:profile.';
+    }
+    const acked = readCheckboxes(values, CCT_BLOCK_IDS.attach_tos_ack, CCT_ACTION_IDS.attach_tos_ack).includes('ack');
+    if (!acked) {
+      errors[CCT_BLOCK_IDS.attach_tos_ack] =
+        'You must acknowledge the Anthropic Terms-of-Service risk to attach OAuth credentials.';
+    }
+    if (Object.keys(errors).length > 0) {
+      await ack({ response_action: 'errors', errors });
+      return;
+    }
+    const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
+    if (!keyId) {
+      await ack();
+      return;
+    }
+    try {
+      await tokenManager.attachOAuth(keyId, creds!, true);
+      await ack();
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      const msg = (err as Error)?.message ?? '';
+      // Surface scope / ack / shape errors back onto the blob input.
+      if (/missing required scope/i.test(msg) || /slot kind must be cct/i.test(msg) || /only setup-source/i.test(msg)) {
+        await ack({
+          response_action: 'errors',
+          errors: { [CCT_BLOCK_IDS.attach_oauth_blob]: msg },
+        });
+        return;
+      }
+      await ack();
+      logger.error('cct view_submission attach failed', err);
+    }
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -330,6 +457,12 @@ export function validateAddSubmission(
     if (!acked) {
       errors[CCT_BLOCK_IDS.add_tos_ack] =
         'You must acknowledge the Anthropic Terms-of-Service risk to use oauth_credentials.';
+    }
+  } else if (kind === 'api_key') {
+    // Z3 — commercial API key format.
+    const value = readPlainText(values, CCT_BLOCK_IDS.add_api_key_value, CCT_ACTION_IDS.api_key_input);
+    if (!API_KEY_REGEX.test(value)) {
+      errors[CCT_BLOCK_IDS.add_api_key_value] = 'Expected format: sk-ant-api03-<chars> (≥ 8 chars).';
     }
   } else {
     errors[CCT_BLOCK_IDS.add_kind] = 'Select a credential kind.';
