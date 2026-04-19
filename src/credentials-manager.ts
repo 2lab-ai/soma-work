@@ -125,10 +125,22 @@ export class NoHealthySlotError extends Error {
  * finally block. release() is idempotent.
  */
 export interface SlotAuthLease {
-  readonly slotId: string;
-  /** The access token to use for this request. */
+  /**
+   * Immutable AuthKey identity (replaces v1 `slotId`). Named keyId here so
+   * the field matches the persisted schema and the TokenManager's public
+   * `ActiveTokenInfo`.
+   */
+  readonly keyId: string;
+  /**
+   * The access token to use for this request.
+   *
+   * Kept as `accessToken` for PR-A to avoid coupling to any not-yet-landed
+   * consumer. PR-B atomically renames this to `secret` alongside its
+   * `runClaudeQuery` wrapper.
+   */
   readonly accessToken: string;
-  readonly kind: 'setup_token' | 'oauth_credentials';
+  /** Tagged union of the AuthKey's top-level `kind`. */
+  readonly kind: 'api_key' | 'cct';
   /** Free the lease. Safe to call more than once. */
   release(): Promise<void>;
   /** Extend the lease TTL — use for long-running requests. */
@@ -175,10 +187,11 @@ export async function ensureActiveSlotAuth(
     throw new NoHealthySlotError();
   }
 
-  // Pre-refresh for oauth_credentials slots (7h buffer); setup_token returns the static value.
+  // Pre-refresh for cct slots with OAuth attachment (7h buffer); setup-only
+  // CCT slots return the setupToken; api_key slots return slot.value.
   let accessToken: string;
   try {
-    accessToken = await tokenManager.getValidAccessToken(active.slotId);
+    accessToken = await tokenManager.getValidAccessToken(active.keyId);
   } catch (err) {
     try {
       await tokenManager.releaseLease(lease.leaseId);
@@ -191,7 +204,7 @@ export async function ensureActiveSlotAuth(
 
   let released = false;
   const slotAuthLease: SlotAuthLease = {
-    slotId: active.slotId,
+    keyId: active.keyId,
     accessToken,
     kind: active.kind,
     async release(): Promise<void> {

@@ -99,15 +99,18 @@ export class McpStatusDisplay {
 
   /**
    * Mark a call as completed. Rendered on next tick.
+   * If duration is null (e.g. abort path or untracked call), fall back
+   * to startTime so the final render still shows real elapsed time.
    */
   completeCall(callId: string, duration: number | null): void {
     const entry = this.activeCalls.get(callId);
     if (!entry) return;
 
+    const finalDuration = duration ?? Math.max(0, Date.now() - entry.startTime);
     this.activeCalls.set(callId, {
       ...entry,
       status: 'completed',
-      duration: duration ?? undefined,
+      duration: finalDuration,
     });
   }
 
