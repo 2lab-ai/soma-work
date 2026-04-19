@@ -1,19 +1,28 @@
 import path from 'node:path';
 
+// Re-export the AuthKey union so existing callers that imported the old
+// v1 `TokenSlot` family from this package get a single, typed replacement.
+export type {
+  ApiKeySlot,
+  AuthKey,
+  AuthKeyKind,
+  CctSlot,
+  CctSlotLegacyAttachmentOnly,
+  CctSlotWithSetup,
+  OAuthAttachment,
+} from '../auth/auth-key';
+export { isApiKeySlot, isCctLegacyAttachmentOnly, isCctSlot, isCctWithSetup } from '../auth/auth-key';
 export { migrateLegacyCooldowns } from './migrate';
+export { migrateV1ToV2 } from './migrate-v2';
 export { CctStore, RevisionConflictError } from './store';
 export type {
   AuthState,
   CctRegistry,
   CctStoreSnapshot,
   Lease,
-  OAuthCredentials,
-  OAuthCredentialsSlot,
+  PersistedSnapshot,
   RateLimitSource,
-  SetupTokenSlot,
-  SlotKind,
   SlotState,
-  TokenSlot,
   UsageSnapshot,
   UsageWindow,
 } from './types';

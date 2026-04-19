@@ -1,36 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import type { SlotState, TokenSlot } from '../../cct-store';
+import type { AuthKey, SlotState } from '../../cct-store';
 import { buildAddSlotModal, buildCctCardBlocks, buildRemoveSlotModal, buildSlotRow } from './builder';
 import { CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
-function setupSlot(name: string = 'cct1'): TokenSlot {
+function setupSlot(name: string = 'cct1', keyId: string = 'slot-1'): AuthKey {
   return {
-    slotId: 'slot-1',
+    kind: 'cct',
+    source: 'setup',
+    keyId,
     name,
-    kind: 'setup_token',
-    value: 'sk-ant-oat01-xxxxxxxx',
+    setupToken: 'sk-ant-oat01-xxxxxxxx',
     createdAt: '2026-01-01T00:00:00Z',
   };
 }
 
-function oauthSlot(name: string = 'oauth-personal'): TokenSlot {
+function oauthSlot(name: string = 'oauth-personal', keyId: string = 'slot-2'): AuthKey {
   return {
-    slotId: 'slot-2',
+    kind: 'cct',
+    source: 'legacy-attachment',
+    keyId,
     name,
-    kind: 'oauth_credentials',
-    credentials: {
+    oauthAttachment: {
       accessToken: 'tok',
       refreshToken: 'ref',
       expiresAtMs: Date.parse('2026-12-31T00:00:00Z'),
       scopes: ['user:profile'],
+      acknowledgedConsumerTosRisk: true,
     },
     createdAt: '2026-01-01T00:00:00Z',
-    acknowledgedConsumerTosRisk: true,
   };
 }
 
 describe('buildSlotRow', () => {
-  it('renders the name, active suffix, kind tag, and no ToS badge for setup_token', () => {
+  it('renders the name, active suffix, kind tag, and no ToS badge for cct/setup', () => {
     const slot = setupSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const blocks = buildSlotRow(slot, undefined, true, now, 'Asia/Seoul');
@@ -38,16 +40,16 @@ describe('buildSlotRow', () => {
     expect(section.type).toBe('section');
     expect(section.text.text).toContain('*cct1*');
     expect(section.text.text).toContain('· active');
-    expect(section.text.text).toContain('setup_token');
+    expect(section.text.text).toContain('cct/setup');
     expect(section.text.text).not.toMatch(/ToS-risk/);
   });
 
-  it('renders ConsumerTosBadge for oauth_credentials', () => {
+  it('renders ConsumerTosBadge for cct/legacy-attachment', () => {
     const slot = oauthSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const blocks = buildSlotRow(slot, undefined, false, now);
     const section = blocks[0] as any;
-    expect(section.text.text).toContain('oauth_credentials');
+    expect(section.text.text).toContain('cct/legacy-attachment');
     expect(section.text.text).toContain('ToS-risk');
   });
 
@@ -104,7 +106,7 @@ describe('buildSlotRow', () => {
     expect(text).toMatch(/cooldown until/);
   });
 
-  it('emits per-slot Remove/Rename buttons with value = slotId', () => {
+  it('emits per-slot Remove/Rename buttons with value = keyId', () => {
     const slot = setupSlot();
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-18T00:00:00Z'));
     // Last block should be the actions row with Remove + Rename.
@@ -114,8 +116,8 @@ describe('buildSlotRow', () => {
     const renameBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_rename');
     expect(removeBtn).toBeDefined();
     expect(renameBtn).toBeDefined();
-    expect(removeBtn.value).toBe(slot.slotId);
-    expect(renameBtn.value).toBe(slot.slotId);
+    expect(removeBtn.value).toBe(slot.keyId);
+    expect(renameBtn.value).toBe(slot.keyId);
   });
 });
 
@@ -136,18 +138,18 @@ describe('buildCctCardBlocks', () => {
 
   it('renders set-active selector only when >1 slot', () => {
     const slot = setupSlot();
-    const slot2 = { ...slot, slotId: 'slot-2', name: 'cct2' };
-    const blocks = buildCctCardBlocks({ slots: [slot, slot2], states: {}, activeSlotId: 'slot-1' });
+    const slot2 = { ...setupSlot('cct2', 'slot-2') };
+    const blocks = buildCctCardBlocks({ slots: [slot, slot2], states: {}, activeKeyId: 'slot-1' });
     const selectors = blocks.filter(
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.type === 'static_select'),
     );
     expect(selectors.length).toBe(1);
   });
 
-  it('each slot row carries per-slot Remove/Rename buttons whose value is that slotId', () => {
-    const slot1 = setupSlot('cct1');
-    const slot2 = { ...setupSlot('cct2'), slotId: 'slot-2' };
-    const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeSlotId: 'slot-1' });
+  it('each slot row carries per-slot Remove/Rename buttons whose value is that keyId', () => {
+    const slot1 = setupSlot('cct1', 'slot-1');
+    const slot2 = setupSlot('cct2', 'slot-2');
+    const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeKeyId: 'slot-1' });
     // Collect every actions row whose elements include a cct_open_remove button.
     const removeRows = blocks.filter(
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_remove'),
