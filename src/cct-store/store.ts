@@ -3,7 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { migrateLegacyCooldowns } from './migrate';
-import type { CctStoreSnapshot } from './types';
+import { migrateV1ToV2 } from './migrate-v2';
+import type { CctStoreSnapshot, PersistedSnapshot } from './types';
 
 const MAX_CAS_RETRIES = 5;
 const CAS_BACKOFF_MS = 20;
@@ -21,7 +22,7 @@ export class RevisionConflictError extends Error {
 
 function emptySnapshot(): CctStoreSnapshot {
   return {
-    version: 1,
+    version: 2,
     revision: 0,
     registry: { slots: [] },
     state: {},
@@ -41,9 +42,15 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
-async function readSnapshot(filePath: string): Promise<CctStoreSnapshot> {
+/**
+ * Read the on-disk JSON as-is (either v1 or v2). Unlike {@link readSnapshot},
+ * this does NOT run the v1 → v2 migrator — callers (notably {@link CctStore.save}'s
+ * CAS pre-check) need to see the raw on-disk `version` and `revision` to
+ * decide if another writer has raced them.
+ */
+async function readSnapshotRaw(filePath: string): Promise<PersistedSnapshot> {
   const raw = await fs.readFile(filePath, 'utf8');
-  return JSON.parse(raw) as CctStoreSnapshot;
+  return JSON.parse(raw) as PersistedSnapshot;
 }
 
 function randomHex(bytes: number): string {
@@ -51,7 +58,7 @@ function randomHex(bytes: number): string {
 }
 
 /**
- * Single-file, revision-CAS, durable-write store for CCT slot state.
+ * Single-file, revision-CAS, durable-write store for AuthKey slot state.
  *
  * Concurrency model:
  *   - `withLock` acquires an inter-process advisory lock via `proper-lockfile`
@@ -63,6 +70,14 @@ function randomHex(bytes: number): string {
  *     of `save()` do not need to pre-lock.
  *   - `mutate(fn)` = load + deep-clone + apply + increment revision + save,
  *     retrying up to 5 times on CAS conflict with short jittered backoff.
+ *
+ * Schema-v2 upgrade path:
+ *   - `load()` reads raw bytes, runs the legacy-cooldown migrator, then the
+ *     v1 → v2 AuthKey migrator. When either migration did real work we
+ *     persist the v2 result under the lock (CAS on the v1 revision) so the
+ *     next caller never has to re-run the migration. If another process
+ *     upgraded the file concurrently we short-circuit and return their v2
+ *     output instead of writing our own.
  */
 export class CctStore {
   private readonly filePath: string;
@@ -80,21 +95,33 @@ export class CctStore {
 
   /**
    * Load the current snapshot. If the file is missing we synthesize an empty
-   * snapshot and then run legacy-cooldown migration (matching by slot name
-   * and renaming the source file). The migration runs on every load but is
-   * a no-op once the legacy file has been renamed.
+   * v2 snapshot. Migrations run in order:
+   *   1. `migrateLegacyCooldowns` — fold legacy `token-cooldowns.json`.
+   *   2. `migrateV1ToV2` — rewrite v1 TokenSlot into v2 AuthKey.
+   * When either migration mutated the snapshot we persist the v2 result
+   * under the lock so subsequent reads are migration-free.
    */
   async load(): Promise<CctStoreSnapshot> {
     await this.ensureDir();
-    let snap: CctStoreSnapshot;
+    let raw: PersistedSnapshot;
     if (await pathExists(this.filePath)) {
-      snap = await readSnapshot(this.filePath);
+      raw = await readSnapshotRaw(this.filePath);
     } else {
-      snap = emptySnapshot();
+      raw = emptySnapshot();
     }
+
     const dir = path.dirname(this.filePath);
-    snap = await migrateLegacyCooldowns(snap, dir);
-    return snap;
+    const cooldownResult = await migrateLegacyCooldowns(raw, dir);
+    const legacyRan = cooldownResult.didRename;
+    raw = cooldownResult.snapshot;
+
+    const wasV1 = raw.version === 1;
+    const v2InMemory: CctStoreSnapshot = wasV1 ? migrateV1ToV2(raw) : (raw as CctStoreSnapshot);
+
+    if (wasV1 || legacyRan) {
+      return await this.persistMigrated(v2InMemory, wasV1);
+    }
+    return v2InMemory;
   }
 
   /**
@@ -125,21 +152,12 @@ export class CctStore {
       retries: { retries: 50, minTimeout: 10, maxTimeout: 100 },
     });
     try {
-      const actual = (await pathExists(this.filePath)) ? (await readSnapshot(this.filePath)).revision : 0;
+      const actual = (await pathExists(this.filePath)) ? (await readSnapshotRaw(this.filePath)).revision : 0;
       if (actual !== expectedRevision) {
         throw new RevisionConflictError(expectedRevision, actual);
       }
 
-      const tmp = `${this.filePath}.tmp.${randomHex(8)}`;
-      const fd = await fs.open(tmp, 'w');
-      try {
-        await fd.writeFile(JSON.stringify(next, null, 2));
-        await fd.sync();
-      } finally {
-        await fd.close();
-      }
-      await fs.rename(tmp, this.filePath);
-      await this.fsyncDir(path.dirname(this.filePath));
+      await this.writeAtomic(next);
     } finally {
       await release();
     }
@@ -204,6 +222,74 @@ export class CctStore {
   }
 
   // ── internals ────────────────────────────────────────────────
+
+  /**
+   * Persist the result of a v1 → v2 (or legacy-cooldown) migration under
+   * the advisory lock.
+   *
+   * We CAS on the pre-migration revision:
+   *   - If the on-disk shape is still v1 and the revision matches, we
+   *     write `v2InMemory` at the same revision (migration adds no
+   *     semantic work, so we do not bump it).
+   *   - If another process already promoted the file to v2, we short-
+   *     circuit: return their v2 snapshot (reloaded) instead of ours.
+   *   - If the v1 file has advanced past our expected revision, someone
+   *     else raced the cooldown migration — drop our v2 attempt and
+   *     re-migrate from the new raw snapshot.
+   */
+  private async persistMigrated(v2InMemory: CctStoreSnapshot, wasV1: boolean): Promise<CctStoreSnapshot> {
+    await this.ensureFileForLock();
+    const release = await lockfile.lock(this.filePath, {
+      lockfilePath: this.lockPath,
+      stale: 30_000,
+      update: 5_000,
+      realpath: true,
+      retries: { retries: 50, minTimeout: 10, maxTimeout: 100 },
+    });
+    try {
+      // Re-read under the lock.
+      const diskRaw = (await pathExists(this.filePath)) ? await readSnapshotRaw(this.filePath) : emptySnapshot();
+
+      // Race-won path: another writer already upgraded the file to v2.
+      // Prefer their snapshot over our in-memory copy so we don't clobber
+      // writes they may have applied after migration.
+      if (wasV1 && diskRaw.version === 2) {
+        return diskRaw;
+      }
+
+      // If the disk revision advanced beyond what we loaded, re-migrate
+      // from the fresh raw snapshot.
+      if (diskRaw.revision !== v2InMemory.revision) {
+        const dir = path.dirname(this.filePath);
+        const cooldownResult = await migrateLegacyCooldowns(diskRaw, dir);
+        const raced = cooldownResult.snapshot;
+        const v2Raced: CctStoreSnapshot = raced.version === 1 ? migrateV1ToV2(raced) : (raced as CctStoreSnapshot);
+        // Only write if we still need to upgrade.
+        if (raced.version === 1 || cooldownResult.didRename) {
+          await this.writeAtomic(v2Raced);
+        }
+        return v2Raced;
+      }
+
+      await this.writeAtomic(v2InMemory);
+      return v2InMemory;
+    } finally {
+      await release();
+    }
+  }
+
+  private async writeAtomic(next: CctStoreSnapshot): Promise<void> {
+    const tmp = `${this.filePath}.tmp.${randomHex(8)}`;
+    const fd = await fs.open(tmp, 'w');
+    try {
+      await fd.writeFile(JSON.stringify(next, null, 2));
+      await fd.sync();
+    } finally {
+      await fd.close();
+    }
+    await fs.rename(tmp, this.filePath);
+    await this.fsyncDir(path.dirname(this.filePath));
+  }
 
   private async ensureDir(): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });

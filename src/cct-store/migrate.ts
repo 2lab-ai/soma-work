@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { CctStoreSnapshot, SlotState } from './types';
+import type { LegacyV1Snapshot, PersistedSnapshot, SlotState } from './types';
 
 /**
  * Legacy `token-cooldowns.json` entry as recognised by the migrator.
@@ -67,6 +67,16 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
+export interface CooldownMigrationResult {
+  snapshot: PersistedSnapshot;
+  /**
+   * True iff the legacy file was found and successfully renamed — the
+   * caller needs to persist the resulting snapshot so the migration sticks.
+   * When false the snapshot is the original reference (no work to save).
+   */
+  didRename: boolean;
+}
+
 /**
  * Fold a legacy `token-cooldowns.json` (if present under `dataDir`) into
  * the given snapshot. Matched entries attach their `cooldownUntil` to the
@@ -74,12 +84,19 @@ async function pathExists(target: string): Promise<boolean> {
  * warning. On success the legacy file is renamed to
  * `token-cooldowns.json.migrated.<ISO>` so the migration is idempotent.
  *
- * The returned snapshot is a NEW object — the input is not mutated.
+ * Operates on either the v1 or v2 snapshot shape transparently — it only
+ * reads `registry.slots` (for the name lookup) and the `state` map.
+ *
+ * The returned snapshot is a NEW object when the legacy file existed;
+ * otherwise the input reference is returned unchanged.
  */
-export async function migrateLegacyCooldowns(snapshot: CctStoreSnapshot, dataDir: string): Promise<CctStoreSnapshot> {
+export async function migrateLegacyCooldowns(
+  snapshot: PersistedSnapshot,
+  dataDir: string,
+): Promise<CooldownMigrationResult> {
   const legacyPath = path.join(dataDir, 'token-cooldowns.json');
   if (!(await pathExists(legacyPath))) {
-    return snapshot;
+    return { snapshot, didRename: false };
   }
 
   let raw: string;
@@ -87,33 +104,44 @@ export async function migrateLegacyCooldowns(snapshot: CctStoreSnapshot, dataDir
     raw = await fs.readFile(legacyPath, 'utf8');
   } catch (err) {
     console.warn('cct-store: failed to read legacy token-cooldowns.json', err);
-    return snapshot;
+    return { snapshot, didRename: false };
   }
 
   const entries = parseLegacyEntries(raw);
-
   const nextState: Record<string, SlotState> = { ...snapshot.state };
-  const byName = new Map(snapshot.registry.slots.map((slot) => [slot.name, slot]));
+
+  // Build a name → key-of-state-map association that works for both shapes:
+  //   v1: slot.slotId keys SlotState.
+  //   v2: slot.keyId keys SlotState.
+  const byName = new Map<string, string>();
+  if (snapshot.version === 1) {
+    const v1 = snapshot as LegacyV1Snapshot;
+    for (const slot of v1.registry.slots) byName.set(slot.name, slot.slotId);
+  } else {
+    for (const slot of snapshot.registry.slots) byName.set(slot.name, slot.keyId);
+  }
 
   for (const entry of entries) {
-    const slot = byName.get(entry.name);
-    if (!slot) {
+    const stateKey = byName.get(entry.name);
+    if (!stateKey) {
       console.warn(`cct-store: orphan legacy cooldown '${entry.name}' — no matching slot`);
       continue;
     }
-    const prev = nextState[slot.slotId] ?? { authState: 'healthy' as const, activeLeases: [] };
-    nextState[slot.slotId] = { ...prev, cooldownUntil: entry.cooldownUntil };
+    const prev = nextState[stateKey] ?? { authState: 'healthy' as const, activeLeases: [] };
+    nextState[stateKey] = { ...prev, cooldownUntil: entry.cooldownUntil };
   }
 
+  let didRename = false;
   const renamedPath = `${legacyPath}.migrated.${new Date().toISOString()}`;
   try {
     await fs.rename(legacyPath, renamedPath);
+    didRename = true;
   } catch (err) {
     console.warn('cct-store: failed to rename migrated legacy file', err);
   }
 
   return {
-    ...snapshot,
-    state: nextState,
+    snapshot: { ...snapshot, state: nextState } as PersistedSnapshot,
+    didRename,
   };
 }

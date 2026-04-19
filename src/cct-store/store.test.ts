@@ -2,42 +2,20 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  makeCctLegacyAttachmentSlot,
+  makeCctSetupSlot,
+  makeV1OAuthSlot,
+  makeV1SetupSlot,
+  makeV1Snapshot,
+  makeV2Snapshot,
+} from './__fixtures__/snapshots';
 import { migrateLegacyCooldowns } from './migrate';
 import { CctStore, RevisionConflictError } from './store';
-import type { CctStoreSnapshot, OAuthCredentialsSlot, SetupTokenSlot } from './types';
+import type { CctStoreSnapshot, LegacyV1Snapshot } from './types';
 
 async function makeTmpDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cct-store-test-'));
-}
-
-function setupSlot(overrides: Partial<SetupTokenSlot> = {}): SetupTokenSlot {
-  return {
-    slotId: '01HZZZAAAA0000000000000001',
-    name: 'cct1',
-    kind: 'setup_token',
-    value: 'sk-ant-oat01-abc',
-    createdAt: '2026-04-18T00:00:00.000Z',
-    ...overrides,
-  };
-}
-
-function oauthSlot(overrides: Partial<OAuthCredentialsSlot> = {}): OAuthCredentialsSlot {
-  return {
-    slotId: '01HZZZAAAA0000000000000002',
-    name: 'cct2',
-    kind: 'oauth_credentials',
-    credentials: {
-      accessToken: 'at-xyz',
-      refreshToken: 'rt-xyz',
-      expiresAtMs: 1_900_000_000_000,
-      scopes: ['user:inference', 'user:profile'],
-      rateLimitTier: 'default_claude_max_5x',
-      subscriptionType: 'max_5x',
-    },
-    createdAt: '2026-04-18T00:00:00.000Z',
-    acknowledgedConsumerTosRisk: true,
-    ...overrides,
-  };
 }
 
 describe('CctStore.load', () => {
@@ -49,11 +27,11 @@ describe('CctStore.load', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  it('creates empty snapshot when file is missing', async () => {
+  it('creates empty v2 snapshot when file is missing', async () => {
     const store = new CctStore(path.join(tmp, 'cct-store.json'));
     const snap = await store.load();
     expect(snap).toEqual({
-      version: 1,
+      version: 2,
       revision: 0,
       registry: { slots: [] },
       state: {},
@@ -70,33 +48,37 @@ describe('CctStore save/load round-trip', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  it('preserves both TokenSlot union kinds', async () => {
+  it('preserves both AuthKey CCT sub-arms (setup + legacy-attachment)', async () => {
     const filePath = path.join(tmp, 'cct-store.json');
     const store = new CctStore(filePath);
     const loaded = await store.load();
 
-    const s1 = setupSlot();
-    const s2 = oauthSlot();
+    const s1 = makeCctSetupSlot();
+    const s2 = makeCctLegacyAttachmentSlot();
     const next: CctStoreSnapshot = {
       ...loaded,
       revision: loaded.revision + 1,
-      registry: { activeSlotId: s1.slotId, slots: [s1, s2] },
+      registry: { activeKeyId: s1.keyId, slots: [s1, s2] },
       state: {
-        [s1.slotId]: { authState: 'healthy', activeLeases: [] },
-        [s2.slotId]: { authState: 'healthy', activeLeases: [] },
+        [s1.keyId]: { authState: 'healthy', activeLeases: [] },
+        [s2.keyId]: { authState: 'healthy', activeLeases: [] },
       },
     };
     await store.save(loaded.revision, next);
 
     const store2 = new CctStore(filePath);
     const readBack = await store2.load();
+    expect(readBack.version).toBe(2);
     expect(readBack.registry.slots).toHaveLength(2);
-    expect(readBack.registry.slots[0].kind).toBe('setup_token');
-    expect(readBack.registry.slots[1].kind).toBe('oauth_credentials');
-    if (readBack.registry.slots[1].kind === 'oauth_credentials') {
-      expect(readBack.registry.slots[1].credentials.accessToken).toBe('at-xyz');
-      expect(readBack.registry.slots[1].acknowledgedConsumerTosRisk).toBe(true);
-    }
+    const [r1, r2] = readBack.registry.slots;
+    expect(r1.kind).toBe('cct');
+    expect(r2.kind).toBe('cct');
+    if (r1.kind !== 'cct' || r2.kind !== 'cct') throw new Error('unreachable');
+    expect(r1.source).toBe('setup');
+    expect(r2.source).toBe('legacy-attachment');
+    if (r2.source !== 'legacy-attachment') throw new Error('unreachable');
+    expect(r2.oauthAttachment.accessToken).toBe('at-xyz');
+    expect(r2.oauthAttachment.acknowledgedConsumerTosRisk).toBe(true);
     expect(readBack.revision).toBe(1);
   });
 
@@ -136,34 +118,34 @@ describe('CctStore CAS', () => {
     const filePath = path.join(tmp, 'cct-store.json');
     const store = new CctStore(filePath);
     // seed with two slots
-    const s1 = setupSlot();
-    const s2 = setupSlot({ slotId: '01HZZZAAAA0000000000000099', name: 'cct9' });
+    const s1 = makeCctSetupSlot();
+    const s2 = makeCctSetupSlot({ keyId: '01HZZZAAAA0000000000000099', name: 'cct9' });
     const initial = await store.load();
     await store.save(initial.revision, {
       ...initial,
       revision: initial.revision + 1,
       registry: { slots: [s1, s2] },
       state: {
-        [s1.slotId]: { authState: 'healthy', activeLeases: [] },
-        [s2.slotId]: { authState: 'healthy', activeLeases: [] },
+        [s1.keyId]: { authState: 'healthy', activeLeases: [] },
+        [s2.keyId]: { authState: 'healthy', activeLeases: [] },
       },
     });
 
     // Two concurrent mutations — both set cooldown on a different slot.
     const [result1, result2] = await Promise.all([
       store.mutate((s) => {
-        s.state[s1.slotId].cooldownUntil = '2026-04-19T00:00:00.000Z';
+        s.state[s1.keyId].cooldownUntil = '2026-04-19T00:00:00.000Z';
       }),
       store.mutate((s) => {
-        s.state[s2.slotId].cooldownUntil = '2026-04-20T00:00:00.000Z';
+        s.state[s2.keyId].cooldownUntil = '2026-04-20T00:00:00.000Z';
       }),
     ]);
     expect(result1).toBeUndefined();
     expect(result2).toBeUndefined();
 
     const final = await new CctStore(filePath).load();
-    expect(final.state[s1.slotId].cooldownUntil).toBe('2026-04-19T00:00:00.000Z');
-    expect(final.state[s2.slotId].cooldownUntil).toBe('2026-04-20T00:00:00.000Z');
+    expect(final.state[s1.keyId].cooldownUntil).toBe('2026-04-19T00:00:00.000Z');
+    expect(final.state[s2.keyId].cooldownUntil).toBe('2026-04-20T00:00:00.000Z');
     // Two successive commits after seed: revisions 2 and 3 (seed left us at 1).
     expect(final.revision).toBe(3);
   });
@@ -203,10 +185,10 @@ describe('CctStore.mutate deep-clone safety', () => {
     const filePath = path.join(tmp, 'cct-store.json');
     const store = new CctStore(filePath);
 
-    const s1 = setupSlot();
+    const s1 = makeCctSetupSlot();
     await store.mutate((snap) => {
       snap.registry.slots.push(s1);
-      snap.state[s1.slotId] = { authState: 'healthy', activeLeases: [] };
+      snap.state[s1.keyId] = { authState: 'healthy', activeLeases: [] };
     });
 
     // Grab a ref and mutate it after mutate returned — must not affect disk.
@@ -216,11 +198,11 @@ describe('CctStore.mutate deep-clone safety', () => {
     });
     if (!escaped) throw new Error('escaped ref missing');
     escaped.registry.slots[0].name = 'HACKED';
-    escaped.state[s1.slotId].cooldownUntil = '9999-01-01T00:00:00.000Z';
+    escaped.state[s1.keyId].cooldownUntil = '9999-01-01T00:00:00.000Z';
 
     const fresh = await new CctStore(filePath).load();
     expect(fresh.registry.slots[0].name).toBe('cct1');
-    expect(fresh.state[s1.slotId].cooldownUntil).toBeUndefined();
+    expect(fresh.state[s1.keyId].cooldownUntil).toBeUndefined();
   });
 });
 
@@ -277,17 +259,14 @@ describe('migrateLegacyCooldowns', () => {
     ];
     await fs.writeFile(legacyPath, JSON.stringify({ entries }), 'utf8');
 
-    const s1 = setupSlot({ name: 'cct1' });
-    const snap: CctStoreSnapshot = {
-      version: 1,
-      revision: 0,
-      registry: { slots: [s1] },
-      state: { [s1.slotId]: { authState: 'healthy', activeLeases: [] } },
-    };
+    const s1 = makeCctSetupSlot({ name: 'cct1' });
+    const snap = makeV2Snapshot({ slots: [s1] });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const after = await migrateLegacyCooldowns(snap, tmp);
-    expect(after.state[s1.slotId].cooldownUntil).toBe('2026-04-20T12:00:00.000Z');
+    const result = await migrateLegacyCooldowns(snap, tmp);
+    expect(result.didRename).toBe(true);
+    const after = result.snapshot;
+    expect(after.state[s1.keyId].cooldownUntil).toBe('2026-04-20T12:00:00.000Z');
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("orphan legacy cooldown 'ghost'"));
     warnSpy.mockRestore();
 
@@ -299,13 +278,121 @@ describe('migrateLegacyCooldowns', () => {
   });
 
   it('is a no-op when legacy file does not exist', async () => {
-    const snap: CctStoreSnapshot = {
-      version: 1,
-      revision: 0,
-      registry: { slots: [] },
-      state: {},
-    };
-    const after = await migrateLegacyCooldowns(snap, tmp);
-    expect(after).toEqual(snap);
+    const snap = makeV2Snapshot();
+    const result = await migrateLegacyCooldowns(snap, tmp);
+    expect(result.didRename).toBe(false);
+    expect(result.snapshot).toBe(snap);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// PR-A: load() persists v1 → v2 migration
+// ─────────────────────────────────────────────────────────────────────
+describe('CctStore.load — v1 → v2 migration on first read', () => {
+  let tmp: string;
+  beforeEach(async () => {
+    tmp = await makeTmpDir();
+  });
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('upgrades a v1 file on disk: returned snapshot + on-disk file are both v2', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const v1: LegacyV1Snapshot = makeV1Snapshot({
+      revision: 7,
+      activeSlotId: 'k-1',
+      slots: [makeV1SetupSlot({ slotId: 'k-1' }), makeV1OAuthSlot({ slotId: 'k-2' })],
+    });
+    await fs.writeFile(filePath, JSON.stringify(v1, null, 2), 'utf8');
+
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+    expect(loaded.version).toBe(2);
+    expect(loaded.registry.activeKeyId).toBe('k-1');
+    expect(loaded.registry.slots.map((s) => s.keyId)).toEqual(['k-1', 'k-2']);
+
+    // Round-trip: re-reading the raw file must show v2 (persistence worked).
+    const diskRaw = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(diskRaw.version).toBe(2);
+    expect(diskRaw.registry.activeKeyId).toBe('k-1');
+    expect('activeSlotId' in diskRaw.registry).toBe(false);
+  });
+
+  it('v2 file is not re-written on load (no-op load preserves file mtime bytes)', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const snap = makeV2Snapshot({ revision: 3, slots: [makeCctSetupSlot({ keyId: 'k-a' })] });
+    await fs.writeFile(filePath, JSON.stringify(snap, null, 2), 'utf8');
+    const before = await fs.readFile(filePath, 'utf8');
+
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+    expect(loaded.version).toBe(2);
+    expect(loaded.revision).toBe(3);
+
+    const after = await fs.readFile(filePath, 'utf8');
+    expect(after).toBe(before);
+  });
+
+  it('race: concurrent load on a fresh v1 file produces a single consistent v2 on disk', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const v1 = makeV1Snapshot({ slots: [makeV1SetupSlot({ slotId: 'k-z' })] });
+    await fs.writeFile(filePath, JSON.stringify(v1, null, 2), 'utf8');
+
+    const results = await Promise.all([
+      new CctStore(filePath).load(),
+      new CctStore(filePath).load(),
+      new CctStore(filePath).load(),
+    ]);
+    for (const r of results) {
+      expect(r.version).toBe(2);
+      expect(r.registry.slots[0].keyId).toBe('k-z');
+    }
+    const disk = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(disk.version).toBe(2);
+  });
+
+  it('legacy-cooldown migration on a v1 snapshot is folded in and persisted as v2', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const v1 = makeV1Snapshot({
+      slots: [makeV1SetupSlot({ slotId: 'k-c', name: 'cctC' })],
+    });
+    await fs.writeFile(filePath, JSON.stringify(v1, null, 2), 'utf8');
+    const legacyPath = path.join(tmp, 'token-cooldowns.json');
+    await fs.writeFile(
+      legacyPath,
+      JSON.stringify({ entries: [{ name: 'cctC', cooldownUntil: '2026-04-30T00:00:00.000Z' }] }),
+      'utf8',
+    );
+
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+    expect(loaded.version).toBe(2);
+    expect(loaded.state['k-c'].cooldownUntil).toBe('2026-04-30T00:00:00.000Z');
+
+    // The on-disk file must also reflect v2 + folded cooldown.
+    const disk = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(disk.version).toBe(2);
+    expect(disk.state['k-c'].cooldownUntil).toBe('2026-04-30T00:00:00.000Z');
+    // Legacy file renamed.
+    await expect(fs.stat(legacyPath)).rejects.toThrow();
+  });
+
+  it('load() is safe when only the legacy cooldown file is present (no main v1 file)', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const legacyPath = path.join(tmp, 'token-cooldowns.json');
+    // No slot named 'ghostly' exists — the migrator warns but does not throw.
+    await fs.writeFile(
+      legacyPath,
+      JSON.stringify({ entries: [{ name: 'ghostly', cooldownUntil: '2026-05-01T00:00:00.000Z' }] }),
+      'utf8',
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+    expect(loaded.version).toBe(2);
+    expect(loaded.registry.slots).toEqual([]);
+    warnSpy.mockRestore();
   });
 });
