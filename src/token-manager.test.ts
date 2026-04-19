@@ -1057,9 +1057,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       fetchUsageMock.mockReset();
       fetchUsageMock.mockImplementation(async () => upstream);
-      const parallel = Promise.all(
-        Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)),
-      );
+      const parallel = Promise.all(Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)));
       // Give the first call a microtask to land in the in-flight map.
       await new Promise((r) => setTimeout(r, 10));
       resolveFetch({

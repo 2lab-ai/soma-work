@@ -37,8 +37,7 @@ const mockStore = {
 
 vi.mock('../../../token-manager', () => {
   const tm = {
-    listTokens: () =>
-      mockStore.slots.map((s) => ({ keyId: s.keyId, name: s.name, kind: s.kind, status: 'healthy' })),
+    listTokens: () => mockStore.slots.map((s) => ({ keyId: s.keyId, name: s.name, kind: s.kind, status: 'healthy' })),
     getActiveToken: () => {
       const t = mockStore.slots.find((s) => s.keyId === mockStore.activeKeyId);
       return t ? { keyId: t.keyId, name: t.name, kind: t.kind } : null;

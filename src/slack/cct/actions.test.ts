@@ -552,7 +552,11 @@ describe('attach/detach action routing (Z2)', () => {
     });
     // Plain ack (not an errors-ack) fires after the successful attach.
     expect(ack).toHaveBeenCalledWith();
-    expect(attachOAuth).toHaveBeenCalledWith('slot-B', expect.objectContaining({ accessToken: expect.any(String) }), true);
+    expect(attachOAuth).toHaveBeenCalledWith(
+      'slot-B',
+      expect.objectContaining({ accessToken: expect.any(String) }),
+      true,
+    );
   });
 
   it('T8e: attach view_submission surfaces validation errors (no ack checkbox) as response_action:errors', async () => {

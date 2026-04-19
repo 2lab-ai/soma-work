@@ -678,9 +678,7 @@ export class TokenManager {
       if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find(
-          (s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now),
-        );
+        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now));
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
@@ -943,10 +941,7 @@ export class TokenManager {
    * place — the public `detachOAuth(keyId)` surface is string-keyed, and
    * only here do we know the slot matches this union arm.
    */
-  #detachOAuthOnSetupSlot(
-    snap: CctStoreSnapshot,
-    slot: CctSlotWithSetup & { oauthAttachment: OAuthAttachment },
-  ): void {
+  #detachOAuthOnSetupSlot(snap: CctStoreSnapshot, slot: CctSlotWithSetup & { oauthAttachment: OAuthAttachment }): void {
     // Delete the optional attachment field; source stays 'setup'.
     delete (slot as CctSlotWithSetup).oauthAttachment;
     const st = snap.state[slot.keyId];
