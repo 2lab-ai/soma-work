@@ -18,6 +18,6 @@ Google Noto Sans KR build, not Source Han Sans directly.
 
 ## Usage
 
-Loaded by `src/metrics/usage-render/renderer.ts` for rendering `/usage card`
-PNG output. The font buffer is read at runtime and passed to
-`@resvg/resvg-js` as `defaultFontFamily: 'Noto Sans KR'`.
+Loaded by `src/metrics/usage-render/carousel-renderer.ts` for rendering
+`/usage card` carousel tab PNGs. The font buffer is read at runtime and
+passed to `@resvg/resvg-js` as `defaultFontFamily: 'Noto Sans KR'`.

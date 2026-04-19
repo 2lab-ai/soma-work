@@ -24,7 +24,7 @@ const TAB_IDS: TabId[] = ['24h', '7d', '30d', 'all'];
 const CANVAS_WIDTH = 1600;
 const CANVAS_HEIGHT = 2200;
 
-// Module-level font cache (mirrors v1 `renderer.ts`).
+// Module-level font cache.
 const FONT_PATH = path.join(__dirname, 'assets', 'NotoSansKR.ttf');
 let fontPathPromise: Promise<string> | null = null;
 let testFontPath: string | null = null;

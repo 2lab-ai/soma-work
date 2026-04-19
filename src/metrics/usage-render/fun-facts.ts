@@ -1,6 +1,6 @@
 /**
  * Fun-fact table for `/usage card` — maps token totals to human-scale references.
- * Trace: docs/usage-card/trace.md, Scenario 4
+ * Trace: docs/usage-card-dark/trace.md (fun-fact emoji + human-scale refs)
  */
 
 interface FunFactEntry {
