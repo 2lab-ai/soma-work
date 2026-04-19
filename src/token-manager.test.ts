@@ -1198,6 +1198,124 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── T10/T10b: api_key runtime fence (Z3) ───────────────────
+
+  describe('api_key runtime fence (Z3 — not runtime-selectable in phase 1)', () => {
+    it('T10: applyToken throws for an api_key slot; activeKeyId unchanged', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctSlot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.applyToken(apiSlot.keyId)).rejects.toThrow(/api_key is not runtime-selectable/);
+      const snap = await store.load();
+      // The cct slot remains active — the fence must not have flipped it.
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+    });
+
+    it('T10b: acquireLease rejects when only api_key slots exist (no healthy cct slot)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({ name: 'api1', kind: 'api_key', value: 'sk-ant-api03-aaaaaaaaa' });
+      await tm.addSlot({ name: 'api2', kind: 'api_key', value: 'sk-ant-api03-bbbbbbbbb' });
+      // No cct slot at all → acquireLease must refuse rather than lease on api_key.
+      await expect(tm.acquireLease('svc:fence', 60_000)).rejects.toThrow(/no healthy slot/);
+    });
+
+    it('T10b-ii: acquireLease falls through an api_key active slot and leases the first healthy cct', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctSlot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-aaaaaaaaa' });
+      // Force activeKeyId to point at the api_key slot (bypassing applyToken's
+      // fence so we can verify acquireLease handles the pre-existing state).
+      await store.mutate((snap) => {
+        snap.registry.activeKeyId = apiSlot.keyId;
+      });
+      const lease = await tm.acquireLease('svc:fall-through', 60_000);
+      const snap = await store.load();
+      // acquireLease must have pivoted activeKeyId to a cct slot.
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+      expect(snap.state[cctSlot.keyId].activeLeases.map((l) => l.leaseId)).toContain(lease.leaseId);
+      expect(snap.state[apiSlot.keyId].activeLeases.map((l) => l.leaseId)).not.toContain(lease.leaseId);
+    });
+
+    it('T10-rotate: rotateToNext skips api_key candidates', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctA = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'vA' });
+      await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-xxxxxxxxxxx' });
+      const cctB = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'vB' });
+      // Currently active is cctA. rotateToNext should skip the api_key and
+      // land on cctB.
+      const result = await tm.rotateToNext();
+      expect(result?.keyId).toBe(cctB.keyId);
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctB.keyId);
+      void cctA;
+    });
+
+    it('T10-rotate-rl: rotateOnRateLimit skips api_key candidates', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctA = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'vA' });
+      await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-yyyyyyyyyyy' });
+      const cctB = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'vB' });
+      const result = await tm.rotateOnRateLimit('hit', { source: 'response_header', cooldownMinutes: 60 });
+      expect(result?.keyId).toBe(cctB.keyId);
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctB.keyId);
+      void cctA;
+    });
+
+    it('T10-ensure: ensureActiveSlot re-picks a cct slot when the persisted active is an api_key', async () => {
+      // Pre-populate the store with an api_key as activeKeyId, then init()
+      // and expect ensureActiveSlot() to self-heal by pivoting to a cct.
+      const storePath = path.join(tmp, 'cct-store.json');
+      const { storeMod } = await importSut();
+      const bootstrap = new storeMod.CctStore(storePath);
+      const apiKeyId = '01HZZZAPIKEY000000000000001';
+      const cctKeyId = '01HZZZCCTAAA00000000000000A';
+      await bootstrap.mutate((snap) => {
+        snap.registry.slots.push({
+          kind: 'api_key',
+          keyId: apiKeyId,
+          name: 'api',
+          value: 'sk-ant-api03-seededseed',
+          createdAt: new Date().toISOString(),
+        });
+        snap.registry.slots.push({
+          kind: 'cct',
+          source: 'setup',
+          keyId: cctKeyId,
+          name: 'cct',
+          setupToken: 'sk-ant-oat01-seed',
+          createdAt: new Date().toISOString(),
+        });
+        snap.state[apiKeyId] = { authState: 'healthy', activeLeases: [] };
+        snap.state[cctKeyId] = { authState: 'healthy', activeLeases: [] };
+        // Deliberately point active at the api_key slot.
+        snap.registry.activeKeyId = apiKeyId;
+      });
+      process.env.SOMA_CCT_DISABLE_ENV_SEED = 'true';
+      const { mod } = await importSut();
+      const store = new storeMod.CctStore(storePath);
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctKeyId);
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {

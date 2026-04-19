@@ -432,11 +432,22 @@ export class TokenManager {
       const now = Date.now();
       const currentId = snap.registry.activeKeyId;
       const currentSlot = currentId ? snap.registry.slots.find((s) => s.keyId === currentId) : undefined;
-      if (!currentSlot || !isEligible(snap.state[currentSlot.keyId], now)) {
-        // Prefer first healthy; else first slot.
+      // Z3 — api_key is not runtime-selectable in phase 1: treat a current
+      // api_key activeKeyId as ineligible so we fall through and re-pick a
+      // cct slot. Preferred pick also skips api_key, falling back to the
+      // first cct slot if every cct is in cooldown / tombstoned. Only if
+      // there is no cct slot at all do we unset activeKeyId entirely.
+      const currentIneligible =
+        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(snap.state[currentSlot.keyId], now);
+      if (currentIneligible) {
         const preferred =
-          snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now)) ?? snap.registry.slots[0];
-        snap.registry.activeKeyId = preferred.keyId;
+          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now)) ??
+          snap.registry.slots.find((s) => s.kind !== 'api_key');
+        if (preferred) {
+          snap.registry.activeKeyId = preferred.keyId;
+        } else {
+          delete snap.registry.activeKeyId;
+        }
       }
     });
   }
@@ -495,6 +506,12 @@ export class TokenManager {
     await this.store.mutate((snap) => {
       const slot = snap.registry.slots.find((s) => s.keyId === keyId);
       if (!slot) throw new Error(`applyToken: unknown keyId ${keyId}`);
+      // Z3 — api_key is not runtime-selectable in phase 1; callers must pick
+      // a cct slot. The follow-up PR that wires ANTHROPIC_API_KEY + isolated
+      // spawn will relax this fence.
+      if (slot.kind === 'api_key') {
+        throw new Error('applyToken: api_key is not runtime-selectable in phase 1');
+      }
       snap.registry.activeKeyId = keyId;
     });
     const snap = await this.store.load();
@@ -518,6 +535,8 @@ export class TokenManager {
       for (let i = 1; i < len; i++) {
         const idx = (startIndex + i) % len;
         const candidate = snap.registry.slots[idx];
+        // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
+        if (candidate.kind === 'api_key') continue;
         if (isEligible(snap.state[candidate.keyId], now)) {
           snap.registry.activeKeyId = candidate.keyId;
           return { keyId: candidate.keyId, name: candidate.name };
@@ -572,6 +591,8 @@ export class TokenManager {
         for (let i = 1; i < len; i++) {
           const idx = (startIndex + i) % len;
           const candidate = snap.registry.slots[idx];
+          // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
+          if (candidate.kind === 'api_key') continue;
           if (isEligible(snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
             return { keyId: candidate.keyId, name: candidate.name };
@@ -634,13 +655,17 @@ export class TokenManager {
       }
       const now = Date.now();
       // Prefer the current active slot if eligible; otherwise rotate to next.
+      // Z3 — api_key is not runtime-selectable in phase 1; treat an api_key
+      // active slot as ineligible and fall through to pick a cct candidate.
       const activeId = snap.registry.activeKeyId;
       const activeSlot = activeId ? snap.registry.slots.find((s) => s.keyId === activeId) : undefined;
       let picked: string;
-      if (activeSlot && isEligible(snap.state[activeSlot.keyId], now)) {
+      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
+        const candidate = snap.registry.slots.find(
+          (s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now),
+        );
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
