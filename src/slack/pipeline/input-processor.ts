@@ -1,13 +1,20 @@
+import type { ClaudeHandler } from '../../claude-handler';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import type { WorkflowType } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
 import type { CommandRouter } from '../commands';
+import type { SlackApiHelper } from '../slack-api-helper';
 import { InputProcessResult, type MessageEvent, type SayFn } from './types';
 
 interface InputProcessorDeps {
   fileHandler: FileHandler;
   commandRouter: CommandRouter;
+  // Compaction Tracking (#617): required by the AC3 auto-compact interception
+  // path. Kept optional so pre-#617 tests that construct InputProcessor with
+  // only fileHandler + commandRouter keep working.
+  claudeHandler?: ClaudeHandler;
+  slackApi?: SlackApiHelper;
 }
 
 /**
@@ -59,10 +66,40 @@ export class InputProcessor {
       return { handled: false };
     }
 
+    // #617 AC3: auto-compact interception. If the previous turn's threshold
+    // check flagged the session, swallow the current user message text,
+    // post a short notice, and inject `/compact` via the existing
+    // continueWithPrompt pipeline (event-router.ts:158-160). The original
+    // user text is stashed on the session and re-dispatched by the
+    // PostCompact hook / `onCompactBoundary` path — whichever fires first.
+    const threadTs = thread_ts || ts;
+    const session = this.deps.claudeHandler?.getSession(channel, threadTs);
+    if (session?.autoCompactPending) {
+      session.autoCompactPending = false;
+      session.pendingUserText = text;
+      session.pendingEventContext = { channel, threadTs, user, ts };
+
+      if (this.deps.slackApi) {
+        try {
+          await this.deps.slackApi.postSystemMessage(
+            channel,
+            '🗜️ Auto-compact 실행 — 원 메시지는 compact 완료 후 재처리됩니다',
+            { threadTs },
+          );
+        } catch (err) {
+          this.logger.warn('input-processor: pending-compact notice post failed', {
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
+      }
+
+      return { handled: true, continueWithPrompt: '/compact' };
+    }
+
     const commandResult = await this.deps.commandRouter.route({
       user,
       channel,
-      threadTs: thread_ts || ts,
+      threadTs,
       text,
       say,
     });

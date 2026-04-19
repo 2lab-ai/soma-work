@@ -126,6 +126,21 @@ export function resolveShowSummary(
   return sessionShowThinking ?? userShowThinking ?? DEFAULT_SHOW_THINKING;
 }
 
+/**
+ * Compaction Tracking (#617): late-bound factory that returns the 3-hook
+ * set for the current query. ClaudeHandler calls this when building the
+ * Options.hooks payload — decoupled from concrete `EventRouter` /
+ * `SlackApiHelper` types so this module keeps a minimal surface area.
+ *
+ * Registered by `SlackHandler` after both ClaudeHandler AND EventRouter
+ * have been constructed (there is a cyclic dependency otherwise).
+ */
+export type CompactHookBuilder = (args: { session: ConversationSession; channel: string; threadTs: string }) => {
+  PreCompact: (input: HookInput) => Promise<HookJSONOutput>;
+  PostCompact: (input: HookInput) => Promise<HookJSONOutput>;
+  SessionStart: (input: HookInput) => Promise<HookJSONOutput>;
+};
+
 export class ClaudeHandler {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
@@ -135,11 +150,25 @@ export class ClaudeHandler {
   private promptBuilder: PromptBuilder;
   private mcpConfigBuilder: McpConfigBuilder;
 
+  // Compaction Tracking (#617): optional hook factory. Set by SlackHandler
+  // during bootstrap. Undefined in unit tests / non-Slack callers — SDK
+  // compaction then falls back to the stream-executor `compacting` signal
+  // path with no thread-side post.
+  private compactHookBuilder?: CompactHookBuilder;
+
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
     this.promptBuilder = new PromptBuilder();
     this.mcpConfigBuilder = new McpConfigBuilder(mcpManager);
+  }
+
+  /**
+   * Register the compact-hook factory. Called once during bootstrap.
+   * See `CompactHookBuilder` JSDoc.
+   */
+  setCompactHookBuilder(builder: CompactHookBuilder): void {
+    this.compactHookBuilder = builder;
   }
 
   /**
@@ -862,6 +891,26 @@ export class ClaudeHandler {
           options.hooks = {
             ...options.hooks,
             PreToolUse: preToolUseHooks,
+          };
+        }
+
+        // Compaction Tracking (#617): register PreCompact / PostCompact /
+        // SessionStart hooks so we can post thread-visible start/end messages
+        // and rebuild preservation context after SDK-driven compaction. When
+        // the builder hasn't been wired (tests, non-Slack callers) this is a
+        // no-op and compaction falls back to the stream-executor `compacting`
+        // signal path.
+        if (this.compactHookBuilder && session && slackContext.threadTs) {
+          const compactHooks = this.compactHookBuilder({
+            session,
+            channel: slackContext.channel,
+            threadTs: slackContext.threadTs,
+          });
+          options.hooks = {
+            ...options.hooks,
+            PreCompact: [{ hooks: [compactHooks.PreCompact] }],
+            PostCompact: [{ hooks: [compactHooks.PostCompact] }],
+            SessionStart: [{ hooks: [compactHooks.SessionStart] }],
           };
         }
       }
