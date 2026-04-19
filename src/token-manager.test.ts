@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Contract tests for the slotId-keyed TokenManager rewrite.
+// Contract tests for the AuthKey-v2 keyed TokenManager rewrite.
 // All tests drive a tmpdir-backed CctStore so we avoid pulling env-paths side effects.
 
 // Hoisted mocks — must be declared before the SUT is imported inside each test.
@@ -63,8 +63,8 @@ async function activeAccessToken(tm: import('./token-manager').TokenManager): Pr
 }
 
 function makeOAuthCreds(
-  overrides: Partial<import('./cct-store').OAuthCredentials> = {},
-): import('./cct-store').OAuthCredentials {
+  overrides: Partial<import('./oauth/refresher').OAuthCredentials> = {},
+): import('./oauth/refresher').OAuthCredentials {
   return {
     accessToken: 'sk-ant-oat01-abc',
     refreshToken: 'sk-ant-ort01-xyz',
@@ -74,7 +74,7 @@ function makeOAuthCreds(
   };
 }
 
-describe('TokenManager (slot-based)', () => {
+describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
   const originalEnv = { ...process.env };
   let tmp: string;
 
@@ -84,7 +84,7 @@ describe('TokenManager (slot-based)', () => {
     fetchUsageMock.mockReset();
     nextUsageBackoffMsMock.mockClear();
     // Default: echo back with extended expiry
-    refreshClaudeCredentialsMock.mockImplementation(async (current: import('./cct-store').OAuthCredentials) => ({
+    refreshClaudeCredentialsMock.mockImplementation(async (current: import('./oauth/refresher').OAuthCredentials) => ({
       ...current,
       accessToken: `${current.accessToken}-refreshed`,
       expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
@@ -104,24 +104,26 @@ describe('TokenManager (slot-based)', () => {
   // ── addSlot ────────────────────────────────────────────────
 
   describe('addSlot', () => {
-    it('adds a setup_token slot with ULID slotId + createdAt', async () => {
+    it('adds a setup_token input as a cct/setup slot with ULID keyId + createdAt', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
 
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-xxxxxxxx' });
-      expect(slot.slotId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-      expect(slot.kind).toBe('setup_token');
+      expect(slot.keyId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      expect(slot.kind).toBe('cct');
+      if (slot.kind !== 'cct') throw new Error('expected cct slot');
+      expect(slot.source).toBe('setup');
       expect(slot.name).toBe('cct1');
       expect(new Date(slot.createdAt).toString()).not.toBe('Invalid Date');
 
       const snap = await store.load();
       expect(snap.registry.slots).toHaveLength(1);
-      expect(snap.state[slot.slotId]).toEqual({ authState: 'healthy', activeLeases: [] });
+      expect(snap.state[slot.keyId]).toEqual({ authState: 'healthy', activeLeases: [] });
     });
 
-    it('adds an oauth_credentials slot when scopes include user:profile', async () => {
+    it('adds an oauth_credentials input as a cct/legacy-attachment slot with ToS ack on the attachment', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -134,11 +136,12 @@ describe('TokenManager (slot-based)', () => {
         credentials,
         acknowledgedConsumerTosRisk: true,
       });
-      expect(slot.kind).toBe('oauth_credentials');
-      if (slot.kind === 'oauth_credentials') {
-        expect(slot.credentials.accessToken).toBe(credentials.accessToken);
-        expect(slot.acknowledgedConsumerTosRisk).toBe(true);
-      }
+      expect(slot.kind).toBe('cct');
+      if (slot.kind !== 'cct') throw new Error('expected cct slot');
+      expect(slot.source).toBe('legacy-attachment');
+      if (slot.source !== 'legacy-attachment') throw new Error('expected legacy-attachment');
+      expect(slot.oauthAttachment.accessToken).toBe(credentials.accessToken);
+      expect(slot.oauthAttachment.acknowledgedConsumerTosRisk).toBe(true);
     });
 
     it('rejects oauth_credentials slot missing user:profile scope', async () => {
@@ -157,14 +160,14 @@ describe('TokenManager (slot-based)', () => {
       ).rejects.toThrow(/user:profile/);
     });
 
-    it('auto-sets activeSlotId when first slot is added', async () => {
+    it('auto-sets activeKeyId when first slot is added', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       const snap = await store.load();
-      expect(snap.registry.activeSlotId).toBe(slot.slotId);
+      expect(snap.registry.activeKeyId).toBe(slot.keyId);
       expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-aaa');
     });
 
@@ -190,7 +193,7 @@ describe('TokenManager (slot-based)', () => {
   // ── applyToken ─────────────────────────────────────────────
 
   describe('applyToken', () => {
-    it('updates activeSlotId + surfaces new access token via lease for setup_token', async () => {
+    it('updates activeKeyId + surfaces new access token via lease for cct/setup slots', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -198,18 +201,18 @@ describe('TokenManager (slot-based)', () => {
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'val-a' });
       const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'val-b' });
 
-      await tm.applyToken(s2.slotId);
+      await tm.applyToken(s2.keyId);
       const snap = await store.load();
-      expect(snap.registry.activeSlotId).toBe(s2.slotId);
+      expect(snap.registry.activeKeyId).toBe(s2.keyId);
       expect(await activeAccessToken(tm)).toBe('val-b');
 
-      await tm.applyToken(s1.slotId);
+      await tm.applyToken(s1.keyId);
       const snap2 = await store.load();
-      expect(snap2.registry.activeSlotId).toBe(s1.slotId);
+      expect(snap2.registry.activeKeyId).toBe(s1.keyId);
       expect(await activeAccessToken(tm)).toBe('val-a');
     });
 
-    it('surfaces oauth_credentials accessToken via lease', async () => {
+    it('surfaces oauth_credentials accessToken via lease (legacy-attachment slot)', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -222,7 +225,7 @@ describe('TokenManager (slot-based)', () => {
         acknowledgedConsumerTosRisk: true,
       });
       void s1;
-      await tm.applyToken(s2.slotId);
+      await tm.applyToken(s2.keyId);
       expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-ooo');
     });
   });
@@ -243,14 +246,14 @@ describe('TokenManager (slot-based)', () => {
       // s1 active. Mark s2 cooling, s3 revoked — expect rotate to s4.
       await store.mutate((snap) => {
         const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        snap.state[s2.slotId].cooldownUntil = future;
-        snap.state[s3.slotId].authState = 'revoked';
+        snap.state[s2.keyId].cooldownUntil = future;
+        snap.state[s3.keyId].authState = 'revoked';
       });
       const result = await tm.rotateToNext();
       expect(result).not.toBeNull();
-      expect(result?.slotId).toBe(s4.slotId);
+      expect(result?.keyId).toBe(s4.keyId);
       const cur = tm.getActiveToken();
-      expect(cur?.slotId).toBe(s4.slotId);
+      expect(cur?.keyId).toBe(s4.keyId);
       expect(await activeAccessToken(tm)).toBe('v4');
       void s1;
     });
@@ -285,13 +288,13 @@ describe('TokenManager (slot-based)', () => {
       });
 
       const snap = await store.load();
-      expect(snap.state[s1.slotId].rateLimitedAt).toBeDefined();
-      expect(snap.state[s1.slotId].rateLimitSource).toBe('response_header');
-      expect(snap.state[s1.slotId].cooldownUntil).toBeDefined();
+      expect(snap.state[s1.keyId].rateLimitedAt).toBeDefined();
+      expect(snap.state[s1.keyId].rateLimitSource).toBe('response_header');
+      expect(snap.state[s1.keyId].cooldownUntil).toBeDefined();
       // within 5 seconds of the computed cooldownUntil
-      const actual = new Date(snap.state[s1.slotId].cooldownUntil as string).getTime();
+      const actual = new Date(snap.state[s1.keyId].cooldownUntil as string).getTime();
       expect(Math.abs(actual - cooldownUntilMs)).toBeLessThan(5000);
-      expect(snap.registry.activeSlotId).toBe(s2.slotId);
+      expect(snap.registry.activeKeyId).toBe(s2.keyId);
       void cooldownUntil;
     });
 
@@ -305,15 +308,15 @@ describe('TokenManager (slot-based)', () => {
 
       await tm.rotateOnRateLimit('first', { source: 'response_header', cooldownMinutes: 60 });
       const snap1 = await store.load();
-      const firstAt = snap1.state[s1.slotId].rateLimitedAt;
+      const firstAt = snap1.state[s1.keyId].rateLimitedAt;
       expect(firstAt).toBeDefined();
 
       // Simulate a second rate-limit hit for the same slot while still in cooldown.
       // We need to re-activate s1 to call rotate again.
-      await tm.applyToken(s1.slotId);
+      await tm.applyToken(s1.keyId);
       await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60 });
       const snap2 = await store.load();
-      expect(snap2.state[s1.slotId].rateLimitedAt).toBe(firstAt);
+      expect(snap2.state[s1.keyId].rateLimitedAt).toBe(firstAt);
     });
 
     it('defaults to 60 minute cooldown when cooldownMinutes omitted', async () => {
@@ -327,7 +330,7 @@ describe('TokenManager (slot-based)', () => {
       const beforeMs = Date.now();
       await tm.rotateOnRateLimit('limit', { source: 'manual' });
       const snap = await store.load();
-      const until = new Date(snap.state[s1.slotId].cooldownUntil as string).getTime();
+      const until = new Date(snap.state[s1.keyId].cooldownUntil as string).getTime();
       // ~60 min from "now"
       expect(until).toBeGreaterThan(beforeMs + 59 * 60 * 1000);
       expect(until).toBeLessThan(beforeMs + 61 * 60 * 1000);
@@ -342,23 +345,23 @@ describe('TokenManager (slot-based)', () => {
 
       // Seed a rate-limit hint with NO cooldownUntil (simulates a manual hint
       // or a response_header hint where cooldown was not parseable).
-      await tm.recordRateLimitHint(s1.slotId, 'response_header');
-      const firstAt = (await store.load()).state[s1.slotId].rateLimitedAt;
+      await tm.recordRateLimitHint(s1.keyId, 'response_header');
+      const firstAt = (await store.load()).state[s1.keyId].rateLimitedAt;
       expect(firstAt).toBeDefined();
 
       // Second hint a few seconds later — should NOT overwrite.
       await new Promise((r) => setTimeout(r, 5));
-      await tm.recordRateLimitHint(s1.slotId, 'response_header');
-      const secondAt = (await store.load()).state[s1.slotId].rateLimitedAt;
+      await tm.recordRateLimitHint(s1.keyId, 'response_header');
+      const secondAt = (await store.load()).state[s1.keyId].rateLimitedAt;
       expect(secondAt).toBe(firstAt);
 
       // Age the stored timestamp past the 5h window by rewriting it.
       await store.mutate((snap) => {
-        snap.state[s1.slotId].rateLimitedAt = new Date(Date.now() - (5 * 60 + 1) * 60 * 1000).toISOString();
+        snap.state[s1.keyId].rateLimitedAt = new Date(Date.now() - (5 * 60 + 1) * 60 * 1000).toISOString();
       });
 
-      await tm.recordRateLimitHint(s1.slotId, 'error_string');
-      const thirdAt = (await store.load()).state[s1.slotId].rateLimitedAt as string;
+      await tm.recordRateLimitHint(s1.keyId, 'error_string');
+      const thirdAt = (await store.load()).state[s1.keyId].rateLimitedAt as string;
       expect(new Date(thirdAt).getTime()).toBeGreaterThan(new Date(firstAt as string).getTime());
     });
   });
@@ -382,8 +385,8 @@ describe('TokenManager (slot-based)', () => {
       expect(ttl).toBeLessThan(61_000);
 
       const snap = await store.load();
-      expect(snap.state[s1.slotId].activeLeases).toHaveLength(1);
-      expect(snap.state[s1.slotId].activeLeases[0].leaseId).toBe(lease.leaseId);
+      expect(snap.state[s1.keyId].activeLeases).toHaveLength(1);
+      expect(snap.state[s1.keyId].activeLeases[0].leaseId).toBe(lease.leaseId);
     });
 
     it('heartbeatLease extends expiresAt', async () => {
@@ -398,7 +401,7 @@ describe('TokenManager (slot-based)', () => {
       await new Promise((r) => setTimeout(r, 50));
       await tm.heartbeatLease(lease.leaseId);
       const snap = await store.load();
-      const active = snap.registry.activeSlotId;
+      const active = snap.registry.activeKeyId;
       if (!active) throw new Error('active missing');
       const newExp = new Date(snap.state[active].activeLeases[0].expiresAt).getTime();
       expect(newExp).toBeGreaterThan(firstExp);
@@ -423,7 +426,7 @@ describe('TokenManager (slot-based)', () => {
       await tm.releaseLease(lease.leaseId);
       await tm.releaseLease(lease.leaseId); // idempotent
       const snap = await store.load();
-      expect(snap.state[s1.slotId].activeLeases).toHaveLength(0);
+      expect(snap.state[s1.keyId].activeLeases).toHaveLength(0);
     });
 
     it('reapExpiredLeases removes leases whose expiresAt < now', async () => {
@@ -434,7 +437,7 @@ describe('TokenManager (slot-based)', () => {
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
       // Manually inject an expired lease
       await store.mutate((snap) => {
-        snap.state[s1.slotId].activeLeases = [
+        snap.state[s1.keyId].activeLeases = [
           {
             leaseId: 'stale',
             ownerTag: 'x',
@@ -445,7 +448,7 @@ describe('TokenManager (slot-based)', () => {
       });
       await tm.reapExpiredLeases();
       const snap = await store.load();
-      expect(snap.state[s1.slotId].activeLeases).toHaveLength(0);
+      expect(snap.state[s1.keyId].activeLeases).toHaveLength(0);
     });
 
     it('acquireLease throws when no healthy slot exists', async () => {
@@ -467,12 +470,12 @@ describe('TokenManager (slot-based)', () => {
       await tm.init();
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
       const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
-      const result = await tm.removeSlot(s2.slotId);
+      const result = await tm.removeSlot(s2.keyId);
       expect(result.removed).toBe(true);
       const snap = await store.load();
       expect(snap.registry.slots).toHaveLength(1);
-      expect(snap.state[s2.slotId]).toBeUndefined();
-      expect(snap.registry.activeSlotId).toBe(s1.slotId);
+      expect(snap.state[s2.keyId]).toBeUndefined();
+      expect(snap.registry.activeKeyId).toBe(s1.keyId);
     });
 
     it('tombstones a slot that has active leases; reaper later fully removes it', async () => {
@@ -482,24 +485,24 @@ describe('TokenManager (slot-based)', () => {
       await tm.init();
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
       const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
-      await tm.applyToken(s1.slotId);
+      await tm.applyToken(s1.keyId);
       const lease = await tm.acquireLease('svc', 60_000);
 
-      const result = await tm.removeSlot(s1.slotId);
+      const result = await tm.removeSlot(s1.keyId);
       expect(result.removed).toBe(false);
       expect(result.pendingDrain).toBe(true);
 
       let snap = await store.load();
-      expect(snap.state[s1.slotId].tombstoned).toBe(true);
+      expect(snap.state[s1.keyId].tombstoned).toBe(true);
       // active should be rotated away from tombstoned
-      expect(snap.registry.activeSlotId).toBe(s2.slotId);
+      expect(snap.registry.activeKeyId).toBe(s2.keyId);
 
       // Release the lease, then run reaper
       await tm.releaseLease(lease.leaseId);
       await tm.reapExpiredLeases();
       snap = await store.load();
-      expect(snap.registry.slots.find((s) => s.slotId === s1.slotId)).toBeUndefined();
-      expect(snap.state[s1.slotId]).toBeUndefined();
+      expect(snap.registry.slots.find((s) => s.keyId === s1.keyId)).toBeUndefined();
+      expect(snap.state[s1.keyId]).toBeUndefined();
     });
 
     it('force removes a slot even with active leases', async () => {
@@ -511,12 +514,12 @@ describe('TokenManager (slot-based)', () => {
       const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
       const lease = await tm.acquireLease('svc', 60_000);
       void lease;
-      const result = await tm.removeSlot(s2.slotId, { force: true });
+      const result = await tm.removeSlot(s2.keyId, { force: true });
       // lease was on active s2 (no rotation during addSlot for s2 since s1 was first)
       // re-read and assert s2 is gone
       void result;
       const snap = await store.load();
-      expect(snap.registry.slots.find((s) => s.slotId === s2.slotId)).toBeUndefined();
+      expect(snap.registry.slots.find((s) => s.keyId === s2.keyId)).toBeUndefined();
     });
   });
 
@@ -529,7 +532,7 @@ describe('TokenManager (slot-based)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
-      await tm.renameSlot(s1.slotId, 'production');
+      await tm.renameSlot(s1.keyId, 'production');
       const snap = await store.load();
       expect(snap.registry.slots[0].name).toBe('production');
     });
@@ -538,13 +541,13 @@ describe('TokenManager (slot-based)', () => {
   // ── getValidAccessToken ───────────────────────────────────
 
   describe('getValidAccessToken', () => {
-    it('returns the setup_token value directly', async () => {
+    it('returns the setupToken value directly for cct/setup slots without attachment', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const s = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-xyz' });
-      const token = await tm.getValidAccessToken(s.slotId);
+      const token = await tm.getValidAccessToken(s.keyId);
       expect(token).toBe('sk-ant-oat01-xyz');
       expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
     });
@@ -563,12 +566,12 @@ describe('TokenManager (slot-based)', () => {
         }),
         acknowledgedConsumerTosRisk: true,
       });
-      const token = await tm.getValidAccessToken(s.slotId);
+      const token = await tm.getValidAccessToken(s.keyId);
       expect(token).toBe('sk-ant-oat01-fresh');
       expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
     });
 
-    it('triggers refresh when expiresAtMs < now + 7h and persists new creds', async () => {
+    it('triggers refresh when expiresAtMs < now + 7h and persists new creds on the attachment', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -582,14 +585,15 @@ describe('TokenManager (slot-based)', () => {
         }),
         acknowledgedConsumerTosRisk: true,
       });
-      const token = await tm.getValidAccessToken(s.slotId);
+      const token = await tm.getValidAccessToken(s.keyId);
       expect(token).toBe('sk-ant-oat01-stale-refreshed');
       expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(1);
 
       const snap = await store.load();
       const slot = snap.registry.slots[0];
-      if (slot.kind !== 'oauth_credentials') throw new Error('expected oauth slot');
-      expect(slot.credentials.accessToken).toBe('sk-ant-oat01-stale-refreshed');
+      if (slot.kind !== 'cct') throw new Error('expected cct slot');
+      expect(slot.oauthAttachment?.accessToken).toBe('sk-ant-oat01-stale-refreshed');
+      expect(slot.oauthAttachment?.acknowledgedConsumerTosRisk).toBe(true);
     });
 
     it('dedupes 10 concurrent refreshes to a single refresh call', async () => {
@@ -606,16 +610,18 @@ describe('TokenManager (slot-based)', () => {
         }),
         acknowledgedConsumerTosRisk: true,
       });
-      let resolveRefresh: (v: import('./cct-store').OAuthCredentials) => void = () => {};
-      const refreshPromise = new Promise<import('./cct-store').OAuthCredentials>((resolve) => {
+      let resolveRefresh: (v: import('./oauth/refresher').OAuthCredentials) => void = () => {};
+      const refreshPromise = new Promise<import('./oauth/refresher').OAuthCredentials>((resolve) => {
         resolveRefresh = resolve;
       });
       refreshClaudeCredentialsMock.mockReset();
-      refreshClaudeCredentialsMock.mockImplementation(async (_current: import('./cct-store').OAuthCredentials) => {
-        return refreshPromise;
-      });
+      refreshClaudeCredentialsMock.mockImplementation(
+        async (_current: import('./oauth/refresher').OAuthCredentials) => {
+          return refreshPromise;
+        },
+      );
 
-      const p = Promise.all(Array.from({ length: 10 }, () => tm.getValidAccessToken(s.slotId)));
+      const p = Promise.all(Array.from({ length: 10 }, () => tm.getValidAccessToken(s.keyId)));
       // Give refreshes a microtask to register into the dedupe map
       await new Promise((r) => setTimeout(r, 10));
       resolveRefresh({
@@ -643,9 +649,9 @@ describe('TokenManager (slot-based)', () => {
       });
       refreshClaudeCredentialsMock.mockReset();
       refreshClaudeCredentialsMock.mockRejectedValue(new OAuthRefreshError(401, '', 'unauthorized'));
-      await expect(tm.getValidAccessToken(s.slotId)).rejects.toThrow();
+      await expect(tm.getValidAccessToken(s.keyId)).rejects.toThrow();
       const snap = await store.load();
-      expect(snap.state[s.slotId].authState).toBe('refresh_failed');
+      expect(snap.state[s.keyId].authState).toBe('refresh_failed');
     });
 
     it('403 from refresh → authState=revoked', async () => {
@@ -662,9 +668,9 @@ describe('TokenManager (slot-based)', () => {
       });
       refreshClaudeCredentialsMock.mockReset();
       refreshClaudeCredentialsMock.mockRejectedValue(new OAuthRefreshError(403, '', 'forbidden'));
-      await expect(tm.getValidAccessToken(s.slotId)).rejects.toThrow();
+      await expect(tm.getValidAccessToken(s.keyId)).rejects.toThrow();
       const snap = await store.load();
-      expect(snap.state[s.slotId].authState).toBe('revoked');
+      expect(snap.state[s.keyId].authState).toBe('revoked');
     });
   });
 
@@ -683,9 +689,9 @@ describe('TokenManager (slot-based)', () => {
         acknowledgedConsumerTosRisk: true,
       });
       await store.mutate((snap) => {
-        snap.state[s.slotId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
+        snap.state[s.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
       });
-      const result = await tm.fetchAndStoreUsage(s.slotId);
+      const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).toBeNull();
       expect(fetchUsageMock).not.toHaveBeenCalled();
     });
@@ -708,12 +714,12 @@ describe('TokenManager (slot-based)', () => {
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
-      const result = await tm.fetchAndStoreUsage(s.slotId);
+      const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).not.toBeNull();
       expect(result?.fiveHour?.utilization).toBe(0.5);
       const snap = await store.load();
-      expect(snap.state[s.slotId].usage?.fiveHour?.utilization).toBe(0.5);
-      expect(snap.state[s.slotId].lastUsageFetchedAt).toBeDefined();
+      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(0.5);
+      expect(snap.state[s.keyId].lastUsageFetchedAt).toBeDefined();
     });
 
     it('401 → refresh → retry once → success', async () => {
@@ -736,7 +742,7 @@ describe('TokenManager (slot-based)', () => {
         },
         nextFetchAllowedAtMs: Date.now() + 120_000,
       });
-      const result = await tm.fetchAndStoreUsage(s.slotId);
+      const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).not.toBeNull();
       expect(refreshClaudeCredentialsMock).toHaveBeenCalled();
     });
@@ -754,10 +760,10 @@ describe('TokenManager (slot-based)', () => {
         acknowledgedConsumerTosRisk: true,
       });
       fetchUsageMock.mockRejectedValueOnce(new UsageFetchError(403, '', 'forbidden'));
-      const result = await tm.fetchAndStoreUsage(s.slotId);
+      const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).toBeNull();
       const snap = await store.load();
-      expect(snap.state[s.slotId].authState).toBe('revoked');
+      expect(snap.state[s.keyId].authState).toBe('revoked');
     });
 
     it('429 → bumps nextUsageFetchAllowedAt via backoff', async () => {
@@ -774,10 +780,10 @@ describe('TokenManager (slot-based)', () => {
       });
       fetchUsageMock.mockRejectedValueOnce(new UsageFetchError(429, '', 'too many'));
       const beforeMs = Date.now();
-      const result = await tm.fetchAndStoreUsage(s.slotId);
+      const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).toBeNull();
       const snap = await store.load();
-      const next = snap.state[s.slotId].nextUsageFetchAllowedAt;
+      const next = snap.state[s.keyId].nextUsageFetchAllowedAt;
       expect(next).toBeDefined();
       const nextMs = new Date(next as string).getTime();
       expect(nextMs).toBeGreaterThan(beforeMs);
@@ -793,9 +799,9 @@ describe('TokenManager (slot-based)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       const s = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
-      await tm.markAuthState(s.slotId, 'revoked');
+      await tm.markAuthState(s.keyId, 'revoked');
       const snap = await store.load();
-      expect(snap.state[s.slotId].authState).toBe('revoked');
+      expect(snap.state[s.keyId].authState).toBe('revoked');
     });
   });
 
@@ -809,14 +815,14 @@ describe('TokenManager (slot-based)', () => {
       await tm.init();
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
       await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
-      await tm.markAuthState(s1.slotId, 'revoked');
+      await tm.markAuthState(s1.keyId, 'revoked');
       const list = tm.listTokens();
       expect(list).toHaveLength(2);
-      const revoked = list.find((t) => t.slotId === s1.slotId);
+      const revoked = list.find((t) => t.keyId === s1.keyId);
       expect(revoked?.status).toContain('revoked');
 
       const active = tm.getActiveToken();
-      expect(active?.slotId).toBe(s1.slotId);
+      expect(active?.keyId).toBe(s1.keyId);
     });
   });
 
@@ -835,9 +841,10 @@ describe('TokenManager (slot-based)', () => {
       expect(snap.registry.slots).toHaveLength(2);
       expect(snap.registry.slots[0].name).toBe('ai2');
       expect(snap.registry.slots[1].name).toBe('ai3');
-      if (snap.registry.slots[0].kind !== 'setup_token') throw new Error('expected setup_token');
-      expect(snap.registry.slots[0].value).toBe('sk-ant-oat01-a');
-      expect(snap.registry.activeSlotId).toBe(snap.registry.slots[0].slotId);
+      const first = snap.registry.slots[0];
+      if (first.kind !== 'cct' || first.source !== 'setup') throw new Error('expected cct/setup');
+      expect(first.setupToken).toBe('sk-ant-oat01-a');
+      expect(snap.registry.activeKeyId).toBe(first.keyId);
     });
 
     it('falls back to cctN names when name: omitted', async () => {
@@ -875,21 +882,22 @@ describe('TokenManager (slot-based)', () => {
       expect(snap.registry.slots).toHaveLength(0);
     });
 
-    it('sets activeSlotId when registry has slots but no active (e.g. after load)', async () => {
-      // Pre-populate the store WITHOUT activeSlotId, then init and expect it to self-heal.
+    it('sets activeKeyId when registry has slots but no active (e.g. after load)', async () => {
+      // Pre-populate the store WITHOUT activeKeyId, then init and expect it to self-heal.
       const storePath = path.join(tmp, 'cct-store.json');
       const { storeMod } = await importSut();
       const bootstrap = new storeMod.CctStore(storePath);
       await bootstrap.mutate((snap) => {
-        const slotId = '01HZZZAAAA0000000000000111';
+        const keyId = '01HZZZAAAA0000000000000111';
         snap.registry.slots.push({
-          slotId,
+          kind: 'cct',
+          source: 'setup',
+          keyId,
           name: 'preexisting',
-          kind: 'setup_token',
-          value: 'sk-ant-oat01-zzz',
+          setupToken: 'sk-ant-oat01-zzz',
           createdAt: new Date().toISOString(),
         });
-        snap.state[slotId] = { authState: 'healthy', activeLeases: [] };
+        snap.state[keyId] = { authState: 'healthy', activeLeases: [] };
       });
 
       process.env.SOMA_CCT_DISABLE_ENV_SEED = 'true';
@@ -898,7 +906,7 @@ describe('TokenManager (slot-based)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       const snap = await store.load();
-      expect(snap.registry.activeSlotId).toBe('01HZZZAAAA0000000000000111');
+      expect(snap.registry.activeKeyId).toBe('01HZZZAAAA0000000000000111');
       expect(await activeAccessToken(tm)).toBe('sk-ant-oat01-zzz');
     });
   });
@@ -923,7 +931,7 @@ describe('TokenManager (slot-based)', () => {
       const snap = await store.load();
       const ai2Slot = snap.registry.slots.find((s) => s.name === 'ai2');
       if (!ai2Slot) throw new Error('ai2 slot missing');
-      expect(snap.state[ai2Slot.slotId].cooldownUntil).toBe(cooldownUntil);
+      expect(snap.state[ai2Slot.keyId].cooldownUntil).toBe(cooldownUntil);
 
       // The legacy file should have been renamed by the migrator
       const siblings = await fs.readdir(tmp);

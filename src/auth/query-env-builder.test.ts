@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotAuthLease } from '../credentials-manager';
 import { buildQueryEnv } from './query-env-builder';
 
-function makeLease(slotId: string, accessToken: string, kind: SlotAuthLease['kind'] = 'setup_token'): SlotAuthLease {
+function makeLease(keyId: string, accessToken: string, kind: SlotAuthLease['kind'] = 'cct'): SlotAuthLease {
   return {
-    slotId,
+    keyId,
     accessToken,
     kind,
     async release() {
@@ -39,27 +39,27 @@ describe('buildQueryEnv', () => {
     else process.env.__QENV_BUILDER_FIXTURE__ = originalFoo;
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (setup_token)', () => {
-    const lease = makeLease('slot-a', 'sk-ant-oat01-TOKEN-A', 'setup_token');
+  it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (cct slot without attachment)', () => {
+    const lease = makeLease('slot-a', 'sk-ant-oat01-TOKEN-A', 'cct');
     const { env } = buildQueryEnv(lease);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-A');
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (oauth_credentials)', () => {
-    const lease = makeLease('slot-b', 'sk-ant-oat01-TOKEN-B', 'oauth_credentials');
+  it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (cct slot with oauth attachment)', () => {
+    const lease = makeLease('slot-b', 'sk-ant-oat01-TOKEN-B', 'cct');
     const { env } = buildQueryEnv(lease);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-B');
   });
 
   it('does NOT mutate process.env', () => {
-    const lease = makeLease('slot-a', 'sk-ant-oat01-FRESH', 'setup_token');
+    const lease = makeLease('slot-a', 'sk-ant-oat01-FRESH', 'cct');
     buildQueryEnv(lease);
     // The global token we pre-seeded must survive untouched.
     expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('GLOBAL-WRONG-TOKEN');
   });
 
   it('preserves unrelated process.env variables in the returned env', () => {
-    const lease = makeLease('slot-a', 'sk-ant-oat01-X', 'setup_token');
+    const lease = makeLease('slot-a', 'sk-ant-oat01-X', 'cct');
     const { env } = buildQueryEnv(lease);
     expect(env.__QENV_BUILDER_FIXTURE__).toBe('keep-me');
     // The returned env shouldn't clobber PATH either — presence is enough here.
@@ -69,8 +69,8 @@ describe('buildQueryEnv', () => {
   });
 
   it('returns independent env objects for separate leases (concurrent isolation)', () => {
-    const leaseA = makeLease('slot-a', 'TOKEN-A', 'setup_token');
-    const leaseB = makeLease('slot-b', 'TOKEN-B', 'oauth_credentials');
+    const leaseA = makeLease('slot-a', 'TOKEN-A', 'cct');
+    const leaseB = makeLease('slot-b', 'TOKEN-B', 'cct');
     const { env: envA } = buildQueryEnv(leaseA);
     const { env: envB } = buildQueryEnv(leaseB);
 
@@ -89,8 +89,8 @@ describe('buildQueryEnv', () => {
   it('simulated concurrent dispatch: each query() call sees its own token', async () => {
     // Two leases dispatched "in parallel" — the env captured for each spawn
     // must carry ONLY its own token, regardless of ordering.
-    const leaseA = makeLease('slot-a', 'PARALLEL-A', 'setup_token');
-    const leaseB = makeLease('slot-b', 'PARALLEL-B', 'oauth_credentials');
+    const leaseA = makeLease('slot-a', 'PARALLEL-A', 'cct');
+    const leaseB = makeLease('slot-b', 'PARALLEL-B', 'cct');
 
     const [{ env: envA }, { env: envB }] = await Promise.all([
       Promise.resolve(buildQueryEnv(leaseA)),
@@ -104,7 +104,7 @@ describe('buildQueryEnv', () => {
   });
 
   it('returns a plain object whose values are all strings', () => {
-    const lease = makeLease('slot-a', 'TOKEN', 'setup_token');
+    const lease = makeLease('slot-a', 'TOKEN', 'cct');
     const { env } = buildQueryEnv(lease);
     for (const v of Object.values(env)) {
       expect(typeof v).toBe('string');

@@ -43,20 +43,20 @@ beforeEach(() => {
 });
 
 describe('ensureActiveSlotAuth', () => {
-  it('returns a lease with the expected shape (setup_token)', async () => {
+  it('returns a lease with the expected shape (cct slot)', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L1',
       ownerTag: 'test',
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-A', name: 'setup1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('sk-ant-oat01-TEST');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'test:owner');
 
-    expect(lease.slotId).toBe('slot-A');
-    expect(lease.kind).toBe('setup_token');
+    expect(lease.keyId).toBe('slot-A');
+    expect(lease.kind).toBe('cct');
     expect(lease.accessToken).toBe('sk-ant-oat01-TEST');
     expect(typeof lease.release).toBe('function');
     expect(typeof lease.heartbeat).toBe('function');
@@ -70,7 +70,7 @@ describe('ensureActiveSlotAuth', () => {
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-A', name: 'setup1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('tok');
 
     await ensureActiveSlotAuth(mockTokenManager as any, 'tag', 30_000);
@@ -84,19 +84,19 @@ describe('ensureActiveSlotAuth', () => {
     expect(mockReleaseLease).not.toHaveBeenCalled();
   });
 
-  it('for oauth_credentials slots, accessToken is the value returned by getValidAccessToken (refresh)', async () => {
+  it('for cct slots with oauth attachment, accessToken is the value returned by getValidAccessToken (refresh)', async () => {
     mockAcquireLease.mockResolvedValue({
       leaseId: 'L3',
       ownerTag: 'test',
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-O', name: 'oauth1', kind: 'oauth_credentials' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-O', name: 'oauth1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('refreshed-access-token');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
     expect(lease.accessToken).toBe('refreshed-access-token');
-    expect(lease.kind).toBe('oauth_credentials');
+    expect(lease.kind).toBe('cct');
     expect(mockGetValidAccessToken).toHaveBeenCalledWith('slot-O');
   });
 
@@ -107,7 +107,7 @@ describe('ensureActiveSlotAuth', () => {
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-A', name: 'setup1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('tok');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
@@ -124,7 +124,7 @@ describe('ensureActiveSlotAuth', () => {
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-O', name: 'oauth1', kind: 'oauth_credentials' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-O', name: 'oauth1', kind: 'cct' });
     mockGetValidAccessToken.mockRejectedValue(new Error('refresh 401'));
 
     await expect(ensureActiveSlotAuth(mockTokenManager as any, 'owner')).rejects.toBeInstanceOf(NoHealthySlotError);
@@ -151,7 +151,7 @@ describe('ensureActiveSlotAuth', () => {
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-A', name: 'setup1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('tok');
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
@@ -174,7 +174,7 @@ describe('ensureValidCredentials (legacy wrapper)', () => {
       acquiredAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    mockGetActiveToken.mockReturnValue({ slotId: 'slot-A', name: 'setup1', kind: 'setup_token' });
+    mockGetActiveToken.mockReturnValue({ keyId: 'slot-A', name: 'setup1', kind: 'cct' });
     mockGetValidAccessToken.mockResolvedValue('tok');
 
     const r = await ensureValidCredentials();
