@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OAuthCredentials } from '../cct-store/types';
+import type { OAuthCredentials } from './refresher';
 import {
   CLAUDE_OAUTH_CLIENT_ID,
   CLAUDE_OAUTH_REFRESH_URL,

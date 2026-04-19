@@ -86,12 +86,42 @@ describe('CctHandler — Wave 5', () => {
   // back to a harness-safe value.
   const adminUser = (process.env.ADMIN_USERS?.split(',')[0] || 'U_ADMIN').trim();
 
+  // Synthesise a v2 snapshot whose single cct slot carries an oauthAttachment.
+  // Usage-path tests must hand this to the mocked TokenManager so handleUsage
+  // can clear the `hasOAuthAttachment` gate and dispatch fetchAndStoreUsage.
+  function snapshotWithOAuthAttachment(keyId: string, name: string): Record<string, unknown> {
+    return {
+      version: 2,
+      revision: 1,
+      registry: {
+        activeKeyId: keyId,
+        slots: [
+          {
+            kind: 'cct',
+            source: 'legacy-attachment',
+            keyId,
+            name,
+            createdAt: new Date().toISOString(),
+            oauthAttachment: {
+              accessToken: 'sk-ant-oat01-xxx',
+              refreshToken: 'r',
+              expiresAtMs: Date.now() + 3_600_000,
+              scopes: ['user:profile', 'user:inference'],
+              acknowledgedConsumerTosRisk: true,
+            },
+          },
+        ],
+      },
+      state: { [keyId]: { authState: 'healthy', activeLeases: [] } },
+    };
+  }
+
   async function loadHandlerWithMockTm(overrides: {
-    tokens?: Array<{ slotId: string; name: string; kind: 'setup_token' | 'oauth_credentials'; status: string }>;
-    active?: { slotId: string; name: string; kind: 'setup_token' | 'oauth_credentials' } | null;
-    fetchAndStoreUsage?: (slotId: string) => Promise<unknown>;
-    rotateToNext?: () => Promise<{ slotId: string; name: string } | null>;
-    applyToken?: (slotId: string) => Promise<void>;
+    tokens?: Array<{ keyId: string; name: string; kind: 'api_key' | 'cct'; status: string }>;
+    active?: { keyId: string; name: string; kind: 'api_key' | 'cct' } | null;
+    fetchAndStoreUsage?: (keyId: string) => Promise<unknown>;
+    rotateToNext?: () => Promise<{ keyId: string; name: string } | null>;
+    applyToken?: (keyId: string) => Promise<void>;
     snapshot?: Record<string, unknown> | null;
   }): Promise<{ CctHandler: typeof import('./cct-handler').CctHandler }> {
     vi.resetModules();
@@ -128,16 +158,17 @@ describe('CctHandler — Wave 5', () => {
     return { CctHandler: mod.CctHandler };
   }
 
-  it('cct usage (no name) fetches usage for active oauth_credentials slot', async () => {
-    const fetchAndStoreUsage = vi.fn(async (_slotId: string) => ({
+  it('cct usage (no name) fetches usage for the active cct slot with oauth attachment', async () => {
+    const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
       fiveHour: { utilization: 0.42, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
       sevenDay: { utilization: 0.17, resetsAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
     }));
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
       fetchAndStoreUsage,
+      snapshot: snapshotWithOAuthAttachment('slot-1', 'active'),
     });
 
     const say = makeSay();
@@ -154,25 +185,69 @@ describe('CctHandler — Wave 5', () => {
     expect(say.calls).toHaveLength(1);
     const msg = say.calls[0].text;
     expect(msg).toContain('Usage for *active*');
-    expect(msg).toContain('(oauth_credentials)');
+    expect(msg).toContain('(cct)');
     expect(msg).toMatch(/5h:\s*42%/);
     expect(msg).toMatch(/7d:\s*17%/);
     expect(msg).toContain('resets in');
   });
 
   it('cct usage <name> looks up slot by name and calls fetchAndStoreUsage', async () => {
-    const fetchAndStoreUsage = vi.fn(async (_slotId: string) => ({
+    const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
       fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() },
       sevenDay: { utilization: 0.25, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
     }));
+    // Build a snapshot where BOTH slots carry oauthAttachment so the lookup
+    // for 'secondary' passes the attachment gate.
+    const twoSlotSnapshot = {
+      version: 2,
+      revision: 1,
+      registry: {
+        activeKeyId: 'slot-1',
+        slots: [
+          {
+            kind: 'cct',
+            source: 'legacy-attachment',
+            keyId: 'slot-1',
+            name: 'active',
+            createdAt: new Date().toISOString(),
+            oauthAttachment: {
+              accessToken: 'a',
+              refreshToken: 'r',
+              expiresAtMs: Date.now() + 3_600_000,
+              scopes: ['user:profile'],
+              acknowledgedConsumerTosRisk: true,
+            },
+          },
+          {
+            kind: 'cct',
+            source: 'legacy-attachment',
+            keyId: 'slot-2',
+            name: 'secondary',
+            createdAt: new Date().toISOString(),
+            oauthAttachment: {
+              accessToken: 'b',
+              refreshToken: 'r',
+              expiresAtMs: Date.now() + 3_600_000,
+              scopes: ['user:profile'],
+              acknowledgedConsumerTosRisk: true,
+            },
+          },
+        ],
+      },
+      state: {
+        'slot-1': { authState: 'healthy', activeLeases: [] },
+        'slot-2': { authState: 'healthy', activeLeases: [] },
+      },
+    };
     const { CctHandler } = await loadHandlerWithMockTm({
       tokens: [
-        { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' },
-        { slotId: 'slot-2', name: 'secondary', kind: 'oauth_credentials', status: 'healthy' },
+        { keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' },
+        { keyId: 'slot-2', name: 'secondary', kind: 'cct' as const, status: 'healthy' },
       ],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
       fetchAndStoreUsage,
+      snapshot: twoSlotSnapshot,
     });
     const say = makeSay();
     const h = new CctHandler();
@@ -192,8 +267,8 @@ describe('CctHandler — Wave 5', () => {
   it('cct usage <unknown> returns "Unknown slot: <name>"', async () => {
     const fetchAndStoreUsage = vi.fn();
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
       fetchAndStoreUsage,
     });
     const say = makeSay();
@@ -209,12 +284,32 @@ describe('CctHandler — Wave 5', () => {
     expect(fetchAndStoreUsage).not.toHaveBeenCalled();
   });
 
-  it('cct usage for setup_token slot does NOT attempt fetch and emits oauth-only error', async () => {
+  it('cct usage for setup-only cct slot (no oauth attachment) does NOT attempt fetch and emits oauth-only error', async () => {
     const fetchAndStoreUsage = vi.fn();
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'setup', kind: 'setup_token', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'setup', kind: 'setup_token' },
+      tokens: [{ keyId: 'slot-1', name: 'setup', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'setup', kind: 'cct' as const },
       fetchAndStoreUsage,
+      // Snapshot with a setup-only cct slot (no oauthAttachment) — must trigger
+      // the oauth-only error path without dispatching fetchAndStoreUsage.
+      snapshot: {
+        version: 2,
+        revision: 1,
+        registry: {
+          activeKeyId: 'slot-1',
+          slots: [
+            {
+              kind: 'cct',
+              source: 'setup',
+              keyId: 'slot-1',
+              name: 'setup',
+              setupToken: 'sk-ant-oat01-abc',
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+        state: { 'slot-1': { authState: 'healthy', activeLeases: [] } },
+      },
     });
     const say = makeSay();
     const h = new CctHandler();
@@ -225,21 +320,39 @@ describe('CctHandler — Wave 5', () => {
       text: 'cct usage',
       say: say.fn,
     });
-    expect(say.calls[0].text).toContain('Usage API requires oauth_credentials');
-    expect(say.calls[0].text).toContain('setup_token');
+    expect(say.calls[0].text).toContain('Usage API requires an OAuth attachment');
+    expect(say.calls[0].text).toContain('no oauth_credentials attached');
     expect(fetchAndStoreUsage).not.toHaveBeenCalled();
   });
 
   it('cct usage when backoff active (fetch returns null) emits "not available yet"', async () => {
     const nextAt = new Date(Date.now() + 7 * 60_000).toISOString();
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
       fetchAndStoreUsage: async () => null,
       snapshot: {
-        version: 1,
+        version: 2,
         revision: 1,
-        registry: { activeSlotId: 'slot-1', slots: [] },
+        registry: {
+          activeKeyId: 'slot-1',
+          slots: [
+            {
+              kind: 'cct',
+              source: 'legacy-attachment',
+              keyId: 'slot-1',
+              name: 'active',
+              createdAt: new Date().toISOString(),
+              oauthAttachment: {
+                accessToken: 'a',
+                refreshToken: 'r',
+                expiresAtMs: Date.now() + 3_600_000,
+                scopes: ['user:profile'],
+                acknowledgedConsumerTosRisk: true,
+              },
+            },
+          ],
+        },
         state: {
           'slot-1': {
             authState: 'healthy',
@@ -264,8 +377,8 @@ describe('CctHandler — Wave 5', () => {
 
   it('cct add <…> returns the forbidden "use card" message (Add button)', async () => {
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
     });
     const say = makeSay();
     const h = new CctHandler();
@@ -283,8 +396,8 @@ describe('CctHandler — Wave 5', () => {
 
   it('cct rm <…> returns the forbidden "use card" message (Remove button)', async () => {
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'healthy' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
     });
     const say = makeSay();
     const h = new CctHandler();
@@ -303,21 +416,27 @@ describe('CctHandler — Wave 5', () => {
   it('cct (status) text fallback includes KST + UTC + relative timestamp when slot rate-limited', async () => {
     const rateLimitedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // 5m ago
     const { CctHandler } = await loadHandlerWithMockTm({
-      tokens: [{ slotId: 'slot-1', name: 'active', kind: 'oauth_credentials', status: 'rate-limited' }],
-      active: { slotId: 'slot-1', name: 'active', kind: 'oauth_credentials' },
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'rate-limited' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
       snapshot: {
-        version: 1,
+        version: 2,
         revision: 1,
         registry: {
-          activeSlotId: 'slot-1',
+          activeKeyId: 'slot-1',
           slots: [
             {
-              slotId: 'slot-1',
+              kind: 'cct',
+              source: 'legacy-attachment',
+              keyId: 'slot-1',
               name: 'active',
-              kind: 'oauth_credentials',
-              credentials: { accessToken: 'x', refreshToken: 'y', expiresAtMs: 0, scopes: [] },
               createdAt: new Date().toISOString(),
-              acknowledgedConsumerTosRisk: true,
+              oauthAttachment: {
+                accessToken: 'x',
+                refreshToken: 'y',
+                expiresAtMs: 0,
+                scopes: [],
+                acknowledgedConsumerTosRisk: true,
+              },
             },
           ],
         },
@@ -354,7 +473,7 @@ describe('renderUsageLines', () => {
     const { renderUsageLines } = await import('./cct-handler');
     const now = Date.parse('2026-04-18T00:00:00Z');
     const out = renderUsageLines(
-      { name: 'x', kind: 'oauth_credentials' },
+      { name: 'x', kind: 'cct' },
       {
         fetchedAt: '2026-04-18T00:00:00Z',
         fiveHour: { utilization: 0.4234, resetsAt: '2026-04-18T03:45:00Z' },
@@ -362,7 +481,7 @@ describe('renderUsageLines', () => {
       },
       now,
     );
-    expect(out).toContain('Usage for *x* (oauth_credentials)');
+    expect(out).toContain('Usage for *x* (cct)');
     expect(out).toMatch(/5h:\s*42%/);
     expect(out).toMatch(/7d:\s*1%/);
   });
@@ -371,7 +490,7 @@ describe('renderUsageLines', () => {
     const { renderUsageLines } = await import('./cct-handler');
     const now = Date.parse('2026-04-18T00:00:00Z');
     const out = renderUsageLines(
-      { name: 'x', kind: 'oauth_credentials' },
+      { name: 'x', kind: 'cct' },
       {
         fetchedAt: '2026-04-18T00:00:00Z',
         fiveHour: { utilization: 75, resetsAt: '2026-04-18T03:45:00Z' },

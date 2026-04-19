@@ -23,6 +23,7 @@ import { config, runPreflightChecks, validateConfig } from './config';
 import {
   broadcastConversationUpdate,
   broadcastSessionUpdate,
+  broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
   initRecorder,
   setDashboardChoiceAnswerHandler,
@@ -37,6 +38,7 @@ import {
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
+  setSessionTitleBridge,
   startWebServer,
   stopWebServer,
 } from './conversation';
@@ -421,6 +423,65 @@ async function start() {
 
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Dashboard v2.1 — wire session title bridge so the recorder can
+    // regenerate session summaryTitle without importing session-registry
+    // (which would create a cycle with conversation/recorder).
+    setSessionTitleBridge({
+      getSnapshot: (conversationId) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const sessions = registry.getAllSessions();
+        let found: { key: string; session: any } | null = null;
+        for (const [k, s] of sessions.entries()) {
+          if (s.conversationId === conversationId) {
+            found = { key: k, session: s };
+            break;
+          }
+        }
+        if (!found) return null;
+        const { key, session } = found;
+        const userMessages: string[] = Array.isArray(session.followUpInstructions)
+          ? (session.followUpInstructions as Array<{ text: string }>).map((f) => f.text)
+          : [];
+        if (session.initialInstruction) {
+          userMessages.unshift(session.initialInstruction);
+        }
+        const links = {
+          issueTitle: session.links?.issue?.title,
+          issueLabel: session.links?.issue?.label,
+          prTitle: session.links?.pr?.title,
+          prLabel: session.links?.pr?.label,
+          prStatus: session.links?.pr?.status,
+        };
+        return {
+          sessionKey: key,
+          userMessages,
+          lastAssistantTurnId: session.lastAssistantTurnId,
+          summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
+          links,
+        };
+      },
+      setLastAssistantTurnId: (conversationId, turnId) => {
+        const registry = claudeHandler.getSessionRegistry();
+        for (const session of registry.getAllSessions().values()) {
+          if (session.conversationId === conversationId) {
+            session.lastAssistantTurnId = turnId;
+            break;
+          }
+        }
+      },
+      applyTitle: (sessionKey, title, turnId, _model) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const session = registry.getSessionByKey(sessionKey);
+        if (!session) return;
+        session.summaryTitle = title;
+        session.summaryTitleTurnId = turnId;
+        session.summaryTitleLastUpdatedAtMs = Date.now();
+        registry.saveSessions();
+        // Scoped push — only the title changes, no need to re-send the full board.
+        broadcastSummaryTitleChanged(sessionKey, title);
+      },
+    });
 
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
