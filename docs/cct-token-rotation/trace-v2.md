@@ -6,9 +6,10 @@
 >
 > This document traces the code path end-to-end after PR-A
 > (AuthKey v2 foundation + schema v2 + docs). Implementation details
-> that land in PR-B / PR-C (atomic field rename, full island
-> extraction) are called out as *future work* rather than silently
-> conflated with the current state.
+> that land in PR-B (spawn isolation, atomic `accessToken → secret`
+> rename, 11 audit blocker fixes, api_key e2e, forbidden-pattern CI
+> gate) are called out as *future work within #575* rather than
+> silently conflated with the current state.
 
 ## 1. Glossary (schema v2 vocabulary)
 
@@ -204,8 +205,8 @@ sole refresh entry point:
   quarantines the slot and rotates.
 
 The refresher is agnostic of the store; any caller holding an
-`OAuthCredentials` snapshot can invoke it. That's what enables the
-future `oauth-island` extraction (PR-C).
+`OAuthCredentials` snapshot can invoke it. The HTTP contract itself is
+documented in `docs/cct-token-rotation/extraction/agent-island-oauth-extraction.md`.
 
 ## 7. Rate-limit handling
 
@@ -255,14 +256,18 @@ heuristic match.
 - `SlotAuthLease` is the new public lease shape. Legacy callers still
   reach it via `ensureValidCredentials()` for back-compat.
 
-## 10. Future work (PR-B / PR-C)
+## 10. Future work (PR-B, within #575)
 
-- **PR-B** — per-slot `CLAUDE_CONFIG_DIR` isolation. `buildQueryEnv`
-  learns to derive a per-`keyId` config dir so two concurrent queries
-  using different slots cannot stomp each other's `~/.claude/config.json`
-  state. Also drops the deprecated `accessToken` field name on
-  `SlotAuthLease` in favour of a discriminant-appropriate name.
-- **PR-C** — `oauth-island` extraction. Move `src/oauth/` to a standalone
-  package so non-Slack consumers (agent-session, cron workers) can
-  refresh an `OAuthAttachment` without pulling the Slack SDK bundle.
-  See `docs/cct-token-rotation/extraction/agent-island-oauth-extraction.md`.
+- **PR-B** — per-slot `CLAUDE_CONFIG_DIR` isolation via the new
+  `runClaudeQuery` async-generator wrapper (`src/spawn/claude-spawn.ts`).
+  Each query call receives its own `mkdtemp` directory with
+  `.credentials.json` written atomically, avoiding any `process.env`
+  mutation. PR-B also atomically renames `SlotAuthLease.accessToken`
+  to a discriminant-appropriate name, wires the `api_key` kind through
+  add/list/use/spawn, fixes the 11 audit blockers (A1–C6) each with a
+  regression test, deletes `mirrorToEnv`, and installs a
+  `grep`-zero CI gate proving no `process.env.CLAUDE_CODE_OAUTH_TOKEN =`
+  or `process.env.ANTHROPIC_API_KEY =` writes remain in runtime code.
+
+Further factoring of `src/oauth/**` into a separately packaged island
+is out of scope for #575 and tracked elsewhere.

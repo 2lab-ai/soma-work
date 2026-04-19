@@ -39,8 +39,8 @@ Code entry points:
   the `ensureActiveSlotAuth` wrapper used by every dispatcher.
 - `src/auth/query-env-builder.ts` — per-lease env-object builder.
 - `src/oauth/refresher.ts` / `usage.ts` / `scope-check.ts` /
-  `header-parser.ts` — HTTP-layer helpers (targeted for PR-C island
-  extraction).
+  `header-parser.ts` — HTTP-layer helpers. HTTP contract documented in
+  `docs/cct-token-rotation/extraction/agent-island-oauth-extraction.md`.
 - `src/slack/cct/builder.ts`, `views.ts`, `actions.ts` — Block Kit card
   & modal surface.
 - `src/slack/commands/cct-handler.ts`, `src/slack/command-parser.ts` —
@@ -576,10 +576,10 @@ seeding.
 
 ## Out of scope (tracked for follow-ons)
 
-- **PR-B**: per-slot `CLAUDE_CONFIG_DIR` isolation, atomic rename of
+- **PR-B** (follow-on within #575): per-slot `CLAUDE_CONFIG_DIR`
+  isolation via `runClaudeQuery` wrapper, atomic rename of
   `SlotAuthLease.accessToken` to a discriminant-appropriate name,
-  `api_key` acquisition path + Slack surface.
-- **PR-C**: extract `src/oauth/**` into a standalone `oauth-island`
-  package consumable by non-Slack runtimes (agent-session, dashboard
-  backend, cron workers). See
-  `extraction/agent-island-oauth-extraction.md`.
+  `api_key` acquisition path + Slack surface, 11 audit blocker
+  regression fixes (A1–C6), forbidden-pattern CI gate.
+- Further factoring of `src/oauth/**` into a separately packaged island
+  (non-Slack runtimes) is explicitly out of scope for #575.

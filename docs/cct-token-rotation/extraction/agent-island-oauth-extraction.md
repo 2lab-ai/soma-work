@@ -1,85 +1,80 @@
-# Agent-Island OAuth Extraction (PR-C scope-setter)
+# OAuth HTTP Contract — agent-island extraction
 
-> Status: **design note** — not implemented by PR-A. This file exists so
-> PR-A's AuthKey rename lands with a clear target for the follow-on work
-> and future reviewers can see the extraction plan before it ships.
+> This file documents the OAuth HTTP contract used by soma-work's CCT
+> subsystem, extracted from the `agent-island` reference implementation.
+> It is a reference for reviewers working on CCT token rotation and for
+> any future non-Slack consumer (dashboard, cron worker, agent-session)
+> that needs to refresh an `OAuthAttachment`.
 
-## Motivation
+## Endpoint
 
-Today `src/oauth/` is coupled to Slack through two seams:
+`POST https://platform.claude.com/v1/oauth/token`
 
-1. It imports `src/logger.ts`, which imports `config.ts`, which pulls the
-   Slack Bolt configuration. Anything that needs `refreshClaudeCredentials`
-   therefore transitively loads the Slack SDK.
-2. The CAS-write semantics live in `cct-store`, which is co-hosted with
-   `token-manager` — a module whose public API still references Slack
-   `ActiveTokenInfo` shapes for the `/z cct` card.
+## Client ID
 
-For agent-session (future island: `agent-session/`), cron workers, and
-the dashboard backend we need a pure-TS `oauth-island` that only knows
-how to:
+`9d1c250a-e61b-44d9-88ed-5944d1962f5e`
 
-- Refresh an `OAuthAttachment` given its current shape + `client_id`.
-- Validate OAuth scopes (`scope-check.ts`).
-- Parse rate-limit headers from an Anthropic response (`header-parser.ts`).
+## Request body
 
-None of those ingest Slack, Bolt, or the Slack-flavoured logger.
+JSON (`Content-Type: application/json`):
 
-## What PR-A already did
+```json
+{
+  "grant_type": "refresh_token",
+  "refresh_token": "<current refresh_token>",
+  "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+}
+```
 
-To make the extraction mechanical in PR-C, PR-A:
+## Response (200 OK)
 
-- **Moved `OAuthCredentials` to `src/oauth/refresher.ts`**. The persisted
-  shape (`OAuthAttachment`) lives in `src/auth/auth-key.ts` and is the
-  only thing that references the store. The HTTP DTO does not.
-- **Defined `AuthKey` / `OAuthAttachment`** in a path that doesn't
-  depend on Slack. `src/auth/auth-key.ts` has zero runtime imports from
-  `src/slack/**`.
-- **Kept `acknowledgedConsumerTosRisk: true` as a literal** on
-  `OAuthAttachment`. That guarantees any extracted refresher can round-
-  trip the attachment without re-prompting the user. The refresher's
-  output (`OAuthCredentials`) deliberately does *not* carry the ack —
-  the caller is responsible for setting it when persisting.
+```json
+{
+  "access_token": "sk-ant-oat01-...",
+  "refresh_token": "sk-ant-ort01-...",
+  "expires_in": 3600,
+  "token_type": "Bearer",
+  "scope": "user:inference user:profile"
+}
+```
 
-## What PR-C will do
+- `expires_in` is seconds-from-now. Soma-work stores
+  `expiresAtMs = Date.now() + expires_in * 1000`.
+- `refresh_token` may be rotated; always replace the stored value with
+  the response value.
+- `scope` is a space-separated list.
 
-1. **Carve out `src/oauth/**` into `agent-island-oauth/`** (or
-   equivalent top-level package), exporting:
-   - `refreshClaudeCredentials(current): Promise<OAuthCredentials>`
-   - `OAuthRefreshError` class
-   - `scopeCheck(scopes): ScopeReport`
-   - `parseRateLimitHeaders(headers): RateLimitInfo`
-   - Types: `OAuthCredentials`
-2. **Introduce a dependency-injection seam** on
-   `TokenManager.refreshSlot(keyId)` so the manager doesn't import the
-   refresher directly — it calls an injected `OAuthRefresher` function.
-   Slack side supplies the real island impl; tests supply a stub.
-3. **Replace the transitive Slack logger import** with a tiny
-   `IslandLogger` interface (debug / info / warn / error) that the
-   extracted package asks the caller to provide.
-4. **Ship the extracted package as a workspace package** so
-   agent-session and the dashboard can depend on `@2lab/oauth-island`
-   (or equivalent) directly, without going through the Slack bundle.
+## Error mapping
 
-## Open questions for PR-C
+| HTTP status | Body signal | Soma-work action |
+|-------------|-------------|------------------|
+| 400 | `error: "invalid_grant"` | Slot `authState = 'revoked'` (terminal). See audit blocker A3. |
+| 401 | any | Usage endpoint: force-refresh path only (A4). Refresh endpoint: `refresh_failed` retriable. |
+| 403 | any | Slot `authState = 'revoked'` (terminal). |
+| 429 | `Retry-After` header | Honour backoff, retry after interval. |
+| 5xx / network | any | Transient: single retry with 500ms delay (C6). |
 
-- Do we keep `usage.ts` in the island, or does it stay with
-  `token-manager` (since usage requires the store's backoff ledger)?
-  Leaning: *stay*, because the backoff state lives in `SlotState` and
-  that belongs to the store.
-- Does the island own the `CLAUDE_OAUTH_CLIENT_ID` constant? Yes —
-  it's per-refresher-flavour, so an `api.anthropic.com` refresher and
-  a self-hosted variant would ship with different clients.
-- Does the island expose `refreshClaudeCredentialsWithRetry` with the
-  hardcoded 2-attempt, 1-min retry window? Lean *no* — retry is a
-  caller policy.
+## Source
 
-## Non-goals (explicitly deferred)
+Extracted from `agent-island@a6ca08c2`:
+<https://github.com/2lab-ai/agent-island/tree/a6ca08c28ffe311760ac18bb759279253a5c6e3a>
 
-- Refactoring `src/credentials-manager.ts` into the island. It owns the
-  lease contract and will stay near `TokenManager`.
-- Moving `src/auth/query-env-builder.ts`. It's thin and stable; can
-  ship as-is in the Slack app.
-- Any change to the v2 schema or the migrator. The island only
-  manipulates `OAuthCredentials` in memory — the store shape is
-  PR-A-final.
+Relevant symbols in that tree:
+
+- `refreshClaudeCredentials(current)` — the canonical refresh function.
+- `CLAUDE_OAUTH_CLIENT_ID` — the client-id constant (mirrored above).
+
+## Consumer in soma-work
+
+- `src/oauth/refresher.ts` — wraps this endpoint for CCT slot refresh.
+- `src/token-manager.ts` — consumes the refresher; passes the current
+  `OAuthAttachment` in and stores the returned tokens back.
+- `src/cct-store/types.ts` — defines `OAuthAttachment`, the persisted
+  shape that mirrors the response fields plus
+  `acknowledgedConsumerTosRisk`.
+
+## Scope note
+
+This document describes the HTTP contract only. Further factoring of
+`src/oauth/**` into a separately packaged island is out of scope for
+issue #575 and not part of the 2-PR stack (PR-A + PR-B).
