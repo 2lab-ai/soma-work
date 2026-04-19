@@ -468,6 +468,21 @@ export class TokenManager {
   }
 
   /**
+   * Z3 runtime fence (PR-B phase1): return only slots that are currently
+   * **runtime-selectable** — i.e. eligible for `cct set <name>` /
+   * `cct usage <name>` / `rotateToNext` name-matching. `api_key` slots are
+   * store-only in PR-B (add/list/remove via modal) and are deliberately
+   * excluded so text-command callers can't bypass the fence by typing an
+   * api_key slot name.
+   *
+   * When the follow-up issue wires `ANTHROPIC_API_KEY` spawn isolation,
+   * this helper will start returning api_key slots too.
+   */
+  listRuntimeSelectableTokens(): TokenSummary[] {
+    return this.listTokens().filter((t) => t.kind !== 'api_key');
+  }
+
+  /**
    * Public, authoritative read of the persisted CCT store snapshot.
    *
    * Prefer this over duck-typing `(tm as any).store.load()` at call sites
