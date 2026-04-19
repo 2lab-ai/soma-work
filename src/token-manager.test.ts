@@ -950,6 +950,57 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── T1/T2: addSlot api_key (Z3) ────────────────────────────
+
+  describe('addSlot api_key (Z3 — store-only, not runtime-selectable)', () => {
+    it('T1: persists an api_key slot with kind="api_key" and does NOT auto-elect it as active', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'commercial-1',
+        kind: 'api_key',
+        value: 'sk-ant-api03-xxxxxxxxxxxx',
+      });
+      expect(slot.kind).toBe('api_key');
+      if (slot.kind !== 'api_key') throw new Error('expected api_key');
+      expect(slot.value).toBe('sk-ant-api03-xxxxxxxxxxxx');
+      expect(slot.keyId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      const snap = await store.load();
+      expect(snap.registry.slots).toHaveLength(1);
+      // activeKeyId must NOT have been auto-set to an api_key slot.
+      expect(snap.registry.activeKeyId).toBeUndefined();
+    });
+
+    it('T2: rejects api_key values that do not match the sk-ant-api03- regex', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await expect(tm.addSlot({ name: 'bad', kind: 'api_key', value: 'not-an-api-key' })).rejects.toThrow(
+        /sk-ant-api03/,
+      );
+      await expect(tm.addSlot({ name: 'bad2', kind: 'api_key', value: 'sk-ant-api03-' })).rejects.toThrow(
+        /sk-ant-api03/,
+      );
+    });
+
+    it('T1b: api_key does not auto-elect even when no CCT slots exist, but a later CCT slot does', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      let snap = await store.load();
+      expect(snap.registry.activeKeyId).toBeUndefined();
+      const cctSlot = await tm.addSlot({ name: 'cct', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+      expect(snap.registry.activeKeyId).not.toBe(apiSlot.keyId);
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {

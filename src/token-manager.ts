@@ -40,7 +40,7 @@
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
-import type { AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
+import type { ApiKeySlot, AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { Logger, redactAnthropicSecrets } from './logger';
@@ -150,7 +150,22 @@ export interface AddOAuthCredentialsInput {
   acknowledgedConsumerTosRisk: true;
 }
 
-export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput;
+/**
+ * Input DTO for a raw Anthropic `sk-ant-api03-…` commercial API key. Mapped
+ * to {@link ApiKeySlot} on persist. Phase 1 scope (Z3): store-only — api_key
+ * slots are runtime-fenced so callers can't select them as active until a
+ * follow-up PR wires `ANTHROPIC_API_KEY` + isolated spawn.
+ */
+export interface AddApiKeyInput {
+  name: string;
+  kind: 'api_key';
+  value: string;
+}
+
+export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput | AddApiKeyInput;
+
+/** Format guard for `sk-ant-api03-<base64url>` commercial API keys. */
+export const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
 export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
@@ -741,6 +756,19 @@ export class TokenManager {
         createdAt,
       };
       newSlot = slot;
+    } else if (input.kind === 'api_key') {
+      // Z3 — Add Slot modal radio 에 api_key 옵션. sk-ant-api03- 검증 + 저장만 가능.
+      if (!API_KEY_REGEX.test(input.value)) {
+        throw new Error('addSlot: api_key must match sk-ant-api03-<chars>');
+      }
+      const slot: ApiKeySlot = {
+        kind: 'api_key',
+        keyId,
+        name: input.name,
+        value: input.value,
+        createdAt,
+      };
+      newSlot = slot;
     } else {
       if (!hasRequiredScopes(input.credentials.scopes)) {
         const missing = missingScopes(input.credentials.scopes);
@@ -779,7 +807,8 @@ export class TokenManager {
       }
       snap.registry.slots.push(newSlot);
       snap.state[newSlot.keyId] = { authState: 'healthy', activeLeases: [] };
-      if (!snap.registry.activeKeyId) {
+      // Z3 — api_key is not runtime-selectable in phase 1; never auto-elect.
+      if (!snap.registry.activeKeyId && newSlot.kind !== 'api_key') {
         snap.registry.activeKeyId = newSlot.keyId;
       }
     });
