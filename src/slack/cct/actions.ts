@@ -20,8 +20,9 @@
 import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
-import type { OAuthCredentials } from '../../cct-store';
+import type { AuthKey } from '../../auth/auth-key';
 import { Logger } from '../../logger';
+import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
 import { buildAddSlotModal, buildCctCardBlocks, buildRemoveSlotModal, buildRenameSlotModal } from './builder';
@@ -37,7 +38,7 @@ const SETUP_TOKEN_REGEX = /^sk-ant-oat01-[A-Za-z0-9_-]{8,}$/;
  * Registered routes:
  *   action  cct_open_add       → open Add modal
  *   action  cct_kind_radio     → update Add modal (conditional blocks)
- *   action  cct_open_remove    → open Remove modal (resolves slotId from value)
+ *   action  cct_open_remove    → open Remove modal (resolves keyId from value)
  *   action  cct_open_rename    → open Rename modal (ditto)
  *   action  cct_next           → rotateToNext + re-post card
  *   action  cct_set_active     → applyToken + re-post card
@@ -80,30 +81,31 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Open Remove modal — slot value is the slotId.
+  // Open Remove modal — button value is the target keyId.
   app.action(CCT_ACTION_IDS.remove, async ({ ack, body, client }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
-      // Per-slot Remove button: `value` carries the target slotId. Reject
+      // Per-slot Remove button: `value` carries the target keyId. Reject
       // if absent or unknown — no silent fallback to active/slots[0].
       const bodyAction = (body as any).actions?.[0];
-      const targetSlotId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      const slots = tokenManager.listTokens();
-      const target = targetSlotId ? slots.find((s) => s.slotId === targetSlotId) : undefined;
-      if (!target) {
-        logger.warn('cct_open_remove: target slot not found', { targetSlotId });
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_open_remove: missing keyId on action value');
         return;
       }
-      // Resolve the TokenSlot shape the modal expects.
-      const slotShape = { slotId: target.slotId, name: target.name, kind: target.kind } as any;
-      // Lease check — listTokens' status string carries 'leases:N' when active.
-      const hasActiveLeases = /leases:\d+/.test(target.status);
+      const snap = await tokenManager.getSnapshot();
+      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
+      if (!target) {
+        logger.warn('cct_open_remove: target slot not found', { targetKeyId });
+        return;
+      }
+      const hasActiveLeases = (snap.state[target.keyId]?.activeLeases.length ?? 0) > 0;
       await client.views.open({
         trigger_id: triggerId,
-        view: buildRemoveSlotModal(slotShape, hasActiveLeases) as any,
+        view: buildRemoveSlotModal(target, hasActiveLeases) as any,
       });
     } catch (err) {
       logger.error('cct_open_remove failed', err);
@@ -117,19 +119,22 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
-      // Per-slot Rename button: `value` carries the target slotId.
+      // Per-slot Rename button: `value` carries the target keyId.
       const bodyAction = (body as any).actions?.[0];
-      const targetSlotId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      const slots = tokenManager.listTokens();
-      const target = targetSlotId ? slots.find((s) => s.slotId === targetSlotId) : undefined;
-      if (!target) {
-        logger.warn('cct_open_rename: target slot not found', { targetSlotId });
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_open_rename: missing keyId on action value');
         return;
       }
-      const slotShape = { slotId: target.slotId, name: target.name, kind: target.kind } as any;
+      const snap = await tokenManager.getSnapshot();
+      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
+      if (!target) {
+        logger.warn('cct_open_rename: target slot not found', { targetKeyId });
+        return;
+      }
       await client.views.open({
         trigger_id: triggerId,
-        view: buildRenameSlotModal(slotShape) as any,
+        view: buildRenameSlotModal(target) as any,
       });
     } catch (err) {
       logger.error('cct_open_rename failed', err);
@@ -153,9 +158,9 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const slotId = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
-      if (!slotId) return;
-      await tokenManager.applyToken(slotId);
+      const keyId = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
+      if (!keyId) return;
+      await tokenManager.applyToken(keyId);
       await respondWithCard({ tokenManager, respond, body, client });
     } catch (err) {
       logger.error('cct_set_active failed', err);
@@ -212,9 +217,9 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   app.view(CCT_VIEW_IDS.remove, async ({ ack, body, client }) => {
     await ack();
     try {
-      const slotId = ((body as any)?.view?.private_metadata ?? '') as string;
-      if (!slotId) return;
-      const result = await tokenManager.removeSlot(slotId);
+      const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
+      if (!keyId) return;
+      const result = await tokenManager.removeSlot(keyId);
       if (result.pendingDrain) {
         const userId = (body as any)?.user?.id as string | undefined;
         const channel = await resolveActorDm(client, userId);
@@ -251,12 +256,12 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       return;
     }
     try {
-      const slotId = ((body as any)?.view?.private_metadata ?? '') as string;
-      if (!slotId) {
+      const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
+      if (!keyId) {
         await ack();
         return;
       }
-      await tokenManager.renameSlot(slotId, newName);
+      await tokenManager.renameSlot(keyId, newName);
       await ack();
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
@@ -431,22 +436,26 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
     return buildCctCardBlocks({
       slots: snap.registry.slots,
       states: snap.state ?? {},
-      activeSlotId: snap.registry.activeSlotId,
+      activeKeyId: snap.registry.activeKeyId,
       nowMs: Date.now(),
     });
   } catch (err) {
     logger.warn('buildCardFromManager: getSnapshot failed, falling back to listTokens()', { err });
     const summaries = tokenManager.listTokens();
     const active = tokenManager.getActiveToken();
-    const slots = summaries.map((s) => ({
-      slotId: s.slotId,
-      name: s.name,
-      kind: s.kind,
-    })) as any;
+    // The summary shape lacks the full AuthKey surface, so we reconstruct
+    // minimal AuthKey-ish objects for the fallback card. This path runs
+    // only when getSnapshot fails (disk corruption / unreadable file),
+    // which should be rare.
+    const slots: AuthKey[] = summaries.map((s) =>
+      s.kind === 'api_key'
+        ? { kind: 'api_key', keyId: s.keyId, name: s.name, value: '', createdAt: '' }
+        : { kind: 'cct', source: 'setup', keyId: s.keyId, name: s.name, setupToken: '', createdAt: '' },
+    );
     return buildCctCardBlocks({
       slots,
       states: {},
-      activeSlotId: active?.slotId,
+      activeKeyId: active?.keyId,
     });
   }
 }

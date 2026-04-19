@@ -12,7 +12,7 @@
  */
 
 import { isAdminUser } from '../../../admin-utils';
-import type { CctStoreSnapshot, TokenSlot } from '../../../cct-store';
+import type { AuthKey, CctStoreSnapshot } from '../../../cct-store';
 import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
@@ -26,16 +26,16 @@ const logger = new Logger('CctTopic');
  * preserve defensive behaviour — a broken store must not brick the card.
  */
 async function loadSnapshotOrEmpty(): Promise<{
-  slots: TokenSlot[];
+  slots: AuthKey[];
   states: Record<string, NonNullable<CctStoreSnapshot['state'][string]>>;
-  activeSlotId?: string;
+  activeKeyId?: string;
 }> {
   try {
     const snap = await getTokenManager().getSnapshot();
     return {
       slots: snap.registry.slots,
       states: snap.state,
-      activeSlotId: snap.registry.activeSlotId,
+      activeKeyId: snap.registry.activeKeyId,
     };
   } catch (err) {
     logger.warn(`loadSnapshotOrEmpty: getSnapshot failed — rendering empty card: ${(err as Error).message}`);
@@ -77,11 +77,11 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     };
   }
 
-  const { slots, states, activeSlotId } = await loadSnapshotOrEmpty();
+  const { slots, states, activeKeyId } = await loadSnapshotOrEmpty();
   const blocks = buildCctCardBlocks({
     slots,
     states,
-    activeSlotId,
+    activeKeyId,
     nowMs: Date.now(),
   });
 
@@ -116,7 +116,7 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     ],
   });
 
-  const active = slots.find((s) => s.slotId === activeSlotId);
+  const active = slots.find((s) => s.keyId === activeKeyId);
   return { text: `🔑 CCT (active: ${active?.name ?? 'none'})`, blocks };
 }
 
@@ -140,7 +140,7 @@ export async function applyCct(args: { userId: string; value: string }): Promise
     return {
       ok: true,
       summary: `🔄 Rotated → *${active?.name ?? rotated.name}*`,
-      description: `kind: \`${active?.kind ?? 'setup_token'}\``,
+      description: `kind: \`${active?.kind ?? 'cct'}\``,
     };
   }
   // Support both the new bare-name form (`value = t.name`) emitted by Block
@@ -157,7 +157,7 @@ export async function applyCct(args: { userId: string; value: string }): Promise
       description: `Available: ${available}`,
     };
   }
-  await tm.applyToken(match.slotId);
+  await tm.applyToken(match.keyId);
   const active = tm.getActiveToken();
   return {
     ok: true,

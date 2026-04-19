@@ -4,9 +4,27 @@
  * Pure HTTP wrapper — no global state, no coupling to TokenManager. Callers are
  * responsible for deciding what to do with the result (persist, bump auth
  * state, etc.).
+ *
+ * Decoupled from the v2 `OAuthAttachment` shape on purpose: this module only
+ * speaks the subset of fields that Anthropic's refresh endpoint returns,
+ * and the `acknowledgedConsumerTosRisk` gate is a higher-level concern
+ * enforced in `TokenManager.addSlot`.
  */
 
-import type { OAuthCredentials } from '../cct-store/types';
+/**
+ * The minimal credential bag passed through the refresh flow. Structurally
+ * compatible with a stripped-down `OAuthAttachment`, but independent of the
+ * AuthKey union so this module stays usable from tests that never touch the
+ * store.
+ */
+export interface OAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAtMs: number;
+  scopes: string[];
+  rateLimitTier?: string;
+  subscriptionType?: string;
+}
 
 export const CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const CLAUDE_OAUTH_REFRESH_URL = 'https://platform.claude.com/v1/oauth/token';

@@ -6,7 +6,8 @@
  * intact — Slack preserves `state.values` only when keys are stable.
  */
 
-import type { AuthState, SlotState, TokenSlot } from '../../cct-store';
+import type { AuthKey, AuthState, SlotState } from '../../cct-store';
+import { isCctSlot } from '../../cct-store';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
 import type { ZBlock } from '../z/types';
 import {
@@ -20,18 +21,39 @@ import {
 
 /** Shape used by the card renderer. */
 export interface CctCardInput {
-  slots: TokenSlot[];
-  /** Keyed by slotId. */
+  slots: AuthKey[];
+  /** Keyed by keyId. */
   states: Record<string, SlotState>;
-  activeSlotId?: string;
+  activeKeyId?: string;
   /** Default: `Date.now()`. Accepts an explicit "now" for stable snapshots. */
   nowMs?: number;
   /** IANA timezone for rate-limit timestamps. Default: Asia/Seoul. */
   userTz?: string;
 }
 
-/** A subset of SlotKind used for UI only — matches cct-store types. */
-type SlotKind = TokenSlot['kind'];
+/**
+ * UI-facing "kind" for the Add-slot modal radio. Drives the conditional
+ * form blocks — `setup_token` asks for a bare token string, `oauth_credentials`
+ * asks for a claudeAiOauth blob + ToS ack. These values are mapped to the
+ * v2 AuthKey arms by `cct/actions.ts` on submit.
+ */
+type AddSlotFormKind = 'setup_token' | 'oauth_credentials';
+
+/**
+ * UI kind label for a persisted AuthKey: used in the row header tag. CCT
+ * slots carry an internal `source` distinction that drives the ToS badge.
+ */
+function displayKindTag(slot: AuthKey): string {
+  if (slot.kind === 'api_key') return ' · api_key';
+  return slot.source === 'setup' ? ' · cct/setup' : ' · cct/legacy-attachment';
+}
+
+/** ToS-risk badge — only for CCT slots with an OAuth attachment. */
+function tosBadge(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  if (slot.source === 'legacy-attachment') return ' :warning: ToS-risk';
+  return slot.oauthAttachment ? ' :warning: ToS-risk' : '';
+}
 
 /** Utility: format 0..1 or 0..100 utilization as a percent integer string. */
 function toPct(utilization: number | undefined): string {
@@ -56,21 +78,13 @@ function authStateBadge(state: AuthState): string {
   }
 }
 
-function kindTag(kind: SlotKind): string {
-  return kind === 'setup_token' ? ' · setup_token' : ' · oauth_credentials';
-}
-
-function tosBadge(kind: SlotKind): string {
-  return kind === 'oauth_credentials' ? ' :warning: ToS-risk' : '';
-}
-
 /**
  * Render a single slot row — one section block plus (when meta is
  * present) a context block with the rate-limit timestamp, usage, and
  * cooldown.
  */
 export function buildSlotRow(
-  slot: TokenSlot,
+  slot: AuthKey,
   state: SlotState | undefined,
   isActive: boolean,
   nowMs: number,
@@ -81,8 +95,8 @@ export function buildSlotRow(
     ':key:',
     `*${escapeMrkdwn(slot.name)}*`,
     isActive ? '· active' : '',
-    kindTag(slot.kind),
-    tosBadge(slot.kind),
+    displayKindTag(slot),
+    tosBadge(slot),
   ]
     .filter(Boolean)
     .join(' ');
@@ -130,7 +144,7 @@ export function buildSlotRow(
     });
   }
 
-  // Per-slot Remove/Rename action row. The button `value` carries the slotId
+  // Per-slot Remove/Rename action row. The button `value` carries the keyId
   // so the open handler routes to the clicked slot rather than falling back
   // to `active ?? slots[0]`.
   blocks.push({
@@ -141,13 +155,13 @@ export function buildSlotRow(
         action_id: CCT_ACTION_IDS.remove,
         style: 'danger',
         text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
-        value: slot.slotId,
+        value: slot.keyId,
       },
       {
         type: 'button',
         action_id: CCT_ACTION_IDS.rename,
         text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-        value: slot.slotId,
+        value: slot.keyId,
       },
     ],
   });
@@ -178,13 +192,7 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     });
   } else {
     for (const slot of input.slots) {
-      const rowBlocks = buildSlotRow(
-        slot,
-        input.states[slot.slotId],
-        slot.slotId === input.activeSlotId,
-        nowMs,
-        userTz,
-      );
+      const rowBlocks = buildSlotRow(slot, input.states[slot.keyId], slot.keyId === input.activeKeyId, nowMs, userTz);
       for (const b of rowBlocks) blocks.push(b);
       blocks.push({ type: 'divider' });
     }
@@ -214,7 +222,7 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
   if (input.slots.length > 1) {
     const options = input.slots.map((s) => ({
       text: { type: 'plain_text', text: s.name, emoji: false },
-      value: s.slotId,
+      value: s.keyId,
     }));
     blocks.push({
       type: 'actions',
@@ -243,7 +251,7 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
  * rendered. A `views.update` on the kind-radio action re-renders with
  * the same block_ids / action_ids so Slack preserves typed values.
  */
-export function buildAddSlotModal(selectedKind: SlotKind = 'setup_token'): Record<string, unknown> {
+export function buildAddSlotModal(selectedKind: AddSlotFormKind = 'setup_token'): Record<string, unknown> {
   const blocks: ZBlock[] = [];
 
   // Name input
@@ -339,7 +347,7 @@ export function buildAddSlotModal(selectedKind: SlotKind = 'setup_token'): Recor
 }
 
 /** Modal: Confirm remove slot — warns when active leases present. */
-export function buildRemoveSlotModal(slot: TokenSlot, hasActiveLeases: boolean): Record<string, unknown> {
+export function buildRemoveSlotModal(slot: AuthKey, hasActiveLeases: boolean): Record<string, unknown> {
   const warning = hasActiveLeases
     ? ':warning: Slot has active leases; the slot will be *tombstoned* and removed once in-flight requests drain.'
     : 'This will remove the slot immediately.';
@@ -349,7 +357,7 @@ export function buildRemoveSlotModal(slot: TokenSlot, hasActiveLeases: boolean):
       block_id: CCT_BLOCK_IDS.remove_confirm,
       text: {
         type: 'mrkdwn',
-        text: `Remove slot *${escapeMrkdwn(slot.name)}*${kindTag(slot.kind)}?\n${warning}`,
+        text: `Remove slot *${escapeMrkdwn(slot.name)}*${displayKindTag(slot)}?\n${warning}`,
       },
     },
   ];
@@ -359,14 +367,14 @@ export function buildRemoveSlotModal(slot: TokenSlot, hasActiveLeases: boolean):
     title: { type: 'plain_text', text: 'Remove CCT slot', emoji: true },
     submit: { type: 'plain_text', text: 'Remove', emoji: true },
     close: { type: 'plain_text', text: 'Cancel', emoji: true },
-    // `private_metadata` carries the slotId through view_submission.
-    private_metadata: slot.slotId,
+    // `private_metadata` carries the keyId through view_submission.
+    private_metadata: slot.keyId,
     blocks,
   };
 }
 
 /** Modal: Rename slot. */
-export function buildRenameSlotModal(slot: TokenSlot): Record<string, unknown> {
+export function buildRenameSlotModal(slot: AuthKey): Record<string, unknown> {
   const blocks: ZBlock[] = [
     {
       type: 'input',
@@ -386,13 +394,13 @@ export function buildRenameSlotModal(slot: TokenSlot): Record<string, unknown> {
     title: { type: 'plain_text', text: 'Rename CCT slot', emoji: true },
     submit: { type: 'plain_text', text: 'Rename', emoji: true },
     close: { type: 'plain_text', text: 'Cancel', emoji: true },
-    private_metadata: slot.slotId,
+    private_metadata: slot.keyId,
     blocks,
   };
 }
 
-function radioOption(kind: SlotKind): Record<string, unknown> {
-  const labelMap: Record<SlotKind, string> = {
+function radioOption(kind: AddSlotFormKind): Record<string, unknown> {
+  const labelMap: Record<AddSlotFormKind, string> = {
     setup_token: 'setup_token (sk-ant-oat01-…)',
     oauth_credentials: 'oauth_credentials (claudeAiOauth blob) :warning:',
   };

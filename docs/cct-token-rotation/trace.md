@@ -1,6 +1,18 @@
 # CCT Token Rotation — Vertical Traces
 
-> Updated: 2026-04-18 — Wave 5 of the slot-model overhaul (#569). Each
+> **DEPRECATED (2026-04-19, PR-A #575).** This document describes the v1
+> `TokenSlot` union (`setup_token | oauth_credentials` with a flat
+> `slotId` / `activeSlotId`) which no longer exists in `src/`. It is
+> retained **only** as a historical reference for the pre-AuthKey
+> behaviour and for reviewers cross-walking the migrator.
+>
+> For the current authoritative spec see `spec.md`. For the end-to-end
+> code path after the AuthKey v2 refactor see `trace-v2.md`. For the
+> per-field migration mapping (v1 → v2) see `trace-v2.md §2.1`.
+>
+> Do not add new content here. New scenarios belong in `trace-v2.md`.
+
+> Originally written: 2026-04-18 — Wave 5 of the slot-model overhaul (#569). Each
 > scenario references the implementation files in `src/cct-store/*`,
 > `src/oauth/*`, `src/slack/cct/*`, `src/slack/commands/cct-handler.ts`,
 > and `src/token-manager.ts`.
