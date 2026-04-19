@@ -1,51 +1,27 @@
 /**
- * Persistent state types for the CCT token-slot store.
+ * Persistent state types for the AuthKey v2 store (#575 PR-A).
  *
- * A "slot" is a named container for one credential — either a legacy
- * `setup_token` (sk-ant-oat01-...) or an `oauth_credentials` bundle
- * owned by the operator. Slot identity (`slotId`) is immutable; the
- * human-facing `name` is mutable.
+ * Schema v2 replaces the v1 `TokenSlot` union with the richer `AuthKey`
+ * tagged union (see `src/auth/auth-key.ts`). The on-disk layout changes:
+ *
+ *   v1:  { version: 1, registry: { activeSlotId?, slots: TokenSlot[] },
+ *                     state: Record<slotId, SlotState> }
+ *   v2:  { version: 2, registry: { activeKeyId?,  slots: AuthKey[] },
+ *                     state: Record<keyId,  SlotState> }
+ *
+ * The v1 → v2 migrator lives in `./migrate-v2.ts`; it renames
+ * `slotId → keyId` / `activeSlotId → activeKeyId`, splits
+ * `kind:'setup_token'`  → `{kind:'cct', source:'setup', setupToken}` and
+ * `kind:'oauth_credentials'` → `{kind:'cct', source:'legacy-attachment',
+ * oauthAttachment}`.
+ *
+ * Legacy type aliases (`TokenSlot`, `SetupTokenSlot`, `OAuthCredentialsSlot`,
+ * `SlotKind`, `OAuthCredentials`) are intentionally *not* re-exported from
+ * this module (AC-1 of PR-A). Call sites that still need a per-file alias
+ * should define it locally on top of `AuthKey`.
  */
 
-export type SlotKind = 'setup_token' | 'oauth_credentials';
-
-export interface OAuthCredentials {
-  accessToken: string;
-  refreshToken: string;
-  /** Absolute epoch ms — Date.now() + expires_in*1000 at refresh time. */
-  expiresAtMs: number;
-  scopes: string[];
-  /** e.g. 'default_claude_max_5x' */
-  rateLimitTier?: string;
-  /** e.g. 'max_5x' */
-  subscriptionType?: string;
-}
-
-export interface SetupTokenSlot {
-  /** ULID — immutable. */
-  slotId: string;
-  /** Human-facing display name, renamable. */
-  name: string;
-  kind: 'setup_token';
-  /** sk-ant-oat01-... */
-  value: string;
-  /** ISO UTC. */
-  createdAt: string;
-  /** Always false/undefined for setup_token. */
-  acknowledgedConsumerTosRisk?: false;
-}
-
-export interface OAuthCredentialsSlot {
-  slotId: string;
-  name: string;
-  kind: 'oauth_credentials';
-  credentials: OAuthCredentials;
-  createdAt: string;
-  /** Required true for oauth_credentials slots. */
-  acknowledgedConsumerTosRisk: true;
-}
-
-export type TokenSlot = SetupTokenSlot | OAuthCredentialsSlot;
+import type { AuthKey } from '../auth/auth-key';
 
 export type AuthState = 'healthy' | 'refresh_failed' | 'revoked';
 
@@ -93,15 +69,67 @@ export interface SlotState {
 }
 
 export interface CctRegistry {
-  activeSlotId?: string;
-  slots: TokenSlot[];
+  /** keyId of the AuthKey currently selected as active. */
+  activeKeyId?: string;
+  slots: AuthKey[];
 }
 
 export interface CctStoreSnapshot {
-  version: 1;
+  version: 2;
   /** Monotonic counter for optimistic CAS on save. */
   revision: number;
   registry: CctRegistry;
-  /** Keyed by slotId. */
+  /** Keyed by AuthKey.keyId. */
   state: Record<string, SlotState>;
 }
+
+/**
+ * V1 on-disk shape — kept internally for the migrator only. Not part of
+ * the public surface; do not re-export from `./index.ts`.
+ */
+export interface LegacyV1SetupTokenSlot {
+  slotId: string;
+  name: string;
+  kind: 'setup_token';
+  value: string;
+  createdAt: string;
+  acknowledgedConsumerTosRisk?: false;
+}
+
+export interface LegacyV1OAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAtMs: number;
+  scopes: string[];
+  rateLimitTier?: string;
+  subscriptionType?: string;
+}
+
+export interface LegacyV1OAuthCredentialsSlot {
+  slotId: string;
+  name: string;
+  kind: 'oauth_credentials';
+  credentials: LegacyV1OAuthCredentials;
+  createdAt: string;
+  acknowledgedConsumerTosRisk: true;
+}
+
+export type LegacyV1TokenSlot = LegacyV1SetupTokenSlot | LegacyV1OAuthCredentialsSlot;
+
+export interface LegacyV1Registry {
+  activeSlotId?: string;
+  slots: LegacyV1TokenSlot[];
+}
+
+export interface LegacyV1Snapshot {
+  version: 1;
+  revision: number;
+  registry: LegacyV1Registry;
+  state: Record<string, SlotState>;
+}
+
+/**
+ * Either on-disk shape. The `readSnapshotRaw` helper returns this and
+ * `load()` decides whether to run the migrator.
+ */
+export type PersistedSnapshot = CctStoreSnapshot | LegacyV1Snapshot;

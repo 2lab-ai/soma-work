@@ -317,11 +317,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
     // W3-B: slot-keyed usage fetch — identify the active slot at query-start
-    // so the slotId stays stable even if another session rotates mid-turn.
+    // so the keyId stays stable even if another session rotates mid-turn.
     const activeSlotSnapshot = getTokenManager().getActiveToken();
     const usageBeforePromise: Promise<UsagePercentSnapshot | null> = activeSlotSnapshot
       ? getTokenManager()
-          .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+          .fetchAndStoreUsage(activeSlotSnapshot.keyId)
           .then((snap) => toUsagePercentSnapshot(snap))
           .catch(() => null)
       : Promise.resolve(null);
@@ -345,8 +345,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
 
+    // Dashboard v2.1 — turn timer: mark active-leg start and broadcast so
+    // the live 1s tick picks up the new leg without waiting for any other
+    // session event. Guarded so failures never break the turn.
+    try {
+      this.deps.claudeHandler.getSessionRegistry().beginTurn(session);
+      this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
+    } catch (err) {
+      this.logger.debug('stream-executor: beginTurn timer hook failed', {
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+
     // W3-B: `activeSlotSnapshot` above captured the slot at query-start, so
-    // rate-limit rotation on error can use the stable slotId/name even if
+    // rate-limit rotation on error can use the stable keyId/name even if
     // another session has already rotated the active slot.
 
     // Issue #42 S3: TurnResultCollector — 턴 결과 구조화 수집
@@ -748,6 +761,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // #196: Compaction-Aware Context Preservation
         onCompactBoundary: () => {
           session.compactionOccurred = true;
+          // Dashboard v2.1 — bump compaction counter. Guarded so any failure
+          // in the dashboard/broadcast path cannot interrupt compaction.
+          try {
+            session.compactionCount = (session.compactionCount || 0) + 1;
+            this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
+          } catch (err) {
+            this.logger.debug('compactionCount bump failed', {
+              error: (err as Error)?.message ?? String(err),
+            });
+          }
           this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
         },
         onStatusUpdate: async (status: string) => {
@@ -774,7 +797,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
           const usageAfter = activeSlotSnapshot
             ? await getTokenManager()
-                .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+                .fetchAndStoreUsage(activeSlotSnapshot.keyId)
                 .then((snap) => toUsagePercentSnapshot(snap))
                 .catch(() => null)
             : null;
@@ -912,7 +935,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const usageBefore = await usageBeforePromise;
           const usageAfter = activeSlotSnapshot
             ? await getTokenManager()
-                .fetchAndStoreUsage(activeSlotSnapshot.slotId)
+                .fetchAndStoreUsage(activeSlotSnapshot.keyId)
                 .then((snap) => toUsagePercentSnapshot(snap))
                 .catch(() => null)
             : null;
@@ -1040,6 +1063,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
         });
       }
+      // Dashboard v2.1 — turn timer: fold the active leg into the accumulator
+      // on the error path (try/finally cannot guarantee it because we still
+      // want the finally branch to be idempotent when the catch branch closes).
+      try {
+        this.deps.claudeHandler.getSessionRegistry().endTurn(session);
+        this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
+      } catch (err) {
+        this.logger.debug('stream-executor: endTurn timer hook (catch) failed', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       const retryAfterMs = await this.handleError(
         error,
         session,
@@ -1065,6 +1100,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.logger.warn('stream-executor: B1 close in finally failed', {
           turnId,
           cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
+        });
+      }
+      // Dashboard v2.1 — turn timer: idempotent fold. If the catch branch
+      // already ran endTurn, activeLegStartedAtMs is undefined and this is
+      // a no-op. Guarantees the accumulator is correct on every exit path.
+      try {
+        this.deps.claudeHandler.getSessionRegistry().endTurn(session);
+        this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
+      } catch (err) {
+        this.logger.debug('stream-executor: endTurn timer hook (finally) failed', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
         });
       }
       await this.cleanup(session, sessionKey, abortController);
@@ -1453,7 +1500,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (rotated) {
       this.logger.info(
         'CCT slot auto-rotated',
-        redactAnthropicSecrets({ newSlot: rotated.name, newSlotId: rotated.slotId }) as Record<string, unknown>,
+        redactAnthropicSecrets({ newSlot: rotated.name, newKeyId: rotated.keyId }) as Record<string, unknown>,
       );
     } else {
       this.logger.warn('CCT rotateOnRateLimit: no eligible replacement slot', {

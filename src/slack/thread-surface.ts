@@ -37,8 +37,13 @@ interface PRCacheEntry {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Minimum interval between consecutive Slack chat.update calls (ms). */
-const RENDER_DEBOUNCE_MS = 500;
+/**
+ * Minimum interval between consecutive Slack chat.update calls (ms).
+ * Dashboard v2.1 chunk I — widened from 500ms to 3000ms with leading edge
+ * so turn-timer-driven renders don't hammer chat.update. Override via env
+ * for tests or tuning.
+ */
+const RENDER_DEBOUNCE_MS = Number(process.env.SLACK_RENDER_DEBOUNCE_MS) || 3000;
 
 /** PR status cache TTL (ms). */
 const PR_CACHE_TTL_MS = 60_000;
@@ -54,6 +59,8 @@ interface SessionRenderState {
   pendingForce: boolean;
   pendingOverrides: { closed?: boolean } | null;
   prCache: PRCacheEntry | null;
+  // Dashboard v2.1 chunk I — leading+trailing debounce bookkeeping.
+  lastEditMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +104,7 @@ export class ThreadSurface {
         pendingForce: false,
         pendingOverrides: null,
         prCache: null,
+        lastEditMs: 0,
       };
       this.sessions.set(sessionKey, state);
     }
@@ -317,16 +325,31 @@ export class ThreadSurface {
         clearTimeout(rs.pendingTimer);
         rs.pendingTimer = null;
       }
+      rs.lastEditMs = Date.now();
       this.flushRender(sessionKey);
       return;
     }
 
-    // Debounced: reset timer
+    // Dashboard v2.1 chunk I — leading edge: if no render has happened in the
+    // debounce window AND nothing is currently in flight, fire immediately so
+    // the first edit after idle time is snappy.
+    const now = Date.now();
+    const sinceLast = now - rs.lastEditMs;
+    if (sinceLast >= RENDER_DEBOUNCE_MS && !rs.inflightPromise && !rs.pendingTimer) {
+      rs.lastEditMs = now;
+      this.flushRender(sessionKey);
+      return;
+    }
+
+    // Trailing edge: coalesce subsequent edits into a single render after the
+    // window. Reset the timer on each call so the trailing render reflects the
+    // latest state.
     if (rs.pendingTimer) {
       clearTimeout(rs.pendingTimer);
     }
     rs.pendingTimer = setTimeout(() => {
       rs.pendingTimer = null;
+      rs.lastEditMs = Date.now();
       this.flushRender(sessionKey);
     }, RENDER_DEBOUNCE_MS);
   }

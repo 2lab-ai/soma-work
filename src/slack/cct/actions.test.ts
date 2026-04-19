@@ -58,7 +58,7 @@ function mergeValues(...parts: Values[]): Values {
   return Object.assign({}, ...parts);
 }
 
-function fakeManager(listResult: Array<{ name: string; slotId: string; kind: any; status: string }> = []) {
+function fakeManager(listResult: Array<{ name: string; keyId: string; kind: any; status: string }> = []) {
   return { listTokens: vi.fn(() => listResult) } as any;
 }
 
@@ -83,7 +83,7 @@ describe('validateAddSubmission', () => {
     const values = mergeValues(withName('cct1'), withKind('setup_token'), setupTokenValue('sk-ant-oat01-abcdefgh'));
     const errors = validateAddSubmission(
       values,
-      fakeManager([{ name: 'cct1', slotId: 's1', kind: 'setup_token', status: 'healthy' }]),
+      fakeManager([{ name: 'cct1', keyId: 's1', kind: 'cct', status: 'healthy' }]),
     );
     expect(errors?.[CCT_BLOCK_IDS.add_name]).toMatch(/already in use/);
   });
@@ -178,16 +178,17 @@ describe('parseOAuthBlob', () => {
 describe('buildCardFromManager (post-action ephemeral card)', () => {
   it('uses snapshot state so the card reflects persisted per-slot state after Add', async () => {
     const snap = {
-      version: 1 as const,
+      version: 2 as const,
       revision: 2,
       registry: {
-        activeSlotId: 'slot-1',
+        activeKeyId: 'slot-1',
         slots: [
           {
-            slotId: 'slot-1',
+            kind: 'cct' as const,
+            source: 'setup' as const,
+            keyId: 'slot-1',
             name: 'cct1',
-            kind: 'setup_token' as const,
-            value: 'sk-ant-oat01-abc',
+            setupToken: 'sk-ant-oat01-abc',
             createdAt: '2026-04-18T00:00:00Z',
           },
         ],
@@ -218,8 +219,8 @@ describe('buildCardFromManager (post-action ephemeral card)', () => {
       getSnapshot: vi.fn(async () => {
         throw new Error('boom');
       }),
-      listTokens: vi.fn(() => [{ slotId: 'slot-2', name: 'cct2', kind: 'setup_token', status: 'healthy' }]),
-      getActiveToken: vi.fn(() => ({ slotId: 'slot-2', name: 'cct2', kind: 'setup_token' })),
+      listTokens: vi.fn(() => [{ keyId: 'slot-2', name: 'cct2', kind: 'cct', status: 'healthy' }]),
+      getActiveToken: vi.fn(() => ({ keyId: 'slot-2', name: 'cct2', kind: 'cct' })),
     } as any;
     const blocks = await buildCardFromManager(tm);
     expect(tm.listTokens).toHaveBeenCalled();
@@ -242,14 +243,40 @@ describe('cct_open_remove / cct_open_rename routing', () => {
     return { app, handlers };
   }
 
-  it('open_remove routes to the slotId carried in the button value, not the active slot', async () => {
+  it('open_remove routes to the keyId carried in the button value, not the active slot', async () => {
     const { app, handlers } = makeApp();
     const tm = {
       listTokens: () => [
-        { slotId: 'slot-A', name: 'cctA', kind: 'setup_token', status: 'healthy' },
-        { slotId: 'slot-B', name: 'cctB', kind: 'setup_token', status: 'healthy' },
+        { keyId: 'slot-A', name: 'cctA', kind: 'cct', status: 'healthy' },
+        { keyId: 'slot-B', name: 'cctB', kind: 'cct', status: 'healthy' },
       ],
-      getActiveToken: () => ({ slotId: 'slot-A', name: 'cctA', kind: 'setup_token' }),
+      getActiveToken: () => ({ keyId: 'slot-A', name: 'cctA', kind: 'cct' }),
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: {
+          activeKeyId: 'slot-A',
+          slots: [
+            {
+              kind: 'cct' as const,
+              source: 'setup' as const,
+              keyId: 'slot-A',
+              name: 'cctA',
+              setupToken: '',
+              createdAt: '',
+            },
+            {
+              kind: 'cct' as const,
+              source: 'setup' as const,
+              keyId: 'slot-B',
+              name: 'cctB',
+              setupToken: '',
+              createdAt: '',
+            },
+          ],
+        },
+        state: {},
+      }),
     } as any;
     // admin-utils is only used by requireAdmin — stub via vi.doMock is heavy;
     // the test manually sets user.id to a well-known admin via mock.
@@ -280,11 +307,29 @@ describe('cct_open_remove / cct_open_rename routing', () => {
     }
   });
 
-  it('open_rename rejects (no view opens) when value is not a known slotId', async () => {
+  it('open_rename rejects (no view opens) when value is not a known keyId', async () => {
     const { app, handlers } = makeApp();
     const tm = {
-      listTokens: () => [{ slotId: 'slot-A', name: 'cctA', kind: 'setup_token', status: 'healthy' }],
-      getActiveToken: () => ({ slotId: 'slot-A', name: 'cctA', kind: 'setup_token' }),
+      listTokens: () => [{ keyId: 'slot-A', name: 'cctA', kind: 'cct', status: 'healthy' }],
+      getActiveToken: () => ({ keyId: 'slot-A', name: 'cctA', kind: 'cct' }),
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: {
+          activeKeyId: 'slot-A',
+          slots: [
+            {
+              kind: 'cct' as const,
+              source: 'setup' as const,
+              keyId: 'slot-A',
+              name: 'cctA',
+              setupToken: '',
+              createdAt: '',
+            },
+          ],
+        },
+        state: {},
+      }),
     } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);

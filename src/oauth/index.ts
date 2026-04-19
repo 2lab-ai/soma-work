@@ -5,12 +5,13 @@
  * integrator wires these into the CCT slot store.
  */
 
-export type { OAuthCredentials, UsageSnapshot } from '../cct-store/types';
+export type { UsageSnapshot } from '../cct-store/types';
 export {
   hintsIndicateExhausted,
   parseRateLimitHeaders,
   type RateLimitHint,
 } from './header-parser';
+export type { OAuthCredentials } from './refresher';
 export {
   CLAUDE_OAUTH_CLIENT_ID,
   CLAUDE_OAUTH_REFRESH_URL,
