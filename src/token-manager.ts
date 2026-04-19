@@ -1,9 +1,9 @@
 /**
- * TokenManager — slotId-keyed pool of Claude Code credentials backed by
- * the CctStore.
+ * TokenManager — keyId-keyed pool of AuthKey slots backed by the CctStore.
  *
  * Responsibilities:
- *   - Maintain the registry of slots (setup_token or oauth_credentials).
+ *   - Maintain the registry of AuthKey slots (`api_key` or `cct` with either
+ *     `source: 'setup'` or `source: 'legacy-attachment'`).
  *   - Select the active slot; surface its fresh access token through
  *     `acquireLease()`. Callers forward the lease's token to the Claude
  *     Agent SDK per-call via `buildQueryEnv(lease)` → `options.env`.
@@ -13,39 +13,38 @@
  *   - Manage leases (replaces refcount): acquire / heartbeat / release,
  *     with a background reaper sweeping expired leases.
  *   - Refresh OAuth credentials proactively (7 h before expiry) with
- *     in-process `Map<slotId, Promise<string>>` dedupe and cross-process
+ *     in-process `Map<keyId, Promise<string>>` dedupe and cross-process
  *     serialisation via `store.withLock`.
  *   - Fetch and persist usage snapshots with 429 backoff, 401-then-refresh
  *     retry, and 403 → authState=revoked transitions.
  *
+ * Schema v2 notes (#575 PR-A):
+ *   - Input DTOs still accept the legacy `kind: 'setup_token' | 'oauth_credentials'`
+ *     strings so existing callers (Slack slash command, legacy seed paths)
+ *     keep compiling. They are mapped internally to the v2 AuthKey shape
+ *     before persist.
+ *   - Public getters expose the v2 `keyId` / `kind: 'api_key' | 'cct'` surface.
+ *     The returned slot objects are full AuthKey values — callers switch on
+ *     `kind === 'cct'` + `source === 'setup' | 'legacy-attachment'`.
+ *
  * Lock ordering (STRICT):
  *   The ONLY cross-process lock is `cct-store.lock`, obtained via
- *   `CctStore.withLock(fn)` or `CctStore.save(...)`. Refresh-token
- *   and usage-cache serialisation is achieved by the combination of
- *   in-process dedupe maps (`Map<slotId, Promise>`) and the single
- *   store lock — we deliberately avoid a second lockfile to keep the
- *   lock ordering trivial: caller → store lock → done. HTTP calls are
- *   made OUTSIDE the store lock; we re-acquire the lock only to persist
- *   results.
+ *   `CctStore.withLock(fn)` or `CctStore.save(...)`. Refresh-token and
+ *   usage-cache serialisation is achieved by the combination of in-process
+ *   dedupe maps (`Map<keyId, Promise>`) and the single store lock — we
+ *   deliberately avoid a second lockfile to keep the lock ordering trivial:
+ *   caller → store lock → done. HTTP calls are made OUTSIDE the store lock;
+ *   we re-acquire the lock only to persist results.
  */
 
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
-import type {
-  AuthState,
-  CctStoreSnapshot,
-  Lease,
-  OAuthCredentials,
-  OAuthCredentialsSlot,
-  RateLimitSource,
-  SetupTokenSlot,
-  SlotState,
-  TokenSlot,
-  UsageSnapshot,
-} from './cct-store';
+import type { AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
+import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { Logger, redactAnthropicSecrets } from './logger';
+import type { OAuthCredentials } from './oauth/refresher';
 import { OAuthRefreshError, refreshClaudeCredentials } from './oauth/refresher';
 import { hasRequiredScopes, missingScopes } from './oauth/scope-check';
 import { fetchUsage, UsageFetchError, usageBackoffForFailureCount } from './oauth/usage';
@@ -117,24 +116,33 @@ export function parseCooldownTime(message: string): Date | null {
 // ── Types exposed to consumers ─────────────────────────────────
 
 export interface TokenSummary {
-  readonly slotId: string;
+  readonly keyId: string;
   readonly name: string;
-  readonly kind: TokenSlot['kind'];
+  readonly kind: AuthKey['kind'];
   readonly status: string;
 }
 
 export interface ActiveTokenInfo {
-  readonly slotId: string;
+  readonly keyId: string;
   readonly name: string;
-  readonly kind: TokenSlot['kind'];
+  readonly kind: AuthKey['kind'];
 }
 
+/**
+ * Legacy input DTO — a bare setupToken acquired from a Max seat. Mapped to
+ * {@link CctSlotWithSetup} on persist.
+ */
 export interface AddSetupTokenInput {
   name: string;
   kind: 'setup_token';
   value: string;
 }
 
+/**
+ * Legacy input DTO — an oauth_credentials blob without a matching setupToken.
+ * Requires explicit ToS-risk acknowledgement and is mapped to
+ * {@link CctSlot} with `source: 'legacy-attachment'` on persist.
+ */
 export interface AddOAuthCredentialsInput {
   name: string;
   kind: 'oauth_credentials';
@@ -198,9 +206,30 @@ function deriveStatus(state: SlotState | undefined, nowMs: number): string {
   return tags.length === 0 ? 'healthy' : tags.join(',');
 }
 
-function resolveActiveTokenValue(slot: TokenSlot): string {
-  if (slot.kind === 'setup_token') return slot.value;
-  return slot.credentials.accessToken;
+/**
+ * Return the access-token string a consumer would forward to the Anthropic
+ * SDK for the given slot.
+ *
+ *   - `api_key`                   → slot.value (`sk-ant-api03-…`)
+ *   - `cct` / `source:'setup'`    → oauthAttachment.accessToken if present,
+ *                                   else setupToken (`sk-ant-oat01-…`)
+ *   - `cct` / `source:'legacy-attachment'` → oauthAttachment.accessToken
+ */
+function resolveActiveTokenValue(slot: AuthKey): string {
+  if (slot.kind === 'api_key') return slot.value;
+  if (slot.source === 'setup') {
+    return slot.oauthAttachment?.accessToken ?? slot.setupToken;
+  }
+  return slot.oauthAttachment.accessToken;
+}
+
+/**
+ * Is this slot a CCT slot that currently carries an OAuth attachment we
+ * can refresh? Used to short-circuit the refresh flow for api_key slots
+ * and setup-only slots that have not yet been attached.
+ */
+function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment: OAuthAttachment } {
+  return slot.kind === 'cct' && slot.oauthAttachment !== undefined;
 }
 
 // ── TokenManager class ─────────────────────────────────────────
@@ -243,8 +272,9 @@ export class TokenManager {
     //    to matching slot names after env seeding.
     const legacyCooldownsByName = await this.peekLegacyCooldownsByName();
 
-    // 2. load() runs legacy-cooldowns migration inside cct-store. Since
-    //    the file on disk may be empty/missing, this is safe.
+    // 2. load() runs legacy-cooldowns migration + v1→v2 AuthKey migration
+    //    inside cct-store. Since the file on disk may be empty/missing,
+    //    this is safe.
     const snap = await this.store.load();
 
     // 3. Seed from env if registry is empty and seeding is not disabled
@@ -260,13 +290,13 @@ export class TokenManager {
         for (const slot of s.registry.slots) {
           const until = legacyCooldownsByName.get(slot.name);
           if (!until) continue;
-          const prev = s.state[slot.slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
-          s.state[slot.slotId] = { ...prev, cooldownUntil: until };
+          const prev = s.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+          s.state[slot.keyId] = { ...prev, cooldownUntil: until };
         }
       });
     }
 
-    // 5. Re-read; ensure activeSlotId + process.env reflect an actual slot
+    // 5. Re-read; ensure activeKeyId reflects an actual slot.
     await this.ensureActiveSlot();
 
     // 6. Optional reaper
@@ -319,7 +349,7 @@ export class TokenManager {
 
   /**
    * Parse `CLAUDE_CODE_OAUTH_TOKEN_LIST` / `CLAUDE_CODE_OAUTH_TOKEN` and
-   * append setup_token slots. Only called when the registry is empty.
+   * append setup-token CCT slots. Only called when the registry is empty.
    */
   private async seedFromEnv(): Promise<void> {
     const list = process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
@@ -363,8 +393,8 @@ export class TokenManager {
   }
 
   /**
-   * Ensure activeSlotId is set to a real slot. If the current active slot is
-   * ineligible, we pick the next healthy one.
+   * Ensure `activeKeyId` points at an eligible slot. If the current active
+   * slot is ineligible, we pick the next healthy one.
    *
    * The active token is NOT mirrored to `process.env` — consumers obtain the
    * token per-call via `acquireLease().accessToken` and pass it to the Agent
@@ -375,25 +405,25 @@ export class TokenManager {
   private async ensureActiveSlot(): Promise<void> {
     await this.store.mutate((snap) => {
       if (snap.registry.slots.length === 0) {
-        delete snap.registry.activeSlotId;
+        delete snap.registry.activeKeyId;
         return;
       }
       const now = Date.now();
-      const currentId = snap.registry.activeSlotId;
-      const currentSlot = currentId ? snap.registry.slots.find((s) => s.slotId === currentId) : undefined;
-      if (!currentSlot || !isEligible(snap.state[currentSlot.slotId], now)) {
+      const currentId = snap.registry.activeKeyId;
+      const currentSlot = currentId ? snap.registry.slots.find((s) => s.keyId === currentId) : undefined;
+      if (!currentSlot || !isEligible(snap.state[currentSlot.keyId], now)) {
         // Prefer first healthy; else first slot.
         const preferred =
-          snap.registry.slots.find((s) => isEligible(snap.state[s.slotId], now)) ?? snap.registry.slots[0];
-        snap.registry.activeSlotId = preferred.slotId;
+          snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now)) ?? snap.registry.slots[0];
+        snap.registry.activeKeyId = preferred.keyId;
       }
     });
   }
 
-  private getActiveSlotFromSnap(snap: CctStoreSnapshot): TokenSlot | null {
-    const id = snap.registry.activeSlotId;
+  private getActiveSlotFromSnap(snap: CctStoreSnapshot): AuthKey | null {
+    const id = snap.registry.activeKeyId;
     if (!id) return null;
-    return snap.registry.slots.find((s) => s.slotId === id) ?? null;
+    return snap.registry.slots.find((s) => s.keyId === id) ?? null;
   }
 
   // ── Public API ────────────────────────────────────────────
@@ -402,10 +432,6 @@ export class TokenManager {
     // Synchronous read: we trust the most recent snapshot we saw via
     // store.load(). For a fully authoritative read consumers can call
     // `store.load()` directly — but listTokens is used for display only.
-    // Implemented as an async read exposed synchronously via a promise
-    // cache would complicate the API; instead, consumers that need a
-    // fresh view should `await tm.init()` before calling.
-    // For simplicity we perform a blocking read via a cached snapshot.
     return this.loadCachedSync();
   }
 
@@ -431,49 +457,49 @@ export class TokenManager {
     const snap = await this.store.load();
     const now = Date.now();
     this.cachedSummary = snap.registry.slots.map((s) => ({
-      slotId: s.slotId,
+      keyId: s.keyId,
       name: s.name,
       kind: s.kind,
-      status: deriveStatus(snap.state[s.slotId], now),
+      status: deriveStatus(snap.state[s.keyId], now),
     }));
     const active = this.getActiveSlotFromSnap(snap);
-    this.cachedActive = active ? { slotId: active.slotId, name: active.name, kind: active.kind } : null;
+    this.cachedActive = active ? { keyId: active.keyId, name: active.name, kind: active.kind } : null;
   }
 
   getActiveToken(): ActiveTokenInfo | null {
     return this.cachedActive;
   }
 
-  async applyToken(slotId: string): Promise<void> {
+  async applyToken(keyId: string): Promise<void> {
     await this.store.mutate((snap) => {
-      const slot = snap.registry.slots.find((s) => s.slotId === slotId);
-      if (!slot) throw new Error(`applyToken: unknown slotId ${slotId}`);
-      snap.registry.activeSlotId = slotId;
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`applyToken: unknown keyId ${keyId}`);
+      snap.registry.activeKeyId = keyId;
     });
     const snap = await this.store.load();
     const slot = this.getActiveSlotFromSnap(snap);
     if (slot) {
       logger.info(
         `applyToken: active=${slot.name} (${maskToken(resolveActiveTokenValue(slot))})`,
-        redactAnthropicSecrets({ slotId, name: slot.name }) as Record<string, unknown>,
+        redactAnthropicSecrets({ keyId, name: slot.name }) as Record<string, unknown>,
       );
     }
     await this.refreshCache();
   }
 
-  async rotateToNext(): Promise<{ slotId: string; name: string } | null> {
-    const result = await this.store.mutate<{ slotId: string; name: string } | null>((snap) => {
+  async rotateToNext(): Promise<{ keyId: string; name: string } | null> {
+    const result = await this.store.mutate<{ keyId: string; name: string } | null>((snap) => {
       if (snap.registry.slots.length <= 1) return null;
       const now = Date.now();
-      const currentIndex = snap.registry.slots.findIndex((s) => s.slotId === snap.registry.activeSlotId);
+      const currentIndex = snap.registry.slots.findIndex((s) => s.keyId === snap.registry.activeKeyId);
       const startIndex = currentIndex >= 0 ? currentIndex : 0;
       const len = snap.registry.slots.length;
       for (let i = 1; i < len; i++) {
         const idx = (startIndex + i) % len;
         const candidate = snap.registry.slots[idx];
-        if (isEligible(snap.state[candidate.slotId], now)) {
-          snap.registry.activeSlotId = candidate.slotId;
-          return { slotId: candidate.slotId, name: candidate.name };
+        if (isEligible(snap.state[candidate.keyId], now)) {
+          snap.registry.activeKeyId = candidate.keyId;
+          return { keyId: candidate.keyId, name: candidate.name };
         }
       }
       return null;
@@ -487,7 +513,7 @@ export class TokenManager {
   async rotateOnRateLimit(
     reason?: string,
     opts?: RotateOnRateLimitOptions,
-  ): Promise<{ slotId: string; name: string } | null> {
+  ): Promise<{ keyId: string; name: string } | null> {
     const effectiveOpts: RotateOnRateLimitOptions = opts ?? { source: 'manual' };
     const source = effectiveOpts.source;
     const cooldownMs = (effectiveOpts.cooldownMinutes ?? DEFAULT_COOLDOWN_MS / 60_000) * 60_000;
@@ -495,8 +521,8 @@ export class TokenManager {
     const nowMs = Date.now();
     const cooldownUntilIso = new Date(nowMs + cooldownMs).toISOString();
 
-    const rotated = await this.store.mutate<{ slotId: string; name: string } | null>((snap) => {
-      const currentId = snap.registry.activeSlotId;
+    const rotated = await this.store.mutate<{ keyId: string; name: string } | null>((snap) => {
+      const currentId = snap.registry.activeKeyId;
       if (!currentId) return null;
       const state = snap.state[currentId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       // rate-limit timestamp hygiene: overwrite if previous window has
@@ -519,15 +545,15 @@ export class TokenManager {
 
       // rotate to next eligible
       if (snap.registry.slots.length > 1) {
-        const currentIndex = snap.registry.slots.findIndex((s) => s.slotId === currentId);
+        const currentIndex = snap.registry.slots.findIndex((s) => s.keyId === currentId);
         const startIndex = currentIndex >= 0 ? currentIndex : 0;
         const len = snap.registry.slots.length;
         for (let i = 1; i < len; i++) {
           const idx = (startIndex + i) % len;
           const candidate = snap.registry.slots[idx];
-          if (isEligible(snap.state[candidate.slotId], nowMs)) {
-            snap.registry.activeSlotId = candidate.slotId;
-            return { slotId: candidate.slotId, name: candidate.name };
+          if (isEligible(snap.state[candidate.keyId], nowMs)) {
+            snap.registry.activeKeyId = candidate.keyId;
+            return { keyId: candidate.keyId, name: candidate.name };
           }
         }
       }
@@ -541,11 +567,11 @@ export class TokenManager {
     return rotated;
   }
 
-  async recordRateLimitHint(slotId: string, source: RateLimitSource, cooldownUntil?: string): Promise<void> {
+  async recordRateLimitHint(keyId: string, source: RateLimitSource, cooldownUntil?: string): Promise<void> {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     await this.store.mutate((snap) => {
-      const state = snap.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      const state = snap.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       const prevUntilMs = state.cooldownUntil ? new Date(state.cooldownUntil).getTime() : 0;
       const prevRateLimitedAtMs = state.rateLimitedAt ? new Date(state.rateLimitedAt).getTime() : 0;
       const windowOpen =
@@ -557,14 +583,14 @@ export class TokenManager {
         state.rateLimitSource = source;
       }
       if (cooldownUntil !== undefined) state.cooldownUntil = cooldownUntil;
-      snap.state[slotId] = state;
+      snap.state[keyId] = state;
     });
     await this.refreshCache();
   }
 
-  async clearRateLimitFlag(slotId: string): Promise<void> {
+  async clearRateLimitFlag(keyId: string): Promise<void> {
     await this.store.mutate((snap) => {
-      const state = snap.state[slotId];
+      const state = snap.state[keyId];
       if (!state) return;
       delete state.rateLimitedAt;
       delete state.rateLimitSource;
@@ -581,24 +607,24 @@ export class TokenManager {
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
     const lease: Lease = { leaseId, ownerTag, acquiredAt, expiresAt };
 
-    const chosenSlotId = await this.store.mutate<string>((snap) => {
+    const chosenKeyId = await this.store.mutate<string>((snap) => {
       if (snap.registry.slots.length === 0) {
         throw new Error('acquireLease: no slots available');
       }
       const now = Date.now();
       // Prefer the current active slot if eligible; otherwise rotate to next.
-      const activeId = snap.registry.activeSlotId;
-      const activeSlot = activeId ? snap.registry.slots.find((s) => s.slotId === activeId) : undefined;
+      const activeId = snap.registry.activeKeyId;
+      const activeSlot = activeId ? snap.registry.slots.find((s) => s.keyId === activeId) : undefined;
       let picked: string;
-      if (activeSlot && isEligible(snap.state[activeSlot.slotId], now)) {
-        picked = activeSlot.slotId;
+      if (activeSlot && isEligible(snap.state[activeSlot.keyId], now)) {
+        picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.slotId], now));
+        const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
-        picked = candidate.slotId;
-        snap.registry.activeSlotId = candidate.slotId;
+        picked = candidate.keyId;
+        snap.registry.activeKeyId = candidate.keyId;
       }
       const state = snap.state[picked] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       state.activeLeases = [...state.activeLeases, lease];
@@ -607,14 +633,14 @@ export class TokenManager {
     });
 
     await this.refreshCache();
-    logger.debug(`acquireLease ${leaseId} on ${chosenSlotId} (ownerTag=${ownerTag})`);
+    logger.debug(`acquireLease ${leaseId} on ${chosenKeyId} (ownerTag=${ownerTag})`);
     return lease;
   }
 
   async heartbeatLease(leaseId: string): Promise<void> {
     const nowMs = Date.now();
     const found = await this.store.mutate((snap) => {
-      for (const [slotId, state] of Object.entries(snap.state)) {
+      for (const [keyId, state] of Object.entries(snap.state)) {
         const idx = state.activeLeases.findIndex((l) => l.leaseId === leaseId);
         if (idx >= 0) {
           const lease = state.activeLeases[idx];
@@ -626,7 +652,7 @@ export class TokenManager {
           const originalTtl = Math.max(DEFAULT_LEASE_TTL_MS, expiresMs - new Date(lease.acquiredAt).getTime());
           const nextExpires = new Date(nowMs + originalTtl).toISOString();
           state.activeLeases[idx] = { ...lease, expiresAt: nextExpires };
-          snap.state[slotId] = state;
+          snap.state[keyId] = state;
           return true;
         }
       }
@@ -639,10 +665,10 @@ export class TokenManager {
 
   async releaseLease(leaseId: string): Promise<void> {
     await this.store.mutate((snap) => {
-      for (const [slotId, state] of Object.entries(snap.state)) {
+      for (const [keyId, state] of Object.entries(snap.state)) {
         const next = state.activeLeases.filter((l) => l.leaseId !== leaseId);
         if (next.length !== state.activeLeases.length) {
-          snap.state[slotId] = { ...state, activeLeases: next };
+          snap.state[keyId] = { ...state, activeLeases: next };
           return;
         }
       }
@@ -653,20 +679,20 @@ export class TokenManager {
   async reapExpiredLeases(): Promise<void> {
     const nowMs = Date.now();
     await this.store.mutate((snap) => {
-      for (const [slotId, state] of Object.entries(snap.state)) {
+      for (const [keyId, state] of Object.entries(snap.state)) {
         const kept = state.activeLeases.filter((l) => new Date(l.expiresAt).getTime() > nowMs);
         if (kept.length !== state.activeLeases.length) {
-          snap.state[slotId] = { ...state, activeLeases: kept };
+          snap.state[keyId] = { ...state, activeLeases: kept };
         }
       }
       // After trimming, fully remove tombstoned-with-no-leases slots.
-      const survivors: TokenSlot[] = [];
+      const survivors: AuthKey[] = [];
       for (const slot of snap.registry.slots) {
-        const state = snap.state[slot.slotId];
+        const state = snap.state[slot.keyId];
         if (state?.tombstoned && state.activeLeases.length === 0) {
-          delete snap.state[slot.slotId];
-          if (snap.registry.activeSlotId === slot.slotId) {
-            delete snap.registry.activeSlotId;
+          delete snap.state[slot.keyId];
+          if (snap.registry.activeKeyId === slot.keyId) {
+            delete snap.registry.activeKeyId;
           }
           continue;
         }
@@ -701,16 +727,17 @@ export class TokenManager {
 
   // ── Slot CRUD ─────────────────────────────────────────────
 
-  async addSlot(input: AddSlotInput): Promise<TokenSlot> {
-    const slotId = ulid();
+  async addSlot(input: AddSlotInput): Promise<AuthKey> {
+    const keyId = ulid();
     const createdAt = new Date().toISOString();
-    let newSlot: TokenSlot;
+    let newSlot: AuthKey;
     if (input.kind === 'setup_token') {
-      const slot: SetupTokenSlot = {
-        slotId,
+      const slot: CctSlotWithSetup = {
+        kind: 'cct',
+        source: 'setup',
+        keyId,
         name: input.name,
-        kind: 'setup_token',
-        value: input.value,
+        setupToken: input.value,
         createdAt,
       };
       newSlot = slot;
@@ -722,15 +749,24 @@ export class TokenManager {
       if (input.acknowledgedConsumerTosRisk !== true) {
         throw new Error('addSlot: oauth_credentials requires acknowledgedConsumerTosRisk=true');
       }
-      const slot: OAuthCredentialsSlot = {
-        slotId,
-        name: input.name,
-        kind: 'oauth_credentials',
-        credentials: input.credentials,
-        createdAt,
+      const attachment: OAuthAttachment = {
+        accessToken: input.credentials.accessToken,
+        refreshToken: input.credentials.refreshToken,
+        expiresAtMs: input.credentials.expiresAtMs,
+        scopes: [...input.credentials.scopes],
         acknowledgedConsumerTosRisk: true,
       };
-      newSlot = slot;
+      if (input.credentials.subscriptionType !== undefined)
+        attachment.subscriptionType = input.credentials.subscriptionType;
+      if (input.credentials.rateLimitTier !== undefined) attachment.rateLimitTier = input.credentials.rateLimitTier;
+      newSlot = {
+        kind: 'cct',
+        source: 'legacy-attachment',
+        keyId,
+        name: input.name,
+        oauthAttachment: attachment,
+        createdAt,
+      };
     }
 
     await this.store.mutate((snap) => {
@@ -742,26 +778,26 @@ export class TokenManager {
         throw new Error(`NAME_IN_USE:${newSlot.name}`);
       }
       snap.registry.slots.push(newSlot);
-      snap.state[newSlot.slotId] = { authState: 'healthy', activeLeases: [] };
-      if (!snap.registry.activeSlotId) {
-        snap.registry.activeSlotId = newSlot.slotId;
+      snap.state[newSlot.keyId] = { authState: 'healthy', activeLeases: [] };
+      if (!snap.registry.activeKeyId) {
+        snap.registry.activeKeyId = newSlot.keyId;
       }
     });
     await this.refreshCache();
     logger.info(
-      `addSlot: ${newSlot.name} kind=${newSlot.kind} slotId=${newSlot.slotId}`,
-      redactAnthropicSecrets({ slotId: newSlot.slotId, name: newSlot.name }) as Record<string, unknown>,
+      `addSlot: ${newSlot.name} kind=${newSlot.kind} keyId=${newSlot.keyId}`,
+      redactAnthropicSecrets({ keyId: newSlot.keyId, name: newSlot.name }) as Record<string, unknown>,
     );
     return newSlot;
   }
 
-  async renameSlot(slotId: string, newName: string): Promise<void> {
+  async renameSlot(keyId: string, newName: string): Promise<void> {
     await this.store.mutate((snap) => {
-      const slot = snap.registry.slots.find((s) => s.slotId === slotId);
-      if (!slot) throw new Error(`renameSlot: unknown slotId ${slotId}`);
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`renameSlot: unknown keyId ${keyId}`);
       // CAS-protect name uniqueness (excluding self) so two parallel renames
       // can't both land the same name.
-      if (snap.registry.slots.some((s) => s.slotId !== slotId && s.name === newName)) {
+      if (snap.registry.slots.some((s) => s.keyId !== keyId && s.name === newName)) {
         throw new Error(`NAME_IN_USE:${newName}`);
       }
       slot.name = newName;
@@ -770,29 +806,29 @@ export class TokenManager {
   }
 
   async removeSlot(
-    slotId: string,
+    keyId: string,
     opts: { force?: boolean } = {},
   ): Promise<{ removed: boolean; pendingDrain?: boolean }> {
     const force = opts.force === true;
     let removed = false;
     let pendingDrain = false;
     await this.store.mutate((snap) => {
-      const idx = snap.registry.slots.findIndex((s) => s.slotId === slotId);
+      const idx = snap.registry.slots.findIndex((s) => s.keyId === keyId);
       if (idx < 0) {
         removed = false;
         return;
       }
-      const state = snap.state[slotId];
+      const state = snap.state[keyId];
       const hasLeases = state ? state.activeLeases.length > 0 : false;
       if (hasLeases && !force) {
         // Tombstone + rotate active if needed
-        snap.state[slotId] = { ...state, tombstoned: true };
-        if (snap.registry.activeSlotId === slotId) {
+        snap.state[keyId] = { ...state, tombstoned: true };
+        if (snap.registry.activeKeyId === keyId) {
           const now = Date.now();
           const replacement = snap.registry.slots.find(
-            (s) => s.slotId !== slotId && isEligible(snap.state[s.slotId], now),
+            (s) => s.keyId !== keyId && isEligible(snap.state[s.keyId], now),
           );
-          if (replacement) snap.registry.activeSlotId = replacement.slotId;
+          if (replacement) snap.registry.activeKeyId = replacement.keyId;
         }
         pendingDrain = true;
         removed = false;
@@ -800,11 +836,11 @@ export class TokenManager {
       }
       // Full removal
       snap.registry.slots.splice(idx, 1);
-      delete snap.state[slotId];
-      if (snap.registry.activeSlotId === slotId) {
+      delete snap.state[keyId];
+      if (snap.registry.activeKeyId === keyId) {
         const now = Date.now();
-        const replacement = snap.registry.slots.find((s) => isEligible(snap.state[s.slotId], now));
-        snap.registry.activeSlotId = replacement?.slotId;
+        const replacement = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
+        snap.registry.activeKeyId = replacement?.keyId;
       }
       removed = true;
     });
@@ -812,35 +848,40 @@ export class TokenManager {
     return pendingDrain ? { removed: false, pendingDrain: true } : { removed };
   }
 
-  async markAuthState(slotId: string, state: AuthState): Promise<void> {
+  async markAuthState(keyId: string, state: AuthState): Promise<void> {
     await this.store.mutate((snap) => {
-      const prev = snap.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
-      snap.state[slotId] = { ...prev, authState: state };
+      const prev = snap.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      snap.state[keyId] = { ...prev, authState: state };
     });
     await this.refreshCache();
   }
 
   // ── Proactive refresh ─────────────────────────────────────
 
-  async getValidAccessToken(slotId: string): Promise<string> {
+  async getValidAccessToken(keyId: string): Promise<string> {
     const snap = await this.store.load();
-    const slot = snap.registry.slots.find((s) => s.slotId === slotId);
-    if (!slot) throw new Error(`getValidAccessToken: unknown slotId ${slotId}`);
-    if (slot.kind === 'setup_token') return slot.value;
-
-    const nowMs = Date.now();
-    const needsRefresh = slot.credentials.expiresAtMs - nowMs < REFRESH_BUFFER_MS;
-    if (!needsRefresh) return slot.credentials.accessToken;
-
-    return this.refreshAccessToken(slot);
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot) throw new Error(`getValidAccessToken: unknown keyId ${keyId}`);
+    if (slot.kind === 'api_key') return slot.value;
+    // CCT: attachment present → return fresh access token (refreshed if near expiry).
+    if (hasOAuthAttachment(slot)) {
+      const nowMs = Date.now();
+      const needsRefresh = slot.oauthAttachment.expiresAtMs - nowMs < REFRESH_BUFFER_MS;
+      if (!needsRefresh) return slot.oauthAttachment.accessToken;
+      return this.refreshAccessToken(slot);
+    }
+    // source:'setup' without attachment → return the setupToken verbatim
+    // (the SDK will lift it to an oauth session on first call).
+    if (slot.source === 'setup') return slot.setupToken;
+    throw new Error(`getValidAccessToken: CCT slot ${keyId} has no usable credential`);
   }
 
-  async refreshCredentialsIfNeeded(slotId: string): Promise<void> {
+  async refreshCredentialsIfNeeded(keyId: string): Promise<void> {
     const snap = await this.store.load();
-    const slot = snap.registry.slots.find((s) => s.slotId === slotId);
-    if (!slot || slot.kind !== 'oauth_credentials') return;
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot || !hasOAuthAttachment(slot)) return;
     const nowMs = Date.now();
-    if (slot.credentials.expiresAtMs - nowMs >= REFRESH_BUFFER_MS) return;
+    if (slot.oauthAttachment.expiresAtMs - nowMs >= REFRESH_BUFFER_MS) return;
     await this.refreshAccessToken(slot);
   }
 
@@ -849,51 +890,75 @@ export class TokenManager {
    * single Promise. The actual HTTP call happens OUTSIDE any cct-store
    * lock; we acquire the lock only to persist the result.
    */
-  private refreshAccessToken(slot: OAuthCredentialsSlot): Promise<string> {
-    const existing = this.refreshInFlight.get(slot.slotId);
+  private refreshAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
+    const existing = this.refreshInFlight.get(slot.keyId);
     if (existing) return existing;
     const promise = (async (): Promise<string> => {
       try {
         let next: OAuthCredentials;
         try {
-          next = await refreshClaudeCredentials(slot.credentials);
+          next = await refreshClaudeCredentials({
+            accessToken: slot.oauthAttachment.accessToken,
+            refreshToken: slot.oauthAttachment.refreshToken,
+            expiresAtMs: slot.oauthAttachment.expiresAtMs,
+            scopes: [...slot.oauthAttachment.scopes],
+            ...(slot.oauthAttachment.rateLimitTier !== undefined
+              ? { rateLimitTier: slot.oauthAttachment.rateLimitTier }
+              : {}),
+            ...(slot.oauthAttachment.subscriptionType !== undefined
+              ? { subscriptionType: slot.oauthAttachment.subscriptionType }
+              : {}),
+          });
         } catch (err) {
           if (err instanceof OAuthRefreshError) {
-            if (err.status === 401) await this.markAuthState(slot.slotId, 'refresh_failed');
-            else if (err.status === 403) await this.markAuthState(slot.slotId, 'revoked');
+            if (err.status === 401) await this.markAuthState(slot.keyId, 'refresh_failed');
+            else if (err.status === 403) await this.markAuthState(slot.keyId, 'revoked');
           }
           throw err;
         }
         // Persist — single-step under the store lock.
         await this.store.mutate((snap) => {
-          const target = snap.registry.slots.find((s) => s.slotId === slot.slotId);
-          if (!target || target.kind !== 'oauth_credentials') return;
-          target.credentials = next;
-          const st = snap.state[slot.slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+          const target = snap.registry.slots.find((s) => s.keyId === slot.keyId);
+          if (!target || target.kind !== 'cct') return;
+          const updated: OAuthAttachment = {
+            accessToken: next.accessToken,
+            refreshToken: next.refreshToken,
+            expiresAtMs: next.expiresAtMs,
+            scopes: [...next.scopes],
+            acknowledgedConsumerTosRisk: true,
+          };
+          if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
+          if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
+          if (target.source === 'setup') {
+            target.oauthAttachment = updated;
+          } else {
+            target.oauthAttachment = updated;
+          }
+          const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
-          snap.state[slot.slotId] = st;
+          snap.state[slot.keyId] = st;
         });
         await this.refreshCache();
         logger.info(
           'refreshAccessToken: success',
-          redactAnthropicSecrets({ slotId: slot.slotId, name: slot.name }) as Record<string, unknown>,
+          redactAnthropicSecrets({ keyId: slot.keyId, name: slot.name }) as Record<string, unknown>,
         );
         return next.accessToken;
       } finally {
-        this.refreshInFlight.delete(slot.slotId);
+        this.refreshInFlight.delete(slot.keyId);
       }
     })();
-    this.refreshInFlight.set(slot.slotId, promise);
+    this.refreshInFlight.set(slot.keyId, promise);
     return promise;
   }
 
   // ── Usage fetch ───────────────────────────────────────────
 
-  async fetchAndStoreUsage(slotId: string): Promise<UsageSnapshot | null> {
+  async fetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
     const snap = await this.store.load();
-    const slot = snap.registry.slots.find((s) => s.slotId === slotId);
-    if (!slot || slot.kind !== 'oauth_credentials') return null;
-    const state = snap.state[slotId];
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot || !hasOAuthAttachment(slot)) return null;
+    const state = snap.state[keyId];
     const nowMs = Date.now();
     if (state?.nextUsageFetchAllowedAt) {
       const allowedMs = new Date(state.nextUsageFetchAllowedAt).getTime();
@@ -903,7 +968,7 @@ export class TokenManager {
     // Ensure fresh access token (proactive refresh)
     let accessToken: string;
     try {
-      accessToken = await this.getValidAccessToken(slotId);
+      accessToken = await this.getValidAccessToken(keyId);
     } catch (err) {
       logger.warn('fetchAndStoreUsage: refresh failed pre-fetch', err);
       return null;
@@ -919,27 +984,27 @@ export class TokenManager {
         if (err.status === 401) {
           // Attempt one refresh then retry.
           try {
-            await this.refreshCredentialsIfNeeded(slotId);
-            const fresh = await this.getValidAccessToken(slotId);
+            await this.refreshCredentialsIfNeeded(keyId);
+            const fresh = await this.getValidAccessToken(keyId);
             result = await doFetch(fresh);
           } catch (retryErr) {
-            await this.applyUsageFailureBackoff(slotId);
+            await this.applyUsageFailureBackoff(keyId);
             logger.warn('fetchAndStoreUsage: 401→refresh→retry failed', retryErr);
             return null;
           }
         } else if (err.status === 403) {
-          await this.markAuthState(slotId, 'revoked');
+          await this.markAuthState(keyId, 'revoked');
           return null;
         } else if (err.status === 429) {
-          await this.applyUsageFailureBackoff(slotId);
+          await this.applyUsageFailureBackoff(keyId);
           return null;
         } else {
-          await this.applyUsageFailureBackoff(slotId);
+          await this.applyUsageFailureBackoff(keyId);
           logger.warn(`fetchAndStoreUsage: non-OK ${err.status}`, err);
           return null;
         }
       } else {
-        await this.applyUsageFailureBackoff(slotId);
+        await this.applyUsageFailureBackoff(keyId);
         logger.warn('fetchAndStoreUsage: unexpected error', err);
         return null;
       }
@@ -949,25 +1014,25 @@ export class TokenManager {
     const settled = result;
 
     await this.store.mutate((snap2) => {
-      const st = snap2.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      const st = snap2.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       st.usage = settled.snapshot;
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;
       st.nextUsageFetchAllowedAt = new Date(settled.nextFetchAllowedAtMs).toISOString();
       st.consecutiveUsageFailures = 0;
-      snap2.state[slotId] = st;
+      snap2.state[keyId] = st;
     });
     return settled.snapshot;
   }
 
-  private async applyUsageFailureBackoff(slotId: string): Promise<void> {
+  private async applyUsageFailureBackoff(keyId: string): Promise<void> {
     await this.store.mutate((s) => {
-      const st = s.state[slotId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      const st = s.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       const failureCount = (st.consecutiveUsageFailures ?? 0) + 1;
       // Ladder is 1-indexed from the caller's perspective — first failure → rung 0 (2m).
       const next = usageBackoffForFailureCount(failureCount - 1);
       st.consecutiveUsageFailures = failureCount;
       st.nextUsageFetchAllowedAt = new Date(Date.now() + next).toISOString();
-      s.state[slotId] = st;
+      s.state[keyId] = st;
     });
   }
 }
