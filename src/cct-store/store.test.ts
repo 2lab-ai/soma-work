@@ -396,3 +396,113 @@ describe('CctStore.load — v1 → v2 migration on first read', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('CctStore.load — malformed v2 recovery', () => {
+  let tmp: string;
+  beforeEach(async () => {
+    tmp = await makeTmpDir();
+  });
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('reinterprets "version:2 with v1 body" as v1 and re-runs migration', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    // Shape observed on a production dev host: version was flipped to 2 but
+    // slots/registry are still v1-shaped and `state` is absent entirely.
+    const malformed = {
+      version: 2,
+      revision: 5135,
+      registry: {
+        slots: [
+          {
+            slotId: '01KPG2HKB3DXZY74QWVMBNC2X9',
+            name: 'ai2',
+            kind: 'setup_token',
+            value: 'sk-ant-oat01-aaa',
+            createdAt: '2026-04-18T10:35:21.827Z',
+          },
+          {
+            slotId: '01KPG2HKBZJDTF9QPN0H19WHS5',
+            name: 'ai3',
+            kind: 'setup_token',
+            value: 'sk-ant-oat01-bbb',
+            createdAt: '2026-04-18T10:35:21.855Z',
+          },
+        ],
+        activeSlotId: '01KPG2HKB3DXZY74QWVMBNC2X9',
+      },
+    };
+    await fs.writeFile(filePath, JSON.stringify(malformed, null, 2), 'utf8');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+
+    // The in-memory snapshot is valid v2.
+    expect(loaded.version).toBe(2);
+    expect(loaded.revision).toBe(5135);
+    expect(loaded.registry.activeKeyId).toBe('01KPG2HKB3DXZY74QWVMBNC2X9');
+    expect(loaded.registry.slots).toHaveLength(2);
+    for (const slot of loaded.registry.slots) {
+      expect(slot.kind).toBe('cct');
+      if (slot.kind !== 'cct') throw new Error('unreachable');
+      expect(slot.source).toBe('setup');
+      if (slot.source !== 'setup') throw new Error('unreachable');
+      expect(typeof slot.keyId).toBe('string');
+      expect(slot.keyId.length).toBeGreaterThan(0);
+      expect(typeof slot.setupToken).toBe('string');
+    }
+    expect(loaded.state).toEqual({});
+
+    // Disk is rewritten as proper v2.
+    const disk = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(disk.version).toBe(2);
+    expect(disk.registry.activeKeyId).toBe('01KPG2HKB3DXZY74QWVMBNC2X9');
+    expect('activeSlotId' in disk.registry).toBe(false);
+    expect(disk.registry.slots[0]).toMatchObject({ kind: 'cct', source: 'setup' });
+    expect(disk.registry.slots[0].setupToken).toBe('sk-ant-oat01-aaa');
+    expect('slotId' in disk.registry.slots[0]).toBe(false);
+    expect('value' in disk.registry.slots[0]).toBe(false);
+    expect(disk.state).toEqual({});
+
+    // We surface a single warning so operators notice the repair.
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('defaults missing `state` to {} on an otherwise valid v2 file', async () => {
+    const filePath = path.join(tmp, 'cct-store.json');
+    const missingStateV2 = {
+      version: 2,
+      revision: 1,
+      registry: {
+        activeKeyId: 'k-only',
+        slots: [
+          {
+            kind: 'cct',
+            source: 'setup',
+            keyId: 'k-only',
+            name: 'only',
+            setupToken: 'sk-ant-oat01-solo',
+            createdAt: '2026-04-18T00:00:00.000Z',
+          },
+        ],
+      },
+    };
+    await fs.writeFile(filePath, JSON.stringify(missingStateV2, null, 2), 'utf8');
+
+    const store = new CctStore(filePath);
+    const loaded = await store.load();
+    expect(loaded.version).toBe(2);
+    // In-memory repair: subsequent `snap.state[keyId]` reads are safe.
+    expect(loaded.state).toEqual({});
+
+    // The first write after a repaired read persists the normalised shape.
+    await store.mutate((snap) => {
+      snap.state[snap.registry.slots[0].keyId] = { authState: 'healthy', activeLeases: [] };
+    });
+    const disk = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(disk.state['k-only']).toEqual({ authState: 'healthy', activeLeases: [] });
+  });
+});

@@ -4,7 +4,7 @@ import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { migrateLegacyCooldowns } from './migrate';
 import { migrateV1ToV2 } from './migrate-v2';
-import type { CctStoreSnapshot, PersistedSnapshot } from './types';
+import type { CctStoreSnapshot, LegacyV1Snapshot, LegacyV1TokenSlot, PersistedSnapshot, SlotState } from './types';
 
 const MAX_CAS_RETRIES = 5;
 const CAS_BACKOFF_MS = 20;
@@ -51,6 +51,67 @@ async function pathExists(target: string): Promise<boolean> {
 async function readSnapshotRaw(filePath: string): Promise<PersistedSnapshot> {
   const raw = await fs.readFile(filePath, 'utf8');
   return JSON.parse(raw) as PersistedSnapshot;
+}
+
+/**
+ * Guard against a pathological on-disk shape where `version: 2` coexists with
+ * a v1-styled body (slots keyed by `slotId`/`value`, registry with
+ * `activeSlotId`, absent `state`). This is not a shape any code path in the
+ * current tree emits, but it has been observed in the wild — typically when
+ * an operator hand-edits `cct-store.json` (or a short-lived PR that wrote v2
+ * prematurely gets reverted, leaving the next boot staring at a mislabelled
+ * v1 body). Without this guard, `load()` would trust the declared version,
+ * skip migration, and downstream `snap.state[slot.keyId]` blows up with the
+ * diagnostic-hostile `Cannot read properties of undefined (reading 'undefined')`.
+ *
+ * The repair strategy is deliberately narrow:
+ *   - v1-shaped slots present → relabel the snapshot as v1 so the normal
+ *     `migrateV1ToV2` path handles it (and persists the canonical v2 shape).
+ *   - v2-shaped body with `state` missing → fill in `{}` and return; callers
+ *     treat this as a non-migration load, so the repair is only persisted on
+ *     the next write.
+ */
+function reinterpretIfMalformed(raw: PersistedSnapshot): PersistedSnapshot {
+  if (raw.version !== 2) return raw;
+
+  const slots = (raw.registry as { slots?: unknown[] } | undefined)?.slots;
+  const hasV1Slots =
+    Array.isArray(slots) &&
+    slots.length > 0 &&
+    slots.every(
+      (s) =>
+        typeof (s as { slotId?: unknown })?.slotId === 'string' &&
+        typeof (s as { keyId?: unknown })?.keyId !== 'string',
+    );
+
+  if (hasV1Slots) {
+    console.warn(
+      'cct-store: on-disk file claims version:2 but body is v1-shaped — ' +
+        're-running v1→v2 migration. Check for a stray manual edit or an aborted schema rollout.',
+    );
+    const registry = raw.registry as { activeSlotId?: string; activeKeyId?: string; slots?: unknown[] };
+    const activeSlotId = registry.activeSlotId ?? registry.activeKeyId;
+    const state = ((raw as { state?: Record<string, SlotState> }).state ?? {}) as Record<string, SlotState>;
+    const v1: LegacyV1Snapshot = {
+      version: 1,
+      revision: raw.revision,
+      registry: {
+        slots: slots as LegacyV1TokenSlot[],
+        ...(activeSlotId !== undefined ? { activeSlotId } : {}),
+      },
+      state,
+    };
+    return v1;
+  }
+
+  // Well-formed v2 with an absent state map: normalise so every downstream
+  // `snap.state[keyId]` read is well-defined. We return a new object; the
+  // caller decides whether to persist (load() currently does not, which keeps
+  // the happy path zero-write).
+  if ((raw as { state?: unknown }).state === undefined) {
+    return { ...(raw as CctStoreSnapshot), state: {} };
+  }
+  return raw;
 }
 
 function randomHex(bytes: number): string {
@@ -109,6 +170,10 @@ export class CctStore {
     } else {
       raw = emptySnapshot();
     }
+
+    // Repair a mislabelled v2 body (observed in the wild after manual edits)
+    // BEFORE any downstream consumer trusts `raw.version`.
+    raw = reinterpretIfMalformed(raw);
 
     const dir = path.dirname(this.filePath);
     const cooldownResult = await migrateLegacyCooldowns(raw, dir);
@@ -247,8 +312,12 @@ export class CctStore {
       retries: { retries: 50, minTimeout: 10, maxTimeout: 100 },
     });
     try {
-      // Re-read under the lock.
-      const diskRaw = (await pathExists(this.filePath)) ? await readSnapshotRaw(this.filePath) : emptySnapshot();
+      // Re-read under the lock, and repair any mislabelled v2 body so we
+      // don't short-circuit into a malformed snapshot on the "race-won" path
+      // below.
+      const diskRaw = (await pathExists(this.filePath))
+        ? reinterpretIfMalformed(await readSnapshotRaw(this.filePath))
+        : emptySnapshot();
 
       // Race-won path: another writer already upgraded the file to v2.
       // Prefer their snapshot over our in-memory copy so we don't clobber
