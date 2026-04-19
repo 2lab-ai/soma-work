@@ -252,6 +252,12 @@ function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment:
 export class TokenManager {
   private readonly store: CctStore;
   private readonly refreshInFlight: Map<string, Promise<string>> = new Map();
+  /**
+   * Per-keyId dedupe for `fetchAndStoreUsage`. Mirrors the `refreshInFlight`
+   * pattern so multiple `fetchUsageForAllAttached` fan-outs racing on the
+   * same slot hit the upstream usage endpoint once. Cleanup in `finally`.
+   */
+  private readonly usageFetchInFlight: Map<string, Promise<UsageSnapshot | null>> = new Map();
   private reaperTimer: NodeJS.Timeout | null = null;
   private reaperIntervalMs = DEFAULT_REAPER_INTERVAL_MS;
   private initPromise: Promise<void> | null = null;
@@ -1100,6 +1106,19 @@ export class TokenManager {
   // ── Usage fetch ───────────────────────────────────────────
 
   async fetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
+    // Z1 — Per-keyId in-flight dedupe: if another `fetchUsageForAllAttached`
+    // fan-out or a parallel caller is already fetching for this keyId,
+    // reuse that Promise to avoid hammering the usage endpoint.
+    const existing = this.usageFetchInFlight.get(keyId);
+    if (existing) return existing;
+    const promise = this.#doFetchAndStoreUsage(keyId).finally(() => {
+      this.usageFetchInFlight.delete(keyId);
+    });
+    this.usageFetchInFlight.set(keyId, promise);
+    return promise;
+  }
+
+  async #doFetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return null;
@@ -1167,6 +1186,45 @@ export class TokenManager {
       snap2.state[keyId] = st;
     });
     return settled.snapshot;
+  }
+
+  /**
+   * Z1 — Fetch usage for every OAuth-attached CCT slot in parallel and
+   * persist the results. Returns a keyed map of the fresh snapshots (or
+   * `null` per-slot when fetch-backoff blocked or the upstream call
+   * failed).
+   *
+   * Timeout semantics: the fan-out runs under a single overall deadline
+   * (`opts.timeoutMs`, default 1500ms). On timeout the method returns
+   * whatever results have landed so far — the card renderer will fall
+   * back to cached percentages (or blank) for the laggards.
+   *
+   * Concurrency: per-keyId dedupe via `usageFetchInFlight` prevents the
+   * same slot being hit by multiple fan-outs (e.g. a /cct open racing a
+   * backend refresh). Slots without an oauthAttachment (bare setup
+   * tokens, api_key slots, fresh slots) are skipped.
+   */
+  async fetchUsageForAllAttached(opts?: { timeoutMs?: number }): Promise<Record<string, UsageSnapshot | null>> {
+    const snap = await this.store.load();
+    const keyIds = snap.registry.slots
+      .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
+      .map((s) => s.keyId);
+    const results: Record<string, UsageSnapshot | null> = {};
+    const promises = keyIds.map(async (keyId) => {
+      try {
+        results[keyId] = await this.fetchAndStoreUsage(keyId);
+      } catch {
+        results[keyId] = null;
+      }
+    });
+    const timeoutMs = opts?.timeoutMs ?? 1500;
+    const timeout = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, timeoutMs);
+      // Allow Node to exit under tests.
+      if (typeof t.unref === 'function') t.unref();
+    });
+    await Promise.race([Promise.allSettled(promises), timeout]);
+    return results;
   }
 
   private async applyUsageFailureBackoff(keyId: string): Promise<void> {

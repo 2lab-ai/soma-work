@@ -1001,6 +1001,103 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── T6/T6b: fetchUsageForAllAttached + per-key dedupe (Z1) ─
+
+  describe('fetchUsageForAllAttached (Z1 — /cct usage-on-open fan-out)', () => {
+    it('T6: fans out usage fetch only for OAuth-attached CCT slots (skips api_key + bare-setup)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      const bareSetup = await tm.addSlot({ name: 'bare', kind: 'setup_token', value: 'sk-ant-oat01-xxx' });
+      const attached1 = await tm.addSlot({
+        name: 'oauth1',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'sk-ant-oat01-a1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const attached2 = await tm.addSlot({
+        name: 'oauth2',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'sk-ant-oat01-a2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => ({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      }));
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000 });
+      expect(Object.keys(results).sort()).toEqual([attached1.keyId, attached2.keyId].sort());
+      expect(results[apiSlot.keyId]).toBeUndefined();
+      expect(results[bareSetup.keyId]).toBeUndefined();
+      expect(fetchUsageMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('T6b: usageFetchInFlight dedupes parallel fetchAndStoreUsage calls for the same keyId', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Block the upstream until we signal, so 5 concurrent calls observe
+      // the dedupe map (all queue on the same in-flight Promise).
+      let resolveFetch: (v: any) => void = () => {};
+      const upstream = new Promise<any>((r) => {
+        resolveFetch = r;
+      });
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => upstream);
+      const parallel = Promise.all(
+        Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)),
+      );
+      // Give the first call a microtask to land in the in-flight map.
+      await new Promise((r) => setTimeout(r, 10));
+      resolveFetch({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      const results = await parallel;
+      expect(results.every((r) => r?.fiveHour?.utilization === 0.5)).toBe(true);
+      // Critical assertion: upstream fetch hit at most once thanks to dedupe.
+      expect(fetchUsageMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('T6c: fetchUsageForAllAttached timeout returns partial results without blocking longer than timeoutMs', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Make the upstream never resolve within the test window.
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => new Promise(() => {}));
+      const t0 = Date.now();
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 60 });
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(500); // did NOT block indefinitely
+      // Best-effort: no keys will have landed yet.
+      expect(Object.keys(results).length === 0 || Object.values(results).every((v) => v === null)).toBe(true);
+    });
+  });
+
   // ── T3-T5c: attachOAuth / detachOAuth (Z2) ─────────────────
 
   describe('attachOAuth / detachOAuth (Z2 — setup-source only)', () => {
