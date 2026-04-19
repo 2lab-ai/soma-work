@@ -4,43 +4,44 @@ vi.mock('../../../admin-utils', () => ({ isAdminUser: vi.fn() }));
 
 vi.mock('../../../token-manager', () => {
   type SlotListItem = {
-    slotId: string;
+    keyId: string;
     name: string;
-    kind: 'setup_token' | 'oauth_credentials';
+    kind: 'cct' | 'api_key';
     status: string;
   };
   const tokens: SlotListItem[] = [
-    { slotId: 'slot-1', name: 'cct1', kind: 'setup_token', status: 'healthy' },
-    { slotId: 'slot-2', name: 'cct2', kind: 'setup_token', status: 'healthy' },
+    { keyId: 'slot-1', name: 'cct1', kind: 'cct', status: 'healthy' },
+    { keyId: 'slot-2', name: 'cct2', kind: 'cct', status: 'healthy' },
   ];
   let activeIdx = 0;
   const tm = {
     listTokens: () => [...tokens],
     getActiveToken: () => {
       const t = tokens[activeIdx];
-      return t ? { slotId: t.slotId, name: t.name, kind: t.kind } : null;
+      return t ? { keyId: t.keyId, name: t.name, kind: t.kind } : null;
     },
-    applyToken: async (slotId: string) => {
-      const i = tokens.findIndex((t) => t.slotId === slotId);
-      if (i < 0) throw new Error(`unknown slotId ${slotId}`);
+    applyToken: async (keyId: string) => {
+      const i = tokens.findIndex((t) => t.keyId === keyId);
+      if (i < 0) throw new Error(`unknown keyId ${keyId}`);
       activeIdx = i;
     },
     rotateToNext: async () => {
       if (tokens.length < 2) return null;
       activeIdx = (activeIdx + 1) % tokens.length;
       const t = tokens[activeIdx];
-      return { slotId: t.slotId, name: t.name };
+      return { keyId: t.keyId, name: t.name };
     },
     getSnapshot: async () => ({
-      version: 1,
+      version: 2,
       revision: 1,
       registry: {
-        activeSlotId: tokens[activeIdx]?.slotId,
+        activeKeyId: tokens[activeIdx]?.keyId,
         slots: tokens.map((t) => ({
-          slotId: t.slotId,
+          kind: 'cct' as const,
+          source: 'setup' as const,
+          keyId: t.keyId,
           name: t.name,
-          kind: t.kind,
-          value: '',
+          setupToken: '',
           createdAt: '',
         })),
       },

@@ -1,5 +1,6 @@
 import { isAdminUser } from '../../admin-utils';
-import type { CctStoreSnapshot, SlotState, TokenSlot, UsageSnapshot } from '../../cct-store';
+import type { AuthKey } from '../../auth/auth-key';
+import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
 import { CommandParser } from '../command-parser';
@@ -81,7 +82,7 @@ export class CctHandler implements CommandHandler {
       if (result) {
         const active = tm.getActiveToken();
         await say({
-          text: `🔄 Rotated to next token: *${active?.name ?? result.name}* (${active?.kind ?? 'setup_token'})`,
+          text: `🔄 Rotated to next token: *${active?.name ?? result.name}* (${active?.kind ?? 'cct'})`,
           thread_ts: threadTs,
         });
       } else {
@@ -93,7 +94,7 @@ export class CctHandler implements CommandHandler {
     } else if (action.action === 'set') {
       const match = tokens.find((t: TokenSummary) => t.name === action.target);
       if (match) {
-        await tm.applyToken(match.slotId);
+        await tm.applyToken(match.keyId);
         const active = tm.getActiveToken();
         await say({
           text: `✅ Active token switched to *${active?.name ?? match.name}* (${active?.kind ?? match.kind})`,
@@ -126,11 +127,11 @@ async function buildStatusTextFallback(cardFallback: string | undefined): Promis
   const header = cardFallback ?? '🔑 CCT';
   const snap = await loadSnapshotSafe();
   if (!snap) return header;
-  const active = snap.registry.activeSlotId
-    ? snap.registry.slots.find((s) => s.slotId === snap.registry.activeSlotId)
+  const active = snap.registry.activeKeyId
+    ? snap.registry.slots.find((s) => s.keyId === snap.registry.activeKeyId)
     : undefined;
   if (!active) return header;
-  const state = snap.state[active.slotId];
+  const state = snap.state[active.keyId];
   if (!state?.rateLimitedAt) return header;
   const ts = formatRateLimitedAt(state.rateLimitedAt);
   const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
@@ -147,8 +148,8 @@ async function loadSnapshotSafe(): Promise<CctStoreSnapshot | null> {
 }
 
 interface UsageCapableTokenManager {
-  fetchAndStoreUsage: (slotId: string) => Promise<UsageSnapshot | null>;
-  getActiveToken: () => { slotId: string; name: string; kind: TokenSlot['kind'] } | null;
+  fetchAndStoreUsage: (keyId: string) => Promise<UsageSnapshot | null>;
+  getActiveToken: () => { keyId: string; name: string; kind: AuthKey['kind'] } | null;
   getSnapshot?: () => Promise<CctStoreSnapshot>;
 }
 
@@ -158,7 +159,7 @@ interface UsageCapableTokenManager {
  * Resolution order:
  *   1. If `target` is provided → match `listTokens().find(s => s.name === target)`.
  *   2. Otherwise → use `tm.getActiveToken()`.
- *   3. `setup_token` kind → error: usage API requires oauth_credentials.
+ *   3. Slot has no OAuth attachment → error: usage API requires an oauth_credentials attachment.
  *   4. `fetchAndStoreUsage()` returns null → backoff-active message with next-fetch hint.
  */
 async function handleUsage(
@@ -168,14 +169,14 @@ async function handleUsage(
   reply: (text: string) => Promise<unknown>,
 ): Promise<void> {
   const usageTm = tm as UsageCapableTokenManager;
-  let resolved: { slotId: string; name: string; kind: TokenSlot['kind'] } | null;
+  let resolved: { keyId: string; name: string; kind: AuthKey['kind'] } | null;
   if (target) {
     const match = tokens.find((t) => t.name === target);
     if (!match) {
       await reply(`❌ Unknown slot: ${target}`);
       return;
     }
-    resolved = { slotId: match.slotId, name: match.name, kind: match.kind };
+    resolved = { keyId: match.keyId, name: match.name, kind: match.kind };
   } else {
     resolved = usageTm.getActiveToken();
     if (!resolved) {
@@ -184,17 +185,22 @@ async function handleUsage(
     }
   }
 
-  if (resolved.kind === 'setup_token') {
+  // Usage endpoint requires an OAuth access token. Inspect the persisted
+  // slot to see whether it currently carries an oauthAttachment.
+  const snap = await loadSnapshotSafe();
+  const slot = snap?.registry.slots.find((s) => s.keyId === resolved!.keyId);
+  const hasOAuthAttachment = slot !== undefined && slot.kind === 'cct' && slot.oauthAttachment !== undefined;
+  if (!hasOAuthAttachment) {
     await reply(
-      `⚠️ Usage API requires oauth_credentials slots. *${resolved.name}* is a setup_token — no access token to query /api/oauth/usage.`,
+      `⚠️ Usage API requires an OAuth attachment. *${resolved.name}* has no oauth_credentials attached — cannot query /api/oauth/usage.`,
     );
     return;
   }
 
-  const snapshot = await usageTm.fetchAndStoreUsage(resolved.slotId);
+  const snapshot = await usageTm.fetchAndStoreUsage(resolved.keyId);
   if (!snapshot) {
     // Backoff active, or fetch-failed — try to render the next-fetch hint.
-    const state = await loadSlotState(resolved.slotId);
+    const state = await loadSlotState(resolved.keyId);
     const waitHint = state?.nextUsageFetchAllowedAt ? formatDurationUntil(state.nextUsageFetchAllowedAt) : 'a bit';
     await reply(`⚠️ Usage not available yet — next fetch in ${waitHint}. Try again later.`);
     return;
@@ -204,9 +210,9 @@ async function handleUsage(
   await reply(lines);
 }
 
-async function loadSlotState(slotId: string): Promise<SlotState | undefined> {
+async function loadSlotState(keyId: string): Promise<SlotState | undefined> {
   const snap = await loadSnapshotSafe();
-  return snap?.state[slotId];
+  return snap?.state[keyId];
 }
 
 /**
@@ -218,7 +224,7 @@ async function loadSlotState(slotId: string): Promise<SlotState | undefined> {
  *   • 7d: {pct}% (resets in {T})
  */
 export function renderUsageLines(
-  slot: { name: string; kind: TokenSlot['kind'] },
+  slot: { name: string; kind: AuthKey['kind'] },
   snapshot: UsageSnapshot,
   nowMs?: number,
 ): string {
