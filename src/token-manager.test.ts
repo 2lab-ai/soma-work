@@ -1281,21 +1281,21 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.detachOAuth(slot.keyId);
       // Snapshot the post-detach state; the post-release snapshot MUST match
       // this exactly — any mutation by the stale persist corrupts the test.
-      const postDetachSnap = await store.load();
-      const detachedSlotBefore = structuredClone(postDetachSnap.registry.slots[0]);
-      const detachedStateBefore = structuredClone(postDetachSnap.state[slot.keyId]);
+      const postDetachSnap = structuredClone(await store.load());
       releaseFetch();
       await usagePromise;
       const finalSnap = await store.load();
-      const detachedSlotAfter = finalSnap.registry.slots[0];
-      const detachedStateAfter = finalSnap.state[slot.keyId];
-      // Deep equality: no field of the detached slot or its state was
-      // touched by the stale persist.
-      expect(detachedSlotAfter).toEqual(detachedSlotBefore);
-      expect(detachedStateAfter).toEqual(detachedStateBefore);
-      // Spot-checks that also pinpoint the two most common regression modes.
-      expect(detachedStateAfter?.usage).toBeUndefined();
-      expect((detachedSlotAfter as any).oauthAttachment).toBeUndefined();
+      // WHOLE-SNAPSHOT equality (Codex v2 tightening). `mutate` always bumps
+      // revision on commit — even when the guarded callback is a no-op —
+      // so we normalize revision before comparing the data shape. Every
+      // other field (registry, state, version) must be byte-identical; a
+      // stale persist touching anything outside slots[0] / state[keyId]
+      // would still fail this assertion.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postDetachSnap));
+      // Spot-checks that pinpoint the two most common regression modes.
+      expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
     });
 
     it('T5h: refreshAccessToken does NOT resurrect attachment when detach lands mid-refresh (Codex P0 fix #3)', async () => {
@@ -1331,14 +1331,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // where detach happens first.
       await startedPromise;
       await tm.detachOAuth(slot.keyId);
-      const postDetachSnap = await store.load();
-      const detachedSlotBefore = structuredClone(postDetachSnap.registry.slots[0]);
-      const detachedStateBefore = structuredClone(postDetachSnap.state[slot.keyId]);
+      const postDetachSnap = structuredClone(await store.load());
       releaseRefresh();
       await refreshPromise;
       const finalSnap = await store.load();
-      expect(finalSnap.registry.slots[0]).toEqual(detachedSlotBefore);
-      expect(finalSnap.state[slot.keyId]).toEqual(detachedStateBefore);
+      // WHOLE-SNAPSHOT equality (Codex v2 tightening). `mutate` always bumps
+      // revision on commit — even when the guarded callback is a no-op —
+      // so we normalize revision before comparing the data shape.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postDetachSnap));
       // Spot-check: no attachment resurrection.
       expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
     });
@@ -1350,17 +1351,23 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     // operator detaches AND re-attaches the same keyId while an old
     // refresh/usage fetch is still in flight, the stale persist must not
     // clobber the newer attachment generation.
-    it('T5i: stale refresh does NOT overwrite a fresh re-attached generation', async () => {
+    it('T5i: stale refresh does NOT overwrite a fresh re-attached generation (pure-generation guard)', async () => {
+      // Codex v2 tightening — this test uses IDENTICAL credential payload
+      // on both attach generations; only the `attachedAt` fingerprint
+      // differs. That closes the loophole where a regression could say
+      // "drop stale persist only when accessToken changed" and still pass.
+      // Here both generations carry the same accessToken, so a value-based
+      // guard would silently rotate the token on the fresh generation —
+      // only a strict `attachedAt` equality check protects the fresh gen.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
-      const staleAccess = 'oat-GEN-A';
-      const freshAccess = 'oat-GEN-B';
+      const sharedAccess = 'oat-SHARED';
       await tm.attachOAuth(
         slot.keyId,
-        makeOAuthCreds({ accessToken: staleAccess, expiresAtMs: Date.now() - 60_000 }),
+        makeOAuthCreds({ accessToken: sharedAccess, expiresAtMs: Date.now() - 60_000 }),
         true,
       );
       let releaseRefresh!: () => void;
@@ -1376,35 +1383,54 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         await refreshGate;
         return {
           ...current,
+          // If the guard is generation-aware, this rotated token must NOT
+          // land on the fresh generation. If the guard is value-based on
+          // accessToken, the test would give it a false pass — which is
+          // why we force a token-change here: sharedAccess → sharedAccess-refreshed.
           accessToken: `${current.accessToken}-refreshed`,
           expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
         };
       });
       const staleRefreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
       await startedPromise;
-      // Detach and immediately re-attach with a fresh access token — the
-      // stale refresh below must NOT write its result over this fresh gen.
+      // Force a wall-clock gap so the fresh reattach gets a strictly
+      // different `attachedAt` (Date.now() resolution is 1ms).
+      await new Promise((r) => setTimeout(r, 5));
       await tm.detachOAuth(slot.keyId);
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: freshAccess }), true);
+      // Reattach with BYTE-IDENTICAL credential payload — the only thing
+      // distinguishing the fresh generation from the stale one is the
+      // attachment-generation fingerprint stamped internally by attachOAuth.
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
       const postReattachSnap = await store.load();
       const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
+      const freshAttachedAt: number | undefined = freshAttachment.attachedAt;
       releaseRefresh();
       await staleRefreshPromise;
       const finalSnap = await store.load();
       const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
-      // The fresh attachment is preserved byte-for-byte; the stale refresh
-      // did not rotate the access token under it.
+      // Pure-generation guard: the fresh attachment survives byte-for-byte.
+      // A buggy value-based guard would rotate accessToken here.
       expect(finalAttachment).toEqual(freshAttachment);
-      expect(finalAttachment.accessToken).toBe(freshAccess);
+      expect(finalAttachment.accessToken).toBe(sharedAccess);
+      expect(finalAttachment.accessToken).not.toBe(`${sharedAccess}-refreshed`);
+      // The generation fingerprint is the real guard; assert it survives.
+      expect(finalAttachment.attachedAt).toBe(freshAttachedAt);
+      // And the fresh attachedAt was actually strictly newer than the stale one.
+      expect(typeof freshAttachedAt).toBe('number');
     });
 
-    it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation', async () => {
+    it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation (pure-generation guard)', async () => {
+      // Codex v2 tightening — credential payload is IDENTICAL across the
+      // stale and fresh attachments; the ONLY generational distinguisher is
+      // `attachedAt`. A regression that keyed its guard on any credential
+      // field would silently write stale usage onto the fresh generation.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-GEN-A' }), true);
+      const sharedAccess = 'oat-SHARED';
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
       let releaseFetch!: () => void;
       const fetchGate = new Promise<void>((r) => {
         releaseFetch = r;
@@ -1426,18 +1452,25 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       const staleUsagePromise = tm.fetchAndStoreUsage(slot.keyId);
       await startedPromise;
+      // Force wall-clock gap so the fresh generation's `attachedAt` differs.
+      await new Promise((r) => setTimeout(r, 5));
       await tm.detachOAuth(slot.keyId);
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-GEN-B' }), true);
-      // Snapshot the fresh generation's state to deep-compare later.
-      const postReattachSnap = await store.load();
-      const freshState = structuredClone(postReattachSnap.state[slot.keyId]);
+      // Reattach with identical credential payload — only the fingerprint differs.
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
+      const postReattachSnap = structuredClone(await store.load());
+      const freshAttachedAt: number | undefined = (postReattachSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
       releaseFetch();
       await staleUsagePromise;
       const finalSnap = await store.load();
-      // The stale usage snapshot (99% utilization) must NOT appear on the
-      // fresh generation's state entry. Fresh state stays byte-equal.
-      expect(finalSnap.state[slot.keyId]).toEqual(freshState);
+      // WHOLE-SNAPSHOT equality (revision-normalized). Any stale write to
+      // state or slot fails the assertion — not only the `usage` field.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postReattachSnap));
+      // Spot-checks.
       expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.attachedAt).toBe(freshAttachedAt);
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe(sharedAccess);
     });
   });
 

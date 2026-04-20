@@ -251,7 +251,16 @@ function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment:
 
 export class TokenManager {
   private readonly store: CctStore;
-  private readonly refreshInFlight: Map<string, Promise<string>> = new Map();
+  /**
+   * In-process dedupe for concurrent `refreshAccessToken` calls on the same
+   * slot. Codex P0 fix #3 (v3) — keyed by `keyId` AND tagged with the
+   * attachment-generation fingerprint (`attachedAt`) so two callers on the
+   * SAME generation share one network call, but a caller arriving on a
+   * NEWER generation (after `detachOAuth` + fresh `attachOAuth`) starts a
+   * fresh refresh instead of inheriting stale tokens from the old one.
+   */
+  private readonly refreshInFlight: Map<string, { attachedAt: number | undefined; promise: Promise<string> }> =
+    new Map();
   /**
    * Per-keyId dedupe for `fetchAndStoreUsage`. Mirrors the `refreshInFlight`
    * pattern so multiple `fetchUsageForAllAttached` fan-outs racing on the
@@ -1095,16 +1104,21 @@ export class TokenManager {
    * lock; we acquire the lock only to persist the result.
    */
   private refreshAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
-    const existing = this.refreshInFlight.get(slot.keyId);
-    if (existing) return existing;
     // Codex P0 fix #3 — capture the attachment-generation fingerprint BEFORE
-    // the async refresh call. A detach + re-attach while the network request
-    // is in flight changes `attachedAt` on the slot; the persist branch uses
-    // this captured value to reject stale overwrites of a newer generation.
-    // `undefined` is a distinct generation (v2 snapshots persisted before
-    // the field existed), so the comparison is strict.
+    // the in-flight lookup so dedupe is generation-aware. A detach +
+    // re-attach while a refresh is in flight changes `attachedAt`; the new
+    // generation must NOT inherit the stale refresh promise. `undefined` is
+    // a distinct generation (v2 snapshots persisted before the field
+    // existed), so the comparison is strict.
     const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
-    const promise = (async (): Promise<string> => {
+    const existing = this.refreshInFlight.get(slot.keyId);
+    if (existing && existing.attachedAt === preAttachedAt) return existing.promise;
+    // Definite-assignment assertion: the `finally` below runs on the
+    // microtask queue AFTER the synchronous `promise = ...` assignment
+    // completes, so by the time the ownership check executes the binding
+    // is live. TS control-flow analysis can't prove that through the IIFE.
+    let promise!: Promise<string>;
+    promise = (async (): Promise<string> => {
       try {
         let next: OAuthCredentials;
         try {
@@ -1171,10 +1185,16 @@ export class TokenManager {
         );
         return next.accessToken;
       } finally {
-        this.refreshInFlight.delete(slot.keyId);
+        // Clear ONLY if we still own the entry — a newer generation may
+        // have replaced this entry while we were in flight; deleting
+        // unconditionally would strand that newer caller's dedupe.
+        const current = this.refreshInFlight.get(slot.keyId);
+        if (current && current.promise === promise) {
+          this.refreshInFlight.delete(slot.keyId);
+        }
       }
     })();
-    this.refreshInFlight.set(slot.keyId, promise);
+    this.refreshInFlight.set(slot.keyId, { attachedAt: preAttachedAt, promise });
     return promise;
   }
 
