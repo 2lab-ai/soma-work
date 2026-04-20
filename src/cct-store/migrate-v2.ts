@@ -46,12 +46,18 @@ function v1SetupToCct(slot: LegacyV1SetupTokenSlot): CctSlotWithSetup {
 
 function v1OAuthToAttachment(slot: LegacyV1OAuthCredentialsSlot): OAuthAttachment {
   const c = slot.credentials;
+  // Derive a deterministic `attachedAt` from the legacy `createdAt` so the
+  // migration is idempotent (same v1 → same v2 bytes). The value is only
+  // used as the attachment-generation fingerprint (Codex P0 fix #3); 0 is a
+  // valid sentinel for inputs with an unparseable or missing `createdAt`.
+  const createdAtMs = Number.isFinite(Date.parse(slot.createdAt)) ? Date.parse(slot.createdAt) : 0;
   const out: OAuthAttachment = {
     accessToken: c.accessToken,
     refreshToken: c.refreshToken,
     expiresAtMs: c.expiresAtMs,
     scopes: [...c.scopes],
     acknowledgedConsumerTosRisk: true,
+    attachedAt: createdAtMs,
   };
   if (c.subscriptionType !== undefined) out.subscriptionType = c.subscriptionType;
   if (c.rateLimitTier !== undefined) out.rateLimitTier = c.rateLimitTier;

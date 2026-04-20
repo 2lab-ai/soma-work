@@ -40,7 +40,7 @@
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
-import type { AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
+import type { ApiKeySlot, AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { Logger, redactAnthropicSecrets } from './logger';
@@ -150,7 +150,22 @@ export interface AddOAuthCredentialsInput {
   acknowledgedConsumerTosRisk: true;
 }
 
-export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput;
+/**
+ * Input DTO for a raw Anthropic `sk-ant-api03-…` commercial API key. Mapped
+ * to {@link ApiKeySlot} on persist. Phase 1 scope (Z3): store-only — api_key
+ * slots are runtime-fenced so callers can't select them as active until a
+ * follow-up PR wires `ANTHROPIC_API_KEY` + isolated spawn.
+ */
+export interface AddApiKeyInput {
+  name: string;
+  kind: 'api_key';
+  value: string;
+}
+
+export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput | AddApiKeyInput;
+
+/** Format guard for `sk-ant-api03-<base64url>` commercial API keys. */
+export const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
 export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
@@ -236,7 +251,26 @@ function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment:
 
 export class TokenManager {
   private readonly store: CctStore;
+  /**
+   * In-process dedupe for concurrent `refreshAccessToken` calls.
+   *
+   * Codex P0 fix #3 (v4): the Map key is the COMPOSITE generation key
+   * `${keyId}:${attachedAt ?? "legacy"}` so two concurrent generations of
+   * the same slot can coexist in flight without evicting each other's
+   * dedupe entry. Under the earlier `Map<keyId, {attachedAt, promise}>`
+   * shape a newer generation would overwrite the older one's record;
+   * subsequent callers on the older generation then saw a tag mismatch
+   * and fired a SECOND network refresh even though the older promise was
+   * still in flight. The composite key makes dedupe lossless across the
+   * detach/reattach race window.
+   */
   private readonly refreshInFlight: Map<string, Promise<string>> = new Map();
+  /**
+   * Per-keyId dedupe for `fetchAndStoreUsage`. Mirrors the `refreshInFlight`
+   * pattern so multiple `fetchUsageForAllAttached` fan-outs racing on the
+   * same slot hit the upstream usage endpoint once. Cleanup in `finally`.
+   */
+  private readonly usageFetchInFlight: Map<string, Promise<UsageSnapshot | null>> = new Map();
   private reaperTimer: NodeJS.Timeout | null = null;
   private reaperIntervalMs = DEFAULT_REAPER_INTERVAL_MS;
   private initPromise: Promise<void> | null = null;
@@ -411,11 +445,22 @@ export class TokenManager {
       const now = Date.now();
       const currentId = snap.registry.activeKeyId;
       const currentSlot = currentId ? snap.registry.slots.find((s) => s.keyId === currentId) : undefined;
-      if (!currentSlot || !isEligible(snap.state[currentSlot.keyId], now)) {
-        // Prefer first healthy; else first slot.
+      // Z3 — api_key is not runtime-selectable in phase 1: treat a current
+      // api_key activeKeyId as ineligible so we fall through and re-pick a
+      // cct slot. Preferred pick also skips api_key, falling back to the
+      // first cct slot if every cct is in cooldown / tombstoned. Only if
+      // there is no cct slot at all do we unset activeKeyId entirely.
+      const currentIneligible =
+        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(snap.state[currentSlot.keyId], now);
+      if (currentIneligible) {
         const preferred =
-          snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now)) ?? snap.registry.slots[0];
-        snap.registry.activeKeyId = preferred.keyId;
+          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now)) ??
+          snap.registry.slots.find((s) => s.kind !== 'api_key');
+        if (preferred) {
+          snap.registry.activeKeyId = preferred.keyId;
+        } else {
+          delete snap.registry.activeKeyId;
+        }
       }
     });
   }
@@ -433,6 +478,21 @@ export class TokenManager {
     // store.load(). For a fully authoritative read consumers can call
     // `store.load()` directly — but listTokens is used for display only.
     return this.loadCachedSync();
+  }
+
+  /**
+   * Z3 runtime fence (PR-B phase1): return only slots that are currently
+   * **runtime-selectable** — i.e. eligible for `cct set <name>` /
+   * `cct usage <name>` / `rotateToNext` name-matching. `api_key` slots are
+   * store-only in PR-B (add/list/remove via modal) and are deliberately
+   * excluded so text-command callers can't bypass the fence by typing an
+   * api_key slot name.
+   *
+   * When the follow-up issue wires `ANTHROPIC_API_KEY` spawn isolation,
+   * this helper will start returning api_key slots too.
+   */
+  listRuntimeSelectableTokens(): TokenSummary[] {
+    return this.listTokens().filter((t) => t.kind !== 'api_key');
   }
 
   /**
@@ -474,6 +534,12 @@ export class TokenManager {
     await this.store.mutate((snap) => {
       const slot = snap.registry.slots.find((s) => s.keyId === keyId);
       if (!slot) throw new Error(`applyToken: unknown keyId ${keyId}`);
+      // Z3 — api_key is not runtime-selectable in phase 1; callers must pick
+      // a cct slot. The follow-up PR that wires ANTHROPIC_API_KEY + isolated
+      // spawn will relax this fence.
+      if (slot.kind === 'api_key') {
+        throw new Error('applyToken: api_key is not runtime-selectable in phase 1');
+      }
       snap.registry.activeKeyId = keyId;
     });
     const snap = await this.store.load();
@@ -497,6 +563,8 @@ export class TokenManager {
       for (let i = 1; i < len; i++) {
         const idx = (startIndex + i) % len;
         const candidate = snap.registry.slots[idx];
+        // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
+        if (candidate.kind === 'api_key') continue;
         if (isEligible(snap.state[candidate.keyId], now)) {
           snap.registry.activeKeyId = candidate.keyId;
           return { keyId: candidate.keyId, name: candidate.name };
@@ -551,6 +619,8 @@ export class TokenManager {
         for (let i = 1; i < len; i++) {
           const idx = (startIndex + i) % len;
           const candidate = snap.registry.slots[idx];
+          // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
+          if (candidate.kind === 'api_key') continue;
           if (isEligible(snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
             return { keyId: candidate.keyId, name: candidate.name };
@@ -613,13 +683,15 @@ export class TokenManager {
       }
       const now = Date.now();
       // Prefer the current active slot if eligible; otherwise rotate to next.
+      // Z3 — api_key is not runtime-selectable in phase 1; treat an api_key
+      // active slot as ineligible and fall through to pick a cct candidate.
       const activeId = snap.registry.activeKeyId;
       const activeSlot = activeId ? snap.registry.slots.find((s) => s.keyId === activeId) : undefined;
       let picked: string;
-      if (activeSlot && isEligible(snap.state[activeSlot.keyId], now)) {
+      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
+        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now));
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
@@ -741,6 +813,19 @@ export class TokenManager {
         createdAt,
       };
       newSlot = slot;
+    } else if (input.kind === 'api_key') {
+      // Z3 — Add Slot modal radio 에 api_key 옵션. sk-ant-api03- 검증 + 저장만 가능.
+      if (!API_KEY_REGEX.test(input.value)) {
+        throw new Error('addSlot: api_key must match sk-ant-api03-<chars>');
+      }
+      const slot: ApiKeySlot = {
+        kind: 'api_key',
+        keyId,
+        name: input.name,
+        value: input.value,
+        createdAt,
+      };
+      newSlot = slot;
     } else {
       if (!hasRequiredScopes(input.credentials.scopes)) {
         const missing = missingScopes(input.credentials.scopes);
@@ -779,7 +864,8 @@ export class TokenManager {
       }
       snap.registry.slots.push(newSlot);
       snap.state[newSlot.keyId] = { authState: 'healthy', activeLeases: [] };
-      if (!snap.registry.activeKeyId) {
+      // Z3 — api_key is not runtime-selectable in phase 1; never auto-elect.
+      if (!snap.registry.activeKeyId && newSlot.kind !== 'api_key') {
         snap.registry.activeKeyId = newSlot.keyId;
       }
     });
@@ -856,6 +942,137 @@ export class TokenManager {
     await this.refreshCache();
   }
 
+  // ── Attach / detach OAuth on setup-source CCT slots (Z2) ─
+
+  /**
+   * Narrowed helper: mutates a setup-source CCT slot that currently carries
+   * an OAuthAttachment, removing the attachment field and clearing any
+   * cached usage. Called only from inside a CAS `store.mutate` callback
+   * where the slot has been narrowed to this shape.
+   *
+   * Centralising the erase-side mutation keeps the type narrowing in one
+   * place — the public `detachOAuth(keyId)` surface is string-keyed, and
+   * only here do we know the slot matches this union arm.
+   */
+  #detachOAuthOnSetupSlot(snap: CctStoreSnapshot, slot: CctSlotWithSetup & { oauthAttachment: OAuthAttachment }): void {
+    // Delete the optional attachment field; source stays 'setup'.
+    delete (slot as CctSlotWithSetup).oauthAttachment;
+    const st = snap.state[slot.keyId];
+    if (st) {
+      delete st.usage;
+      delete st.lastUsageFetchedAt;
+      delete st.nextUsageFetchAllowedAt;
+      delete st.consecutiveUsageFailures;
+      // Codex P0 fix #3: clear attachment-scoped auth state. With no
+      // attachment, 'refresh_failed'/'revoked' are not meaningful (a bare
+      // setup-source slot uses setupToken verbatim). Leaving stale marks
+      // would make the slot ineligible in `isEligible` even after a later
+      // attach cycle that itself resets state.
+      st.authState = 'healthy';
+    }
+  }
+
+  /**
+   * Attach an `oauthAttachment` to an existing setup-source CCT slot (Z2).
+   *
+   * Guards (every call, not cached):
+   *   - Unknown keyId → throw.
+   *   - `slot.kind !== 'cct'` → throw `attachOAuth: slot kind must be cct`.
+   *     api_key slots have no attachment surface in phase 1.
+   *   - `slot.source !== 'setup'` → throw
+   *     `attachOAuth: only setup-source slots accept attachment`.
+   *     legacy-attachment slots already carry a mandatory attachment; the
+   *     replace path is "remove + re-add", not attach-on-top.
+   *   - `!hasRequiredScopes(creds.scopes)` → re-validated every call even
+   *     when the slot previously had a good attachment (blobs can shrink).
+   *   - `ack !== true` → throw `attachOAuth: ack required`.
+   *
+   * On success: `source: 'setup'` stays unchanged; we only set
+   * `oauthAttachment`. A usage fetch is *triggered* (fire-and-forget) so
+   * the next card open has fresh numbers — we do NOT await it (the Z1
+   * `fetchUsageForAllAttached` path will pick it up).
+   */
+  async attachOAuth(keyId: string, creds: OAuthCredentials, ack: true): Promise<void> {
+    if (ack !== true) {
+      throw new Error('attachOAuth: ack required (acknowledgedConsumerTosRisk)');
+    }
+    if (!hasRequiredScopes(creds.scopes)) {
+      const missing = missingScopes(creds.scopes);
+      throw new Error(`attachOAuth: missing required scope(s): ${missing.join(', ')}`);
+    }
+    await this.store.mutate((snap) => {
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`attachOAuth: unknown keyId ${keyId}`);
+      if (slot.kind !== 'cct') {
+        throw new Error('attachOAuth: slot kind must be cct');
+      }
+      if (slot.source !== 'setup') {
+        throw new Error('attachOAuth: only setup-source slots accept attachment');
+      }
+      const attachment: OAuthAttachment = {
+        accessToken: creds.accessToken,
+        refreshToken: creds.refreshToken,
+        expiresAtMs: creds.expiresAtMs,
+        scopes: [...creds.scopes],
+        acknowledgedConsumerTosRisk: true,
+        // Codex P0 fix #3 (attachment-generation fingerprint): stamp the attach
+        // moment so a later in-flight refresh/usage persist can reject writes
+        // that crossed a detach → re-attach boundary. `refreshAccessToken`
+        // copies this value through; `detachOAuth` erases the attachment, so
+        // any later attach lands a different `attachedAt`.
+        attachedAt: Date.now(),
+      };
+      if (creds.subscriptionType !== undefined) attachment.subscriptionType = creds.subscriptionType;
+      if (creds.rateLimitTier !== undefined) attachment.rateLimitTier = creds.rateLimitTier;
+      slot.oauthAttachment = attachment;
+      // Reset attachment-scoped auth state (Codex P0 fix #3): a slot carrying
+      // a stale `refresh_failed` / `revoked` mark from a prior attachment
+      // must become eligible again once fresh creds are supplied. Without
+      // this, `isEligible` rejects the slot and `acquireLease` skips it.
+      const prev = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      snap.state[slot.keyId] = { ...prev, authState: 'healthy' };
+    });
+    await this.refreshCache();
+    // Fire-and-forget usage fetch — the renderCctCard path will also pick
+    // this up via fetchUsageForAllAttached on next open. Swallow errors so
+    // attach response is not blocked.
+    void this.fetchAndStoreUsage(keyId).catch(() => {});
+  }
+
+  /**
+   * Remove the oauthAttachment from a setup-source CCT slot (Z2).
+   *
+   * Guards:
+   *   - Unknown keyId → throw.
+   *   - `slot.kind !== 'cct'` → throw `detachOAuth: api_key slots have no attachment`.
+   *   - `slot.source !== 'setup'` → throw
+   *     `detachOAuth: legacy-attachment slots cannot detach; use removeSlot`.
+   *     That union arm has `oauthAttachment` as a REQUIRED field; dropping
+   *     it would violate the type.
+   *
+   * On success: `slot.oauthAttachment` is deleted, and the state entry's
+   * usage cache is cleared (avoids rendering stale percentages against a
+   * now-attachmentless slot).
+   */
+  async detachOAuth(keyId: string): Promise<void> {
+    await this.store.mutate((snap) => {
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot) throw new Error(`detachOAuth: unknown keyId ${keyId}`);
+      if (slot.kind !== 'cct') {
+        throw new Error('detachOAuth: api_key slots have no attachment');
+      }
+      if (slot.source !== 'setup') {
+        throw new Error('detachOAuth: legacy-attachment slots cannot detach; use removeSlot');
+      }
+      if (slot.oauthAttachment === undefined) {
+        // No-op for setup slots without an attachment — idempotent.
+        return;
+      }
+      this.#detachOAuthOnSetupSlot(snap, slot as CctSlotWithSetup & { oauthAttachment: OAuthAttachment });
+    });
+    await this.refreshCache();
+  }
+
   // ── Proactive refresh ─────────────────────────────────────
 
   async getValidAccessToken(keyId: string): Promise<string> {
@@ -891,9 +1108,25 @@ export class TokenManager {
    * lock; we acquire the lock only to persist the result.
    */
   private refreshAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
-    const existing = this.refreshInFlight.get(slot.keyId);
+    // Codex P0 fix #3 — capture the attachment-generation fingerprint BEFORE
+    // the in-flight lookup so dedupe is generation-aware. A detach +
+    // re-attach while a refresh is in flight changes `attachedAt`; the new
+    // generation must NOT inherit the stale refresh promise. `undefined` is
+    // a distinct generation (v2 snapshots persisted before the field
+    // existed), so the comparison is strict.
+    const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
+    // Composite dedupe key (Codex P0 fix #3, v4). The `attachedAt ?? 'legacy'`
+    // lets v2 snapshots written before the field existed share one bucket
+    // while still being strictly distinct from any numeric generation.
+    const dedupeKey = `${slot.keyId}:${preAttachedAt ?? 'legacy'}`;
+    const existing = this.refreshInFlight.get(dedupeKey);
     if (existing) return existing;
-    const promise = (async (): Promise<string> => {
+    // Definite-assignment assertion: the `finally` below runs on the
+    // microtask queue AFTER the synchronous `promise = ...` assignment
+    // completes, so by the time the ownership check executes the binding
+    // is live. TS control-flow analysis can't prove that through the IIFE.
+    let promise!: Promise<string>;
+    promise = (async (): Promise<string> => {
       try {
         let next: OAuthCredentials;
         try {
@@ -920,20 +1153,35 @@ export class TokenManager {
         await this.store.mutate((snap) => {
           const target = snap.registry.slots.find((s) => s.keyId === slot.keyId);
           if (!target || target.kind !== 'cct') return;
+          // Codex P0 fix #3 (attachment-generation guard).
+          //
+          // Two failure modes this must reject:
+          //   (a) `detachOAuth` landed between refresh start and persist —
+          //       `target.oauthAttachment` is now `undefined`. Writing would
+          //       silently resurrect the attachment the operator just removed.
+          //   (b) `detachOAuth` + a NEW `attachOAuth` both landed between
+          //       refresh start and persist — `target.oauthAttachment` is
+          //       defined, but it is a different attachment generation.
+          //       Writing would clobber the newer generation with stale
+          //       tokens from the old one (auth-state leakage).
+          //
+          // Both are caught by requiring the current attachment's fingerprint
+          // to strictly equal the one we captured at refresh start.
+          if (target.oauthAttachment === undefined) return;
+          if (target.oauthAttachment.attachedAt !== preAttachedAt) return;
           const updated: OAuthAttachment = {
             accessToken: next.accessToken,
             refreshToken: next.refreshToken,
             expiresAtMs: next.expiresAtMs,
             scopes: [...next.scopes],
             acknowledgedConsumerTosRisk: true,
+            // Preserve the fingerprint — refresh keeps the attachment
+            // identity unchanged, only the tokens rotate.
+            attachedAt: target.oauthAttachment.attachedAt ?? preAttachedAt,
           };
           if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
           if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
-          if (target.source === 'setup') {
-            target.oauthAttachment = updated;
-          } else {
-            target.oauthAttachment = updated;
-          }
+          target.oauthAttachment = updated;
           const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
           snap.state[slot.keyId] = st;
@@ -945,19 +1193,45 @@ export class TokenManager {
         );
         return next.accessToken;
       } finally {
-        this.refreshInFlight.delete(slot.keyId);
+        // With the composite dedupe key, each generation owns its own
+        // bucket — a newer generation cannot evict this entry, so the
+        // ownership check only has to verify the bucket still points
+        // at this exact promise (defensive in case another refresh for
+        // the SAME generation ever races in, which shouldn't happen).
+        const current = this.refreshInFlight.get(dedupeKey);
+        if (current === promise) {
+          this.refreshInFlight.delete(dedupeKey);
+        }
       }
     })();
-    this.refreshInFlight.set(slot.keyId, promise);
+    this.refreshInFlight.set(dedupeKey, promise);
     return promise;
   }
 
   // ── Usage fetch ───────────────────────────────────────────
 
   async fetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
+    // Z1 — Per-keyId in-flight dedupe: if another `fetchUsageForAllAttached`
+    // fan-out or a parallel caller is already fetching for this keyId,
+    // reuse that Promise to avoid hammering the usage endpoint.
+    const existing = this.usageFetchInFlight.get(keyId);
+    if (existing) return existing;
+    const promise = this.#doFetchAndStoreUsage(keyId).finally(() => {
+      this.usageFetchInFlight.delete(keyId);
+    });
+    this.usageFetchInFlight.set(keyId, promise);
+    return promise;
+  }
+
+  async #doFetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return null;
+    // Codex P0 fix #3 — capture attachment-generation fingerprint BEFORE the
+    // async fetch/refresh/retry pipeline starts. If detach + re-attach both
+    // land before persist, the fingerprint differs and the write is dropped.
+    // `undefined` is a valid (pre-Z2) generation and compares strictly.
+    const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
     const state = snap.state[keyId];
     const nowMs = Date.now();
     if (state?.nextUsageFetchAllowedAt) {
@@ -1014,6 +1288,21 @@ export class TokenManager {
     const settled = result;
 
     await this.store.mutate((snap2) => {
+      // Codex P0 fix #3 (attachment-generation guard).
+      //
+      // Reject the persist when either:
+      //   (a) `detachOAuth` cleared the attachment since fetch start, OR
+      //   (b) `detachOAuth` + a fresh `attachOAuth` both landed before
+      //       persist — the slot again has an attachment but it is a new
+      //       generation, and the usage numbers we fetched belong to the
+      //       OLD generation. Writing them onto the new generation's state
+      //       would render stale percentages on the next card open.
+      //
+      // Both cases collapse to "the captured fingerprint must match the
+      // current attachment's fingerprint, strictly".
+      const slotNow = snap2.registry.slots.find((s) => s.keyId === keyId);
+      if (!slotNow || slotNow.kind !== 'cct' || slotNow.oauthAttachment === undefined) return;
+      if (slotNow.oauthAttachment.attachedAt !== preAttachedAt) return;
       const st = snap2.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       st.usage = settled.snapshot;
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;
@@ -1022,6 +1311,45 @@ export class TokenManager {
       snap2.state[keyId] = st;
     });
     return settled.snapshot;
+  }
+
+  /**
+   * Z1 — Fetch usage for every OAuth-attached CCT slot in parallel and
+   * persist the results. Returns a keyed map of the fresh snapshots (or
+   * `null` per-slot when fetch-backoff blocked or the upstream call
+   * failed).
+   *
+   * Timeout semantics: the fan-out runs under a single overall deadline
+   * (`opts.timeoutMs`, default 1500ms). On timeout the method returns
+   * whatever results have landed so far — the card renderer will fall
+   * back to cached percentages (or blank) for the laggards.
+   *
+   * Concurrency: per-keyId dedupe via `usageFetchInFlight` prevents the
+   * same slot being hit by multiple fan-outs (e.g. a /cct open racing a
+   * backend refresh). Slots without an oauthAttachment (bare setup
+   * tokens, api_key slots, fresh slots) are skipped.
+   */
+  async fetchUsageForAllAttached(opts?: { timeoutMs?: number }): Promise<Record<string, UsageSnapshot | null>> {
+    const snap = await this.store.load();
+    const keyIds = snap.registry.slots
+      .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
+      .map((s) => s.keyId);
+    const results: Record<string, UsageSnapshot | null> = {};
+    const promises = keyIds.map(async (keyId) => {
+      try {
+        results[keyId] = await this.fetchAndStoreUsage(keyId);
+      } catch {
+        results[keyId] = null;
+      }
+    });
+    const timeoutMs = opts?.timeoutMs ?? 1500;
+    const timeout = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, timeoutMs);
+      // Allow Node to exit under tests.
+      if (typeof t.unref === 'function') t.unref();
+    });
+    await Promise.race([Promise.allSettled(promises), timeout]);
+    return results;
   }
 
   private async applyUsageFailureBackoff(keyId: string): Promise<void> {
