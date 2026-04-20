@@ -5,7 +5,7 @@ description: "**Trigger always** before ask user fopr Approval. Also trigger jus
 
 # zcheck — Post-Implementation Verification Gate
 
-PR이 mergeable 상태가 될 때까지 루프. **코드 변경 시 Step 1부터 재시작.**
+PR이 mergeable 상태가 될 때까지 루프
 
 ## Input
 
@@ -13,8 +13,8 @@ PR이 mergeable 상태가 될 때까지 루프. **코드 변경 시 Step 1부터
 
 ## Step 0: Update bracnh
 
-1. base branch로 새로 rebase 한다. 충돌이 발생하면 충돌을 처리한다.
-2. simplify 스킬을 사용한다.
+1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
+2. Invoke `simplify`
 
 ## Step 1: CI Must Pass
 
@@ -43,8 +43,8 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 ## Step 4: Request Approve
 
-1. 유저애게 이슈와 approve를 요청할 PR 링크를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 
-리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 템플릿: [`../UIAskUserQuestion/templates/zcheck-pr-approve.json`](../UIAskUserQuestion/templates/zcheck-pr-approve.json) — 4 options (RATE +1 / -2 / -3 / -5) 이미 `checkAskUserQuestionQuality` 0 warnings로 검증됨. `{pr_number}` / `{ci_status}` / `{ci_run_id}` / `{ci_duration}` / `{unresolved_threads}` / `{merge_state}` / `{mergeable}` / `{files_changed}` / `{loc_add}` / `{loc_del}` 채워 전송.
+1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 
+리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 
 선택지:
 - 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
 - local:ztrace를 절차대로 다시 해라 (RATE -2)

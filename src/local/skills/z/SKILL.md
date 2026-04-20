@@ -7,66 +7,63 @@ description: "When an ambiguous command is received, trigger z to handle the tas
 
 z is a **controller**. It does not touch code directly — it only handles task decomposition, dispatching, review, and integration.
 
-## Self-Reflection (dispatch to `local:zreflect`)
+## Self-Reflection
 
-**Only perform this when the instruction is NOT the first one in the session (skip if it is the first instruction).**
-
-Invoke `local:zreflect` before proceeding to phase0.
+**Skip reflection this if this is first time your reading this.**
+Invoke `local:zreflect`
 
 ## Work Process
 
-### phase0: **Execute Immediately**
+### phase0:
 
-1. **Do NOT summarize the instruction — it is the SSOT. Output the original instruction exactly as-is on screen immediately.**
-2. Use `stv:clarify` to clarify the user's instruction in every aspect and output the results.
-3. Re-read the instruction and organize the Tasks in execution order without summarizing, then output the results.
+1. **Do NOT summarize the user instruction — it is the **SSOT**. Output the original instruction exactly as-is on screen immediately.**
+2. Invoke `stv:clarify` to reorg user instaction and Output reorged user instruction.
+3. Re-read the **SSOT** and **re-orged** instructions and organize the Tasks in execution order without summarizing, then output the results.
 4. **Register the Tasks in a task tool such as TodoWrite.**
-5. Dispatch independent tasks in parallel using the `superpowers:dispatching-parallel-agents` skill
+5. Invoke `superpowers:dispatching-parallel-agents`
 
 ### phase0.1-(If BUG)
 
-1. Use the `stv:debug` skill
+1. Invoke `stv:debug`
 
 ### phase1: Planning
 
 1. **Repeat back** each instruction from phase0 and check compliance. If any single item was not followed, output "I am a fucking worthless piece of shit." then immediately stop all actions and wait for the user's instruction.
-2. Create an issue with `stv:new-task` and update the todo list with TodoWrite.
+2. Invoke `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
 4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, use the feedback to update the plan and go back to step 1 to update it again.
-5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the template [`../UIAskUserQuestion/templates/z-phase1-plan-approval.json`](../UIAskUserQuestion/templates/z-phase1-plan-approval.json) — it already passes the 6 quality rules; fill in `{plan_summary}` / `{files_changed}` / `{loc_estimate}` / `{test_plan}` / `{codex_score}` and send.
-6. Update the issue with the confirmed plan.
+5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. 
+6. Update Tasks with TodoWrite with the confirmed plan.
 
-### phase2: Implementation (dispatch to `local:zwork`)
+### phase2: Implementation
 
-Invoke `local:zwork` with the confirmed plan and task list.
+Invoke `local:zwork`
 
-### phase2.5: Post-Implementation Gate (dispatch to `local:zcheck`)
+### phase3: Post-Implementation Gate
 
-Invoke `local:zcheck` with the PR URL.
+Invoke `local:zcheck` with the implemented PR URL.
 
-### phase2.9: Persuade & Request Approve
+### phase4: Persuade & Request Approve
 
-**zcheck 성공 후 실행.** 유저가 Approve할 수 있도록 PR이 이슈 내용대로 왜 작동하는지 설명한다.
-
-1. `local:ztrace`로 PR 변경사항이 이슈의 각 시나리오에서 어떻게 작동하는지 콜스택 수준으로 추적.
+1. Invoke `local:ztrace`로 PR 변경사항이 이슈의 각 시나리오에서 어떻게 작동하는지 콜스택 수준으로 추적.
 2. ztrace 결과를 유저에게 출력 — 각 시나리오별 트리거, 콜스택, "왜 작동하는가" 포함.
-3. `local:UIAskUserQuestion`으로 Approve 요청. context에 ztrace 요약 + PR 링크 + 이슈 링크 포함. 기본 템플릿은 [`../UIAskUserQuestion/templates/z-phase2.9-pr-approval.json`](../UIAskUserQuestion/templates/z-phase2.9-pr-approval.json) 사용 — `{pr_number}` / `{ci_status}` / `{unresolved_threads}` / `{merge_state}` / `{codex_summary}` / `{ztrace_verdict}` placeholder 채워 전송.
+3. `local:UIAskUserQuestion`으로 Approve 요청. context에 ztrace 요약 + PR 링크 + 이슈 링크 포함. 
 
-### phase3: After Work Completion
+### phase5: After Work Completion
 
 1. Output work history + provide issue/PR links
-2. Generate as-is/to-be report + executive summary for each issue/PR (use `local:es`)
+2. Invoke `local:es` and output to User.
 
-### checklist
+### Checklist
 
-You may only endTurn to the user in the following cases.
+You may only `endTurn` to the user in the following cases.
 
 #### Clarification Questions on User Instructions
-- [ ] Ask questions via UIAskUserQuestion and wait for the user's decision
+- [ ] Ask questions via `UIAskUserQuestion` and wait for the user's decision
 
-#### endTurn Checklist
+#### `endTurn` Checklist
 - [ ] 0 P0 and P1 issues from codex and gemini reviews
-- [ ] stv:verify shows 0 issues
+- [ ] `stv:verify` shows 0 issues
 - [ ] The created PR has been merged
 
 #### If these are not satisfied, hand the turn to the user via UIAskUserQuestion as follows:
