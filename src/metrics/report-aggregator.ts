@@ -399,7 +399,7 @@ export class ReportAggregator {
       // 365-day window cap — ignore events older than that for rankings/'all'.
       if (e.timestamp < w365Start) continue;
 
-      // Global 30d rankings (skip system buckets — v1 parity).
+      // Global 30d rankings (skip system buckets).
       if (e.timestamp >= w30Start && e.timestamp <= w30End) {
         if (e.userId !== 'assistant' && e.userId !== 'unknown') {
           const bucket = rankingsUsers.get(e.userId) || { tokens: 0, userName: e.userName };

@@ -244,7 +244,7 @@ export class UsageHandler implements CommandHandler {
       });
 
       const pngBytes = Object.values(pngMap).reduce((s, b) => s + b.byteLength, 0);
-      this.logger.info('usage_card_v2_posted', {
+      this.logger.info('usage_card_posted', {
         userId: user,
         messageTs,
         pngBytes,
