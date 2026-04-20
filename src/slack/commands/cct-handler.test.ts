@@ -144,6 +144,9 @@ describe('CctHandler — Wave 5', () => {
     const active = overrides.active ?? null;
     const fakeTm = {
       listTokens: () => tokens,
+      // Z3 runtime fence: the handler now calls listRuntimeSelectableTokens;
+      // mirror the real TokenManager behaviour (kind !== 'api_key').
+      listRuntimeSelectableTokens: () => tokens.filter((t) => t.kind !== 'api_key'),
       getActiveToken: () => active,
       fetchAndStoreUsage: overrides.fetchAndStoreUsage ?? (async () => null),
       rotateToNext: overrides.rotateToNext ?? (async () => null),
@@ -411,6 +414,83 @@ describe('CctHandler — Wave 5', () => {
     expect(say.calls[0].text).toContain('disabled');
     expect(say.calls[0].text).toContain('/z cct');
     expect(say.calls[0].text).toContain('*Remove*');
+  });
+
+  // ── T10c: Z3 runtime fence — `cct set <api_key-name>` is not runtime-selectable ──
+  it('T10c: cct set <api_key-name> → applyToken NOT called, replies Unknown token', async () => {
+    const applyToken = vi.fn(async () => undefined);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [
+        { keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' },
+        { keyId: 'api-1', name: 'ops-api', kind: 'api_key' as const, status: 'healthy' },
+      ],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
+      applyToken,
+    });
+    const say = makeSay();
+    const h = new CctHandler();
+    await h.execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct set ops-api',
+      say: say.fn,
+    });
+    expect(applyToken).not.toHaveBeenCalled();
+    expect(say.calls[0].text).toContain('Unknown token');
+    // Available: list must not leak the api_key slot name. Input echo in the
+    // error preamble ("Unknown token: `ops-api`") is expected — inspect only
+    // the "Available:" line.
+    const availableLine = say.calls[0].text.split('\n').find((l: string) => l.startsWith('Available:'));
+    expect(availableLine).toBeDefined();
+    expect(availableLine).not.toContain('ops-api');
+    expect(availableLine).toContain('active');
+  });
+
+  // ── T10d: Z3 runtime fence — `cct usage <api_key-name>` is not runtime-selectable ──
+  it('T10d: cct usage <api_key-name> → fetchAndStoreUsage NOT called, replies Unknown slot', async () => {
+    const fetchAndStoreUsage = vi.fn();
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [
+        { keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' },
+        { keyId: 'api-1', name: 'ops-api', kind: 'api_key' as const, status: 'healthy' },
+      ],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
+      fetchAndStoreUsage,
+    });
+    const say = makeSay();
+    const h = new CctHandler();
+    await h.execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct usage ops-api',
+      say: say.fn,
+    });
+    expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+    expect(say.calls[0].text).toContain('Unknown slot: ops-api');
+  });
+
+  // ── T10e: Z3 runtime fence — "Available:" hint excludes api_key slot names ──
+  it('T10e: cct set <unknown> → "Available:" hint excludes api_key slot names', async () => {
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [
+        { keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' },
+        { keyId: 'api-1', name: 'ops-api', kind: 'api_key' as const, status: 'healthy' },
+      ],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
+    });
+    const say = makeSay();
+    const h = new CctHandler();
+    await h.execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct set doesnotexist',
+      say: say.fn,
+    });
+    expect(say.calls[0].text).toContain('`active`');
+    expect(say.calls[0].text).not.toContain('ops-api');
   });
 
   it('cct (status) text fallback includes KST + UTC + relative timestamp when slot rate-limited', async () => {

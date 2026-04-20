@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthKey, SlotState } from '../../cct-store';
-import { buildAddSlotModal, buildCctCardBlocks, buildRemoveSlotModal, buildSlotRow } from './builder';
-import { CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
+import {
+  buildAddSlotModal,
+  buildAttachOAuthModal,
+  buildCctCardBlocks,
+  buildRemoveSlotModal,
+  buildSlotRow,
+} from './builder';
+import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
 function setupSlot(name: string = 'cct1', keyId: string = 'slot-1'): AuthKey {
   return {
@@ -196,6 +202,106 @@ describe('buildAddSlotModal', () => {
     const view = buildAddSlotModal() as any;
     const kindBlock = view.blocks.find((b: any) => b.block_id === CCT_BLOCK_IDS.add_kind);
     expect(kindBlock.dispatch_action).toBe(true);
+  });
+});
+
+describe('buildAddSlotModal — api_key arm (Z3)', () => {
+  it('T7: renders the api_key radio option and shows the api_key input when selected', () => {
+    // Default radio options include api_key.
+    const defaultView = buildAddSlotModal() as any;
+    const kindBlock = defaultView.blocks.find((b: any) => b.block_id === CCT_BLOCK_IDS.add_kind);
+    const radioValues = kindBlock.element.options.map((o: any) => o.value);
+    expect(radioValues).toEqual(expect.arrayContaining(['setup_token', 'oauth_credentials', 'api_key']));
+
+    // api_key arm shows the api_key input and no ToS ack block.
+    const view = buildAddSlotModal('api_key') as any;
+    const blockIds = view.blocks.map((b: any) => b.block_id);
+    expect(blockIds).toContain(CCT_BLOCK_IDS.add_api_key_value);
+    expect(blockIds).not.toContain(CCT_BLOCK_IDS.add_setup_token_value);
+    expect(blockIds).not.toContain(CCT_BLOCK_IDS.add_oauth_credentials_blob);
+    expect(blockIds).not.toContain(CCT_BLOCK_IDS.add_tos_ack);
+  });
+});
+
+describe('buildAttachOAuthModal (Z2)', () => {
+  it('T7b: targets the slot via private_metadata and includes the ToS ack checkbox', () => {
+    const slot = setupSlot('setup-a', 'slot-attach');
+    const view = buildAttachOAuthModal(slot) as any;
+    expect(view.callback_id).toBe(CCT_VIEW_IDS.attach);
+    expect(view.private_metadata).toBe('slot-attach');
+    const blockIds = view.blocks.map((b: any) => b.block_id);
+    expect(blockIds).toContain(CCT_BLOCK_IDS.attach_oauth_blob);
+    expect(blockIds).toContain(CCT_BLOCK_IDS.attach_tos_ack);
+  });
+});
+
+describe('buildSlotRow Attach/Detach buttons (Z2)', () => {
+  function setupSlotWithAttachment(name: string = 'cct-attached', keyId: string = 'slot-attached'): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId,
+      name,
+      setupToken: 'sk-ant-oat01-xxxxxxxx',
+      oauthAttachment: {
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAtMs: Date.parse('2026-12-31T00:00:00Z'),
+        scopes: ['user:profile', 'user:inference'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+  }
+  function apiKeySlot(name: string = 'api1', keyId: string = 'slot-api'): AuthKey {
+    return {
+      kind: 'api_key',
+      keyId,
+      name,
+      value: 'sk-ant-api03-abcdefghij',
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+  }
+  const now = Date.parse('2026-04-18T00:00:00Z');
+
+  it('T7c-i: setup-source cct slot without attachment gets Attach OAuth button', () => {
+    const slot = setupSlot('bare', 'slot-bare');
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).toContain(CCT_ACTION_IDS.attach);
+    expect(ids).not.toContain(CCT_ACTION_IDS.detach);
+    const attachBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.attach);
+    expect(attachBtn.value).toBe('slot-bare');
+  });
+
+  it('T7c-ii: setup-source cct slot with attachment gets Detach OAuth button', () => {
+    const slot = setupSlotWithAttachment();
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).toContain(CCT_ACTION_IDS.detach);
+    expect(ids).not.toContain(CCT_ACTION_IDS.attach);
+    const detachBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.detach);
+    expect(detachBtn.value).toBe('slot-attached');
+  });
+
+  it('T7c-iii: legacy-attachment cct slot has NO Attach/Detach (mandatory-attachment arm)', () => {
+    const slot = oauthSlot();
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).not.toContain(CCT_ACTION_IDS.attach);
+    expect(ids).not.toContain(CCT_ACTION_IDS.detach);
+  });
+
+  it('T7c-iv: api_key slot has NO Attach/Detach (no attachment surface)', () => {
+    const slot = apiKeySlot();
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).not.toContain(CCT_ACTION_IDS.attach);
+    expect(ids).not.toContain(CCT_ACTION_IDS.detach);
   });
 });
 
