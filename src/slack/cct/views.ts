@@ -18,6 +18,9 @@ export const CCT_VIEW_IDS = {
   add: 'cct_add_slot',
   remove: 'cct_remove_slot',
   rename: 'cct_rename_slot',
+  // Z2 — Attach OAuth credentials modal. Opened from the per-slot "Attach"
+  // button emitted by `buildSlotRow` for setup-source cct slots.
+  attach: 'cct_attach_oauth',
 } as const;
 
 /**
@@ -30,8 +33,14 @@ export const CCT_BLOCK_IDS = {
   add_setup_token_value: 'cct_add_value',
   add_oauth_credentials_blob: 'cct_add_oauth_blob',
   add_tos_ack: 'cct_add_tos_ack',
+  // Z3 — api_key arm of the Add Slot modal (radio option switches which
+  // block renders).
+  add_api_key_value: 'cct_add_api_key_value',
   remove_confirm: 'cct_remove_confirm',
   rename_name: 'cct_rename_name',
+  // Z2 — Attach OAuth modal inputs.
+  attach_oauth_blob: 'cct_attach_oauth_blob',
+  attach_tos_ack: 'cct_attach_tos_ack',
 } as const;
 
 /** Action_ids stable across `views.update`. Preserves typed values. */
@@ -47,8 +56,15 @@ export const CCT_ACTION_IDS = {
   name_input: 'cct_name_value',
   setup_token_input: 'cct_setup_token_value',
   oauth_blob_input: 'cct_oauth_blob_value',
+  // Z3 — api_key input (sk-ant-api03-<chars>).
+  api_key_input: 'cct_api_key_value',
   rename_input: 'cct_rename_value',
   remove_private_metadata: 'cct_remove_slot_id',
+  // Z2 — Attach/Detach row buttons + modal inputs.
+  attach: 'cct_open_attach',
+  detach: 'cct_detach',
+  attach_oauth_input: 'cct_attach_oauth_blob_value',
+  attach_tos_ack: 'cct_attach_tos_ack_value',
 } as const;
 
 export type CctViewId = (typeof CCT_VIEW_IDS)[keyof typeof CCT_VIEW_IDS];

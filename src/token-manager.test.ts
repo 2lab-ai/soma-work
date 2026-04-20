@@ -950,6 +950,669 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── T1/T2: addSlot api_key (Z3) ────────────────────────────
+
+  describe('addSlot api_key (Z3 — store-only, not runtime-selectable)', () => {
+    it('T1: persists an api_key slot with kind="api_key" and does NOT auto-elect it as active', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'commercial-1',
+        kind: 'api_key',
+        value: 'sk-ant-api03-xxxxxxxxxxxx',
+      });
+      expect(slot.kind).toBe('api_key');
+      if (slot.kind !== 'api_key') throw new Error('expected api_key');
+      expect(slot.value).toBe('sk-ant-api03-xxxxxxxxxxxx');
+      expect(slot.keyId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      const snap = await store.load();
+      expect(snap.registry.slots).toHaveLength(1);
+      // activeKeyId must NOT have been auto-set to an api_key slot.
+      expect(snap.registry.activeKeyId).toBeUndefined();
+    });
+
+    it('T2: rejects api_key values that do not match the sk-ant-api03- regex', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await expect(tm.addSlot({ name: 'bad', kind: 'api_key', value: 'not-an-api-key' })).rejects.toThrow(
+        /sk-ant-api03/,
+      );
+      await expect(tm.addSlot({ name: 'bad2', kind: 'api_key', value: 'sk-ant-api03-' })).rejects.toThrow(
+        /sk-ant-api03/,
+      );
+    });
+
+    it('T1b: api_key does not auto-elect even when no CCT slots exist, but a later CCT slot does', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      let snap = await store.load();
+      expect(snap.registry.activeKeyId).toBeUndefined();
+      const cctSlot = await tm.addSlot({ name: 'cct', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+      expect(snap.registry.activeKeyId).not.toBe(apiSlot.keyId);
+    });
+  });
+
+  // ── T6/T6b: fetchUsageForAllAttached + per-key dedupe (Z1) ─
+
+  describe('fetchUsageForAllAttached (Z1 — /cct usage-on-open fan-out)', () => {
+    it('T6: fans out usage fetch only for OAuth-attached CCT slots (skips api_key + bare-setup)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      const bareSetup = await tm.addSlot({ name: 'bare', kind: 'setup_token', value: 'sk-ant-oat01-xxx' });
+      const attached1 = await tm.addSlot({
+        name: 'oauth1',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'sk-ant-oat01-a1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const attached2 = await tm.addSlot({
+        name: 'oauth2',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'sk-ant-oat01-a2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => ({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      }));
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000 });
+      expect(Object.keys(results).sort()).toEqual([attached1.keyId, attached2.keyId].sort());
+      expect(results[apiSlot.keyId]).toBeUndefined();
+      expect(results[bareSetup.keyId]).toBeUndefined();
+      expect(fetchUsageMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('T6b: usageFetchInFlight dedupes parallel fetchAndStoreUsage calls for the same keyId', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Block the upstream until we signal, so 5 concurrent calls observe
+      // the dedupe map (all queue on the same in-flight Promise).
+      let resolveFetch: (v: any) => void = () => {};
+      const upstream = new Promise<any>((r) => {
+        resolveFetch = r;
+      });
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => upstream);
+      const parallel = Promise.all(Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)));
+      // Give the first call a microtask to land in the in-flight map.
+      await new Promise((r) => setTimeout(r, 10));
+      resolveFetch({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      const results = await parallel;
+      expect(results.every((r) => r?.fiveHour?.utilization === 0.5)).toBe(true);
+      // Critical assertion: upstream fetch hit at most once thanks to dedupe.
+      expect(fetchUsageMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('T6c: fetchUsageForAllAttached timeout returns partial results without blocking longer than timeoutMs', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Make the upstream never resolve within the test window.
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockImplementation(async () => new Promise(() => {}));
+      const t0 = Date.now();
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 60 });
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(500); // did NOT block indefinitely
+      // Best-effort: no keys will have landed yet.
+      expect(Object.keys(results).length === 0 || Object.values(results).every((v) => v === null)).toBe(true);
+    });
+  });
+
+  // ── T3-T5c: attachOAuth / detachOAuth (Z2) ─────────────────
+
+  describe('attachOAuth / detachOAuth (Z2 — setup-source only)', () => {
+    it('T3: attachOAuth on a setup-source slot sets oauthAttachment, keeps source="setup", re-validates scopes', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const creds = makeOAuthCreds({ accessToken: 'sk-ant-oat01-attach' });
+      await tm.attachOAuth(slot.keyId, creds, true);
+      const snap = await store.load();
+      const updated = snap.registry.slots.find((s) => s.keyId === slot.keyId);
+      if (!updated || updated.kind !== 'cct' || updated.source !== 'setup') {
+        throw new Error('expected setup-source cct slot');
+      }
+      expect(updated.source).toBe('setup');
+      expect(updated.oauthAttachment?.accessToken).toBe('sk-ant-oat01-attach');
+      expect(updated.oauthAttachment?.acknowledgedConsumerTosRisk).toBe(true);
+    });
+
+    it('T4: attachOAuth with insufficient scopes (missing user:profile) rejects', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const badCreds = makeOAuthCreds({ scopes: ['user:inference'] });
+      await expect(tm.attachOAuth(slot.keyId, badCreds, true)).rejects.toThrow(/user:profile/);
+    });
+
+    it('T4b: attachOAuth requires ack=true', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await expect(tm.attachOAuth(slot.keyId, makeOAuthCreds(), false as any)).rejects.toThrow(/ack/);
+    });
+
+    it('T5: detachOAuth on a setup-source slot with attachment clears oauthAttachment + usage cache', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-a', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Seed some usage state so detach clears it.
+      await store.mutate((snap) => {
+        snap.state[slot.keyId] = {
+          ...(snap.state[slot.keyId] ?? { authState: 'healthy', activeLeases: [] }),
+          usage: {
+            fetchedAt: new Date().toISOString(),
+            fiveHour: { utilization: 0.42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          },
+          lastUsageFetchedAt: new Date().toISOString(),
+        };
+      });
+      await tm.detachOAuth(slot.keyId);
+      const snap = await store.load();
+      const after = snap.registry.slots.find((s) => s.keyId === slot.keyId);
+      if (!after || after.kind !== 'cct' || after.source !== 'setup') throw new Error('expected setup cct');
+      expect(after.oauthAttachment).toBeUndefined();
+      expect(snap.state[slot.keyId]?.usage).toBeUndefined();
+      expect(snap.state[slot.keyId]?.lastUsageFetchedAt).toBeUndefined();
+    });
+
+    it('T5b: detachOAuth on a legacy-attachment slot throws (mandatory-attachment arm)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'legacy',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      await expect(tm.detachOAuth(slot.keyId)).rejects.toThrow(/legacy-attachment/);
+    });
+
+    it('T5c: attachOAuth on an api_key slot throws', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.attachOAuth(slot.keyId, makeOAuthCreds(), true)).rejects.toThrow(/slot kind must be cct/);
+    });
+
+    it('T5d: detachOAuth on an api_key slot throws (no attachment surface)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.detachOAuth(slot.keyId)).rejects.toThrow(/api_key slots have no attachment/);
+    });
+
+    // ── Codex P0 fix #3: authState reset on attach/detach ──────
+    it('T5e: attachOAuth resets stale authState=refresh_failed to healthy (Codex P0 fix #3)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      // Simulate a stale refresh_failed mark from a prior attachment cycle.
+      await tm.markAuthState(slot.keyId, 'refresh_failed');
+      let snap = await store.load();
+      expect(snap.state[slot.keyId].authState).toBe('refresh_failed');
+      // Attach fresh creds — the reset MUST clear the stale mark so the
+      // slot is eligible again in isEligible().
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      snap = await store.load();
+      expect(snap.state[slot.keyId].authState).toBe('healthy');
+    });
+
+    it('T5f: detachOAuth clears stale authState=revoked to healthy (Codex P0 fix #3)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Mark revoked as if a 403 fired mid-lifecycle.
+      await tm.markAuthState(slot.keyId, 'revoked');
+      await tm.detachOAuth(slot.keyId);
+      const snap = await store.load();
+      // With no attachment, the revoked mark is meaningless; must reset.
+      expect(snap.state[slot.keyId].authState).toBe('healthy');
+      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    // ── Codex P0 fix #3: in-flight writer race guards ──────────
+    it('T5g: fetchAndStoreUsage drops snapshot when detach lands before persist (Codex P0 fix #3)', async () => {
+      // Race scenario:
+      //   1. fetchAndStoreUsage(keyId) enters #doFetchAndStoreUsage, calls
+      //      upstream fetchUsage (mocked to stall on an explicit gate).
+      //   2. Before the persist mutate runs, detachOAuth(keyId) lands.
+      //   3. Persist must NOT write ANY state onto the now-detached slot —
+      //      otherwise the next card open renders stale percentages.
+      //
+      // Tightened from the initial T5g (Codex test-review feedback):
+      //   • Explicit `started` handshake proves the upstream fetch was
+      //     genuinely in flight before detach ran (setImmediate alone is not
+      //     a guarantee that the mock was entered).
+      //   • Post-detach snapshot is captured and deep-compared to the final
+      //     post-release snapshot — any persist-side leak of state onto the
+      //     detached slot, not just `usage`, fails the test.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Explicit two-promise handshake: the mock signals `started` on entry
+      // so the test can await it before proceeding to detach, and stalls on
+      // `fetchGate` so the race window is large and deterministic.
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-19T00:00:00Z',
+            fiveHour: { utilization: 0.5, resetsAt: '2026-04-19T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+      const usagePromise = tm.fetchAndStoreUsage(slot.keyId);
+      // Proof-of-in-flight: wait for the mock to enter BEFORE detach. This
+      // makes the race deterministic — without this barrier, a regression
+      // where detach happens before fetch starts would trivially pass.
+      await startedPromise;
+      await tm.detachOAuth(slot.keyId);
+      // Snapshot the post-detach state; the post-release snapshot MUST match
+      // this exactly — any mutation by the stale persist corrupts the test.
+      const postDetachSnap = structuredClone(await store.load());
+      releaseFetch();
+      await usagePromise;
+      const finalSnap = await store.load();
+      // WHOLE-SNAPSHOT equality (Codex v2 tightening). `mutate` always bumps
+      // revision on commit — even when the guarded callback is a no-op —
+      // so we normalize revision before comparing the data shape. Every
+      // other field (registry, state, version) must be byte-identical; a
+      // stale persist touching anything outside slots[0] / state[keyId]
+      // would still fail this assertion.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postDetachSnap));
+      // Spot-checks that pinpoint the two most common regression modes.
+      expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    it('T5h: refreshAccessToken does NOT resurrect attachment when detach lands mid-refresh (Codex P0 fix #3)', async () => {
+      // Same structure as T5g, but for the refresh pipeline. The refresh
+      // persist MUST NOT overwrite any detached-slot field after stale
+      // credentials resolve.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ expiresAtMs: Date.now() - 60_000 }), true);
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => {
+        releaseRefresh = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+        signalStarted();
+        await refreshGate;
+        return {
+          ...current,
+          accessToken: `${current.accessToken}-refreshed`,
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        };
+      });
+      const refreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
+      // Proof-of-in-flight: the upstream mock has actually entered before
+      // detach runs — otherwise this race could pass even under a regression
+      // where detach happens first.
+      await startedPromise;
+      await tm.detachOAuth(slot.keyId);
+      const postDetachSnap = structuredClone(await store.load());
+      releaseRefresh();
+      await refreshPromise;
+      const finalSnap = await store.load();
+      // WHOLE-SNAPSHOT equality (Codex v2 tightening). `mutate` always bumps
+      // revision on commit — even when the guarded callback is a no-op —
+      // so we normalize revision before comparing the data shape.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postDetachSnap));
+      // Spot-check: no attachment resurrection.
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    // ── T5i / T5j: detach + re-attach before persist — attachment-generation
+    // guard (Codex P0 fix #3, attachedAt fingerprint).
+    //
+    // These prove the deeper failure mode from the code review: if the
+    // operator detaches AND re-attaches the same keyId while an old
+    // refresh/usage fetch is still in flight, the stale persist must not
+    // clobber the newer attachment generation.
+    it('T5i: stale refresh does NOT overwrite a fresh re-attached generation (pure-generation guard)', async () => {
+      // Codex v3 tightening — BOTH attach generations use a BYTE-IDENTICAL
+      // credential payload (same accessToken, refreshToken, expiresAtMs,
+      // scopes). The ONLY difference between them is the `attachedAt`
+      // fingerprint stamped internally by attachOAuth. This closes two
+      // loopholes from prior rounds:
+      //   (a) v2 used different accessTokens, so a regression to a
+      //       value-based guard on accessToken would still pass.
+      //   (b) v3 still had asymmetric expiresAtMs (first attach expired,
+      //       reattach default future), so a regression keyed on
+      //       expiresAtMs would still pass.
+      // Here only `attachedAt` differs, and we explicitly capture both
+      // generations' fingerprints to assert they are strictly unequal.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      // Single creds literal reused for BOTH attaches → identical payload
+      // across generations; `attachedAt` is the only thing that differs.
+      // The creds are expired so the stale `refreshCredentialsIfNeeded`
+      // fires; the fresh reattach does not trigger another refresh
+      // because we do not call refreshCredentialsIfNeeded on the fresh gen.
+      const identicalCreds = makeOAuthCreds({
+        accessToken: 'oat-SHARED',
+        expiresAtMs: Date.now() - 60_000,
+      });
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Capture the stale generation's fingerprint BEFORE detach so we can
+      // later assert the fresh generation minted a strictly different one.
+      const postAttachStaleSnap = await store.load();
+      const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => {
+        releaseRefresh = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+        signalStarted();
+        await refreshGate;
+        return {
+          ...current,
+          // Force a token-change: a regression keyed on accessToken diff
+          // would say "no change, safe to write" and clobber the fresh gen.
+          accessToken: `${current.accessToken}-refreshed`,
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        };
+      });
+      const staleRefreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
+      await startedPromise;
+      // Force a wall-clock gap so the fresh reattach gets a strictly
+      // different `attachedAt` (Date.now() resolution is 1ms).
+      await new Promise((r) => setTimeout(r, 5));
+      await tm.detachOAuth(slot.keyId);
+      // Reattach with the IDENTICAL creds payload — only attachedAt differs.
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      const postReattachSnap = await store.load();
+      const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
+      const freshAttachedAt: number | undefined = freshAttachment.attachedAt;
+      // The two generations minted DIFFERENT fingerprints — this is the
+      // single distinguisher the guard has to work with. If this ever
+      // becomes equal, the test would stop exercising the guard at all.
+      expect(typeof staleAttachedAt).toBe('number');
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(freshAttachedAt).not.toBe(staleAttachedAt);
+      releaseRefresh();
+      await staleRefreshPromise;
+      const finalSnap = await store.load();
+      const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
+      // Pure-generation guard: fresh attachment survives byte-for-byte.
+      expect(finalAttachment).toEqual(freshAttachment);
+      expect(finalAttachment.accessToken).toBe('oat-SHARED');
+      expect(finalAttachment.accessToken).not.toBe('oat-SHARED-refreshed');
+      expect(finalAttachment.attachedAt).toBe(freshAttachedAt);
+    });
+
+    it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation (pure-generation guard)', async () => {
+      // Codex v3 tightening — credential payload is BYTE-IDENTICAL across
+      // the stale and fresh attachments; the ONLY generational
+      // distinguisher is `attachedAt`, and we explicitly assert the two
+      // fingerprints are strictly unequal before exercising the race.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const identicalCreds = makeOAuthCreds({ accessToken: 'oat-SHARED' });
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Capture the stale generation's fingerprint BEFORE detach.
+      const postAttachStaleSnap = await store.load();
+      const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-19T00:00:00Z',
+            fiveHour: { utilization: 0.99, resetsAt: '2026-04-19T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+      const staleUsagePromise = tm.fetchAndStoreUsage(slot.keyId);
+      await startedPromise;
+      // Force wall-clock gap so the fresh generation's `attachedAt` differs.
+      await new Promise((r) => setTimeout(r, 5));
+      await tm.detachOAuth(slot.keyId);
+      // Reattach with the IDENTICAL creds payload — only attachedAt differs.
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      const postReattachSnap = structuredClone(await store.load());
+      const freshAttachedAt: number | undefined = (postReattachSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
+      // Two generations → two strictly different fingerprints. If this
+      // ever collapses to equality, the race below would pass trivially.
+      expect(typeof staleAttachedAt).toBe('number');
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(freshAttachedAt).not.toBe(staleAttachedAt);
+      releaseFetch();
+      await staleUsagePromise;
+      const finalSnap = await store.load();
+      // WHOLE-SNAPSHOT equality (revision-normalized). Any stale write to
+      // state or slot fails the assertion — not only the `usage` field.
+      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      expect(normalize(finalSnap)).toEqual(normalize(postReattachSnap));
+      // Spot-checks.
+      expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.attachedAt).toBe(freshAttachedAt);
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe('oat-SHARED');
+    });
+  });
+
+  // ── T10/T10b: api_key runtime fence (Z3) ───────────────────
+
+  describe('api_key runtime fence (Z3 — not runtime-selectable in phase 1)', () => {
+    it('T10: applyToken throws for an api_key slot; activeKeyId unchanged', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctSlot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.applyToken(apiSlot.keyId)).rejects.toThrow(/api_key is not runtime-selectable/);
+      const snap = await store.load();
+      // The cct slot remains active — the fence must not have flipped it.
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+    });
+
+    it('T10b: acquireLease rejects when only api_key slots exist (no healthy cct slot)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({ name: 'api1', kind: 'api_key', value: 'sk-ant-api03-aaaaaaaaa' });
+      await tm.addSlot({ name: 'api2', kind: 'api_key', value: 'sk-ant-api03-bbbbbbbbb' });
+      // No cct slot at all → acquireLease must refuse rather than lease on api_key.
+      await expect(tm.acquireLease('svc:fence', 60_000)).rejects.toThrow(/no healthy slot/);
+    });
+
+    it('T10b-ii: acquireLease falls through an api_key active slot and leases the first healthy cct', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctSlot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const apiSlot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-aaaaaaaaa' });
+      // Force activeKeyId to point at the api_key slot (bypassing applyToken's
+      // fence so we can verify acquireLease handles the pre-existing state).
+      await store.mutate((snap) => {
+        snap.registry.activeKeyId = apiSlot.keyId;
+      });
+      const lease = await tm.acquireLease('svc:fall-through', 60_000);
+      const snap = await store.load();
+      // acquireLease must have pivoted activeKeyId to a cct slot.
+      expect(snap.registry.activeKeyId).toBe(cctSlot.keyId);
+      expect(snap.state[cctSlot.keyId].activeLeases.map((l) => l.leaseId)).toContain(lease.leaseId);
+      expect(snap.state[apiSlot.keyId].activeLeases.map((l) => l.leaseId)).not.toContain(lease.leaseId);
+    });
+
+    it('T10-rotate: rotateToNext skips api_key candidates', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctA = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'vA' });
+      await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-xxxxxxxxxxx' });
+      const cctB = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'vB' });
+      // Currently active is cctA. rotateToNext should skip the api_key and
+      // land on cctB.
+      const result = await tm.rotateToNext();
+      expect(result?.keyId).toBe(cctB.keyId);
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctB.keyId);
+      void cctA;
+    });
+
+    it('T10-rotate-rl: rotateOnRateLimit skips api_key candidates', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cctA = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'vA' });
+      await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-yyyyyyyyyyy' });
+      const cctB = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'vB' });
+      const result = await tm.rotateOnRateLimit('hit', { source: 'response_header', cooldownMinutes: 60 });
+      expect(result?.keyId).toBe(cctB.keyId);
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctB.keyId);
+      void cctA;
+    });
+
+    it('T10-ensure: ensureActiveSlot re-picks a cct slot when the persisted active is an api_key', async () => {
+      // Pre-populate the store with an api_key as activeKeyId, then init()
+      // and expect ensureActiveSlot() to self-heal by pivoting to a cct.
+      const storePath = path.join(tmp, 'cct-store.json');
+      const { storeMod } = await importSut();
+      const bootstrap = new storeMod.CctStore(storePath);
+      const apiKeyId = '01HZZZAPIKEY000000000000001';
+      const cctKeyId = '01HZZZCCTAAA00000000000000A';
+      await bootstrap.mutate((snap) => {
+        snap.registry.slots.push({
+          kind: 'api_key',
+          keyId: apiKeyId,
+          name: 'api',
+          value: 'sk-ant-api03-seededseed',
+          createdAt: new Date().toISOString(),
+        });
+        snap.registry.slots.push({
+          kind: 'cct',
+          source: 'setup',
+          keyId: cctKeyId,
+          name: 'cct',
+          setupToken: 'sk-ant-oat01-seed',
+          createdAt: new Date().toISOString(),
+        });
+        snap.state[apiKeyId] = { authState: 'healthy', activeLeases: [] };
+        snap.state[cctKeyId] = { authState: 'healthy', activeLeases: [] };
+        // Deliberately point active at the api_key slot.
+        snap.registry.activeKeyId = apiKeyId;
+      });
+      process.env.SOMA_CCT_DISABLE_ENV_SEED = 'true';
+      const { mod } = await importSut();
+      const store = new storeMod.CctStore(storePath);
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(cctKeyId);
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {

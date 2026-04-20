@@ -38,6 +38,22 @@ export interface OAuthAttachment {
    * the migrator / UI cannot silently drop the flag.
    */
   acknowledgedConsumerTosRisk: true;
+  /**
+   * Codex P0 fix #3 — attachment-generation fingerprint.
+   *
+   * Epoch ms stamped at `attachOAuth` time. `refreshAccessToken` preserves
+   * it (the attachment identity is unchanged — only the tokens rotate).
+   * `detachOAuth` erases the attachment entirely; a subsequent re-attach
+   * stamps a fresh `attachedAt`. That is the difference the refresh/usage
+   * persist paths use to reject a stale in-flight result that would
+   * otherwise overwrite a newer attachment generation on the same keyId.
+   *
+   * Optional for back-compat with v2 snapshots persisted before this
+   * field existed; callers treat `undefined` as a distinct "no fingerprint"
+   * generation (so a capture of `undefined` must still strictly equal a
+   * later `undefined` before the persist is allowed).
+   */
+  attachedAt?: number;
 }
 
 /** Raw Anthropic API key. Headless; no OAuth attachment. */
