@@ -1,6 +1,7 @@
 import type { ClaudeHandler } from '../../claude-handler';
 import type { McpManager } from '../../mcp-manager';
 import type { WorkflowType } from '../../types';
+import type { UserSettingsStore } from '../../user-settings-store';
 import type { WorkingDirectoryManager } from '../../working-directory-manager';
 import type { ContextWindowManager } from '../context-window-manager';
 import type { ReactionManager } from '../reaction-manager';
@@ -37,6 +38,8 @@ export interface CommandDependencies {
   slackApi: SlackApiHelper;
   reactionManager: ReactionManager;
   contextWindowManager: ContextWindowManager;
+  // Compaction Tracking (#617): required by /compact-threshold handler for per-user persistence.
+  userSettingsStore: UserSettingsStore;
 }
 
 /**

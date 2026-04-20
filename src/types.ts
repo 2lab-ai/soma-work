@@ -242,6 +242,23 @@ export interface ConversationSession {
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;
+  // Compaction Tracking (#617):
+  // Monotonically-incrementing epoch; bumped by START signals (PreCompact hook or `status==='compacting'` fallback).
+  compactEpoch?: number;
+  // Per-epoch dedupe map for Slack posts (one "starting" + one "complete" per cycle).
+  compactPostedByEpoch?: Record<number, { pre: boolean; post: boolean }>;
+  // Per-epoch dedupe flag: true when compaction-context rebuild has been scheduled for this epoch.
+  compactionRehydratedByEpoch?: Record<number, boolean>;
+  // Usage % snapshot captured at PreCompact for the "was ~X%" message.
+  preCompactUsagePct?: number | null;
+  // Latest observed usage % (updated on every result-message); fallback source for X/Y.
+  lastKnownUsagePct?: number | null;
+  // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
+  autoCompactPending?: boolean;
+  // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
+  pendingUserText?: string | null;
+  // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
+  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
   // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
   activeLegStartedAtMs?: number;
   // Accumulated busy time (ms) across closed legs of the current session.
