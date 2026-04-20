@@ -253,6 +253,18 @@ export interface ConversationSession {
   preCompactUsagePct?: number | null;
   // Latest observed usage % (updated on every result-message); fallback source for X/Y.
   lastKnownUsagePct?: number | null;
+  // #617 followup — SDK-authoritative compaction metrics captured from
+  // `compact_metadata` on the SDK `compact_boundary` system message.
+  // These are preferred over the heuristic `preCompactUsagePct` /
+  // `lastKnownUsagePct` pair because they are measured at the exact
+  // SDK-internal pre/post boundary rather than the last turn-end sample.
+  // Nullable only when the SDK omits the field (defensive — current SDK
+  // versions always provide `pre_tokens`; `post_tokens` and `duration_ms`
+  // are optional in the type).
+  compactPreTokens?: number | null;
+  compactPostTokens?: number | null;
+  compactTrigger?: 'manual' | 'auto' | null;
+  compactDurationMs?: number | null;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
