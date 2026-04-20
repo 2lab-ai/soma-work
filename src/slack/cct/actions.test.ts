@@ -227,6 +227,84 @@ describe('buildCardFromManager (post-action ephemeral card)', () => {
     expect(Array.isArray(blocks)).toBe(true);
     expect(blocks.length).toBeGreaterThan(0);
   });
+
+  // Codex P0 fix #2 — post-action ephemeral card must hide api_key slots
+  // from rows AND from the set_active selector, matching the Z-topic
+  // `renderCctCard` filter. A stray api_key row would let the user click a
+  // token whose runtime path throws (api_key fence in applyToken), leaving
+  // them with only `logger.error` as feedback.
+  it('T8g: buildCardFromManager hides api_key slot rows + set_active options (Codex P0 fix #2)', async () => {
+    const snap = {
+      version: 2 as const,
+      revision: 2,
+      registry: {
+        activeKeyId: 'slot-1',
+        slots: [
+          {
+            kind: 'cct' as const,
+            source: 'setup' as const,
+            keyId: 'slot-1',
+            name: 'cct1',
+            setupToken: 'sk-ant-oat01-abc',
+            createdAt: '2026-04-18T00:00:00Z',
+          },
+          {
+            kind: 'api_key' as const,
+            keyId: 'api-1',
+            name: 'ops-api',
+            value: 'sk-ant-api03-zzz',
+            createdAt: '2026-04-18T00:00:00Z',
+          },
+        ],
+      },
+      state: {},
+    };
+    const tm = {
+      getSnapshot: vi.fn(async () => snap),
+      listTokens: vi.fn(() => []),
+      getActiveToken: vi.fn(() => null),
+    } as any;
+    const blocks = await buildCardFromManager(tm);
+    const flat = JSON.stringify(blocks);
+    // cct slot is rendered.
+    expect(flat).toContain('cct1');
+    // api_key slot name must NOT appear as a row title (row titles embed the
+    // name as plain text). We assert the name doesn't appear anywhere in
+    // the block tree (no row, no set_active option, no legacy button).
+    expect(flat).not.toContain('ops-api');
+    // Hidden-count context line is surfaced so operators still see the
+    // api_key slots exist.
+    expect(flat).toContain('1 api_key slots hidden');
+  });
+
+  it('T8g-ii: buildCardFromManager omits hidden-count line when no api_key slots exist', async () => {
+    const snap = {
+      version: 2 as const,
+      revision: 2,
+      registry: {
+        activeKeyId: 'slot-1',
+        slots: [
+          {
+            kind: 'cct' as const,
+            source: 'setup' as const,
+            keyId: 'slot-1',
+            name: 'cct1',
+            setupToken: 'sk-ant-oat01-abc',
+            createdAt: '2026-04-18T00:00:00Z',
+          },
+        ],
+      },
+      state: {},
+    };
+    const tm = {
+      getSnapshot: vi.fn(async () => snap),
+      listTokens: vi.fn(() => []),
+      getActiveToken: vi.fn(() => null),
+    } as any;
+    const blocks = await buildCardFromManager(tm);
+    const flat = JSON.stringify(blocks);
+    expect(flat).not.toMatch(/api_key slots hidden/);
+  });
 });
 
 describe('cct_open_remove / cct_open_rename routing', () => {
@@ -511,7 +589,7 @@ describe('attach/detach action routing (Z2)', () => {
     }
   });
 
-  it('T8d: attach view_submission validate→ack→attachOAuth (happy path)', async () => {
+  it('T8d: attach view_submission validate→ack-first→attachOAuth (happy path)', async () => {
     const { app, viewHandlers } = makeApp();
     const attachOAuth = vi.fn(async () => undefined);
     const tm = {
@@ -550,13 +628,74 @@ describe('attach/detach action routing (Z2)', () => {
       },
       client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
     });
-    // Plain ack (not an errors-ack) fires after the successful attach.
+    // Codex P0 fix #1 — plain ack (not an errors-ack) fires BEFORE the
+    // attach mutation so the 3s view_submission budget is never at risk of
+    // CAS retries on a slow disk. Ordering is asserted strictly in T8f.
     expect(ack).toHaveBeenCalledWith();
     expect(attachOAuth).toHaveBeenCalledWith(
       'slot-B',
       expect.objectContaining({ accessToken: expect.any(String) }),
       true,
     );
+  });
+
+  it('T8f: attach view_submission acks BEFORE awaiting attachOAuth (Codex P0 fix #1, 3s budget safety)', async () => {
+    // Regression test — proves strict ordering: the handler must ack before
+    // attachOAuth starts, so a slow disk / CAS retry never blows the 3s
+    // Slack view_submission budget. We fork a manually-resolved attachOAuth
+    // promise and assert ack fires while attach is still pending.
+    const { app, viewHandlers } = makeApp();
+    let resolveAttach!: () => void;
+    const attachGate = new Promise<void>((r) => {
+      resolveAttach = r;
+    });
+    const attachOAuth = vi.fn(async () => {
+      await attachGate;
+    });
+    const tm = {
+      attachOAuth,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-B', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    registerCctActions(app, tm);
+    const submit = viewHandlers.get('cct_attach_oauth');
+    const ack = vi.fn(async () => undefined);
+    const handlerPromise = submit?.({
+      ack,
+      body: {
+        user: { id: 'admin' },
+        container: { channel_id: 'C1' },
+        view: {
+          private_metadata: 'slot-B',
+          state: {
+            values: {
+              [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+              },
+              [CCT_BLOCK_IDS.attach_tos_ack]: {
+                [CCT_ACTION_IDS.attach_tos_ack]: { selected_options: [{ value: 'ack' }] },
+              },
+            },
+          },
+        },
+      },
+      client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+    });
+    // Let microtasks drain so sync validation + ack have a chance to run.
+    await new Promise((r) => setImmediate(r));
+    // Strict ordering: ack must have fired even though attachOAuth is still
+    // pending on the gate.
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(attachOAuth).toHaveBeenCalledTimes(1);
+    // Release attach so the handler can return cleanly.
+    resolveAttach();
+    await handlerPromise;
   });
 
   it('T8e: attach view_submission surfaces validation errors (no ack checkbox) as response_action:errors', async () => {

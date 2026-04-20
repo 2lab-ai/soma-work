@@ -167,7 +167,12 @@ export async function applyCct(args: { userId: string; value: string }): Promise
     return { ok: false, summary: '🚫 Admin only: CCT는 관리자만 변경할 수 있습니다.' };
   }
   const tm = getTokenManager();
-  const tokens = tm.listTokens();
+  // Z3 runtime fence (Codex P0 fix #2): text-command `/z cct set <name>` and
+  // `next` must not target api_key slots — phase1 treats api_key as add-only.
+  // Mirrors the fence in cct-handler.ts (listRuntimeSelectableTokens) and
+  // the render-side filter in `renderCctCard` so every user-facing path
+  // agrees about what's selectable.
+  const tokens = tm.listRuntimeSelectableTokens();
   if (tokens.length === 0) {
     return { ok: false, summary: '⚠️ No CCT tokens configured.' };
   }

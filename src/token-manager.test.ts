@@ -1194,6 +1194,124 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const slot = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
       await expect(tm.detachOAuth(slot.keyId)).rejects.toThrow(/api_key slots have no attachment/);
     });
+
+    // ── Codex P0 fix #3: authState reset on attach/detach ──────
+    it('T5e: attachOAuth resets stale authState=refresh_failed to healthy (Codex P0 fix #3)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      // Simulate a stale refresh_failed mark from a prior attachment cycle.
+      await tm.markAuthState(slot.keyId, 'refresh_failed');
+      let snap = await store.load();
+      expect(snap.state[slot.keyId].authState).toBe('refresh_failed');
+      // Attach fresh creds — the reset MUST clear the stale mark so the
+      // slot is eligible again in isEligible().
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      snap = await store.load();
+      expect(snap.state[slot.keyId].authState).toBe('healthy');
+    });
+
+    it('T5f: detachOAuth clears stale authState=revoked to healthy (Codex P0 fix #3)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Mark revoked as if a 403 fired mid-lifecycle.
+      await tm.markAuthState(slot.keyId, 'revoked');
+      await tm.detachOAuth(slot.keyId);
+      const snap = await store.load();
+      // With no attachment, the revoked mark is meaningless; must reset.
+      expect(snap.state[slot.keyId].authState).toBe('healthy');
+      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    // ── Codex P0 fix #3: in-flight writer race guards ──────────
+    it('T5g: fetchAndStoreUsage drops snapshot when detach lands before persist (Codex P0 fix #3)', async () => {
+      // Race scenario:
+      //   1. fetchAndStoreUsage(keyId) enters #doFetchAndStoreUsage, calls
+      //      upstream fetchUsage (mocked to stall on a gate).
+      //   2. Before the persist mutate runs, detachOAuth(keyId) lands.
+      //   3. Persist must NOT write state.usage onto the now-detached slot —
+      //      otherwise the next card open renders stale percentages.
+      //
+      // We gate the upstream fetch on an external Promise so we can await
+      // the detach between `doFetch` return and the store.mutate persist.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
+      // Arm the upstream-usage mock to stall until we release it. The stall
+      // window is where detachOAuth will land.
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-19T00:00:00Z',
+            fiveHour: { utilization: 0.5, resetsAt: '2026-04-19T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+      const usagePromise = tm.fetchAndStoreUsage(slot.keyId);
+      // Wait a tick so the inner fetch starts, then detach before we
+      // release the fetch gate.
+      await new Promise((r) => setImmediate(r));
+      await tm.detachOAuth(slot.keyId);
+      releaseFetch();
+      await usagePromise;
+      const snap = await store.load();
+      const st = snap.state[slot.keyId];
+      // The detached slot must NOT have usage rewritten onto it; the detach
+      // path already cleared it, and persist must respect that.
+      expect(st?.usage).toBeUndefined();
+      // And the attachment remains absent — no resurrection.
+      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    it('T5h: refreshAccessToken does NOT resurrect attachment when detach lands mid-refresh (Codex P0 fix #3)', async () => {
+      // Race: refreshAccessToken is in-flight (upstream refresh stalling on
+      // a gate). During the stall, detachOAuth removes the attachment.
+      // When refresh resumes to persist, it must see `oauthAttachment ===
+      // undefined` and drop the refreshed credentials on the floor rather
+      // than silently undoing the operator's detach.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ expiresAtMs: Date.now() - 60_000 }), true);
+      // Arm the upstream refresher to stall until we release.
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => {
+        releaseRefresh = r;
+      });
+      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+        await refreshGate;
+        return {
+          ...current,
+          accessToken: `${current.accessToken}-refreshed`,
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        };
+      });
+      const refreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
+      await new Promise((r) => setImmediate(r));
+      await tm.detachOAuth(slot.keyId);
+      releaseRefresh();
+      await refreshPromise;
+      const snap = await store.load();
+      // Attachment stays detached — refresh must not resurrect it.
+      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
   });
 
   // ── T10/T10b: api_key runtime fence (Z3) ───────────────────

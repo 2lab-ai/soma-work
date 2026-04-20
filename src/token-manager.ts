@@ -950,6 +950,12 @@ export class TokenManager {
       delete st.lastUsageFetchedAt;
       delete st.nextUsageFetchAllowedAt;
       delete st.consecutiveUsageFailures;
+      // Codex P0 fix #3: clear attachment-scoped auth state. With no
+      // attachment, 'refresh_failed'/'revoked' are not meaningful (a bare
+      // setup-source slot uses setupToken verbatim). Leaving stale marks
+      // would make the slot ineligible in `isEligible` even after a later
+      // attach cycle that itself resets state.
+      st.authState = 'healthy';
     }
   }
 
@@ -1000,6 +1006,12 @@ export class TokenManager {
       if (creds.subscriptionType !== undefined) attachment.subscriptionType = creds.subscriptionType;
       if (creds.rateLimitTier !== undefined) attachment.rateLimitTier = creds.rateLimitTier;
       slot.oauthAttachment = attachment;
+      // Reset attachment-scoped auth state (Codex P0 fix #3): a slot carrying
+      // a stale `refresh_failed` / `revoked` mark from a prior attachment
+      // must become eligible again once fresh creds are supplied. Without
+      // this, `isEligible` rejects the slot and `acquireLease` skips it.
+      const prev = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      snap.state[slot.keyId] = { ...prev, authState: 'healthy' };
     });
     await this.refreshCache();
     // Fire-and-forget usage fetch — the renderCctCard path will also pick
@@ -1106,6 +1118,12 @@ export class TokenManager {
         await this.store.mutate((snap) => {
           const target = snap.registry.slots.find((s) => s.keyId === slot.keyId);
           if (!target || target.kind !== 'cct') return;
+          // Codex P0 fix #3 (detached-in-flight guard): if `detachOAuth`
+          // landed between this refresh starting and persist, the slot has
+          // no attachment to update. Resurrecting it would silently undo
+          // the operator's explicit detach. Drop the refreshed credentials
+          // on the floor — a later attach cycle will supply fresh ones.
+          if (target.oauthAttachment === undefined) return;
           const updated: OAuthAttachment = {
             accessToken: next.accessToken,
             refreshToken: next.refreshToken,
@@ -1115,11 +1133,7 @@ export class TokenManager {
           };
           if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
           if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
-          if (target.source === 'setup') {
-            target.oauthAttachment = updated;
-          } else {
-            target.oauthAttachment = updated;
-          }
+          target.oauthAttachment = updated;
           const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
           snap.state[slot.keyId] = st;
@@ -1213,6 +1227,13 @@ export class TokenManager {
     const settled = result;
 
     await this.store.mutate((snap2) => {
+      // Codex P0 fix #3 (detached-in-flight guard): if `detachOAuth` landed
+      // between this usage fetch starting and persist, the slot no longer
+      // has an attachment. Writing usage onto a detached slot would render
+      // stale percentages on the next card open (and the state is already
+      // cleared by `#detachOAuthOnSetupSlot`). Drop the snapshot.
+      const slotNow = snap2.registry.slots.find((s) => s.keyId === keyId);
+      if (!slotNow || slotNow.kind !== 'cct' || slotNow.oauthAttachment === undefined) return;
       const st = snap2.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       st.usage = settled.snapshot;
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;

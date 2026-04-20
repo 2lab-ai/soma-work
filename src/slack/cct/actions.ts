@@ -356,12 +356,17 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Z2 — View submission: Attach OAuth. Validate-then-ack-then-mutate so
-  // validation errors surface as `response_action: 'errors'` keyed by the
-  // input block_id (NOT the action_id — Slack's Block Kit spec requires
-  // block_id). Ordering matters: we ack with 'errors' before any mutation,
-  // or ack plainly before invoking `attachOAuth` so the 3s ack budget is
-  // safe.
+  // Z2 — View submission: Attach OAuth.
+  //
+  // Ordering (Codex P0 fix #1):
+  //   1. Sync-validate blob shape, scopes, ToS ack.
+  //   2. If invalid → ack with `response_action: 'errors'` keyed by block_id.
+  //      This single ack satisfies Slack's 3s contract AND surfaces field
+  //      errors on the still-open modal.
+  //   3. If valid → ack plainly FIRST (satisfies 3s budget even if the store
+  //      mutate hits CAS retries on a slow disk), then invoke `attachOAuth`.
+  //   4. Runtime errors from `attachOAuth` (race-lost kind/source checks,
+  //      scope drift) surface via ephemeral DM — the modal is already closed.
   app.view(CCT_VIEW_IDS.attach, async ({ ack, body, client }) => {
     const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
     const blob = readPlainText(values, CCT_BLOCK_IDS.attach_oauth_blob, CCT_ACTION_IDS.attach_oauth_input);
@@ -387,22 +392,31 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await ack();
       return;
     }
+    // Ack FIRST to satisfy Slack's 3s view_submission contract. The mutate
+    // path does disk I/O + CAS retry + refreshCache, which can spike beyond
+    // 3s on a slow disk or contended store.
+    await ack();
     try {
       await tokenManager.attachOAuth(keyId, creds!, true);
-      await ack();
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
-      const msg = (err as Error)?.message ?? '';
-      // Surface scope / ack / shape errors back onto the blob input.
-      if (/missing required scope/i.test(msg) || /slot kind must be cct/i.test(msg) || /only setup-source/i.test(msg)) {
-        await ack({
-          response_action: 'errors',
-          errors: { [CCT_BLOCK_IDS.attach_oauth_blob]: msg },
-        });
-        return;
-      }
-      await ack();
       logger.error('cct view_submission attach failed', err);
+      // Modal is already closed — surface failure via ephemeral DM so the
+      // operator isn't left guessing. Swallow DM errors (Slack rate limits /
+      // offline channel) — logger.error is the durable record.
+      const userId = (body as any)?.user?.id as string | undefined;
+      const channel = await resolveActorDm(client, userId);
+      if (channel) {
+        const msg = (err as Error)?.message ?? 'attach failed';
+        try {
+          await client.chat.postMessage({
+            channel,
+            text: `:warning: Attach OAuth failed: ${msg}`,
+          });
+        } catch (dmErr) {
+          logger.debug('cct attach DM failed', { dmErr });
+        }
+      }
     }
   });
 }
@@ -564,32 +578,65 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
   // Always load the authoritative snapshot so post-action ephemeral cards
   // reflect current per-slot state (rate-limit timestamps, usage, cooldown)
   // rather than rendering with an empty `states` map.
+  //
+  // Z3 runtime fence (Codex P0 fix #2): post-action ephemeral cards must NOT
+  // render api_key slots as clickable rows / set-active options — api_key is
+  // add-only in PR-B. `renderCctCard` already applies the same filter for
+  // the Z-topic entry; we mirror it here for the CCT-action entry so the
+  // fence is uniform across every card-render path.
   try {
     const snap = await tokenManager.getSnapshot();
-    return buildCctCardBlocks({
-      slots: snap.registry.slots,
+    const slots = snap.registry.slots;
+    const visibleSlots = slots.filter((s) => s.kind === 'cct');
+    const hiddenApiKeyCount = slots.length - visibleSlots.length;
+    const blocks = buildCctCardBlocks({
+      slots: visibleSlots,
       states: snap.state ?? {},
       activeKeyId: snap.registry.activeKeyId,
       nowMs: Date.now(),
     });
+    if (hiddenApiKeyCount > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${hiddenApiKeyCount} api_key slots hidden (phase1: add-only, use is follow-up)`,
+          },
+        ],
+      });
+    }
+    return blocks;
   } catch (err) {
     logger.warn('buildCardFromManager: getSnapshot failed, falling back to listTokens()', { err });
+    // Fallback path runs only when getSnapshot fails (disk corruption /
+    // unreadable file). We still apply the api_key fence here.
     const summaries = tokenManager.listTokens();
     const active = tokenManager.getActiveToken();
-    // The summary shape lacks the full AuthKey surface, so we reconstruct
-    // minimal AuthKey-ish objects for the fallback card. This path runs
-    // only when getSnapshot fails (disk corruption / unreadable file),
-    // which should be rare.
     const slots: AuthKey[] = summaries.map((s) =>
       s.kind === 'api_key'
         ? { kind: 'api_key', keyId: s.keyId, name: s.name, value: '', createdAt: '' }
         : { kind: 'cct', source: 'setup', keyId: s.keyId, name: s.name, setupToken: '', createdAt: '' },
     );
-    return buildCctCardBlocks({
-      slots,
+    const visibleSlots = slots.filter((s) => s.kind === 'cct');
+    const hiddenApiKeyCount = slots.length - visibleSlots.length;
+    const blocks = buildCctCardBlocks({
+      slots: visibleSlots,
       states: {},
       activeKeyId: active?.keyId,
     });
+    if (hiddenApiKeyCount > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${hiddenApiKeyCount} api_key slots hidden (phase1: add-only, use is follow-up)`,
+          },
+        ],
+      });
+    }
+    return blocks;
   }
 }
 

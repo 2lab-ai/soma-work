@@ -38,6 +38,13 @@ const mockStore = {
 vi.mock('../../../token-manager', () => {
   const tm = {
     listTokens: () => mockStore.slots.map((s) => ({ keyId: s.keyId, name: s.name, kind: s.kind, status: 'healthy' })),
+    // Mirror TokenManager.listRuntimeSelectableTokens: filter api_key. Codex
+    // P0 fix #2 — applyCct now uses this method to keep text-command fence
+    // in sync with render-side filter.
+    listRuntimeSelectableTokens: () =>
+      mockStore.slots
+        .filter((s) => s.kind !== 'api_key')
+        .map((s) => ({ keyId: s.keyId, name: s.name, kind: s.kind, status: 'healthy' })),
     getActiveToken: () => {
       const t = mockStore.slots.find((s) => s.keyId === mockStore.activeKeyId);
       return t ? { keyId: t.keyId, name: t.name, kind: t.kind } : null;
@@ -261,6 +268,44 @@ describe('cct-topic.applyCct', () => {
     const r = await applyCct({ userId: 'U1', value: 'set_doesnotexist' });
     expect(r.ok).toBe(false);
     expect(r.summary).toContain('Unknown');
+  });
+
+  // Codex P0 fix #2 — `/z cct set <api_key-name>` must be rejected as
+  // Unknown (no applyToken call), with the api_key name absent from the
+  // "Available:" hint. This mirrors the text-command fence in
+  // cct-handler.ts and the render-side filter in renderCctCard.
+  it('T10f: applyCct rejects api_key slot targets and hides them from Available hint', async () => {
+    resetMockStore();
+    mockStore.slots.push({
+      kind: 'api_key',
+      keyId: 'api-5',
+      name: 'ops-api',
+      value: 'sk-ant-api03-abcdefghij',
+      createdAt: '',
+    });
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const r = await applyCct({ userId: 'U1', value: 'set_ops-api' });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain('Unknown');
+    expect(mockStore.activeKeyId).toBe('slot-1');
+    expect(r.description ?? '').not.toContain('ops-api');
+    expect(r.description ?? '').toContain('cct1');
+  });
+
+  it('T10g: applyCct rotateToNext target after api_key add still picks only cct slots', async () => {
+    resetMockStore();
+    mockStore.slots.push({
+      kind: 'api_key',
+      keyId: 'api-6',
+      name: 'k6',
+      value: 'sk-ant-api03-abcdefghij',
+      createdAt: '',
+    });
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    // Two cct slots exist (cct1, cct2) + 1 api_key — rotateToNext still succeeds.
+    const r = await applyCct({ userId: 'U1', value: 'next' });
+    expect(r.ok).toBe(true);
+    expect(r.summary).toContain('Rotated');
   });
 });
 
