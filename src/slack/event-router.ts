@@ -62,6 +62,49 @@ export class EventRouter {
   }
 
   /**
+   * Compaction Tracking (#617 AC3): re-dispatch a user message that was
+   * captured at auto-compact time and held in `session.pendingUserText`
+   * until the SDK finished compaction. Called from the PostCompact hook
+   * and the `onCompactBoundary` stream callback — whichever fires first.
+   *
+   * Builds a synthetic `MessageEvent` whose shape matches what `messageHandler`
+   * already consumes, and an inline `SayFn` that writes to the same thread
+   * via `slackApi.postMessage` so we don't depend on Bolt's request-scoped
+   * `say` (which is unavailable outside an actual event handler).
+   */
+  public async dispatchPendingUserMessage(
+    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    text: string,
+  ): Promise<void> {
+    const syntheticEvent = {
+      type: 'message',
+      channel: ctx.channel,
+      thread_ts: ctx.threadTs,
+      user: ctx.user,
+      ts: ctx.ts,
+      text,
+    } as unknown as MessageEvent;
+
+    const say: SayFn = async (arg) => {
+      const payload = typeof arg === 'string' ? { text: arg } : arg;
+      await this.deps.slackApi.postMessage(ctx.channel, payload.text ?? '', {
+        threadTs: ctx.threadTs,
+        blocks: payload.blocks,
+      });
+      return {} as any;
+    };
+
+    this.logger.info('dispatchPendingUserMessage: re-entering pipeline after compaction', {
+      channel: ctx.channel,
+      threadTs: ctx.threadTs,
+      user: ctx.user,
+      textPreview: text.substring(0, 80),
+    });
+
+    await this.messageHandler(syntheticEvent, say);
+  }
+
+  /**
    * Returns true when the `SOMA_ENABLE_LEGACY_SLASH` env var is set.
    * When enabled the old `/soma`, `/session`, `/new` handlers remain active
    * (rollback path — Tier 2 in plan/MASTER-SPEC.md §12).

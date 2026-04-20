@@ -501,6 +501,25 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a /compact-threshold command (set per-user auto-compact threshold).
+   * Matches `/compact-threshold`, `/compact-threshold 80`, `compact-threshold abc`, etc.
+   * See #617 AC1/AC7.
+   */
+  static isCompactThresholdCommand(text: string): boolean {
+    return /^\/?compact-threshold(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse /compact-threshold command. Returns raw argument string when present,
+   * `undefined` when no argument (current-value query per AC7).
+   */
+  static parseCompactThresholdCommand(text: string): { rawArg?: string } {
+    const match = text.trim().match(/^\/?compact-threshold(?:\s+(\S+))?$/i);
+    if (!match) return {};
+    return { rawArg: match[1] };
+  }
+
+  /**
    * Check if text is a /new command
    */
   static isNewCommand(text: string): boolean {

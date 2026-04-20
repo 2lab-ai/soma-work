@@ -38,6 +38,7 @@ import {
 } from './slack';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
+import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
@@ -141,6 +142,8 @@ export class SlackHandler {
       slackApi: this.slackApi,
       reactionManager: this.reactionManager,
       contextWindowManager: this.contextWindowManager,
+      // #617: /compact-threshold handler reads/writes compactThreshold.
+      userSettingsStore,
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
@@ -188,6 +191,10 @@ export class SlackHandler {
     this.inputProcessor = new InputProcessor({
       fileHandler: this.fileHandler,
       commandRouter: this.commandRouter,
+      // #617 AC3: InputProcessor needs session + slackApi to intercept the
+      // user turn when autoCompactPending is set.
+      claudeHandler: this.claudeHandler,
+      slackApi: this.slackApi,
     });
 
     this.sessionInitializer = new SessionInitializer({
@@ -243,6 +250,30 @@ export class SlackHandler {
       commandDeps,
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
+
+    // #617 DI finalisation. These three wires CANNOT run before EventRouter
+    // is constructed (cyclic dep) — ClaudeHandler and StreamExecutor need
+    // to be able to call back into EventRouter's dispatchPendingUserMessage.
+
+    // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
+    //    Set on an already-constructed instance via a runtime field.
+    (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
+      ctx: { channel: string; threadTs: string; user: string; ts: string },
+      text: string,
+    ) => this.eventRouter.dispatchPendingUserMessage(ctx, text);
+
+    // 2. ClaudeHandler compact-hook factory. Each call creates a closure
+    //    over the session + slack routing context for a single query.
+    // Optional-chained so existing tests that mock claudeHandler as {} still work.
+    this.claudeHandler.setCompactHookBuilder?.(({ session, channel, threadTs }) =>
+      buildCompactHooks({
+        session,
+        channel,
+        threadTs,
+        slackApi: this.slackApi,
+        eventRouter: this.eventRouter,
+      }),
+    );
   }
 
   /**

@@ -9,6 +9,7 @@ import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
 import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
+import { CompactThresholdHandler } from './compact-threshold-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
 import { EffortHandler } from './effort-handler';
@@ -82,6 +83,10 @@ export class CommandRouter {
       new OnboardingHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
+      // #617: CompactThresholdHandler MUST come before CompactHandler so
+      // `/compact-threshold` / `/compact-threshold 80` match the threshold
+      // handler instead of being swallowed by the bare-`/compact` matcher.
+      new CompactThresholdHandler(deps),
       new CompactHandler(deps),
       new LinkHandler(deps),
       new CloseHandler(deps),
