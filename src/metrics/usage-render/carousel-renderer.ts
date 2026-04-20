@@ -1,12 +1,12 @@
 /**
- * Carousel (v2) renderer — produces 4 tab PNGs in parallel.
+ * Carousel renderer — produces 4 tab PNGs in parallel.
  * Trace: docs/usage-card-dark/trace.md — Scenario 10.
  *
  * Delegates the ECharts option shape to `buildCarouselOption.buildCardOption`
- * and reuses v1 `svg-to-png` + font cache. Each tab is rendered independently
- * in parallel via `Promise.all`; if one tab fails the first error propagates
- * wrapped as a v1 `SafeOperationalError` subclass so `isSafeOperational`
- * still matches in the handler's catch.
+ * and reuses the shared `svg-to-png` + font cache. Each tab is rendered
+ * independently in parallel via `Promise.all`; if one tab fails the first
+ * error propagates wrapped as a `SafeOperationalError` subclass so
+ * `isSafeOperational` still matches in the handler's catch.
  */
 
 import * as fs from 'node:fs/promises';
@@ -20,11 +20,11 @@ import type { CarouselStats, TabId } from './types';
 /** Tab render order — matches button order in carousel. */
 const TAB_IDS: TabId[] = ['24h', '7d', '30d', 'all'];
 
-/** Canvas size per tab PNG. Matches v1 `buildOption.CANVAS_{WIDTH,HEIGHT}`. */
+/** Canvas size per tab PNG. */
 const CANVAS_WIDTH = 1600;
 const CANVAS_HEIGHT = 2200;
 
-// Module-level font cache (mirrors v1 `renderer.ts`).
+// Module-level font cache.
 const FONT_PATH = path.join(__dirname, 'assets', 'NotoSansKR.ttf');
 let fontPathPromise: Promise<string> | null = null;
 let testFontPath: string | null = null;

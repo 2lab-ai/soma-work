@@ -38,13 +38,13 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 ### Scenario 1 — `/usage card` happy path
 
 **Entry**: `src/slack/commands/usage-handler.ts::UsageHandler.handleCard(ctx)`
-**Feature flag**: `USAGE_CARD_V2` env. false/unset → v1 single-render path (untouched). true → this flow.
+**Feature flag**: 없음. `/usage card` 는 단일 carousel 경로. (v1 legacy 및 env gate 는 `refactor/usage-card-drop-legacy` 에서 완전 제거 — see Changelog rev-3.)
 
-**Flow (replaces v1 single-render path when flag active)**:
-1. strict param gate + privacy gate (unchanged from v1)
+**Flow**:
+1. strict param gate + privacy gate
 2. `now = clock()`; compute 4 `{startDate,endDate}` windows (24h / 7d / 30d / all — all starts at earliest event day, lazily from aggregator)
-3. `carouselStats = await aggregator.aggregateCarousel({ targetUserId: user, now })` — single scan, 4 `UsageCardStats | {empty:true}`
-4. if **all 4** empty → v1 text ephemeral fallback (Scenario 12)
+3. `carouselStats = await aggregator.aggregateCarousel({ targetUserId: user, now })` — single scan, 4 `TabResult` per-tab
+4. if **all 4** empty → text ephemeral fallback (Scenario 12)
 5. `pngMap = await renderer.renderCarousel(carouselStats, '30d')` → `{ '24h': Buffer, '7d': Buffer, '30d': Buffer, 'all': Buffer }`
 6. upload 4 PNGs in parallel via `Promise.all([filesUploadV2 × 4])` → `fileIds: Record<tabId, string>`
    - `filesUploadV2` args: `{ filename, file: buffer }` — **no `channels` / `channel_id`** (guard against Slack auto-posting orphan file messages)
@@ -60,7 +60,6 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 - initial `blocks[1].type === 'image' && blocks[1].slack_file.id === fileIds['30d']`
 - `blocks[2].type === 'actions'` with `block_id === 'usage_card_tabs'` (static, not messageTs-embedded), 4 buttons, value set = `{24h, 7d, 30d, all}`, 30d button has `style:'primary'`
 - tabCache has entry keyed by messageTs with userId === ctx.user
-- feature flag off (`USAGE_CARD_V2=false`) → v1 path executes; no `aggregateCarousel`/`renderCarousel`/4-upload calls
 
 **RED**: `usage-handler.test.ts` describe `handleCard (carousel)` — DI mocks for aggregator (4 non-empty), renderer (4 buffers), slackApi (track calls), clock (fixed ts). Assert call order + payload shape + tabCache populated.
 
@@ -76,14 +75,14 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 
 **Entry**: `src/metrics/report-aggregator.ts::ReportAggregator.aggregateCarousel(opts)`
 **Input**: `{ targetUserId: string, now: Date }`
-**Output**: `CarouselStats = { '24h': UsageCardResult, '7d': UsageCardResult, '30d': UsageCardResult, 'all': UsageCardResult }`
-  (`UsageCardResult = UsageCardStats | EmptyStats` — v1 type union reused)
+**Output**: `CarouselStats = { '24h': TabResult, '7d': TabResult, '30d': TabResult, 'all': TabResult }`
+  (`TabResult = CarouselTabStats | EmptyTabStats` — tab-specific types; v1 type union was removed in rev-3.)
 
 **Internals**:
-1. one pass over `metrics-events-*.jsonl` files — do NOT call `aggregateUsageCard` 4× (would cost 4× disk I/O)
+1. one pass over `metrics-events-*.jsonl` files — do NOT invoke a single-window aggregator 4× (would cost 4× disk I/O)
 2. per event: compute KST timestamp + day key + hour key
 3. for each of 4 windows, if event falls inside, accumulate into that window's mutable builder: totals, per-hour, per-day, per-model, per-session, activeDays Set
-4. after scan: convert each builder → `UsageCardStats` (or `{empty:true}` if 0 events)
+4. after scan: convert each builder → `CarouselTabStats` (or `EmptyTabStats` = `{empty:true}` if 0 events)
 5. rankings: global top-N using **period=30d** only (v1 parity — carousel tabs share rankings; shown on card footer)
 
 **Contract**:
@@ -282,7 +281,7 @@ class TabCache {
 **File touch**:
 - New: `src/metrics/usage-render/carousel-renderer.ts`
 - New: `src/metrics/usage-render/carousel-renderer.test.ts`
-- Untouched: `src/metrics/usage-render/renderer.ts` (v1 path kept for any other future callers — v2 handler uses carousel only)
+- Deleted (rev-3): `src/metrics/usage-render/renderer.ts`, `buildOption.ts` — v1 path completely removed
 
 ---
 
@@ -375,15 +374,15 @@ export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 
 **Contract**: none of the following paths are modified:
 - `UsageHandler.execute(ctx)` when `!isCardSubcommand(text)` — falls through to existing `aggregateTokenUsage` + `formatReport` + `postSystemMessage`
-- `/usage` (no period), `/usage today`, `/usage 7d`, `/usage 30d`, `/usage @user` — all plain-text responses identical byte-for-byte to v1
+- `/usage` (no period), `/usage today`, `/usage 7d`, `/usage 30d`, `/usage @user` — all plain-text responses identical byte-for-byte to pre-carousel behavior
 
-**RED**: `usage-handler.test.ts` describe `regression (v1 text path)` —
-- run 5 commands through handler with pinned fixture output
-- assert `postSystemMessage` called with text containing expected section headers ("📊 Token Usage", "Rankings", etc.)
-- assert `filesUploadV2` + `postMessage` never called (card path not taken)
-- existing v1 test assertions still green
+**RED**: `usage-handler.test.ts` describe `UsageHandler subcommand routing` —
+- run 4 text commands (`usage`, `usage today`, `usage 7d`, `usage 30d`) through handler
+- assert `handleCard` spy never fires
+- assert `aggregateCarousel` never called (card path not taken)
+- `/usage <@OTHER_USER>` → privacy gate reached (`postSystemMessage` called with "다른 사용자") instead of card path
 
-**File touch**: `src/slack/commands/usage-handler.test.ts` (add regression describe block — no production code change)
+**File touch**: `src/slack/commands/usage-handler.test.ts` (routing describe — no production code change beyond refactor)
 
 ---
 
@@ -424,7 +423,7 @@ export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 | Multi-instance readiness                                           | Single-instance assumption PINNED (§4.6); Redis migration = separate ticket | Current prod = single systemd unit; Redis-backed TabCache premature — Linus P0 #2 |
 | `filesUploadV2` auto-post risk                                     | `channel_id: undefined` + contract test spies upload args         | Passing `channels` would post 4 orphan file messages — Oracle P0 #1            |
 | Heatmap scale step 0 hex                                           | `#1F1F1F` (L=31.0) replacing `#2A2A2A` (L=42.0)                   | strict monotonicity over `#3A231C` (L=41.1) — Oracle P1                        |
-| `USAGE_CARD_V2` feature flag                                       | Added; false → v1 path, true → carousel path                     | Oracle MISSING: rollback path needed without code revert                      |
+| Dual-path env feature flag                                         | **Removed** (rev-3 — see Changelog for identifier + history)     | Env flag was single-point-of-failure — dropped with v1 legacy in refactor/usage-card-drop-legacy |
 
 ---
 
@@ -446,7 +445,7 @@ export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 
 ### Modified (5 files)
 
-- `src/metrics/report-aggregator.ts` (+ `aggregateCarousel`; `aggregateUsageCard` kept for any remaining callers — delete only if unused post-v2)
+- `src/metrics/report-aggregator.ts` (+ `aggregateCarousel`; v1 single-window aggregator deleted in rev-3 — see Changelog)
 - `src/metrics/report-aggregator.test.ts` (extend)
 - `src/slack/commands/usage-handler.ts` (`handleCard` body replaced — gates kept)
 - `src/slack/commands/usage-handler.test.ts` (extend + regression describe)
@@ -463,13 +462,51 @@ export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 - `.github/workflows/deploy.yml` — no workflow change needed
 - `package.json` / `package-lock.json` — no new deps
 - `src/metrics/usage-render/assets/*` — fonts reused as-is
-- `src/metrics/usage-render/renderer.ts` — v1 single-renderer path kept
-- `src/metrics/usage-render/errors.ts` — v1 error taxonomy reused
-- `src/metrics/usage-render/types.ts` — `UsageCardStats` reused; `CarouselStats` added inline in carousel-renderer.ts
+- `src/metrics/usage-render/errors.ts` — error taxonomy reused across carousel path
+- `src/metrics/usage-render/types.ts` — carousel types (`CarouselStats`/`TabResult`/`CarouselTabStats`/`EmptyTabStats`/etc.); v1 type union removed in rev-3 (see Changelog)
 
 ---
 
 ## Changelog
+
+### 2026-04-19 (rev-3) — v1 legacy removal, feature flag deleted
+
+Live incident: `/opt/soma-work/dev/.env` 에 `USAGE_CARD_V2` 미주입 상태로 배포되어 주군이 carousel 을 보지 못함. "롤백 가드" 명목으로 추가된 dual path + env flag 가 오히려 배포 사고의 원인이었음. 단일 경로 refactor.
+
+#### MODIFIED Scenarios
+
+- **Scenario 1 — `/usage card` happy path**
+  - **Before**: `USAGE_CARD_V2=true` 일 때만 carousel, 아니면 v1 single-render 경로
+  - **After**: feature flag 제거. `/usage card` → 단일 carousel 경로 (`handleCard` 한 몸으로 합쳐짐)
+  - **Trigger**: dev 배포 사고 (env flag 미주입 → carousel 미노출) + v2 is superset of v1
+  - **Contract tests updated**: `flag off → v1 path` 테스트 삭제; routing invariant 만 유지
+
+- **Scenario 15 — Regression: text commands unchanged**
+  - **Before**: `USAGE_CARD_V2` flag on/off matrix 9-parametrized cases (`it.each` 2회)
+  - **After**: 단일 routing invariant — bare `/usage` / today / 7d / 30d 는 `handleCard` 미진입 (flag 언급 없음)
+  - **Trigger**: flag 자체가 사라져 matrix 불필요
+  - **Contract tests updated**: `process.env.USAGE_CARD_V2` 조작 제거, 단일 `describe('UsageHandler subcommand routing')` 로 축소
+
+#### REMOVED Scenarios
+
+None (Scenario 15 축소만; 카운트 불변).
+
+#### Code + Docs deleted (moved to `trash/`)
+
+- `src/metrics/usage-render/renderer.ts` — v1 단일 PNG 렌더러
+- `src/metrics/usage-render/buildOption.ts` — v1 ECharts option builder
+- `src/metrics/usage-render/renderer.test.ts`, `buildOption.test.ts` — v1 전용 테스트
+- `src/metrics/usage-card-aggregation.test.ts` — v1 aggregator 테스트
+- `src/slack/commands/usage-handler.ts::handleCardV1` 메서드
+- `src/metrics/report-aggregator.ts::aggregateUsageCard` 메서드
+- `src/metrics/usage-render/types.ts` 의 `UsageCardStats` / `UsageCardResult` / `EmptyStats` / `UsageCardRanking` / `UsageCardSession` 타입
+- `src/slack/commands/usage-handler.ts` 의 `UsageCardOverrides.aggregator.aggregateUsageCard`, `.renderer` 필드
+- `docs/usage-card/` 전체 디렉토리 (v1 spec/trace/proof/deploy-patch)
+
+#### Rollout change
+
+- `USAGE_CARD_V2` env flag 제거. `.env` 에 아무것도 추가하지 않아도 `/usage card` → carousel.
+- 회귀 시 code revert (단일 경로 — revert 로 전체 원복)
 
 ### 2026-04-18 (rev-2) — Linus + Oracle review integration
 
