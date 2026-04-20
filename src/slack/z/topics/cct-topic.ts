@@ -20,6 +20,12 @@ import { buildCctCardBlocks } from '../../cct/builder';
 
 const logger = new Logger('CctTopic');
 
+/** Z1 — upper bound for usage fan-out on card open. Chosen so the card
+ * still renders responsively (under Slack's 3s budget for ephemeral post)
+ * even when one or two keys are slow or unreachable. The fan-out runs
+ * allSettled internally, so the slowest key caps the wait here. */
+const USAGE_ON_OPEN_TIMEOUT_MS = 1500;
+
 /**
  * Pull the latest `CctStoreSnapshot` via the public `getSnapshot()` API so
  * we can hand full `SlotState`s to the builder. Wrapped in try/catch to
@@ -77,18 +83,53 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     };
   }
 
+  // Z1 — Card open fan-out: refresh usage for every CCT slot that
+  // currently carries an OAuthAttachment so inactive slots don't render
+  // with stale/empty usage. Await (not fire-and-forget) per plan §3.6 so
+  // "한눈에" semantics hold; fall back to `.catch()` and whatever is in
+  // the snapshot if the fan-out throws or hits the timeout.
+  try {
+    await getTokenManager()
+      .fetchUsageForAllAttached({ timeoutMs: USAGE_ON_OPEN_TIMEOUT_MS })
+      .catch((err: unknown) => {
+        logger.debug(`fetchUsageForAllAttached: ignored error on card open: ${(err as Error)?.message ?? err}`);
+      });
+  } catch (err) {
+    // Defensive: a non-async throw from the getTokenManager() accessor must
+    // not brick card rendering.
+    logger.debug(`fetchUsageForAllAttached accessor threw: ${(err as Error)?.message ?? err}`);
+  }
+
   const { slots, states, activeKeyId } = await loadSnapshotOrEmpty();
+  // Z3 runtime fence — phase1 renders CCT slots only; api_key slots are
+  // store-only in PR-B and are hidden from the card row list + legacy
+  // set-active buttons. A `context` line below surfaces the hidden count
+  // so operators can still see the api_key slots exist.
+  const visibleSlots = slots.filter((s) => s.kind === 'cct');
+  const hiddenApiKeyCount = slots.length - visibleSlots.length;
   const blocks = buildCctCardBlocks({
-    slots,
+    slots: visibleSlots,
     states,
     activeKeyId,
     nowMs: Date.now(),
   });
 
+  if (hiddenApiKeyCount > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `${hiddenApiKeyCount} api_key slots hidden (phase1: add-only, use is follow-up)`,
+        },
+      ],
+    });
+  }
+
   // Back-compat: the text `/z cct` command still used legacy-named action
   // IDs from the shared ui-builder. We add them here so the existing
   // z-settings-actions router continues to resolve `set_<name>` / `next`.
-  const legacyActions: Record<string, unknown>[] = slots.map((s) => ({
+  const legacyActions: Record<string, unknown>[] = visibleSlots.map((s) => ({
     type: 'button',
     action_id: `z_setting_cct_set_${s.name}`,
     text: { type: 'plain_text', text: `🔑 ${s.name}`, emoji: true },
@@ -116,7 +157,7 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     ],
   });
 
-  const active = slots.find((s) => s.keyId === activeKeyId);
+  const active = visibleSlots.find((s) => s.keyId === activeKeyId);
   return { text: `🔑 CCT (active: ${active?.name ?? 'none'})`, blocks };
 }
 
@@ -126,7 +167,12 @@ export async function applyCct(args: { userId: string; value: string }): Promise
     return { ok: false, summary: '🚫 Admin only: CCT는 관리자만 변경할 수 있습니다.' };
   }
   const tm = getTokenManager();
-  const tokens = tm.listTokens();
+  // Z3 runtime fence (Codex P0 fix #2): text-command `/z cct set <name>` and
+  // `next` must not target api_key slots — phase1 treats api_key as add-only.
+  // Mirrors the fence in cct-handler.ts (listRuntimeSelectableTokens) and
+  // the render-side filter in `renderCctCard` so every user-facing path
+  // agrees about what's selectable.
+  const tokens = tm.listRuntimeSelectableTokens();
   if (tokens.length === 0) {
     return { ok: false, summary: '⚠️ No CCT tokens configured.' };
   }

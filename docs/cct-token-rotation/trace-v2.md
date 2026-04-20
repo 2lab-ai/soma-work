@@ -256,18 +256,138 @@ heuristic match.
 - `SlotAuthLease` is the new public lease shape. Legacy callers still
   reach it via `ensureValidCredentials()` for back-compat.
 
-## 10. Future work (PR-B, within #575)
+## 10. `/cct` card — Attach / Detach OAuth (Z2, PR-B)
 
-- **PR-B** — per-slot `CLAUDE_CONFIG_DIR` isolation via the new
-  `runClaudeQuery` async-generator wrapper (`src/spawn/claude-spawn.ts`).
-  Each query call receives its own `mkdtemp` directory with
-  `.credentials.json` written atomically, avoiding any `process.env`
-  mutation. PR-B also atomically renames `SlotAuthLease.accessToken`
-  to a discriminant-appropriate name, wires the `api_key` kind through
-  add/list/use/spawn, fixes the 11 audit blockers (A1–C6) each with a
-  regression test, deletes `mirrorToEnv`, and installs a
-  `grep`-zero CI gate proving no `process.env.CLAUDE_CODE_OAUTH_TOKEN =`
-  or `process.env.ANTHROPIC_API_KEY =` writes remain in runtime code.
+Each setup-token slot on the card now carries an Attach OAuth / Detach OAuth
+button pair. The button visibility rules are:
+
+| Slot state                                                         | Attach | Detach |
+|--------------------------------------------------------------------|--------|--------|
+| `CctSlotWithSetup` without `oauthAttachment`                       | ✅     | ✖      |
+| `CctSlotWithSetup` **with** `oauthAttachment`                      | ✖      | ✅     |
+| `CctSlotLegacyAttachmentOnly` (mandatory `oauthAttachment`)        | ✖      | ✖ (†)  |
+| `ApiKeySlot`                                                       | ✖      | ✖ (Z3) |
+
+† Detach on a legacy-attachment slot would remove the only credential
+material the slot has. The button is suppressed in the UI and the
+`TokenManager.detachOAuth(keyId)` public entry point additionally
+**throws** `RuntimeError('detach requires CctSlotWithSetup source')` when
+the caller sneaks a legacy-attachment `keyId` through, because the
+union's `#detachOAuthOnSetupSlot(slot)` helper is narrowed to
+`source: 'setup'`. The compile-time arm protection + runtime assertion
+together give two independent fences.
+
+### 10.1 Attach flow
+
+```
+user clicks Attach OAuth on card row
+  │
+  ▼
+app.action('cct_row_attach_oauth_<keyId>')  (src/slack/cct/actions.ts)
+  │   ack()            ◄── within 3 s
+  ▼
+views.open(buildAttachOAuthModal({ keyId, slotName }))
+  │   modal has:
+  │    • plain_text_input  block_id=cct_attach_oauth_blob   # pasted JSON blob
+  │    • plain_text_input  block_id=cct_attach_oauth_scope  # comma-separated
+  │    • checkboxes       block_id=cct_attach_oauth_ack     # ToS ack
+  ▼
+app.view('cct_attach_oauth_submit')
+  │   ack()                     ◄── within 3 s, may return
+  │                                response_action:'errors'
+  │                                keyed by block_id
+  │
+  ▼
+tokenManager.attachOAuth(keyId, parsedBlob, ackTrue)
+  │   CAS loop
+  │    • load snapshot
+  │    • assert slot.kind === 'cct'     (skip api_key)
+  │    • assert slot.source === 'setup' (reject legacy)
+  │    • build OAuthAttachment with acknowledgedConsumerTosRisk=true
+  │    • persist
+  │
+  ▼
+re-post /cct card into thread
+```
+
+### 10.2 Detach flow
+
+```
+user clicks Detach OAuth on card row
+  │
+  ▼
+app.action('cct_row_detach_oauth_<keyId>')  (inline — no modal)
+  │   validate slot.source === 'setup' from cached snapshot
+  │   ack()                     ◄── within 3 s
+  │   tokenManager.detachOAuth(keyId)
+  │    • CAS loop
+  │    • #detachOAuthOnSetupSlot narrows to source:'setup' at compile time
+  │    • set slot.oauthAttachment = undefined
+  │    • persist
+  │
+  ▼
+re-post /cct card into thread
+```
+
+## 11. `/cct` card — usage fan-out on open (Z1)
+
+When any admin opens the `/cct` card (via `/cct`, `/z cct`, or any other
+renderer entry point), `renderCctCard` awaits a bounded
+`tokenManager.fetchUsageForAllAttached({ timeoutMs: 1500 })` before
+loading the snapshot for the card body. This guarantees that when the
+card renders, every CCT slot that currently carries an
+`oauthAttachment` shows 5 h / 7 d utilisation sourced from a fresh
+fetch, rather than whatever happened to be cached from the last active
+slot's call.
+
+- The fan-out runs `Promise.allSettled` internally so the slowest key
+  caps the wait at `timeoutMs`. A slow or unreachable key degrades that
+  row's numbers to the snapshot-cached values — it never bricks the
+  card.
+- Per-`keyId` dedupe (`usageFetchInFlight: Map<keyId, Promise>`)
+  prevents two concurrent card opens from issuing two overlapping fetch
+  requests for the same key.
+- Setup-only slots with no `oauthAttachment` are skipped — the usage
+  endpoint requires an OAuth access token.
+- `api_key` slots are skipped (usage endpoint is OAuth-only).
+
+## 12. `api_key` lifecycle (Z3, PR-B phase 1)
+
+PR-B phase 1 wires the Add path only. Runtime selection (apply /
+rotate / lease / spawn) is deliberately fenced:
+
+| Path                                                               | PR-B phase 1 behaviour                                             |
+|--------------------------------------------------------------------|---------------------------------------------------------------------|
+| Add Slot modal, `kind = api_key` radio                              | `TokenManager.addSlot({ kind: 'api_key', value: 'sk-ant-api03-…' })` persists the slot |
+| `/cct` card row render                                              | `api_key` slots **not** shown; context line `"N api_key slots hidden"` when N≥1 |
+| `/cct` text: `cct set <api_key-name>`                               | `CctHandler` reads `listRuntimeSelectableTokens()` → slot invisible → `Unknown token` |
+| `/cct` text: `cct usage <api_key-name>`                             | same fence → `Unknown slot`                                         |
+| `TokenManager.applyToken(api_keyId)`                                | throws `api_key is not runtime-selectable in phase 1`               |
+| `TokenManager.rotateToNext()`                                       | skips `api_key` candidates                                          |
+| `TokenManager.rotateOnRateLimit()`                                  | skips `api_key` candidates                                          |
+| `TokenManager.acquireLease()`                                       | skips `api_key` candidates                                          |
+| `buildQueryEnv(lease)` for an `api_key` lease                       | n/a — acquireLease can't return one in phase 1                      |
+
+The intent is: `api_key` slots exist in the store and the UI, so an
+operator can add them ahead of the spawn-isolation work, but they are
+**indistinguishable from absent** on every runtime path until the
+follow-up issue (`ANTHROPIC_API_KEY` + isolated `claude-spawn`) removes
+the fence. Every fence site carries a comment referencing that
+follow-up so it can be lifted atomically.
+
+## 13. Future work (remaining #575 scope)
+
+- Per-slot `CLAUDE_CONFIG_DIR` isolation via the new `runClaudeQuery`
+  async-generator wrapper (`src/spawn/claude-spawn.ts`). Each query
+  call receives its own `mkdtemp` directory with `.credentials.json`
+  written atomically, avoiding any `process.env` mutation.
+- Atomic rename `SlotAuthLease.accessToken` → discriminant-appropriate
+  field (tracked under V2-R9).
+- `api_key` runtime selection path (lifts the fences in §12).
+- 11 audit blockers A1–C6, each with a regression test.
+- `mirrorToEnv` deletion and the `grep`-zero CI gate proving no
+  `process.env.CLAUDE_CODE_OAUTH_TOKEN =` or
+  `process.env.ANTHROPIC_API_KEY =` writes remain in runtime code.
 
 Further factoring of `src/oauth/**` into a separately packaged island
 is out of scope for #575 and tracked elsewhere.
