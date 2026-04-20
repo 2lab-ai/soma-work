@@ -1002,6 +1002,12 @@ export class TokenManager {
         expiresAtMs: creds.expiresAtMs,
         scopes: [...creds.scopes],
         acknowledgedConsumerTosRisk: true,
+        // Codex P0 fix #3 (attachment-generation fingerprint): stamp the attach
+        // moment so a later in-flight refresh/usage persist can reject writes
+        // that crossed a detach → re-attach boundary. `refreshAccessToken`
+        // copies this value through; `detachOAuth` erases the attachment, so
+        // any later attach lands a different `attachedAt`.
+        attachedAt: Date.now(),
       };
       if (creds.subscriptionType !== undefined) attachment.subscriptionType = creds.subscriptionType;
       if (creds.rateLimitTier !== undefined) attachment.rateLimitTier = creds.rateLimitTier;
@@ -1091,6 +1097,13 @@ export class TokenManager {
   private refreshAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
     const existing = this.refreshInFlight.get(slot.keyId);
     if (existing) return existing;
+    // Codex P0 fix #3 — capture the attachment-generation fingerprint BEFORE
+    // the async refresh call. A detach + re-attach while the network request
+    // is in flight changes `attachedAt` on the slot; the persist branch uses
+    // this captured value to reject stale overwrites of a newer generation.
+    // `undefined` is a distinct generation (v2 snapshots persisted before
+    // the field existed), so the comparison is strict.
+    const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
     const promise = (async (): Promise<string> => {
       try {
         let next: OAuthCredentials;
@@ -1118,18 +1131,31 @@ export class TokenManager {
         await this.store.mutate((snap) => {
           const target = snap.registry.slots.find((s) => s.keyId === slot.keyId);
           if (!target || target.kind !== 'cct') return;
-          // Codex P0 fix #3 (detached-in-flight guard): if `detachOAuth`
-          // landed between this refresh starting and persist, the slot has
-          // no attachment to update. Resurrecting it would silently undo
-          // the operator's explicit detach. Drop the refreshed credentials
-          // on the floor — a later attach cycle will supply fresh ones.
+          // Codex P0 fix #3 (attachment-generation guard).
+          //
+          // Two failure modes this must reject:
+          //   (a) `detachOAuth` landed between refresh start and persist —
+          //       `target.oauthAttachment` is now `undefined`. Writing would
+          //       silently resurrect the attachment the operator just removed.
+          //   (b) `detachOAuth` + a NEW `attachOAuth` both landed between
+          //       refresh start and persist — `target.oauthAttachment` is
+          //       defined, but it is a different attachment generation.
+          //       Writing would clobber the newer generation with stale
+          //       tokens from the old one (auth-state leakage).
+          //
+          // Both are caught by requiring the current attachment's fingerprint
+          // to strictly equal the one we captured at refresh start.
           if (target.oauthAttachment === undefined) return;
+          if (target.oauthAttachment.attachedAt !== preAttachedAt) return;
           const updated: OAuthAttachment = {
             accessToken: next.accessToken,
             refreshToken: next.refreshToken,
             expiresAtMs: next.expiresAtMs,
             scopes: [...next.scopes],
             acknowledgedConsumerTosRisk: true,
+            // Preserve the fingerprint — refresh keeps the attachment
+            // identity unchanged, only the tokens rotate.
+            attachedAt: target.oauthAttachment.attachedAt ?? preAttachedAt,
           };
           if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
           if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
@@ -1171,6 +1197,11 @@ export class TokenManager {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return null;
+    // Codex P0 fix #3 — capture attachment-generation fingerprint BEFORE the
+    // async fetch/refresh/retry pipeline starts. If detach + re-attach both
+    // land before persist, the fingerprint differs and the write is dropped.
+    // `undefined` is a valid (pre-Z2) generation and compares strictly.
+    const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
     const state = snap.state[keyId];
     const nowMs = Date.now();
     if (state?.nextUsageFetchAllowedAt) {
@@ -1227,13 +1258,21 @@ export class TokenManager {
     const settled = result;
 
     await this.store.mutate((snap2) => {
-      // Codex P0 fix #3 (detached-in-flight guard): if `detachOAuth` landed
-      // between this usage fetch starting and persist, the slot no longer
-      // has an attachment. Writing usage onto a detached slot would render
-      // stale percentages on the next card open (and the state is already
-      // cleared by `#detachOAuthOnSetupSlot`). Drop the snapshot.
+      // Codex P0 fix #3 (attachment-generation guard).
+      //
+      // Reject the persist when either:
+      //   (a) `detachOAuth` cleared the attachment since fetch start, OR
+      //   (b) `detachOAuth` + a fresh `attachOAuth` both landed before
+      //       persist — the slot again has an attachment but it is a new
+      //       generation, and the usage numbers we fetched belong to the
+      //       OLD generation. Writing them onto the new generation's state
+      //       would render stale percentages on the next card open.
+      //
+      // Both cases collapse to "the captured fingerprint must match the
+      // current attachment's fingerprint, strictly".
       const slotNow = snap2.registry.slots.find((s) => s.keyId === keyId);
       if (!slotNow || slotNow.kind !== 'cct' || slotNow.oauthAttachment === undefined) return;
+      if (slotNow.oauthAttachment.attachedAt !== preAttachedAt) return;
       const st = snap2.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       st.usage = settled.snapshot;
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;

@@ -55,9 +55,17 @@ vi.mock('../../../token-manager', () => {
       mockStore.activeKeyId = keyId;
     },
     rotateToNext: async () => {
-      if (mockStore.slots.length < 2) return null;
-      const i = mockStore.slots.findIndex((s) => s.keyId === mockStore.activeKeyId);
-      const next = mockStore.slots[(i + 1) % mockStore.slots.length];
+      // Mirror TokenManager.rotateToNext: api_key slots are not
+      // runtime-selectable in phase 1 (Z3), so rotation iterates over the
+      // cct slots only. Without this filter the mock diverges from the real
+      // implementation and T10g would spuriously pass for a regression that
+      // let api_key slots be rotated to.
+      const cctSlots = mockStore.slots.filter((s) => s.kind === 'cct');
+      if (cctSlots.length < 2) return null;
+      const activeIdxInCct = cctSlots.findIndex((s) => s.keyId === mockStore.activeKeyId);
+      // When the current active is an api_key (or missing), pick the first
+      // cct slot — mirrors the real rotateToNext's fallback pick.
+      const next = activeIdxInCct >= 0 ? cctSlots[(activeIdxInCct + 1) % cctSlots.length] : cctSlots[0];
       mockStore.activeKeyId = next.keyId;
       return { keyId: next.keyId, name: next.name };
     },
@@ -302,10 +310,24 @@ describe('cct-topic.applyCct', () => {
       createdAt: '',
     });
     vi.mocked(isAdminUser).mockReturnValue(true);
-    // Two cct slots exist (cct1, cct2) + 1 api_key — rotateToNext still succeeds.
-    const r = await applyCct({ userId: 'U1', value: 'next' });
-    expect(r.ok).toBe(true);
-    expect(r.summary).toContain('Rotated');
+    // Two cct slots exist (cct1, cct2) + 1 api_key. Rotate twice — a
+    // non-filtering rotateToNext would land on the api_key on the second
+    // rotation. Tightened (Codex test-review feedback) to assert on
+    // `mockStore.activeKeyId` rather than the stringified summary so a
+    // regression that labeled the api_key as "Rotated → k6" still fails.
+    const r1 = await applyCct({ userId: 'U1', value: 'next' });
+    expect(r1.ok).toBe(true);
+    expect(mockStore.activeKeyId).toBe('slot-2');
+    expect(mockStore.activeKeyId).not.toBe('api-6');
+    const r2 = await applyCct({ userId: 'U1', value: 'next' });
+    expect(r2.ok).toBe(true);
+    // Second rotation MUST skip api-6 and wrap to slot-1; an implementation
+    // that lets api_key be the next rotation target corrupts this.
+    expect(mockStore.activeKeyId).toBe('slot-1');
+    expect(mockStore.activeKeyId).not.toBe('api-6');
+    // Final sanity: the active slot must be a cct arm, never api_key.
+    const finalActive = mockStore.slots.find((s) => s.keyId === mockStore.activeKeyId);
+    expect(finalActive?.kind).toBe('cct');
   });
 });
 

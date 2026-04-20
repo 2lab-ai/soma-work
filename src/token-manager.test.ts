@@ -1233,26 +1233,37 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     it('T5g: fetchAndStoreUsage drops snapshot when detach lands before persist (Codex P0 fix #3)', async () => {
       // Race scenario:
       //   1. fetchAndStoreUsage(keyId) enters #doFetchAndStoreUsage, calls
-      //      upstream fetchUsage (mocked to stall on a gate).
+      //      upstream fetchUsage (mocked to stall on an explicit gate).
       //   2. Before the persist mutate runs, detachOAuth(keyId) lands.
-      //   3. Persist must NOT write state.usage onto the now-detached slot —
+      //   3. Persist must NOT write ANY state onto the now-detached slot —
       //      otherwise the next card open renders stale percentages.
       //
-      // We gate the upstream fetch on an external Promise so we can await
-      // the detach between `doFetch` return and the store.mutate persist.
+      // Tightened from the initial T5g (Codex test-review feedback):
+      //   • Explicit `started` handshake proves the upstream fetch was
+      //     genuinely in flight before detach ran (setImmediate alone is not
+      //     a guarantee that the mock was entered).
+      //   • Post-detach snapshot is captured and deep-compared to the final
+      //     post-release snapshot — any persist-side leak of state onto the
+      //     detached slot, not just `usage`, fails the test.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       await tm.attachOAuth(slot.keyId, makeOAuthCreds(), true);
-      // Arm the upstream-usage mock to stall until we release it. The stall
-      // window is where detachOAuth will land.
+      // Explicit two-promise handshake: the mock signals `started` on entry
+      // so the test can await it before proceeding to detach, and stalls on
+      // `fetchGate` so the race window is large and deterministic.
       let releaseFetch!: () => void;
       const fetchGate = new Promise<void>((r) => {
         releaseFetch = r;
       });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
       fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
         await fetchGate;
         return {
           snapshot: {
@@ -1263,39 +1274,50 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         };
       });
       const usagePromise = tm.fetchAndStoreUsage(slot.keyId);
-      // Wait a tick so the inner fetch starts, then detach before we
-      // release the fetch gate.
-      await new Promise((r) => setImmediate(r));
+      // Proof-of-in-flight: wait for the mock to enter BEFORE detach. This
+      // makes the race deterministic — without this barrier, a regression
+      // where detach happens before fetch starts would trivially pass.
+      await startedPromise;
       await tm.detachOAuth(slot.keyId);
+      // Snapshot the post-detach state; the post-release snapshot MUST match
+      // this exactly — any mutation by the stale persist corrupts the test.
+      const postDetachSnap = await store.load();
+      const detachedSlotBefore = structuredClone(postDetachSnap.registry.slots[0]);
+      const detachedStateBefore = structuredClone(postDetachSnap.state[slot.keyId]);
       releaseFetch();
       await usagePromise;
-      const snap = await store.load();
-      const st = snap.state[slot.keyId];
-      // The detached slot must NOT have usage rewritten onto it; the detach
-      // path already cleared it, and persist must respect that.
-      expect(st?.usage).toBeUndefined();
-      // And the attachment remains absent — no resurrection.
-      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+      const finalSnap = await store.load();
+      const detachedSlotAfter = finalSnap.registry.slots[0];
+      const detachedStateAfter = finalSnap.state[slot.keyId];
+      // Deep equality: no field of the detached slot or its state was
+      // touched by the stale persist.
+      expect(detachedSlotAfter).toEqual(detachedSlotBefore);
+      expect(detachedStateAfter).toEqual(detachedStateBefore);
+      // Spot-checks that also pinpoint the two most common regression modes.
+      expect(detachedStateAfter?.usage).toBeUndefined();
+      expect((detachedSlotAfter as any).oauthAttachment).toBeUndefined();
     });
 
     it('T5h: refreshAccessToken does NOT resurrect attachment when detach lands mid-refresh (Codex P0 fix #3)', async () => {
-      // Race: refreshAccessToken is in-flight (upstream refresh stalling on
-      // a gate). During the stall, detachOAuth removes the attachment.
-      // When refresh resumes to persist, it must see `oauthAttachment ===
-      // undefined` and drop the refreshed credentials on the floor rather
-      // than silently undoing the operator's detach.
+      // Same structure as T5g, but for the refresh pipeline. The refresh
+      // persist MUST NOT overwrite any detached-slot field after stale
+      // credentials resolve.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       await tm.attachOAuth(slot.keyId, makeOAuthCreds({ expiresAtMs: Date.now() - 60_000 }), true);
-      // Arm the upstream refresher to stall until we release.
       let releaseRefresh!: () => void;
       const refreshGate = new Promise<void>((r) => {
         releaseRefresh = r;
       });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
       refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+        signalStarted();
         await refreshGate;
         return {
           ...current,
@@ -1304,13 +1326,118 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         };
       });
       const refreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
-      await new Promise((r) => setImmediate(r));
+      // Proof-of-in-flight: the upstream mock has actually entered before
+      // detach runs — otherwise this race could pass even under a regression
+      // where detach happens first.
+      await startedPromise;
       await tm.detachOAuth(slot.keyId);
+      const postDetachSnap = await store.load();
+      const detachedSlotBefore = structuredClone(postDetachSnap.registry.slots[0]);
+      const detachedStateBefore = structuredClone(postDetachSnap.state[slot.keyId]);
       releaseRefresh();
       await refreshPromise;
-      const snap = await store.load();
-      // Attachment stays detached — refresh must not resurrect it.
-      expect((snap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+      const finalSnap = await store.load();
+      expect(finalSnap.registry.slots[0]).toEqual(detachedSlotBefore);
+      expect(finalSnap.state[slot.keyId]).toEqual(detachedStateBefore);
+      // Spot-check: no attachment resurrection.
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
+    });
+
+    // ── T5i / T5j: detach + re-attach before persist — attachment-generation
+    // guard (Codex P0 fix #3, attachedAt fingerprint).
+    //
+    // These prove the deeper failure mode from the code review: if the
+    // operator detaches AND re-attaches the same keyId while an old
+    // refresh/usage fetch is still in flight, the stale persist must not
+    // clobber the newer attachment generation.
+    it('T5i: stale refresh does NOT overwrite a fresh re-attached generation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const staleAccess = 'oat-GEN-A';
+      const freshAccess = 'oat-GEN-B';
+      await tm.attachOAuth(
+        slot.keyId,
+        makeOAuthCreds({ accessToken: staleAccess, expiresAtMs: Date.now() - 60_000 }),
+        true,
+      );
+      let releaseRefresh!: () => void;
+      const refreshGate = new Promise<void>((r) => {
+        releaseRefresh = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+        signalStarted();
+        await refreshGate;
+        return {
+          ...current,
+          accessToken: `${current.accessToken}-refreshed`,
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        };
+      });
+      const staleRefreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
+      await startedPromise;
+      // Detach and immediately re-attach with a fresh access token — the
+      // stale refresh below must NOT write its result over this fresh gen.
+      await tm.detachOAuth(slot.keyId);
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: freshAccess }), true);
+      const postReattachSnap = await store.load();
+      const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
+      releaseRefresh();
+      await staleRefreshPromise;
+      const finalSnap = await store.load();
+      const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
+      // The fresh attachment is preserved byte-for-byte; the stale refresh
+      // did not rotate the access token under it.
+      expect(finalAttachment).toEqual(freshAttachment);
+      expect(finalAttachment.accessToken).toBe(freshAccess);
+    });
+
+    it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-GEN-A' }), true);
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-19T00:00:00Z',
+            fiveHour: { utilization: 0.99, resetsAt: '2026-04-19T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+      const staleUsagePromise = tm.fetchAndStoreUsage(slot.keyId);
+      await startedPromise;
+      await tm.detachOAuth(slot.keyId);
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-GEN-B' }), true);
+      // Snapshot the fresh generation's state to deep-compare later.
+      const postReattachSnap = await store.load();
+      const freshState = structuredClone(postReattachSnap.state[slot.keyId]);
+      releaseFetch();
+      await staleUsagePromise;
+      const finalSnap = await store.load();
+      // The stale usage snapshot (99% utilization) must NOT appear on the
+      // fresh generation's state entry. Fresh state stays byte-equal.
+      expect(finalSnap.state[slot.keyId]).toEqual(freshState);
+      expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
     });
   });
 

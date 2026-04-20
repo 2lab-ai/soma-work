@@ -265,16 +265,38 @@ describe('buildCardFromManager (post-action ephemeral card)', () => {
       getActiveToken: vi.fn(() => null),
     } as any;
     const blocks = await buildCardFromManager(tm);
-    const flat = JSON.stringify(blocks);
+    // Tightened assertion (Codex test-review feedback): walk the block tree
+    // structurally. A text-fragment check can pass for a leak that reuses the
+    // keyId instead of the name, or embeds the api_key into a button value.
+    // We walk every node and reject if any string field anywhere references
+    // `api-1` (the keyId) or `ops-api` (the name) while the cct slot must
+    // still be present.
+    type AnyBlock = Record<string, unknown>;
+    const collectedStrings: string[] = [];
+    const walk = (node: unknown): void => {
+      if (node == null) return;
+      if (typeof node === 'string') {
+        collectedStrings.push(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item);
+        return;
+      }
+      if (typeof node === 'object') {
+        for (const v of Object.values(node as AnyBlock)) walk(v);
+      }
+    };
+    walk(blocks);
     // cct slot is rendered.
-    expect(flat).toContain('cct1');
-    // api_key slot name must NOT appear as a row title (row titles embed the
-    // name as plain text). We assert the name doesn't appear anywhere in
-    // the block tree (no row, no set_active option, no legacy button).
-    expect(flat).not.toContain('ops-api');
+    expect(collectedStrings.some((s) => s.includes('cct1'))).toBe(true);
+    // No string anywhere references the api_key slot (name or keyId), so a
+    // leak via button `value`, action_id, or row title all fail this assertion.
+    expect(collectedStrings.some((s) => s.includes('ops-api'))).toBe(false);
+    expect(collectedStrings.some((s) => s.includes('api-1'))).toBe(false);
     // Hidden-count context line is surfaced so operators still see the
     // api_key slots exist.
-    expect(flat).toContain('1 api_key slots hidden');
+    expect(collectedStrings.some((s) => s.includes('1 api_key slots hidden'))).toBe(true);
   });
 
   it('T8g-ii: buildCardFromManager omits hidden-count line when no api_key slots exist', async () => {
@@ -639,18 +661,33 @@ describe('attach/detach action routing (Z2)', () => {
     );
   });
 
-  it('T8f: attach view_submission acks BEFORE awaiting attachOAuth (Codex P0 fix #1, 3s budget safety)', async () => {
-    // Regression test — proves strict ordering: the handler must ack before
-    // attachOAuth starts, so a slow disk / CAS retry never blows the 3s
-    // Slack view_submission budget. We fork a manually-resolved attachOAuth
-    // promise and assert ack fires while attach is still pending.
+  it('T8f: attach view_submission acks BEFORE attachOAuth is invoked (Codex P0 fix #1, 3s budget safety)', async () => {
+    // Regression test — proves strict ordering: ack must fire BEFORE
+    // attachOAuth is invoked, not merely before attachOAuth settles. A
+    // regression like `const p = attachOAuth(...); await ack(); await p;`
+    // would still satisfy a "ack called while attach pending" assertion
+    // but would blow Slack's 3s view_submission budget whenever the mutate
+    // hits CAS retries. We catch that by:
+    //   (1) recording call order synchronously in both mock bodies;
+    //   (2) asserting ack runs while attachOAuth has NOT yet been invoked;
+    //   (3) asserting the final call-order log is ['ack', 'attach'].
     const { app, viewHandlers } = makeApp();
+    const callOrder: string[] = [];
     let resolveAttach!: () => void;
     const attachGate = new Promise<void>((r) => {
       resolveAttach = r;
     });
     const attachOAuth = vi.fn(async () => {
+      callOrder.push('attach');
       await attachGate;
+    });
+    // Ack records its own call AND asserts attachOAuth has not yet been
+    // entered — this is the synchronous ordering contract the 3s budget
+    // relies on. If the handler ever regresses to calling attachOAuth first,
+    // this inner expect fires and the test fails at the exact crossing.
+    const ack = vi.fn(async () => {
+      expect(attachOAuth).not.toHaveBeenCalled();
+      callOrder.push('ack');
     });
     const tm = {
       attachOAuth,
@@ -665,7 +702,6 @@ describe('attach/detach action routing (Z2)', () => {
     } as any;
     registerCctActions(app, tm);
     const submit = viewHandlers.get('cct_attach_oauth');
-    const ack = vi.fn(async () => undefined);
     const handlerPromise = submit?.({
       ack,
       body: {
@@ -687,12 +723,13 @@ describe('attach/detach action routing (Z2)', () => {
       },
       client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
     });
-    // Let microtasks drain so sync validation + ack have a chance to run.
+    // Drain one microtask round so sync validation + ack have fired, and
+    // attachOAuth is awaiting the gate.
     await new Promise((r) => setImmediate(r));
-    // Strict ordering: ack must have fired even though attachOAuth is still
-    // pending on the gate.
     expect(ack).toHaveBeenCalledTimes(1);
     expect(attachOAuth).toHaveBeenCalledTimes(1);
+    // Strict ordering: ack first, attach second.
+    expect(callOrder).toEqual(['ack', 'attach']);
     // Release attach so the handler can return cleanly.
     resolveAttach();
     await handlerPromise;
