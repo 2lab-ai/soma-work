@@ -43,7 +43,7 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 ## Step 4: Request Approve
 
-1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 
+1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 
 선택지:
 - 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
