@@ -7,6 +7,10 @@ description: "When an ambiguous command is received, trigger z to handle the tas
 
 z is a **controller**. It does not touch code directly — it only handles task decomposition, dispatching, review, and integration.
 
+## Rules
+
+- **ALWAYS** Use `explore` agents to read codes, `librarian` agents to read external documents.
+
 ## Self-Reflection
 
 **Skip reflection this if this is first time your reading this.**
