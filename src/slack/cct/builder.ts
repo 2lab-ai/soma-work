@@ -33,11 +33,14 @@ export interface CctCardInput {
 
 /**
  * UI-facing "kind" for the Add-slot modal radio. Drives the conditional
- * form blocks — `setup_token` asks for a bare token string, `oauth_credentials`
- * asks for a claudeAiOauth blob + ToS ack. These values are mapped to the
- * v2 AuthKey arms by `cct/actions.ts` on submit.
+ * form blocks — `setup_token` asks for a bare token string,
+ * `oauth_credentials` asks for a claudeAiOauth blob + ToS ack, and
+ * `api_key` (Z3) asks for a raw `sk-ant-api03-<chars>` commercial key.
+ * These values are mapped to the v2 AuthKey arms by `cct/actions.ts` on
+ * submit. The api_key arm is store-only in phase 1 — the TokenManager
+ * fence prevents a rotation from landing on it.
  */
-type AddSlotFormKind = 'setup_token' | 'oauth_credentials';
+export type AddSlotFormKind = 'setup_token' | 'oauth_credentials' | 'api_key';
 
 /**
  * UI kind label for a persisted AuthKey: used in the row header tag. CCT
@@ -144,26 +147,47 @@ export function buildSlotRow(
     });
   }
 
-  // Per-slot Remove/Rename action row. The button `value` carries the keyId
-  // so the open handler routes to the clicked slot rather than falling back
-  // to `active ?? slots[0]`.
+  // Per-slot action row: Remove / Rename + Z2 Attach-or-Detach for
+  // setup-source cct slots (only that arm of the union can toggle an
+  // oauthAttachment — legacy-attachment slots carry a mandatory one,
+  // api_key has no attachment surface at all). The button `value` carries
+  // the keyId so the open handler routes to the clicked slot.
+  const actionElements: ZBlock[] = [
+    {
+      type: 'button',
+      action_id: CCT_ACTION_IDS.remove,
+      style: 'danger',
+      text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
+      value: slot.keyId,
+    },
+    {
+      type: 'button',
+      action_id: CCT_ACTION_IDS.rename,
+      text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
+      value: slot.keyId,
+    },
+  ];
+  if (isCctSlot(slot) && slot.source === 'setup') {
+    if (slot.oauthAttachment === undefined) {
+      actionElements.push({
+        type: 'button',
+        action_id: CCT_ACTION_IDS.attach,
+        style: 'primary',
+        text: { type: 'plain_text', text: ':link: Attach OAuth', emoji: true },
+        value: slot.keyId,
+      });
+    } else {
+      actionElements.push({
+        type: 'button',
+        action_id: CCT_ACTION_IDS.detach,
+        text: { type: 'plain_text', text: ':unlock: Detach OAuth', emoji: true },
+        value: slot.keyId,
+      });
+    }
+  }
   blocks.push({
     type: 'actions',
-    elements: [
-      {
-        type: 'button',
-        action_id: CCT_ACTION_IDS.remove,
-        style: 'danger',
-        text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
-        value: slot.keyId,
-      },
-      {
-        type: 'button',
-        action_id: CCT_ACTION_IDS.rename,
-        text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-        value: slot.keyId,
-      },
-    ],
+    elements: actionElements,
   });
 
   return blocks;
@@ -277,11 +301,30 @@ export function buildAddSlotModal(selectedKind: AddSlotFormKind = 'setup_token')
       type: 'radio_buttons',
       action_id: CCT_ACTION_IDS.kind_radio,
       initial_option: radioOption(selectedKind),
-      options: [radioOption('setup_token'), radioOption('oauth_credentials')],
+      options: [radioOption('setup_token'), radioOption('oauth_credentials'), radioOption('api_key')],
     },
   });
 
-  if (selectedKind === 'setup_token') {
+  if (selectedKind === 'api_key') {
+    // Z3 — api_key: raw sk-ant-api03-<chars> commercial API key. Stored
+    // only; TokenManager's runtime fence prevents it being selected as
+    // active in phase 1 (applyToken/rotate/acquireLease reject it).
+    blocks.push({
+      type: 'input',
+      block_id: CCT_BLOCK_IDS.add_api_key_value,
+      label: { type: 'plain_text', text: 'Anthropic API key (sk-ant-api03-…)', emoji: true },
+      element: {
+        type: 'plain_text_input',
+        action_id: CCT_ACTION_IDS.api_key_input,
+        max_length: SLACK_PLAIN_TEXT_INPUT_MAX,
+        placeholder: { type: 'plain_text', text: 'sk-ant-api03-…' },
+      },
+      hint: {
+        type: 'plain_text',
+        text: 'Store-only in phase 1 — api_key slots cannot be rotated onto yet.',
+      },
+    });
+  } else if (selectedKind === 'setup_token') {
     blocks.push({
       type: 'input',
       block_id: CCT_BLOCK_IDS.add_setup_token_value,
@@ -373,6 +416,70 @@ export function buildRemoveSlotModal(slot: AuthKey, hasActiveLeases: boolean): R
   };
 }
 
+/**
+ * Z2 — Modal: Attach OAuth credentials to an existing setup-source cct
+ * slot. Mirrors the `oauth_credentials` arm of the Add modal but targets
+ * an existing keyId (passed via `private_metadata`) instead of creating a
+ * new slot. On submit, `actions.ts` calls `TokenManager.attachOAuth(keyId,
+ * creds, true)` which re-validates scopes and persists the attachment
+ * while keeping `source: 'setup'` untouched.
+ */
+export function buildAttachOAuthModal(slot: AuthKey): Record<string, unknown> {
+  const blocks: ZBlock[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `Attach OAuth credentials to *${escapeMrkdwn(slot.name)}* (setup-source cct slot).`,
+      },
+    },
+    {
+      type: 'input',
+      block_id: CCT_BLOCK_IDS.attach_oauth_blob,
+      label: { type: 'plain_text', text: 'OAuth credentials (JSON)', emoji: true },
+      element: {
+        type: 'plain_text_input',
+        action_id: CCT_ACTION_IDS.attach_oauth_input,
+        multiline: true,
+        max_length: SLACK_PLAIN_TEXT_INPUT_MAX,
+        placeholder: {
+          type: 'plain_text',
+          text: '{"claudeAiOauth":{"accessToken":"…","refreshToken":"…","expiresAt":…,"scopes":["user:profile","user:inference"]}}',
+        },
+      },
+      hint: { type: 'plain_text', text: OAUTH_BLOB_HELP },
+    },
+    {
+      type: 'input',
+      block_id: CCT_BLOCK_IDS.attach_tos_ack,
+      label: { type: 'plain_text', text: 'Consumer ToS acknowledgement', emoji: true },
+      element: {
+        type: 'checkboxes',
+        action_id: CCT_ACTION_IDS.attach_tos_ack,
+        options: [
+          {
+            text: {
+              type: 'plain_text',
+              text: "I understand that using a consumer Claude subscription token for automated requests may violate Anthropic's Terms of Service.",
+              emoji: false,
+            },
+            value: 'ack',
+          },
+        ],
+      },
+    },
+  ];
+  return {
+    type: 'modal',
+    callback_id: CCT_VIEW_IDS.attach,
+    title: { type: 'plain_text', text: 'Attach OAuth', emoji: true },
+    submit: { type: 'plain_text', text: 'Attach', emoji: true },
+    close: { type: 'plain_text', text: 'Cancel', emoji: true },
+    private_metadata: slot.keyId,
+    blocks,
+  };
+}
+
 /** Modal: Rename slot. */
 export function buildRenameSlotModal(slot: AuthKey): Record<string, unknown> {
   const blocks: ZBlock[] = [
@@ -403,6 +510,7 @@ function radioOption(kind: AddSlotFormKind): Record<string, unknown> {
   const labelMap: Record<AddSlotFormKind, string> = {
     setup_token: 'setup_token (sk-ant-oat01-…)',
     oauth_credentials: 'oauth_credentials (claudeAiOauth blob) :warning:',
+    api_key: 'api_key (sk-ant-api03-…, store-only)',
   };
   return {
     text: { type: 'plain_text', text: labelMap[kind], emoji: true },

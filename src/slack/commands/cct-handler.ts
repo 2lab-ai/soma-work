@@ -39,7 +39,12 @@ export class CctHandler implements CommandHandler {
 
     const action = CommandParser.parseCctCommand(text);
     const tm = getTokenManager();
-    const tokens = tm.listTokens();
+    // Z3 runtime fence (PR-B phase1): `cct set <name>` / `cct usage <name>`
+    // / `cct next` may not target api_key slots — those are store-only in
+    // PR-B and their name must not appear in the matching set nor in the
+    // "Available slots:" hint. Follow-up issue wires ANTHROPIC_API_KEY
+    // spawn isolation and will remove the filter.
+    const tokens = tm.listRuntimeSelectableTokens();
 
     // `cct add …` / `cct rm …` are forbidden via text — the modal on the
     // `/z cct` card is the only path for token mutation (ToS ack, split
@@ -157,7 +162,7 @@ interface UsageCapableTokenManager {
  * Render the `/z cct usage [<name>]` reply.
  *
  * Resolution order:
- *   1. If `target` is provided → match `listTokens().find(s => s.name === target)`.
+ *   1. If `target` is provided → match `listRuntimeSelectableTokens().find(s => s.name === target)` (Z3 fence — api_key excluded in PR-B).
  *   2. Otherwise → use `tm.getActiveToken()`.
  *   3. Slot has no OAuth attachment → error: usage API requires an oauth_credentials attachment.
  *   4. `fetchAndStoreUsage()` returns null → backoff-active message with next-fetch hint.
