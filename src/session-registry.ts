@@ -345,6 +345,11 @@ export class SessionRegistry {
       compactionRehydratedByEpoch: {},
       preCompactUsagePct: null,
       lastKnownUsagePct: null,
+      // #617 followup: SDK-authoritative compact_metadata snapshot.
+      compactPreTokens: null,
+      compactPostTokens: null,
+      compactTrigger: null,
+      compactDurationMs: null,
       autoCompactPending: false,
       pendingUserText: null,
       pendingEventContext: null,
@@ -1626,6 +1631,11 @@ export class SessionRegistry {
           compactionRehydratedByEpoch: {},
           preCompactUsagePct: null,
           lastKnownUsagePct: null,
+          // #617 followup: SDK-authoritative compact_metadata snapshot.
+          compactPreTokens: null,
+          compactPostTokens: null,
+          compactTrigger: null,
+          compactDurationMs: null,
           autoCompactPending: false,
           pendingUserText: null,
           pendingEventContext: null,
