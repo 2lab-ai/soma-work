@@ -264,7 +264,8 @@ export class SlackHandler {
 
     // 2. ClaudeHandler compact-hook factory. Each call creates a closure
     //    over the session + slack routing context for a single query.
-    this.claudeHandler.setCompactHookBuilder(({ session, channel, threadTs }) =>
+    // Optional-chained so existing tests that mock claudeHandler as {} still work.
+    this.claudeHandler.setCompactHookBuilder?.(({ session, channel, threadTs }) =>
       buildCompactHooks({
         session,
         channel,

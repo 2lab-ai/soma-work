@@ -13,35 +13,26 @@
  */
 
 import type { Logger } from '../logger';
-import { getContextWindow } from '../metrics/model-registry';
+import { resolveContextWindow } from '../metrics/model-registry';
+import { ContextWindowManager } from '../slack/context-window-manager';
 import type { SlackApiHelper } from '../slack/slack-api-helper';
-import type { ConversationSession, SessionUsage } from '../types';
+import type { ConversationSession } from '../types';
 import type { UserSettingsStore } from '../user-settings-store';
 
-// Fallback when the SDK hasn't reported a contextWindow yet — matches the
-// stream-executor's FALLBACK_CONTEXT_WINDOW so both code paths agree.
-const FALLBACK_CONTEXT_WINDOW = 200_000;
-
 /**
- * Compute the integer context-usage percent for a session. Mirrors
- * `StreamExecutor.getCurrentContextUsagePercent` but returns an integer
- * (dashboard + threshold compare both want whole numbers). Returns
- * `undefined` when usage is missing — caller treats that as "below threshold".
+ * Integer context-usage percent for a session. Uses the shared
+ * `ContextWindowManager.computeUsedTokens` so the formula stays in sync with
+ * the dashboard. Returns `undefined` when usage is missing — caller treats
+ * that as "below threshold".
  */
 export function computeContextUsagePct(session: ConversationSession): number | undefined {
-  const usage: SessionUsage | undefined = session.usage;
+  const usage = session.usage;
   if (!usage) return undefined;
   const contextWindow =
-    usage.contextWindow && usage.contextWindow > 0
-      ? usage.contextWindow
-      : getContextWindow(session.model) || FALLBACK_CONTEXT_WINDOW;
+    usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : resolveContextWindow(session.model);
   if (contextWindow <= 0) return undefined;
 
-  const usedTokens =
-    usage.currentInputTokens +
-    usage.currentOutputTokens +
-    (usage.currentCacheReadTokens ?? 0) +
-    (usage.currentCacheCreateTokens ?? 0);
+  const usedTokens = ContextWindowManager.computeUsedTokens(usage);
   const pct = (usedTokens / contextWindow) * 100;
   return Math.max(0, Math.min(100, Math.round(pct)));
 }

@@ -17,7 +17,7 @@ import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
-import { getContextWindow, PRICING_VERSION } from '../../metrics/model-registry';
+import { FALLBACK_CONTEXT_WINDOW, PRICING_VERSION, resolveContextWindow } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -35,7 +35,7 @@ import type {
 import { userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
 import type { CompletionMessageTracker } from '../completion-message-tracker.js';
-import { beginCompactionCycleIfNeeded, getCurrentEpochForEnd } from '../hooks/compact-hooks';
+import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 import {
   type AssistantStatusManager,
   type ContextWindowManager,
@@ -69,14 +69,6 @@ export interface ExecuteResult {
   turnCollector?: TurnResultCollector;
   /** If set, caller should auto-retry after this many ms (recoverable error). */
   retryAfterMs?: number;
-}
-
-// Fallback context window size when SDK doesn't report contextWindow.
-const FALLBACK_CONTEXT_WINDOW = 200_000;
-
-/** Resolve context window for a model by name pattern matching. */
-function resolveContextWindow(modelName?: string): number {
-  return getContextWindow(modelName) || FALLBACK_CONTEXT_WINDOW;
 }
 
 interface StreamExecutorDeps {
@@ -788,38 +780,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
 
           // #617 AC5 fallback + AC3 end-to-end pending re-dispatch. Fire-and-forget
-          // so a Slack failure cannot block the SDK stream callback chain.
+          // so a Slack failure cannot block the SDK stream callback chain. Wrap
+          // the shared helper's own EventRouter dispatch as a narrow adapter —
+          // the StreamExecutor's `dispatchPendingUserMessage` dep is the wiring
+          // target here (not the EventRouter itself).
           void (async () => {
             try {
-              const epoch = getCurrentEpochForEnd(session);
-              const marker = (session.compactPostedByEpoch ??= {})[epoch];
-              if (marker && !marker.post) {
-                const x = session.preCompactUsagePct;
-                const y = session.lastKnownUsagePct;
-                const xStr = x === null || x === undefined ? '?' : String(x);
-                const yStr = y === null || y === undefined ? '?' : String(y);
-                await this.deps.slackApi.postSystemMessage(
-                  channel,
-                  `✅ Compaction complete · was ~${xStr}% → now ~${yStr}%`,
-                  { threadTs },
-                );
-                marker.post = true;
-              }
-              // Rehydration dedupe: stream-executor already re-injects context
-              // at lines 399-406 on the next user prompt; mark here so the
-              // SessionStart hook doesn't double-trigger.
-              const rehydrated = (session.compactionRehydratedByEpoch ??= {});
-              rehydrated[epoch] = true;
-
-              // Clear pending flag + re-dispatch captured user message (AC3).
-              session.autoCompactPending = false;
-              if (session.pendingUserText && session.pendingEventContext && this.deps.dispatchPendingUserMessage) {
-                const text = session.pendingUserText;
-                const ctx = session.pendingEventContext;
-                session.pendingUserText = null;
-                session.pendingEventContext = null;
-                await this.deps.dispatchPendingUserMessage(ctx, text);
-              }
+              await postCompactCompleteIfNeeded({
+                session,
+                channel,
+                threadTs,
+                slackApi: this.deps.slackApi,
+                eventRouter: this.deps.dispatchPendingUserMessage
+                  ? ({ dispatchPendingUserMessage: this.deps.dispatchPendingUserMessage } as any)
+                  : undefined,
+              });
             } catch (err) {
               this.logger.warn('onCompactBoundary: post-compact path failed', {
                 sessionKey,
@@ -833,28 +808,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // Context compaction start — always visible regardless of verbosity
             await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
-            // (older SDK or edge case), the `compacting` status is still
-            // emitted and guarantees a thread-visible "starting" post.
-            // Dedupe by epoch so the primary hook + this fallback cannot
-            // double-post.
-            try {
-              const epoch = beginCompactionCycleIfNeeded(session);
-              const marker = (session.compactPostedByEpoch ??= {})[epoch];
-              if (marker && !marker.pre) {
-                session.preCompactUsagePct = session.lastKnownUsagePct ?? null;
-                await this.deps.slackApi.postSystemMessage(
-                  channel,
-                  '🗜️ Compaction starting · trigger=unknown (fallback)',
-                  { threadTs },
+            // (older SDK or edge case), the `compacting` status still
+            // guarantees a thread-visible "starting" post. Epoch dedupe in
+            // the helper ensures the primary hook + this fallback cannot
+            // double-post. Fire-and-forget so Slack latency doesn't block
+            // the SDK status callback.
+            void (async () => {
+              try {
+                await postCompactStartingIfNeeded(
+                  { session, channel, threadTs, slackApi: this.deps.slackApi },
+                  'unknown (fallback)',
                 );
-                marker.pre = true;
+              } catch (err) {
+                this.logger.warn('onStatusUpdate(compacting): fallback post failed', {
+                  sessionKey,
+                  error: (err as Error)?.message ?? String(err),
+                });
               }
-            } catch (err) {
-              this.logger.warn('onStatusUpdate(compacting): fallback post failed', {
-                sessionKey,
-                error: (err as Error)?.message ?? String(err),
-              });
-            }
+            })();
           } else if (status === 'compact_done') {
             // Context compaction end — always visible regardless of verbosity
             await this.deps.assistantStatusManager.setStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
@@ -1181,24 +1152,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       // #617 AC3: threshold check at turn-end. Must run AFTER endTurn so
-      // session.usage reflects the just-completed turn. Guarded so any
-      // failure cannot interrupt subsequent cleanup.
-      try {
-        await checkAndSchedulePendingCompact({
-          session,
-          userId: user,
-          channel,
-          threadTs,
-          userSettings: userSettingsStore,
-          slackApi: this.deps.slackApi,
-          logger: this.logger,
-        });
-      } catch (err) {
+      // session.usage reflects the just-completed turn. Fire-and-forget —
+      // the helper sets `session.autoCompactPending=true` synchronously
+      // before the Slack post, so the next user turn sees the flag
+      // immediately; the decorative post must not block cleanup.
+      void checkAndSchedulePendingCompact({
+        session,
+        userId: user,
+        channel,
+        threadTs,
+        userSettings: userSettingsStore,
+        slackApi: this.deps.slackApi,
+        logger: this.logger,
+      }).catch((err) => {
         this.logger.warn('stream-executor: compact threshold check failed', {
           turnId,
           error: (err as Error)?.message ?? String(err),
         });
-      }
+      });
       // Dashboard v2.1 — turn timer: idempotent fold. If the catch branch
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.

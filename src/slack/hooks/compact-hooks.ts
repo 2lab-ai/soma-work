@@ -164,7 +164,19 @@ export function buildCompactHooks(deps: CompactHookDeps): CompactHookSet {
   };
 }
 
-async function handlePreCompact(deps: CompactHookDeps, payload: PreCompactHookInput): Promise<void> {
+/** Format a nullable usage% for the "was ~X% → now ~Y%" messages. */
+function fmtPct(pct: number | null | undefined): string {
+  return pct === null || pct === undefined ? '?' : String(pct);
+}
+
+/**
+ * Shared START-post helper. Called by both the PreCompact hook and the
+ * `status === 'compacting'` fallback in stream-executor.ts so the two paths
+ * agree on epoch bookkeeping and the "starting" message text.
+ *
+ * Idempotent within a cycle via `marker.pre`.
+ */
+export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger: string): Promise<void> {
   const { session, channel, threadTs, slackApi } = deps;
   const epoch = beginCompactionCycleIfNeeded(session);
 
@@ -174,45 +186,65 @@ async function handlePreCompact(deps: CompactHookDeps, payload: PreCompactHookIn
   const marker = ensurePostedMap(session)[epoch];
   if (!marker || marker.pre) return;
 
-  const trigger = payload.trigger ?? 'unknown';
-  await slackApi.postSystemMessage(channel, `🗜️ Compaction starting · trigger=${trigger}`, {
-    threadTs,
-  });
+  await slackApi.postSystemMessage(channel, `🗜️ Compaction starting · trigger=${trigger}`, { threadTs });
   marker.pre = true;
 }
 
-async function handlePostCompact(deps: CompactHookDeps, payload: PostCompactHookInput): Promise<void> {
+/**
+ * Shared END-post helper. Called by both the PostCompact hook and the
+ * `onCompactBoundary` stream callback. Posts the "complete" message once per
+ * epoch, marks the epoch rehydrated, clears `autoCompactPending`, and
+ * re-dispatches any captured user message atomically.
+ *
+ * The Slack post and the pending re-dispatch are independent → run in parallel.
+ */
+export async function postCompactCompleteIfNeeded(deps: CompactHookDeps): Promise<void> {
   const { session, channel, threadTs, slackApi, eventRouter } = deps;
-  // `payload` is available for future diagnostics (compact_summary); not
-  // rendered to Slack currently — we rely on the "was X% → now Y%" signal.
-  void payload;
   const epoch = getCurrentEpochForEnd(session);
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
 
-  if (!marker.post) {
-    const x = session.preCompactUsagePct;
-    const y = session.lastKnownUsagePct;
-    const xStr = x === null || x === undefined ? '?' : String(x);
-    const yStr = y === null || y === undefined ? '?' : String(y);
-    await slackApi.postSystemMessage(channel, `✅ Compaction complete · was ~${xStr}% → now ~${yStr}%`, { threadTs });
-    marker.post = true;
-  }
+  const postPromise =
+    marker.post === true
+      ? Promise.resolve()
+      : (async () => {
+          await slackApi.postSystemMessage(
+            channel,
+            `✅ Compaction complete · was ~${fmtPct(session.preCompactUsagePct)}% → now ~${fmtPct(session.lastKnownUsagePct)}%`,
+            { threadTs },
+          );
+          marker.post = true;
+        })();
+
+  // Rehydration dedupe: whichever END signal fires first marks the epoch so
+  // the SessionStart(source=compact) hook doesn't double-rebuild.
+  ensureRehydratedMap(session)[epoch] = true;
 
   // Clear the "pending" flag so InputProcessor stops intercepting.
   session.autoCompactPending = false;
 
-  // Re-dispatch the user message captured by InputProcessor, if any. Consumed
-  // atomically — setting the locals + clearing the session fields first
-  // guarantees a second END signal inside the same cycle (e.g.
-  // compact_boundary firing after PostCompact) cannot double-fire.
+  // Consume pending atomically so a second END signal in the same cycle
+  // cannot double-fire, then re-dispatch in parallel with the Slack post.
+  let dispatchPromise: Promise<void> = Promise.resolve();
   if (session.pendingUserText && session.pendingEventContext && eventRouter) {
     const text = session.pendingUserText;
     const ctx = session.pendingEventContext;
     session.pendingUserText = null;
     session.pendingEventContext = null;
-    await eventRouter.dispatchPendingUserMessage(ctx, text);
+    dispatchPromise = eventRouter.dispatchPendingUserMessage(ctx, text);
   }
+
+  await Promise.all([postPromise, dispatchPromise]);
+}
+
+async function handlePreCompact(deps: CompactHookDeps, payload: PreCompactHookInput): Promise<void> {
+  await postCompactStartingIfNeeded(deps, payload.trigger ?? 'unknown');
+}
+
+async function handlePostCompact(deps: CompactHookDeps, payload: PostCompactHookInput): Promise<void> {
+  // `payload` carries `compact_summary` for future diagnostics; unused today.
+  void payload;
+  await postCompactCompleteIfNeeded(deps);
 }
 
 async function handleSessionStart(deps: CompactHookDeps, payload: SessionStartHookInput): Promise<void> {

@@ -79,19 +79,15 @@ export class InputProcessor {
       session.pendingUserText = text;
       session.pendingEventContext = { channel, threadTs, user, ts };
 
-      if (this.deps.slackApi) {
-        try {
-          await this.deps.slackApi.postSystemMessage(
-            channel,
-            '🗜️ Auto-compact 실행 — 원 메시지는 compact 완료 후 재처리됩니다',
-            { threadTs },
-          );
-        } catch (err) {
+      // Notice post is decorative — fire-and-forget so Slack latency cannot
+      // delay the `/compact` injection that the pipeline is about to run.
+      this.deps.slackApi
+        ?.postSystemMessage(channel, '🗜️ Auto-compact 실행 — 원 메시지는 compact 완료 후 재처리됩니다', { threadTs })
+        .catch((err) => {
           this.logger.warn('input-processor: pending-compact notice post failed', {
             error: (err as Error)?.message ?? String(err),
           });
-        }
-      }
+        });
 
       return { handled: true, continueWithPrompt: '/compact' };
     }

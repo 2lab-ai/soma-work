@@ -30,11 +30,10 @@ export class CompactThresholdHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // AC1: argument present → validate + persist.
-    // Parsed as integer up-front so "3.5" and "abc" both fail the type guard.
-    const parsed = /^-?\d+$/.test(rawArg) ? Number.parseInt(rawArg, 10) : Number.NaN;
+    // AC1: argument present → validate + persist. `validateCompactThreshold`
+    // rejects NaN and non-integers ("abc", "3.5") with the same error message.
     try {
-      const validated = validateCompactThreshold(parsed);
+      const validated = validateCompactThreshold(Number(rawArg));
       this.deps.userSettingsStore.setUserCompactThreshold(user, validated);
       await this.deps.slackApi.postSystemMessage(channel, `Updated to ${validated}%`, { threadTs });
     } catch (err) {
