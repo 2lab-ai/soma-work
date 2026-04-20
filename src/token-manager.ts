@@ -252,15 +252,19 @@ function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment:
 export class TokenManager {
   private readonly store: CctStore;
   /**
-   * In-process dedupe for concurrent `refreshAccessToken` calls on the same
-   * slot. Codex P0 fix #3 (v3) — keyed by `keyId` AND tagged with the
-   * attachment-generation fingerprint (`attachedAt`) so two callers on the
-   * SAME generation share one network call, but a caller arriving on a
-   * NEWER generation (after `detachOAuth` + fresh `attachOAuth`) starts a
-   * fresh refresh instead of inheriting stale tokens from the old one.
+   * In-process dedupe for concurrent `refreshAccessToken` calls.
+   *
+   * Codex P0 fix #3 (v4): the Map key is the COMPOSITE generation key
+   * `${keyId}:${attachedAt ?? "legacy"}` so two concurrent generations of
+   * the same slot can coexist in flight without evicting each other's
+   * dedupe entry. Under the earlier `Map<keyId, {attachedAt, promise}>`
+   * shape a newer generation would overwrite the older one's record;
+   * subsequent callers on the older generation then saw a tag mismatch
+   * and fired a SECOND network refresh even though the older promise was
+   * still in flight. The composite key makes dedupe lossless across the
+   * detach/reattach race window.
    */
-  private readonly refreshInFlight: Map<string, { attachedAt: number | undefined; promise: Promise<string> }> =
-    new Map();
+  private readonly refreshInFlight: Map<string, Promise<string>> = new Map();
   /**
    * Per-keyId dedupe for `fetchAndStoreUsage`. Mirrors the `refreshInFlight`
    * pattern so multiple `fetchUsageForAllAttached` fan-outs racing on the
@@ -1111,8 +1115,12 @@ export class TokenManager {
     // a distinct generation (v2 snapshots persisted before the field
     // existed), so the comparison is strict.
     const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
-    const existing = this.refreshInFlight.get(slot.keyId);
-    if (existing && existing.attachedAt === preAttachedAt) return existing.promise;
+    // Composite dedupe key (Codex P0 fix #3, v4). The `attachedAt ?? 'legacy'`
+    // lets v2 snapshots written before the field existed share one bucket
+    // while still being strictly distinct from any numeric generation.
+    const dedupeKey = `${slot.keyId}:${preAttachedAt ?? 'legacy'}`;
+    const existing = this.refreshInFlight.get(dedupeKey);
+    if (existing) return existing;
     // Definite-assignment assertion: the `finally` below runs on the
     // microtask queue AFTER the synchronous `promise = ...` assignment
     // completes, so by the time the ownership check executes the binding
@@ -1185,16 +1193,18 @@ export class TokenManager {
         );
         return next.accessToken;
       } finally {
-        // Clear ONLY if we still own the entry — a newer generation may
-        // have replaced this entry while we were in flight; deleting
-        // unconditionally would strand that newer caller's dedupe.
-        const current = this.refreshInFlight.get(slot.keyId);
-        if (current && current.promise === promise) {
-          this.refreshInFlight.delete(slot.keyId);
+        // With the composite dedupe key, each generation owns its own
+        // bucket — a newer generation cannot evict this entry, so the
+        // ownership check only has to verify the bucket still points
+        // at this exact promise (defensive in case another refresh for
+        // the SAME generation ever races in, which shouldn't happen).
+        const current = this.refreshInFlight.get(dedupeKey);
+        if (current === promise) {
+          this.refreshInFlight.delete(dedupeKey);
         }
       }
     })();
-    this.refreshInFlight.set(slot.keyId, { attachedAt: preAttachedAt, promise });
+    this.refreshInFlight.set(dedupeKey, promise);
     return promise;
   }
 

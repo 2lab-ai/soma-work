@@ -1352,24 +1352,38 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     // refresh/usage fetch is still in flight, the stale persist must not
     // clobber the newer attachment generation.
     it('T5i: stale refresh does NOT overwrite a fresh re-attached generation (pure-generation guard)', async () => {
-      // Codex v2 tightening — this test uses IDENTICAL credential payload
-      // on both attach generations; only the `attachedAt` fingerprint
-      // differs. That closes the loophole where a regression could say
-      // "drop stale persist only when accessToken changed" and still pass.
-      // Here both generations carry the same accessToken, so a value-based
-      // guard would silently rotate the token on the fresh generation —
-      // only a strict `attachedAt` equality check protects the fresh gen.
+      // Codex v3 tightening — BOTH attach generations use a BYTE-IDENTICAL
+      // credential payload (same accessToken, refreshToken, expiresAtMs,
+      // scopes). The ONLY difference between them is the `attachedAt`
+      // fingerprint stamped internally by attachOAuth. This closes two
+      // loopholes from prior rounds:
+      //   (a) v2 used different accessTokens, so a regression to a
+      //       value-based guard on accessToken would still pass.
+      //   (b) v3 still had asymmetric expiresAtMs (first attach expired,
+      //       reattach default future), so a regression keyed on
+      //       expiresAtMs would still pass.
+      // Here only `attachedAt` differs, and we explicitly capture both
+      // generations' fingerprints to assert they are strictly unequal.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
-      const sharedAccess = 'oat-SHARED';
-      await tm.attachOAuth(
-        slot.keyId,
-        makeOAuthCreds({ accessToken: sharedAccess, expiresAtMs: Date.now() - 60_000 }),
-        true,
-      );
+      // Single creds literal reused for BOTH attaches → identical payload
+      // across generations; `attachedAt` is the only thing that differs.
+      // The creds are expired so the stale `refreshCredentialsIfNeeded`
+      // fires; the fresh reattach does not trigger another refresh
+      // because we do not call refreshCredentialsIfNeeded on the fresh gen.
+      const identicalCreds = makeOAuthCreds({
+        accessToken: 'oat-SHARED',
+        expiresAtMs: Date.now() - 60_000,
+      });
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Capture the stale generation's fingerprint BEFORE detach so we can
+      // later assert the fresh generation minted a strictly different one.
+      const postAttachStaleSnap = await store.load();
+      const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
       let releaseRefresh!: () => void;
       const refreshGate = new Promise<void>((r) => {
         releaseRefresh = r;
@@ -1383,10 +1397,8 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         await refreshGate;
         return {
           ...current,
-          // If the guard is generation-aware, this rotated token must NOT
-          // land on the fresh generation. If the guard is value-based on
-          // accessToken, the test would give it a false pass — which is
-          // why we force a token-change here: sharedAccess → sharedAccess-refreshed.
+          // Force a token-change: a regression keyed on accessToken diff
+          // would say "no change, safe to write" and clobber the fresh gen.
           accessToken: `${current.accessToken}-refreshed`,
           expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
         };
@@ -1397,40 +1409,44 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // different `attachedAt` (Date.now() resolution is 1ms).
       await new Promise((r) => setTimeout(r, 5));
       await tm.detachOAuth(slot.keyId);
-      // Reattach with BYTE-IDENTICAL credential payload — the only thing
-      // distinguishing the fresh generation from the stale one is the
-      // attachment-generation fingerprint stamped internally by attachOAuth.
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
+      // Reattach with the IDENTICAL creds payload — only attachedAt differs.
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
       const postReattachSnap = await store.load();
       const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
       const freshAttachedAt: number | undefined = freshAttachment.attachedAt;
+      // The two generations minted DIFFERENT fingerprints — this is the
+      // single distinguisher the guard has to work with. If this ever
+      // becomes equal, the test would stop exercising the guard at all.
+      expect(typeof staleAttachedAt).toBe('number');
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(freshAttachedAt).not.toBe(staleAttachedAt);
       releaseRefresh();
       await staleRefreshPromise;
       const finalSnap = await store.load();
       const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
-      // Pure-generation guard: the fresh attachment survives byte-for-byte.
-      // A buggy value-based guard would rotate accessToken here.
+      // Pure-generation guard: fresh attachment survives byte-for-byte.
       expect(finalAttachment).toEqual(freshAttachment);
-      expect(finalAttachment.accessToken).toBe(sharedAccess);
-      expect(finalAttachment.accessToken).not.toBe(`${sharedAccess}-refreshed`);
-      // The generation fingerprint is the real guard; assert it survives.
+      expect(finalAttachment.accessToken).toBe('oat-SHARED');
+      expect(finalAttachment.accessToken).not.toBe('oat-SHARED-refreshed');
       expect(finalAttachment.attachedAt).toBe(freshAttachedAt);
-      // And the fresh attachedAt was actually strictly newer than the stale one.
-      expect(typeof freshAttachedAt).toBe('number');
     });
 
     it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation (pure-generation guard)', async () => {
-      // Codex v2 tightening — credential payload is IDENTICAL across the
-      // stale and fresh attachments; the ONLY generational distinguisher is
-      // `attachedAt`. A regression that keyed its guard on any credential
-      // field would silently write stale usage onto the fresh generation.
+      // Codex v3 tightening — credential payload is BYTE-IDENTICAL across
+      // the stale and fresh attachments; the ONLY generational
+      // distinguisher is `attachedAt`, and we explicitly assert the two
+      // fingerprints are strictly unequal before exercising the race.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
-      const sharedAccess = 'oat-SHARED';
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
+      const identicalCreds = makeOAuthCreds({ accessToken: 'oat-SHARED' });
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Capture the stale generation's fingerprint BEFORE detach.
+      const postAttachStaleSnap = await store.load();
+      const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
+        ?.attachedAt;
       let releaseFetch!: () => void;
       const fetchGate = new Promise<void>((r) => {
         releaseFetch = r;
@@ -1455,11 +1471,16 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Force wall-clock gap so the fresh generation's `attachedAt` differs.
       await new Promise((r) => setTimeout(r, 5));
       await tm.detachOAuth(slot.keyId);
-      // Reattach with identical credential payload — only the fingerprint differs.
-      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: sharedAccess }), true);
+      // Reattach with the IDENTICAL creds payload — only attachedAt differs.
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
       const postReattachSnap = structuredClone(await store.load());
       const freshAttachedAt: number | undefined = (postReattachSnap.registry.slots[0] as any).oauthAttachment
         ?.attachedAt;
+      // Two generations → two strictly different fingerprints. If this
+      // ever collapses to equality, the race below would pass trivially.
+      expect(typeof staleAttachedAt).toBe('number');
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(freshAttachedAt).not.toBe(staleAttachedAt);
       releaseFetch();
       await staleUsagePromise;
       const finalSnap = await store.load();
@@ -1470,7 +1491,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Spot-checks.
       expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
       expect((finalSnap.registry.slots[0] as any).oauthAttachment?.attachedAt).toBe(freshAttachedAt);
-      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe(sharedAccess);
+      expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe('oat-SHARED');
     });
   });
 
