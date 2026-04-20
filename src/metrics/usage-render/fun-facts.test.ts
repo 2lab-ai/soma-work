@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FUN_FACTS, pickFunFact } from './fun-facts';
 
-// Trace: docs/usage-card/trace.md, Scenario 4
+// Trace: docs/usage-card-dark/trace.md (fun-fact emoji + human-scale refs)
 describe('fun-facts pickFunFact', () => {
   it('0 tokens → empty-state copy', () => {
     expect(pickFunFact(0)).toBe('아직 첫 문단 분량입니다.');

@@ -31,14 +31,9 @@ import type {
   CarouselRanking,
   CarouselStats,
   CarouselTabStats,
-  EmptyStats,
   EmptyTabStats,
   TabId,
   TabResult,
-  UsageCardRanking,
-  UsageCardResult,
-  UsageCardSession,
-  UsageCardStats,
 } from './usage-render/types';
 
 const logger = new Logger('ReportAggregator');
@@ -331,225 +326,6 @@ export class ReportAggregator {
   }
 
   /**
-   * Aggregate usage-card stats for a single target user over a (typically 30d) window.
-   * Trace: docs/usage-card/trace.md, Scenario 2
-   */
-  async aggregateUsageCard(opts: {
-    startDate: string;
-    endDate: string;
-    targetUserId: string;
-    targetUserName?: string;
-    topN?: number;
-    now?: Date;
-  }): Promise<UsageCardResult> {
-    const { startDate, endDate, targetUserId, targetUserName } = opts;
-    const topN = opts.topN ?? 10;
-    const now = opts.now ?? new Date();
-
-    const events = await this.store.readRange(startDate, endDate);
-    const tokenEvents = events.filter((e) => e.eventType === 'token_usage');
-
-    const perUserTotals = new Map<string, { tokens: number; cost: number; userName?: string }>();
-    const perDayForTarget = new Map<string, number>();
-    const perHourForTarget = new Array<number>(24).fill(0);
-    const perSessionForTarget = new Map<string, { tokens: number; firstMs: number; lastMs: number; count: number }>();
-    const perModelForTarget = new Map<string, number>();
-
-    let targetTokens24h = 0;
-    let targetTokens7d = 0;
-    let targetCost30d = 0;
-    const t24hMs = now.getTime() - 24 * 60 * 60 * 1000;
-    const t7dMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
-
-    let resolvedTargetUserName = targetUserName;
-
-    for (const e of tokenEvents) {
-      const m = e.metadata as unknown as TokenUsageMetadata | undefined;
-      if (!m) continue;
-      const tokens =
-        (m.inputTokens || 0) +
-        (m.outputTokens || 0) +
-        (m.cacheReadInputTokens || 0) +
-        (m.cacheCreationInputTokens || 0);
-      const cost = m.costUsd || 0;
-
-      // Skip system/unknown buckets from rankings to match aggregateTokenUsage behavior.
-      if (e.userId !== 'assistant' && e.userId !== 'unknown') {
-        const bucket = perUserTotals.get(e.userId) || { tokens: 0, cost: 0, userName: e.userName };
-        bucket.tokens += tokens;
-        bucket.cost += cost;
-        if (e.userName && e.userName !== 'unknown') bucket.userName = e.userName;
-        perUserTotals.set(e.userId, bucket);
-      }
-
-      if (e.userId !== targetUserId) continue;
-
-      if (e.userName && e.userName !== 'unknown') {
-        resolvedTargetUserName = e.userName;
-      }
-
-      // Per-day (KST)
-      const dayKey = timestampToDateInTz(e.timestamp);
-      perDayForTarget.set(dayKey, (perDayForTarget.get(dayKey) || 0) + tokens);
-
-      // Per-hour (KST)
-      const hour = getHourInTz(e.timestamp);
-      perHourForTarget[hour] += tokens;
-
-      // Per-session
-      const sk = m.sessionKey || e.sessionKey;
-      if (sk) {
-        const s = perSessionForTarget.get(sk) || {
-          tokens: 0,
-          firstMs: e.timestamp,
-          lastMs: e.timestamp,
-          count: 0,
-        };
-        s.tokens += tokens;
-        if (e.timestamp < s.firstMs) s.firstMs = e.timestamp;
-        if (e.timestamp > s.lastMs) s.lastMs = e.timestamp;
-        s.count += 1;
-        perSessionForTarget.set(sk, s);
-      }
-
-      // Per-model
-      if (m.modelBreakdown) {
-        for (const [model, u] of Object.entries(m.modelBreakdown)) {
-          const t =
-            (u.inputTokens || 0) +
-            (u.outputTokens || 0) +
-            (u.cacheReadInputTokens || 0) +
-            (u.cacheCreationInputTokens || 0);
-          perModelForTarget.set(model, (perModelForTarget.get(model) || 0) + t);
-        }
-      } else if (m.model) {
-        perModelForTarget.set(m.model, (perModelForTarget.get(m.model) || 0) + tokens);
-      }
-
-      // Rolling windows
-      if (e.timestamp >= t24hMs) targetTokens24h += tokens;
-      if (e.timestamp >= t7dMs) targetTokens7d += tokens;
-      targetCost30d += cost;
-    }
-
-    // Empty short-circuit: target user has zero events in window.
-    const targetBucket = perUserTotals.get(targetUserId);
-    if (!targetBucket || targetBucket.tokens <= 0) {
-      const empty: EmptyStats = { empty: true, windowStart: startDate, windowEnd: endDate, targetUserId };
-      return empty;
-    }
-
-    const last30d = targetBucket.tokens;
-
-    // Rankings
-    const rankingEntries = Array.from(perUserTotals.entries()).map(([userId, v]) => ({
-      userId,
-      userName: v.userName,
-      totalTokens: v.tokens,
-      totalCost: v.cost,
-      rank: 0,
-    }));
-    // Sort the full list first so rank is stable across slices; each top-N
-    // entry carries its real position. If target is outside the rendered
-    // top-5 (the card's on-screen window), expose their row separately so
-    // `buildOption` can still highlight them. Trace: spec §4.3, P0 fix.
-    const RENDER_TOP_N = 5;
-    const tokensSorted: UsageCardRanking[] = [...rankingEntries]
-      .sort((a, b) => b.totalTokens - a.totalTokens || (a.userName || '').localeCompare(b.userName || ''))
-      .map((e, i) => ({ ...e, rank: i + 1 }));
-    const costSorted: UsageCardRanking[] = [...rankingEntries]
-      .sort((a, b) => b.totalCost - a.totalCost || (a.userName || '').localeCompare(b.userName || ''))
-      .map((e, i) => ({ ...e, rank: i + 1 }));
-    const tokensTop = tokensSorted.slice(0, topN);
-    const costTop = costSorted.slice(0, topN);
-    const targetTokenRow = tokensSorted.slice(0, RENDER_TOP_N).some((r) => r.userId === targetUserId)
-      ? null
-      : (tokensSorted.find((r) => r.userId === targetUserId) ?? null);
-    const targetCostRow = costSorted.slice(0, RENDER_TOP_N).some((r) => r.userId === targetUserId)
-      ? null
-      : (costSorted.find((r) => r.userId === targetUserId) ?? null);
-
-    // Heatmap: 42 cells, 7 cols × 6 rows. Align so that real days land on correct weekday.
-    // Day-of-week in KST, Sunday=0..Saturday=6 (matches `cellIndex % 7`).
-    const realDates: string[] = [];
-    {
-      // Iterate calendar dates from (endDate - 29d) to endDate in KST day units.
-      const end = new Date(endDate + 'T12:00:00+09:00'); // midday KST, safe from DST
-      for (let i = 29; i >= 0; i--) {
-        const d = new Date(end.getTime() - i * 86400000);
-        realDates.push(dateFormatter.format(d));
-      }
-    }
-    const firstDate = realDates[0];
-    const firstDow = kstDayOfWeek(firstDate); // 0=Sun
-    // Pad leading cells so the first real day lands at cellIndex = firstDow.
-    // 42 total cells, 30 real → 12 pads. Split pads so leading=firstDow, trailing=12-firstDow.
-    const leadingPad = Math.min(firstDow, 12);
-    const heatmap: UsageCardStats['heatmap'] = [];
-    for (let i = 0; i < leadingPad; i++) {
-      heatmap.push({ date: '', tokens: 0, cellIndex: heatmap.length });
-    }
-    for (const d of realDates) {
-      heatmap.push({ date: d, tokens: perDayForTarget.get(d) || 0, cellIndex: heatmap.length });
-    }
-    while (heatmap.length < 42) {
-      heatmap.push({ date: '', tokens: 0, cellIndex: heatmap.length });
-    }
-
-    // Sessions
-    const sessionsArr: UsageCardSession[] = Array.from(perSessionForTarget.entries()).map(([sessionKey, s]) => ({
-      sessionKey,
-      totalTokens: s.tokens,
-      durationMs: s.count >= 2 ? s.lastMs - s.firstMs : 0,
-      firstEventAt: new Date(s.firstMs).toISOString(),
-      lastEventAt: new Date(s.lastMs).toISOString(),
-    }));
-    const tokenTop3 = [...sessionsArr].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 3);
-    const spanTop3 = [...sessionsArr]
-      .filter((s) => s.durationMs > 0)
-      .sort((a, b) => b.durationMs - a.durationMs)
-      .slice(0, 3);
-
-    // Favorite model
-    let favoriteModel: UsageCardStats['favoriteModel'] = null;
-    for (const [model, t] of perModelForTarget) {
-      if (!favoriteModel || t > favoriteModel.tokens) {
-        favoriteModel = { model, tokens: t };
-      }
-    }
-
-    // Current streak: consecutive days ending at windowEnd with ≥1 token.
-    let currentStreakDays = 0;
-    for (let i = realDates.length - 1; i >= 0; i--) {
-      const t = perDayForTarget.get(realDates[i]) || 0;
-      if (t > 0) currentStreakDays += 1;
-      else break;
-    }
-
-    const stats: UsageCardStats = {
-      empty: false,
-      targetUserId,
-      targetUserName: resolvedTargetUserName,
-      windowStart: startDate,
-      windowEnd: endDate,
-      totals: {
-        last24h: targetTokens24h,
-        last7d: targetTokens7d,
-        last30d,
-        costLast30dUsd: targetCost30d,
-      },
-      heatmap,
-      hourly: perHourForTarget,
-      rankings: { tokensTop, costTop, targetTokenRow, targetCostRow },
-      sessions: { tokenTop3, spanTop3 },
-      favoriteModel,
-      currentStreakDays,
-      totalSessions: perSessionForTarget.size,
-    };
-    return stats;
-  }
-
-  /**
    * Aggregate carousel stats for a single target user across 4 windows in a
    * single scan over events.
    *
@@ -623,7 +399,7 @@ export class ReportAggregator {
       // 365-day window cap — ignore events older than that for rankings/'all'.
       if (e.timestamp < w365Start) continue;
 
-      // Global 30d rankings (skip system buckets — v1 parity).
+      // Global 30d rankings (skip system buckets).
       if (e.timestamp >= w30Start && e.timestamp <= w30End) {
         if (e.userId !== 'assistant' && e.userId !== 'unknown') {
           const bucket = rankingsUsers.get(e.userId) || { tokens: 0, userName: e.userName };

@@ -9,7 +9,7 @@ import {
   SlackUploadError,
 } from './errors';
 
-// Trace: docs/usage-card/trace.md, Scenario 7
+// Trace: docs/usage-card-dark/trace.md, Scenario 13 (SafeOperationalError whitelist)
 describe('usage-render errors', () => {
   it('all 5 subclasses are instanceof SafeOperationalError', () => {
     expect(new FontLoadError('a')).toBeInstanceOf(SafeOperationalError);
