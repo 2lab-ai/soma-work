@@ -127,6 +127,32 @@ export interface UserSettings {
    * Phase 1 of /z refactor (#506).
    */
   migrationHintShown?: boolean;
+  /**
+   * Compaction threshold (percent). Integer 50–95. When the current turn's
+   * context-usage% reaches this value, the next user turn is auto-compacted.
+   * Undefined = use `DEFAULT_COMPACT_THRESHOLD` (no migration needed).
+   * See #617.
+   */
+  compactThreshold?: number;
+}
+
+// Compaction Tracking (#617): threshold bounds + default.
+export const DEFAULT_COMPACT_THRESHOLD = 80;
+export const COMPACT_THRESHOLD_MIN = 50;
+export const COMPACT_THRESHOLD_MAX = 95;
+
+/**
+ * Validate a compactThreshold value. Throws a user-facing `Error` on failure.
+ * Error messages are surfaced verbatim to Slack via the command handler.
+ */
+export function validateCompactThreshold(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error('compactThreshold must be an integer');
+  }
+  if (value < COMPACT_THRESHOLD_MIN || value > COMPACT_THRESHOLD_MAX) {
+    throw new Error(`compactThreshold must be in [${COMPACT_THRESHOLD_MIN}, ${COMPACT_THRESHOLD_MAX}]`);
+  }
+  return value;
 }
 
 export interface NotificationSettings {
@@ -517,6 +543,24 @@ export class UserSettingsStore {
   setUserDefaultLogVerbosity(userId: string, verbosity: LogVerbosity): void {
     this.patchUserSettings(userId, { defaultLogVerbosity: verbosity });
     logger.info('Set user default log verbosity', { userId, verbosity });
+  }
+
+  /**
+   * Get user's compaction threshold (percent, 50–95).
+   * Returns `DEFAULT_COMPACT_THRESHOLD` when unset (#617 AC2).
+   */
+  getUserCompactThreshold(userId: string): number {
+    return this.settings[userId]?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
+  }
+
+  /**
+   * Set user's compaction threshold (#617 AC1). Validates bounds + integer-ness
+   * before persisting. Throws on invalid input — caller surfaces the message.
+   */
+  setUserCompactThreshold(userId: string, value: number): void {
+    const validated = validateCompactThreshold(value);
+    this.patchUserSettings(userId, { compactThreshold: validated });
+    logger.info('Set user compact threshold', { userId, value: validated });
   }
 
   /**
