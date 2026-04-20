@@ -169,6 +169,48 @@ function fmtPct(pct: number | null | undefined): string {
   return pct === null || pct === undefined ? '?' : String(pct);
 }
 
+/** Format a token count with thousands separators; `?` when missing. */
+function fmtTokens(tokens: number | null | undefined): string {
+  if (tokens === null || tokens === undefined) return '?';
+  return tokens.toLocaleString('en-US');
+}
+
+/** Format ms → `1.2s` / `120ms`. Returns null when unset so callers can omit. */
+function fmtDuration(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined) return null;
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
+/**
+ * Build the "compaction complete" thread message. Emits all SDK-reported
+ * fields that are available on the session: pre/post usage %, absolute token
+ * counts, trigger, duration. When a field is missing (SDK didn't report it)
+ * we fall back to `?` for the % pair and simply omit the optional segments
+ * (trigger, duration, tokens) so the message doesn't lie about unknowns.
+ *
+ * Examples:
+ *   ✅ Compaction complete · was ~83% (166,000 tok) → now ~12% (24,000 tok) · trigger=auto · 1.2s
+ *   ✅ Compaction complete · was ~?% → now ~?%                                          (no data)
+ */
+export function buildCompactCompleteMessage(session: ConversationSession): string {
+  const hasPreTokens = typeof session.compactPreTokens === 'number';
+  const hasPostTokens = typeof session.compactPostTokens === 'number';
+
+  const waseg = hasPreTokens
+    ? `was ~${fmtPct(session.preCompactUsagePct)}% (${fmtTokens(session.compactPreTokens)} tok)`
+    : `was ~${fmtPct(session.preCompactUsagePct)}%`;
+  const nowseg = hasPostTokens
+    ? `now ~${fmtPct(session.lastKnownUsagePct)}% (${fmtTokens(session.compactPostTokens)} tok)`
+    : `now ~${fmtPct(session.lastKnownUsagePct)}%`;
+
+  const parts: string[] = [`✅ Compaction complete · ${waseg} → ${nowseg}`];
+  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
+  const dur = fmtDuration(session.compactDurationMs);
+  if (dur) parts.push(dur);
+  return parts.join(' · ');
+}
+
 /**
  * Shared START-post helper. Called by both the PreCompact hook and the
  * `status === 'compacting'` fallback in stream-executor.ts so the two paths
@@ -208,11 +250,7 @@ export async function postCompactCompleteIfNeeded(deps: CompactHookDeps): Promis
     marker.post === true
       ? Promise.resolve()
       : (async () => {
-          await slackApi.postSystemMessage(
-            channel,
-            `✅ Compaction complete · was ~${fmtPct(session.preCompactUsagePct)}% → now ~${fmtPct(session.lastKnownUsagePct)}%`,
-            { threadTs },
-          );
+          await slackApi.postSystemMessage(channel, buildCompactCompleteMessage(session), { threadTs });
           marker.post = true;
         })();
 
