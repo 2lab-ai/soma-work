@@ -54,15 +54,12 @@ Non-Goal:
 | `/usage today`      | 오늘 flat text + 랭킹                                             | **없음**  |
 | `/usage 7d`         | 7일 flat text                                                    | **없음**  |
 | `/usage 30d`        | 30일 flat text                                                   | **없음**  |
-| `/usage card`       | v1 호환 — 초기 **30d** 다크 카드 posted + 3개 전환 버튼             | **변경** |
+| `/usage card`       | 초기 **30d** 다크 카드 posted + 3개 전환 버튼 (24h / 7d / all)     | **변경** |
 | `usage_card_tab`    | Block Kit action — 탭 클릭 시 `client.chat.update` 으로 이미지 교체 | **NEW**  |
 
-Env flag (rollback path):
-
-- `USAGE_CARD_V2=false` (or unset) → v1 단일 30d PNG 유지 (이전 경로 로딩, v2 코드 inert)
-- `USAGE_CARD_V2=true` → carousel 경로 활성화 (staging 먼저 → main → prod 단계적)
-
-Rule: `card` 에는 파라미터 없음 (v1과 동일). 캐러셀 탭 선택은 Slack action 으로만.
+Rule: `card` 에는 파라미터 없음. 캐러셀 탭 선택은 Slack action 으로만.
+Feature flag 없음. `/usage card` 는 단일 경로로 carousel 을 발급한다
+(v1 단일 PNG 경로는 refactor/usage-card-drop-legacy 에서 완전 제거됨).
 
 ---
 
@@ -99,10 +96,10 @@ ActionHandlers.onUsageCardTab({ack, body, client})
 
 ### 4.1 Data flow (new)
 
-- **CarouselStats** ≝ `Record<'24h'|'7d'|'30d'|'all', UsageCardStats | {empty: true}>`
+- **CarouselStats** ≝ `Record<'24h'|'7d'|'30d'|'all', CarouselTabStats | EmptyTabStats>`
 - 한 번의 aggregator 호출에서 4개 윈도우 동시 계산 (파일 스캔 1회 → 분기)
-- v1 `aggregateUsageCard` 는 `{startDate, endDate}` 기반 — 4회 호출해도 되지만 **동일 이벤트 재스캔 비용 4배**. v2 에서는 `aggregateCarousel({targetUserId, now})` 가 단일 루프에서 4개 윈도우 동시 누적.
-- 각 period 는 독립 UsageCardStats (empty 가능)
+- Single-window aggregator (legacy) 는 `{startDate, endDate}` 기반 — 4회 호출해도 되지만 **동일 이벤트 재스캔 비용 4배**. v2 에서는 `aggregateCarousel({targetUserId, now})` 가 단일 루프에서 4개 윈도우 동시 누적.
+- 각 period 는 독립 `CarouselTabStats` (empty 가능 — `EmptyTabStats`)
 
 **Active days / Longest streak / Current streak 계산 (신규)**
 
@@ -214,7 +211,7 @@ Luminance는 엄격히 단조증가. v1 draft 의 `#2A2A2A` (L=42.0)는 step 1(`
 - `src/metrics/usage-render/dark-palette.ts` — 색상/폰트 토큰
 - `src/metrics/usage-render/buildCarouselOption.ts` — 탭별 ECharts option builder
 - `src/metrics/usage-render/carousel-renderer.ts` — `renderCarousel(stats, clock): {tab24h, tab7d, tab30d, tabAll}` (4 PNG)
-- `src/metrics/report-aggregator.ts` — 신규 `aggregateCarousel({targetUserId, now})` (기존 `aggregateUsageCard` 유지)
+- `src/metrics/report-aggregator.ts` — `aggregateCarousel({targetUserId, now})` (v1 legacy aggregator 는 rev-3 에서 제거됨; see trace.md Changelog)
 - `src/slack/commands/usage-carousel-cache.ts` — `TabCache` class + default instance
 - `src/slack/action-handlers.ts` — `usage_card_tab` handler 등록 (기존 파일에 추가)
 
@@ -244,7 +241,7 @@ Luminance는 엄격히 단조증가. v1 draft 의 `#2A2A2A` (L=42.0)는 step 1(`
 
 | File                                                 | RED → GREEN assertion                                                                  |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `report-aggregator.test.ts` (extend)                 | `aggregateCarousel({now})` returns 4 UsageCardStats, active days/streaks exact         |
+| `report-aggregator.test.ts` (extend)                 | `aggregateCarousel({now})` returns 4 `TabResult`, active days/streaks exact             |
 | `buildCarouselOption.test.ts`                        | 탭별 series/xAxis/yAxis 값 정합 — heatmap(all) vs hourly(24h) vs week-matrix(30d)         |
 | `dark-palette.test.ts`                               | 8 token hex pinned, heatmap 5-step scale monotonic                                      |
 | `carousel-renderer.test.ts`                          | `renderCarousel(fixture)` → 4 non-empty Buffers, font loaded, selected tab state baked |
@@ -309,11 +306,10 @@ Luminance는 엄격히 단조증가. v1 draft 의 `#2A2A2A` (L=42.0)는 step 1(`
 
 ## 12. Rollout
 
-- `USAGE_CARD_V2` env flag: staging 먼저 true, main merge 후 prod true
-- 단일 PR (`feat/usage-card-dark`) — branch 제목 확정 후 작성
-- staging deploy 후 주군 실사 `/usage card` 캡쳐 4장 (24h/7d/30d/all 각 1장)
-- 메인 머지 → 자동 deploy → env flag 단계적 활성화 → live 검증 → close
-- 회귀 발생 시 `USAGE_CARD_V2=false` 한 줄 revert, 코드 롤백 불필요
+- Feature flag 없음 — v1 legacy 와 env gate 는 refactor/usage-card-drop-legacy 에서 완전 제거 (see trace.md Changelog rev-3)
+- 단일 PR (`feat/usage-card-dark` → `refactor/usage-card-drop-legacy`) 후 main merge → 자동 dev deploy
+- dev deploy 후 주군 실사 `/usage card` 캡쳐 4장 (24h/7d/30d/all 각 1장) — env 주입 불필요
+- 회귀 발생 시 PR revert (단일 경로이므로 한 번의 code revert 로 v2 전체를 원복)
 
 ---
 

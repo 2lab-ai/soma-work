@@ -1,6 +1,6 @@
 /**
  * SVG → PNG conversion via @resvg/resvg-js.
- * Trace: docs/usage-card/trace.md, Scenario 6 (step 5-6 of render pipeline).
+ * Trace: docs/usage-card-dark/trace.md (SVG→PNG step of carousel render pipeline).
  *
  * Kept in its own module so the native-bound resvg import is isolated
  * from the ECharts SSR path — tests and callers that only need the
