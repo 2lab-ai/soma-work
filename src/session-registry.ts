@@ -339,6 +339,15 @@ export class SessionRegistry {
       effort: userSettingsStore.getUserDefaultEffort(ownerId),
       state: 'INITIALIZING', // Start in INITIALIZING state
       activityState: 'idle',
+      // Compaction Tracking (#617): explicit zero-state for epoch-based dedupe.
+      compactEpoch: 0,
+      compactPostedByEpoch: {},
+      compactionRehydratedByEpoch: {},
+      preCompactUsagePct: null,
+      lastKnownUsagePct: null,
+      autoCompactPending: false,
+      pendingUserText: null,
+      pendingEventContext: null,
     };
 
     this.sessions.set(this.getSessionKey(channelId, threadTs), session);
@@ -1608,6 +1617,18 @@ export class SessionRegistry {
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
           summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,
+          // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
+          // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
+          // intentionally NOT rehydrated because the original event context cannot be
+          // reconstructed across a restart, and the user can simply retype the message.
+          compactEpoch: 0,
+          compactPostedByEpoch: {},
+          compactionRehydratedByEpoch: {},
+          preCompactUsagePct: null,
+          lastKnownUsagePct: null,
+          autoCompactPending: false,
+          pendingUserText: null,
+          pendingEventContext: null,
         };
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
         // leg (capped by MAX_LEG_MS) into the accumulator and clear the marker so

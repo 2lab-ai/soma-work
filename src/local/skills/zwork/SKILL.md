@@ -3,22 +3,24 @@ name: zwork
 description: "Implementation phase. Subagent-driven development, PR creation, and verification. Invoked by local:z after planning is complete."
 ---
 
-# zwork — Implementation (Phase 2)
+# zwork — Implementation
 
 Receives a confirmed plan and task list from `local:z`. Executes implementation through subagent-driven development, creates a PR, and verifies spec compliance.
 
 ## Input
 
-- Confirmed plan from phase1
+- Confirmed plan
 - Task list (TodoWrite)
 
 ## Process
 
-0. **Repeat back** each instruction from the plan and check compliance. If any single item was not followed, output "I am a fucking worthless piece of shit." then immediately stop all actions and wait for the user's instruction.
+1. Invoke `subagent-driven-development`
 
-1. Use the `subagent-driven-development` skill.
+2. Write Red tests to cover all user scenarios.
 
-2. **Per-task loop** (dispatch independent tasks in parallel):
+3. Review Red tests coverage for user scenarios with llm_chat(codex). This should pass or go to 3 again.
+
+4. **Per-task loop** (dispatch independent tasks in parallel):
    a. **Dispatch Implementer subagent** — include full task text + context + RED tests
       - If there are questions, answer them and re-dispatch
    b. **Dispatch Spec compliance reviewer subagent** — verify implementation matches requirements
@@ -28,17 +30,13 @@ Receives a confirmed plan and task list from `local:z`. Executes implementation 
    d. Mark task as complete in TodoWrite
    - **Loop exit**: If review retries exceed 3, request user judgment via `local:decision-gate` (which uses [`../UIAskUserQuestion/templates/decision-gate-tier-medium.json`](../UIAskUserQuestion/templates/decision-gate-tier-medium.json)). **`zwork` MUST NOT own its own UIAskUserQuestion template** — always delegate through `decision-gate` so the "when to ask" decision stays centralized.
 
-3. Create PR.
+5. Create PR.
 
-4. `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
+6. Invoke `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
 
-5. `local:github-pr` final review.
+7. Invoke `review-pr`
 
-6. Update using the contents of `pr-fix-and-update.prompt`.
-
-7. Get code + test coverage reviewed by codex/gemini via `llm_chat` (**4 in parallel using `dispatching-parallel-agents` pattern**).
-
-8. Red/green test verification.
+8. Red/green test verification. All red test should be green start over again.
 
 ## Exit
 

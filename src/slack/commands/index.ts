@@ -6,6 +6,7 @@ export { BypassHandler } from './bypass-handler';
 export { CloseHandler } from './close-handler';
 export { CommandRouter } from './command-router';
 export { CompactHandler } from './compact-handler';
+export { CompactThresholdHandler } from './compact-threshold-handler';
 export { ContextHandler } from './context-handler';
 export { CwdHandler } from './cwd-handler';
 export { EffortHandler } from './effort-handler';

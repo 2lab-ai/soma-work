@@ -183,6 +183,18 @@ export function getContextWindow(modelName?: string): number {
   return getModelSpec(modelName).contextWindow;
 }
 
+/** Fallback context window size when SDK/registry haven't reported one yet. */
+export const FALLBACK_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Resolve context window for a model by name with fallback. Used by
+ * stream-executor hot paths and threshold checks that need a non-zero
+ * denominator before the SDK reports `contextWindow`.
+ */
+export function resolveContextWindow(modelName?: string): number {
+  return getContextWindow(modelName) || FALLBACK_CONTEXT_WINDOW;
+}
+
 /**
  * Get max output token count for a model.
  */
