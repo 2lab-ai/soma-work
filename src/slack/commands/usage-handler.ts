@@ -4,8 +4,7 @@ import { ReportAggregator } from '../../metrics/report-aggregator';
 import type { UsageReport } from '../../metrics/types';
 import { renderCarousel as defaultRenderCarousel } from '../../metrics/usage-render/carousel-renderer';
 import { isSafeOperational, SlackPostError, SlackUploadError } from '../../metrics/usage-render/errors';
-import { renderUsageCard } from '../../metrics/usage-render/renderer';
-import type { CarouselStats, TabId, UsageCardResult } from '../../metrics/usage-render/types';
+import type { CarouselStats, TabId } from '../../metrics/usage-render/types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { buildCarouselBlocks } from './usage-carousel-blocks';
@@ -14,17 +13,13 @@ import { defaultTabCache, type TabCache } from './usage-carousel-cache';
 /**
  * Injection seam for /usage card pipeline — allows tests to fake out
  * aggregator / renderer / slack-api / clock.
- * Trace: docs/usage-card/trace.md, Scenario 8
- * Trace: docs/usage-card-dark/trace.md, Scenario 1 (carousel extensions).
+ * Trace: docs/usage-card-dark/trace.md, Scenario 1.
  */
 export interface UsageCardOverrides {
   aggregator?: {
-    aggregateUsageCard: ReportAggregator['aggregateUsageCard'];
-    /** Carousel branch (v2). Optional so v1-only call sites stay valid. */
-    aggregateCarousel?: ReportAggregator['aggregateCarousel'];
+    aggregateCarousel: ReportAggregator['aggregateCarousel'];
   };
-  renderer?: (stats: Parameters<typeof renderUsageCard>[0]) => Promise<Buffer>;
-  /** Carousel SSR renderer (v2). */
+  /** Carousel SSR renderer. */
   renderCarousel?: (stats: CarouselStats, selectedTab: TabId) => Promise<Record<TabId, Buffer>>;
   slackApi?: {
     filesUploadV2: (args: Record<string, unknown>) => Promise<unknown>;
@@ -117,17 +112,15 @@ export class UsageHandler implements CommandHandler {
   }
 
   /**
-   * Handle `/usage card` — personal 30-day PNG card.
-   * Trace: docs/usage-card/trace.md, Scenarios 1, 9, 10, 11, 12
-   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (carousel branch).
+   * Handle `/usage card` — personal 4-tab carousel (24h / 7d / 30d / all).
+   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (+ 9 privacy, 12 all-empty, 13 errors, 15 regression).
    */
   async handleCard(ctx: CommandContext): Promise<CommandResult> {
     const { channel, text, threadTs, user } = ctx;
 
-    // Strict param gate — v1 spec §3 forbids *any* argument on `/usage card`.
+    // Strict param gate — spec §3 forbids *any* argument on `/usage card`.
     // `/usage card @someone`, `/usage card foo` → reject explicitly rather
-    // than silently produce the caller's own card. Shared with both v1 and v2
-    // branches.
+    // than silently produce the caller's own card.
     if (hasExtraCardArgs(text)) {
       await this.deps.slackApi.postSystemMessage(
         channel,
@@ -141,7 +134,7 @@ export class UsageHandler implements CommandHandler {
 
     // Privacy gate — redundant safety net (strict param gate above should
     // already catch this). Kept so the privacy rule can never regress even
-    // if the parser grows new cases. Shared with both v1 and v2 branches.
+    // if the parser grows new cases.
     if (parsed.userId && parsed.userId !== user) {
       await this.deps.slackApi.postSystemMessage(
         channel,
@@ -150,104 +143,6 @@ export class UsageHandler implements CommandHandler {
       );
       return { handled: true };
     }
-
-    // Feature-flag gate — v2 carousel when explicitly on; otherwise v1.
-    if (process.env.USAGE_CARD_V2 === 'true') {
-      return this.handleCardCarousel(ctx);
-    }
-    return this.handleCardV1(ctx);
-  }
-
-  /**
-   * v1 single-render path — UNCHANGED byte-for-byte from pre-carousel build.
-   * Extracted only so the feature-flag branch can delegate cleanly. Do NOT
-   * modify without updating `docs/usage-card/trace.md` scenarios.
-   */
-  private async handleCardV1(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, user } = ctx;
-
-    const clock = this.overrides.clock ?? (() => new Date());
-    const now = clock();
-    const { startDate, endDate } = this.getDateRange(now, 'month');
-
-    const store = new MetricsEventStore();
-    const defaultAggregator = new ReportAggregator(store);
-    const aggregator = this.overrides.aggregator ?? defaultAggregator;
-
-    const stats: UsageCardResult = await aggregator.aggregateUsageCard({
-      startDate,
-      endDate,
-      targetUserId: user,
-      topN: 10,
-      now,
-    });
-
-    if (stats.empty) {
-      await this.postEphemeral(ctx, '최근 30일간 기록된 사용량이 없습니다. `/usage`로 기본 집계를 먼저 확인하세요.');
-      return { handled: true };
-    }
-
-    try {
-      const renderer = this.overrides.renderer ?? renderUsageCard;
-      const png = await renderer(stats);
-
-      // 1-step upload: a single `filesUploadV2` with `channel_id` +
-      // `thread_ts` + `initial_comment` uploads the file, shares it into the
-      // originating thread, and renders the caption in one call — removing the
-      // second-call race where a follow-up
-      // `postMessage({ blocks: [image slack_file.id] })` could fire before
-      // Slack finished propagating the file-share to the channel and be
-      // rejected with `invalid_blocks: invalid slack file`. See issue #579.
-      const captionText = `${stats.targetUserName || stats.targetUserId} — Usage Card (${stats.windowStart} ~ ${stats.windowEnd})`;
-      try {
-        const uploadArgs = {
-          filename: 'usage-card.png',
-          file: png,
-          channel_id: channel,
-          thread_ts: threadTs,
-          initial_comment: captionText,
-          alt_text: `Usage card for ${stats.targetUserName || stats.targetUserId}`,
-          request_file_info: false,
-        };
-        if (this.overrides.slackApi) {
-          await this.overrides.slackApi.filesUploadV2(uploadArgs);
-        } else {
-          await this.deps.slackApi.getClient().filesUploadV2(uploadArgs);
-        }
-      } catch (err) {
-        throw new SlackUploadError('filesUploadV2 failed', err);
-      }
-
-      this.logger.info('usage_card_rendered', {
-        userId: user,
-        pngBytes: png.byteLength,
-      });
-      return { handled: true };
-    } catch (err) {
-      if (isSafeOperational(err)) {
-        const kind = err.constructor.name;
-        this.logger.error('usage_card_safe_failure', {
-          kind,
-          message: err.message,
-        });
-        await this.postEphemeral(ctx, '카드 생성 실패, 잠시 후 다시 시도해 주세요.');
-        // Best-effort DM alert (spec §4.4 / §5 acceptance §4). Failure of the
-        // DM itself is swallowed — the channel fallback already succeeded and
-        // a secondary failure must not mask the first.
-        await this.postDmAlert(user, kind);
-        return { handled: true };
-      }
-      // Non-operational error: re-throw so upstream handler/logging sees it.
-      throw err;
-    }
-  }
-
-  /**
-   * v2 carousel path — gated by `process.env.USAGE_CARD_V2 === 'true'`.
-   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (+ 12 all-empty, 13 errors).
-   */
-  private async handleCardCarousel(ctx: CommandContext): Promise<CommandResult> {
-    const { channel, threadTs, user } = ctx;
 
     const clock = this.overrides.clock ?? (() => new Date());
     const now = clock();
@@ -349,7 +244,7 @@ export class UsageHandler implements CommandHandler {
       });
 
       const pngBytes = Object.values(pngMap).reduce((s, b) => s + b.byteLength, 0);
-      this.logger.info('usage_card_v2_posted', {
+      this.logger.info('usage_card_posted', {
         userId: user,
         messageTs,
         pngBytes,
