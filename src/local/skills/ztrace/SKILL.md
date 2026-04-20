@@ -31,7 +31,7 @@ description: "Scenario-driven workflow analysis at callstack depth. Triggered by
 **유저가 시나리오를 제공하지 않은 경우:**
 1. 대상 기능의 엔트리포인트 탐색 (Controller, Worker, EventHandler)
 2. 유저 관점의 핵심 시나리오 3~6개 자동 도출
-3. `local:UIAskUserQuestion`으로 시나리오 확인 받기 — 템플릿 [`../UIAskUserQuestion/templates/ztrace-ambiguous-scenario.json`](../UIAskUserQuestion/templates/ztrace-ambiguous-scenario.json) 사용. `{scenarios_list}` / `{entry_points}` placeholder 채워 전송.
+3. `local:UIAskUserQuestion`으로 시나리오 확인 받기
 
 **유저가 시나리오를 제공한 경우:**
 → Phase 1로 직행
