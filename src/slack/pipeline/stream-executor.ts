@@ -56,6 +56,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnContext } from '../thread-panel';
+import { isLocalSlashCommand } from './local-slash-command';
 import { MessageEvent, type SayFn } from './types';
 
 /**
@@ -391,22 +392,53 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     try {
-      let finalPrompt = await this.preparePrompt(
-        text,
-        processedFiles,
-        userName,
-        user,
-        workingDirectory,
-        threadTs,
-        params.mentionTs,
-      );
+      // #617 followup: Claude Agent SDK only recognizes local slash commands
+      // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
+      // token. preparePrompt wraps the text with <speaker>…</speaker> and a
+      // trailing <context>…</context>, which pushes the slash off the first
+      // character and makes the SDK treat `/compact` as a plain LLM message
+      // instead of invoking compaction. Detect the exact local-command form
+      // and pass it through raw. This also repairs the auto-compact
+      // (#617 AC3) path: event-router injects '/compact' as continueWithPrompt,
+      // so without this bypass the threshold-triggered compaction would also
+      // be silently no-op'd.
+      const trimmedText = (text ?? '').trim();
+      const isSlashCommand = isLocalSlashCommand(trimmedText);
 
-      // #196: Inject compaction context if SDK auto-compacted during previous turn
+      let finalPrompt: string;
+      if (isSlashCommand) {
+        finalPrompt = trimmedText;
+        this.logger.info('Bypassing preparePrompt for SDK local slash command', {
+          sessionKey,
+          command: trimmedText.split(/\s/)[0],
+        });
+      } else {
+        finalPrompt = await this.preparePrompt(
+          text,
+          processedFiles,
+          userName,
+          user,
+          workingDirectory,
+          threadTs,
+          params.mentionTs,
+        );
+      }
+
+      // #196: Inject compaction context if SDK auto-compacted during previous turn.
+      // Skip injection for local slash commands — prefixing `<compaction-context>`
+      // would break SDK recognition of the leading `/cmd`. The session flag is
+      // still cleared so we don't inject stale context into the next real turn.
       if (session.compactionOccurred) {
-        const compactionCtx = buildCompactionContext(snapshotFromSession(session));
-        if (compactionCtx) {
-          finalPrompt = `${compactionCtx}\n\n${finalPrompt}`;
-          this.logger.info('Injected compaction preservation context', { sessionKey });
+        if (!isSlashCommand) {
+          const compactionCtx = buildCompactionContext(snapshotFromSession(session));
+          if (compactionCtx) {
+            finalPrompt = `${compactionCtx}\n\n${finalPrompt}`;
+            this.logger.info('Injected compaction preservation context', { sessionKey });
+          }
+        } else {
+          this.logger.info('Skipping compaction context injection for local slash command', {
+            sessionKey,
+          });
         }
         session.compactionOccurred = false;
       }
@@ -765,7 +797,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         // #196: Compaction-Aware Context Preservation
         // #617: END-signal dedupe + pendingUserText re-dispatch
-        onCompactBoundary: () => {
+        // #617 followup: capture SDK-authoritative pre/post token counts from
+        // `compact_metadata` so the "complete" message can report real
+        // percentages (the heuristic `lastKnownUsagePct` is only refreshed
+        // at turn-end and is stale between PreCompact and PostCompact).
+        onCompactBoundary: (metadata) => {
           session.compactionOccurred = true;
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
@@ -777,7 +813,55 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               error: (err as Error)?.message ?? String(err),
             });
           }
-          this.logger.info('Compaction flag set — context will be re-injected on next prompt', { sessionKey });
+
+          // Capture SDK compact_metadata — shape per SDKCompactBoundaryMessage:
+          //   { trigger: 'manual'|'auto', pre_tokens: number,
+          //     post_tokens?: number, duration_ms?: number }
+          // We store raw tokens + trigger + duration on the session so the
+          // completion message can show the full picture (pre%, post%,
+          // token counts, trigger, wall time) regardless of whether a
+          // turn-end usage sample has arrived between pre- and post-compact.
+          if (metadata && typeof metadata === 'object') {
+            const m = metadata as {
+              trigger?: 'manual' | 'auto';
+              pre_tokens?: number;
+              post_tokens?: number;
+              duration_ms?: number;
+            };
+            if (typeof m.pre_tokens === 'number') session.compactPreTokens = m.pre_tokens;
+            if (typeof m.post_tokens === 'number') session.compactPostTokens = m.post_tokens;
+            if (m.trigger === 'manual' || m.trigger === 'auto') session.compactTrigger = m.trigger;
+            if (typeof m.duration_ms === 'number') session.compactDurationMs = m.duration_ms;
+
+            // Mirror token counts into usagePct fields so the "was ~X% → now ~Y%"
+            // message shows real numbers instead of `?` even on the very first
+            // compaction of a session (before any turn-end usage sample).
+            const contextWindow = resolveContextWindow(session.model);
+            if (contextWindow > 0) {
+              if (typeof m.pre_tokens === 'number') {
+                session.preCompactUsagePct = Math.max(
+                  0,
+                  Math.min(100, Math.round((m.pre_tokens / contextWindow) * 100)),
+                );
+              }
+              if (typeof m.post_tokens === 'number') {
+                session.lastKnownUsagePct = Math.max(
+                  0,
+                  Math.min(100, Math.round((m.post_tokens / contextWindow) * 100)),
+                );
+              }
+            }
+          }
+
+          this.logger.info('Compaction flag set — context will be re-injected on next prompt', {
+            sessionKey,
+            preTokens: session.compactPreTokens ?? null,
+            postTokens: session.compactPostTokens ?? null,
+            trigger: session.compactTrigger ?? null,
+            durationMs: session.compactDurationMs ?? null,
+            preCompactUsagePct: session.preCompactUsagePct ?? null,
+            lastKnownUsagePct: session.lastKnownUsagePct ?? null,
+          });
 
           // #617 AC5 fallback + AC3 end-to-end pending re-dispatch. Fire-and-forget
           // so a Slack failure cannot block the SDK stream callback chain. Wrap
