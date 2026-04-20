@@ -17,7 +17,6 @@ import { EmailHandler } from './email-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
-import { LlmChatHandler } from './llm-chat-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
 import { MemoryHandler } from './memory-handler';
@@ -54,7 +53,6 @@ export class CommandRouter {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
     this.handlers = [
-      new LlmChatHandler(),
       new AdminHandler(),
       new PromptHandler(deps),
       new InstructionsHandler(deps),

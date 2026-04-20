@@ -1,5 +1,5 @@
 /**
- * Unit Tests — GeminiRuntime (post-refactor signatures).
+ * Unit Tests — GeminiRuntime (slim surface; no resolvedConfig).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { GeminiRuntime } from './gemini-runtime.js';
@@ -61,7 +61,7 @@ describe('GeminiRuntime', () => {
       let startCount = 0;
       mockClient.start.mockImplementation(async () => {
         startCount++;
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise((r) => setTimeout(r, 10));
       });
       await Promise.all([runtime.ensureReady(), runtime.ensureReady()]);
       expect(startCount).toBe(1);
@@ -69,7 +69,7 @@ describe('GeminiRuntime', () => {
   });
 
   describe('startSession()', () => {
-    it('calls chat tool with correct args', async () => {
+    it('calls chat tool with prompt + model', async () => {
       const result = await runtime.startSession('gemini-3.1-pro-preview', 'hello', {});
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'chat',
@@ -77,13 +77,12 @@ describe('GeminiRuntime', () => {
         600_000,
       );
       expect(result.backendSessionId).toBe('gemini-session-xyz');
-      expect(result.resolvedConfig).toEqual({});
     });
 
-    it('echoes resolvedConfig verbatim', async () => {
-      const input = { temperature: 0.2 };
-      const result = await runtime.startSession('gemini-3.1-pro', 'hi', { resolvedConfig: input });
-      expect(result.resolvedConfig).toEqual(input);
+    it('passes cwd when supplied', async () => {
+      await runtime.startSession('gemini-3.1-pro', 'hi', { cwd: '/tmp/wd' });
+      const args = mockClient.callTool.mock.calls[0][1];
+      expect(args.cwd).toBe('/tmp/wd');
     });
   });
 
@@ -96,17 +95,6 @@ describe('GeminiRuntime', () => {
         600_000,
       );
       expect(result.backendSessionId).toBe('gemini-session-xyz');
-    });
-  });
-
-  describe('capabilities', () => {
-    it('has correct flags', () => {
-      expect(runtime.capabilities).toEqual({
-        supportsReview: false,
-        supportsInterrupt: false,
-        supportsResume: true,
-        supportsEventStream: false,
-      });
     });
   });
 });

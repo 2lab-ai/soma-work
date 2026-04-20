@@ -18,16 +18,9 @@ import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');
 
-export interface LlmBackendConfigJson {
-  backend: string;
-  model: string;
-  configOverride?: Record<string, string>;
-}
-
 export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
-  llmChat?: Record<string, LlmBackendConfigJson>;
   agents?: Record<string, AgentConfig>;
   a2t?: A2tConfig;
 }
@@ -113,10 +106,6 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.plugin = validatePluginConfig(raw.plugin);
       }
 
-      if (raw.llmChat && typeof raw.llmChat === 'object') {
-        result.llmChat = raw.llmChat;
-      }
-
       // Parse agents section (Trace: docs/multi-agent/trace.md, S1)
       const agents = parseAgentsConfig(raw);
       if (Object.keys(agents).length > 0) {
@@ -132,7 +121,6 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
-        hasLlmChat: !!result.llmChat,
         agents: result.agents ? Object.keys(result.agents).length : 0,
         hasA2t: !!result.a2t,
       });

@@ -27,11 +27,6 @@ export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type SessionThemeCommandResult = { theme: string | null } | null;
 export type LinkCommandResult = { linkType: 'issue' | 'pr' | 'doc'; url: string } | null;
-export type LlmChatAction =
-  | { action: 'show' }
-  | { action: 'set'; provider: string; key: string; value: string }
-  | { action: 'reset' }
-  | { action: 'error'; message: string };
 export type SessionCommandAction =
   | { type: 'info' }
   | { type: 'model'; action: 'status' | 'set'; model?: string }
@@ -713,54 +708,6 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is any llm_chat command (set/show/reset)
-   */
-  static isLlmChatCommand(text: string): boolean {
-    return /^\/?(?:set|show|reset)\s+llm_chat\b/i.test(text.trim());
-  }
-
-  /**
-   * Parse llm_chat command
-   */
-  static parseLlmChatCommand(text: string): LlmChatAction {
-    const trimmed = text.trim();
-
-    if (/^\/?show\s+llm_chat\s*$/i.test(trimmed)) {
-      return { action: 'show' };
-    }
-
-    if (/^\/?reset\s+llm_chat\s*$/i.test(trimmed)) {
-      return { action: 'reset' };
-    }
-
-    // Parse: set llm_chat <provider> <key> <value>
-    const setMatch = trimmed.match(/^\/?set\s+llm_chat\s+(\S+)\s+(\S+)\s+(.+)$/i);
-    if (setMatch) {
-      return {
-        action: 'set',
-        provider: setMatch[1].toLowerCase(),
-        key: setMatch[2].toLowerCase(),
-        value: setMatch[3].trim(),
-      };
-    }
-
-    // If "set llm_chat" but missing args, return error with usage guidance
-    if (/^\/?set\s+llm_chat/i.test(trimmed)) {
-      return {
-        action: 'error',
-        message: 'Usage: `set llm_chat <provider> <key> <value>`\nExample: `set llm_chat codex model gpt-5.4`',
-      };
-    }
-
-    // Fallback for any other unrecognized pattern
-    return {
-      action: 'error',
-      message:
-        'Unrecognized llm_chat command.\nUsage: `show llm_chat` | `set llm_chat <provider> <key> <value>` | `reset llm_chat`',
-    };
-  }
-
-  /**
    * Check if text is a marketplace command
    */
   static isMarketplaceCommand(text: string): boolean {
@@ -1121,12 +1068,6 @@ export class CommandParser {
       '• `verbosity <level>` - Set log verbosity (minimal/compact/detail/verbose)',
       '• `effort` - Show current default effort level',
       `• \`effort <level>\` - Set default effort (${EFFORT_LEVELS.join('/')}). Persists for all future sessions.`,
-      '',
-      '*LLM Chat Config:*',
-      '• `show llm_chat` - Show current llm_chat model configuration',
-      '• `set llm_chat <provider> model <value>` - Change model (e.g., `set llm_chat codex model gpt-5.4`)',
-      '• `set llm_chat <provider> model_reasoning_effort <value>` - Change reasoning effort',
-      '• `reset llm_chat` - Reset llm_chat config to defaults',
       '',
       '*Session Settings (`%` prefix):*',
       '_Note: `$` prefix is deprecated for session commands — use `%` instead._',

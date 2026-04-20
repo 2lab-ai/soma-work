@@ -1,5 +1,5 @@
 /**
- * Unit Tests — CodexRuntime (post-refactor signatures).
+ * Unit Tests — CodexRuntime (slim surface; no resolvedConfig, no child-registry).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { CodexRuntime } from './codex-runtime.js';
@@ -70,7 +70,7 @@ describe('CodexRuntime', () => {
       let startCount = 0;
       mockClient.start.mockImplementation(async () => {
         startCount++;
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise((r) => setTimeout(r, 10));
       });
       await Promise.all([runtime.ensureReady(), runtime.ensureReady(), runtime.ensureReady()]);
       expect(startCount).toBe(1);
@@ -78,11 +78,8 @@ describe('CodexRuntime', () => {
   });
 
   describe('startSession()', () => {
-    it('calls codex tool with expanded config', async () => {
-      const result = await runtime.startSession('gpt-5.4', 'hello', {
-        cwd: '/tmp/test',
-        resolvedConfig: { model_reasoning_effort: 'xhigh', 'features.fast_mode': 'true' },
-      });
+    it('calls codex tool with hardcoded default config', async () => {
+      const result = await runtime.startSession('gpt-5.4', 'hello', { cwd: '/tmp/test' });
 
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'codex',
@@ -93,21 +90,18 @@ describe('CodexRuntime', () => {
           config: expect.objectContaining({
             model_reasoning_effort: 'xhigh',
             features: { fast_mode: true },
+            service_tier: 'fast',
           }),
         }),
         600_000,
       );
       expect(result.backendSessionId).toBe('thread-abc-123');
-      expect(result.resolvedConfig).toEqual({
-        model_reasoning_effort: 'xhigh',
-        'features.fast_mode': 'true',
-      });
     });
 
-    it('echoes resolvedConfig unchanged (pre-expansion)', async () => {
-      const input = { model_reasoning_effort: 'low', custom_flag: 'on' };
-      const result = await runtime.startSession('gpt-5.4', 'hi', { resolvedConfig: input });
-      expect(result.resolvedConfig).toEqual(input);
+    it('omits cwd when not supplied', async () => {
+      await runtime.startSession('gpt-5.4', 'hi', {});
+      const args = mockClient.callTool.mock.calls[0][1];
+      expect(args).not.toHaveProperty('cwd');
     });
 
     it('extracts threadId from structuredContent', async () => {
@@ -123,7 +117,7 @@ describe('CodexRuntime', () => {
   });
 
   describe('resumeSession()', () => {
-    it('calls codex-reply with threadId', async () => {
+    it('calls codex-reply with threadId only', async () => {
       const result = await runtime.resumeSession('thread-abc-123', 'continue', {});
       expect(mockClient.callTool).toHaveBeenCalledWith(
         'codex-reply',
@@ -156,17 +150,6 @@ describe('CodexRuntime', () => {
       await runtime.ensureReady();
       await runtime.shutdown();
       expect(mockClient.stop).toHaveBeenCalled();
-    });
-  });
-
-  describe('capabilities', () => {
-    it('has correct flags', () => {
-      expect(runtime.capabilities).toEqual({
-        supportsReview: false,
-        supportsInterrupt: false,
-        supportsResume: true,
-        supportsEventStream: false,
-      });
     });
   });
 });

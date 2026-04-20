@@ -1,8 +1,8 @@
 /**
  * GeminiRuntime — LlmRuntime adapter for the Gemini MCP server.
  *
- * Same architecture as CodexRuntime: shared long-lived McpClient child, PID
- * registered with ChildRegistry, watchdog-controlled kill on timeout/abort.
+ * Same architecture as CodexRuntime: shared long-lived McpClient child,
+ * watchdog-controlled kill on timeout/abort.
  */
 
 import { execFileSync } from 'child_process';
@@ -10,12 +10,10 @@ import { McpClient } from '../../_shared/mcp-client.js';
 import type { McpClientConfig } from '../../_shared/mcp-client.js';
 import type {
   LlmRuntime,
-  RuntimeCapabilities,
   RuntimeCallOptions,
   StartSessionResult,
   ResumeSessionResult,
 } from './types.js';
-import type { ChildRegistry } from './child-registry.js';
 import { runWithWatchdog } from './watchdog.js';
 import { ErrorCode, LlmChatError } from './errors.js';
 
@@ -54,27 +52,17 @@ const GEMINI_DEFAULT_TIMEOUT = 600_000;
 
 export interface GeminiRuntimeOptions {
   clientConfig?: McpClientConfig;
-  childRegistry?: ChildRegistry;
 }
 
 export class GeminiRuntime implements LlmRuntime {
   readonly name = 'gemini' as const;
-  readonly capabilities: RuntimeCapabilities = {
-    supportsReview: false,
-    supportsInterrupt: false,
-    supportsResume: true,
-    supportsEventStream: false,
-  };
 
   private client: McpClient | null = null;
   private readyPromise: Promise<void> | null = null;
-  private registeredPid: number | null = null;
   private readonly clientConfig: McpClientConfig;
-  private readonly childRegistry?: ChildRegistry;
 
   constructor(opts: GeminiRuntimeOptions = {}) {
     this.clientConfig = opts.clientConfig ?? { command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] };
-    this.childRegistry = opts.childRegistry;
   }
 
   async ensureReady(): Promise<void> {
@@ -91,10 +79,6 @@ export class GeminiRuntime implements LlmRuntime {
   ): Promise<StartSessionResult> {
     await this.ensureReady();
 
-    // Gemini MCP server does not consume flat dot-notation config the way Codex does;
-    // the resolvedConfig passed to the child is the merged dictionary as-is.
-    const mergedConfig: Record<string, unknown> = { ...(opts.resolvedConfig ?? {}) };
-
     const backendArgs: Record<string, unknown> = { prompt, model };
     if (opts.cwd) backendArgs.cwd = opts.cwd;
 
@@ -103,7 +87,7 @@ export class GeminiRuntime implements LlmRuntime {
     const backendSessionId = extractSessionId(parsed, result);
     const content = extractContent(result, parsed, text);
 
-    return { backendSessionId, content, resolvedConfig: mergedConfig };
+    return { backendSessionId, content };
   }
 
   async resumeSession(
@@ -123,15 +107,9 @@ export class GeminiRuntime implements LlmRuntime {
   }
 
   async shutdown(): Promise<void> {
-    if (this.client) {
-      const pid = this.client.getPid();
-      try { await this.client.stop(); } catch { /* ignore */ }
-      this.client = null;
-      if (pid !== undefined && this.registeredPid === pid) {
-        try { await this.childRegistry?.remove(pid); } catch { /* ignore */ }
-        this.registeredPid = null;
-      }
-    }
+    if (!this.client) return;
+    try { await this.client.stop(); } catch { /* ignore */ }
+    this.client = null;
   }
 
   // ── Internal ────────────────────────────────────────────
@@ -153,9 +131,7 @@ export class GeminiRuntime implements LlmRuntime {
     return runWithWatchdog(work, {
       timeoutMs,
       signal: opts.signal,
-      killChild: (sig) => {
-        client.killProcess(sig);
-      },
+      killChild: (sig) => { client.killProcess(sig); },
     });
   }
 
@@ -165,26 +141,13 @@ export class GeminiRuntime implements LlmRuntime {
     }
 
     if (this.client) {
-      const oldPid = this.registeredPid;
       try { await this.client.stop(); } catch { /* ignore */ }
       this.client = null;
-      if (oldPid !== null) {
-        try { await this.childRegistry?.remove(oldPid); } catch { /* ignore */ }
-        this.registeredPid = null;
-      }
     }
 
     const client = new McpClient(this.clientConfig, 'LlmMCP:gemini');
     await client.start();
     this.client = client;
-
-    const pid = client.getPid();
-    if (pid !== undefined && this.childRegistry) {
-      try {
-        await this.childRegistry.append(pid, 'gemini');
-        this.registeredPid = pid;
-      } catch { /* non-fatal */ }
-    }
   }
 
   private cliExists(command: string): boolean {

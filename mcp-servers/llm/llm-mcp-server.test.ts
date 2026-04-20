@@ -42,12 +42,11 @@ vi.mock('./runtime/gemini-runtime.js', () => ({
 }));
 
 describe('routeModel', () => {
-  it('routes "codex" alias to codex backend with defaults', async () => {
+  it('routes "codex" alias to codex backend with default model', async () => {
     const { routeModel } = await import('./llm-mcp-server.js');
     const route = routeModel('codex');
     expect(route.backend).toBe('codex');
     expect(route.model).toBe('gpt-5.4');
-    expect(route.configOverride).toBeDefined();
   });
 
   it('routes "gemini" alias to gemini backend with defaults', async () => {
