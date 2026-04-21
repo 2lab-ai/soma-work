@@ -52,9 +52,15 @@ describe('buildCarouselBlocks', () => {
     expect(elements.map((e: any) => e.value)).toEqual(['24h', '7d', '30d', 'all']);
     for (const el of elements) {
       expect(el.type).toBe('button');
-      expect(el.action_id).toBe('usage_card_tab');
+      expect(el.action_id).toMatch(/^usage_card_tab:/);
       expect(el.text.type).toBe('plain_text');
     }
+    // Slack block-kit requires unique action_id per message. Suffix with tabId
+    // so all 4 buttons collide no more (regression guard for SlackPostError
+    // invalid_blocks — see stderr: `action_id "usage_card_tab" already exists`).
+    const ids = elements.map((e: any) => e.action_id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toEqual(['usage_card_tab:24h', 'usage_card_tab:7d', 'usage_card_tab:30d', 'usage_card_tab:all']);
   });
 
   it('selectedTab="30d" → 30d button has style:"primary", others do not', () => {
