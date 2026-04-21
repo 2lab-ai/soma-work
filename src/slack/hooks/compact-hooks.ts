@@ -46,6 +46,15 @@ const logger = new Logger('CompactHooks');
  * is currently open (previous is closed or absent). Idempotent when called
  * twice inside the same cycle (PreCompact hook + compacting-status fallback).
  *
+ * When the epoch actually bumps we also wipe the boundary-populated metadata
+ * fields (`compactPreTokens/PostTokens/Trigger/DurationMs`). These are set by
+ * `onCompactBoundary` (stream-executor.ts:831-834) and read by
+ * `hasBoundaryMetadata()` + `buildCompactCompleteMessage()`. Without the reset,
+ * cycle N+1 inherits cycle N's values: `hasBoundaryMetadata` returns true
+ * immediately, skipping the 500ms grace window in `postCompactCompleteIfNeeded`,
+ * and the completion message renders cycle N's pre/post tokens on cycle N+1's
+ * announcement (see docs/issues/compact-bugs-trace — stale-metadata P1).
+ *
  * Returns the current epoch — callers store per-cycle dedupe state under
  * `session.compactPostedByEpoch[epoch]`.
  */
@@ -57,6 +66,11 @@ export function beginCompactionCycleIfNeeded(session: ConversationSession): numb
     const nextEpoch = epoch + 1;
     session.compactEpoch = nextEpoch;
     map[nextEpoch] = { pre: false, post: false };
+    // Clear prior cycle's boundary metadata so the new cycle starts clean.
+    session.compactPreTokens = null;
+    session.compactPostTokens = null;
+    session.compactTrigger = null;
+    session.compactDurationMs = null;
     return nextEpoch;
   }
   return epoch;
@@ -318,7 +332,13 @@ function stopStartingTicker(session: ConversationSession): void {
  * The ticker is cleared by `postCompactCompleteIfNeeded`; if that never
  * fires (SDK failure), a 10-minute safety ceiling stops the ticker anyway.
  *
- * Idempotent within a cycle via `marker.pre`.
+ * Idempotent within a cycle via `marker.pre`. The dedupe latch is claimed
+ * SYNCHRONOUSLY (before any await) so racing callers — PreCompact hook and
+ * the `onStatusUpdate('compacting')` fallback IIFE in stream-executor — can
+ * never both slip past the guard. Previously the assignment happened after
+ * `await slackApi.postSystemMessage(...)`, which produced two posts + two
+ * tickers; the first ticker's handle was overwritten and leaked (see
+ * docs/issues/compact-bugs-trace/trace.md Hypothesis 1).
  */
 export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger: string): Promise<void> {
   const { session, channel, threadTs, slackApi } = deps;
@@ -330,24 +350,47 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const marker = ensurePostedMap(session)[epoch];
   if (!marker || marker.pre) return;
 
+  // ATOMIC: claim the cycle synchronously BEFORE any await. This is the
+  // only correct position — setting it after the Slack round-trip leaves a
+  // race window where a parallel caller passes the guard and double-posts.
+  marker.pre = true;
+
+  // Defensive: clear any pre-existing interval before we create a new one.
+  // A prior cycle's ticker *should* have been stopped by
+  // `postCompactCompleteIfNeeded`, but if anything slipped (crash, early
+  // return, test harness leak) we must not stack intervals on the same
+  // session — that's the runaway-ticker bug.
+  stopStartingTicker(session);
+
   const resolvedTrigger = resolveStartingTrigger(session, trigger);
   const startedAtMs = Date.now();
   const initialText = buildCompactStartingMessage({ trigger: resolvedTrigger });
+  session.compactStartedAtMs = startedAtMs;
 
-  const result = await slackApi.postSystemMessage(channel, initialText, { threadTs });
-  marker.pre = true;
+  let postResult: { ts?: string; channel?: string };
+  try {
+    postResult = await slackApi.postSystemMessage(channel, initialText, { threadTs });
+  } catch (err) {
+    // Leave marker.pre=true so completion logic still considers the cycle
+    // opened. No ts captured → completion path falls back to a fresh
+    // `postSystemMessage`.
+    logger.warn('compact-starting: initial post failed', {
+      error: (err as Error)?.message ?? String(err),
+    });
+    session.compactStartingMessageTs = null;
+    return;
+  }
 
   // Track the live-message ts so the completion handler can chat.update it
   // in-place rather than posting a second message.
-  session.compactStartedAtMs = startedAtMs;
-  session.compactStartingMessageTs = result.ts ?? null;
+  session.compactStartingMessageTs = postResult.ts ?? null;
 
-  if (!result.ts) return; // Slack post failed — nothing to tick against.
+  if (!postResult.ts) return; // Slack post returned no ts — nothing to tick against.
 
   // Start the ticker. Each tick re-resolves the trigger from the session —
   // covers the "fallback path posted first, then onCompactBoundary filled in
   // session.compactTrigger" case so the live message self-corrects.
-  const tsForUpdate = result.ts;
+  const tsForUpdate = postResult.ts;
   session.compactTickInterval = setInterval(() => {
     const elapsedMs = Date.now() - startedAtMs;
     if (elapsedMs >= COMPACT_STARTING_TICKER_MAX_MS) {
@@ -367,6 +410,43 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
 }
 
 /**
+ * Grace window for the PostCompact hook to let `onCompactBoundary` race in
+ * first when it carries authoritative `compact_metadata` (pre/post tokens,
+ * duration). The SDK emits `compact_boundary` as a system message AND fires
+ * the PostCompact hook with no guaranteed ordering. Only the system message
+ * carries token counts — so if PostCompact arrives first we'd render
+ * `Context: now ~?% ← was ~?%` (see docs/issues/compact-bugs-trace Hypothesis
+ * 2). 500 ms is generous vs. the microsecond-scale gap observed in practice
+ * while short enough to stay invisible to users.
+ */
+const COMPACT_METADATA_WAIT_MS = 500;
+
+/**
+ * Whether the session already has SDK-authoritative metadata populated from
+ * `onCompactBoundary`. We treat "any of the three boundary-only fields is
+ * present" as sufficient — the three fields ship together on the
+ * `compact_boundary` system message so if one is set, the boundary callback
+ * already ran.
+ */
+function hasBoundaryMetadata(session: ConversationSession): boolean {
+  return (
+    typeof session.compactPreTokens === 'number' ||
+    typeof session.compactPostTokens === 'number' ||
+    typeof session.compactDurationMs === 'number'
+  );
+}
+
+export interface PostCompactCompleteOpts {
+  /**
+   * Which callback invoked this. When `post-compact-hook` arrives without
+   * boundary metadata we briefly wait for `onCompactBoundary` — it carries
+   * the only source of pre/post token counts. `on-compact-boundary` posts
+   * immediately because it's already the authoritative path.
+   */
+  source?: 'post-compact-hook' | 'on-compact-boundary';
+}
+
+/**
  * Shared END-post helper. Called by both the PostCompact hook and the
  * `onCompactBoundary` stream callback. On first call per epoch:
  *   1. Stops the live-starting ticker.
@@ -380,11 +460,31 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
  *
  * The Slack post and the pending re-dispatch are independent → run in parallel.
  */
-export async function postCompactCompleteIfNeeded(deps: CompactHookDeps): Promise<void> {
+export async function postCompactCompleteIfNeeded(
+  deps: CompactHookDeps,
+  opts: PostCompactCompleteOpts = {},
+): Promise<void> {
   const { session, channel, threadTs, slackApi, eventRouter } = deps;
   const epoch = getCurrentEpochForEnd(session);
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
+
+  // PostCompact-hook-first ordering guard (see docs/issues/compact-bugs-trace
+  // Hypothesis 2). When the SDK fires the PostCompact hook before the
+  // `compact_boundary` system message, session.compactPreTokens/PostTokens/
+  // DurationMs are still null and the completion message would render
+  // `~?% ← was ~?%`. Give onCompactBoundary a brief grace window to arrive
+  // and fill in metadata; if it races in, it will seal the cycle via
+  // `marker.post = true` and this invocation becomes a no-op.
+  if (opts.source === 'post-compact-hook' && !hasBoundaryMetadata(session) && !marker.post) {
+    await new Promise<void>((resolve) => setTimeout(resolve, COMPACT_METADATA_WAIT_MS));
+    // Early exit if the boundary callback sealed the cycle during the wait.
+    // Re-read through the map because TS would narrow marker.post to `false`
+    // through the enclosing guard — the boundary callback mutates via a
+    // different reference on the same object, so the value may now be true.
+    const current = ensurePostedMap(session)[epoch];
+    if (current?.post) return;
+  }
 
   // Stop the ticker BEFORE posting so a racing tick cannot clobber the
   // "completed" text back to "starting".
@@ -445,9 +545,18 @@ async function handlePreCompact(deps: CompactHookDeps, payload: PreCompactHookIn
 }
 
 async function handlePostCompact(deps: CompactHookDeps, payload: PostCompactHookInput): Promise<void> {
-  // `payload` carries `compact_summary` for future diagnostics; unused today.
-  void payload;
-  await postCompactCompleteIfNeeded(deps);
+  // Capture the trigger from the PostCompact payload ONLY when
+  // `onCompactBoundary` hasn't already set it. Both signals carry the same
+  // trigger in practice, but compact_boundary is the authoritative source
+  // (it also carries token counts/duration), so if it raced in first we
+  // keep its value verbatim. This guarantees the "trigger=manual|auto"
+  // segment on the completion message regardless of ordering
+  // (see docs/issues/compact-bugs-trace Hypothesis 2).
+  if (!deps.session.compactTrigger && (payload?.trigger === 'manual' || payload?.trigger === 'auto')) {
+    deps.session.compactTrigger = payload.trigger;
+  }
+  // `payload.compact_summary` is available for future diagnostics; unused today.
+  await postCompactCompleteIfNeeded(deps, { source: 'post-compact-hook' });
 }
 
 async function handleSessionStart(deps: CompactHookDeps, payload: SessionStartHookInput): Promise<void> {
