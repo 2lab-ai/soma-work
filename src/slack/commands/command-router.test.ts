@@ -25,7 +25,6 @@ import { BypassHandler } from './bypass-handler';
 import { CommandRouter } from './command-router';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
-import { LlmChatHandler } from './llm-chat-handler';
 import { ModelHandler } from './model-handler';
 import { PersonaHandler } from './persona-handler';
 import { PromptHandler } from './prompt-handler';
@@ -178,13 +177,6 @@ describe('CommandRouter — bare [cmd] [args] routing (restored #530)', () => {
   it('bare "show prompt" → PromptHandler.execute called', async () => {
     const executeSpy = vi.spyOn(PromptHandler.prototype, 'execute').mockResolvedValue({ handled: true });
     const { result } = await runBare('show prompt');
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-    expect(result.handled).toBe(true);
-  });
-
-  it('bare "show llm_chat" → LlmChatHandler.execute called', async () => {
-    const executeSpy = vi.spyOn(LlmChatHandler.prototype, 'execute').mockResolvedValue({ handled: true });
-    const { result } = await runBare('show llm_chat');
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
   });

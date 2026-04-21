@@ -90,9 +90,6 @@ describe('translateToLegacy', () => {
     { input: 'admin sessions list', expected: 'all_sessions' },
     { input: 'admin config', expected: 'config show' },
     { input: 'admin config set KEY VALUE', expected: 'config KEY=VALUE' },
-    { input: 'admin llmchat', expected: 'show llm_chat' },
-    { input: 'admin llmchat set p1 k1 v1', expected: 'set llm_chat p1 k1 v1' },
-    { input: 'admin llmchat reset', expected: 'reset llm_chat' },
     { input: 'session set model sonnet', expected: '$model sonnet' },
     { input: 'session set verbosity 3', expected: '$verbosity 3' },
     // pass-through for unknown

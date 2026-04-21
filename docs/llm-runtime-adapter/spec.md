@@ -46,9 +46,10 @@ LlmRuntime interface
 interface SessionOptions {
   model: string;
   cwd?: string;
-  config?: Record<string, unknown>;
-  /** Backend-specific defaults from BackendConfig.configOverride (e.g. Codex reasoning_effort) */
-  configOverride?: Record<string, string>;
+  // NOTE: per-call `config` / `configOverride` fields were removed in PR #639
+  // along with the llmChatConfigStore subsystem. Runtimes now pull their own
+  // defaults from their own config module rather than accepting caller-
+  // supplied overrides on every invocation.
 }
 
 interface SessionResult {

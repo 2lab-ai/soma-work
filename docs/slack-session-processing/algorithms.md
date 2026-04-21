@@ -173,8 +173,9 @@ INPUT:  event = any message with first-token-is-command or prefix ∈ {'/','$','
 OUTPUT: 커맨드 결과를 **원본 이니시에이션 스레드**에 say()로 회신. 세션 생성 없음(new 예외 제외).
 
 // CommandRouter 등록 — command-router.ts:48-91
+// (LlmChatHandler REMOVED in #639 together with the llmChatConfigStore subsystem.)
 router := [
-    LlmChatHandler, AdminCommandHandler, PromptHandler, ..., SkillForceHandler ($local:*),
+    AdminCommandHandler, PromptHandler, ..., SkillForceHandler ($local:*),
     SessionCommandHandler ($ prefix), ..., NewHandler, CompactHandler, LinkHandler,
     CloseHandler, ..., SessionHandler
 ]
