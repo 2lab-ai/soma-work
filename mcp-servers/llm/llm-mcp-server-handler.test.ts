@@ -180,7 +180,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(deps.runtimes.codex.resumeSession.mock.calls[1][0]).toBe('thread-rotated');
   });
 
-  it('resume: whitespace-only rotated id is ignored (keeps old id) + warns', async () => {
+  it('resume: whitespace-only rotated id is ignored and warns', async () => {
     const id = await seedSession();
     // The warn on blank rotation is the only ops signal that a specific backend
     // regressed — without this assertion the warn could silently disappear.
@@ -308,7 +308,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(parseStructured(result).error.code).toBe(ErrorCode.INVALID_ARGS);
   });
 
-  it('structured error uses stable enum string for session_not_found + logs typed-error', async () => {
+  it('structured error uses stable enum string for session_not_found and logs typed-error', async () => {
     // `llm.chat.typed-error` must fire on every `LlmChatError` branch
     // (SESSION_NOT_FOUND here as representative). Without this assertion
     // the ops-facing log added for BACKEND_TIMEOUT / SESSION_BUSY / etc.
