@@ -277,68 +277,24 @@ export class ReportAggregator {
   async aggregateTokenUsage(startDate: string, endDate: string, userId?: string): Promise<UsageReport> {
     const events = await this.store.readRange(startDate, endDate);
     const tokenEvents = events.filter((e) => e.eventType === 'token_usage' && (!userId || e.userId === userId));
-
-    const totals = aggregateTokenEvents(tokenEvents);
-    const byUser = aggregateTokenEventsByUser(tokenEvents);
-    const byDay = aggregateTokenEventsByDay(tokenEvents, startDate, endDate);
-
-    // Compute rankings (only when not filtered by userId)
-    let tokenRankings: TokenUsageRanking[] = [];
-    let costRankings: TokenUsageRanking[] = [];
-    if (!userId) {
-      const rankingEntries = Object.entries(byUser).map(([uid, agg]) => ({
-        userId: uid,
-        userName: agg.userName,
-        totalTokens:
-          agg.totalInputTokens + agg.totalOutputTokens + agg.totalCacheReadTokens + agg.totalCacheCreateTokens,
-        totalCostUsd: agg.totalCostUsd,
-        rank: 0,
-      }));
-
-      // Token rankings: desc by totalTokens, tie-break alphabetical userName
-      tokenRankings = [...rankingEntries]
-        .sort((a, b) => b.totalTokens - a.totalTokens || a.userName.localeCompare(b.userName))
-        .map((e, i) => ({ ...e, rank: i + 1 }));
-
-      // Cost rankings: desc by totalCostUsd, tie-break alphabetical userName
-      costRankings = [...rankingEntries]
-        .sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.userName.localeCompare(b.userName))
-        .map((e, i) => ({ ...e, rank: i + 1 }));
-    }
-
-    // Detect legacy data (events without pricingVersion)
-    const hasLegacyData = tokenEvents.some((e) => {
-      const m = e.metadata as unknown as TokenUsageMetadata | undefined;
-      return !m?.pricingVersion;
-    });
-
-    return {
-      period: determinePeriod(startDate, endDate),
+    return this.buildUsageReport({
+      tokenEvents,
       startDate,
       endDate,
-      totals,
-      byUser,
-      byDay,
-      tokenRankings,
-      costRankings,
-      hasLegacyData,
-    };
+      userId,
+      period: determinePeriod(startDate, endDate),
+    });
   }
 
   /**
    * Aggregate token usage over a rolling millisecond window
    * `[startMs, endMs]`, optionally filtered by `userId`.
    *
-   * Unlike `aggregateTokenUsage`, which filters by KST calendar-date strings,
-   * this method reads the minimum set of KST day-files that overlap the window
-   * (typically 2 — today + yesterday when the window crosses KST midnight)
-   * and then post-filters by `event.timestamp` for exact ms-level bounds.
-   *
-   * Used by `/usage` (default path) to show the last 24h of usage regardless
-   * of when the command is invoked — e.g. calling `/usage` at KST 02:00
-   * includes yesterday afternoon's events in the window.
-   *
-   * Trace: issue #650.
+   * Reads the minimum set of KST day-files overlapping the window (typically
+   * two when the window crosses KST midnight) then post-filters by
+   * `event.timestamp` for ms-level bounds. Used by `/usage` to show the last
+   * 24h regardless of invocation time — e.g. `/usage` at KST 02:00 still
+   * includes yesterday afternoon's events.
    */
   async aggregateTokenUsageMs(startMs: number, endMs: number, userId?: string): Promise<UsageReport> {
     const startKey = timestampToDateInTz(startMs);
@@ -351,11 +307,29 @@ export class ReportAggregator {
         e.timestamp <= endMs &&
         (!userId || e.userId === userId),
     );
+    return this.buildUsageReport({
+      tokenEvents,
+      startDate: startKey,
+      endDate: endKey,
+      userId,
+      period: 'day',
+    });
+  }
+
+  private buildUsageReport(input: {
+    tokenEvents: MetricsEvent[];
+    startDate: string;
+    endDate: string;
+    userId?: string;
+    period: UsageReport['period'];
+  }): UsageReport {
+    const { tokenEvents, startDate, endDate, userId, period } = input;
 
     const totals = aggregateTokenEvents(tokenEvents);
     const byUser = aggregateTokenEventsByUser(tokenEvents);
-    const byDay = aggregateTokenEventsByDay(tokenEvents, startKey, endKey);
+    const byDay = aggregateTokenEventsByDay(tokenEvents, startDate, endDate);
 
+    // Rankings are meaningless when filtered to a single user.
     let tokenRankings: TokenUsageRanking[] = [];
     let costRankings: TokenUsageRanking[] = [];
     if (!userId) {
@@ -377,15 +351,16 @@ export class ReportAggregator {
         .map((e, i) => ({ ...e, rank: i + 1 }));
     }
 
+    // Legacy: events emitted before pricingVersion was introduced.
     const hasLegacyData = tokenEvents.some((e) => {
       const m = e.metadata as unknown as TokenUsageMetadata | undefined;
       return !m?.pricingVersion;
     });
 
     return {
-      period: 'day',
-      startDate: startKey,
-      endDate: endKey,
+      period,
+      startDate,
+      endDate,
       totals,
       byUser,
       byDay,

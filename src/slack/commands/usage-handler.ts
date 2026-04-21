@@ -105,10 +105,6 @@ export class UsageHandler implements CommandHandler {
     const store = new MetricsEventStore();
     const aggregator = new ReportAggregator(store);
 
-    // `/usage` (period === 'today') now shows a rolling 24h window
-    // [now - 24h, now] instead of the KST calendar day. `/usage week` and
-    // `/usage month` keep their calendar-range semantics.
-    // Issue: https://github.com/2lab-ai/soma-work/issues/650
     let report: UsageReport;
     if (parsed.period === 'today') {
       const nowMs = now.getTime();
@@ -311,9 +307,11 @@ export class UsageHandler implements CommandHandler {
   }
 
   /**
-   * Compute [startDate, endDate] date strings in Asia/Seoul timezone.
+   * Compute [startDate, endDate] date strings in Asia/Seoul timezone for
+   * calendar-range periods. The `today` path uses a ms-level rolling window
+   * instead (see `execute`) so it is not handled here.
    */
-  private getDateRange(now: Date, period: 'today' | 'week' | 'month'): { startDate: string; endDate: string } {
+  private getDateRange(now: Date, period: 'week' | 'month'): { startDate: string; endDate: string } {
     const fmtKst = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Seoul',
       year: 'numeric',
@@ -321,10 +319,7 @@ export class UsageHandler implements CommandHandler {
       day: '2-digit',
     });
     const endDate = fmtKst.format(now);
-    const daysBack = period === 'week' ? 6 : period === 'month' ? 29 : 0;
-    if (daysBack === 0) {
-      return { startDate: endDate, endDate };
-    }
+    const daysBack = period === 'week' ? 6 : 29;
     const [y, m, d] = endDate.split('-').map(Number);
     const startMs = Date.UTC(y, m - 1, d) - daysBack * 86_400_000;
     const start = new Date(startMs);

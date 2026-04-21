@@ -307,10 +307,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
       [kstDayKey(nowMs)]: [],
     });
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs);
 
     expect(report.totals.totalInputTokens).toBe(1000);
     expect(report.totals.totalCostUsd).toBeCloseTo(0.05);
@@ -343,10 +340,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
       ],
     });
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs);
 
     // Only the inside event survives the ms-level filter
     expect(report.totals.totalInputTokens).toBe(100);
@@ -381,10 +375,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
       ],
     });
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs);
 
     expect(report.totals.totalInputTokens).toBe(800); // both included
     expect(report.startDate).toBe('2026-04-19');
@@ -411,11 +402,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
       ],
     });
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-      'U001',
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs, 'U001');
 
     expect(report.totals.totalInputTokens).toBe(100);
     // Rankings suppressed when userId filter applied
@@ -456,10 +443,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
       ],
     });
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs);
 
     // Rankings reflect only the 24h window — Bob's 9999-token event at now-25h is excluded.
     // makeTokenUsageEvent defaults output=500, cacheRead=200, cacheCreate=100 unless overridden,
@@ -479,10 +463,7 @@ describe('aggregateTokenUsageMs — rolling 24h window', () => {
     const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
     const store = mockStoreByDay({});
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsageMs(
-      nowMs - 24 * 60 * 60 * 1000,
-      nowMs,
-    );
+    const report = await aggregator.aggregateTokenUsageMs(nowMs - 24 * 60 * 60 * 1000, nowMs);
 
     expect(report.period).toBe('day');
     expect(report.startDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
