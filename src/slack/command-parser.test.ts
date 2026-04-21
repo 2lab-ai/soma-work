@@ -1461,19 +1461,26 @@ describe('CommandParser', () => {
 
   // #617 followup v2 — `/compact` yes/no confirmation variant.
   describe('isCompactCommand / parseCompactCommand', () => {
-    it.each(['/compact', 'compact', '/COMPACT', '  /compact  ', '/compact --yes', 'compact --yes'])(
-      'isCompactCommand accepts "%s"',
-      (text) => {
-        expect(CommandParser.isCompactCommand(text)).toBe(true);
-      },
-    );
+    it.each([
+      '/compact',
+      'compact',
+      '/COMPACT',
+      '  /compact  ',
+      '/compact --yes',
+      'compact --yes',
+    ])('isCompactCommand accepts "%s"', (text) => {
+      expect(CommandParser.isCompactCommand(text)).toBe(true);
+    });
 
-    it.each(['/compact-threshold', 'compact threshold', '/compact 80', 'compact --no', 'hello'])(
-      'isCompactCommand rejects "%s"',
-      (text) => {
-        expect(CommandParser.isCompactCommand(text)).toBe(false);
-      },
-    );
+    it.each([
+      '/compact-threshold',
+      'compact threshold',
+      '/compact 80',
+      'compact --no',
+      'hello',
+    ])('isCompactCommand rejects "%s"', (text) => {
+      expect(CommandParser.isCompactCommand(text)).toBe(false);
+    });
 
     it('parseCompactCommand reports confirmed=false for bare /compact', () => {
       expect(CommandParser.parseCompactCommand('/compact')).toEqual({ confirmed: false });

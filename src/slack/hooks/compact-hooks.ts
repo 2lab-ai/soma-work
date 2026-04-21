@@ -46,6 +46,15 @@ const logger = new Logger('CompactHooks');
  * is currently open (previous is closed or absent). Idempotent when called
  * twice inside the same cycle (PreCompact hook + compacting-status fallback).
  *
+ * When the epoch actually bumps we also wipe the boundary-populated metadata
+ * fields (`compactPreTokens/PostTokens/Trigger/DurationMs`). These are set by
+ * `onCompactBoundary` (stream-executor.ts:831-834) and read by
+ * `hasBoundaryMetadata()` + `buildCompactCompleteMessage()`. Without the reset,
+ * cycle N+1 inherits cycle N's values: `hasBoundaryMetadata` returns true
+ * immediately, skipping the 500ms grace window in `postCompactCompleteIfNeeded`,
+ * and the completion message renders cycle N's pre/post tokens on cycle N+1's
+ * announcement (see docs/issues/compact-bugs-trace — stale-metadata P1).
+ *
  * Returns the current epoch — callers store per-cycle dedupe state under
  * `session.compactPostedByEpoch[epoch]`.
  */
@@ -57,6 +66,11 @@ export function beginCompactionCycleIfNeeded(session: ConversationSession): numb
     const nextEpoch = epoch + 1;
     session.compactEpoch = nextEpoch;
     map[nextEpoch] = { pre: false, post: false };
+    // Clear prior cycle's boundary metadata so the new cycle starts clean.
+    session.compactPreTokens = null;
+    session.compactPostTokens = null;
+    session.compactTrigger = null;
+    session.compactDurationMs = null;
     return nextEpoch;
   }
   return epoch;

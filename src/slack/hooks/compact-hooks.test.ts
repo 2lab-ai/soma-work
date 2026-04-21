@@ -90,6 +90,45 @@ describe('Epoch helpers (#617 AC6 dedupe foundation)', () => {
     expect(session.compactEpoch).toBe(1);
     expect(session.compactPostedByEpoch?.[1]).toEqual({ pre: false, post: false });
   });
+
+  it('stale-metadata P1: beginCompactionCycleIfNeeded wipes prior cycle boundary metadata on bump', () => {
+    const session = makeSession();
+    // Simulate cycle N fully closed with SDK-populated boundary metadata.
+    beginCompactionCycleIfNeeded(session); // epoch 0 → 1
+    session.compactPostedByEpoch![1] = { pre: true, post: true };
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.compactTrigger = 'auto';
+    session.compactDurationMs = 5_200;
+
+    // Cycle N+1 starts — the bump must clear the stale metadata so the
+    // PostCompact grace window in postCompactCompleteIfNeeded actually
+    // waits for the new onCompactBoundary payload instead of rendering
+    // cycle N's numbers on cycle N+1's announcement.
+    expect(beginCompactionCycleIfNeeded(session)).toBe(2);
+    expect(session.compactPreTokens).toBeNull();
+    expect(session.compactPostTokens).toBeNull();
+    expect(session.compactTrigger).toBeNull();
+    expect(session.compactDurationMs).toBeNull();
+  });
+
+  it('stale-metadata P1: idempotent bump inside an open cycle does NOT wipe live metadata', () => {
+    const session = makeSession();
+    beginCompactionCycleIfNeeded(session); // open epoch 1
+    // onCompactBoundary already wrote cycle 1's metadata — the second
+    // call (e.g. compacting-status fallback racing the PreCompact hook)
+    // must be a true no-op, not a reset.
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.compactTrigger = 'auto';
+    session.compactDurationMs = 5_200;
+
+    expect(beginCompactionCycleIfNeeded(session)).toBe(1);
+    expect(session.compactPreTokens).toBe(160_000);
+    expect(session.compactPostTokens).toBe(35_000);
+    expect(session.compactTrigger).toBe('auto');
+    expect(session.compactDurationMs).toBe(5_200);
+  });
 });
 
 describe('buildCompactHooks — PreCompact (#617 AC4, live ticker v2)', () => {

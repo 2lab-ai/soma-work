@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { CompactActionHandler } from './compact-action-handler';
+import type { MessageHandler, RespondFn } from './types';
 
 /**
  * #617 followup v2 — `/compact` yes/no button handlers.
@@ -12,16 +13,16 @@ import { CompactActionHandler } from './compact-action-handler';
 describe('CompactActionHandler — confirm', () => {
   let slackApi: { postMessage: ReturnType<typeof vi.fn> };
   let claudeHandler: { getSessionByKey: ReturnType<typeof vi.fn> };
-  let messageHandler: ReturnType<typeof vi.fn>;
-  let respond: ReturnType<typeof vi.fn>;
+  let messageHandler: Mock<MessageHandler>;
+  let respond: Mock<RespondFn>;
 
   beforeEach(() => {
     slackApi = { postMessage: vi.fn().mockResolvedValue({ ts: 'ts-say' }) };
     claudeHandler = {
       getSessionByKey: vi.fn().mockReturnValue({ sessionId: 'sess-1', ownerId: 'U1' }),
     };
-    messageHandler = vi.fn().mockResolvedValue(undefined);
-    respond = vi.fn().mockResolvedValue(undefined);
+    messageHandler = vi.fn<MessageHandler>().mockResolvedValue(undefined);
+    respond = vi.fn<RespondFn>().mockResolvedValue(undefined);
   });
 
   const makeHandler = () =>
@@ -90,9 +91,7 @@ describe('CompactActionHandler — confirm', () => {
   it('returns ephemeral error on malformed payload (missing sessionKey)', async () => {
     const handler = makeHandler();
     await handler.handleConfirm(makeConfirmBody({ actions: [{}] }), respond);
-    expect(respond).toHaveBeenCalledWith(
-      expect.objectContaining({ response_type: 'ephemeral' }),
-    );
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     expect(messageHandler).not.toHaveBeenCalled();
   });
 });
@@ -101,8 +100,8 @@ describe('CompactActionHandler — cancel', () => {
   it('replaces the prompt with "취소되었습니다."', async () => {
     const slackApi = { postMessage: vi.fn() };
     const claudeHandler = { getSessionByKey: vi.fn() };
-    const messageHandler = vi.fn();
-    const respond = vi.fn().mockResolvedValue(undefined);
+    const messageHandler = vi.fn<MessageHandler>();
+    const respond = vi.fn<RespondFn>().mockResolvedValue(undefined);
 
     const handler = new CompactActionHandler({
       slackApi: slackApi as any,

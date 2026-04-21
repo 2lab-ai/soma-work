@@ -45,12 +45,16 @@ describe('CompactHandler (#617 followup v2 — yes/no confirmation)', () => {
   });
 
   describe('canHandle', () => {
-    it.each(['/compact', 'compact', '/compact --yes', 'compact --yes', '/COMPACT', '  compact  '])(
-      'accepts "%s"',
-      (cmd) => {
-        expect(handler.canHandle(cmd)).toBe(true);
-      },
-    );
+    it.each([
+      '/compact',
+      'compact',
+      '/compact --yes',
+      'compact --yes',
+      '/COMPACT',
+      '  compact  ',
+    ])('accepts "%s"', (cmd) => {
+      expect(handler.canHandle(cmd)).toBe(true);
+    });
 
     it.each(['/compact-threshold', 'compact-threshold 80', '/compact 80', 'compact extra'])('rejects "%s"', (cmd) => {
       expect(handler.canHandle(cmd)).toBe(false);
