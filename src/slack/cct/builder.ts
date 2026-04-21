@@ -246,18 +246,18 @@ export function buildSlotRow(
   // hard cap (section+actions+divider per slot = 3). Users click the
   // inactive slot's action row to inspect its usage details.
   //
-  // #641 §3.1.2 info-density defer (#644 review 4146267530 Finding #4 /
-  // tracked in follow-up issue):
+  // #641 §3.1.2 info-density defer — tracked in issue #653
+  // (#644 review 4146267530 Finding #4, Option A accepted):
   //   The spec calls for inactive-slot rows to surface a one-line usage
   //   summary (5h util %, subscription tier, inline Activate) without
   //   expanding the full 3-line usage panel. Implementing that while
   //   staying under Slack's 50-block hard cap at N≥16 attached slots
   //   requires the inline "expand" affordance plus either a Block Kit
   //   accessory-overflow per row or a collapsible container block. Both
-  //   are M2 scope — see the follow-up issue referenced in PR #644 and
-  //   the reviewer-Linus 50-block overflow note. M1 keeps the collapsed
-  //   header + actions + divider shape so the card stays legal at 15
-  //   attached slots (1 + 3*15 + 2 = 48 < 50).
+  //   are M2 scope — see #653 and the reviewer-Linus 50-block overflow
+  //   note on PR #644. M1 keeps the collapsed header + actions + divider
+  //   shape so the card stays legal at 15 attached slots
+  //   (1 + 3*15 + 2 = 48 < 50).
   if (isActive) {
     // Context line — only when we have something meaningful.
     const segments: string[] = [];
