@@ -28,12 +28,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import {
-  coerceToAvailableModel,
-  type EffortLevel,
-  type ModelId,
-  userSettingsStore,
-} from './user-settings-store';
+import { coerceToAvailableModel, type EffortLevel, type ModelId, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
