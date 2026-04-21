@@ -53,7 +53,7 @@ export class ActionHandlers {
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
 
-    this.permissionHandler = new PermissionActionHandler();
+    this.permissionHandler = new PermissionActionHandler(ctx.claudeHandler);
 
     this.sessionHandler = new SessionActionHandler({
       slackApi: ctx.slackApi,
@@ -166,6 +166,15 @@ export class ActionHandlers {
     app.action('explain_tool', async ({ ack, body, respond }) => {
       await ack();
       await this.permissionHandler.handleExplain(body, respond);
+    });
+
+    // Approve current tool AND disable the matched overridable
+    // dangerous-command rule(s) for the remainder of this ConversationSession
+    // (Slack thread). The button is only rendered for bypass-mode Bash
+    // escalations that matched `sessionOverridable=true` rules.
+    app.action('approve_disable_rule_session', async ({ ack, body, respond }) => {
+      await ack();
+      await this.permissionHandler.handleApproveDisableRule(body, respond);
     });
 
     // 세션 액션

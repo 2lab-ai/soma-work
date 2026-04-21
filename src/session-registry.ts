@@ -1000,6 +1000,68 @@ export class SessionRegistry {
     return session.ownerId === userId || session.currentInitiatorId === userId;
   }
 
+  // ---------------------------------------------------------------------------
+  // Session-scoped dangerous-rule overrides
+  //
+  // When a user clicks "Approve & disable rule for this session" in the Slack
+  // permission prompt, the rule id(s) are added to `session.disabledDangerousRules`
+  // so subsequent bypass-mode bash commands matching only those rules no longer
+  // escalate. In-memory only — a process restart clears the set intentionally.
+  // See `src/dangerous-command-filter.ts` for the rule catalog.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mark a dangerous rule as disabled for the given session key.
+   * Creates the backing Set on first use. No-op if the session is unknown —
+   * the caller is expected to have already checked; we log at debug instead
+   * of throwing because racing with session cleanup is expected.
+   */
+  disableDangerousRule(sessionKey: string, ruleId: string): void {
+    const session = this.sessions.get(sessionKey);
+    if (!session) {
+      this.logger.debug('disableDangerousRule: session not found', { sessionKey, ruleId });
+      return;
+    }
+    if (!session.disabledDangerousRules) {
+      session.disabledDangerousRules = new Set<string>();
+    }
+    session.disabledDangerousRules.add(ruleId);
+    this.logger.info('Dangerous rule disabled for session', {
+      sessionKey,
+      ruleId,
+      activeDisabled: Array.from(session.disabledDangerousRules),
+    });
+  }
+
+  /**
+   * Batch variant — disable multiple rule ids atomically. Preserves insertion
+   * order for deterministic logging.
+   */
+  disableDangerousRules(sessionKey: string, ruleIds: ReadonlyArray<string>): void {
+    for (const ruleId of ruleIds) {
+      this.disableDangerousRule(sessionKey, ruleId);
+    }
+  }
+
+  /**
+   * True if `ruleId` has been disabled for the session. Returns false for
+   * unknown sessions so bypass-mode behaviour defaults to the safe side
+   * (still escalates).
+   */
+  isDangerousRuleDisabled(sessionKey: string, ruleId: string): boolean {
+    const session = this.sessions.get(sessionKey);
+    return session?.disabledDangerousRules?.has(ruleId) ?? false;
+  }
+
+  /**
+   * List the currently-disabled rule ids for a session. Returns an empty
+   * array if the session is unknown or no rules have been disabled.
+   */
+  listDisabledDangerousRules(sessionKey: string): string[] {
+    const session = this.sessions.get(sessionKey);
+    return session?.disabledDangerousRules ? Array.from(session.disabledDangerousRules) : [];
+  }
+
   /**
    * Update session with session ID from Claude SDK
    */
