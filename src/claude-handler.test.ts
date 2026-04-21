@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildBetaHeaders, buildThinkingOption, resolveShowSummary } from './claude-handler';
+import * as claudeHandler from './claude-handler';
+import { buildThinkingOption, resolveShowSummary } from './claude-handler';
 import { DEFAULT_SHOW_THINKING, DEFAULT_THINKING_ENABLED } from './user-settings-store';
 
 describe('buildThinkingOption', () => {
@@ -29,41 +30,14 @@ describe('buildThinkingOption', () => {
   });
 });
 
-describe('buildBetaHeaders', () => {
-  it('returns undefined when no API key', () => {
-    expect(buildBetaHeaders('claude-sonnet-4-5-20250929', false)).toBeUndefined();
-  });
-
-  it('omits 1M beta for Opus 4.7 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-opus-4-7', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('omits 1M beta for Opus 4.6 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-opus-4-6', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('omits 1M beta for Sonnet 4.6 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-sonnet-4-6', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('includes 1M beta for Sonnet 4.5 (still needs header)', () => {
-    const betas = buildBetaHeaders('claude-sonnet-4-5-20250929', true);
-    expect(betas).toBeDefined();
-    expect(betas).toContain('context-1m-2025-08-07');
-  });
-
-  it('includes 1M beta for Haiku 4.5 (still needs header)', () => {
-    const betas = buildBetaHeaders('claude-haiku-4-5-20251001', true);
-    expect(betas).toBeDefined();
-    expect(betas).toContain('context-1m-2025-08-07');
-  });
-
-  it('includes 1M beta for unknown / empty model name (conservative default)', () => {
-    expect(buildBetaHeaders(undefined, true)).toContain('context-1m-2025-08-07');
-    expect(buildBetaHeaders('', true)).toContain('context-1m-2025-08-07');
+describe('buildBetaHeaders removal (#648)', () => {
+  // Post-#648: we delegate `[1m]` → 1M-context beta handling to
+  // Claude Agent SDK (v0.2.111+), which detects the suffix, strips it
+  // before the API call, and injects `context-1m-2025-08-07` uniformly
+  // across API-key and OAuth auth. Our own helper was deleted so there
+  // is no longer a custom beta-header code path to regress into.
+  it('no longer exports buildBetaHeaders', () => {
+    expect((claudeHandler as Record<string, unknown>).buildBetaHeaders).toBeUndefined();
   });
 });
 

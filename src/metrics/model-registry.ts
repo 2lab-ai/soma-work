@@ -1,10 +1,21 @@
 /**
  * Unified model registry — single source of truth for pricing, context windows, and max output.
  * Source: https://docs.anthropic.com/en/docs/about-claude/models
- * Last updated: 2026-04-17
+ * Last updated: 2026-04-21
+ *
+ * Context window rule (#648):
+ *   `contextWindow` is derived from the `[1m]` model-name suffix, not from the
+ *   registry pricing rows. A bare model (e.g. `claude-opus-4-7`) is 200k; the
+ *   `[1m]`-suffixed form (e.g. `claude-opus-4-7[1m]`) is 1M. Claude Agent SDK
+ *   strips the suffix and injects the `context-1m-2025-08-07` beta internally.
+ *
+ *   The `contextWindow` field on each `ModelSpec` below is informational only —
+ *   every row is set to 200_000 to avoid the foot-gun of a mismatched registry
+ *   value masking the suffix-based rule. Call `getContextWindow` /
+ *   `resolveContextWindow` as the single source of truth.
  */
 
-export const PRICING_VERSION = '2026-04-17';
+export const PRICING_VERSION = '2026-04-21';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -18,6 +29,10 @@ export interface ModelPricingSpec {
 
 export interface ModelSpec {
   pricing: ModelPricingSpec;
+  /**
+   * Informational only. The true context window is derived from the `[1m]`
+   * suffix — use `resolveContextWindow` / `getContextWindow`.
+   */
   contextWindow: number;
   maxOutput: number;
 }
@@ -25,6 +40,11 @@ export interface ModelSpec {
 /**
  * Model registry. Key = substring matched against full model name.
  * Order matters — first match wins.
+ *
+ * Note: substring matching still works with `[1m]`-suffixed names because
+ * `'claude-opus-4-7[1m]'.includes('opus-4-7') === true`. Only `contextWindow`
+ * is forced to the bare 200k base — the `[1m]` lift is applied by
+ * `resolveContextWindow`.
  */
 const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
   // Claude 4.7
@@ -38,7 +58,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 6.25,
         cache1hrWritePerMTok: 10,
       },
-      contextWindow: 1_000_000,
+      contextWindow: 200_000,
       maxOutput: 128_000,
     },
   ],
@@ -53,7 +73,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 6.25,
         cache1hrWritePerMTok: 10,
       },
-      contextWindow: 1_000_000,
+      contextWindow: 200_000,
       maxOutput: 128_000,
     },
   ],
@@ -67,7 +87,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 3.75,
         cache1hrWritePerMTok: 6,
       },
-      contextWindow: 1_000_000,
+      contextWindow: 200_000,
       maxOutput: 64_000,
     },
   ],
@@ -82,7 +102,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 6.25,
         cache1hrWritePerMTok: 10,
       },
-      contextWindow: 1_000_000,
+      contextWindow: 200_000,
       maxOutput: 128_000,
     },
   ],
@@ -96,7 +116,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 3.75,
         cache1hrWritePerMTok: 6,
       },
-      contextWindow: 1_000_000,
+      contextWindow: 200_000,
       maxOutput: 64_000,
     },
   ],
@@ -176,23 +196,29 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
   return getModelSpec(modelName).pricing;
 }
 
-/**
- * Get context window size for a model.
- */
-export function getContextWindow(modelName?: string): number {
-  return getModelSpec(modelName).contextWindow;
-}
-
-/** Fallback context window size when SDK/registry haven't reported one yet. */
+/** Fallback context window size when model is undefined. */
 export const FALLBACK_CONTEXT_WINDOW = 200_000;
 
 /**
- * Resolve context window for a model by name with fallback. Used by
- * stream-executor hot paths and threshold checks that need a non-zero
- * denominator before the SDK reports `contextWindow`.
+ * Resolve context window for a model by suffix rule.
+ *
+ * Rule (#648): `[1m]` suffix → 1M. Anything else → 200k.
+ * Claude Agent SDK (v0.2.111+) strips the suffix and injects the
+ * `context-1m-2025-08-07` beta header internally. We keep the suffix
+ * end-to-end so our local math (compact threshold %, usage meter) matches
+ * the window the API is actually serving.
  */
 export function resolveContextWindow(modelName?: string): number {
-  return getContextWindow(modelName) || FALLBACK_CONTEXT_WINDOW;
+  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
+  return /\[1m\]$/i.test(modelName) ? 1_000_000 : 200_000;
+}
+
+/**
+ * Get context window size for a model. Delegates to `resolveContextWindow`.
+ * Kept as a named export for backward compatibility with existing call sites.
+ */
+export function getContextWindow(modelName?: string): number {
+  return resolveContextWindow(modelName);
 }
 
 /**

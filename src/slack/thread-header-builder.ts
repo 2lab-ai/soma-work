@@ -310,13 +310,19 @@ export class ThreadHeaderBuilder {
   /**
    * Format model name for display.
    * "claude-opus-4-6-20250414" → "opus-4.6"
+   * "claude-opus-4-7[1m]"      → "opus-4.7 (1M)"
+   *
+   * The `[1m]` suffix (#648) is a non-word character, so we strip it before
+   * running the regex and re-append `" (1M)"` to the formatted output.
    */
   static formatModelName(model: string): string {
-    const match = model.match(/claude-(\w+)-(\d+)-(\d+)/);
-    if (match) {
-      return `${match[1]}-${match[2]}.${match[3]}`;
-    }
-    return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    const hasOneMSuffix = /\[1m\]$/i.test(model);
+    const base = hasOneMSuffix ? model.replace(/\[1m\]$/i, '') : model;
+    const match = base.match(/claude-(\w+)-(\d+)-(\d+)/);
+    const formatted = match
+      ? `${match[1]}-${match[2]}.${match[3]}`
+      : base.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    return hasOneMSuffix ? `${formatted} (1M)` : formatted;
   }
 
   /**

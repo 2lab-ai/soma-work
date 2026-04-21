@@ -11,7 +11,7 @@ vi.mock('../../user-settings-store', () => ({
       defaultDirectory: '',
       bypassPermission: false,
       persona: 'default',
-      defaultModel: 'claude-sonnet-4-5-20250929',
+      defaultModel: 'claude-opus-4-7',
       lastUpdated: new Date().toISOString(),
     }),
     getUserDefaultDirectory: vi.fn().mockReturnValue(''),
@@ -20,7 +20,7 @@ vi.mock('../../user-settings-store', () => ({
     setUserBypassPermission: vi.fn(),
     getUserPersona: vi.fn().mockReturnValue('default'),
     setUserPersona: vi.fn(),
-    getUserDefaultModel: vi.fn().mockReturnValue('claude-sonnet-4-5-20250929'),
+    getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-4-7'),
     setUserDefaultModel: vi.fn(),
     getUserJiraInfo: vi.fn().mockReturnValue(undefined),
     updateUserJiraInfo: vi.fn(),
@@ -32,13 +32,7 @@ vi.mock('../../user-settings-store', () => ({
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  AVAILABLE_MODELS: [
-    'claude-opus-4-7',
-    'claude-opus-4-6',
-    'claude-sonnet-4-5-20250929',
-    'claude-opus-4-5-20251101',
-    'claude-haiku-4-5-20251001',
-  ],
+  AVAILABLE_MODELS: ['claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-opus-4-7', 'claude-opus-4-7[1m]'],
   DEFAULT_MODEL: 'claude-opus-4-7',
 }));
 
@@ -175,7 +169,7 @@ const ACCEPTED_USER_SETTINGS = {
   defaultDirectory: '/some/dir',
   bypassPermission: false,
   persona: 'default' as const,
-  defaultModel: 'claude-sonnet-4-5-20250929' as const,
+  defaultModel: 'claude-opus-4-7' as const,
   lastUpdated: '2024-01-01',
 };
 

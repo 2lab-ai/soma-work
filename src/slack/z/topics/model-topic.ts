@@ -7,7 +7,7 @@ import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-s
 import { buildSettingCard } from '../ui-builder';
 
 /** Short aliases featured as primary buttons (resolved to real model ids by the store). */
-const FEATURED_ALIASES = ['sonnet', 'opus', 'haiku'] as const;
+const FEATURED_ALIASES = ['opus', 'opus[1m]', 'opus-4.6[1m]'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;

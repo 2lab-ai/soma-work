@@ -5,14 +5,11 @@ const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
 const DEFAULT_MODEL = 'claude-opus-4-7';
-const VALID_MODELS = new Set([
-  'claude-opus-4-7',
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-sonnet-4-5-20250929',
-  'claude-opus-4-5-20251101',
-  'claude-haiku-4-5-20251001',
-]);
+// Must mirror `AVAILABLE_MODELS` in `src/user-settings-store.ts` (#648).
+// Deploy-time normalization runs BEFORE the app starts, so keeping this list in
+// sync prevents `normalizeMainTargetData` from undoing a user's `[1m]` choice
+// (or an admin seeding a legacy model) during main-env bootstrap.
+const VALID_MODELS = new Set(['claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-opus-4-7', 'claude-opus-4-7[1m]']);
 
 export interface BootstrapResult {
   bootstrapped: boolean;
@@ -108,7 +105,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
 
     for (const userSettings of Object.values(settings)) {
       const model = typeof userSettings.defaultModel === 'string' ? userSettings.defaultModel : '';
-      if (!model || !VALID_MODELS.has(model) || model === 'claude-opus-4-5-20251101') {
+      if (!model || !VALID_MODELS.has(model)) {
         userSettings.defaultModel = DEFAULT_MODEL;
       }
       if (userSettings.accepted === undefined) {
@@ -131,6 +128,15 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
       }
       if (session.workflow === undefined) {
         session.workflow = 'default';
+      }
+      // #648: coerce stale `session.model` (e.g. pre-shrink values like
+      // `claude-sonnet-4-6`) to `DEFAULT_MODEL`. Prevents post-deploy
+      // crash-recovered sessions from resolving an unknown model, which would
+      // otherwise resolve to the 200k fallback window while the session was
+      // intentionally set to a `[1m]` variant (or drive downstream lookups off
+      // an allow-list they no longer appear in).
+      if (typeof session.model === 'string' && !VALID_MODELS.has(session.model)) {
+        session.model = DEFAULT_MODEL;
       }
     }
 

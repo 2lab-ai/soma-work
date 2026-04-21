@@ -155,6 +155,19 @@ describe('ThreadHeaderBuilder.formatModelName', () => {
     expect(ThreadHeaderBuilder.formatModelName('claude-sonnet-4-5-20250414')).toBe('sonnet-4.5');
   });
 
+  it('appends " (1M)" for [1m]-suffixed model names (#648)', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7[1m]')).toBe('opus-4.7 (1M)');
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-6[1m]')).toBe('opus-4.6 (1M)');
+  });
+
+  it('is case-insensitive on the [1m] suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7[1M]')).toBe('opus-4.7 (1M)');
+  });
+
+  it('bare claude-opus-4-7 omits (1M) tag', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7')).toBe('opus-4.7');
+  });
+
   it('handles unrecognized format gracefully', () => {
     expect(ThreadHeaderBuilder.formatModelName('custom-model')).toBe('custom-model');
   });

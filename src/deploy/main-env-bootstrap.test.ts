@@ -183,6 +183,59 @@ describe('main-env-bootstrap', () => {
     expect(sessions[0].workflow).toBe('default');
   });
 
+  it('normalizes stale session.model (#648) against VALID_MODELS', async () => {
+    const targetDir = makeTempDir('bootstrap-target-');
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    writeJson(path.join(targetDir, 'data', 'sessions.json'), [
+      {
+        key: 'C1-t1',
+        userId: 'U1',
+        ownerId: 'U1',
+        channelId: 'C1',
+        threadTs: 't1',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+        // Pre-shrink legacy model: must coerce.
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        key: 'C1-t2',
+        userId: 'U1',
+        ownerId: 'U1',
+        channelId: 'C1',
+        threadTs: 't2',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+        // Valid suffixed model: must survive.
+        model: 'claude-opus-4-7[1m]',
+      },
+      {
+        key: 'C1-t3',
+        userId: 'U1',
+        ownerId: 'U1',
+        channelId: 'C1',
+        threadTs: 't3',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+        // Retired model: must coerce.
+        model: 'claude-opus-4-5-20251101',
+      },
+    ]);
+
+    await normalizeMainTargetData(targetDir);
+
+    const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
+    expect(sessions[0].model).toBe('claude-opus-4-7');
+    expect(sessions[1].model).toBe('claude-opus-4-7[1m]');
+    expect(sessions[2].model).toBe('claude-opus-4-7');
+  });
+
   it('preserves stored claude-opus-4-7 setting through normalize', async () => {
     const targetDir = makeTempDir('bootstrap-target-');
 
@@ -229,16 +282,15 @@ describe('main-env-bootstrap', () => {
 
   it('VALID_MODELS + DEFAULT_MODEL stay in sync with user-settings-store canonical list', async () => {
     // Bootstrap duplicates these constants (to keep bootstrap import-lean). This
-    // drift guard catches the failure mode that originally shipped sonnet-4-6 as
-    // silently force-migrated to the default: any model added to the canonical
-    // AVAILABLE_MODELS must also be accepted here, otherwise users on that model
-    // will be rewritten to DEFAULT_MODEL on boot normalize.
+    // drift guard ensures anything in the canonical AVAILABLE_MODELS survives
+    // normalize — otherwise that user's selection would be silently rewritten
+    // to DEFAULT_MODEL on deploy. After #648 the canonical set is exactly
+    // opus 4.6/4.7 × {bare, [1m]} and the special-case exclusion lists are
+    // empty.
     const targetDir = makeTempDir('bootstrap-target-');
     fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
     const settings: Record<string, Record<string, unknown>> = {};
     for (const model of AVAILABLE_MODELS) {
-      // claude-opus-4-5-20251101 is intentionally still migrated (retired model).
-      if (model === 'claude-opus-4-5-20251101') continue;
       const userId = `U-${model}`;
       settings[userId] = {
         userId,
@@ -256,16 +308,16 @@ describe('main-env-bootstrap', () => {
 
     const after = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
     for (const model of AVAILABLE_MODELS) {
-      if (model === 'claude-opus-4-5-20251101') continue;
       expect(after[`U-${model}`].defaultModel).toBe(model);
     }
     // And the store's canonical default is one of the accepted models.
     expect(AVAILABLE_MODELS).toContain(STORE_DEFAULT_MODEL);
   });
 
-  it('preserves stored claude-sonnet-4-6 setting through normalize', async () => {
-    // Regression guard: VALID_MODELS must include sonnet-4-6 so Sonnet users
-    // are NOT silently force-migrated to the default Opus 4.7 model on boot.
+  it('silently force-migrates claude-sonnet-4-6 through normalize (#648)', async () => {
+    // After #648 the user-facing model list shrank to opus 4.6/4.7 × {bare,[1m]}.
+    // Sonnet is an infrastructure-internal model; anyone with a stored
+    // `claude-sonnet-4-6` defaultModel gets silently reset to DEFAULT_MODEL.
     const targetDir = makeTempDir('bootstrap-target-');
 
     fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
@@ -284,6 +336,6 @@ describe('main-env-bootstrap', () => {
     await normalizeMainTargetData(targetDir);
 
     const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
-    expect(settings.U1.defaultModel).toBe('claude-sonnet-4-6');
+    expect(settings.U1.defaultModel).toBe(STORE_DEFAULT_MODEL);
   });
 });

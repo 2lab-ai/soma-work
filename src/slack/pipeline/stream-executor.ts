@@ -2188,8 +2188,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Dynamically update context window:
     // Take max(SDK value, model lookup) because SDK often reports the BASE
     // window (200k) even when the 1M beta is active.
+    //
+    // Precedence (#648): prefer `session.model` (which preserves the `[1m]`
+    // suffix the user selected) over `usage.modelName` (which the SDK strips
+    // to the bare name before reporting back). Using the SDK-stripped name
+    // here would force the suffix-based lookup to 200k even when the user
+    // explicitly picked the 1M variant.
     const sdkWindow = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : 0;
-    const modelName = usage.modelName || session.model;
+    const modelName = session.model ?? usage.modelName;
     const lookupWindow = resolveContextWindow(modelName);
     const resolved = Math.max(sdkWindow, lookupWindow);
     if (resolved > 0) {

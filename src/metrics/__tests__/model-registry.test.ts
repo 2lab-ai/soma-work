@@ -10,12 +10,15 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-04-17', () => {
-      expect(PRICING_VERSION).toBe('2026-04-17');
+    it('should be 2026-04-21', () => {
+      expect(PRICING_VERSION).toBe('2026-04-21');
     });
   });
 
   describe('getModelSpec', () => {
+    // Pricing & maxOutput still come from substring-matched registry rows.
+    // `contextWindow` on the spec is informational only post-#648 — see
+    // `getContextWindow` block below for the live suffix-based rule.
     it('returns Opus 4.7 spec', () => {
       const spec = getModelSpec('claude-opus-4-7');
       expect(spec.pricing.inputPerMTok).toBe(5);
@@ -23,7 +26,7 @@ describe('model-registry', () => {
       expect(spec.pricing.cacheReadPerMTok).toBe(0.5);
       expect(spec.pricing.cache5minWritePerMTok).toBe(6.25);
       expect(spec.pricing.cache1hrWritePerMTok).toBe(10);
-      expect(spec.contextWindow).toBe(1_000_000);
+      expect(spec.contextWindow).toBe(200_000);
       expect(spec.maxOutput).toBe(128_000);
     });
 
@@ -34,7 +37,7 @@ describe('model-registry', () => {
       expect(spec.pricing.cacheReadPerMTok).toBe(0.5);
       expect(spec.pricing.cache5minWritePerMTok).toBe(6.25);
       expect(spec.pricing.cache1hrWritePerMTok).toBe(10);
-      expect(spec.contextWindow).toBe(1_000_000);
+      expect(spec.contextWindow).toBe(200_000);
       expect(spec.maxOutput).toBe(128_000);
     });
 
@@ -42,7 +45,7 @@ describe('model-registry', () => {
       const spec = getModelSpec('claude-sonnet-4-6-20250414');
       expect(spec.pricing.inputPerMTok).toBe(3);
       expect(spec.pricing.outputPerMTok).toBe(15);
-      expect(spec.contextWindow).toBe(1_000_000);
+      expect(spec.contextWindow).toBe(200_000);
       expect(spec.maxOutput).toBe(64_000);
     });
 
@@ -65,13 +68,33 @@ describe('model-registry', () => {
     });
   });
 
-  describe('getContextWindow', () => {
-    it('returns 1M for opus-4-6', () => {
-      expect(getContextWindow('claude-opus-4-6-20250414')).toBe(1_000_000);
+  describe('getContextWindow (suffix rule, #648)', () => {
+    it('returns 200k for bare opus-4-7', () => {
+      expect(getContextWindow('claude-opus-4-7')).toBe(200_000);
     });
 
-    it('returns 200k for haiku-4-5', () => {
+    it('returns 1M for opus-4-7[1m]', () => {
+      expect(getContextWindow('claude-opus-4-7[1m]')).toBe(1_000_000);
+    });
+
+    it('returns 200k for bare opus-4-6', () => {
+      expect(getContextWindow('claude-opus-4-6-20250414')).toBe(200_000);
+    });
+
+    it('returns 1M for opus-4-6[1m]', () => {
+      expect(getContextWindow('claude-opus-4-6[1m]')).toBe(1_000_000);
+    });
+
+    it('returns 200k for haiku-4-5 (never a [1m] model)', () => {
       expect(getContextWindow('claude-haiku-4-5-20250414')).toBe(200_000);
+    });
+
+    it('returns 200k for undefined', () => {
+      expect(getContextWindow(undefined)).toBe(200_000);
+    });
+
+    it('is case-insensitive on the suffix', () => {
+      expect(getContextWindow('claude-opus-4-7[1M]')).toBe(1_000_000);
     });
   });
 

@@ -7,29 +7,29 @@ import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
 
-// Available models
+// Available models (user-facing).
+// Context window is determined by the `[1m]` suffix — see
+// `src/metrics/model-registry.ts#resolveContextWindow`. Bare = 200k, `[1m]` = 1M.
+// Claude Agent SDK strips the suffix and injects the beta header internally (#648).
 export const AVAILABLE_MODELS = [
-  'claude-opus-4-7',
   'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-sonnet-4-5-20250929',
-  'claude-opus-4-5-20251101',
-  'claude-haiku-4-5-20251001',
+  'claude-opus-4-6[1m]',
+  'claude-opus-4-7',
+  'claude-opus-4-7[1m]',
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number];
 
-// Model aliases for user-friendly input
+// Model aliases for user-friendly input. Keys are lowercased alias forms; the
+// `resolveModelInput` function lowercases/trims before lookup (so `OPUS[1M]`
+// resolves via the `opus[1m]` key).
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  sonnet: 'claude-sonnet-4-6',
-  'sonnet-4.6': 'claude-sonnet-4-6',
-  'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   opus: 'claude-opus-4-7',
+  'opus[1m]': 'claude-opus-4-7[1m]',
   'opus-4.7': 'claude-opus-4-7',
+  'opus-4.7[1m]': 'claude-opus-4-7[1m]',
   'opus-4.6': 'claude-opus-4-6',
-  'opus-4.5': 'claude-opus-4-5-20251101',
-  haiku: 'claude-haiku-4-5-20251001',
-  'haiku-4.5': 'claude-haiku-4-5-20251001',
+  'opus-4.6[1m]': 'claude-opus-4-6[1m]',
 };
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
@@ -216,11 +216,7 @@ export class UserSettingsStore {
         let didUpdate = false;
         const validModels = new Set(AVAILABLE_MODELS as readonly string[]);
         for (const userSettings of Object.values(this.settings)) {
-          if (
-            !userSettings.defaultModel ||
-            !validModels.has(userSettings.defaultModel) ||
-            userSettings.defaultModel === 'claude-opus-4-5-20251101'
-          ) {
+          if (!userSettings.defaultModel || !validModels.has(userSettings.defaultModel)) {
             userSettings.defaultModel = DEFAULT_MODEL;
             didUpdate = true;
           }
@@ -708,23 +704,30 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get display name for a model
+   * Get display name for a model.
+   *
+   * Switch covers the 4 canonical `AVAILABLE_MODELS`. The default branch has
+   * a belt-and-suspenders fallback for unknown strings ending in `[1m]` —
+   * strip the suffix, recurse on the bare form, and append ` (1M)`. This
+   * keeps display sane for transient state between pre-deploy persistence
+   * and post-deploy coerce.
    */
-  getModelDisplayName(model: ModelId): string {
+  getModelDisplayName(model: ModelId | string): string {
     switch (model) {
       case 'claude-opus-4-7':
         return 'Opus 4.7';
-      case 'claude-sonnet-4-6':
-        return 'Sonnet 4.6';
-      case 'claude-sonnet-4-5-20250929':
-        return 'Sonnet 4.5';
+      case 'claude-opus-4-7[1m]':
+        return 'Opus 4.7 (1M)';
       case 'claude-opus-4-6':
         return 'Opus 4.6';
-      case 'claude-opus-4-5-20251101':
-        return 'Opus 4.5';
-      case 'claude-haiku-4-5-20251001':
-        return 'Haiku 4.5';
+      case 'claude-opus-4-6[1m]':
+        return 'Opus 4.6 (1M)';
       default:
+        if (typeof model === 'string' && /\[1m\]$/i.test(model)) {
+          const bare = model.replace(/\[1m\]$/i, '');
+          const bareName = this.getModelDisplayName(bare as ModelId);
+          return `${bareName} (1M)`;
+        }
         return model;
     }
   }

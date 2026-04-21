@@ -92,25 +92,6 @@ export function buildThinkingOption(
 }
 
 /**
- * Build the `betas` header list for a query.
- *
- * 1M context window is GA on Opus 4.7, Opus 4.6, and Sonnet 4.6 — no beta header
- * needed there. Still required for older Sonnet 4.5 / Haiku 4.5 when using
- * API-key auth. Returns `undefined` when no beta headers are needed (or when
- * using OAuth/subscription auth, which does not support the 1M beta header).
- */
-export function buildBetaHeaders(
-  model: string | undefined,
-  hasApiKey: boolean,
-): NonNullable<Options['betas']> | undefined {
-  if (!hasApiKey) return undefined;
-  const activeModel = model || '';
-  const needs1mBeta =
-    !activeModel.includes('opus-4-7') && !activeModel.includes('opus-4-6') && !activeModel.includes('sonnet-4-6');
-  return needs1mBeta ? ['context-1m-2025-08-07'] : undefined;
-}
-
-/**
  * Resolve the effective `showSummary` value for a turn.
  *
  * Precedence matches the rest of the stack (see stream-executor.ts):
@@ -1084,15 +1065,11 @@ export class ClaudeHandler {
         this.logger.debug('Starting new Claude conversation');
       }
 
-      // 1M context window: GA on Opus 4.7, Opus 4.6, Sonnet 4.6 — no beta header needed there.
-      // Still required for older Sonnet 4.5 / Haiku 4.5 when using API-key auth.
-      {
-        const betas = buildBetaHeaders(options.model, !!process.env.ANTHROPIC_API_KEY);
-        if (betas) {
-          options.betas = betas;
-        }
-      }
-
+      // 1M context window (#648): delegated to Claude Agent SDK.
+      // When the caller passes `options.model` with a `[1m]` suffix, the SDK
+      // strips the suffix and injects the `context-1m-2025-08-07` beta header
+      // automatically — uniformly across API-key and OAuth auth. We never set
+      // `options.betas` from here.
       // Set abort controller
       if (abortController) {
         options.abortController = abortController;

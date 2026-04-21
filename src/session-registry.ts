@@ -28,7 +28,13 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { type EffortLevel, userSettingsStore } from './user-settings-store';
+import {
+  AVAILABLE_MODELS,
+  DEFAULT_MODEL,
+  type EffortLevel,
+  type ModelId,
+  userSettingsStore,
+} from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -1560,6 +1566,32 @@ export class SessionRegistry {
   }
 
   /**
+   * Coerce a persisted session.model to the current allow-list (#648).
+   *
+   * Pre-deploy sessions may hold legacy model ids (e.g. `claude-sonnet-4-6`)
+   * that are no longer in `AVAILABLE_MODELS`. Surfacing those unchanged to
+   * the hot path would break the suffix-based context-window rule
+   * (`resolveContextWindow` returns 200k for unknown names, which is fine,
+   * but the model itself would then fail the `/model` UI validation and
+   * other consumers that gate on `AVAILABLE_MODELS`). Returns `DEFAULT_MODEL`
+   * when the serialized value is missing or unrecognized; logs the coercion
+   * exactly once per load so operators can trace post-deploy drift.
+   */
+  private coerceLegacySessionModel(serialized: SerializedSession): ModelId | undefined {
+    const raw = serialized.model;
+    if (raw === undefined) return undefined;
+    if ((AVAILABLE_MODELS as readonly string[]).includes(raw)) {
+      return raw as ModelId;
+    }
+    this.logger.info('Coerced legacy session model', {
+      key: serialized.key,
+      previous: raw,
+      coerced: DEFAULT_MODEL,
+    });
+    return DEFAULT_MODEL;
+  }
+
+  /**
    * Archive a serialized session during loadSessions() when it's being discarded (#401).
    * Creates a minimal ConversationSession from serialized data to pass to the archive store.
    */
@@ -1652,7 +1684,10 @@ export class SessionRegistry {
           lastActivity,
           workingDirectory: serialized.workingDirectory,
           title: serialized.title,
-          model: serialized.model,
+          // #648: legacy session.model values (e.g. `claude-sonnet-4-6`) that
+          // predate the AVAILABLE_MODELS shrink get coerced to DEFAULT_MODEL
+          // on load so the hot path never sees an unrecognized id.
+          model: this.coerceLegacySessionModel(serialized),
           state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
