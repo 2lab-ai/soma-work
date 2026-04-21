@@ -63,8 +63,8 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
 
 // Inside the `config` object (sibling of `credentials`, `ui`, etc.):
 usage: {
-  refreshEnabled: process.env.USAGE_REFRESH_DISABLED !== '1',
-  refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000),
+  refreshEnabled: process.env.USAGE_REFRESH_ENABLED !== '0',
+  refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000, 30_000),
   fetchTimeoutMs: parsePositiveIntEnv('USAGE_FETCH_TIMEOUT_MS', 2_000),
 },
 ```
@@ -114,7 +114,7 @@ M2 (카드 UI 전면 재설계)는 다른 PR. 이번 PR#1 에서는:
 
 ## Done (Acceptance Criteria — PR#1)
 
-1. 부팅 시 scheduler 시작. `USAGE_REFRESH_DISABLED=1` 로 끌 수 있음.
+1. 부팅 시 scheduler 시작. `USAGE_REFRESH_ENABLED=0` 로 끌 수 있음 (unset/기타 값은 enabled).
 2. Scheduler 가 5분 주기로 `fetchUsageForAllAttached({ timeoutMs: 2000 })` pump.
 3. Shutdown path 에서 scheduler 정지 (`tokenManager.stop()` 옆).
 4. 카드 active slot row 에:

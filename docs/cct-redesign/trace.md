@@ -116,8 +116,8 @@ export function startUsageRefreshScheduler(
 
 ```ts
 usage: {
-  refreshEnabled: process.env.USAGE_REFRESH_DISABLED !== '1',
-  refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000),
+  refreshEnabled: process.env.USAGE_REFRESH_ENABLED !== '0',
+  refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000, 30_000),
   fetchTimeoutMs: parsePositiveIntEnv('USAGE_FETCH_TIMEOUT_MS', 2_000),
 }
 ```

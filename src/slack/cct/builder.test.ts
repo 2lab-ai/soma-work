@@ -551,6 +551,41 @@ describe('buildSlotRow — Refresh button (M1-S4)', () => {
     const refresh = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.refresh_usage_slot);
     expect(refresh.value).toBe('slot-r');
   });
+
+  // Negative cases — the Refresh button must NOT appear on slots that have no
+  // usage-API surface. If it did, a click would 500 on the handler side when
+  // `fetchAndStoreUsage` refuses a non-attached slot. Two distinct shapes are
+  // checked: a bare setup-source cct slot (setupToken but no oauthAttachment)
+  // and an api_key slot (entirely separate kind, no attachment concept).
+  it('bare setup-source cct slot (no oauthAttachment) has NO Refresh button', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-bare',
+      name: 'cct-bare',
+      setupToken: 'sk-ant-oat01-xxxxxxxx',
+      // oauthAttachment intentionally absent — usage API cannot reach Anthropic.
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
+  });
+
+  it('api_key slot has NO Refresh button (no attachment surface)', () => {
+    const slot: AuthKey = {
+      kind: 'api_key',
+      keyId: 'slot-api',
+      name: 'ops-api',
+      value: 'sk-ant-api03-xxxxxxxx',
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
+  });
 });
 
 describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {

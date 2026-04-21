@@ -22,16 +22,21 @@ function makeFakeClock(): {
   let storedFn: Tick | null = null;
   let storedMs: number | undefined;
   let cleared = 0;
+  // Wrap set/clearInterval in vi.fn so tests can assert call-count directly
+  // (e.g. `expect(clock.setInterval).not.toHaveBeenCalled()` when the
+  // scheduler refuses to arm because `enabled: false`).
+  const setIntervalFn = vi.fn((fn: Tick, ms: number) => {
+    storedFn = fn;
+    storedMs = ms;
+    return { id: 'fake' } as unknown as ReturnType<typeof setInterval>;
+  });
+  const clearIntervalFn = vi.fn(() => {
+    cleared += 1;
+    storedFn = null;
+  });
   const clock: NonNullable<UsageSchedulerOpts['clock']> = {
-    setInterval: (fn, ms) => {
-      storedFn = fn;
-      storedMs = ms;
-      return { id: 'fake' } as unknown as ReturnType<typeof setInterval>;
-    },
-    clearInterval: () => {
-      cleared += 1;
-      storedFn = null;
-    },
+    setInterval: setIntervalFn as unknown as NonNullable<UsageSchedulerOpts['clock']>['setInterval'],
+    clearInterval: clearIntervalFn as unknown as NonNullable<UsageSchedulerOpts['clock']>['clearInterval'],
   };
   return {
     clock,
@@ -72,7 +77,7 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     expect(args).toEqual(expect.objectContaining({ timeoutMs: 2_000 }));
   });
 
-  it('enabled:false → startUsageRefreshScheduler returns null and no tick happens', () => {
+  it('enabled:false → startUsageRefreshScheduler returns null, NEVER arms the interval, and no tick happens', () => {
     const { clock, fireTick } = makeFakeClock();
     const tm = makeTm();
     const scheduler = startUsageRefreshScheduler(tm, {
@@ -82,6 +87,11 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
       clock,
     });
     expect(scheduler).toBeNull();
+    // Stronger than checking the TM was never called: the scheduler must not
+    // even arm the interval. A future refactor that returns null AFTER
+    // calling clock.setInterval would leak a timer — this assertion catches
+    // that at the boundary.
+    expect(clock.setInterval).not.toHaveBeenCalled();
     fireTick();
     expect(tm.fetchUsageForAllAttached).not.toHaveBeenCalled();
   });
@@ -126,6 +136,24 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     expect(tm.fetchUsageForAllAttached).toHaveBeenCalledTimes(2);
   });
 
+  it('INVARIANT: shutdown path stops scheduler BEFORE tokenManager (pump must not fire mid-teardown)', async () => {
+    // The cleanup() function in src/index.ts is defined inline inside the
+    // bootstrap IIFE and not exported — we cannot import and invoke it
+    // directly without a prod-code refactor. Instead, we lock the ordering
+    // by reading the source and asserting the textual pattern: the
+    // `usageRefreshScheduler.stop()` call site MUST precede the
+    // `tokenManager.stop()` call site inside cleanup. A refactor that
+    // accidentally flips the order will be caught here.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
+    const schedIdx = source.indexOf('usageRefreshScheduler.stop()');
+    const tmIdx = source.indexOf('tokenManager.stop()');
+    expect(schedIdx).toBeGreaterThan(-1);
+    expect(tmIdx).toBeGreaterThan(-1);
+    expect(schedIdx).toBeLessThan(tmIdx);
+  });
+
   it('INVARIANT: scheduler tick never forwards force:true (Anthropic DDoS guard)', async () => {
     const { clock, fireTick } = makeFakeClock();
     const tm = makeTm();
@@ -140,10 +168,12 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     await Promise.resolve();
     await Promise.resolve();
     const args = tm.fetchUsageForAllAttached.mock.calls[0][0];
-    // The args object MUST NOT carry `force: true`. We accept either an
-    // omission or an explicit `force: false` (defensive), but a scheduler
-    // that passes force=true bypasses nextUsageFetchAllowedAt on every
-    // attached slot and hammers Anthropic.
-    expect(args?.force).not.toBe(true);
+    // The args object MUST NOT carry `force` at all. Earlier the test also
+    // accepted `force: false` as "defensive", but that's a footgun: a future
+    // author reading the scheduler could read `force: false` as meaningful
+    // and flip it to `force: true` to "fix" something. The scheduler contract
+    // is simpler — never pass the key. A `force: true` would bypass every
+    // slot's `nextUsageFetchAllowedAt` gate and hammer Anthropic.
+    expect(args).not.toHaveProperty('force');
   });
 });

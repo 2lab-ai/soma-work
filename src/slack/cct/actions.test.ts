@@ -787,11 +787,19 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     return { app, actionHandlers };
   }
 
-  it('refresh_usage_all → tm.fetchUsageForAllAttached({ force: true, timeoutMs }) called once', async () => {
+  it('refresh_usage_all → tm.fetchUsageForAllAttached({ force: true, timeoutMs }) called once; ack runs BEFORE TM (3s budget)', async () => {
+    // Ordering contract mirrors T8f on view_submission: ack MUST land before
+    // the TM call starts, not merely before it settles. Regressing to
+    // `const p = tm.fetch(...); await ack(); await p;` would still satisfy
+    // "ack called" but blow Slack's 3s action-ack budget whenever the
+    // Anthropic fan-out stalls. The inner `expect` inside the ack mock fires
+    // at the exact crossing.
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(
-      async (_opts?: { force?: boolean; timeoutMs?: number }) => ({}) as Record<string, unknown>,
-    );
+    const callOrder: string[] = [];
+    const fetchUsageForAllAttached = vi.fn(async (_opts?: { force?: boolean; timeoutMs?: number }) => {
+      callOrder.push('tm.fetchUsageForAllAttached');
+      return {} as Record<string, unknown>;
+    });
     const tm = {
       fetchUsageForAllAttached,
       getSnapshot: async () => ({
@@ -809,7 +817,11 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
       expect(h).toBeDefined();
-      const ack = vi.fn(async () => undefined);
+      const ack = vi.fn(async () => {
+        // At the moment ack is invoked, the TM fan-out MUST NOT have started.
+        expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+        callOrder.push('ack');
+      });
       await h?.({
         ack,
         body: {
@@ -824,14 +836,20 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       const args = fetchUsageForAllAttached.mock.calls[0][0];
       expect(args).toEqual(expect.objectContaining({ force: true }));
       expect(typeof args?.timeoutMs).toBe('number');
+      // Strict ordering — ack first, TM second.
+      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchUsageForAllAttached']);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('refresh_usage_slot → tm.fetchAndStoreUsage(keyId, { force: true }) called once', async () => {
+  it('refresh_usage_slot → tm.fetchAndStoreUsage(keyId, { force: true }) called once; ack runs BEFORE TM (3s budget)', async () => {
     const { app, actionHandlers } = makeApp();
-    const fetchAndStoreUsage = vi.fn(async () => null);
+    const callOrder: string[] = [];
+    const fetchAndStoreUsage = vi.fn(async () => {
+      callOrder.push('tm.fetchAndStoreUsage');
+      return null;
+    });
     const tm = {
       fetchAndStoreUsage,
       getSnapshot: async () => ({
@@ -849,7 +867,10 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
       expect(h).toBeDefined();
-      const ack = vi.fn(async () => undefined);
+      const ack = vi.fn(async () => {
+        expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+        callOrder.push('ack');
+      });
       await h?.({
         ack,
         body: {
@@ -862,6 +883,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(ack).toHaveBeenCalled();
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
       expect(fetchAndStoreUsage).toHaveBeenCalledWith('cct1', expect.objectContaining({ force: true }));
+      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchAndStoreUsage']);
     } finally {
       spy.mockRestore();
     }

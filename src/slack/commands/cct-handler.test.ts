@@ -196,6 +196,42 @@ describe('CctHandler — Wave 5', () => {
     expect(msg).toContain('resets in');
   });
 
+  it('cct usage NEVER forces — respects server-backoff (no { force: true } sent to TM)', async () => {
+    // Server-respect contract (PR#641 M1-S4): `/cct usage` is a user-triggered
+    // inspect, NOT an emergency override. It must never pass `{ force: true }`
+    // to `fetchAndStoreUsage` — doing so would bypass the per-slot
+    // `nextUsageFetchAllowedAt` backoff that protects Anthropic from the
+    // Slack command surface. Only the Refresh-buttons admin path may force.
+    const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
+      fetchedAt: '2026-04-18T03:42:00Z',
+      fiveHour: { utilization: 0.1, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+    }));
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
+      fetchAndStoreUsage,
+      snapshot: snapshotWithOAuthAttachment('slot-1', 'active'),
+    });
+    const say = makeSay();
+    const h = new CctHandler();
+    await h.execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct usage',
+      say: say.fn,
+    });
+    expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
+    // Defensive: whatever the handler passes, the 2nd arg must NOT carry
+    // `force: true`. A single-arg call is the production shape; this
+    // matcher also tolerates future passes that thread timeouts etc., as
+    // long as `force: true` is never among them.
+    const secondArg = (fetchAndStoreUsage.mock.calls[0] as unknown as unknown[])[1];
+    if (secondArg !== undefined) {
+      expect(secondArg).not.toEqual(expect.objectContaining({ force: true }));
+    }
+  });
+
   it('cct usage <name> looks up slot by name and calls fetchAndStoreUsage', async () => {
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',

@@ -37,14 +37,23 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
  * duplicating the validate-then-warn boilerplate for every usage-scheduler
  * tunable. Not exported outside this module — callers read the already-
  * parsed value via `config.usage.*`.
+ *
+ * `minimum` (default 0) clamps parsed values that are positive but too small
+ * to a safe floor. Catches `USAGE_REFRESH_INTERVAL_MS=1` style foot-guns that
+ * would otherwise hammer Anthropic (the tick fires below the 2-minute per-slot
+ * backoff so it just bounces, but still burns event-loop time every ms).
  */
-function parsePositiveIntEnv(name: string, fallback: number): number {
+function parsePositiveIntEnv(name: string, fallback: number, minimum: number = 0): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) {
     logger.warn(`${name}="${raw}" invalid (expected positive integer); falling back to ${fallback}`);
     return fallback;
+  }
+  if (n < minimum) {
+    logger.warn(`${name}="${raw}" below minimum ${minimum}; clamping to ${minimum}`);
+    return minimum;
   }
   return n;
 }
@@ -117,10 +126,19 @@ export const config = {
    * gate, longer intervals let the card go stale.
    */
   usage: {
-    /** Emergency-off: set USAGE_REFRESH_DISABLED=1 to disable the pump. */
-    refreshEnabled: process.env.USAGE_REFRESH_DISABLED !== '1',
-    /** ms between ticks; default 5min. */
-    refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000),
+    /**
+     * Emergency-off: set USAGE_REFRESH_ENABLED=0 to disable the pump.
+     * Any other value (or unset) leaves the scheduler enabled. The default-on
+     * semantics mean an operator with no env flag still gets the pump, which
+     * matches the PR contract — only explicit opt-out kills it.
+     */
+    refreshEnabled: process.env.USAGE_REFRESH_ENABLED !== '0',
+    /**
+     * ms between ticks; default 5min. Floor is 30s — below that the tick just
+     * bounces off each slot's 2-minute `nextUsageFetchAllowedAt` gate, so a
+     * faster interval spins the event loop without producing fresher data.
+     */
+    refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000, 30_000),
     /** ms deadline for each fan-out; default 2s. */
     fetchTimeoutMs: parsePositiveIntEnv('USAGE_FETCH_TIMEOUT_MS', 2_000),
   },

@@ -102,7 +102,7 @@ async function start() {
     // Start CCT usage refresh scheduler (#641 M1-S1).
     // Periodically pumps TokenManager.fetchUsageForAllAttached — the tick
     // MUST NOT pass { force: true } (see src/oauth/usage-scheduler.ts).
-    // Null is returned when USAGE_REFRESH_DISABLED=1 kills the feature flag.
+    // Null is returned when USAGE_REFRESH_ENABLED=0 kills the feature flag.
     const usageRefreshScheduler: UsageRefreshScheduler | null = startUsageRefreshScheduler(tokenManager, {
       intervalMs: config.usage.refreshIntervalMs,
       timeoutMs: config.usage.fetchTimeoutMs,

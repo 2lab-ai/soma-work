@@ -112,7 +112,7 @@ export class UsageRefreshScheduler {
  */
 export function startUsageRefreshScheduler(tm: TokenManager, opts: UsageSchedulerOpts): UsageRefreshScheduler | null {
   if (opts.enabled === false) {
-    logger.info('usage refresh scheduler disabled (USAGE_REFRESH_DISABLED=1)');
+    logger.info('usage refresh scheduler disabled (USAGE_REFRESH_ENABLED=0)');
     return null;
   }
   const scheduler = new UsageRefreshScheduler(tm, opts);
