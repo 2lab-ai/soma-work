@@ -292,10 +292,20 @@ export class LlmMCPServer extends BaseMcpServer {
         timeoutMs: opts.timeoutMs,
       });
 
-      const rotated =
-        typeof result.backendSessionId === 'string' ? result.backendSessionId.trim() : '';
+      const raw = result.backendSessionId;
+      const rotated = typeof raw === 'string' ? raw.trim() : '';
       if (rotated && rotated !== session.backendSessionId) {
         session.backendSessionId = rotated;
+      } else if (typeof raw !== 'string' || (raw.length > 0 && rotated.length === 0)) {
+        // Mirror handleNew's `llm.chat.empty-session-id` log. If the runtime returned
+        // a non-string or a whitespace-only string, we silently keep the existing
+        // backendSessionId — record it so regressions in a specific backend are
+        // distinguishable from normal "no rotation needed" responses.
+        this.logger.warn('llm.chat.resume.blank-rotated-id', {
+          publicId: resumeSessionId,
+          backend: session.backend,
+          rawType: typeof raw,
+        });
       }
 
       return successResult({

@@ -113,7 +113,13 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_TIMEOUT);
   });
 
-  it('new: runtime returns empty backendSessionId → BACKEND_FAILED', async () => {
+  it('new: runtime returns empty backendSessionId → BACKEND_FAILED + error log', async () => {
+    // The only way ops can distinguish a backend regression from a caller bug
+    // is the `llm.chat.empty-session-id` log line. Assert it is emitted with
+    // enough routing context (backend, model) to act on.
+    const logger = (deps.server as unknown as { logger: { error: (...a: any[]) => void } }).logger;
+    const errSpy = vi.spyOn(logger, 'error');
+
     deps.runtimes.codex.startSession.mockResolvedValueOnce({
       backendSessionId: '',
       content: 'ok',
@@ -121,6 +127,10 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const result = await deps.server.handleTool('chat', { prompt: 'hi', model: 'codex' });
     expect(result.isError).toBe(true);
     expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_FAILED);
+    expect(errSpy).toHaveBeenCalledWith(
+      'llm.chat.empty-session-id',
+      expect.objectContaining({ backend: 'codex' }),
+    );
   });
 
   // ── Resume ──
@@ -235,13 +245,26 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     await first;
   });
 
-  it('resume watchdog timeout → BACKEND_TIMEOUT', async () => {
+  it('resume watchdog timeout → BACKEND_TIMEOUT; inflight released for retry', async () => {
     const id = await seedSession();
     deps.runtimes.codex.resumeSession.mockRejectedValueOnce(
       new LlmChatError(ErrorCode.BACKEND_TIMEOUT, 'slow'),
     );
     const result = await deps.server.handleTool('chat', { prompt: 'x', resumeSessionId: id });
     expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_TIMEOUT);
+
+    // The inflight Set must release on the error path — otherwise a single
+    // transient timeout would permanently lock the session to SESSION_BUSY.
+    deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
+      backendSessionId: 'thread-stored',
+      content: 'ok',
+    });
+    const retry = await deps.server.handleTool('chat', {
+      prompt: 'again',
+      resumeSessionId: id,
+    });
+    expect(parseStructured(retry).error).toBeUndefined();
+    expect(parseStructured(retry).content).toBe('ok');
   });
 
   // ── Validation ──
@@ -349,6 +372,11 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
   // ── Shutdown ──
 
   it('shutdown drains every runtime and swallows-with-log per-runtime errors', async () => {
+    // Capture the warn log before triggering shutdown — the swallow-with-log
+    // contract is the only signal that a runtime hung during teardown.
+    const logger = (deps.server as unknown as { logger: { warn: (...a: any[]) => void } }).logger;
+    const warnSpy = vi.spyOn(logger, 'warn');
+
     deps.runtimes.gemini.shutdown.mockRejectedValueOnce(new Error('gemini stuck'));
     // Accessing the protected hook is intentional — the change under review
     // exposed this seam specifically so tests can assert teardown without
@@ -356,5 +384,6 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     await (deps.server as unknown as { shutdown: () => Promise<void> }).shutdown();
     expect(deps.runtimes.codex.shutdown).toHaveBeenCalled();
     expect(deps.runtimes.gemini.shutdown).toHaveBeenCalled();
+    expect(warnSpy.mock.calls.map((c) => c[0])).toContain('llm.runtime.shutdown-failed');
   });
 });
