@@ -3,6 +3,7 @@
 import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
+import { overridableMatchedRuleIds, rulesByIds } from '../_shared/dangerous-command-filter.js';
 import { sharedStore, PendingApproval, PermissionResponse } from '../_shared/shared-store.js';
 import { SlackPermissionMessenger } from '../_shared/slack-messenger.js';
 
@@ -62,7 +63,21 @@ class PermissionMCPServer extends BaseMcpServer {
 
     const approvalId = `approval_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user);
+    // Re-derive which overridable dangerous rules this Bash command matched, so
+    // the Slack prompt can offer a "disable rule for this session" button and the
+    // action handler knows which rule id(s) to silence on the session. For
+    // non-Bash tools (or Bash commands that don't match any rule) this stays
+    // empty and no extra button is rendered.
+    const ruleIds = this.deriveRuleIds(tool_name, input);
+    const overridableRules = rulesByIds(ruleIds);
+
+    const blocks = this.messenger.buildRequestBlocks(
+      tool_name,
+      input,
+      approvalId,
+      user,
+      overridableRules,
+    );
 
     try {
       const result = await this.messenger.sendPermissionRequest(
@@ -75,6 +90,7 @@ class PermissionMCPServer extends BaseMcpServer {
         tool_name, input, channel, thread_ts, user,
         created_at: Date.now(),
         expires_at: Date.now() + 5 * 60 * 1000,
+        rule_ids: ruleIds.length > 0 ? ruleIds : undefined,
       };
 
       await sharedStore.storePendingApproval(approvalId, pendingApproval);
@@ -126,6 +142,19 @@ class PermissionMCPServer extends BaseMcpServer {
 
   public async clearExpiredApprovals(): Promise<number> {
     return await sharedStore.cleanupExpired();
+  }
+
+  /**
+   * For Bash tool calls, re-derive which overridable dangerous-rules this
+   * command matched. Non-Bash tools always return []. Used to render the
+   * "Approve & disable rule for this session" button and to persist the
+   * matched rule ids on the pending approval so the Slack action handler
+   * can silence them on the session.
+   */
+  private deriveRuleIds(toolName: string, input: any): string[] {
+    if (toolName !== 'Bash') return [];
+    const command = typeof input?.command === 'string' ? input.command : '';
+    return command ? overridableMatchedRuleIds(command) : [];
   }
 }
 
