@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   bypassBashPermissionDecision,
   checkDangerousCommand,
+  DANGEROUS_RULES,
+  getOverridableRule,
   isCrossUserAccess,
   isDangerousCommand,
   isSshCommand,
+  matchRules,
+  overridableMatchedRuleIds,
 } from './dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
@@ -189,28 +193,138 @@ describe('bypassBashPermissionDecision', () => {
       ['cp file1 file2', 'cp'],
       ['', 'empty command'],
     ])('allows: %s (%s)', (command) => {
-      expect(bypassBashPermissionDecision(command)).toBe('allow');
+      const result = bypassBashPermissionDecision(command);
+      expect(result.decision).toBe('allow');
+      expect(result.matchedRuleIds).toEqual([]);
     });
   });
 
   describe('returns "ask" for dangerous commands', () => {
     it.each([
-      ['kill 1234', 'kill'],
-      ['kill -9 1234', 'kill with signal'],
-      ['pkill node', 'pkill'],
-      ['killall python', 'killall'],
-      ['rm -rf /tmp/dir', 'rm -rf'],
-      ['rm -f file.txt', 'rm -f'],
-      ['rm --force file.txt', 'rm --force'],
-      ['shutdown now', 'shutdown'],
-      ['reboot', 'reboot'],
-      ['dd if=/dev/zero of=/dev/sda', 'dd'],
-    ])('asks: %s (%s)', (command) => {
-      expect(bypassBashPermissionDecision(command)).toBe('ask');
+      ['kill 1234', 'kill', 'kill'],
+      ['kill -9 1234', 'kill with signal', 'kill'],
+      ['pkill node', 'pkill', 'pkill'],
+      ['killall python', 'killall', 'killall'],
+      ['rm -rf /tmp/dir', 'rm -rf', 'rm-recursive'],
+      ['rm -f file.txt', 'rm -f', 'rm-force'],
+      ['rm --force file.txt', 'rm --force', 'rm-force-long'],
+      ['shutdown now', 'shutdown', 'shutdown'],
+      ['reboot', 'reboot', 'reboot'],
+      ['dd if=/dev/zero of=/dev/sda', 'dd', 'dd-if'],
+    ])('asks: %s (%s)', (command, _label, expectedRuleId) => {
+      const result = bypassBashPermissionDecision(command);
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRuleIds).toContain(expectedRuleId);
     });
   });
 
   it('returns "ask" for compound commands containing dangerous parts', () => {
-    expect(bypassBashPermissionDecision('mkdir -p /tmp/dir && kill 1234')).toBe('ask');
+    const result = bypassBashPermissionDecision('mkdir -p /tmp/dir && kill 1234');
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRuleIds).toContain('kill');
+  });
+
+  describe('session-scoped rule disable', () => {
+    it('degrades to "allow" when the only matched rule is disabled', () => {
+      const result = bypassBashPermissionDecision('kill 1234', (ruleId) => ruleId === 'kill');
+      expect(result.decision).toBe('allow');
+      expect(result.matchedRuleIds).toEqual([]);
+    });
+
+    it('still asks when at least one matched rule is NOT disabled', () => {
+      // `rm -rf` matches both rm-recursive and rm-force. Disable only rm-recursive.
+      const result = bypassBashPermissionDecision('rm -rf /tmp/dir', (ruleId) => ruleId === 'rm-recursive');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRuleIds).toContain('rm-force');
+      expect(result.matchedRuleIds).not.toContain('rm-recursive');
+    });
+
+    it('disabling all matched rules on a compound command degrades to "allow"', () => {
+      const result = bypassBashPermissionDecision('kill 1234 && rm -rf /tmp/x', (ruleId) =>
+        new Set(['kill', 'rm-recursive', 'rm-force']).has(ruleId),
+      );
+      expect(result.decision).toBe('allow');
+    });
+
+    it('disabling a non-matched rule has no effect', () => {
+      const result = bypassBashPermissionDecision('kill 1234', (ruleId) => ruleId === 'reboot');
+      expect(result.decision).toBe('ask');
+      expect(result.matchedRuleIds).toContain('kill');
+    });
+  });
+
+  it('ignores lockdown rules (cross-user/ssh) — they enforce on other paths', () => {
+    // ssh is a lockdown rule (sessionOverridable=false) — bypass decision must
+    // NOT return 'ask' for it here; its own hook denies separately.
+    const result = bypassBashPermissionDecision('ssh remotehost ls');
+    expect(result.decision).toBe('allow');
+    expect(result.matchedRuleIds).toEqual([]);
+  });
+});
+
+describe('rule catalog', () => {
+  it('every rule has a stable id, label, description, and sessionOverridable flag', () => {
+    for (const rule of DANGEROUS_RULES) {
+      expect(rule.id).toMatch(/^[a-z][a-z0-9-]*$/);
+      expect(rule.label.length).toBeGreaterThan(0);
+      expect(rule.description.length).toBeGreaterThan(0);
+      expect(typeof rule.sessionOverridable).toBe('boolean');
+    }
+  });
+
+  it('rule ids are unique', () => {
+    const ids = DANGEROUS_RULES.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('cross-user-access and ssh-remote are lockdown (non-overridable)', () => {
+    expect(DANGEROUS_RULES.find((r) => r.id === 'cross-user-access')?.sessionOverridable).toBe(false);
+    expect(DANGEROUS_RULES.find((r) => r.id === 'ssh-remote')?.sessionOverridable).toBe(false);
+  });
+
+  describe('matchRules', () => {
+    it('returns empty for safe commands', () => {
+      expect(matchRules('git status')).toEqual([]);
+    });
+
+    it('returns the matched rule object for a dangerous command', () => {
+      const matches = matchRules('kill 1234');
+      expect(matches.map((r) => r.id)).toContain('kill');
+    });
+
+    it('consults cross-user rule only when ctx.userId is provided', () => {
+      expect(matchRules('ls /tmp/U09F1M5MML1/file').map((r) => r.id)).not.toContain('cross-user-access');
+      const withUser = matchRules('ls /tmp/U09F1M5MML1/file', { userId: 'U094E5L4A15' });
+      expect(withUser.map((r) => r.id)).toContain('cross-user-access');
+    });
+  });
+
+  describe('overridableMatchedRuleIds', () => {
+    it('returns ids for dangerous overridable commands', () => {
+      expect(overridableMatchedRuleIds('kill 1234')).toContain('kill');
+    });
+
+    it('excludes lockdown rules', () => {
+      expect(overridableMatchedRuleIds('ssh host ls')).toEqual([]);
+    });
+
+    it('returns empty for safe commands', () => {
+      expect(overridableMatchedRuleIds('echo hi')).toEqual([]);
+    });
+  });
+
+  describe('getOverridableRule', () => {
+    it('returns the rule object for a known overridable id', () => {
+      expect(getOverridableRule('kill')?.id).toBe('kill');
+    });
+
+    it('returns undefined for lockdown ids', () => {
+      expect(getOverridableRule('cross-user-access')).toBeUndefined();
+      expect(getOverridableRule('ssh-remote')).toBeUndefined();
+    });
+
+    it('returns undefined for unknown ids', () => {
+      expect(getOverridableRule('nonexistent')).toBeUndefined();
+    });
   });
 });
