@@ -4,50 +4,31 @@
  *
  * Runs a real LlmMCPServer over stdio, but replaces the production
  * CodexRuntime/GeminiRuntime with fakes whose behavior is controlled
- * via env vars. This lets the parent drive the 7 plan-spec scenarios
+ * via env vars. This lets the parent drive the acceptance scenarios
  * without real backend CLIs.
  *
  * Config via env:
- *   SELFPROOF_TMPDIR       — isolated state dir (pidfile + sessions + children live here)
- *   SELFPROOF_SLEEP_MS     — when set, fake runtime's startSession spawns a real
- *                            `sleep` child of this duration (for watchdog test 7)
- *                            and awaits it; otherwise resolves synchronously.
+ *   SELFPROOF_SLEEP_MS — when set, fake runtime's startSession spawns a real
+ *                        `sleep` child of this duration (for watchdog test)
+ *                        and awaits it; otherwise resolves synchronously.
+ *
+ * SELFPROOF_TMPDIR is still accepted for callers that set it, but is
+ * ignored — the simplified server has no on-disk state.
  */
-import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { LlmMCPServer } from '../llm-mcp-server.js';
-import { FileSessionStore } from '../runtime/session-store.js';
-import { ChildRegistry } from '../runtime/child-registry.js';
-import { SessionLocks } from '../runtime/session-locks.js';
-import { ShutdownCoordinator } from '../runtime/shutdown.js';
-import { acquirePidfile } from '../runtime/pidfile.js';
 import { runWithWatchdog } from '../runtime/watchdog.js';
 import type { Backend, LlmRuntime, RuntimeCallOptions, StartSessionResult, ResumeSessionResult } from '../runtime/types.js';
 
-const tmpdir = process.env.SELFPROOF_TMPDIR;
-if (!tmpdir) {
-  console.error('SELFPROOF_TMPDIR required');
-  process.exit(2);
-}
 const sleepMs = process.env.SELFPROOF_SLEEP_MS ? Number(process.env.SELFPROOF_SLEEP_MS) : 0;
 
-const pidPath = path.join(tmpdir, 'llm-mcp-server.pid');
-const sessionPath = path.join(tmpdir, 'sessions.jsonl');
-const childPath = path.join(tmpdir, 'children.jsonl');
-
 class FakeRuntime implements LlmRuntime {
-  readonly capabilities = {
-    supportsReview: false,
-    supportsInterrupt: false,
-    supportsResume: true,
-    supportsEventStream: false,
-  };
-  constructor(public readonly name: Backend, private readonly childRegistry: ChildRegistry) {}
+  constructor(public readonly name: Backend) {}
 
   async ensureReady(): Promise<void> {}
 
   async startSession(
-    model: string,
+    _model: string,
     prompt: string,
     opts: RuntimeCallOptions,
   ): Promise<StartSessionResult> {
@@ -72,20 +53,17 @@ class FakeRuntime implements LlmRuntime {
     isNew: boolean,
   ): Promise<StartSessionResult> {
     if (sleepMs > 0) {
-      // Scenario 7: spawn a real `sleep` child, register it, await via watchdog.
+      // Watchdog scenario: spawn a real `sleep` child, await via watchdog.
       const seconds = Math.ceil(sleepMs / 1000);
       const child = spawn('sleep', [String(seconds)], { stdio: 'ignore' });
       await new Promise<void>((resolve, reject) => {
         child.once('spawn', () => resolve());
         child.once('error', reject);
       });
-      const pid = child.pid!;
-      await this.childRegistry.append(pid, this.name);
       const waitForResult = new Promise<StartSessionResult>((resolve, reject) => {
         child.once('exit', () => resolve({
           backendSessionId,
           content: `[fake ${this.name}] ${prompt}`,
-          resolvedConfig: opts.resolvedConfig ?? {},
         }));
         child.once('error', reject);
       });
@@ -93,45 +71,21 @@ class FakeRuntime implements LlmRuntime {
         timeoutMs: opts.timeoutMs ?? 300_000,
         signal: opts.signal,
         killChild: (sig) => { try { child.kill(sig); } catch { /* ignore */ } },
-      }).finally(() => {
-        void this.childRegistry.remove(pid).catch(() => { /* best-effort */ });
       });
     }
     return {
       backendSessionId,
       content: `[fake ${this.name}] ${prompt}${isNew ? ' (new)' : ' (resumed)'}`,
-      resolvedConfig: opts.resolvedConfig ?? {},
     };
   }
 }
 
 async function main(): Promise<void> {
-  const pidfile = acquirePidfile(pidPath);
-  const sessionStore = new FileSessionStore(sessionPath);
-  const childRegistry = new ChildRegistry(childPath);
-  await childRegistry.replayAndReap();
-
   const runtimes: Record<Backend, LlmRuntime> = {
-    codex: new FakeRuntime('codex', childRegistry),
-    gemini: new FakeRuntime('gemini', childRegistry),
+    codex: new FakeRuntime('codex'),
+    gemini: new FakeRuntime('gemini'),
   };
-  const sessionLocks = new SessionLocks();
-  const shutdownCoordinator = new ShutdownCoordinator({
-    pidfile,
-    sessionStore,
-    childRegistry,
-    runtimes,
-  });
-
-  const server = new LlmMCPServer({
-    runtimes,
-    sessionStore,
-    childRegistry,
-    sessionLocks,
-    shutdownCoordinator,
-  });
-
-  shutdownCoordinator.installSignalHandlers();
+  const server = new LlmMCPServer({ runtimes });
   await server.run();
 }
 
