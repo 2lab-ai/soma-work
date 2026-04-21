@@ -247,10 +247,13 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
       eventRouter: eventRouter as unknown as EventRouter,
     });
     await hooks.PostCompact(postPayload() as any);
+    // #617 followup v2: PostCompact payload carries trigger=manual, so the
+    // completion message header includes `· trigger=manual` (handlePostCompact
+    // writes session.compactTrigger when onCompactBoundary hasn't set it yet).
     expect(slackApi.updateMessage).toHaveBeenCalledWith(
       'C1',
       '1700000000.000100',
-      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+      '🟢 🗜️ Compaction completed · trigger=manual\nContext: now ~45% ← was ~83%',
     );
     expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
     expect(session.compactPostedByEpoch?.[1]?.post).toBe(true);
@@ -296,7 +299,7 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
     expect(slackApi.updateMessage).not.toHaveBeenCalled();
     expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
       'C1',
-      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+      '🟢 🗜️ Compaction completed · trigger=manual\nContext: now ~45% ← was ~83%',
       { threadTs: 'T1' },
     );
   });
@@ -313,7 +316,7 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
     expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
     expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
       'C1',
-      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+      '🟢 🗜️ Compaction completed · trigger=manual\nContext: now ~45% ← was ~83%',
       { threadTs: 'T1' },
     );
   });
@@ -436,5 +439,190 @@ describe('buildCompactHooks — SessionStart (#617 AC6)', () => {
     // compactionOccurred must NOT flip because rehydration already happened
     // via the stream-executor compact_boundary path.
     expect(session.compactionOccurred).toBeFalsy();
+  });
+});
+
+/**
+ * #617 followup v2 — three post-deploy bugs:
+ *   Bug 1: duplicate "starting" message when PreCompact + compacting-status
+ *          fire concurrently (check-then-act race on marker.pre).
+ *   Bug 2: runaway ticker — the second race winner overwrites
+ *          `session.compactTickInterval`, leaking the first setInterval.
+ *   Bug 3: auto-compact completion shows `~?% ← was ~?%` when PostCompact
+ *          races onCompactBoundary.
+ * See docs/issues/compact-bugs-trace/trace.md.
+ */
+describe('Compact follow-up fixes (#617 v2 bugs 1/2/3)', () => {
+  let slackApi: {
+    postSystemMessage: ReturnType<typeof vi.fn>;
+    updateMessage: ReturnType<typeof vi.fn>;
+  };
+  let session: ConversationSession;
+
+  beforeEach(() => {
+    slackApi = {
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: '1700000000.000100', channel: 'C1' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    session = makeSession({ lastKnownUsagePct: 80 });
+  });
+
+  afterEach(() => {
+    clearStartingTicker(session);
+    vi.useRealTimers();
+  });
+
+  const preCompactPayload = (): PreCompactHookInput =>
+    ({
+      session_id: 'sess-1',
+      transcript_path: '/tmp/t',
+      cwd: '/tmp',
+      hook_event_name: 'PreCompact',
+      trigger: 'manual',
+      custom_instructions: null,
+    }) as unknown as PreCompactHookInput;
+
+  const postCompactPayload = (trigger: 'manual' | 'auto' = 'manual'): PostCompactHookInput =>
+    ({
+      session_id: 'sess-1',
+      transcript_path: '/tmp/t',
+      cwd: '/tmp',
+      hook_event_name: 'PostCompact',
+      trigger,
+      compact_summary: 'summary',
+    }) as unknown as PostCompactHookInput;
+
+  /**
+   * Bug 1+2 RED — previously `marker.pre = true` was set AFTER
+   * `await postSystemMessage`, so two concurrent callers would both pass the
+   * `!marker.pre` guard synchronously, then each post + start a ticker. The
+   * second `setInterval` would overwrite the first pointer on the session,
+   * and the first ticker would tick forever.
+   *
+   * After the fix (atomic marker + defensive stopStartingTicker), two
+   * parallel calls produce exactly ONE post and leave exactly ONE interval
+   * handle on the session.
+   */
+  it('Bug 1+2: two parallel PreCompact-style calls post once + leave one ticker', async () => {
+    // Make the Slack post block briefly so both callers cross the await.
+    let resolvePost!: (value: { ts: string; channel: string }) => void;
+    slackApi.postSystemMessage = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePost = resolve;
+        }),
+    );
+
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    // Fire the two racing START paths. Neither has awaited yet.
+    const a = hooks.PreCompact(preCompactPayload() as any);
+    const b = hooks.PreCompact(preCompactPayload() as any);
+
+    resolvePost({ ts: '1700000000.000100', channel: 'C1' });
+    await Promise.all([a, b]);
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+    expect(session.compactPostedByEpoch?.[1]?.pre).toBe(true);
+    // Exactly one ticker handle stored on the session.
+    expect(session.compactTickInterval).toBeDefined();
+  });
+
+  /**
+   * Bug 3 RED — when PostCompact arrives before onCompactBoundary has
+   * populated session.compactPreTokens/PostTokens/DurationMs, the completion
+   * message used to render `~?% ← was ~?%`. Fix 2 introduces a 500 ms grace
+   * window: if the boundary callback races in during the wait and seals the
+   * cycle, the PostCompact path becomes a no-op.
+   */
+  it('Bug 3: PostCompact-first waits ~500ms and yields to onCompactBoundary if it arrives', async () => {
+    // Open a cycle (PreCompact-style setup).
+    beginCompactionCycleIfNeeded(session);
+    session.compactPostedByEpoch![1].pre = true;
+    session.compactStartingMessageTs = '1700000000.000100';
+    session.compactStartedAtMs = Date.now();
+
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    // Fire PostCompact — metadata missing, so it enters the 500ms wait.
+    const pending = hooks.PostCompact(postCompactPayload('auto') as any);
+
+    // Simulate onCompactBoundary racing in DURING the wait:
+    // populate metadata and seal the cycle (marker.post = true) as the
+    // stream-executor path does.
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.compactTrigger = 'auto';
+    session.compactDurationMs = 5_200;
+    session.compactPostedByEpoch![1].post = true;
+
+    await pending;
+
+    // The PostCompact path yielded to the boundary callback.
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Bug 3 RED — when neither boundary callback nor subsequent metadata
+   * population races in during the grace window, the hook eventually posts
+   * with whatever it has (including the PostCompact-captured trigger).
+   */
+  it('Bug 3: PostCompact with no metadata after grace window still posts, with captured trigger', async () => {
+    beginCompactionCycleIfNeeded(session);
+    session.compactPostedByEpoch![1].pre = true;
+    session.compactStartingMessageTs = '1700000000.000100';
+    session.compactStartedAtMs = Date.now();
+
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    await hooks.PostCompact(postCompactPayload('auto') as any);
+
+    expect(session.compactTrigger).toBe('auto');
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    const [, , text] = (slackApi.updateMessage as any).mock.calls[0];
+    expect(text).toContain('trigger=auto');
+  });
+
+  /**
+   * Bug 3 RED — PostCompact must NOT clobber an already-set trigger
+   * (onCompactBoundary is authoritative; both signals carry the same value
+   * in practice, but if they ever differ the boundary wins).
+   */
+  it('Bug 3: handlePostCompact preserves a pre-set compactTrigger from onCompactBoundary', async () => {
+    beginCompactionCycleIfNeeded(session);
+    session.compactPostedByEpoch![1].pre = true;
+    session.compactStartingMessageTs = '1700000000.000100';
+    session.compactStartedAtMs = Date.now();
+    // onCompactBoundary already set trigger=auto and metadata.
+    session.compactTrigger = 'auto';
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    // PostCompact arrives with trigger='manual' — must NOT overwrite.
+    await hooks.PostCompact(postCompactPayload('manual') as any);
+
+    expect(session.compactTrigger).toBe('auto');
   });
 });
