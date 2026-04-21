@@ -244,8 +244,20 @@ export function buildSlotRow(
   //   [ header ] · [ action row ] · [ divider ]
   // which brings a 15-attached-slot card back under Slack's 50-block
   // hard cap (section+actions+divider per slot = 3). Users click the
-  // inactive slot's action row to inspect its usage details — follow-up
-  // M2 will turn this into an inline "expand" affordance per #641 §3.1.2.
+  // inactive slot's action row to inspect its usage details.
+  //
+  // #641 §3.1.2 info-density defer (#644 review 4146267530 Finding #4 /
+  // tracked in follow-up issue):
+  //   The spec calls for inactive-slot rows to surface a one-line usage
+  //   summary (5h util %, subscription tier, inline Activate) without
+  //   expanding the full 3-line usage panel. Implementing that while
+  //   staying under Slack's 50-block hard cap at N≥16 attached slots
+  //   requires the inline "expand" affordance plus either a Block Kit
+  //   accessory-overflow per row or a collapsible container block. Both
+  //   are M2 scope — see the follow-up issue referenced in PR #644 and
+  //   the reviewer-Linus 50-block overflow note. M1 keeps the collapsed
+  //   header + actions + divider shape so the card stays legal at 15
+  //   attached slots (1 + 3*15 + 2 = 48 < 50).
   if (isActive) {
     // Context line — only when we have something meaningful.
     const segments: string[] = [];
@@ -347,6 +359,29 @@ export function buildSlotRow(
   });
 
   return blocks;
+}
+
+/**
+ * #644 review 4146267530 Finding #6 — shared store-read failure banner.
+ * Push a single `:warning:` context block onto the given card so the
+ * operator distinguishes a failed `getSnapshot()` fallback from a card
+ * with zero slots. Both entry points (`actions.ts buildCardFromManager`
+ * catch path + `cct-topic.ts loadSnapshotOrEmpty` banner) call this
+ * helper so the wording is guaranteed identical across surfaces.
+ *
+ * Pure mutation on the passed `blocks` array — returns `void` so it
+ * slots into the existing `blocks.push(...)` idiom without a rebind.
+ */
+export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: ':warning: *Store read failed* — card rendered empty as a fallback. Check the CctTopic logs for `loadSnapshotOrEmpty: getSnapshot failed` or `buildCardFromManager: getSnapshot failed`.',
+      },
+    ],
+  });
 }
 
 /**

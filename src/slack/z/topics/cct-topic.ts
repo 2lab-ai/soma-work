@@ -17,7 +17,7 @@ import { config } from '../../../config';
 import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { buildCctCardBlocks } from '../../cct/builder';
+import { appendStoreReadFailureBanner, buildCctCardBlocks } from '../../cct/builder';
 
 const logger = new Logger('CctTopic');
 
@@ -117,17 +117,11 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
   // #644 review P3 — surface store-read failures as a visible warning
   // banner instead of an indistinguishable-from-empty card. Operators
   // relying on the card to see slot health should notice a store outage
-  // immediately; logs alone are not enough.
+  // immediately; logs alone are not enough. Shared wording with the
+  // `buildCardFromManager` fallback path via `appendStoreReadFailureBanner`
+  // (see #644 review 4146267530 Finding #6).
   if (loadFailed) {
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: ':warning: *Store read failed* — card rendered empty as a fallback. Check the CctTopic logs for `loadSnapshotOrEmpty: getSnapshot failed`.',
-        },
-      ],
-    });
+    appendStoreReadFailureBanner(blocks);
   }
 
   if (hiddenApiKeyCount > 0) {

@@ -787,13 +787,20 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     return { app, actionHandlers };
   }
 
-  it('refresh_usage_all → tm.fetchUsageForAllAttached({ force: true, timeoutMs }) called once; ack runs BEFORE TM (3s budget)', async () => {
+  it('refresh_usage_all → tm.fetchUsageForAllAttached({ timeoutMs }) called once WITHOUT force; ack runs BEFORE TM (3s budget)', async () => {
     // Ordering contract mirrors T8f on view_submission: ack MUST land before
     // the TM call starts, not merely before it settles. Regressing to
     // `const p = tm.fetch(...); await ack(); await p;` would still satisfy
     // "ack called" but blow Slack's 3s action-ack budget whenever the
     // Anthropic fan-out stalls. The inner `expect` inside the ack mock fires
     // at the exact crossing.
+    //
+    // Force contract (#644 review 4146267530 Finding #2 + autonomous fix):
+    // `fetchUsageForAllAttached` does NOT forward `force` to per-slot calls
+    // (see `token-manager.ts:1359-1369` and `token-manager.test.ts:1667`).
+    // Passing `{ force: true }` here was dead weight — the call-site now
+    // omits `force` entirely and this test locks the omission so a future
+    // plumbing refactor can't silently reintroduce force for the fan-out.
     const { app, actionHandlers } = makeApp();
     const callOrder: string[] = [];
     const fetchUsageForAllAttached = vi.fn(async (_opts?: { force?: boolean; timeoutMs?: number }) => {
@@ -834,10 +841,104 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(ack).toHaveBeenCalled();
       expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
       const args = fetchUsageForAllAttached.mock.calls[0][0];
-      expect(args).toEqual(expect.objectContaining({ force: true }));
+      // `force` must NOT be passed at all — stricter than `force !== true`
+      // so a regression adding `{ force: false }` also fires.
+      expect(args).not.toHaveProperty('force');
       expect(typeof args?.timeoutMs).toBe('number');
       // Strict ordering — ack first, TM second.
       expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchUsageForAllAttached']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refresh_usage_all → when every attached slot returns null, post ephemeral failure banner instead of re-posting the card', async () => {
+    // #644 review 4146267530 Finding #2 Option A — all-null result map
+    // means the fan-out attempted but every slot failed. Silently
+    // re-posting the same stale card would look like "button does
+    // nothing" to the admin. Post an ephemeral failure banner instead.
+    // An EMPTY result map (no attached slots at all) is NOT "all failed"
+    // and falls through to the normal card-repost path.
+    const { app, actionHandlers } = makeApp();
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null, 'slot-B': null }));
+    const tm = {
+      fetchUsageForAllAttached,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-A', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'all' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      // Failure banner MUST carry a top-level `text` — no `blocks` array
+      // (that's the card repost path). This locks the branch.
+      expect(call.channel).toBe('C1');
+      expect(call.user).toBe('admin');
+      expect(typeof call.text).toBe('string');
+      expect(call.text).toMatch(/Refresh all failed/i);
+      expect(call.blocks).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refresh_usage_all → when zero slots are attached, re-post the card normally (empty map is not "all failed")', async () => {
+    // Empty input map is NOT "all failed" — it just means no attached
+    // slots exist to fetch. The handler should re-post the normal card
+    // (which renders the "No CCT slots configured" section).
+    const { app, actionHandlers } = makeApp();
+    const fetchUsageForAllAttached = vi.fn(async () => ({}) as Record<string, null>);
+    const tm = {
+      fetchUsageForAllAttached,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: undefined, slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'all' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      // Card repost path carries a `blocks` array (Block Kit).
+      expect(Array.isArray(call.blocks)).toBe(true);
     } finally {
       spy.mockRestore();
     }

@@ -28,6 +28,7 @@ import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
 import {
   type AddSlotFormKind,
+  appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
   buildCctCardBlocks,
@@ -239,22 +240,45 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // #641 M1-S4 — card-level "Refresh all" button. Admin-only fan-out that
-  // forwards `{ force: true }` so the per-slot `nextUsageFetchAllowedAt`
-  // local throttle is bypassed. Server-side 429 still advances that gate
-  // via `applyUsageFailureBackoff`.
+  // #641 M1-S4 — card-level "Refresh all" button. Admin-only fan-out.
+  //
+  // Per-slot force contract: `fetchUsageForAllAttached` DOES NOT forward
+  // the `force` option to its per-slot `fetchAndStoreUsage` calls — see
+  // `token-manager.ts:1359-1369` and the test contract at
+  // `token-manager.test.ts:1667`. The fan-out relies on the per-keyId
+  // in-flight dedupe (`usageFetchInFlight`) so an admin-triggered refresh
+  // that overlaps a scheduler tick shares the in-flight Promise. Bypassing
+  // every slot's `nextUsageFetchAllowedAt` gate here would defeat the same
+  // local throttle that protects Anthropic from refresh storms. The
+  // per-slot Refresh button below still force-bypasses locally when a
+  // human explicitly asks for ONE slot to refresh NOW.
   //
   // Ordering: ack FIRST (Slack 3s contract), then admin gate, then the
   // fetch. Non-admin short-circuits after ack so the button appears
   // responsive but doesn't touch the TM.
+  //
+  // #644 review 4146267530 Finding #2 Option A — when every attached slot
+  // returns `null` (all fetches failed — usually a store/network outage),
+  // post an ephemeral failure banner to the invoking admin instead of
+  // silently re-posting the same stale card. Empty input map (no attached
+  // slots at all) is NOT "all failed" and still re-posts the card normally.
   app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      await tokenManager.fetchUsageForAllAttached({
-        force: true,
+      const results = await tokenManager.fetchUsageForAllAttached({
         timeoutMs: config.usage.fetchTimeoutMs,
       });
+      const entries = Object.values(results);
+      const allFailed = entries.length > 0 && entries.every((r) => r === null);
+      if (allFailed) {
+        await postEphemeralFailure(
+          client,
+          body,
+          ':warning: *Refresh all failed* — every attached slot returned no usage data. Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+        );
+        return;
+      }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
@@ -618,6 +642,27 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
   }
 }
 
+/**
+ * #644 review 4146267530 Finding #2 — ephemeral failure banner. Used by
+ * the Refresh-all handler when every attached slot returned `null` so the
+ * admin sees an actionable error instead of an identical-looking re-render
+ * of the previous card.
+ */
+async function postEphemeralFailure(client: WebClient, body: unknown, message: string): Promise<void> {
+  const userId = (body as any)?.user?.id as string | undefined;
+  const channel = (body as any)?.container?.channel_id ?? (body as any)?.channel?.id;
+  if (!userId || !channel) return;
+  try {
+    await client.chat.postEphemeral({
+      channel,
+      user: userId,
+      text: message,
+    });
+  } catch (err) {
+    logger.debug('postEphemeralFailure failed', { err });
+  }
+}
+
 export async function buildCardFromManager(tokenManager: TokenManager): Promise<Record<string, unknown>[]> {
   // Always load the authoritative snapshot so post-action ephemeral cards
   // reflect current per-slot state (rate-limit timestamps, usage, cooldown)
@@ -669,6 +714,9 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
       states: {},
       activeKeyId: active?.keyId,
     });
+    // #644 review 4146267530 Finding #6 — surface the store-read failure
+    // with the same wording the Z-topic uses so operators can't miss it.
+    appendStoreReadFailureBanner(blocks);
     if (hiddenApiKeyCount > 0) {
       blocks.push({
         type: 'context',
