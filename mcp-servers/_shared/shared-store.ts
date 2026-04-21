@@ -19,6 +19,16 @@ export interface PendingApproval {
   user?: string;
   created_at: number;
   expires_at: number;
+  /**
+   * Overridable dangerous-rule ids matched by this approval request.
+   * Populated when the approval originated from a bypass-mode Bash escalation
+   * (permission-mcp-server re-runs `overridableMatchedRuleIds()` on entry).
+   *
+   * Consumed by the Slack action handler to know which rule(s) to silence
+   * for the session when the user clicks "Approve & disable rule for this
+   * session". Absent for non-Bash tools and non-dangerous commands.
+   */
+  rule_ids?: string[];
 }
 
 /**

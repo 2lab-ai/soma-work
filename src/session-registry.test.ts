@@ -539,3 +539,90 @@ describe('SessionRegistry persistence', () => {
     expect(recovered[0].sessionKey).toBe('C391-171.391d');
   });
 });
+
+describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('records a single disabled rule per session', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C1', '171.100');
+    const key = reg.getSessionKey('C1', '171.100');
+
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(false);
+    reg.disableDangerousRule(key, 'kill');
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
+    expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
+  });
+
+  it('batch-disables multiple rules atomically', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C2', '171.101');
+    const key = reg.getSessionKey('C2', '171.101');
+
+    reg.disableDangerousRules(key, ['kill', 'rm-recursive', 'rm-force']);
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'rm-recursive')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'rm-force')).toBe(true);
+    expect(reg.listDisabledDangerousRules(key).sort()).toEqual(['kill', 'rm-force', 'rm-recursive']);
+  });
+
+  it('disable is idempotent (same rule twice = one entry)', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C3', '171.102');
+    const key = reg.getSessionKey('C3', '171.102');
+
+    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRule(key, 'kill');
+    expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
+  });
+
+  it('disables are isolated between sessions', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C4', '171.103');
+    reg.createSession('U1', 'Tester', 'C4', '171.104');
+    const keyA = reg.getSessionKey('C4', '171.103');
+    const keyB = reg.getSessionKey('C4', '171.104');
+
+    reg.disableDangerousRule(keyA, 'kill');
+    expect(reg.isDangerousRuleDisabled(keyA, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(keyB, 'kill')).toBe(false);
+  });
+
+  it('no-op on unknown session key (safe side — still returns false)', () => {
+    const reg = new SessionRegistry();
+    reg.disableDangerousRule('C-unknown-171.999', 'kill');
+    expect(reg.isDangerousRuleDisabled('C-unknown-171.999', 'kill')).toBe(false);
+    expect(reg.listDisabledDangerousRules('C-unknown-171.999')).toEqual([]);
+  });
+
+  it('disabledDangerousRules is NOT persisted across save/load (in-memory only)', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C5', '171.105');
+    // saveSessions() only serialises sessions with a sessionId — set one so the
+    // persistence path actually runs (otherwise we'd be testing nothing).
+    session.sessionId = 'session-rule-disable-roundtrip';
+    const key = writer.getSessionKey('C5', '171.105');
+    writer.disableDangerousRule(key, 'kill');
+    writer.disableDangerousRule(key, 'reboot');
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.isDangerousRuleDisabled(key, 'kill')).toBe(false);
+    expect(reader.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
+    expect(reader.listDisabledDangerousRules(key)).toEqual([]);
+  });
+});
