@@ -256,3 +256,236 @@ describe('Token Usage Aggregation', () => {
     expect(report.byUser['U001']).toBeDefined();
   });
 });
+
+// Trace: docs/usage-rolling-24h — Scenario: /usage rolling 24h window
+// Issue: https://github.com/2lab-ai/soma-work/issues/650
+describe('aggregateTokenUsageMs — rolling 24h window', () => {
+  /**
+   * Build a store stub keyed by KST day-file. `readRange(startKey, endKey)`
+   * returns the union of events for the requested KST calendar dates.
+   * Mirrors the real JSONL day-file rotation in MetricsEventStore.
+   */
+  function mockStoreByDay(eventsByDay: Record<string, MetricsEvent[]>) {
+    const readRange = vi.fn(async (startKey: string, endKey: string) => {
+      // Generate inclusive day-key range in UTC (same algorithm as generateDateRange)
+      const out: MetricsEvent[] = [];
+      const start = new Date(`${startKey}T00:00:00Z`);
+      const end = new Date(`${endKey}T00:00:00Z`);
+      for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        const key = d.toISOString().slice(0, 10);
+        if (eventsByDay[key]) out.push(...eventsByDay[key]);
+      }
+      out.sort((a, b) => a.timestamp - b.timestamp);
+      return out;
+    });
+    return { readRange, append: vi.fn() } as any;
+  }
+
+  /** Return KST day-key (YYYY-MM-DD) for a given ms timestamp. */
+  function kstDayKey(ms: number): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(ms));
+  }
+
+  it('includes event at now - 23h', async () => {
+    // Anchor: 2026-04-20 12:00:00 KST = 2026-04-20 03:00:00 UTC
+    const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
+    const event = makeTokenUsageEvent({
+      timestamp: nowMs - 23 * 60 * 60 * 1000, // now - 23h = 13:00 KST (2026-04-19)
+      inputTokens: 1000,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0.05,
+    });
+    const store = mockStoreByDay({
+      [kstDayKey(event.timestamp)]: [event],
+      [kstDayKey(nowMs)]: [],
+    });
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+    );
+
+    expect(report.totals.totalInputTokens).toBe(1000);
+    expect(report.totals.totalCostUsd).toBeCloseTo(0.05);
+  });
+
+  it('excludes event at now - 24h - 1min', async () => {
+    const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
+    const oldTs = nowMs - 24 * 60 * 60 * 1000 - 60_000; // just outside window
+    const insideTs = nowMs - 60_000; // 1 min ago, clearly inside
+    const store = mockStoreByDay({
+      [kstDayKey(oldTs)]: [
+        makeTokenUsageEvent({
+          timestamp: oldTs,
+          inputTokens: 9999,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 1.0,
+        }),
+      ],
+      [kstDayKey(insideTs)]: [
+        makeTokenUsageEvent({
+          timestamp: insideTs,
+          inputTokens: 100,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.01,
+        }),
+      ],
+    });
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+    );
+
+    // Only the inside event survives the ms-level filter
+    expect(report.totals.totalInputTokens).toBe(100);
+    expect(report.totals.totalCostUsd).toBeCloseTo(0.01);
+  });
+
+  it('window crossing KST midnight: yesterday day-file events are included', async () => {
+    // Call at KST 02:00 — window spans [2026-04-19 02:00 KST, 2026-04-20 02:00 KST]
+    const nowMs = new Date('2026-04-20T02:00:00+09:00').getTime();
+    const yesterdayEveningTs = new Date('2026-04-19T15:00:00+09:00').getTime();
+    const todayEarlyTs = new Date('2026-04-20T01:30:00+09:00').getTime();
+    const store = mockStoreByDay({
+      '2026-04-19': [
+        makeTokenUsageEvent({
+          timestamp: yesterdayEveningTs,
+          inputTokens: 500,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.02,
+        }),
+      ],
+      '2026-04-20': [
+        makeTokenUsageEvent({
+          timestamp: todayEarlyTs,
+          inputTokens: 300,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 0.01,
+        }),
+      ],
+    });
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+    );
+
+    expect(report.totals.totalInputTokens).toBe(800); // both included
+    expect(report.startDate).toBe('2026-04-19');
+    expect(report.endDate).toBe('2026-04-20');
+  });
+
+  it('userId filter: only target user events counted', async () => {
+    const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
+    const ts = nowMs - 60_000;
+    const store = mockStoreByDay({
+      [kstDayKey(nowMs)]: [
+        makeTokenUsageEvent({
+          userId: 'U001',
+          userName: 'Alice',
+          timestamp: ts,
+          inputTokens: 100,
+        }),
+        makeTokenUsageEvent({
+          userId: 'U002',
+          userName: 'Bob',
+          timestamp: ts,
+          inputTokens: 9999,
+        }),
+      ],
+    });
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+      'U001',
+    );
+
+    expect(report.totals.totalInputTokens).toBe(100);
+    // Rankings suppressed when userId filter applied
+    expect(report.tokenRankings).toEqual([]);
+    expect(report.costRankings).toEqual([]);
+  });
+
+  it('rankings: populated + 24h-scoped when no userId filter', async () => {
+    const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
+    const insideTs = nowMs - 60 * 60 * 1000; // 1h ago — inside
+    const outsideTs = nowMs - 25 * 60 * 60 * 1000; // 25h ago — outside
+    const store = mockStoreByDay({
+      [kstDayKey(outsideTs)]: [
+        // Outside window — must not affect rankings
+        makeTokenUsageEvent({
+          userId: 'U002',
+          userName: 'Bob',
+          timestamp: outsideTs,
+          inputTokens: 9999,
+          costUsd: 1.0,
+        }),
+      ],
+      [kstDayKey(insideTs)]: [
+        makeTokenUsageEvent({
+          userId: 'U001',
+          userName: 'Alice',
+          timestamp: insideTs,
+          inputTokens: 100,
+          costUsd: 0.01,
+        }),
+        makeTokenUsageEvent({
+          userId: 'U002',
+          userName: 'Bob',
+          timestamp: insideTs,
+          inputTokens: 200,
+          costUsd: 0.02,
+        }),
+      ],
+    });
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+    );
+
+    // Rankings reflect only the 24h window — Bob's 9999-token event at now-25h is excluded.
+    // makeTokenUsageEvent defaults output=500, cacheRead=200, cacheCreate=100 unless overridden,
+    // so Bob inside total = 200+500+200+100 = 1000, Alice = 100+500+200+100 = 900.
+    expect(report.tokenRankings).toHaveLength(2);
+    expect(report.tokenRankings[0].userName).toBe('Bob');
+    expect(report.tokenRankings[0].totalTokens).toBe(1000);
+    expect(report.tokenRankings[0].rank).toBe(1);
+    expect(report.tokenRankings[1].userName).toBe('Alice');
+    expect(report.tokenRankings[1].totalTokens).toBe(900);
+    expect(report.tokenRankings[1].rank).toBe(2);
+    // Cost rankings: Bob (0.02) > Alice (0.01)
+    expect(report.costRankings[0].userName).toBe('Bob');
+  });
+
+  it('period field is "day" and date strings are KST day-keys', async () => {
+    const nowMs = new Date('2026-04-20T12:00:00+09:00').getTime();
+    const store = mockStoreByDay({});
+    const aggregator = new ReportAggregator(store);
+    const report = await aggregator.aggregateTokenUsageMs(
+      nowMs - 24 * 60 * 60 * 1000,
+      nowMs,
+    );
+
+    expect(report.period).toBe('day');
+    expect(report.startDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(report.endDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});

@@ -60,8 +60,11 @@ export function __setSleepImplForTests(fn: ((ms: number) => Promise<void>) | nul
  * Subcommand `/usage card` renders a personal PNG card (last 30d). Privacy gate
  * applies equally — only the caller's own userId is ever used.
  *
- * Timezone: all date ranges are computed in Asia/Seoul to match
- * ReportAggregator's REPORT_TIMEZONE partitioning.
+ * Timezone: `week` and `month` date ranges are computed in Asia/Seoul to match
+ * ReportAggregator's REPORT_TIMEZONE partitioning. The default path
+ * (`period === 'today'`) is a rolling 24h window `[now - 24h, now]` in
+ * absolute ms — the KST day-files are still the read unit, but the filter
+ * is timestamp-based. See issue #650.
  */
 export class UsageHandler implements CommandHandler {
   private logger = new Logger('UsageHandler');
@@ -99,11 +102,22 @@ export class UsageHandler implements CommandHandler {
     }
 
     const now = new Date();
-    const { startDate, endDate } = this.getDateRange(now, parsed.period);
-
     const store = new MetricsEventStore();
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsage(startDate, endDate, parsed.userId || undefined);
+
+    // `/usage` (period === 'today') now shows a rolling 24h window
+    // [now - 24h, now] instead of the KST calendar day. `/usage week` and
+    // `/usage month` keep their calendar-range semantics.
+    // Issue: https://github.com/2lab-ai/soma-work/issues/650
+    let report: UsageReport;
+    if (parsed.period === 'today') {
+      const nowMs = now.getTime();
+      const startMs = nowMs - 24 * 60 * 60 * 1000;
+      report = await aggregator.aggregateTokenUsageMs(startMs, nowMs, parsed.userId || undefined);
+    } else {
+      const { startDate, endDate } = this.getDateRange(now, parsed.period);
+      report = await aggregator.aggregateTokenUsage(startDate, endDate, parsed.userId || undefined);
+    }
 
     const message = this.formatReport(report, parsed.period, parsed.userId);
     await this.deps.slackApi.postSystemMessage(channel, message, { threadTs });
@@ -320,7 +334,7 @@ export class UsageHandler implements CommandHandler {
   }
 
   private formatReport(report: UsageReport, period: string, userId?: string): string {
-    const periodLabel = period === 'today' ? '오늘' : period === 'week' ? '최근 7일' : '최근 30일';
+    const periodLabel = period === 'today' ? '최근 24시간' : period === 'week' ? '최근 7일' : '최근 30일';
     const lines: string[] = [`📊 *토큰 사용량* — ${periodLabel}`, ''];
 
     const t = report.totals;

@@ -117,4 +117,30 @@ describe('UsageHandler — Asia/Seoul date range', () => {
     const after = new Date('2026-04-15T15:00:00Z');
     expect(getRange(handler, after, 'today').endDate).toBe('2026-04-16');
   });
+
+  // NOTE: `getDateRange('today')` remains correct as a helper, but `execute()`
+  // no longer calls it for the `today` path — it computes a rolling 24h ms
+  // window instead. See issue #650. The `today` cases above still test that
+  // the helper itself stays correct for any future caller.
+});
+
+describe('UsageHandler.execute — rolling 24h window for /usage', () => {
+  // Issue: https://github.com/2lab-ai/soma-work/issues/650
+  it('formats default /usage output with `최근 24시간` label', async () => {
+    const { deps, postSystemMessage } = makeDeps();
+    const handler = new UsageHandler(deps);
+    // `execute()` constructs its own MetricsEventStore; with no JSONL files
+    // on disk `readRange` returns [] gracefully (ENOENT handled). That is
+    // sufficient to drive `formatReport` and inspect the label.
+    await handler.execute(makeCtx({ user: 'U_ALICE', text: 'usage' }));
+
+    // First call is the report (privacy gate would short-circuit earlier).
+    const calls = postSystemMessage.mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const [, message] = calls[0];
+    // Label proves the 'today' branch now uses the rolling 24h path.
+    expect(message).toMatch(/📊 \*토큰 사용량\* — 최근 24시간/);
+    // Must NOT contain the legacy '— 오늘' label.
+    expect(message).not.toMatch(/— 오늘/);
+  });
 });

@@ -326,6 +326,76 @@ export class ReportAggregator {
   }
 
   /**
+   * Aggregate token usage over a rolling millisecond window
+   * `[startMs, endMs]`, optionally filtered by `userId`.
+   *
+   * Unlike `aggregateTokenUsage`, which filters by KST calendar-date strings,
+   * this method reads the minimum set of KST day-files that overlap the window
+   * (typically 2 — today + yesterday when the window crosses KST midnight)
+   * and then post-filters by `event.timestamp` for exact ms-level bounds.
+   *
+   * Used by `/usage` (default path) to show the last 24h of usage regardless
+   * of when the command is invoked — e.g. calling `/usage` at KST 02:00
+   * includes yesterday afternoon's events in the window.
+   *
+   * Trace: issue #650.
+   */
+  async aggregateTokenUsageMs(startMs: number, endMs: number, userId?: string): Promise<UsageReport> {
+    const startKey = timestampToDateInTz(startMs);
+    const endKey = timestampToDateInTz(endMs);
+    const events = await this.store.readRange(startKey, endKey);
+    const tokenEvents = events.filter(
+      (e) =>
+        e.eventType === 'token_usage' &&
+        e.timestamp >= startMs &&
+        e.timestamp <= endMs &&
+        (!userId || e.userId === userId),
+    );
+
+    const totals = aggregateTokenEvents(tokenEvents);
+    const byUser = aggregateTokenEventsByUser(tokenEvents);
+    const byDay = aggregateTokenEventsByDay(tokenEvents, startKey, endKey);
+
+    let tokenRankings: TokenUsageRanking[] = [];
+    let costRankings: TokenUsageRanking[] = [];
+    if (!userId) {
+      const rankingEntries = Object.entries(byUser).map(([uid, agg]) => ({
+        userId: uid,
+        userName: agg.userName,
+        totalTokens:
+          agg.totalInputTokens + agg.totalOutputTokens + agg.totalCacheReadTokens + agg.totalCacheCreateTokens,
+        totalCostUsd: agg.totalCostUsd,
+        rank: 0,
+      }));
+
+      tokenRankings = [...rankingEntries]
+        .sort((a, b) => b.totalTokens - a.totalTokens || a.userName.localeCompare(b.userName))
+        .map((e, i) => ({ ...e, rank: i + 1 }));
+
+      costRankings = [...rankingEntries]
+        .sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.userName.localeCompare(b.userName))
+        .map((e, i) => ({ ...e, rank: i + 1 }));
+    }
+
+    const hasLegacyData = tokenEvents.some((e) => {
+      const m = e.metadata as unknown as TokenUsageMetadata | undefined;
+      return !m?.pricingVersion;
+    });
+
+    return {
+      period: 'day',
+      startDate: startKey,
+      endDate: endKey,
+      totals,
+      byUser,
+      byDay,
+      tokenRankings,
+      costRankings,
+      hasLegacyData,
+    };
+  }
+
+  /**
    * Aggregate carousel stats for a single target user across 4 windows in a
    * single scan over events.
    *
