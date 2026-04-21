@@ -81,9 +81,7 @@ describe('buildCompactStartingMessage — live "Compaction starting" indicator',
   });
 
   it('unknown trigger + elapsed → elapsed still appended', () => {
-    expect(buildCompactStartingMessage({ trigger: null, elapsedMs: 7_000 })).toBe(
-      '⏳ 🗜️ Compaction starting — 7s',
-    );
+    expect(buildCompactStartingMessage({ trigger: null, elapsedMs: 7_000 })).toBe('⏳ 🗜️ Compaction starting — 7s');
   });
 });
 
@@ -143,9 +141,7 @@ describe('buildCompactCompleteMessage — SDK-authoritative 2-line complete mess
 
   it('completely absent data → `?` fallback on both sides', () => {
     const session = baseSession();
-    expect(buildCompactCompleteMessage(session)).toBe(
-      '🟢 🗜️ Compaction completed\n' + 'Context: now ~?% ← was ~?%',
-    );
+    expect(buildCompactCompleteMessage(session)).toBe('🟢 🗜️ Compaction completed\n' + 'Context: now ~?% ← was ~?%');
   });
 
   it('only post_tokens present → post side shows compact tokens, pre side falls back', () => {
