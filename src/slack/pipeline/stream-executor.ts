@@ -870,15 +870,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // target here (not the EventRouter itself).
           void (async () => {
             try {
-              await postCompactCompleteIfNeeded({
-                session,
-                channel,
-                threadTs,
-                slackApi: this.deps.slackApi,
-                eventRouter: this.deps.dispatchPendingUserMessage
-                  ? ({ dispatchPendingUserMessage: this.deps.dispatchPendingUserMessage } as any)
-                  : undefined,
-              });
+              await postCompactCompleteIfNeeded(
+                {
+                  session,
+                  channel,
+                  threadTs,
+                  slackApi: this.deps.slackApi,
+                  eventRouter: this.deps.dispatchPendingUserMessage
+                    ? ({ dispatchPendingUserMessage: this.deps.dispatchPendingUserMessage } as any)
+                    : undefined,
+                },
+                // `onCompactBoundary` is the authoritative metadata source —
+                // post immediately; no grace window needed (trace.md Fix 2).
+                { source: 'on-compact-boundary' },
+              );
             } catch (err) {
               this.logger.warn('onCompactBoundary: post-compact path failed', {
                 sessionKey,

@@ -9,6 +9,7 @@ import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
+import { CompactActionHandler } from './compact-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
@@ -35,6 +36,7 @@ export class ActionHandlers {
   private formStore: PendingFormStore;
   private permissionHandler: PermissionActionHandler;
   private sessionHandler: SessionActionHandler;
+  private compactHandler: CompactActionHandler;
   private choiceHandler: ChoiceActionHandler;
   private formHandler: FormActionHandler;
   private jiraHandler: JiraActionHandler;
@@ -60,6 +62,12 @@ export class ActionHandlers {
       reactionManager: ctx.reactionManager,
       requestCoordinator: ctx.requestCoordinator,
       threadPanel: ctx.threadPanel,
+    });
+
+    this.compactHandler = new CompactActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
     });
 
     this.choiceHandler = new ChoiceActionHandler(
@@ -180,6 +188,17 @@ export class ActionHandlers {
     app.action('close_session_cancel', async ({ ack, body, respond }) => {
       await ack();
       await this.sessionHandler.handleCloseCancel(body, respond);
+    });
+
+    // Compact confirm/cancel (from /compact command) — #617 followup v2
+    app.action('compact_confirm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.compactHandler.handleConfirm(body, respond);
+    });
+
+    app.action('compact_cancel', async ({ ack, body, respond }) => {
+      await ack();
+      await this.compactHandler.handleCancel(body, respond);
     });
 
     // Idle session close/keep (from 12h idle check)
