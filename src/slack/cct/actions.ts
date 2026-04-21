@@ -21,6 +21,7 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
+import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
@@ -250,7 +251,10 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      await tokenManager.fetchUsageForAllAttached({ force: true, timeoutMs: 2_000 });
+      await tokenManager.fetchUsageForAllAttached({
+        force: true,
+        timeoutMs: config.usage.fetchTimeoutMs,
+      });
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);

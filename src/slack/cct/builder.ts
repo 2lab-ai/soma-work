@@ -58,13 +58,6 @@ function tosBadge(slot: AuthKey): string {
   return slot.oauthAttachment ? ' :warning: ToS-risk' : '';
 }
 
-/** Utility: format 0..1 or 0..100 utilization as a percent integer string. */
-function toPct(utilization: number | undefined): string {
-  if (utilization === undefined || !Number.isFinite(utilization)) return '0%';
-  const scaled = utilization <= 1 ? utilization * 100 : utilization;
-  return `${Math.round(scaled)}%`;
-}
-
 /**
  * Width of the Unicode progress bar used by `formatUsageBar`. Ten cells
  * gives 10-pp resolution, fits well within Slack mrkdwn width, and avoids
@@ -73,7 +66,7 @@ function toPct(utilization: number | undefined): string {
 const PROGRESS_BAR_CELLS = 10;
 
 /**
- * Label column width — left-padded so three stacked rows (`5h`, `7d`,
+ * Label column width — right-padded so three stacked rows (`5h`, `7d`,
  * `7d-sonnet`) line up under one another. Matches the longest supported
  * label (`7d-sonnet` = 9 chars).
  */
