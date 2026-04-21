@@ -222,13 +222,18 @@ describe('CctHandler — Wave 5', () => {
       say: say.fn,
     });
     expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
-    // Defensive: whatever the handler passes, the 2nd arg must NOT carry
-    // `force: true`. A single-arg call is the production shape; this
-    // matcher also tolerates future passes that thread timeouts etc., as
-    // long as `force: true` is never among them.
+    // #644 review #6 — tighten to match the scheduler test's stricter
+    // contract (`expect(args).not.toHaveProperty('force')`). The previous
+    // matcher (`not.objectContaining({ force: true })`) would have quietly
+    // accepted a regression that explicitly passed `{ force: false }`, which
+    // signals to a future reader that `force` is a knob on this surface —
+    // exactly the anti-pattern we are guarding against. The contract is
+    // simpler and stronger: `force` must never appear at all, for any value.
+    // Single-arg calls (the production shape) are also tolerated by this
+    // guard because `secondArg === undefined` skips the check.
     const secondArg = (fetchAndStoreUsage.mock.calls[0] as unknown as unknown[])[1];
     if (secondArg !== undefined) {
-      expect(secondArg).not.toEqual(expect.objectContaining({ force: true }));
+      expect(secondArg).not.toHaveProperty('force');
     }
   });
 
