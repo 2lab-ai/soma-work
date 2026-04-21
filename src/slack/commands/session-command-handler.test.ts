@@ -4,15 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../user-settings-store', () => ({
   DEFAULT_SHOW_THINKING: false,
   DEFAULT_THINKING_ENABLED: false,
-  MODEL_ALIASES: { opus: 'claude-opus-4-1-20250805', sonnet: 'claude-sonnet-4-20250514' },
+  MODEL_ALIASES: { opus: 'claude-opus-4-7', 'opus[1m]': 'claude-opus-4-7[1m]' },
   userSettingsStore: {
-    getUserDefaultModel: vi.fn().mockReturnValue('claude-sonnet-4-20250514'),
-    getModelDisplayName: vi.fn().mockReturnValue('Sonnet 4'),
+    getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-4-7'),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserDefaultEffort: vi.fn().mockReturnValue('high'),
     getUserDefaultLogVerbosity: vi.fn().mockReturnValue('detail'),
     getUserThinkingEnabled: vi.fn().mockReturnValue(false),
     getUserShowThinking: vi.fn().mockReturnValue(false),
-    resolveModelInput: vi.fn((v: string) => (v === 'opus' ? 'claude-opus-4-1-20250805' : null)),
+    resolveModelInput: vi.fn((v: string) => (v === 'opus' ? 'claude-opus-4-7' : null)),
     resolveVerbosityInput: vi.fn((v: string) => (['minimal', 'compact', 'detail', 'verbose'].includes(v) ? v : null)),
   },
 }));
@@ -37,7 +37,7 @@ describe('SessionCommandHandler', () => {
   let session: Record<string, unknown>;
 
   beforeEach(() => {
-    session = { model: 'claude-sonnet-4-20250514', logVerbosity: 0b1111 };
+    session = { model: 'claude-opus-4-7', logVerbosity: 0b1111 };
     mockDeps = {
       claudeHandler: {
         getSession: vi.fn().mockReturnValue(session),
