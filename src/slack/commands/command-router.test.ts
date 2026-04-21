@@ -180,7 +180,6 @@ describe('CommandRouter — bare [cmd] [args] routing (restored #530)', () => {
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
   });
-
 });
 
 /**
