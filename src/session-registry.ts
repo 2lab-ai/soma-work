@@ -350,6 +350,8 @@ export class SessionRegistry {
       compactPostTokens: null,
       compactTrigger: null,
       compactDurationMs: null,
+      compactStartingMessageTs: null,
+      compactStartedAtMs: null,
       autoCompactPending: false,
       pendingUserText: null,
       pendingEventContext: null,
@@ -1030,6 +1032,14 @@ export class SessionRegistry {
         clearTimeout(session.pendingRetryTimer);
         session.pendingRetryTimer = undefined;
       }
+      // #617 followup v2: cancel any orphan compact-starting ticker — safe
+      // hygiene even though the ticker has its own 10-min safety ceiling.
+      if (session.compactTickInterval) {
+        clearInterval(session.compactTickInterval);
+        session.compactTickInterval = undefined;
+      }
+      session.compactStartingMessageTs = null;
+      session.compactStartedAtMs = null;
       // Persist to disk so restart doesn't resurrect stale state (Issue #214)
       this.saveSessions();
     }
@@ -1094,6 +1104,14 @@ export class SessionRegistry {
       clearTimeout(session.pendingRetryTimer);
       session.pendingRetryTimer = undefined;
     }
+    // #617 followup v2: cancel any orphan compact-starting ticker so /new
+    // /renew doesn't leak an interval into the fresh logical session.
+    if (session.compactTickInterval) {
+      clearInterval(session.compactTickInterval);
+      session.compactTickInterval = undefined;
+    }
+    session.compactStartingMessageTs = null;
+    session.compactStartedAtMs = null;
 
     // Dashboard v2.1 — /new (and /renew) starts a fresh logical session.
     // Orphan-sweep any open leg into the accumulator, then reset the
