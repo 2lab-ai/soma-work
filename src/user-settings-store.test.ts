@@ -297,7 +297,7 @@ describe('resolveModelInput (#648)', () => {
   });
 });
 
-describe('getModelDisplayName (#648)', () => {
+describe('getModelDisplayName', () => {
   const store = makeStore();
 
   it('renders bare + [1m] pairs with "(1M)" suffix on the latter', () => {
@@ -305,13 +305,6 @@ describe('getModelDisplayName (#648)', () => {
     expect(store.getModelDisplayName('claude-opus-4-7[1m]')).toBe('Opus 4.7 (1M)');
     expect(store.getModelDisplayName('claude-opus-4-6')).toBe('Opus 4.6');
     expect(store.getModelDisplayName('claude-opus-4-6[1m]')).toBe('Opus 4.6 (1M)');
-  });
-
-  it('falls back gracefully for unknown [1m] string (strip + recurse + append)', () => {
-    // Transient state between pre-deploy persistence and post-deploy coerce:
-    // an unknown bare model with a [1m] suffix should still render reasonably.
-    // We can't hit this without bypassing the type system, so use an `as any`.
-    expect(store.getModelDisplayName('claude-opus-4-7[1m]' as never)).toBe('Opus 4.7 (1M)');
   });
 });
 

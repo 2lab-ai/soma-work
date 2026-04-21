@@ -1,4 +1,5 @@
 import { getStatusEmoji } from '../link-metadata-fetcher';
+import { hasOneMSuffix, stripOneMSuffix } from '../metrics/model-registry';
 import type {
   ConversationSession,
   SessionLink,
@@ -312,17 +313,17 @@ export class ThreadHeaderBuilder {
    * "claude-opus-4-6-20250414" → "opus-4.6"
    * "claude-opus-4-7[1m]"      → "opus-4.7 (1M)"
    *
-   * The `[1m]` suffix (#648) is a non-word character, so we strip it before
-   * running the regex and re-append `" (1M)"` to the formatted output.
+   * The `[1m]` suffix is a non-word character, so we strip it before running
+   * the slug regex and re-append `" (1M)"` to the formatted output.
    */
   static formatModelName(model: string): string {
-    const hasOneMSuffix = /\[1m\]$/i.test(model);
-    const base = hasOneMSuffix ? model.replace(/\[1m\]$/i, '') : model;
+    const oneM = hasOneMSuffix(model);
+    const base = oneM ? stripOneMSuffix(model) : model;
     const match = base.match(/claude-(\w+)-(\d+)-(\d+)/);
     const formatted = match
       ? `${match[1]}-${match[2]}.${match[3]}`
       : base.replace(/^claude-/, '').replace(/-\d{8}$/, '');
-    return hasOneMSuffix ? `${formatted} (1M)` : formatted;
+    return oneM ? `${formatted} (1M)` : formatted;
   }
 
   /**

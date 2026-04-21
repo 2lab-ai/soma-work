@@ -29,8 +29,7 @@ import type {
   WorkflowType,
 } from './types';
 import {
-  AVAILABLE_MODELS,
-  DEFAULT_MODEL,
+  coerceToAvailableModel,
   type EffortLevel,
   type ModelId,
   userSettingsStore,
@@ -1566,29 +1565,25 @@ export class SessionRegistry {
   }
 
   /**
-   * Coerce a persisted session.model to the current allow-list (#648).
+   * Coerce a persisted `session.model` to the current allow-list.
    *
    * Pre-deploy sessions may hold legacy model ids (e.g. `claude-sonnet-4-6`)
    * that are no longer in `AVAILABLE_MODELS`. Surfacing those unchanged to
-   * the hot path would break the suffix-based context-window rule
-   * (`resolveContextWindow` returns 200k for unknown names, which is fine,
-   * but the model itself would then fail the `/model` UI validation and
-   * other consumers that gate on `AVAILABLE_MODELS`). Returns `DEFAULT_MODEL`
-   * when the serialized value is missing or unrecognized; logs the coercion
-   * exactly once per load so operators can trace post-deploy drift.
+   * the hot path would fail `/model` UI validation and any consumer that
+   * gates on `AVAILABLE_MODELS`. Logs the coercion exactly once per load so
+   * operators can trace post-deploy drift.
    */
   private coerceLegacySessionModel(serialized: SerializedSession): ModelId | undefined {
     const raw = serialized.model;
     if (raw === undefined) return undefined;
-    if ((AVAILABLE_MODELS as readonly string[]).includes(raw)) {
-      return raw as ModelId;
-    }
+    const coerced = coerceToAvailableModel(raw);
+    if (coerced === raw) return coerced;
     this.logger.info('Coerced legacy session model', {
       key: serialized.key,
       previous: raw,
-      coerced: DEFAULT_MODEL,
+      coerced,
     });
-    return DEFAULT_MODEL;
+    return coerced;
   }
 
   /**

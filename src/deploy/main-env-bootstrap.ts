@@ -5,11 +5,24 @@ const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
 const DEFAULT_MODEL = 'claude-opus-4-7';
-// Must mirror `AVAILABLE_MODELS` in `src/user-settings-store.ts` (#648).
+// Must mirror `AVAILABLE_MODELS` in `src/user-settings-store.ts`.
 // Deploy-time normalization runs BEFORE the app starts, so keeping this list in
 // sync prevents `normalizeMainTargetData` from undoing a user's `[1m]` choice
 // (or an admin seeding a legacy model) during main-env bootstrap.
 const VALID_MODELS = new Set(['claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-opus-4-7', 'claude-opus-4-7[1m]']);
+
+/**
+ * Coerce a persisted model string to the deploy-time allow-list.
+ * Case-insensitive on the `[1m]` suffix — `claude-opus-4-7[1M]` is normalized
+ * to `claude-opus-4-7[1m]` rather than silently coerced to `DEFAULT_MODEL`.
+ * Must mirror `coerceToAvailableModel` in `src/user-settings-store.ts`.
+ */
+function coerceModel(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) return DEFAULT_MODEL;
+  if (VALID_MODELS.has(raw)) return raw;
+  const lower = raw.toLowerCase();
+  return VALID_MODELS.has(lower) ? lower : DEFAULT_MODEL;
+}
 
 export interface BootstrapResult {
   bootstrapped: boolean;
@@ -104,10 +117,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as Record<string, Record<string, unknown>>;
 
     for (const userSettings of Object.values(settings)) {
-      const model = typeof userSettings.defaultModel === 'string' ? userSettings.defaultModel : '';
-      if (!model || !VALID_MODELS.has(model)) {
-        userSettings.defaultModel = DEFAULT_MODEL;
-      }
+      userSettings.defaultModel = coerceModel(userSettings.defaultModel);
       if (userSettings.accepted === undefined) {
         userSettings.accepted = true;
       }
@@ -129,14 +139,14 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
       if (session.workflow === undefined) {
         session.workflow = 'default';
       }
-      // #648: coerce stale `session.model` (e.g. pre-shrink values like
-      // `claude-sonnet-4-6`) to `DEFAULT_MODEL`. Prevents post-deploy
+      // Coerce stale `session.model` (e.g. pre-shrink values like
+      // `claude-sonnet-4-6`) to the current allow-list. Prevents post-deploy
       // crash-recovered sessions from resolving an unknown model, which would
       // otherwise resolve to the 200k fallback window while the session was
       // intentionally set to a `[1m]` variant (or drive downstream lookups off
       // an allow-list they no longer appear in).
-      if (typeof session.model === 'string' && !VALID_MODELS.has(session.model)) {
-        session.model = DEFAULT_MODEL;
+      if (session.model !== undefined) {
+        session.model = coerceModel(session.model);
       }
     }
 

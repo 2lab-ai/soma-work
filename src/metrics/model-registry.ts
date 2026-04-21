@@ -199,10 +199,26 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
 /** Fallback context window size when model is undefined. */
 export const FALLBACK_CONTEXT_WINDOW = 200_000;
 
+/** Canonical `[1m]` model-name suffix marking the 1M context-window variant. */
+export const ONE_M_SUFFIX = '[1m]';
+
+/** Case-insensitive matcher for the trailing `[1m]` suffix. */
+export const ONE_M_SUFFIX_RE = /\[1m\]$/i;
+
+/** True when the model name ends with `[1m]` (case-insensitive). */
+export function hasOneMSuffix(modelName: string): boolean {
+  return ONE_M_SUFFIX_RE.test(modelName);
+}
+
+/** Strip the trailing `[1m]` suffix (case-insensitive). */
+export function stripOneMSuffix(modelName: string): string {
+  return modelName.replace(ONE_M_SUFFIX_RE, '');
+}
+
 /**
  * Resolve context window for a model by suffix rule.
  *
- * Rule (#648): `[1m]` suffix → 1M. Anything else → 200k.
+ * Rule: `[1m]` suffix → 1M. Anything else → 200k.
  * Claude Agent SDK (v0.2.111+) strips the suffix and injects the
  * `context-1m-2025-08-07` beta header internally. We keep the suffix
  * end-to-end so our local math (compact threshold %, usage meter) matches
@@ -210,7 +226,7 @@ export const FALLBACK_CONTEXT_WINDOW = 200_000;
  */
 export function resolveContextWindow(modelName?: string): number {
   if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  return /\[1m\]$/i.test(modelName) ? 1_000_000 : 200_000;
+  return hasOneMSuffix(modelName) ? 1_000_000 : 200_000;
 }
 
 /**

@@ -34,6 +34,26 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
 
+/** Set form of `AVAILABLE_MODELS` for O(1) membership checks. */
+const AVAILABLE_MODEL_SET: ReadonlySet<string> = new Set(AVAILABLE_MODELS);
+
+/**
+ * Coerce an arbitrary persisted model string to the current allow-list.
+ * Returns the input unchanged when it's a valid `ModelId`; otherwise returns
+ * `DEFAULT_MODEL`. Comparison is case-insensitive on the `[1m]` suffix —
+ * `claude-opus-4-7[1M]` is normalized to `claude-opus-4-7[1m]`.
+ *
+ * Used at every persistence boundary (settings load, session deserialize,
+ * deploy bootstrap) so legacy or hand-edited values never reach the hot path.
+ */
+export function coerceToAvailableModel(raw: unknown): ModelId {
+  if (typeof raw !== 'string') return DEFAULT_MODEL;
+  if (AVAILABLE_MODEL_SET.has(raw)) return raw as ModelId;
+  // Normalize `[1M]` → `[1m]` so case-only drift does not trigger a default.
+  const lower = raw.toLowerCase();
+  return AVAILABLE_MODEL_SET.has(lower) ? (lower as ModelId) : DEFAULT_MODEL;
+}
+
 // Effort levels
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
@@ -214,10 +234,10 @@ export class UserSettingsStore {
         const data = fs.readFileSync(this.settingsFile, 'utf8');
         this.settings = JSON.parse(data);
         let didUpdate = false;
-        const validModels = new Set(AVAILABLE_MODELS as readonly string[]);
         for (const userSettings of Object.values(this.settings)) {
-          if (!userSettings.defaultModel || !validModels.has(userSettings.defaultModel)) {
-            userSettings.defaultModel = DEFAULT_MODEL;
+          const coerced = coerceToAvailableModel(userSettings.defaultModel);
+          if (coerced !== userSettings.defaultModel) {
+            userSettings.defaultModel = coerced;
             didUpdate = true;
           }
           // Migration: grandfathering — existing users without accepted field get accepted=true
@@ -704,15 +724,11 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get display name for a model.
-   *
-   * Switch covers the 4 canonical `AVAILABLE_MODELS`. The default branch has
-   * a belt-and-suspenders fallback for unknown strings ending in `[1m]` —
-   * strip the suffix, recurse on the bare form, and append ` (1M)`. This
-   * keeps display sane for transient state between pre-deploy persistence
-   * and post-deploy coerce.
+   * Get display name for a model. Inputs are constrained to `ModelId` by the
+   * type system; persistence boundaries normalize via `coerceToAvailableModel`
+   * before any value reaches this method.
    */
-  getModelDisplayName(model: ModelId | string): string {
+  getModelDisplayName(model: ModelId): string {
     switch (model) {
       case 'claude-opus-4-7':
         return 'Opus 4.7';
@@ -722,13 +738,6 @@ export class UserSettingsStore {
         return 'Opus 4.6';
       case 'claude-opus-4-6[1m]':
         return 'Opus 4.6 (1M)';
-      default:
-        if (typeof model === 'string' && /\[1m\]$/i.test(model)) {
-          const bare = model.replace(/\[1m\]$/i, '');
-          const bareName = this.getModelDisplayName(bare as ModelId);
-          return `${bareName} (1M)`;
-        }
-        return model;
     }
   }
 
