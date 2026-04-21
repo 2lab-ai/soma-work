@@ -277,12 +277,59 @@ export class ReportAggregator {
   async aggregateTokenUsage(startDate: string, endDate: string, userId?: string): Promise<UsageReport> {
     const events = await this.store.readRange(startDate, endDate);
     const tokenEvents = events.filter((e) => e.eventType === 'token_usage' && (!userId || e.userId === userId));
+    return this.buildUsageReport({
+      tokenEvents,
+      startDate,
+      endDate,
+      userId,
+      period: determinePeriod(startDate, endDate),
+    });
+  }
+
+  /**
+   * Aggregate token usage over a rolling millisecond window
+   * `[startMs, endMs]`, optionally filtered by `userId`.
+   *
+   * Reads the minimum set of KST day-files overlapping the window (typically
+   * two when the window crosses KST midnight) then post-filters by
+   * `event.timestamp` for ms-level bounds. Used by `/usage` to show the last
+   * 24h regardless of invocation time — e.g. `/usage` at KST 02:00 still
+   * includes yesterday afternoon's events.
+   */
+  async aggregateTokenUsageMs(startMs: number, endMs: number, userId?: string): Promise<UsageReport> {
+    const startKey = timestampToDateInTz(startMs);
+    const endKey = timestampToDateInTz(endMs);
+    const events = await this.store.readRange(startKey, endKey);
+    const tokenEvents = events.filter(
+      (e) =>
+        e.eventType === 'token_usage' &&
+        e.timestamp >= startMs &&
+        e.timestamp <= endMs &&
+        (!userId || e.userId === userId),
+    );
+    return this.buildUsageReport({
+      tokenEvents,
+      startDate: startKey,
+      endDate: endKey,
+      userId,
+      period: 'day',
+    });
+  }
+
+  private buildUsageReport(input: {
+    tokenEvents: MetricsEvent[];
+    startDate: string;
+    endDate: string;
+    userId?: string;
+    period: UsageReport['period'];
+  }): UsageReport {
+    const { tokenEvents, startDate, endDate, userId, period } = input;
 
     const totals = aggregateTokenEvents(tokenEvents);
     const byUser = aggregateTokenEventsByUser(tokenEvents);
     const byDay = aggregateTokenEventsByDay(tokenEvents, startDate, endDate);
 
-    // Compute rankings (only when not filtered by userId)
+    // Rankings are meaningless when filtered to a single user.
     let tokenRankings: TokenUsageRanking[] = [];
     let costRankings: TokenUsageRanking[] = [];
     if (!userId) {
@@ -295,25 +342,23 @@ export class ReportAggregator {
         rank: 0,
       }));
 
-      // Token rankings: desc by totalTokens, tie-break alphabetical userName
       tokenRankings = [...rankingEntries]
         .sort((a, b) => b.totalTokens - a.totalTokens || a.userName.localeCompare(b.userName))
         .map((e, i) => ({ ...e, rank: i + 1 }));
 
-      // Cost rankings: desc by totalCostUsd, tie-break alphabetical userName
       costRankings = [...rankingEntries]
         .sort((a, b) => b.totalCostUsd - a.totalCostUsd || a.userName.localeCompare(b.userName))
         .map((e, i) => ({ ...e, rank: i + 1 }));
     }
 
-    // Detect legacy data (events without pricingVersion)
+    // Legacy: events emitted before pricingVersion was introduced.
     const hasLegacyData = tokenEvents.some((e) => {
       const m = e.metadata as unknown as TokenUsageMetadata | undefined;
       return !m?.pricingVersion;
     });
 
     return {
-      period: determinePeriod(startDate, endDate),
+      period,
       startDate,
       endDate,
       totals,
