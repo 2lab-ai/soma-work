@@ -816,7 +816,17 @@ export class ClaudeHandler {
         // causing Slack permission prompts even in bypass mode. Explicit 'allow' makes the
         // decision at hook level, preventing SDK from invoking permissionPromptToolName.
         // See bypassBashPermissionDecision() for the extracted, testable decision logic.
+        //
+        // Session-scoped rule disable: when the user has previously clicked
+        // "Approve & disable rule for this session" on a Slack permission prompt,
+        // the matched rule id is stored on `session.disabledDangerousRules` via
+        // SessionRegistry.disableDangerousRule(). The closure below passes a
+        // lookup into bypassBashPermissionDecision so commands that match only
+        // disabled rules degrade to 'allow' without prompting again.
         if (mcpConfig.userBypass) {
+          const sessionRegistry = this.sessionRegistry;
+          const hookSessionKey = sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
+
           preToolUseHooks.push({
             matcher: 'Bash',
             hooks: [
@@ -825,12 +835,24 @@ export class ClaudeHandler {
                 const toolRecord = tool_input as Record<string, unknown> | undefined;
                 const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
 
-                const decision = bypassBashPermissionDecision(command);
+                const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, (ruleId) =>
+                  sessionRegistry.isDangerousRuleDisabled(hookSessionKey, ruleId),
+                );
 
                 if (decision === 'ask') {
                   this.logger.warn('Dangerous command in bypass mode \u2014 escalating to Slack permission UI', {
                     command: command.substring(0, 100),
                     user: slackContext.user,
+                    matchedRuleIds,
+                  });
+                } else if (matchedRuleIds.length === 0) {
+                  // Non-dangerous: normal bypass allow.
+                } else {
+                  // Matched rules but all were session-disabled \u2014 log for audit.
+                  this.logger.info('Dangerous command auto-approved by session rule disable', {
+                    command: command.substring(0, 100),
+                    user: slackContext.user,
+                    sessionKey: hookSessionKey,
                   });
                 }
 

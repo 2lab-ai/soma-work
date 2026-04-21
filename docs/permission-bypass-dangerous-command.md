@@ -157,14 +157,57 @@ if (slackContext && mcpConfig.userBypass) {
 
 ### 위험 명령 목록 (`dangerous-command-filter.ts`)
 
-| 패턴 | 설명 |
-|------|------|
-| `kill`, `pkill`, `killall` | 프로세스 종료 |
-| `rm -r*`, `rm -f*`, `rm --recursive` | 재귀/강제 삭제 |
-| `shutdown`, `reboot`, `halt` | 시스템 종료 |
-| `mkfs` | 파일시스템 포맷 |
-| `dd if=` | 디스크 복사 |
-| `chmod -R *7*7` | 재귀 world-writable |
+각 룰은 `DANGEROUS_RULES` 카탈로그의 항목(`id`, `label`, `description`, `sessionOverridable`)으로 선언된다.
+
+| 룰 id | 패턴 | 설명 | `sessionOverridable` |
+|-------|------|------|----------------------|
+| `kill`, `pkill`, `killall` | kill/pkill/killall | 프로세스 종료 | true |
+| `rm-recursive`, `rm-force`, `rm-force-long` | rm -r*, rm -f*, rm --force | 재귀/강제 삭제 | true |
+| `shutdown`, `reboot`, `halt` | shutdown/reboot/halt | 시스템 종료 | true |
+| `mkfs` | mkfs | 파일시스템 포맷 | true |
+| `dd-if` | dd if= | 디스크 복사 | true |
+| `chmod-world-recursive` | chmod -R *7*7 | 재귀 world-writable | true |
+| `cross-user-access` | /tmp/{otherUser}/ 경로 접근 | 유저 격리 — **항상 deny**, bypass로도 풀리지 않음 | **false (lockdown)** |
+| `ssh-remote` | ssh/scp/sftp/rsync -e ssh | 원격 셸 — admin 전용 | **false (lockdown)** |
+
+`sessionOverridable=true` 룰만 아래의 세션 스코프 비활성화 대상이 된다. `cross-user-access`와 `ssh-remote`는 유저가 세션에서 끌 수 없는 lockdown 룰이며, 각각 별도의 enforcement 경로(다른 `PreToolUse` hook / admin 체크)로 동작한다.
+
+## 세션 스코프 룰 비활성화 — "Approve & disable rule for this session"
+
+### 동기
+
+유저가 해당 세션에서 의도적으로 반복해야 하는 위험 명령이 있다. 예: `kill` 룰이 걸려서 매번 물어보는데, 이번 thread에선 계속 쓸 것임. 매번 Approve만 눌러주는 건 마찰이고, 룰을 영구히 끄는 건 위험.
+
+### 동작
+
+Slack 퍼미션 프롬프트에 4번째 버튼 `🔓 Approve & disable rule (this session)` 을 추가. bypass-mode Bash escalation이고 `sessionOverridable=true` 룰에 매칭됐을 때만 렌더된다.
+
+버튼 클릭 시:
+1. 현재 툴 호출을 `allow`로 승인
+2. 매칭된 룰 id(s)를 해당 `ConversationSession`의 `disabledDangerousRules` Set에 추가 (in-memory)
+3. 이후 같은 세션에서 같은 룰만 매칭되는 bash 명령은 `bypassBashPermissionDecision`이 자동으로 `allow`로 디그레이드 — 다시 물어보지 않음
+
+### 스코프
+
+- **세션 = Slack thread = `ConversationSession`**. 같은 유저라도 다른 thread는 별개의 `disabledDangerousRules` 집합을 가진다.
+- **in-memory only**. `saveSessions()`는 `disabledDangerousRules` 필드를 직렬화하지 않음. 봇 재시작 / 세션 만료 / 세션 종료 시 자동 리셋. 재활성 UI는 이 PR 범위 밖.
+- **per-rule granularity**. 끄는 단위는 명령 문자열이 아니라 룰 id. `kill`을 끄면 `kill 1234`, `kill -9 99`가 모두 통과.
+- **overridable 룰만 대상**. `cross-user-access` / `ssh-remote`는 버튼에 노출되지 않음 — 다른 hook에서 강제되므로 이 경로의 비활성화는 무의미하고 보안상 위험.
+
+### 부분 비활성화 시 동작
+
+복합 명령 `rm -rf /tmp/x` 는 `rm-recursive`와 `rm-force` 두 룰에 동시 매칭된다. 이 중 `rm-recursive`만 세션에서 disable된 상태에서 다시 `rm -rf`를 실행하면, `rm-force`가 여전히 active이므로 Slack UI가 다시 뜬다. `bypassBashPermissionDecision`은 매칭된 **모든** 룰이 disable일 때에만 `allow`로 디그레이드한다.
+
+### 아키텍처 메모 — cross-process rule flow
+
+`permission-mcp-server`는 parent 프로세스의 `SessionRegistry`에 직접 접근할 수 없다. 대신:
+
+1. `permission-mcp-server`가 command에서 `overridableMatchedRuleIds()`를 **다시** 계산 (stateless)
+2. 계산된 `rule_ids`를 `PendingApproval`에 저장 (shared-store / 파일 IPC)
+3. 유저가 `approve_disable_rule_session` 버튼 클릭 → `PermissionActionHandler.handleApproveDisableRule`
+4. Handler가 `sharedStore.getPendingApproval(approvalId)`로 `rule_ids`와 `{channel, thread_ts}`를 회수
+5. `ClaudeHandler.getSessionRegistry()`로 세션 키 매핑 → `disableDangerousRules(sessionKey, ruleIds)`
+6. `sharedStore.storePermissionResponse(approvalId, {behavior: 'allow'})`로 원래 호출 승인
 
 ## 추가 수정: ephemeral 메시지 스팸 제거
 
@@ -194,5 +237,7 @@ if (slackContext && mcpConfig.userBypass) {
 
 ### hook 통합 테스트 부재
 
-`dangerous-command-filter.ts`는 36개 테스트가 있지만,
-PreToolUse hook 내부의 분기 로직 (위험 → continue, 안전 → allow) 자체는 테스트가 없다.
+`dangerous-command-filter.ts`는 테스트 커버리지가 확장됐고 (rule catalog + session disable),
+`SessionRegistry`의 rule-disable API와 `PermissionActionHandler.handleApproveDisableRule`도
+각각 단위 테스트를 갖췄지만, bypass-mode `PreToolUse` hook의 end-to-end 분기 (위험 → ask,
+안전 → allow, disable된 룰 → allow) 자체는 여전히 `ClaudeSDK` 통합 테스트가 없다.

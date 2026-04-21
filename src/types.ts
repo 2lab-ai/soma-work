@@ -294,6 +294,20 @@ export interface ConversationSession {
   // Last recorded assistant-turn id (monotonic, updated by the recorder).
   // Used as the version token for the stale-write guard in summary-title generation.
   lastAssistantTurnId?: string;
+
+  // Session-scoped disabled dangerous-rule ids. Populated via the Slack
+  // "Approve & disable rule for this session" button (see
+  // src/dangerous-command-filter.ts for the rule catalog).
+  //
+  // Runtime-only — intentionally NOT serialized to disk so a restart always
+  // re-prompts the user (safety default). Mirrors the `pendingRetryTimer`
+  // convention for transient fields.
+  //
+  // When a rule id is present, `bypassBashPermissionDecision` treats that
+  // rule as silenced and degrades its decision from 'ask' to 'allow' when
+  // the command matches only that rule. Lockdown rules
+  // (`sessionOverridable === false`) ignore this set entirely.
+  disabledDangerousRules?: Set<string>;
 }
 
 /**

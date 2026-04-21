@@ -19,6 +19,12 @@ export interface PendingApproval {
   user?: string;
   created_at: number;
   expires_at: number;
+  /**
+   * Overridable dangerous-rule ids matched by this approval request.
+   * Mirrors the field in `mcp-servers/_shared/shared-store.ts`. See that file
+   * for the authoritative documentation.
+   */
+  rule_ids?: string[];
 }
 
 /**
