@@ -1,10 +1,15 @@
 /**
- * Dangerous Command Filter (mcp-servers duplicate)
+ * Dangerous Command Filter — overridable-rules subset for MCP child processes.
  *
- * Mirror of src/dangerous-command-filter.ts for use inside child MCP server
- * processes which cannot import from src/ directly. Keep in sync.
+ * Subset of src/dangerous-command-filter.ts: only the `sessionOverridable`
+ * rules plus `overridableMatchedRuleIds` / `rulesByIds`, which is all the
+ * permission MCP server needs to label the Slack button and round-trip rule
+ * ids through the pending-approval store.
  *
- * See src/dangerous-command-filter.ts for authoritative documentation.
+ * The lockdown rules (`cross-user-access`, `ssh-remote`) are intentionally
+ * NOT mirrored here — they are enforced in the parent process only. Keep the
+ * overridable rule set in sync with src/dangerous-command-filter.ts; see that
+ * file for authoritative documentation.
  */
 
 export interface DangerousRuleContext {
@@ -118,11 +123,16 @@ export function overridableMatchedRuleIds(command: string): string[] {
 }
 
 /**
+ * Module-scope lookup table — catalog is static, so build the Map once at
+ * load time instead of rebuilding on every permission request.
+ */
+const RULES_BY_ID: ReadonlyMap<string, DangerousRule> = new Map(DANGEROUS_RULES.map((r) => [r.id, r]));
+
+/**
  * Return the rule catalog entries for a list of rule ids, preserving order
  * and silently dropping unknown ids. Used by the Slack messenger to render
  * human labels next to the rule-disable button.
  */
 export function rulesByIds(ruleIds: ReadonlyArray<string>): DangerousRule[] {
-  const byId = new Map(DANGEROUS_RULES.map((r) => [r.id, r]));
-  return ruleIds.map((id) => byId.get(id)).filter((r): r is DangerousRule => r !== undefined);
+  return ruleIds.map((id) => RULES_BY_ID.get(id)).filter((r): r is DangerousRule => r !== undefined);
 }
