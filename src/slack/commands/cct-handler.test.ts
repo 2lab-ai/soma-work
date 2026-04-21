@@ -189,8 +189,10 @@ describe('CctHandler — Wave 5', () => {
     const msg = say.calls[0].text;
     expect(msg).toContain('Usage for *active*');
     expect(msg).toContain('(cct)');
-    expect(msg).toMatch(/5h:\s*42%/);
-    expect(msg).toMatch(/7d:\s*17%/);
+    // M1-S2 — renderUsageLines now emits the shared formatUsageBar progress-bar
+    // rows: `<label>   <bar> <pct>% · resets in …`.
+    expect(msg).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(msg).toMatch(/7d\s+[█░]+\s+17%/);
     expect(msg).toContain('resets in');
   });
 
@@ -263,8 +265,9 @@ describe('CctHandler — Wave 5', () => {
     });
     expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-2');
     expect(say.calls[0].text).toContain('Usage for *secondary*');
-    expect(say.calls[0].text).toMatch(/5h:\s*50%/);
-    expect(say.calls[0].text).toMatch(/7d:\s*25%/);
+    // M1-S2 — migrated to the shared formatUsageBar progress-bar format.
+    expect(say.calls[0].text).toMatch(/5h\s+[█░]+\s+50%/);
+    expect(say.calls[0].text).toMatch(/7d\s+[█░]+\s+25%/);
   });
 
   it('cct usage <unknown> returns "Unknown slot: <name>"', async () => {
@@ -562,8 +565,9 @@ describe('renderUsageLines', () => {
       now,
     );
     expect(out).toContain('Usage for *x* (cct)');
-    expect(out).toMatch(/5h:\s*42%/);
-    expect(out).toMatch(/7d:\s*1%/);
+    // M1-S2 — renderUsageLines now shares `formatUsageBar`.
+    expect(out).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(out).toMatch(/7d\s+[█░]+\s+1%/);
   });
 
   it('passes through utilization already in 0..100 integer form', async () => {
@@ -577,6 +581,6 @@ describe('renderUsageLines', () => {
       },
       now,
     );
-    expect(out).toMatch(/5h:\s*75%/);
+    expect(out).toMatch(/5h\s+[█░]+\s+75%/);
   });
 });

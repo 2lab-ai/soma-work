@@ -6,6 +6,8 @@ import {
   buildCctCardBlocks,
   buildRemoveSlotModal,
   buildSlotRow,
+  formatUsageBar,
+  subscriptionBadge,
 } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
@@ -59,7 +61,7 @@ describe('buildSlotRow', () => {
     expect(section.text.text).toContain('ToS-risk');
   });
 
-  it('includes rate-limit timestamp + source + usage segment when state populated', () => {
+  it('includes rate-limit timestamp + source in the context row (M1-S2 moves usage out of context)', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -80,11 +82,14 @@ describe('buildSlotRow', () => {
     expect(text).toContain('rate-limited');
     expect(text).toContain('12:37 KST');
     expect(text).toContain('via response_header');
-    expect(text).toContain('5h 72%');
-    expect(text).toContain('7d 33%');
+    // M1-S2 — old one-line `usage 5h X% 7d Y%` is removed; the usage panel
+    // now lives in a dedicated section/context block rendered after this
+    // one. The context row MUST NOT contain the legacy single-line string.
+    expect(text).not.toMatch(/5h\s+72%/);
+    expect(text).not.toMatch(/7d\s+33%/);
   });
 
-  it('honours 0..100 utilization values', () => {
+  it('honours 0..100 utilization values in the progress bar panel', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -95,8 +100,9 @@ describe('buildSlotRow', () => {
       },
     };
     const blocks = buildSlotRow(slot, state, false, Date.parse('2026-04-18T00:01:00Z'));
-    const text = (blocks[1] as any).elements[0].text as string;
-    expect(text).toContain('5h 77%');
+    const flat = JSON.stringify(blocks);
+    // Pass-through path: 77 > 1 → rendered as 77%.
+    expect(flat).toMatch(/77%/);
   });
 
   it('shows cooldown suffix when still in future', () => {
@@ -319,5 +325,257 @@ describe('buildRemoveSlotModal', () => {
     const view = buildRemoveSlotModal(setupSlot('cct1'), false) as any;
     const body = view.blocks[0].text.text as string;
     expect(body).toMatch(/immediately/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// M1-S2 · formatUsageBar (shared progress-bar helper)
+// ────────────────────────────────────────────────────────────────────
+
+describe('formatUsageBar (M1-S2)', () => {
+  const now = Date.parse('2026-04-21T00:00:00Z');
+
+  it('renders a left-padded label + progress bar + percent + "resets in" hint', () => {
+    const iso = new Date(now + 2 * 3_600_000 + 15 * 60_000).toISOString();
+    const out = formatUsageBar(0.82, iso, now, '5h');
+    // Padded label, filled blocks, unfilled blocks, percent, `resets in` hint.
+    expect(out).toMatch(/^5h\s+█+░+\s+82% · resets in /);
+  });
+
+  it('renders a stable "(no data)" form when util is undefined', () => {
+    const out = formatUsageBar(undefined, undefined, now, '7d');
+    // Label is left-padded to the same fixed width used by the populated
+    // row so columns align visually. Exact width may be tweaked later, but
+    // the output MUST start with the label and contain the sentinel literal.
+    expect(out.startsWith('7d')).toBe(true);
+    expect(out).toContain('(no data)');
+  });
+
+  it('accepts the 0..100 utilization form (pass-through, not *100)', () => {
+    const iso = new Date(now + 86_400_000).toISOString();
+    const out = formatUsageBar(77, iso, now, '7d-sonnet');
+    expect(out).toMatch(/77%/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// M1-S2 · buildSlotRow emits 3-line usage panel
+// ────────────────────────────────────────────────────────────────────
+
+describe('buildSlotRow — usage panel (M1-S2)', () => {
+  const now = Date.parse('2026-04-21T00:00:00Z');
+  function slotWithAttachment(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-u',
+      name: 'cct-u',
+      setupToken: 'sk-ant-oat01-xxxxxxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 3_600_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'max_5x',
+      },
+      createdAt: '2026-04-01T00:00:00Z',
+    };
+  }
+
+  it('emits three usage lines when state.usage is populated (5h / 7d / 7d-sonnet)', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.8, resetsAt: new Date(now + 2 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.28, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
+        sevenDaySonnet: { utilization: 0.18, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, false, now);
+    const flat = JSON.stringify(blocks);
+    // Three independent progress rows — label starts-of-line in the rendered text.
+    expect(flat).toMatch(/5h[^"]*█/);
+    expect(flat).toMatch(/7d[^"]*█/);
+    expect(flat).toMatch(/7d-sonnet[^"]*█/);
+  });
+
+  it('omits the usage panel entirely when state.usage is undefined', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = { authState: 'healthy', activeLeases: [] };
+    const blocks = buildSlotRow(slot, state, false, now);
+    const flat = JSON.stringify(blocks);
+    // No progress-bar glyphs if usage is absent.
+    expect(flat).not.toMatch(/█/);
+    expect(flat).not.toContain('(no data)');
+  });
+
+  it('buildSlotRow never emits the old single-line `usage 5h X% 7d Y%` literal', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.2, resetsAt: new Date(now + 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, false, now);
+    const flat = JSON.stringify(blocks);
+    // The spec explicitly deletes the compact `usage 5h X% 7d Y%` line.
+    expect(flat).not.toMatch(/usage 5h \d+% 7d \d+%/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// M1-S3 · subscriptionBadge helper
+// ────────────────────────────────────────────────────────────────────
+
+describe('subscriptionBadge (M1-S3)', () => {
+  it('formats max_5x → " · Max 5x"', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'k',
+      name: 'n',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'max_5x',
+      },
+      createdAt: '',
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 5x');
+  });
+
+  it('formats max_20x → " · Max 20x"', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'legacy-attachment',
+      keyId: 'k',
+      name: 'n',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'max_20x',
+      },
+      createdAt: '',
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 20x');
+  });
+
+  it('formats pro → " · Pro"', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'legacy-attachment',
+      keyId: 'k',
+      name: 'n',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'pro',
+      },
+      createdAt: '',
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Pro');
+  });
+
+  it('returns empty string for api_key slot (no attachment surface)', () => {
+    const slot: AuthKey = {
+      kind: 'api_key',
+      keyId: 'k',
+      name: 'n',
+      value: 'sk-ant-api03-xxxx',
+      createdAt: '',
+    };
+    expect(subscriptionBadge(slot)).toBe('');
+  });
+
+  it('returns empty string when subscriptionType missing', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'k',
+      name: 'n',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    expect(subscriptionBadge(slot)).toBe('');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// M1-S4 · per-slot + card-level Refresh buttons
+// ────────────────────────────────────────────────────────────────────
+
+describe('buildSlotRow — Refresh button (M1-S4)', () => {
+  const now = Date.parse('2026-04-21T00:00:00Z');
+  function attachedSetupSlot(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-r',
+      name: 'cct-r',
+      setupToken: 'sk-ant-oat01-xxxxxxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 3_600_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+  }
+
+  it('attached cct slot action row has a Refresh button carrying keyId', () => {
+    const slot = attachedSetupSlot();
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const ids = actions.elements.map((e: any) => e.action_id);
+    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_slot);
+    const refresh = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.refresh_usage_slot);
+    expect(refresh.value).toBe('slot-r');
+  });
+});
+
+describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
+  it('card-level action row includes the new Refresh-all button alongside existing actions', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-1',
+      name: 'cct1',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildCctCardBlocks({ slots: [slot], states: {} });
+    // Find the card-level action row (the one containing cct_next / cct_open_add).
+    const cardRow = blocks.find(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_next'),
+    ) as any;
+    expect(cardRow).toBeDefined();
+    const ids = cardRow.elements.map((e: any) => e.action_id);
+    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_all);
+    // Existing actions still present — contract guarantees no existing ID
+    // changes or removals in this PR.
+    expect(ids).toContain(CCT_ACTION_IDS.next);
+    expect(ids).toContain(CCT_ACTION_IDS.add);
+    // Length assertion: exactly three buttons in the card-level row.
+    expect(cardRow.elements).toHaveLength(3);
   });
 });

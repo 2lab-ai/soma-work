@@ -31,6 +31,24 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
   return n;
 }
 
+/**
+ * Defensive parser for positive-integer ENV knobs (#641 M1-S1). Keeps the
+ * per-field inline pattern that the rest of this file uses but avoids
+ * duplicating the validate-then-warn boilerplate for every usage-scheduler
+ * tunable. Not exported outside this module — callers read the already-
+ * parsed value via `config.usage.*`.
+ */
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    logger.warn(`${name}="${raw}" invalid (expected positive integer); falling back to ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -91,6 +109,20 @@ export const config = {
     jwtSecret: process.env.DASHBOARD_JWT_SECRET || '',
     /** Seconds until dashboard JWT expires (default: 7 days) */
     jwtExpiresIn: parseInt(process.env.DASHBOARD_JWT_EXPIRES_IN || '604800', 10),
+  },
+  /**
+   * CCT usage-refresh scheduler knobs (#641 M1-S1). Default 5-minute
+   * interval balances freshness against the per-slot 2-minute backoff on
+   * `nextUsageFetchAllowedAt` — shorter intervals just bounce off the
+   * gate, longer intervals let the card go stale.
+   */
+  usage: {
+    /** Emergency-off: set USAGE_REFRESH_DISABLED=1 to disable the pump. */
+    refreshEnabled: process.env.USAGE_REFRESH_DISABLED !== '1',
+    /** ms between ticks; default 5min. */
+    refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000),
+    /** ms deadline for each fan-out; default 2s. */
+    fetchTimeoutMs: parsePositiveIntEnv('USAGE_FETCH_TIMEOUT_MS', 2_000),
   },
 };
 

@@ -1210,20 +1210,33 @@ export class TokenManager {
 
   // ── Usage fetch ───────────────────────────────────────────
 
-  async fetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
+  /**
+   * Fetch + persist usage for a single CCT slot.
+   *
+   * `opts.force` (PR#1 M1-S4): bypasses the per-slot local throttle
+   * (`nextUsageFetchAllowedAt`). Server-side 429/5xx still trigger the
+   * standard backoff ladder — `force` only skips the LOCAL gate. The
+   * Slack "Refresh" button + `/cct refresh` admin command set this.
+   *
+   * The per-keyId in-flight dedupe is ALWAYS on. If a force-fetch is
+   * requested while a non-force fetch is already pending for the same
+   * keyId, we reuse the pending Promise — another round-trip would
+   * race against persistence and is not what the caller wants.
+   */
+  async fetchAndStoreUsage(keyId: string, opts: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
     // Z1 — Per-keyId in-flight dedupe: if another `fetchUsageForAllAttached`
     // fan-out or a parallel caller is already fetching for this keyId,
     // reuse that Promise to avoid hammering the usage endpoint.
     const existing = this.usageFetchInFlight.get(keyId);
     if (existing) return existing;
-    const promise = this.#doFetchAndStoreUsage(keyId).finally(() => {
+    const promise = this.#doFetchAndStoreUsage(keyId, opts).finally(() => {
       this.usageFetchInFlight.delete(keyId);
     });
     this.usageFetchInFlight.set(keyId, promise);
     return promise;
   }
 
-  async #doFetchAndStoreUsage(keyId: string): Promise<UsageSnapshot | null> {
+  async #doFetchAndStoreUsage(keyId: string, opts: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return null;
@@ -1234,7 +1247,10 @@ export class TokenManager {
     const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
     const state = snap.state[keyId];
     const nowMs = Date.now();
-    if (state?.nextUsageFetchAllowedAt) {
+    // PR#1 M1-S4: `force` bypasses the local throttle but NOT any server-side
+    // backoff — a 429 response still advances `nextUsageFetchAllowedAt` via
+    // `applyUsageFailureBackoff` below.
+    if (!opts.force && state?.nextUsageFetchAllowedAt) {
       const allowedMs = new Date(state.nextUsageFetchAllowedAt).getTime();
       if (Number.isFinite(allowedMs) && allowedMs > nowMs) return null;
     }
@@ -1329,7 +1345,10 @@ export class TokenManager {
    * backend refresh). Slots without an oauthAttachment (bare setup
    * tokens, api_key slots, fresh slots) are skipped.
    */
-  async fetchUsageForAllAttached(opts?: { timeoutMs?: number }): Promise<Record<string, UsageSnapshot | null>> {
+  async fetchUsageForAllAttached(opts?: {
+    timeoutMs?: number;
+    force?: boolean;
+  }): Promise<Record<string, UsageSnapshot | null>> {
     const snap = await this.store.load();
     const keyIds = snap.registry.slots
       .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
@@ -1337,7 +1356,10 @@ export class TokenManager {
     const results: Record<string, UsageSnapshot | null> = {};
     const promises = keyIds.map(async (keyId) => {
       try {
-        results[keyId] = await this.fetchAndStoreUsage(keyId);
+        // PR#1 M1-S4: forward `force` so admin-triggered refreshes fan
+        // out with throttle-bypass. The periodic scheduler MUST NOT set
+        // this flag (invariant guarded by `usage-scheduler.test.ts`).
+        results[keyId] = await this.fetchAndStoreUsage(keyId, { force: opts?.force });
       } catch {
         results[keyId] = null;
       }

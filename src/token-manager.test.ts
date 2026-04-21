@@ -1613,6 +1613,157 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── M1-S4: fetchAndStoreUsage { force } + fetchUsageForAllAttached { force } ──
+
+  describe('fetchAndStoreUsage { force } + fetchUsageForAllAttached { force } (M1-S4)', () => {
+    it('force:true bypasses nextUsageFetchAllowedAt gate (local throttle only)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Pin the gate into the future.
+      await store.mutate((snap) => {
+        snap.state[s.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
+      });
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.9, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      // With force, fetchUsage MUST be invoked despite the gate.
+      const result = await tm.fetchAndStoreUsage(s.keyId, { force: true });
+      expect(fetchUsageMock).toHaveBeenCalledTimes(1);
+      expect(result?.fiveHour?.utilization).toBe(0.9);
+    });
+
+    it('force:false (default) still respects nextUsageFetchAllowedAt gate — regression guard', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      await store.mutate((snap) => {
+        snap.state[s.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
+      });
+      // No-opts overload — existing callers MUST keep the gate.
+      const result = await tm.fetchAndStoreUsage(s.keyId);
+      expect(result).toBeNull();
+      expect(fetchUsageMock).not.toHaveBeenCalled();
+    });
+
+    it('fetchUsageForAllAttached({ force: true }) forwards force to each fetchAndStoreUsage', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s1 = await tm.addSlot({
+        name: 'o1',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const s2 = await tm.addSlot({
+        name: 'o2',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Gate BOTH into the future; only a force-forwarded fan-out can clear them.
+      await store.mutate((snap) => {
+        snap.state[s1.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
+        snap.state[s2.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
+      });
+      fetchUsageMock.mockResolvedValue({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.1, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000, force: true });
+      // Both slots must have fetched — proof that force propagated.
+      expect(fetchUsageMock).toHaveBeenCalledTimes(2);
+      expect(results[s1.keyId]).not.toBeNull();
+      expect(results[s2.keyId]).not.toBeNull();
+    });
+
+    it('force:true + server 429 still bumps consecutiveUsageFailures and backoff (server-side 429 not bypassed)', async () => {
+      const { mod, storeMod } = await importSut();
+      const { UsageFetchError } = await import('./oauth/usage');
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      fetchUsageMock.mockRejectedValueOnce(new UsageFetchError(429, '', 'too many'));
+      const beforeMs = Date.now();
+      const result = await tm.fetchAndStoreUsage(s.keyId, { force: true });
+      expect(result).toBeNull();
+      const snap = await store.load();
+      expect(snap.state[s.keyId].consecutiveUsageFailures).toBe(1);
+      const nextAllowed = snap.state[s.keyId].nextUsageFetchAllowedAt;
+      expect(nextAllowed).toBeDefined();
+      const allowedMs = new Date(nextAllowed!).getTime();
+      expect(allowedMs).toBeGreaterThan(beforeMs);
+    });
+
+    it('generation guard: mid-flight detach + re-attach drops the write even under force', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const sharedCreds = makeOAuthCreds({ accessToken: 'oat-FORCED' });
+      await tm.attachOAuth(slot.keyId, sharedCreds, true);
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      let signalStarted!: () => void;
+      const startedPromise = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-19T00:00:00Z',
+            fiveHour: { utilization: 0.42, resetsAt: '2026-04-19T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+      const usagePromise = tm.fetchAndStoreUsage(slot.keyId, { force: true });
+      await startedPromise;
+      await new Promise((r) => setTimeout(r, 5));
+      await tm.detachOAuth(slot.keyId);
+      await tm.attachOAuth(slot.keyId, sharedCreds, true);
+      releaseFetch();
+      await usagePromise;
+      const final = await store.load();
+      // Generation guard must reject the stale write even though force was set.
+      expect(final.state[slot.keyId]?.usage).toBeUndefined();
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {

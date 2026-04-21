@@ -769,6 +769,157 @@ describe('attach/detach action routing (Z2)', () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────
+// M1-S4 · Refresh usage button handlers (#641)
+// ────────────────────────────────────────────────────────────────────
+
+describe('refresh_usage action handlers (M1-S4)', () => {
+  function makeApp() {
+    const actionHandlers = new Map<string, (ctx: any) => Promise<void>>();
+    const app = {
+      action: (id: string, fn: (ctx: any) => Promise<void>) => {
+        actionHandlers.set(id, fn);
+      },
+      view: () => {
+        /* noop */
+      },
+    } as any;
+    return { app, actionHandlers };
+  }
+
+  it('refresh_usage_all → tm.fetchUsageForAllAttached({ force: true, timeoutMs }) called once', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchUsageForAllAttached = vi.fn(
+      async (_opts?: { force?: boolean; timeoutMs?: number }) => ({}) as Record<string, unknown>,
+    );
+    const tm = {
+      fetchUsageForAllAttached,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-A', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
+      expect(h).toBeDefined();
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'all' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      const args = fetchUsageForAllAttached.mock.calls[0][0];
+      expect(args).toEqual(expect.objectContaining({ force: true }));
+      expect(typeof args?.timeoutMs).toBe('number');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refresh_usage_slot → tm.fetchAndStoreUsage(keyId, { force: true }) called once', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async () => null);
+    const tm = {
+      fetchAndStoreUsage,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'cct1', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
+      expect(h).toBeDefined();
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'cct1' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
+      expect(fetchAndStoreUsage).toHaveBeenCalledWith('cct1', expect.objectContaining({ force: true }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refresh_usage_all by non-admin → ack only, no TM call', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchUsageForAllAttached = vi.fn(async () => ({}));
+    const tm = { fetchUsageForAllAttached } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'all' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refresh_usage_slot by non-admin → ack only, no TM call', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async () => null);
+    const tm = { fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'cct1' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('kind_radio flip preserves block_ids across views.update', () => {
   it('both views use the same add_name block_id so typed value is preserved', () => {
     const setupView = buildAddSlotModal('setup_token') as any;

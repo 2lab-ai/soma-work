@@ -238,6 +238,46 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
+  // #641 M1-S4 — card-level "Refresh all" button. Admin-only fan-out that
+  // forwards `{ force: true }` so the per-slot `nextUsageFetchAllowedAt`
+  // local throttle is bypassed. Server-side 429 still advances that gate
+  // via `applyUsageFailureBackoff`.
+  //
+  // Ordering: ack FIRST (Slack 3s contract), then admin gate, then the
+  // fetch. Non-admin short-circuits after ack so the button appears
+  // responsive but doesn't touch the TM.
+  app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      await tokenManager.fetchUsageForAllAttached({ force: true, timeoutMs: 2_000 });
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_refresh_usage_all failed', err);
+    }
+  });
+
+  // #641 M1-S4 — per-slot "Refresh" button. `value` is the target keyId.
+  // Admin gate + `{ force: true }` bypasses the local throttle for that
+  // single slot. Silently no-ops when the keyId is missing from the
+  // action body (stale card click) or the slot no longer exists.
+  app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const bodyAction = (body as any).actions?.[0];
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_refresh_usage_slot: missing keyId on action value');
+        return;
+      }
+      await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_refresh_usage_slot failed', err);
+    }
+  });
+
   // View submission: Add slot.
   app.view(CCT_VIEW_IDS.add, async ({ ack, body, client }) => {
     const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};

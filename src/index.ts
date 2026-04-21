@@ -50,6 +50,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { startUsageRefreshScheduler, type UsageRefreshScheduler } from './oauth';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
@@ -97,6 +98,17 @@ async function start() {
       logger.error('Preflight checks failed! Fix the errors above before starting.');
       process.exit(1);
     }
+
+    // Start CCT usage refresh scheduler (#641 M1-S1).
+    // Periodically pumps TokenManager.fetchUsageForAllAttached — the tick
+    // MUST NOT pass { force: true } (see src/oauth/usage-scheduler.ts).
+    // Null is returned when USAGE_REFRESH_DISABLED=1 kills the feature flag.
+    const usageRefreshScheduler: UsageRefreshScheduler | null = startUsageRefreshScheduler(tokenManager, {
+      intervalMs: config.usage.refreshIntervalMs,
+      timeoutMs: config.usage.fetchTimeoutMs,
+      enabled: config.usage.refreshEnabled,
+    });
+    timing('Usage refresh scheduler wired');
 
     logger.info('Starting Claude Code Slack bot', {
       debug: config.debug,
@@ -693,6 +705,11 @@ async function start() {
         // Stop cron scheduler
         if (cronScheduler) {
           cronScheduler.stop();
+        }
+
+        // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
+        if (usageRefreshScheduler) {
+          usageRefreshScheduler.stop();
         }
 
         // Stop TokenManager lease reaper
