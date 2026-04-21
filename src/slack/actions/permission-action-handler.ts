@@ -1,12 +1,12 @@
-import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import type { SessionRegistry } from '../../session-registry';
 import { type PermissionResponse, sharedStore } from '../../shared-store';
 import type { RespondFn } from './types';
 
 /**
  * 권한 승인/거부 액션 핸들러
  *
- * `claudeHandler` is optional so callers that don't need the session-scoped
+ * `sessionRegistry` is optional so callers that don't need the session-scoped
  * rule-disable action (`handleApproveDisableRule`) can instantiate the handler
  * without it. The rule-disable path only works when it's provided — otherwise
  * the handler falls back to a plain approve so the user's click isn't lost.
@@ -14,73 +14,28 @@ import type { RespondFn } from './types';
 export class PermissionActionHandler {
   private logger = new Logger('PermissionActionHandler');
 
-  constructor(private readonly claudeHandler?: ClaudeHandler) {}
+  constructor(private readonly sessionRegistry?: SessionRegistry) {}
 
   async handleApprove(body: any, respond: RespondFn): Promise<void> {
-    try {
-      const approvalId = body.actions[0].value;
-      const user = body.user?.id;
-
-      this.logger.info('Tool approval granted', { approvalId, user });
-
-      const response: PermissionResponse = {
-        behavior: 'allow',
-        message: 'Approved by user',
-      };
-      await sharedStore.storePermissionResponse(approvalId, response);
-    } catch (error) {
-      this.logger.error('Error processing tool approval', error);
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Error processing approval. The request may have already been handled.',
-        replace_original: false,
-      });
-    }
+    await this.runSimpleAction(body, respond, 'approval', 'Tool approval granted', {
+      behavior: 'allow',
+      message: 'Approved by user',
+    });
   }
 
   async handleDeny(body: any, respond: RespondFn): Promise<void> {
-    try {
-      const approvalId = body.actions[0].value;
-      const user = body.user?.id;
-
-      this.logger.info('Tool approval denied', { approvalId, user });
-
-      const response: PermissionResponse = {
-        behavior: 'deny',
-        message: 'Denied by user',
-      };
-      await sharedStore.storePermissionResponse(approvalId, response);
-    } catch (error) {
-      this.logger.error('Error processing tool denial', error);
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Error processing denial. The request may have already been handled.',
-        replace_original: false,
-      });
-    }
+    await this.runSimpleAction(body, respond, 'denial', 'Tool approval denied', {
+      behavior: 'deny',
+      message: 'Denied by user',
+    });
   }
 
   async handleExplain(body: any, respond: RespondFn): Promise<void> {
-    try {
-      const approvalId = body.actions[0].value;
-      const user = body.user?.id;
-
-      this.logger.info('Tool explanation requested', { approvalId, user });
-
-      const response: PermissionResponse = {
-        behavior: 'deny',
-        message:
-          'User requested explanation: Before retrying this tool, explain in the conversation why you need to use this tool, what it will do, and what the expected outcome is. Then request permission again.',
-      };
-      await sharedStore.storePermissionResponse(approvalId, response);
-    } catch (error) {
-      this.logger.error('Error processing explanation request', error);
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Error processing request. The request may have already been handled.',
-        replace_original: false,
-      });
-    }
+    await this.runSimpleAction(body, respond, 'request', 'Tool explanation requested', {
+      behavior: 'deny',
+      message:
+        'User requested explanation: Before retrying this tool, explain in the conversation why you need to use this tool, what it will do, and what the expected outcome is. Then request permission again.',
+    });
   }
 
   /**
@@ -101,28 +56,19 @@ export class PermissionActionHandler {
 
     if (!approvalId) {
       this.logger.warn('approve_disable_rule_session: missing approvalId');
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Missing approval id. The request may have already been handled.',
-        replace_original: false,
-      });
+      await this.ephemeralError(respond, '❌ Missing approval id. The request may have already been handled.');
       return;
     }
 
     try {
-      if (!this.claudeHandler) {
-        // Defensive fallback: if the handler was constructed without a
-        // ClaudeHandler (e.g. a legacy test harness) we can't disable rules,
-        // but we still honor the user's approve intent so the request doesn't
-        // hang until timeout.
-        this.logger.warn('approve_disable_rule_session: no claudeHandler; falling back to plain approve', {
+      if (!this.sessionRegistry) {
+        // Without a SessionRegistry we can't disable rules — but still honor
+        // the approve intent so the request doesn't hang until timeout.
+        this.logger.warn('approve_disable_rule_session: no sessionRegistry; falling back to plain approve', {
           approvalId,
           user,
         });
-        await sharedStore.storePermissionResponse(approvalId, {
-          behavior: 'allow',
-          message: 'Approved by user',
-        });
+        await sharedStore.storePermissionResponse(approvalId, { behavior: 'allow', message: 'Approved by user' });
         return;
       }
 
@@ -132,11 +78,7 @@ export class PermissionActionHandler {
           approvalId,
           user,
         });
-        await respond({
-          response_type: 'ephemeral',
-          text: '⚠️ The permission request expired before it could be handled.',
-          replace_original: false,
-        });
+        await this.ephemeralError(respond, '⚠️ The permission request expired before it could be handled.');
         return;
       }
 
@@ -144,24 +86,17 @@ export class PermissionActionHandler {
       const { channel, thread_ts } = pending;
 
       if (ruleIds.length === 0 || !channel) {
-        // No overridable rules on this approval (shouldn't happen — the button
-        // is only rendered when ruleIds is non-empty) or missing Slack
-        // context. Fall back to plain approve.
         this.logger.warn('approve_disable_rule_session: no ruleIds or channel; falling back to plain approve', {
           approvalId,
           hasRuleIds: ruleIds.length > 0,
           hasChannel: Boolean(channel),
         });
-        await sharedStore.storePermissionResponse(approvalId, {
-          behavior: 'allow',
-          message: 'Approved by user',
-        });
+        await sharedStore.storePermissionResponse(approvalId, { behavior: 'allow', message: 'Approved by user' });
         return;
       }
 
-      const sessionRegistry = this.claudeHandler.getSessionRegistry();
-      const sessionKey = sessionRegistry.getSessionKey(channel, thread_ts);
-      sessionRegistry.disableDangerousRules(sessionKey, ruleIds);
+      const sessionKey = this.sessionRegistry.getSessionKey(channel, thread_ts);
+      this.sessionRegistry.disableDangerousRules(sessionKey, ruleIds);
 
       this.logger.info('Tool approved and dangerous rules disabled for session', {
         approvalId,
@@ -176,11 +111,39 @@ export class PermissionActionHandler {
       });
     } catch (error) {
       this.logger.error('Error processing approve_disable_rule_session', error);
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ Error processing approval. The request may have already been handled.',
-        replace_original: false,
-      });
+      await this.ephemeralError(respond, '❌ Error processing approval. The request may have already been handled.');
     }
+  }
+
+  /**
+   * Shared path for the three simple handlers (approve/deny/explain). Wraps
+   * everything including the `body.actions[0].value` access in a single
+   * try/catch so a malformed payload surfaces as an ephemeral error rather
+   * than an unhandled rejection.
+   */
+  private async runSimpleAction(
+    body: any,
+    respond: RespondFn,
+    noun: 'approval' | 'denial' | 'request',
+    logLabel: string,
+    response: PermissionResponse,
+  ): Promise<void> {
+    try {
+      const approvalId = body.actions[0].value;
+      const user = body.user?.id;
+      this.logger.info(logLabel, { approvalId, user });
+      await sharedStore.storePermissionResponse(approvalId, response);
+    } catch (error) {
+      this.logger.error(`Error processing tool ${noun}`, error);
+      await this.ephemeralError(respond, `❌ Error processing ${noun}. The request may have already been handled.`);
+    }
+  }
+
+  private async ephemeralError(respond: RespondFn, text: string): Promise<void> {
+    await respond({
+      response_type: 'ephemeral',
+      text,
+      replace_original: false,
+    });
   }
 }
