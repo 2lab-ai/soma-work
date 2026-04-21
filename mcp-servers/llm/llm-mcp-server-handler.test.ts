@@ -129,7 +129,9 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_FAILED);
     expect(errSpy).toHaveBeenCalledWith(
       'llm.chat.empty-session-id',
-      expect.objectContaining({ backend: 'codex' }),
+      // Pin both fields: a routing regression that drops `model` would go
+      // unnoticed if we only asserted `backend`.
+      expect.objectContaining({ backend: 'codex', model: 'gpt-5.4' }),
     );
   });
 
@@ -178,13 +180,23 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(deps.runtimes.codex.resumeSession.mock.calls[1][0]).toBe('thread-rotated');
   });
 
-  it('resume: whitespace-only rotated id is ignored (keeps old id)', async () => {
+  it('resume: whitespace-only rotated id is ignored (keeps old id) + warns', async () => {
     const id = await seedSession();
+    // The warn on blank rotation is the only ops signal that a specific backend
+    // regressed — without this assertion the warn could silently disappear.
+    const logger = (deps.server as unknown as { logger: { warn: (...a: any[]) => void } }).logger;
+    const warnSpy = vi.spyOn(logger, 'warn');
+
     deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
       backendSessionId: '   ',
       content: 'r',
     });
     await deps.server.handleTool('chat', { prompt: 'x', resumeSessionId: id });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'llm.chat.resume.blank-rotated-id',
+      expect.objectContaining({ backend: 'codex', rawType: 'string' }),
+    );
 
     deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
       backendSessionId: 'thread-stored',
@@ -296,7 +308,14 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     expect(parseStructured(result).error.code).toBe(ErrorCode.INVALID_ARGS);
   });
 
-  it('structured error uses stable enum string for session_not_found', async () => {
+  it('structured error uses stable enum string for session_not_found + logs typed-error', async () => {
+    // `llm.chat.typed-error` must fire on every `LlmChatError` branch
+    // (SESSION_NOT_FOUND here as representative). Without this assertion
+    // the ops-facing log added for BACKEND_TIMEOUT / SESSION_BUSY / etc.
+    // could regress back to silence.
+    const logger = (deps.server as unknown as { logger: { error: (...a: any[]) => void } }).logger;
+    const errSpy = vi.spyOn(logger, 'error');
+
     const result = await deps.server.handleTool('chat', {
       prompt: 'x',
       resumeSessionId: 'missing',
@@ -304,6 +323,10 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const s = parseStructured(result);
     expect(s.error.code).toBe(ErrorCode.SESSION_NOT_FOUND);
     expect(typeof s.error.message).toBe('string');
+    expect(errSpy).toHaveBeenCalledWith(
+      'llm.chat.typed-error',
+      expect.objectContaining({ code: ErrorCode.SESSION_NOT_FOUND }),
+    );
   });
 
   // ── In-memory session map ──
@@ -365,8 +388,12 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
       'x',
       expect.any(Object),
     );
-    const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
-    expect(warnCalls).toContain('llm.route.unknown-alias');
+    // Pin the payload — a regression that emits the event with an empty
+    // alias or the wrong fallback backend still passes a name-only check.
+    expect(warnSpy).toHaveBeenCalledWith(
+      'llm.route.unknown-alias',
+      expect.objectContaining({ alias: 'frobnicate', fallbackBackend: 'codex' }),
+    );
   });
 
   // ── Shutdown ──
@@ -384,6 +411,13 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     await (deps.server as unknown as { shutdown: () => Promise<void> }).shutdown();
     expect(deps.runtimes.codex.shutdown).toHaveBeenCalled();
     expect(deps.runtimes.gemini.shutdown).toHaveBeenCalled();
-    expect(warnSpy.mock.calls.map((c) => c[0])).toContain('llm.runtime.shutdown-failed');
+    // Pin the runtime identity in the payload — a closure bug that logs the
+    // wrong runtime's name (or drops it entirely) still passes a name-only
+    // `toContain` check and ops would lose the ability to identify which
+    // runtime hung during teardown.
+    expect(warnSpy).toHaveBeenCalledWith(
+      'llm.runtime.shutdown-failed',
+      expect.objectContaining({ runtime: 'gemini' }),
+    );
   });
 });
