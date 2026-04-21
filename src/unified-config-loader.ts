@@ -18,6 +18,13 @@ import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');
 
+/**
+ * Process-scoped guard so the legacy `llmChat` warning fires at most once.
+ * `loadUnifiedConfig` is called on boot *and* every plugin-manager save, which
+ * would otherwise double-log the same deprecation message within seconds.
+ */
+let warnedLegacyLlmChat = false;
+
 export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
@@ -120,9 +127,12 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
       // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
       // carrying `llmChat` keep working but the key is silently dropped on
-      // the next saveUnifiedConfig round-trip; warn once so upgraded users
-      // see a trace rather than discovering the drop via vanished data.
-      if (raw.llmChat !== undefined) {
+      // the next saveUnifiedConfig round-trip; warn so upgraded users see a
+      // trace rather than discovering the drop via vanished data. The flag
+      // is process-scoped because this loader runs at boot *and* on every
+      // plugin-manager save.
+      if (raw.llmChat !== undefined && !warnedLegacyLlmChat) {
+        warnedLegacyLlmChat = true;
         logger.warn(
           'Ignoring legacy `llmChat` config key — subsystem removed in PR #639. ' +
             'The key will be dropped on the next config save.',
