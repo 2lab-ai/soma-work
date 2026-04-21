@@ -57,7 +57,7 @@ export function buildCarouselBlocks(fileIds: Record<TabId, string>, selectedTab:
     elements: TAB_ORDER.map((tabId) => {
       const button: Record<string, unknown> = {
         type: 'button',
-        action_id: 'usage_card_tab',
+        action_id: `usage_card_tab:${tabId}`,
         value: tabId,
         text: { type: 'plain_text', text: LABEL[tabId] },
       };
