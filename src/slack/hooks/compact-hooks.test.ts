@@ -1,5 +1,5 @@
 import type { PostCompactHookInput, PreCompactHookInput, SessionStartHookInput } from '@anthropic-ai/claude-agent-sdk';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock compaction-context-builder before importing the module under test.
 // buildCompactionContext returning a truthy string is what flips
@@ -24,11 +24,30 @@ function makeSession(overrides: Partial<ConversationSession> = {}): Conversation
     compactionRehydratedByEpoch: {},
     preCompactUsagePct: null,
     lastKnownUsagePct: null,
+    compactPreTokens: null,
+    compactPostTokens: null,
+    compactTrigger: null,
+    compactDurationMs: null,
+    compactStartingMessageTs: null,
+    compactStartedAtMs: null,
+    compactTickInterval: undefined,
     autoCompactPending: false,
     pendingUserText: null,
     pendingEventContext: null,
     ...overrides,
   } as ConversationSession;
+}
+
+/**
+ * Teardown guard: tests that post a "starting" message leave behind a live
+ * setInterval handle on the session. Clear it here so vitest doesn't hold
+ * the worker open.
+ */
+function clearStartingTicker(session: ConversationSession): void {
+  if (session.compactTickInterval) {
+    clearInterval(session.compactTickInterval);
+    session.compactTickInterval = undefined;
+  }
 }
 
 /**
@@ -73,13 +92,24 @@ describe('Epoch helpers (#617 AC6 dedupe foundation)', () => {
   });
 });
 
-describe('buildCompactHooks — PreCompact (#617 AC4)', () => {
-  let slackApi: { postSystemMessage: ReturnType<typeof vi.fn> };
+describe('buildCompactHooks — PreCompact (#617 AC4, live ticker v2)', () => {
+  let slackApi: {
+    postSystemMessage: ReturnType<typeof vi.fn>;
+    updateMessage: ReturnType<typeof vi.fn>;
+  };
   let session: ConversationSession;
 
   beforeEach(() => {
-    slackApi = { postSystemMessage: vi.fn().mockResolvedValue(undefined) };
+    slackApi = {
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: '1700000000.000100', channel: 'C1' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
     session = makeSession({ lastKnownUsagePct: 82 });
+  });
+
+  afterEach(() => {
+    clearStartingTicker(session);
+    vi.useRealTimers();
   });
 
   const payloadOf = (trigger: 'manual' | 'auto'): PreCompactHookInput =>
@@ -92,7 +122,7 @@ describe('buildCompactHooks — PreCompact (#617 AC4)', () => {
       custom_instructions: null,
     }) as unknown as PreCompactHookInput;
 
-  it('AC4: posts "starting · trigger=manual" and bumps epoch + snapshots preCompactUsagePct', async () => {
+  it('AC4 v2: posts "⏳ 🗜️ Compaction starting · trigger=manual", bumps epoch, snapshots preCompactUsagePct, captures message ts', async () => {
     const hooks = buildCompactHooks({
       session,
       channel: 'C1',
@@ -104,13 +134,19 @@ describe('buildCompactHooks — PreCompact (#617 AC4)', () => {
     expect(res.continue).toBe(true);
     expect(session.compactEpoch).toBe(1);
     expect(session.preCompactUsagePct).toBe(82);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '🗜️ Compaction starting · trigger=manual', {
-      threadTs: 'T1',
-    });
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      '⏳ 🗜️ Compaction starting · trigger=manual',
+      { threadTs: 'T1' },
+    );
     expect(session.compactPostedByEpoch?.[1]?.pre).toBe(true);
+    // Runtime handles captured for the ticker path.
+    expect(session.compactStartingMessageTs).toBe('1700000000.000100');
+    expect(typeof session.compactStartedAtMs).toBe('number');
+    expect(session.compactTickInterval).toBeDefined();
   });
 
-  it('AC4: posts "trigger=auto" for auto trigger', async () => {
+  it('AC4 v2: auto trigger → starting text includes `trigger=auto`', async () => {
     const hooks = buildCompactHooks({
       session,
       channel: 'C1',
@@ -118,12 +154,14 @@ describe('buildCompactHooks — PreCompact (#617 AC4)', () => {
       slackApi: slackApi as unknown as SlackApiHelper,
     });
     await hooks.PreCompact(payloadOf('auto') as any);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '🗜️ Compaction starting · trigger=auto', {
-      threadTs: 'T1',
-    });
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      '⏳ 🗜️ Compaction starting · trigger=auto',
+      { threadTs: 'T1' },
+    );
   });
 
-  it('AC4: second PreCompact call inside same cycle does NOT re-post (pre=true dedupe)', async () => {
+  it('AC4 v2: second PreCompact call inside same cycle does NOT re-post (pre=true dedupe)', async () => {
     const hooks = buildCompactHooks({
       session,
       channel: 'C1',
@@ -134,20 +172,64 @@ describe('buildCompactHooks — PreCompact (#617 AC4)', () => {
     await hooks.PreCompact(payloadOf('manual') as any);
     expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
   });
+
+  it('AC4 v2: ticker fires chat.update with elapsed `— 3s` / `— 6s` as time advances', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    await hooks.PreCompact(payloadOf('auto') as any);
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+
+    // First tick at T+3s
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      '⏳ 🗜️ Compaction starting · trigger=auto — 3s',
+    );
+
+    // Second tick at T+6s
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(slackApi.updateMessage).toHaveBeenLastCalledWith(
+      'C1',
+      '1700000000.000100',
+      '⏳ 🗜️ Compaction starting · trigger=auto — 6s',
+    );
+  });
 });
 
-describe('buildCompactHooks — PostCompact (#617 AC5)', () => {
-  let slackApi: { postSystemMessage: ReturnType<typeof vi.fn> };
+describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
+  let slackApi: {
+    postSystemMessage: ReturnType<typeof vi.fn>;
+    updateMessage: ReturnType<typeof vi.fn>;
+  };
   let eventRouter: { dispatchPendingUserMessage: ReturnType<typeof vi.fn> };
   let session: ConversationSession;
 
   beforeEach(() => {
-    slackApi = { postSystemMessage: vi.fn().mockResolvedValue(undefined) };
+    slackApi = {
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: undefined, channel: 'C1' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
     eventRouter = { dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined) };
     session = makeSession({ preCompactUsagePct: 83, lastKnownUsagePct: 45 });
     // Open a cycle so PostCompact has a marker to flip.
     beginCompactionCycleIfNeeded(session);
     session.compactPostedByEpoch![1].pre = true;
+    // Simulate the ticker state left behind by a prior `postCompactStartingIfNeeded` call.
+    session.compactStartingMessageTs = '1700000000.000100';
+    session.compactStartedAtMs = Date.now();
+  });
+
+  afterEach(() => {
+    clearStartingTicker(session);
   });
 
   const postPayload = (): PostCompactHookInput =>
@@ -160,7 +242,7 @@ describe('buildCompactHooks — PostCompact (#617 AC5)', () => {
       compact_summary: 'summary',
     }) as unknown as PostCompactHookInput;
 
-  it('AC5: posts "complete · was ~83% → now ~45%" on first PostCompact call', async () => {
+  it('AC5 v2: replaces the starting message in-place via chat.update, not postSystemMessage', async () => {
     const hooks = buildCompactHooks({
       session,
       channel: 'C1',
@@ -169,16 +251,28 @@ describe('buildCompactHooks — PostCompact (#617 AC5)', () => {
       eventRouter: eventRouter as unknown as EventRouter,
     });
     await hooks.PostCompact(postPayload() as any);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '✅ Compaction complete · was ~83% → now ~45%', {
-      threadTs: 'T1',
-    });
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+    );
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
     expect(session.compactPostedByEpoch?.[1]?.post).toBe(true);
     expect(session.autoCompactPending).toBe(false);
+    // Runtime-only START tracking cleared.
+    expect(session.compactStartingMessageTs).toBeNull();
+    expect(session.compactStartedAtMs).toBeNull();
   });
 
-  it('AC5: falls back to "?" when preCompactUsagePct is null', async () => {
-    session.preCompactUsagePct = null;
-    session.lastKnownUsagePct = 30;
+  it('AC5 v2: with full SDK metadata → rich 2-line completed message', async () => {
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.preCompactUsagePct = 80;
+    session.lastKnownUsagePct = 16;
+    session.compactTrigger = 'auto';
+    session.compactDurationMs = 5_200;
+    session.compactionCount = 3;
+
     const hooks = buildCompactHooks({
       session,
       channel: 'C1',
@@ -186,9 +280,46 @@ describe('buildCompactHooks — PostCompact (#617 AC5)', () => {
       slackApi: slackApi as unknown as SlackApiHelper,
     });
     await hooks.PostCompact(postPayload() as any);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '✅ Compaction complete · was ~?% → now ~30%', {
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      '🟢 🗜️ Compaction completed · trigger=auto (5.2s)\n' +
+        'Context: now 16% (35k/200k) ← was 80% (160k/200k) · compaction #3',
+    );
+  });
+
+  it('AC5 v2: no starting ts captured (Slack failed on START) → falls back to fresh postSystemMessage', async () => {
+    session.compactStartingMessageTs = null;
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
       threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
     });
+    await hooks.PostCompact(postPayload() as any);
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+      { threadTs: 'T1' },
+    );
+  });
+
+  it('AC5 v2: chat.update fails → falls back to fresh postSystemMessage (no silent drop)', async () => {
+    slackApi.updateMessage = vi.fn().mockRejectedValueOnce(new Error('message_not_found'));
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PostCompact(postPayload() as any);
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      '🟢 🗜️ Compaction completed\nContext: now ~45% ← was ~83%',
+      { threadTs: 'T1' },
+    );
   });
 
   it('AC6 dedupe: second PostCompact in same epoch does NOT re-post', async () => {
@@ -200,7 +331,8 @@ describe('buildCompactHooks — PostCompact (#617 AC5)', () => {
     });
     await hooks.PostCompact(postPayload() as any);
     await hooks.PostCompact(postPayload() as any);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 
   it('AC3 re-dispatch: PostCompact consumes pendingUserText via eventRouter exactly once', async () => {
