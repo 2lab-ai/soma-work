@@ -130,7 +130,6 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'admin_deny', label: 'admin deny' },
       { id: 'admin_users', label: 'admin users' },
       { id: 'admin_config', label: 'admin config' },
-      { id: 'admin_llmchat', label: 'admin llmchat' },
       { id: 'admin_session_list', label: 'admin session list' },
     ],
   },

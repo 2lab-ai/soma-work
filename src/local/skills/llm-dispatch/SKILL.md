@@ -88,7 +88,7 @@ Fallback path (synchronous; no polling):
 
 1. On success: write `content` to `<artifact_path>` (artifact purity applies), mark `status=completed`.
 2. On `BACKEND_TIMEOUT`: one continuation via `mcp__llm__chat({ resumeSessionId: <sessionId>, prompt: "Please continue and finalize." })`. Success → write its `content`, `status=completed`; else `status=timeout`.
-3. On any other error code (`BACKEND_FAILED`, `SESSION_NOT_FOUND`, `SESSION_BUSY`, `SESSION_CORRUPTED`, `PERSISTENCE_FAILED`, `INVALID_ARGS`, `ABORTED`): mark `status=failed` and surface the code.
+3. On any other error code (`BACKEND_FAILED`, `SESSION_NOT_FOUND`, `SESSION_BUSY`, `MUTUAL_EXCLUSION`, `INVALID_ARGS`, `ABORTED`): mark `status=failed` and surface the code.
 
 ### Phase 3: Return
 
