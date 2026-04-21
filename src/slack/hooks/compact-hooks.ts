@@ -33,6 +33,7 @@ import type {
   SessionStartHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../../logger';
+import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import type { ConversationSession } from '../../types';
 import type { EventRouter } from '../event-router';
@@ -169,10 +170,16 @@ function fmtPct(pct: number | null | undefined): string {
   return pct === null || pct === undefined ? '?' : String(pct);
 }
 
-/** Format a token count with thousands separators; `?` when missing. */
-function fmtTokens(tokens: number | null | undefined): string {
+/**
+ * Compact token formatter: `35k`, `1.2M`, `500`. Returns `?` when missing.
+ * Used inside the "Context: now X% (Nk/Wk)" summary line — full-precision
+ * thousands-separator counts are too noisy for a 1-line status.
+ */
+function fmtTokensCompact(tokens: number | null | undefined): string {
   if (tokens === null || tokens === undefined) return '?';
-  return tokens.toLocaleString('en-US');
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
 }
 
 /** Format ms → `1.2s` / `120ms`. Returns null when unset so callers can omit. */
@@ -183,38 +190,133 @@ function fmtDuration(ms: number | null | undefined): string | null {
 }
 
 /**
- * Build the "compaction complete" thread message. Emits all SDK-reported
- * fields that are available on the session: pre/post usage %, absolute token
- * counts, trigger, duration. When a field is missing (SDK didn't report it)
- * we fall back to `?` for the % pair and simply omit the optional segments
- * (trigger, duration, tokens) so the message doesn't lie about unknowns.
+ * Format elapsed seconds for the live "starting" message. Matches the
+ * MCP-status convention (`Xs` / `Xm Ys`). Input is wall-clock ms.
+ */
+function fmtElapsed(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/**
+ * Decide which trigger string to show on the live "starting" message. The
+ * PreCompact hook provides the real `'manual'|'auto'` value; the
+ * `onStatusUpdate('compacting')` fallback passes `'unknown (fallback)'` —
+ * that's noise the user complained about, so we drop it from the rendered
+ * line. If the SDK later populates `session.compactTrigger` via
+ * `onCompactBoundary`, ticking picks it up.
  *
- * Examples:
- *   ✅ Compaction complete · was ~83% (166,000 tok) → now ~12% (24,000 tok) · trigger=auto · 1.2s
- *   ✅ Compaction complete · was ~?% → now ~?%                                          (no data)
+ * Returns `null` when we genuinely don't know the trigger — callers omit the
+ * `· trigger=…` suffix rather than print a lie.
+ */
+function resolveStartingTrigger(session: ConversationSession, initialTrigger: string): 'manual' | 'auto' | null {
+  if (session.compactTrigger === 'manual' || session.compactTrigger === 'auto') return session.compactTrigger;
+  if (initialTrigger === 'manual' || initialTrigger === 'auto') return initialTrigger;
+  return null;
+}
+
+/**
+ * Build the live "Compaction starting" thread message. Shape:
+ *   ⏳ 🗜️ Compaction starting · trigger=auto           (initial post, no elapsed yet)
+ *   ⏳ 🗜️ Compaction starting · trigger=auto — 5s      (ticker update)
+ *   ⏳ 🗜️ Compaction starting                           (no known trigger, fallback path)
+ */
+export function buildCompactStartingMessage(opts: { trigger: 'manual' | 'auto' | null; elapsedMs?: number }): string {
+  const parts: string[] = ['⏳ 🗜️ Compaction starting'];
+  if (opts.trigger) parts.push(`trigger=${opts.trigger}`);
+  let text = parts.join(' · ');
+  if (typeof opts.elapsedMs === 'number' && opts.elapsedMs > 0) {
+    text += ` — ${fmtElapsed(opts.elapsedMs)}`;
+  }
+  return text;
+}
+
+/**
+ * Build the "Compaction completed" thread message. Now a 2-line block that
+ * captures every SDK-reported field plus the full context-window snapshot the
+ * user asked for (#617 followup v2).
+ *
+ * Line 1: `🟢 🗜️ Compaction completed · trigger=auto (5.2s)`
+ * Line 2: `Context: now 16% (35k/200k) ← was 80% (160k/200k) · compaction #3`
+ *
+ * Trigger/duration/compaction-count segments are omitted when the
+ * corresponding field is absent — the message never prints a lie about
+ * unknown data. If nothing is known at all (no pre/post tokens and no pct
+ * snapshot), line 2 falls back to `Context: now ~?% ← was ~?%`.
  */
 export function buildCompactCompleteMessage(session: ConversationSession): string {
+  const headerParts: string[] = ['🟢 🗜️ Compaction completed'];
+  if (session.compactTrigger) headerParts.push(`trigger=${session.compactTrigger}`);
+  let header = headerParts.join(' · ');
+  const dur = fmtDuration(session.compactDurationMs);
+  if (dur) header += ` (${dur})`;
+
+  const contextWindow = resolveContextWindow(session.model);
+  const windowLabel = fmtTokensCompact(contextWindow);
+
   const hasPreTokens = typeof session.compactPreTokens === 'number';
   const hasPostTokens = typeof session.compactPostTokens === 'number';
 
-  const waseg = hasPreTokens
-    ? `was ~${fmtPct(session.preCompactUsagePct)}% (${fmtTokens(session.compactPreTokens)} tok)`
-    : `was ~${fmtPct(session.preCompactUsagePct)}%`;
-  const nowseg = hasPostTokens
-    ? `now ~${fmtPct(session.lastKnownUsagePct)}% (${fmtTokens(session.compactPostTokens)} tok)`
-    : `now ~${fmtPct(session.lastKnownUsagePct)}%`;
+  const nowSeg =
+    hasPostTokens && contextWindow > 0
+      ? `now ${fmtPct(session.lastKnownUsagePct)}% (${fmtTokensCompact(session.compactPostTokens)}/${windowLabel})`
+      : `now ~${fmtPct(session.lastKnownUsagePct)}%`;
+  const wasSeg =
+    hasPreTokens && contextWindow > 0
+      ? `was ${fmtPct(session.preCompactUsagePct)}% (${fmtTokensCompact(session.compactPreTokens)}/${windowLabel})`
+      : `was ~${fmtPct(session.preCompactUsagePct)}%`;
 
-  const parts: string[] = [`✅ Compaction complete · ${waseg} → ${nowseg}`];
-  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
-  const dur = fmtDuration(session.compactDurationMs);
-  if (dur) parts.push(dur);
-  return parts.join(' · ');
+  const contextParts = [`Context: ${nowSeg} ← ${wasSeg}`];
+  if (typeof session.compactionCount === 'number' && session.compactionCount > 0) {
+    contextParts.push(`compaction #${session.compactionCount}`);
+  }
+
+  return `${header}\n${contextParts.join(' · ')}`;
+}
+
+/**
+ * Tick interval for the live "starting" message elapsed-time updates.
+ * 3s matches the MCP-status tracker's adaptive floor — fast enough to feel
+ * live, slow enough to stay well inside Slack's chat.update rate limits.
+ */
+const COMPACT_STARTING_TICK_MS = 3_000;
+
+/**
+ * Safety ceiling for the ticker. If the SDK never emits
+ * `compact_boundary`/`PostCompact` (catastrophic failure mode), we stop
+ * spamming chat.update after this budget.
+ */
+const COMPACT_STARTING_TICKER_MAX_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Clear the live-starting ticker + its tracking fields. Idempotent —
+ * `postCompactCompleteIfNeeded` calls this regardless of whether a ticker is
+ * actually running (fallback-only codepaths never start one).
+ */
+function stopStartingTicker(session: ConversationSession): void {
+  if (session.compactTickInterval) {
+    clearInterval(session.compactTickInterval);
+    session.compactTickInterval = undefined;
+  }
 }
 
 /**
  * Shared START-post helper. Called by both the PreCompact hook and the
  * `status === 'compacting'` fallback in stream-executor.ts so the two paths
  * agree on epoch bookkeeping and the "starting" message text.
+ *
+ * On the first START signal per epoch we:
+ *   1. Post the initial "⏳ 🗜️ Compaction starting · trigger=X" line.
+ *   2. Capture its Slack ts on the session.
+ *   3. Start a setInterval that `chat.update`s the message every 3s with
+ *      elapsed time (MCP-status style live indicator).
+ *
+ * The ticker is cleared by `postCompactCompleteIfNeeded`; if that never
+ * fires (SDK failure), a 10-minute safety ceiling stops the ticker anyway.
  *
  * Idempotent within a cycle via `marker.pre`.
  */
@@ -228,15 +330,53 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const marker = ensurePostedMap(session)[epoch];
   if (!marker || marker.pre) return;
 
-  await slackApi.postSystemMessage(channel, `🗜️ Compaction starting · trigger=${trigger}`, { threadTs });
+  const resolvedTrigger = resolveStartingTrigger(session, trigger);
+  const startedAtMs = Date.now();
+  const initialText = buildCompactStartingMessage({ trigger: resolvedTrigger });
+
+  const result = await slackApi.postSystemMessage(channel, initialText, { threadTs });
   marker.pre = true;
+
+  // Track the live-message ts so the completion handler can chat.update it
+  // in-place rather than posting a second message.
+  session.compactStartedAtMs = startedAtMs;
+  session.compactStartingMessageTs = result.ts ?? null;
+
+  if (!result.ts) return; // Slack post failed — nothing to tick against.
+
+  // Start the ticker. Each tick re-resolves the trigger from the session —
+  // covers the "fallback path posted first, then onCompactBoundary filled in
+  // session.compactTrigger" case so the live message self-corrects.
+  const tsForUpdate = result.ts;
+  session.compactTickInterval = setInterval(() => {
+    const elapsedMs = Date.now() - startedAtMs;
+    if (elapsedMs >= COMPACT_STARTING_TICKER_MAX_MS) {
+      stopStartingTicker(session);
+      return;
+    }
+    const tickTrigger = resolveStartingTrigger(session, trigger);
+    const text = buildCompactStartingMessage({ trigger: tickTrigger, elapsedMs });
+    // chat.update is fire-and-forget here; a single failure is harmless
+    // because the next tick (or the completion update) will retry.
+    slackApi.updateMessage(channel, tsForUpdate, text).catch((err) => {
+      logger.debug('compact-starting ticker update failed (will retry next tick)', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+  }, COMPACT_STARTING_TICK_MS);
 }
 
 /**
  * Shared END-post helper. Called by both the PostCompact hook and the
- * `onCompactBoundary` stream callback. Posts the "complete" message once per
- * epoch, marks the epoch rehydrated, clears `autoCompactPending`, and
- * re-dispatches any captured user message atomically.
+ * `onCompactBoundary` stream callback. On first call per epoch:
+ *   1. Stops the live-starting ticker.
+ *   2. Builds the rich 2-line completion message with SDK-reported
+ *      pre/post tokens, trigger, duration, and Context-window snapshot.
+ *   3. Replaces the "starting" message in-place via `chat.update` when we
+ *      still have its ts (typical path), or posts a fresh system message as
+ *      a fallback (e.g. the ts wasn't captured — Slack post failure on START).
+ *   4. Marks the epoch rehydrated, clears `autoCompactPending`, and
+ *      re-dispatches any captured user message atomically.
  *
  * The Slack post and the pending re-dispatch are independent → run in parallel.
  */
@@ -246,12 +386,37 @@ export async function postCompactCompleteIfNeeded(deps: CompactHookDeps): Promis
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
 
+  // Stop the ticker BEFORE posting so a racing tick cannot clobber the
+  // "completed" text back to "starting".
+  stopStartingTicker(session);
+
   const postPromise =
     marker.post === true
       ? Promise.resolve()
       : (async () => {
-          await slackApi.postSystemMessage(channel, buildCompactCompleteMessage(session), { threadTs });
+          const text = buildCompactCompleteMessage(session);
+          const ts = session.compactStartingMessageTs;
+          if (ts) {
+            // Replace the live "starting" message in-place. If the update
+            // fails (message deleted, edit window expired, etc.) fall back
+            // to posting a fresh system message so the user still sees the
+            // completion signal.
+            try {
+              await slackApi.updateMessage(channel, ts, text);
+            } catch (err) {
+              logger.warn('compact complete: chat.update failed, falling back to new message', {
+                error: (err as Error)?.message ?? String(err),
+              });
+              await slackApi.postSystemMessage(channel, text, { threadTs });
+            }
+          } else {
+            // No starting ts (fallback-only path) → post a fresh message.
+            await slackApi.postSystemMessage(channel, text, { threadTs });
+          }
           marker.post = true;
+          // Clear runtime-only START tracking now that the cycle is sealed.
+          session.compactStartingMessageTs = null;
+          session.compactStartedAtMs = null;
         })();
 
   // Rehydration dedupe: whichever END signal fires first marks the epoch so

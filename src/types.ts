@@ -265,6 +265,16 @@ export interface ConversationSession {
   compactPostTokens?: number | null;
   compactTrigger?: 'manual' | 'auto' | null;
   compactDurationMs?: number | null;
+  // #617 followup (live "compacting" indicator): runtime-only fields — NOT
+  // serialized to disk (same convention as `pendingRetryTimer`). `…MessageTs`
+  // is the Slack message ts of the live "Compaction starting" post; we
+  // chat.update it with elapsed time while compacting and flip it to the
+  // "completed" state atomically when onCompactBoundary/PostCompact fires.
+  // `…StartedAtMs` is the wall-clock at START; `…TickInterval` is the
+  // setInterval handle for the ticker (cleared on completion).
+  compactStartingMessageTs?: string | null;
+  compactStartedAtMs?: number | null;
+  compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.

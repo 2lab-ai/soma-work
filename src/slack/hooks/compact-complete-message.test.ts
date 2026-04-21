@@ -1,21 +1,20 @@
 /**
- * #617 followup — "Compaction complete" rich message.
+ * #617 followup v2 — "Compaction completed" rich message + live "starting"
+ * message with elapsed-time ticker.
  *
- * Regression guard for the user-reported bug where the completion message
- * always showed `was ~?% → now ~?%`. Root cause: the SDK compact_metadata
- * (`pre_tokens`, `post_tokens`, `trigger`, `duration_ms`) was never captured
- * on the session, so the message had no data to display.
+ * Replaces the v1 regression guard (which asserted the flat `· was ~X% → now
+ * ~Y%` shape). The new format is a 2-line block with every SDK-reported
+ * field plus a context-window snapshot, and the starting message shows
+ * elapsed seconds MCP-style.
  *
- * These tests cover `buildCompactCompleteMessage` directly to prove the
- * message emits every field available on the session and falls back cleanly
- * when fields are missing. Callsite (compact-hooks.ts::postCompactCompleteIfNeeded)
- * goes through `slackApi.postSystemMessage` — the AC5 coverage in
- * compact-hooks.test.ts already asserts the call path.
+ * These tests cover `buildCompactCompleteMessage` and
+ * `buildCompactStartingMessage` directly. Hook integration (post → update →
+ * complete) is covered separately in compact-hooks.test.ts.
  */
 
 import { describe, expect, it } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { buildCompactCompleteMessage } from './compact-hooks';
+import { buildCompactCompleteMessage, buildCompactStartingMessage } from './compact-hooks';
 
 function baseSession(overrides: Partial<ConversationSession> = {}): ConversationSession {
   return {
@@ -34,67 +33,123 @@ function baseSession(overrides: Partial<ConversationSession> = {}): Conversation
     autoCompactPending: false,
     pendingUserText: null,
     pendingEventContext: null,
-    ...overrides,
-  } as ConversationSession;
+    // No `model` → resolveContextWindow falls back to 200k, exercised in tests below.
+  } as ConversationSession as ConversationSession & typeof overrides;
 }
 
-describe('buildCompactCompleteMessage — SDK-authoritative fields (#617 followup)', () => {
-  it('AC5 followup: all fields present → full message with tokens + trigger + duration', () => {
-    const session = baseSession({
-      preCompactUsagePct: 83,
-      lastKnownUsagePct: 12,
-      compactPreTokens: 166_000,
-      compactPostTokens: 24_000,
-      compactTrigger: 'auto',
-      compactDurationMs: 1234,
-    });
-    expect(buildCompactCompleteMessage(session)).toBe(
-      '✅ Compaction complete · was ~83% (166,000 tok) → now ~12% (24,000 tok) · trigger=auto · 1.2s',
+function withOverrides(overrides: Partial<ConversationSession>): ConversationSession {
+  return { ...baseSession(), ...overrides } as ConversationSession;
+}
+
+describe('buildCompactStartingMessage — live "Compaction starting" indicator', () => {
+  it('initial post (no elapsed) with auto trigger', () => {
+    expect(buildCompactStartingMessage({ trigger: 'auto' })).toBe('⏳ 🗜️ Compaction starting · trigger=auto');
+  });
+
+  it('initial post with manual trigger', () => {
+    expect(buildCompactStartingMessage({ trigger: 'manual' })).toBe('⏳ 🗜️ Compaction starting · trigger=manual');
+  });
+
+  it('initial post with UNKNOWN trigger (fallback path) — omits trigger segment entirely', () => {
+    // Regression: AS-IS used to show `trigger=unknown (fallback)` which the
+    // user called noise. We now drop the segment rather than print a lie.
+    expect(buildCompactStartingMessage({ trigger: null })).toBe('⏳ 🗜️ Compaction starting');
+  });
+
+  it('ticker update appends elapsed seconds (sub-minute)', () => {
+    expect(buildCompactStartingMessage({ trigger: 'auto', elapsedMs: 5_000 })).toBe(
+      '⏳ 🗜️ Compaction starting · trigger=auto — 5s',
     );
   });
 
-  it('AC5 followup: manual trigger + sub-second duration renders as `Nms`', () => {
-    const session = baseSession({
+  it('ticker update renders minute-scale elapsed as `Xm Ys`', () => {
+    expect(buildCompactStartingMessage({ trigger: 'auto', elapsedMs: 65_000 })).toBe(
+      '⏳ 🗜️ Compaction starting · trigger=auto — 1m 5s',
+    );
+  });
+
+  it('ticker update renders whole-minute elapsed as `Xm` (no trailing 0s)', () => {
+    expect(buildCompactStartingMessage({ trigger: 'auto', elapsedMs: 180_000 })).toBe(
+      '⏳ 🗜️ Compaction starting · trigger=auto — 3m',
+    );
+  });
+
+  it('elapsedMs=0 on first tick → does NOT append `— 0s` (noise)', () => {
+    expect(buildCompactStartingMessage({ trigger: 'auto', elapsedMs: 0 })).toBe(
+      '⏳ 🗜️ Compaction starting · trigger=auto',
+    );
+  });
+
+  it('unknown trigger + elapsed → elapsed still appended', () => {
+    expect(buildCompactStartingMessage({ trigger: null, elapsedMs: 7_000 })).toBe(
+      '⏳ 🗜️ Compaction starting — 7s',
+    );
+  });
+});
+
+describe('buildCompactCompleteMessage — SDK-authoritative 2-line complete message', () => {
+  it('full SDK data → header with trigger+duration, Context line with compact token counts', () => {
+    const session = withOverrides({
+      preCompactUsagePct: 80,
+      lastKnownUsagePct: 16,
+      compactPreTokens: 160_000,
+      compactPostTokens: 35_000,
+      compactTrigger: 'auto',
+      compactDurationMs: 5_200,
+      compactionCount: 3,
+    });
+    // Default model → 200k context window fallback.
+    expect(buildCompactCompleteMessage(session)).toBe(
+      '🟢 🗜️ Compaction completed · trigger=auto (5.2s)\n' +
+        'Context: now 16% (35k/200k) ← was 80% (160k/200k) · compaction #3',
+    );
+  });
+
+  it('manual trigger + sub-second duration renders as `Nms` in header', () => {
+    const session = withOverrides({
       preCompactUsagePct: 85,
       lastKnownUsagePct: 40,
       compactPreTokens: 170_000,
       compactPostTokens: 80_000,
       compactTrigger: 'manual',
       compactDurationMs: 250,
+      compactionCount: 1,
     });
     expect(buildCompactCompleteMessage(session)).toBe(
-      '✅ Compaction complete · was ~85% (170,000 tok) → now ~40% (80,000 tok) · trigger=manual · 250ms',
+      '🟢 🗜️ Compaction completed · trigger=manual (250ms)\n' +
+        'Context: now 40% (80k/200k) ← was 85% (170k/200k) · compaction #1',
     );
   });
 
-  it('AC5 followup: tokens present, no trigger/duration → only tokens appended', () => {
-    const session = baseSession({
+  it('no trigger / no duration / no compactionCount → header collapses, Context only has tokens', () => {
+    const session = withOverrides({
       preCompactUsagePct: 90,
       lastKnownUsagePct: 20,
       compactPreTokens: 180_000,
       compactPostTokens: 40_000,
+      compactionCount: 0, // zero treated as "not yet populated" per impl
     });
     expect(buildCompactCompleteMessage(session)).toBe(
-      '✅ Compaction complete · was ~90% (180,000 tok) → now ~20% (40,000 tok)',
+      '🟢 🗜️ Compaction completed\n' + 'Context: now 20% (40k/200k) ← was 90% (180k/200k)',
     );
   });
 
-  it('AC5 followup: legacy path — no token data → unchanged from prior format', () => {
-    // Ensures backward compatibility with sessions that were compacted by an
-    // older SDK that didn't emit compact_metadata.
-    const session = baseSession({ preCompactUsagePct: 83, lastKnownUsagePct: 45 });
-    expect(buildCompactCompleteMessage(session)).toBe('✅ Compaction complete · was ~83% → now ~45%');
+  it('legacy path — no token data, only pct snapshots → `~X%` fallback for both sides', () => {
+    const session = withOverrides({ preCompactUsagePct: 83, lastKnownUsagePct: 45, compactionCount: 2 });
+    expect(buildCompactCompleteMessage(session)).toBe(
+      '🟢 🗜️ Compaction completed\n' + 'Context: now ~45% ← was ~83% · compaction #2',
+    );
   });
 
-  it('AC5 followup: completely absent data → `?` fallback for both sides', () => {
+  it('completely absent data → `?` fallback on both sides', () => {
     const session = baseSession();
-    expect(buildCompactCompleteMessage(session)).toBe('✅ Compaction complete · was ~?% → now ~?%');
+    expect(buildCompactCompleteMessage(session)).toBe(
+      '🟢 🗜️ Compaction completed\n' + 'Context: now ~?% ← was ~?%',
+    );
   });
 
-  it('AC5 followup: only post_tokens available → post side shows tokens, pre side does not', () => {
-    // Defensive: SDK type marks post_tokens optional. If only post_tokens is
-    // delivered we should still enrich the `now` side without lying about `was`.
-    const session = baseSession({
+  it('only post_tokens present → post side shows compact tokens, pre side falls back', () => {
+    const session = withOverrides({
       preCompactUsagePct: null,
       lastKnownUsagePct: 12,
       compactPreTokens: null,
@@ -102,19 +157,37 @@ describe('buildCompactCompleteMessage — SDK-authoritative fields (#617 followu
       compactTrigger: 'auto',
     });
     expect(buildCompactCompleteMessage(session)).toBe(
-      '✅ Compaction complete · was ~?% → now ~12% (24,000 tok) · trigger=auto',
+      '🟢 🗜️ Compaction completed · trigger=auto\n' + 'Context: now 12% (24k/200k) ← was ~?%',
     );
   });
 
-  it('AC5 followup: token counts with thousand-separators render en-US locale', () => {
-    const session = baseSession({
+  it('mega-scale tokens render as `1.5M` / `300k`', () => {
+    const session = withOverrides({
       preCompactUsagePct: 50,
       lastKnownUsagePct: 10,
       compactPreTokens: 1_500_000,
       compactPostTokens: 300_500,
+      model: 'claude-opus-4-7', // 1M context window
     });
-    expect(buildCompactCompleteMessage(session)).toBe(
-      '✅ Compaction complete · was ~50% (1,500,000 tok) → now ~10% (300,500 tok)',
-    );
+    const msg = buildCompactCompleteMessage(session);
+    // Sanity: header + Context line shape
+    expect(msg).toContain('🟢 🗜️ Compaction completed');
+    expect(msg).toContain('Context: now 10%');
+    expect(msg).toContain('was 50%');
+    // Mega formatting
+    expect(msg).toContain('1.5M/');
+    expect(msg).toContain('301k/');
+  });
+
+  it('sub-1000 tokens (defensive edge case) render as plain integer', () => {
+    const session = withOverrides({
+      preCompactUsagePct: 0,
+      lastKnownUsagePct: 0,
+      compactPreTokens: 500,
+      compactPostTokens: 10,
+    });
+    const msg = buildCompactCompleteMessage(session);
+    expect(msg).toContain('(500/200k)');
+    expect(msg).toContain('(10/200k)');
   });
 });
