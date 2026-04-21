@@ -3,6 +3,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { GeminiRuntime } from './gemini-runtime.js';
+import { ErrorCode, LlmChatError } from './errors.js';
 
 function createMockClient(overrides: Record<string, any> = {}) {
   return {
@@ -95,6 +96,37 @@ describe('GeminiRuntime', () => {
         600_000,
       );
       expect(result.backendSessionId).toBe('gemini-session-xyz');
+    });
+  });
+
+  // Parity with codex-runtime.test.ts — gemini and codex share the
+  // `invoke()` → watchdog → killChild shape, so the same failure-mode
+  // tests must exist for both or a gemini-side regression ships silently.
+
+  describe('watchdog integration', () => {
+    it('kills child on backend timeout', async () => {
+      mockClient.callTool.mockImplementation(() => new Promise(() => {})); // never resolves
+      await expect(
+        runtime.startSession('gemini-3.1-pro-preview', 'x', { timeoutMs: 50 }),
+      ).rejects.toBeInstanceOf(LlmChatError);
+      expect(mockClient.killProcess).toHaveBeenCalledWith('SIGTERM');
+    }, 10_000);
+
+    it('wraps non-LlmChatError from callTool as BACKEND_FAILED', async () => {
+      mockClient.callTool.mockRejectedValue(new Error('boom'));
+      const err = await runtime
+        .startSession('gemini-3.1-pro-preview', 'x', {})
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(LlmChatError);
+      expect((err as LlmChatError).code).toBe(ErrorCode.BACKEND_FAILED);
+    });
+  });
+
+  describe('shutdown()', () => {
+    it('stops the client', async () => {
+      await runtime.ensureReady();
+      await runtime.shutdown();
+      expect(mockClient.stop).toHaveBeenCalled();
     });
   });
 });

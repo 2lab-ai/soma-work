@@ -25,6 +25,8 @@ import { randomUUID } from 'node:crypto';
 export interface RouteResult {
   backend: Backend;
   model: string;
+  /** True when the caller passed an unrecognized alias that fell through to the codex default. */
+  unknownAlias?: boolean;
 }
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.4';
@@ -35,7 +37,10 @@ export function routeModel(model: string): RouteResult {
   if (model === 'gemini') return { backend: 'gemini', model: DEFAULT_GEMINI_MODEL };
   if (model.startsWith('gemini-')) return { backend: 'gemini', model };
   if (model.startsWith('gpt-') || model.startsWith('o')) return { backend: 'codex', model };
-  return { backend: 'codex', model };
+  // Unknown alias: pass through to codex as a last-resort default. Surfaced via
+  // `unknownAlias` so the server can emit a one-shot log — dropping silently
+  // would hide typos in caller-supplied `model` values.
+  return { backend: 'codex', model, unknownAlias: true };
 }
 
 // ── Session state (in-memory) ──────────────────────────────
@@ -80,6 +85,12 @@ function errorResult(err: LlmChatError): ToolResult {
 
 export interface LlmMcpDeps {
   runtimes: Record<Backend, LlmRuntime>;
+  /**
+   * When true (default in `bootstrap()`), `shutdown()` calls `process.exit(0)`
+   * after draining runtimes. Tests disable this so they can await `shutdown()`
+   * and assert child cleanup without terminating the test runner.
+   */
+  exitOnShutdown?: boolean;
 }
 
 // ── Server ─────────────────────────────────────────────────
@@ -135,7 +146,13 @@ export class LlmMCPServer extends BaseMcpServer {
     try {
       return await this.handleChat(args);
     } catch (err) {
-      if (err instanceof LlmChatError) return errorResult(err);
+      if (err instanceof LlmChatError) {
+        // Typed errors are caller-facing codes. Log at error so ops can correlate
+        // BACKEND_TIMEOUT / SESSION_BUSY / SESSION_NOT_FOUND / MUTUAL_EXCLUSION
+        // / INVALID_ARGS on the server side — callers only see the structured result.
+        this.logger.error('llm.chat.typed-error', { code: err.code, message: err.message });
+        return errorResult(err);
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error('llm.chat.unexpected', err);
       return errorResult(new LlmChatError(ErrorCode.BACKEND_FAILED, message, err));
@@ -145,10 +162,25 @@ export class LlmMCPServer extends BaseMcpServer {
   protected override async shutdown(): Promise<void> {
     await Promise.all(
       Object.values(this.deps.runtimes).map(async (rt) => {
-        try { await rt.shutdown(); } catch { /* ignore */ }
+        try {
+          await rt.shutdown();
+        } catch (err) {
+          // Swallowing shutdown errors silently hides hung-child bugs. Warn
+          // with context so long-lived MCP processes leave a trace when
+          // teardown fails, without blocking exit.
+          this.logger.warn('llm.runtime.shutdown-failed', {
+            runtime: (rt as { name?: string }).name,
+            err,
+          });
+        }
       }),
     );
-    process.exit(0);
+    // Process lifecycle belongs to the bootstrap wrapper; tests construct the
+    // server with `exitOnShutdown: false` so they can assert runtime teardown
+    // without terminating the runner.
+    if (this.deps.exitOnShutdown !== false) {
+      process.exit(0);
+    }
   }
 
   // ── Chat handler ────────────────────────────────────────
@@ -185,6 +217,16 @@ export class LlmMCPServer extends BaseMcpServer {
     opts: { model: string; cwd?: string; timeoutMs?: number },
   ): Promise<ToolResult> {
     const route = routeModel(opts.model);
+    if (route.unknownAlias) {
+      // Caller likely typo'd the alias; default-to-codex is a fallback, not a
+      // guarantee. Warn once per call so typos are discoverable without forcing
+      // INVALID_ARGS (which would break every existing `llm_chat(model: 'x')` caller).
+      this.logger.warn('llm.route.unknown-alias', {
+        alias: opts.model,
+        fallbackBackend: route.backend,
+        fallbackModel: route.model,
+      });
+    }
     const runtime = this.deps.runtimes[route.backend];
 
     const result = await runtime.startSession(route.model, prompt, {
@@ -195,6 +237,13 @@ export class LlmMCPServer extends BaseMcpServer {
     const backendSessionId =
       typeof result.backendSessionId === 'string' ? result.backendSessionId.trim() : '';
     if (!backendSessionId) {
+      // Ops-facing context: which backend+model silently returned nothing.
+      // The caller only sees `BACKEND_FAILED`; without this log, routing bugs
+      // that regress one backend would be indistinguishable from the other.
+      this.logger.error('llm.chat.empty-session-id', {
+        backend: route.backend,
+        model: route.model,
+      });
       throw new LlmChatError(ErrorCode.BACKEND_FAILED, 'Backend returned empty session ID');
     }
 
@@ -269,7 +318,7 @@ async function bootstrap(): Promise<void> {
     gemini: new GeminiRuntime(),
   };
 
-  const server = new LlmMCPServer({ runtimes });
+  const server = new LlmMCPServer({ runtimes, exitOnShutdown: true });
   await server.run();
 }
 

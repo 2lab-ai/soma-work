@@ -63,7 +63,9 @@ function buildServer(): Deps {
     codex: makeRuntime('codex'),
     gemini: makeRuntime('gemini'),
   };
-  const server = new LlmMCPServer({ runtimes });
+  // `exitOnShutdown: false` so shutdown-related tests can await the hook
+  // without the test runner being killed by `process.exit(0)`.
+  const server = new LlmMCPServer({ runtimes, exitOnShutdown: false });
   return { server, runtimes };
 }
 
@@ -279,5 +281,80 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const s = parseStructured(result);
     expect(s.error.code).toBe(ErrorCode.SESSION_NOT_FOUND);
     expect(typeof s.error.message).toBe('string');
+  });
+
+  // ── In-memory session map ──
+  // The deleted FileSessionStore enforced `publicId` uniqueness via an
+  // `assertInvariant`. The new `Map<string, Session>` leans on `randomUUID()`;
+  // these tests are the guardrail against a future bug where `handleNew`
+  // clobbers the map or `handleResume` resolves the wrong key.
+
+  it('sessionId uniqueness: two new calls yield distinct sessionIds', async () => {
+    deps.runtimes.codex.startSession
+      .mockResolvedValueOnce({ backendSessionId: 'thread-a', content: 'a' })
+      .mockResolvedValueOnce({ backendSessionId: 'thread-b', content: 'b' });
+    const r1 = await deps.server.handleTool('chat', { prompt: 'a', model: 'codex' });
+    const r2 = await deps.server.handleTool('chat', { prompt: 'b', model: 'codex' });
+    const id1 = parseStructured(r1).sessionId as string;
+    const id2 = parseStructured(r2).sessionId as string;
+    expect(id1).toBeTypeOf('string');
+    expect(id2).toBeTypeOf('string');
+    expect(id1).not.toBe(id2);
+  });
+
+  it('multi-session accumulation: 3 distinct sessions resumable independently', async () => {
+    deps.runtimes.codex.startSession
+      .mockResolvedValueOnce({ backendSessionId: 'thread-1', content: 'c1' })
+      .mockResolvedValueOnce({ backendSessionId: 'thread-2', content: 'c2' })
+      .mockResolvedValueOnce({ backendSessionId: 'thread-3', content: 'c3' });
+
+    const ids = [] as string[];
+    for (const p of ['one', 'two', 'three']) {
+      const r = await deps.server.handleTool('chat', { prompt: p, model: 'codex' });
+      ids.push(parseStructured(r).sessionId as string);
+    }
+    expect(new Set(ids).size).toBe(3);
+
+    // Each resume must hit its own stored backendSessionId.
+    for (let i = 0; i < ids.length; i++) {
+      deps.runtimes.codex.resumeSession.mockResolvedValueOnce({
+        backendSessionId: `thread-${i + 1}`,
+        content: `r${i + 1}`,
+      });
+      await deps.server.handleTool('chat', { prompt: 'cont', resumeSessionId: ids[i] });
+      expect(deps.runtimes.codex.resumeSession.mock.calls[i][0]).toBe(`thread-${i + 1}`);
+    }
+  });
+
+  // ── Unknown model alias ──
+
+  it('unknown model alias: falls back to codex + logs warn without INVALID_ARGS', async () => {
+    // Spy on logger before issuing the call. `warn` is the access point in
+    // base-mcp-server's StderrLogger; we confirm the alias is surfaced.
+    const logger = (deps.server as unknown as { logger: { warn: (...a: any[]) => void } }).logger;
+    const warnSpy = vi.spyOn(logger, 'warn');
+
+    const result = await deps.server.handleTool('chat', { prompt: 'x', model: 'frobnicate' });
+    // No error; request routed to codex with the alias as the `model`.
+    expect(parseStructured(result).error).toBeUndefined();
+    expect(deps.runtimes.codex.startSession).toHaveBeenCalledWith(
+      'frobnicate',
+      'x',
+      expect.any(Object),
+    );
+    const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
+    expect(warnCalls).toContain('llm.route.unknown-alias');
+  });
+
+  // ── Shutdown ──
+
+  it('shutdown drains every runtime and swallows-with-log per-runtime errors', async () => {
+    deps.runtimes.gemini.shutdown.mockRejectedValueOnce(new Error('gemini stuck'));
+    // Accessing the protected hook is intentional — the change under review
+    // exposed this seam specifically so tests can assert teardown without
+    // `process.exit` terminating the runner.
+    await (deps.server as unknown as { shutdown: () => Promise<void> }).shutdown();
+    expect(deps.runtimes.codex.shutdown).toHaveBeenCalled();
+    expect(deps.runtimes.gemini.shutdown).toHaveBeenCalled();
   });
 });

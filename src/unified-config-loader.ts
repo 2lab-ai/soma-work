@@ -117,6 +117,19 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.a2t = raw.a2t as A2tConfig;
       }
 
+      // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
+      // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
+      // carrying `llmChat` keep working but the key is silently dropped on
+      // the next saveUnifiedConfig round-trip; warn once so upgraded users
+      // see a trace rather than discovering the drop via vanished data.
+      if (raw.llmChat !== undefined) {
+        logger.warn(
+          'Ignoring legacy `llmChat` config key — subsystem removed in PR #639. ' +
+            'The key will be dropped on the next config save.',
+          { path: configFile },
+        );
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
